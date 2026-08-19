@@ -1,0 +1,30 @@
+[
+  {
+    "assignment_id": "assignment-canal-essay",
+    "channel": "LMS",
+    "asserted_value": "2026-08-21",
+    "observed_at": "2026-08-19T09:00:00",
+    "confidence": 0.82
+  },
+  {
+    "assignment_id": "assignment-canal-essay",
+    "channel": "PARENT_ENTRY",
+    "asserted_value": "2026-08-22",
+    "observed_at": "2026-08-19T10:00:00",
+    "confidence": 0.7
+  },
+  {
+    "assignment_id": "assignment-algebra-set",
+    "channel": "LMS",
+    "asserted_value": "2026-08-24",
+    "observed_at": "2026-08-19T09:30:00",
+    "confidence": 0.9
+  },
+  {
+    "assignment_id": "assignment-algebra-set",
+    "channel": "STUDENT_REPORT",
+    "asserted_value": "2026-08-24",
+    "observed_at": "2026-08-19T11:00:00",
+    "confidence": 0.85
+  }
+]

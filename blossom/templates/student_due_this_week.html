@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Blossom - Due this week</title>
+    <script src="/static/htmx.js"></script>
+    <link rel="stylesheet" href="/static/blossom.css">
+  </head>
+  <body>
+    <main>
+      <h1>Due this week</h1>
+      <p>Expectation before action: {{ view.expectation }}</p>
+      {% for assignment in view.assignments %}
+        <article>
+          <h2>{{ assignment.course }}: {{ assignment.title }}</h2>
+          <p>Status: {{ assignment.submission_status }}</p>
+          <p>Due: {{ assignment.due_date }}</p>
+          {% if assignment.disagreement %}
+            <h3>Source disagreement</h3>
+            <ul>
+              {% for claim in assignment.disagreement %}
+                <li>{{ claim }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </main>
+  </body>
+</html>
