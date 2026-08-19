@@ -1,0 +1,18 @@
+[
+  {
+    "assignment_id": "assignment-canal-essay",
+    "course": "World History",
+    "title": "Canal Era comparison essay",
+    "due_date": "2026-08-21",
+    "dependencies": ["outline-canal-essay"],
+    "reported_submission_status": "in_progress"
+  },
+  {
+    "assignment_id": "assignment-algebra-set",
+    "course": "Algebra II",
+    "title": "Quadratic modeling problem set",
+    "due_date": "2026-08-24",
+    "dependencies": [],
+    "reported_submission_status": "not_started"
+  }
+]
