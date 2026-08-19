@@ -26,6 +26,18 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
 # PyInstaller
 #   Usually these files are written by a python script from a template
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -35,6 +47,17 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+# Testing and tooling
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
 
 # Unit test / coverage reports
 htmlcov/
@@ -77,6 +100,8 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints
 
 # IPython
 profile_default/
@@ -152,6 +177,7 @@ activemq-data/
 .envrc
 .venv
 env/
+.venv/
 venv/
 ENV/
 env.bak/
@@ -216,3 +242,55 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Secrets and configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+token.json
+
+# Real data. Only data/synthetic/ is ever tracked.
+data/*
+!data/synthetic/
+!data/README.md
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# Vector stores and embedding caches
+.chroma/
+chroma/
+*.faiss
+*.index
+.embeddings_cache/
+
+# Anything exported, scraped, or pulled from a live source
+exports/
+scraped/
+raw/
+*.ics
+*.mbox
+*.eml
+
+# Agent run artifacts
+logs/
+*.log
+runs/
+traces/
+.reflections/
+
+# Editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
