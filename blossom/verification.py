@@ -113,6 +113,7 @@ class VerificationResult(BaseModel):
 
     @property
     def failed_checks(self) -> tuple[HardCheck, ...]:
+        """Checks that ran and failed, in the order they are defined."""
         return tuple(
             check for check in ORDERED_HARD_CHECKS
             if self.outcomes.get(check) is CheckOutcome.FAILED

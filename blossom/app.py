@@ -1,3 +1,14 @@
+"""Application assembly: three route trees over one set of stores.
+
+The student, parent and verifier routers are mounted separately rather than
+sharing a router with permission checks on individual endpoints. Separate trees
+mean a handler cannot accidentally serve the wrong projection, because it has
+no access to another principal's view model.
+
+Stores are opened by the lifespan handler, not at import, so importing this
+module has no side effects.
+"""
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 

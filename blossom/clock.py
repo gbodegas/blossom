@@ -36,9 +36,11 @@ class SystemClock:
     """The real clock. The only implementation that touches the operating system."""
 
     def now(self) -> datetime:
+        """Return the current instant in UTC."""
         return datetime.now(UTC)
 
     def today(self) -> date:
+        """Return today's date in UTC."""
         return self.now().date()
 
 
@@ -49,9 +51,11 @@ class FrozenClock:
         self._instant = instant
 
     def now(self) -> datetime:
+        """Return the pinned instant."""
         return self._instant
 
     def today(self) -> date:
+        """Return the pinned instant's date."""
         return self._instant.date()
 
 

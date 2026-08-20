@@ -33,6 +33,13 @@ ALLOWED_CAPABILITIES: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class ToolSpec:
+    """One tool: what it is called, what it does, and what it is allowed to do.
+
+    ``capabilities`` is checked against ``ALLOWED_CAPABILITIES`` at import.
+    ``call`` returns ``Draft`` and nothing else, which is the structural half of
+    the guarantee -- see the module docstring.
+    """
+
     name: str
     description: str
     capabilities: frozenset[str]
@@ -58,6 +65,10 @@ def validate_capabilities(registry: Iterable[ToolSpec]) -> None:
 
 
 def create_draft(tool_input: dict[str, object]) -> Draft:
+    """Produce a draft for a human to read, copy and send by hand.
+
+    The only tool in the registry. There is no counterpart that transmits.
+    """
     body = str(tool_input.get("body", ""))
     return Draft(body=body)
 
