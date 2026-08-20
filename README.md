@@ -145,6 +145,11 @@ find it without configuration. If your editor reports that `fastapi` or
 `pydantic` cannot be found, it is resolving imports against a different
 interpreter rather than finding a fault in the code.
 
+`.vscode/settings.json` points the mypy and ruff extensions at the versions
+installed in that environment rather than the ones they bundle, so the editor
+and CI check the same things. In VS Code, pick the interpreter with
+**Python: Select Interpreter** from the command palette.
+
 The default data adapter reads from fixtures, so nothing here depends on having school LMS access. That is deliberate. LMS APIs are usually restricted to administrators and scraping breaks when the UI changes, so the system is built to run without either and to treat any real connector as an optional source rather than a dependency.
 
 ## A note on data

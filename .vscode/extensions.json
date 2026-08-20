@@ -1,0 +1,13 @@
+{
+  // Extensions this project's settings.json configures. VS Code offers these
+  // on first open; nothing breaks if they are declined.
+  //
+  // This file is why settings.json can safely set ruff.importStrategy: a
+  // setting belonging to an uninstalled extension is reported as unknown, so
+  // the recommendation and the setting belong together.
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.mypy-type-checker",
+    "charliermarsh.ruff"
+  ]
+}
