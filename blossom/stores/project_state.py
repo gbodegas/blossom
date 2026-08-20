@@ -1,11 +1,15 @@
 import sqlite3
 import threading
 from collections.abc import Iterable
-from datetime import date, datetime
+from datetime import date, timedelta
 
 from pydantic import BaseModel, ConfigDict
 
+from blossom.clock import Clock, SystemClock
 from blossom.retrieval import RetrievalResult
+
+DUE_THIS_WEEK_KEY = "due_this_week"
+DUE_THIS_WEEK_SPAN = timedelta(days=6)
 
 
 class Assignment(BaseModel):
@@ -23,8 +27,9 @@ class ProjectStateStore:
     name = "project_state"
     retention_policy = "Keep structured assignment state for the academic year, then archive."
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, clock: Clock | None = None) -> None:
         self._connection = connection
+        self._clock = SystemClock() if clock is None else clock
         # The connection is opened once at startup and shared by the worker
         # threads FastAPI uses for synchronous handlers, so every statement is
         # serialised. See blossom/dependencies.py for the full rationale.
@@ -99,15 +104,23 @@ class ProjectStateStore:
         ]
 
     def lookup(self, key: str) -> RetrievalResult | None:
-        if key != "due_this_week":
+        """Resolve a keyed structured query.
+
+        The window is computed from the injected clock rather than the fixed
+        August 2026 dates the scaffold hardcoded. Defining "this week" as the
+        next seven days inclusive is a placeholder: it preserves the previous
+        behaviour exactly when the clock reads 2026-08-19, and the definition
+        belongs in a calendar policy rather than in a store once there is one.
+        """
+        if key != DUE_THIS_WEEK_KEY:
             return None
-        today = date(2026, 8, 19)
-        end = date(2026, 8, 25)
+        today = self._clock.today()
+        end = today + DUE_THIS_WEEK_SPAN
         return RetrievalResult(
             store_name=self.name,
             record_id=key,
             source_channel="fixture",
-            asserted_at=datetime(2026, 8, 19, 9, 0, 0),
+            asserted_at=self._clock.now(),
             payload={
                 "assignments": [
                     item.model_dump(mode="json") for item in self.due_between(today, end)

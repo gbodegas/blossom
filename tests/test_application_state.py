@@ -121,6 +121,7 @@ def test_dependency_can_be_overridden_to_substitute_stores() -> None:
     substitute = build_application_state(settings)
     substitute_with_empty_store = ApplicationState(
         settings=settings,
+        clock=substitute.clock,
         source=substitute.source,
         project_state=empty_store,
     )

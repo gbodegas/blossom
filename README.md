@@ -45,8 +45,16 @@ uv run uvicorn blossom.app:app --reload
 
 `uv sync --dev` creates `.venv` and installs the pinned runtime and development
 dependencies from `uv.lock`. There is no separate seed step: the synthetic
-fixtures in `data/synthetic/` are loaded on demand, so the app serves
+fixtures in `data/synthetic/` are loaded once at startup, so the app serves
 `/student/due-this-week` immediately.
+
+Those fixtures carry fixed August 2026 due dates, and "due this week" is
+computed from the real clock, so outside that week the page is legitimately
+empty. To see the fixture data, pin the clock:
+
+```bash
+BLOSSOM_TODAY=2026-08-19 uv run uvicorn blossom.app:app --reload
+```
 
 No credentials are required. Nothing in the package reads an API key yet,
 because nothing calls a model yet.
