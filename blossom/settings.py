@@ -37,6 +37,11 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPOSITORY_ROOT = PACKAGE_ROOT.parent
 
+# Packaged assets. Module-level so importers do not need to read the
+# environment just to locate a template directory that cannot be configured.
+STATIC_PATH = PACKAGE_ROOT / "static"
+TEMPLATE_PATH = PACKAGE_ROOT / "templates"
+
 FIXTURE_PATH_VARIABLE = "BLOSSOM_FIXTURE_PATH"
 DATABASE_PATH_VARIABLE = "BLOSSOM_DATABASE_PATH"
 CHROMA_PATH_VARIABLE = "BLOSSOM_CHROMA_PATH"
@@ -61,12 +66,12 @@ class Settings:
     @property
     def static_path(self) -> Path:
         """Directory of packaged static assets. Not configurable; see module docstring."""
-        return PACKAGE_ROOT / "static"
+        return STATIC_PATH
 
     @property
     def template_path(self) -> Path:
         """Directory of packaged Jinja templates. Not configurable; see module docstring."""
-        return PACKAGE_ROOT / "templates"
+        return TEMPLATE_PATH
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "Settings":

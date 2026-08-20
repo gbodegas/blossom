@@ -154,9 +154,8 @@ def test_reconciler_preserves_all_four_conflicting_records() -> None:
 
 
 def test_empty_workload_signal_post_succeeds() -> None:
-    client = TestClient(create_app())
-
-    response = client.post("/student/workload-signals")
+    with TestClient(create_app()) as client:
+        response = client.post("/student/workload-signals")
 
     assert response.status_code == 200
     assert response.json()["principal"] == "STUDENT"
@@ -203,9 +202,8 @@ def test_verification_tiers_are_ordered_and_only_student_workload_overrides() ->
 
 
 def test_student_due_this_week_renders_disagreement() -> None:
-    client = TestClient(create_app())
-
-    response = client.get("/student/due-this-week")
+    with TestClient(create_app()) as client:
+        response = client.get("/student/due-this-week")
 
     assert response.status_code == 200
     assert "Source disagreement" in response.text

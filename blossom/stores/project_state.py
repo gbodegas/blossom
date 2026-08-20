@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from collections.abc import Iterable
 from datetime import date, datetime
 
@@ -24,6 +25,10 @@ class ProjectStateStore:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+        # The connection is opened once at startup and shared by the worker
+        # threads FastAPI uses for synchronous handlers, so every statement is
+        # serialised. See blossom/dependencies.py for the full rationale.
+        self._lock = threading.Lock()
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS assignments (
@@ -37,7 +42,16 @@ class ProjectStateStore:
             """
         )
 
+    def close(self) -> None:
+        """Close the underlying connection. Called when the application shuts down."""
+        with self._lock:
+            self._connection.close()
+
     def upsert_assignments(self, assignments: Iterable[Assignment]) -> None:
+        with self._lock:
+            self._upsert_assignments_locked(assignments)
+
+    def _upsert_assignments_locked(self, assignments: Iterable[Assignment]) -> None:
         for assignment in assignments:
             self._connection.execute(
                 """
@@ -61,15 +75,17 @@ class ProjectStateStore:
         self._connection.commit()
 
     def due_between(self, start: date, end: date) -> list[Assignment]:
-        rows = self._connection.execute(
-            """
-            SELECT assignment_id, course, title, due_date, dependencies, reported_submission_status
-            FROM assignments
-            WHERE due_date BETWEEN ? AND ?
-            ORDER BY due_date, course, title
-            """,
-            (start.isoformat(), end.isoformat()),
-        ).fetchall()
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT assignment_id, course, title, due_date, dependencies,
+                       reported_submission_status
+                FROM assignments
+                WHERE due_date BETWEEN ? AND ?
+                ORDER BY due_date, course, title
+                """,
+                (start.isoformat(), end.isoformat()),
+            ).fetchall()
         return [
             Assignment(
                 assignment_id=str(row[0]),
