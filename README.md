@@ -32,7 +32,49 @@ The second thing it does is signal workload without asking the user to articulat
 
 ## Status
 
-Design phase, moving into implementation. Three checkpoint documents cover the reasoning loop, the memory architecture, and the retrieval layer. What lives in this repository right now is scaffolding rather than a working system, and the interfaces are more settled than the implementations behind them.
+Design phase, moving into implementation. Four checkpoint documents cover the reasoning loop, the memory architecture, the retrieval layer, and search-based replanning. What lives in this repository is closer to scaffolding than to a working system, and the interfaces are more settled than the implementations behind them.
+
+No model is called anywhere in this system yet. There is no agent.
+
+### What works
+
+The student's weekly view is real end to end. Assignments load from the
+structured store, source records are reconciled without a winner being chosen,
+and every assignment in the window reaches the page labelled with how well its
+due date is corroborated. Nothing is filtered out, including assignments
+nothing corroborates.
+
+Around that: configuration and time are injectable, stores are opened once at
+startup and injected into routes, reflections structurally cannot be written
+about the student, the tool registry structurally cannot hold a tool that
+sends, and the import allowlist confines the two network-capable dependencies
+to one file each.
+
+### What does not work yet
+
+Being specific about this matters more here than it might elsewhere. The whole
+argument of the project is that when the agent is wrong it should be wrong in
+ways that can be detected — so a README that is vague about its own gaps is
+the same failure at the level of the repository.
+
+- **The contradiction check is inert.** `AgentStep` requires an expectation,
+  but the comparison is a substring test, and where it runs it compares a
+  lookup key against itself. It cannot currently register a contradiction, and
+  its result is discarded.
+- **No agent trace is persisted.** Steps are built and dropped.
+- **The workload signal is discarded.** The endpoint accepts it and stores
+  nothing; no plan is reduced, and nothing becomes visible to her.
+- **The semantic half of retrieval is a stub** in the running system, and the
+  support-rules store is neither wired nor tested. Of the three stores, one is
+  live.
+- **Tier-one verification cannot pass.** The policy check is honestly reported
+  as not implemented rather than optimistically passed.
+- **There is no visibility policy layer.** Separate view models prevent
+  accidental leaks; they are not the architectural boundary the design calls
+  for.
+- **Nothing is durable.** Project state is in memory.
+
+`docs/architecture.md` covers each of these in context.
 
 I do not yet have a defined success metric. The honest version is that success looks like the agent making her own tracking legible to her rather than replacing it, and I intend to define what that means with her rather than deciding it on her behalf.
 

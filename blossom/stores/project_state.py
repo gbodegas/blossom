@@ -1,3 +1,21 @@
+"""Store one: structured project state, queried exactly.
+
+Assignments, due dates, dependencies and reported submission status. Small,
+structured, and always asked about by exact criteria, which is why this is
+SQLite and not a vector index: retrieving a due date by similarity would return
+the most similar assignment rather than the correct one.
+
+Retention is the academic year, then archive. This is the record that lets the
+system notice a project entered eleven days ago has no progress against it, and
+that comparison needs history.
+
+Note the name ``reported_submission_status``. It is doing work. A submission
+flag confirms a file was uploaded; it does not confirm the assignment was
+finished, that the right file went up, or that the teacher considers it done.
+The field records what a source reported, not what is true, and code reading it
+should preserve that distinction rather than treating it as completion.
+"""
+
 import sqlite3
 import threading
 from collections.abc import Iterable
@@ -13,6 +31,8 @@ DUE_THIS_WEEK_SPAN = timedelta(days=6)
 
 
 class Assignment(BaseModel):
+    """One assignment as structured state, with dependencies and reported status."""
+
     model_config = ConfigDict(extra="forbid")
 
     assignment_id: str
@@ -24,6 +44,14 @@ class Assignment(BaseModel):
 
 
 class ProjectStateStore:
+    """SQLite-backed project state, opened once and shared across worker threads.
+
+    The connection is created at application startup rather than per request,
+    so every statement is serialised behind a lock. ``sqlite3`` refuses a
+    connection used from a thread other than the one that created it, and
+    FastAPI runs synchronous handlers in a thread pool.
+    """
+
     name = "project_state"
     retention_policy = "Keep structured assignment state for the academic year, then archive."
 
@@ -53,6 +81,7 @@ class ProjectStateStore:
             self._connection.close()
 
     def upsert_assignments(self, assignments: Iterable[Assignment]) -> None:
+        """Insert or update each assignment, keyed by ``assignment_id``."""
         with self._lock:
             self._upsert_assignments_locked(assignments)
 
@@ -80,6 +109,7 @@ class ProjectStateStore:
         self._connection.commit()
 
     def due_between(self, start: date, end: date) -> list[Assignment]:
+        """Return assignments due in ``[start, end]``, ordered by date then course."""
         with self._lock:
             rows = self._connection.execute(
                 """
