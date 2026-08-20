@@ -17,6 +17,7 @@ from blossom.retrieval import (
     RetrievalRouter,
     SemanticRetriever,
 )
+from blossom.settings import Settings
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.tools import TOOL_REGISTRY
 from blossom.verification import ORDERED_TIERS, VerificationTier, Verifier
@@ -202,7 +203,16 @@ def test_verification_tiers_are_ordered_and_only_student_workload_overrides() ->
 
 
 def test_student_due_this_week_renders_disagreement() -> None:
-    with TestClient(create_app()) as client:
+    """The clock is pinned because the fixtures carry fixed August 2026 dates.
+
+    Before the clock became injectable this test read as if it were
+    time-independent, but it only passed because the store hardcoded
+    2026-08-19. Stating the date here makes the dependency visible instead of
+    hiding it inside the store.
+    """
+    settings = Settings.from_environment({"BLOSSOM_TODAY": "2026-08-19"})
+
+    with TestClient(create_app(settings)) as client:
         response = client.get("/student/due-this-week")
 
     assert response.status_code == 200

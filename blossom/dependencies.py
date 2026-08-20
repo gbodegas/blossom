@@ -26,6 +26,7 @@ from typing import cast
 
 from fastapi import FastAPI, Request
 
+from blossom.clock import Clock, clock_from
 from blossom.settings import Settings
 from blossom.sources import FixtureSource
 from blossom.stores.project_state import ProjectStateStore
@@ -40,6 +41,7 @@ class ApplicationState:
     """Everything a request handler may need, assembled once."""
 
     settings: Settings
+    clock: Clock
     source: FixtureSource
     project_state: ProjectStateStore
 
@@ -55,11 +57,17 @@ def build_application_state(settings: Settings) -> ApplicationState:
     read into settings but deliberately not honoured yet, because choosing when
     state becomes durable is a design decision rather than a wiring detail.
     """
+    clock = clock_from(settings.today)
     connection = sqlite3.connect(":memory:", check_same_thread=False)
-    project_state = ProjectStateStore(connection)
+    project_state = ProjectStateStore(connection, clock=clock)
     source = FixtureSource(settings.fixture_path)
     project_state.upsert_assignments(source.assignments())
-    return ApplicationState(settings=settings, source=source, project_state=project_state)
+    return ApplicationState(
+        settings=settings,
+        clock=clock,
+        source=source,
+        project_state=project_state,
+    )
 
 
 def create_lifespan(settings: Settings) -> Lifespan:
