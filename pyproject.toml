@@ -15,6 +15,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    # httpx backs fastapi.testclient.TestClient. It currently arrives as a
+    # transitive dependency of anthropic, so the suite passes without it being
+    # declared; it is declared here so the tests do not depend on that accident.
+    "httpx==0.28.1",
     "mypy==1.17.1",
     "pytest==8.4.1",
     "ruff==0.12.9",
