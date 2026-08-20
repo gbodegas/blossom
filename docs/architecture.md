@@ -4,8 +4,8 @@ This describes what the code does today. Where a design commitment is not yet
 built, that is stated rather than omitted — a document that describes only the
 finished parts reads as though the rest is finished too.
 
-The rationale behind these decisions lives in the capstone checkpoint
-documents, which are coursework and are not in this repository.
+The reasoning behind these decisions lives in a set of design notes kept
+outside this repository.
 
 ## Three principals, three view models
 
@@ -202,7 +202,7 @@ is a design question rather than a wiring detail.
 
 ## Stack decision, open
 
-The checkpoint documents specify LangChain for generation and judging,
+The design notes specify LangChain for generation and judging,
 LangGraph for control flow and checkpointed state, and MCP for external tools.
 None of those are present; the code is FastAPI with hand-rolled control flow
 and no model calls at all. That decision is unresolved, and it determines what
