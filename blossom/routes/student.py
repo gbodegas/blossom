@@ -18,13 +18,14 @@ from blossom.retrieval import (
     SemanticRetriever,
     StructuredRetriever,
 )
+from blossom.settings import get_settings
 from blossom.sources import FixtureSource
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.verification import Verifier
 from blossom.views import StudentAssignmentView, StudentDueThisWeekView
 
 router = APIRouter(prefix="/student", tags=["student"])
-templates = Jinja2Templates(directory="blossom/templates")
+templates = Jinja2Templates(directory=get_settings().template_path)
 
 
 class WorkloadSignalRequest(BaseModel):
@@ -120,7 +121,7 @@ def build_student_due_this_week_view(fixture_root: Path) -> StudentDueThisWeekVi
 
 @router.get("/due-this-week", response_class=HTMLResponse)
 def due_this_week(request: Request) -> HTMLResponse:
-    view = build_student_due_this_week_view(Path("data/synthetic"))
+    view = build_student_due_this_week_view(get_settings().fixture_path)
     return templates.TemplateResponse(
         request,
         "student_due_this_week.html",
