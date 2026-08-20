@@ -32,7 +32,9 @@ The second thing it does is signal workload without asking the user to articulat
 
 ## Status
 
-Design phase, moving into implementation. Four checkpoint documents cover the reasoning loop, the memory architecture, the retrieval layer, and search-based replanning. What lives in this repository is closer to scaffolding than to a working system, and the interfaces are more settled than the implementations behind them.
+Design phase, moving into implementation. The design notes behind it cover the reasoning loop, the memory architecture, the retrieval layer, and search-based replanning; they are kept outside this repository. What lives here is closer to scaffolding than to a working system, and the interfaces are more settled than the implementations behind them.
+
+This is a long-running project rather than something with a delivery date. It is built for one household, and it will keep changing for as long as it is useful there.
 
 No model is called anywhere in this system yet. There is no agent.
 
@@ -160,5 +162,5 @@ If you are reading this because you are considering something similar for your o
 
 ## License
 
-See [LICENSE](LICENSE). The license covers the code. The design documents in `docs/` are coursework and are not licensed for reuse.
+See [LICENSE](LICENSE). The design notes that shaped this system are kept outside the repository.
 
