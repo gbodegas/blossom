@@ -76,8 +76,8 @@ def test_application_serves_a_page_when_started_from_another_directory(
     """The regression guard: the scaffold could not start outside the repository root."""
     monkeypatch.chdir(tmp_path)
 
-    client = TestClient(create_app())
-    response = client.get("/student/due-this-week")
+    with TestClient(create_app()) as client:
+        response = client.get("/student/due-this-week")
 
     assert response.status_code == 200
     assert "Due this week" in response.text

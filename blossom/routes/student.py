@@ -1,14 +1,13 @@
-import sqlite3
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 
 from blossom.agent.loop import AgentStep, compare_expectation_to_observation
+from blossom.dependencies import ApplicationState, get_application_state
 from blossom.principals import Principal
 from blossom.reconciliation import Disagreement, Reconciler
 from blossom.retrieval import (
@@ -18,14 +17,13 @@ from blossom.retrieval import (
     SemanticRetriever,
     StructuredRetriever,
 )
-from blossom.settings import get_settings
-from blossom.sources import FixtureSource
-from blossom.stores.project_state import Assignment, ProjectStateStore
+from blossom.settings import TEMPLATE_PATH
+from blossom.stores.project_state import Assignment
 from blossom.verification import Verifier
 from blossom.views import StudentAssignmentView, StudentDueThisWeekView
 
 router = APIRouter(prefix="/student", tags=["student"])
-templates = Jinja2Templates(directory=get_settings().template_path)
+templates = Jinja2Templates(directory=TEMPLATE_PATH)
 
 
 class WorkloadSignalRequest(BaseModel):
@@ -57,11 +55,15 @@ def register_workload_signal(
     )
 
 
-def build_student_due_this_week_view(fixture_root: Path) -> StudentDueThisWeekView:
-    source = FixtureSource(fixture_root)
-    connection = sqlite3.connect(":memory:")
-    project_store = ProjectStateStore(connection)
-    project_store.upsert_assignments(source.assignments())
+def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisWeekView:
+    """Assemble the student's weekly view from stores opened at startup.
+
+    Previously this function opened a SQLite connection, created the schema and
+    re-seeded every assignment on each request. It now reads the stores that
+    ``ApplicationState`` already holds.
+    """
+    source = state.source
+    project_store = state.project_state
     router_for_retrieval = RetrievalRouter(
         structured=StructuredRetriever(project_store),
         semantic=SemanticRetriever(
@@ -120,8 +122,11 @@ def build_student_due_this_week_view(fixture_root: Path) -> StudentDueThisWeekVi
 
 
 @router.get("/due-this-week", response_class=HTMLResponse)
-def due_this_week(request: Request) -> HTMLResponse:
-    view = build_student_due_this_week_view(get_settings().fixture_path)
+def due_this_week(
+    request: Request,
+    state: Annotated[ApplicationState, Depends(get_application_state)],
+) -> HTMLResponse:
+    view = build_student_due_this_week_view(state)
     return templates.TemplateResponse(
         request,
         "student_due_this_week.html",

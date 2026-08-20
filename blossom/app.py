@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from blossom.dependencies import create_lifespan
 from blossom.routes import parent, student, verifier
 from blossom.settings import Settings, get_settings
 
@@ -8,12 +9,17 @@ from blossom.settings import Settings, get_settings
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the application.
 
-    ``settings`` is a parameter so a test can point the application at a
-    different fixture set without touching process environment variables. It
-    defaults to the process-wide settings.
+    ``settings`` is a parameter so a test can point the app at a different
+    fixture set without touching process environment variables. It defaults to
+    the process-wide settings.
+
+    Stores are opened by the lifespan handler, not here, so nothing is
+    constructed by merely importing this module. A consequence worth knowing:
+    ``TestClient`` only runs the lifespan when used as a context manager, so
+    tests must write ``with TestClient(app) as client:``.
     """
     resolved = get_settings() if settings is None else settings
-    app = FastAPI(title="Blossom")
+    app = FastAPI(title="Blossom", lifespan=create_lifespan(resolved))
     app.mount("/static", StaticFiles(directory=resolved.static_path), name="static")
     app.include_router(student.router)
     app.include_router(parent.router)
