@@ -1,0 +1,25 @@
+{
+  // Use the mypy and ruff installed in the selected interpreter rather than the
+  // copies bundled with each extension.
+  //
+  // This is the setting that matters. pyproject.toml pins mypy 1.17.1 and ruff
+  // 0.12.9, and CI runs exactly those. Bundled copies track the extension's own
+  // release schedule, so without this the editor can flag diagnostics CI does
+  // not have, or stay quiet about ones CI will fail on, with no way to tell
+  // which is right.
+  "mypy-type-checker.importStrategy": "fromEnvironment",
+  "ruff.importStrategy": "fromEnvironment",
+
+  // Run the suite from the Test Explorer. testpaths is already set in
+  // pyproject.toml; this makes the extension agree with it.
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["tests"]
+
+  // Deliberately absent: python.defaultInterpreterPath. It does not force an
+  // interpreter -- VS Code stores the actual selection in per-user workspace
+  // state, and this setting is only consulted when nothing has been selected
+  // yet. It is also a platform-specific path, which would be wrong for anyone
+  // not on Windows. Select the interpreter through the command palette
+  // instead; VS Code discovers a .venv in the workspace root on its own.
+}
