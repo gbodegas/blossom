@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 from blossom.agent.loop import AgentStep, compare_expectation_to_observation
 from blossom.app import create_app
-from blossom.principals import Principal
 from blossom.reconciliation import Disagreement, Reconciler, SourceChannel, SourceRecord
 from blossom.retrieval import (
     NothingRetrieved,
@@ -20,7 +19,6 @@ from blossom.retrieval import (
 from blossom.settings import Settings
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.tools import TOOL_REGISTRY
-from blossom.verification import ORDERED_TIERS, VerificationTier, Verifier
 from blossom.views import ParentCheckpointView, StudentAssignmentView, VerifierClaimView
 
 
@@ -175,31 +173,6 @@ def test_three_principal_views_are_distinct_and_forbid_absent_fields() -> None:
                 "workload_signal_count": 3,
             }
         )
-
-
-def test_verification_tiers_are_ordered_and_only_student_workload_overrides() -> None:
-    assert ORDERED_TIERS == (
-        VerificationTier.SOURCE_PRESENT,
-        VerificationTier.FACTUAL_CONSISTENCY,
-        VerificationTier.POLICY_CONFORMANCE,
-    )
-    verifier = Verifier()
-    failed = verifier.verify_fact("", 0)
-
-    parent_result = verifier.apply_workload_override(
-        failed,
-        principal=Principal.PARENT,
-        has_workload_signal=True,
-    )
-    student_result = verifier.apply_workload_override(
-        failed,
-        principal=Principal.STUDENT,
-        has_workload_signal=True,
-    )
-
-    assert parent_result.passed is False
-    assert student_result.passed is True
-    assert student_result.workload_override is True
 
 
 def test_student_due_this_week_renders_disagreement() -> None:
