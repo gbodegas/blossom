@@ -48,10 +48,18 @@ dependencies from `uv.lock`. There is no separate seed step: the synthetic
 fixtures in `data/synthetic/` are loaded on demand, so the app serves
 `/student/due-this-week` immediately.
 
-No credentials are required. `.env.example` documents the paths the system will
-use for local state once they are wired up, and copying it to `.env` is
-optional. Nothing in the package reads an API key yet, because nothing calls a
-model yet.
+No credentials are required. Nothing in the package reads an API key yet,
+because nothing calls a model yet.
+
+Every filesystem location is configurable through the `BLOSSOM_*` variables
+documented in `.env.example`, and all of them have working defaults, so
+copying it to `.env` is optional. Relative values in that file are resolved
+against the repository root rather than the working directory, which means the
+app starts correctly from anywhere. To load the file:
+
+```bash
+uv run --env-file .env uvicorn blossom.app:app --reload
+```
 
 To run the same checks CI runs:
 
