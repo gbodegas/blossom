@@ -25,6 +25,8 @@ README = REPO_ROOT / "README.md"
 BASH_FENCE = re.compile(r"```bash\n(.*?)```", re.DOTALL)
 UVICORN_TARGET = re.compile(r"uvicorn\s+([\w.]+):(\w+)")
 PYTHON_MODULE_TARGET = re.compile(r"python\s+-m\s+([\w.]+)")
+PINNED_INSTALL = re.compile(r"pip install ([^\n]+)")
+REQUIREMENT = re.compile(r"([A-Za-z][\w.-]*)==([\w.]+)")
 
 
 def readme_shell_text() -> str:
@@ -73,3 +75,47 @@ def test_readme_only_documents_extras_the_project_defines() -> None:
     defined = set(pyproject.get("project", {}).get("optional-dependencies", {}))
     undefined = documented_extras - defined
     assert not undefined, f"README documents extras the project does not define: {undefined}"
+
+
+def declared_pins() -> dict[str, str]:
+    """Every ``name==version`` pin in pyproject, from both runtime and dev groups."""
+    with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
+        pyproject = tomllib.load(handle)
+    requirements = list(pyproject["project"]["dependencies"])
+    for group in pyproject.get("dependency-groups", {}).values():
+        requirements.extend(item for item in group if isinstance(item, str))
+    pins: dict[str, str] = {}
+    for item in requirements:
+        match = REQUIREMENT.fullmatch(item)
+        if match is not None:
+            pins[match.group(1)] = match.group(2)
+    return pins
+
+
+def test_documented_pip_pins_match_pyproject() -> None:
+    """The pip fallback hardcodes versions; they must not drift from the real pins.
+
+    The fallback exists because ``uv`` cannot reach PyPI from every network,
+    and it lists dev tools explicitly because pip could not install a PEP 735
+    dependency group until 25.1. Hardcoding versions in prose is exactly how
+    an editor ends up running a different mypy than CI, so the pins are checked
+    rather than trusted.
+    """
+    declared = declared_pins()
+    documented = {
+        name: version
+        for line in PINNED_INSTALL.findall(readme_shell_text())
+        for name, version in REQUIREMENT.findall(line)
+    }
+    if not documented:
+        pytest.skip("the README does not document any pinned installs")
+
+    mismatched = {
+        name: (version, declared.get(name))
+        for name, version in documented.items()
+        if declared.get(name) != version
+    }
+
+    assert not mismatched, (
+        f"README pins disagree with pyproject.toml (documented, declared): {mismatched}"
+    )

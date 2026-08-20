@@ -119,6 +119,32 @@ uv run mypy blossom tests
 uv run pytest
 ```
 
+### If your network blocks PyPI
+
+`uv` downloads from `files.pythonhosted.org` directly, so on a network that
+only permits an internal package proxy it fails at the TLS handshake even
+though `pip` still works. Build the environment with pip instead:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e .
+pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx==0.28.1
+```
+
+On macOS or Linux the second line is `source .venv/bin/activate`.
+
+Two install commands rather than one because the development dependencies live
+in a PEP 735 `[dependency-groups]` table, which pip could not install from
+until 25.1 added `pip install --group dev`. Keep those pins matching
+`pyproject.toml` — a test enforces it, because an editor running a different
+mypy than CI will disagree with CI about what passes.
+
+Creating the environment at `.venv` inside the repository also lets editors
+find it without configuration. If your editor reports that `fastapi` or
+`pydantic` cannot be found, it is resolving imports against a different
+interpreter rather than finding a fault in the code.
+
 The default data adapter reads from fixtures, so nothing here depends on having school LMS access. That is deliberate. LMS APIs are usually restricted to administrators and scraping breaks when the UI changes, so the system is built to run without either and to treat any real connector as an optional source rather than a dependency.
 
 ## A note on data
