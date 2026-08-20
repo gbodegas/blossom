@@ -31,6 +31,7 @@ dependency, and ``.env`` files can be loaded at the launcher with
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 
@@ -45,6 +46,7 @@ TEMPLATE_PATH = PACKAGE_ROOT / "templates"
 FIXTURE_PATH_VARIABLE = "BLOSSOM_FIXTURE_PATH"
 DATABASE_PATH_VARIABLE = "BLOSSOM_DATABASE_PATH"
 CHROMA_PATH_VARIABLE = "BLOSSOM_CHROMA_PATH"
+TODAY_VARIABLE = "BLOSSOM_TODAY"
 
 
 def resolve_configured_path(value: str) -> Path:
@@ -62,6 +64,8 @@ class Settings:
     fixture_path: Path
     database_path: Path
     chroma_path: Path
+    today: date | None = None
+    """Pins the clock when set, from ``BLOSSOM_TODAY``. ``None`` means use the system clock."""
 
     @property
     def static_path(self) -> Path:
@@ -86,11 +90,21 @@ class Settings:
             value = source.get(variable)
             return default if value is None or not value.strip() else resolve_configured_path(value)
 
+        pinned = source.get(TODAY_VARIABLE)
+        today = None
+        if pinned is not None and pinned.strip():
+            try:
+                today = date.fromisoformat(pinned.strip())
+            except ValueError as error:
+                msg = f"{TODAY_VARIABLE} must be an ISO date such as 2026-08-19, got {pinned!r}"
+                raise ValueError(msg) from error
+
         local = REPOSITORY_ROOT / ".local"
         return cls(
             fixture_path=read(FIXTURE_PATH_VARIABLE, REPOSITORY_ROOT / "data" / "synthetic"),
             database_path=read(DATABASE_PATH_VARIABLE, local / "blossom.sqlite3"),
             chroma_path=read(CHROMA_PATH_VARIABLE, local / "chroma"),
+            today=today,
         )
 
 
