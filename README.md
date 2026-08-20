@@ -39,11 +39,26 @@ I do not yet have a defined success metric. The honest version is that success l
 ## Running it locally
 
 ```bash
-uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
-cp .env.example .env       # add your API key
-python -m blossom.seed     # loads the synthetic fixture set
-uvicorn blossom.web.app:app --reload
+uv sync --dev
+uv run uvicorn blossom.app:app --reload
+```
+
+`uv sync --dev` creates `.venv` and installs the pinned runtime and development
+dependencies from `uv.lock`. There is no separate seed step: the synthetic
+fixtures in `data/synthetic/` are loaded on demand, so the app serves
+`/student/due-this-week` immediately.
+
+No credentials are required. `.env.example` documents the paths the system will
+use for local state once they are wired up, and copying it to `.env` is
+optional. Nothing in the package reads an API key yet, because nothing calls a
+model yet.
+
+To run the same checks CI runs:
+
+```bash
+uv run ruff check .
+uv run mypy blossom tests
+uv run pytest
 ```
 
 The default data adapter reads from fixtures, so nothing here depends on having school LMS access. That is deliberate. LMS APIs are usually restricted to administrators and scraping breaks when the UI changes, so the system is built to run without either and to treat any real connector as an optional source rather than a dependency.
