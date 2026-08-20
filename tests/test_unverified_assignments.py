@@ -16,7 +16,6 @@ the page down with it. The regression test for that is
 
 import json
 import pathlib
-from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,21 +28,12 @@ from blossom.reconciliation import (
     Reconciler,
     SourceChannel,
     SourceConfidence,
-    SourceRecord,
     classify_confidence,
 )
 from blossom.settings import Settings
+from tests.support import record
 
 PINNED_TODAY = "2026-08-19"
-
-
-def record(channel: SourceChannel, value: str) -> SourceRecord:
-    return SourceRecord(
-        channel=channel,
-        asserted_value=value,
-        observed_at=datetime(2026, 8, 19, 9, 0, tzinfo=UTC),
-        confidence=0.8,
-    )
 
 
 def student_page(fixture_root: pathlib.Path | None = None) -> str:
