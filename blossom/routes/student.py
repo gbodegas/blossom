@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from blossom.agent.loop import AgentStep, compare_expectation_to_observation
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.principals import Principal
-from blossom.reconciliation import Disagreement, Reconciler
+from blossom.reconciliation import Disagreement, Reconciler, classify_confidence
 from blossom.retrieval import (
     NothingRetrieved,
     RetrievalQuery,
@@ -19,7 +19,6 @@ from blossom.retrieval import (
 )
 from blossom.settings import TEMPLATE_PATH
 from blossom.stores.project_state import Assignment
-from blossom.verification import Verifier
 from blossom.views import StudentAssignmentView, StudentDueThisWeekView
 
 router = APIRouter(prefix="/student", tags=["student"])
@@ -90,30 +89,31 @@ def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisW
         assignments = [Assignment.model_validate(item) for item in retrieved.payload["assignments"]]
     checked_step = compare_expectation_to_observation(step, observation)
     reconciler = Reconciler()
-    verifier = Verifier()
     views: list[StudentAssignmentView] = []
     for assignment in assignments:
         records = source.deadline_records(assignment.assignment_id)
         reconciliation = reconciler.reconcile(records)
-        verification = verifier.verify_fact(assignment.title, len(records))
         disagreement = []
         if isinstance(reconciliation, Disagreement):
             disagreement = [
                 f"{claim.channel}: {claim.asserted_value}"
                 for claim in reconciliation.conflicting_claims
             ]
-        if verification.passed:
-            views.append(
-                StudentAssignmentView(
-                    assignment_id=assignment.assignment_id,
-                    course=assignment.course,
-                    title=assignment.title,
-                    due_date=assignment.due_date,
-                    submission_status=assignment.reported_submission_status,
-                    workload_signal_count=1,
-                    disagreement=disagreement,
-                )
+        # Every assignment is appended. Nothing here may filter: an assignment
+        # the system cannot corroborate is precisely the one she most needs to
+        # see, and dropping it would present a confident, incomplete week.
+        views.append(
+            StudentAssignmentView(
+                assignment_id=assignment.assignment_id,
+                course=assignment.course,
+                title=assignment.title,
+                due_date=assignment.due_date,
+                submission_status=assignment.reported_submission_status,
+                deadline_confidence=classify_confidence(reconciliation),
+                source_channels=[record.channel for record in records],
+                disagreement=disagreement,
             )
+        )
     return StudentDueThisWeekView(
         generated_at=datetime.now(UTC),
         expectation=checked_step.expectation,
