@@ -4,7 +4,9 @@
     "course": "World History",
     "title": "Canal Era comparison essay",
     "due_date": "2026-08-21",
-    "dependencies": ["outline-canal-essay"],
+    "dependencies": [
+      "outline-canal-essay"
+    ],
     "reported_submission_status": "in_progress"
   },
   {
@@ -12,6 +14,14 @@
     "course": "Algebra II",
     "title": "Quadratic modeling problem set",
     "due_date": "2026-08-24",
+    "dependencies": [],
+    "reported_submission_status": "not_started"
+  },
+  {
+    "assignment_id": "assignment-science-fair-proposal",
+    "course": "Science",
+    "title": "Science fair topic proposal",
+    "due_date": "2026-08-20",
     "dependencies": [],
     "reported_submission_status": "not_started"
   }
