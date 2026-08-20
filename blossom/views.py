@@ -2,8 +2,18 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from blossom.reconciliation import SourceConfidence
+
 
 class StudentAssignmentView(BaseModel):
+    """One assignment as she sees it, including how well its date is corroborated.
+
+    ``workload_signal_count`` used to live here, hardcoded to ``1`` for every
+    assignment regardless of anything. It is removed rather than fixed: a
+    workload signal says the current plan is too much, which is a statement
+    about the plan as a whole, not a counter that belongs on an individual row.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     assignment_id: str
@@ -11,7 +21,8 @@ class StudentAssignmentView(BaseModel):
     title: str
     due_date: date | None
     submission_status: str
-    workload_signal_count: int
+    deadline_confidence: SourceConfidence
+    source_channels: list[str]
     disagreement: list[str]
 
 

@@ -9,20 +9,47 @@
   <body>
     <main>
       <h1>Due this week</h1>
-      <p>Expectation before action: {{ view.expectation }}</p>
+      <p class="expectation">Expectation before action: {{ view.expectation }}</p>
+
       {% for assignment in view.assignments %}
-        <article>
+        <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}">
           <h2>{{ assignment.course }}: {{ assignment.title }}</h2>
-          <p>Status: {{ assignment.submission_status }}</p>
-          <p>Due: {{ assignment.due_date }}</p>
-          {% if assignment.disagreement %}
+          <p class="due">Due: {{ assignment.due_date }}</p>
+
+          {#
+            The confidence banner is never omitted, including when the date is
+            well corroborated. A marker that only appears when something is
+            wrong teaches the reader to skim past its absence; a marker that is
+            always present makes "unverified" readable at a glance.
+          #}
+          {% if assignment.deadline_confidence == "UNVERIFIED" %}
+            <p class="confidence unverified">
+              <strong>Unverified due date.</strong>
+              Nothing on record confirms this date. Please check it before relying on it.
+            </p>
+          {% elif assignment.deadline_confidence == "SOURCES_DISAGREE" %}
+            <p class="confidence disagree">
+              <strong>Sources disagree</strong> about this due date. Nothing has been chosen for you.
+            </p>
             <h3>Source disagreement</h3>
             <ul>
               {% for claim in assignment.disagreement %}
                 <li>{{ claim }}</li>
               {% endfor %}
             </ul>
+          {% elif assignment.deadline_confidence == "SINGLE_SOURCE" %}
+            <p class="confidence single-source">
+              <strong>One source only</strong> ({{ assignment.source_channels|join(", ") }}).
+              Not corroborated by anything else.
+            </p>
+          {% else %}
+            <p class="confidence corroborated">
+              Confirmed by {{ assignment.source_channels|length }} sources
+              ({{ assignment.source_channels|join(", ") }}).
+            </p>
           {% endif %}
+
+          <p class="status">Status: {{ assignment.submission_status }}</p>
         </article>
       {% endfor %}
     </main>

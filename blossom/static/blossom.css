@@ -9,3 +9,37 @@ article {
   padding: 1rem;
   margin-block: 1rem;
 }
+
+/*
+  Confidence is never signalled by colour alone. Each banner carries its own
+  wording, so the state survives greyscale printing, low-contrast screens and
+  colour vision differences. The left border and background are reinforcement,
+  not the message.
+*/
+.confidence {
+  border-left: 4px solid #999;
+  padding: 0.5rem 0.75rem;
+  margin-block: 0.75rem;
+  background: #f6f6f6;
+}
+.confidence.unverified {
+  border-left-color: #b3261e;
+  background: #fdecea;
+}
+.confidence.disagree {
+  border-left-color: #a1660a;
+  background: #fdf3e2;
+}
+.confidence.single-source {
+  border-left-color: #6b6b6b;
+  background: #f2f2f2;
+}
+.confidence.corroborated {
+  border-left-color: #2e6b34;
+  background: #eef6ef;
+}
+
+/* The unverified case is the one most costly to miss, so its card is marked too. */
+article.confidence-unverified {
+  border-color: #b3261e;
+}
