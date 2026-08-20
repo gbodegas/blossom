@@ -1,3 +1,32 @@
+"""Assembling one fact from several channels that routinely disagree.
+
+Assignment state is not retrieved from an authoritative record. It is assembled
+from a school platform, email notifications, a parent typing something in, and
+the student's own account. Any channel may be unavailable, and when several are
+available they may conflict.
+
+The rule this module enforces is that a conflict is a finding, never a tie to
+break. Nothing here picks a winner. ``Disagreement`` keeps every claim with the
+channel that made it, because the disagreement is precisely the information the
+family needs and precisely what disappears when a system quietly chooses one
+source and discards the other.
+
+``NoSourceRecords`` is the same principle applied to absence. It used to be a
+``ValueError``, which meant an assignment nothing corroborated could not be
+reported at all -- the exception removed that assignment and every other one on
+the page along with it.
+
+One distinction this module does not yet make. A record can be stale, meaning
+it was accurate when observed and the situation has since changed, or it can be
+invalid, meaning it is accurate but does not support the conclusion drawn from
+it. A submission flag confirms a file was uploaded; it does not confirm the
+work was finished or the right file was sent. Staleness is answered by
+observing again. Validity is not, and observing the same flag repeatedly
+provides no evidence about what it means. ``SourceRecord`` carries
+``observed_at`` so staleness can eventually be reasoned about; nothing reasons
+about it today, and validity is unmodelled.
+"""
+
 from datetime import datetime
 from enum import StrEnum
 
@@ -5,6 +34,8 @@ from pydantic import BaseModel, ConfigDict
 
 
 class SourceChannel(StrEnum):
+    """Where a claim came from. Never dropped, never ranked into a winner."""
+
     LMS = "LMS"
     EMAIL = "EMAIL"
     PARENT_ENTRY = "PARENT_ENTRY"
@@ -12,6 +43,13 @@ class SourceChannel(StrEnum):
 
 
 class SourceRecord(BaseModel):
+    """One channel's claim about one fact, at one moment.
+
+    ``confidence`` is the channel's own reported certainty. It is deliberately
+    not used to resolve a disagreement, because resolving silently is the
+    behaviour this module exists to prevent.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     channel: SourceChannel
@@ -21,6 +59,12 @@ class SourceRecord(BaseModel):
 
 
 class Agreement(BaseModel):
+    """Every channel that spoke asserted the same value.
+
+    The contributing records are kept rather than collapsed to the value, so a
+    reader can still see whether one channel agreed or four did.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     value: str
@@ -28,6 +72,8 @@ class Agreement(BaseModel):
 
 
 class Disagreement(BaseModel):
+    """Channels asserted different values, and none of them has been chosen."""
+
     model_config = ConfigDict(extra="forbid")
 
     conflicting_claims: list[SourceRecord]
@@ -81,6 +127,8 @@ def classify_confidence(result: ReconciliationResult) -> SourceConfidence:
 
 
 class Reconciler:
+    """Combines source records for one fact. Total: it never raises."""
+
     def reconcile(self, records: list[SourceRecord]) -> ReconciliationResult:
         """Combine source records for one fact without ever choosing a winner."""
         if not records:
