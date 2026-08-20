@@ -1,3 +1,34 @@
+"""Student routes. She is the primary user, and this is the primary view.
+
+Two commitments shape what is here.
+
+Nothing is filtered out of her week. An assignment the system cannot
+corroborate is the one she most needs to see, so every assignment in the window
+reaches the page carrying how well its date is supported. A confident,
+incomplete week is the failure this view exists to avoid.
+
+The workload signal takes no argument. It does not ask her to rate or describe
+anything, because assigning a rating requires stepping back and assessing, and
+that capacity is least available exactly when the signal matters most. An
+undifferentiated "this is too much" is the whole of the input.
+
+Known gaps:
+
+The workload signal is accepted and discarded. Nothing stores it, nothing
+reduces a plan in response, and the response body reports only that it was
+received. The design requires it to produce an immediate visible result, since
+a control that changes nothing observable gets abandoned.
+
+``EmptySemanticCollection`` is a stub that always returns no candidates, so the
+semantic half of the retrieval router cannot return anything in the running
+system. The structured half is real.
+
+The expectation check is inert here. ``expectation`` is a lookup key and the
+observation is the record id the store echoes back, so the comparison is a
+string against itself and can never register a contradiction. Its result is
+discarded; only ``expectation`` is read from the checked step.
+"""
+
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -26,12 +57,19 @@ templates = Jinja2Templates(directory=TEMPLATE_PATH)
 
 
 class WorkloadSignalRequest(BaseModel):
+    """Optional detail attached to a signal. The signal itself needs no body."""
+
     model_config = ConfigDict(extra="forbid")
 
     detail: str | None = None
 
 
 class WorkloadSignalResponse(BaseModel):
+    """Acknowledgement that a signal was received.
+
+    It reports receipt and nothing more, because nothing more happens yet.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     principal: Principal
@@ -40,7 +78,15 @@ class WorkloadSignalResponse(BaseModel):
 
 
 class EmptySemanticCollection:
+    """A collection that never returns candidates. Stands in for an unwired store.
+
+    Returning nothing is the safe stub: the retriever's contract already treats
+    an empty result as a legitimate answer, so the router degrades to
+    structured-only rather than inventing matches.
+    """
+
     def query(self, *, query_texts: list[str], n_results: int) -> dict[str, list[list[object]]]:
+        """Return no candidates, in the shape the retriever expects."""
         return {"ids": [[]], "distances": [[]], "metadatas": [[]]}
 
 
@@ -48,6 +94,13 @@ class EmptySemanticCollection:
 def register_workload_signal(
     payload: Annotated[WorkloadSignalRequest | None, Body()] = None,
 ) -> WorkloadSignalResponse:
+    """Accept a workload signal, with or without a body.
+
+    The empty POST is the important case and is why ``payload`` is optional:
+    the signal must work with no navigation, no fields and no decisions.
+
+    Currently records nothing. See the module docstring.
+    """
     return WorkloadSignalResponse(
         principal=Principal.STUDENT,
         detail_attached=payload is not None and payload.detail is not None,
@@ -126,6 +179,7 @@ def due_this_week(
     request: Request,
     state: Annotated[ApplicationState, Depends(get_application_state)],
 ) -> HTMLResponse:
+    """Render her week, every assignment labelled with its source confidence."""
     view = build_student_due_this_week_view(state)
     return templates.TemplateResponse(
         request,
