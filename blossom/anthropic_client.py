@@ -10,7 +10,7 @@ That confinement is the point. It means model access cannot spread into a route
 without an explicit, reviewable edit to the allowlist.
 
 Unresolved: the comment this module used to carry said that no agent framework
-belongs here. Checkpoint 4.1 specifies LangChain for generation and judging and
+belongs here. The design notes specify LangChain for generation and judging and
 LangGraph for control flow, which is the opposite position. That decision is
 open, and whichever way it goes will change what this file becomes.
 """
