@@ -294,3 +294,14 @@ traces/
 # OS
 .DS_Store
 Thumbs.db
+
+# Blossom local state
+# BLOSSOM_DATABASE_PATH and BLOSSOM_CHROMA_PATH default under .local/, so this
+# directory holds the sqlite database and the Chroma index once they are wired.
+.local/
+
+# Blossom real data
+# Only data/synthetic/ is ever committed. These paths exist so that a real
+# family export cannot be added to the index by accident.
+data/real/
+data/private/
