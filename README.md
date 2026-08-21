@@ -131,7 +131,7 @@ though `pip` still works. Build the environment with pip instead:
 python -m venv .venv
 .venv\Scripts\activate
 pip install -e .
-pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx==0.28.1
+pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
 ```
 
 On macOS or Linux the second line is `source .venv/bin/activate`.
