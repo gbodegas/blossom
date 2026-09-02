@@ -1,30 +1,17 @@
 """Assembling one fact from several channels that routinely disagree.
 
-Assignment state is not retrieved from an authoritative record. It is assembled
-from a school platform, email notifications, a parent typing something in, and
-the student's own account. Any channel may be unavailable, and when several are
-available they may conflict.
+Assignment state is assembled from a school platform, email notifications, a
+parent typing something in, and the student's own account, and any of those
+channels may be unavailable or in conflict. Nothing here picks a winner: a
+conflict is reported as a ``Disagreement`` that keeps every claim with the
+channel that made it, because the disagreement is the information the family
+needs. ``NoSourceRecords`` reports absence as a result rather than an
+exception, so one uncorroborated fact does not remove the rest of the page with
+it, and the caller decides what to show.
 
-The rule this module enforces is that a conflict is a finding, never a tie to
-break. Nothing here picks a winner. ``Disagreement`` keeps every claim with the
-channel that made it, because the disagreement is precisely the information the
-family needs and precisely what disappears when a system quietly chooses one
-source and discards the other.
-
-``NoSourceRecords`` is the same principle applied to absence. It used to be a
-``ValueError``, which meant an assignment nothing corroborated could not be
-reported at all -- the exception removed that assignment and every other one on
-the page along with it.
-
-One distinction this module does not yet make. A record can be stale, meaning
-it was accurate when observed and the situation has since changed, or it can be
-invalid, meaning it is accurate but does not support the conclusion drawn from
-it. A submission flag confirms a file was uploaded; it does not confirm the
-work was finished or the right file was sent. Staleness is answered by
-observing again. Validity is not, and observing the same flag repeatedly
-provides no evidence about what it means. ``SourceRecord`` carries
-``observed_at`` so staleness can eventually be reasoned about; nothing reasons
-about it today, and validity is unmodelled.
+``SourceRecord.observed_at`` is recorded but nothing reads it. Neither
+staleness (accurate when observed, since changed) nor validity (accurate but
+not supporting the conclusion drawn from it) is modeled here.
 """
 
 from datetime import datetime
@@ -34,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class SourceChannel(StrEnum):
-    """Where a claim came from. Never dropped, never ranked into a winner."""
+    """The channel a claim came from."""
 
     LMS = "LMS"
     EMAIL = "EMAIL"
@@ -45,9 +32,8 @@ class SourceChannel(StrEnum):
 class SourceRecord(BaseModel):
     """One channel's claim about one fact, at one moment.
 
-    ``confidence`` is the channel's own reported certainty. It is deliberately
-    not used to resolve a disagreement, because resolving silently is the
-    behaviour this module exists to prevent.
+    ``confidence`` is the channel's own reported certainty. It is not used to
+    resolve a disagreement.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -59,10 +45,10 @@ class SourceRecord(BaseModel):
 
 
 class Agreement(BaseModel):
-    """Every channel that spoke asserted the same value.
+    """Every channel asserted the same value.
 
-    The contributing records are kept rather than collapsed to the value, so a
-    reader can still see whether one channel agreed or four did.
+    The records are kept so the caller can tell one agreeing channel from
+    several.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -80,14 +66,10 @@ class Disagreement(BaseModel):
 
 
 class NoSourceRecords(BaseModel):
-    """Nothing was observed about this fact from any channel.
+    """No channel reported anything about this fact.
 
-    This used to be a ``ValueError``. Raising was the wrong response: the
-    design treats an absence of corroboration as a finding to surface, exactly
-    like a disagreement, and an exception cannot be surfaced -- it removes the
-    assignment it concerns and every other assignment on the page along with
-    it. Making the reconciler total means the caller has to decide what to show
-    rather than being handed a crash.
+    Returned as a result rather than raised, so the caller decides what to show
+    instead of losing the whole page.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -101,12 +83,9 @@ type ReconciliationResult = Agreement | Disagreement | NoSourceRecords
 class SourceConfidence(StrEnum):
     """How well corroborated a reconciled fact is.
 
-    Four states rather than a verified/unverified boolean, because the design
-    draws a distinction a boolean cannot carry: a due date two channels agree
-    on is not the same claim as the identical date asserted by one channel
-    alone. Single-channel observations are meant to be raised as questions
-    rather than presented as settled, so they need to stay distinguishable all
-    the way to the view.
+    Four states rather than a boolean so a single-channel value stays distinct
+    from a corroborated one all the way to the view, where it is presented as a
+    question rather than as settled.
     """
 
     CORROBORATED = "CORROBORATED"

@@ -176,13 +176,7 @@ def test_three_principal_views_are_distinct_and_forbid_absent_fields() -> None:
 
 
 def test_student_due_this_week_renders_disagreement() -> None:
-    """The clock is pinned because the fixtures carry fixed August 2026 dates.
-
-    Before the clock became injectable this test read as if it were
-    time-independent, but it only passed because the store hardcoded
-    2026-08-19. Stating the date here makes the dependency visible instead of
-    hiding it inside the store.
-    """
+    """The clock is pinned because the fixtures carry fixed August 2026 dates."""
     settings = Settings.from_environment({"BLOSSOM_TODAY": "2026-08-19"})
 
     with TestClient(create_app(settings)) as client:

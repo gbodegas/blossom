@@ -1,14 +1,8 @@
 """Guards the setup instructions in ``README.md`` against drift.
 
-The original scaffold documented a startup sequence that could not work: it
-named ``blossom.seed`` and ``blossom.web.app``, neither of which exists, and it
-installed a ``[dev]`` extra that the project never defined. None of that was
-caught by CI, because nothing in the test suite read the README.
-
-These tests parse the shell commands out of the README and assert that every
-module path they name is real. They are deliberately narrow. They do not check
-that the commands succeed, only that the things they refer to exist, which is
-exactly the class of error that shipped.
+These tests parse the shell commands out of the README's bash fences and
+check that every module path, extra, and version pin they name exists in
+the project. They do not run the commands.
 """
 
 import importlib
@@ -43,18 +37,14 @@ def test_readme_documents_at_least_one_shell_command() -> None:
 def test_documented_uvicorn_targets_are_importable() -> None:
     """Every ``uvicorn module:attribute`` target in the README must resolve."""
     targets: list[tuple[str, str]] = UVICORN_TARGET.findall(readme_shell_text())
-    assert targets, "the README no longer documents how to start the server"
+    assert targets, "the README does not document how to start the server"
     for module_path, attribute in targets:
         module = importlib.import_module(module_path)
         assert hasattr(module, attribute), f"{module_path} has no attribute {attribute}"
 
 
 def test_documented_python_module_targets_are_importable() -> None:
-    """Every ``python -m module`` target in the README must exist.
-
-    This is the check that would have caught the documented ``blossom.seed``
-    step, which never existed in the package.
-    """
+    """Every ``python -m module`` target in the README must exist."""
     for module_path in PYTHON_MODULE_TARGET.findall(readme_shell_text()):
         assert importlib.util.find_spec(module_path) is not None, f"no module {module_path}"
 
@@ -62,9 +52,9 @@ def test_documented_python_module_targets_are_importable() -> None:
 def test_readme_only_documents_extras_the_project_defines() -> None:
     """A documented ``".[extra]"`` install must correspond to a real optional group.
 
-    The scaffold documented ``uv pip install -e ".[dev]"`` while declaring its
-    development dependencies under PEP 735 ``[dependency-groups]``, which is a
-    different mechanism and does not create an extra of that name.
+    Dev dependencies live under PEP 735 ``[dependency-groups]``, which does not
+    create an extra, so any extra the README names must appear under
+    ``optional-dependencies``.
     """
     shell_text = readme_shell_text()
     documented_extras = set(re.findall(r'"\.\[([\w,-]+)\]"', shell_text))
@@ -93,13 +83,10 @@ def declared_pins() -> dict[str, str]:
 
 
 def test_documented_pip_pins_match_pyproject() -> None:
-    """The pip fallback hardcodes versions; they must not drift from the real pins.
+    """Versions in the README's pip fallback must match the pins in pyproject.toml.
 
-    The fallback exists because ``uv`` cannot reach PyPI from every network,
-    and it lists dev tools explicitly because pip could not install a PEP 735
-    dependency group until 25.1. Hardcoding versions in prose is exactly how
-    an editor ends up running a different mypy than CI, so the pins are checked
-    rather than trusted.
+    The fallback lists dev tools explicitly because pip before 25.1 cannot
+    install a PEP 735 dependency group, so dev pins are compared too.
     """
     declared = declared_pins()
     documented = {

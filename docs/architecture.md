@@ -1,8 +1,7 @@
 # Blossom architecture
 
 This describes what the code does today. Where a design commitment is not yet
-built, that is stated rather than omitted — a document that describes only the
-finished parts reads as though the rest is finished too.
+built, that is stated.
 
 The reasoning behind these decisions lives in a set of design notes kept
 outside this repository.
@@ -18,7 +17,7 @@ not belong in a projection fails validation instead of leaking into it.
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and
 each receives only what the policy permits. What exists is a convention
-enforced at serialisation time. It makes an accidental leak hard; it would not
+enforced at serialization time. It makes an accidental leak hard; it would not
 stop a future route that reads a store and renders whatever it likes. This is
 the largest gap between the design and the code.
 
@@ -39,7 +38,7 @@ enforced three ways rather than by instruction:
   asserts every imported module is on a justified allowlist, and that the two
   network-capable dependencies are each confined to one file.
 
-The claim is not that nothing reaches the network — calling a model
+The claim is not that nothing reaches the network; calling a model
 necessarily would. It is that the ability lives in one named seam per
 dependency instead of anywhere a future route reaches for it.
 
@@ -65,10 +64,10 @@ identical date from one channel alone.
 
 Nothing filters her week. Every assignment in the window reaches the page
 carrying its confidence, and every card states its confidence even when the
-date is well corroborated — a marker that appears only when something is wrong
+date is well corroborated. A marker that appears only when something is wrong
 trains a reader to skim past its absence.
 
-**Not modelled:** the distinction between a record that is *stale* (accurate
+**Not modeled:** the distinction between a record that is *stale* (accurate
 when observed, since changed) and one that is *invalid* (accurate, but does not
 support the conclusion drawn from it). A submission flag confirms a file was
 uploaded, not that the work was finished. Staleness is answered by observing
@@ -91,10 +90,10 @@ Every result carries provenance: which store, which channel, when the source
 asserted it, and when this system read it.
 
 **Known gaps in `SemanticRetriever`:** `score = 1.0 - distance` assumes a
-distance normalised to the unit interval, but Chroma's default space is squared
-L2, which is unbounded — so the score is not a similarity, and `min_score` has
+distance normalized to the unit interval, but Chroma's default space is squared
+L2, which is unbounded, so the score is not a similarity, and `min_score` has
 no defined meaning until the collection is created with an explicit metric.
-And `n_results=1` fetches only the nearest neighbour, so nothing can tell a
+And `n_results=1` fetches only the nearest neighbor, so nothing can tell a
 confident match from the only candidate; the design calls for three to five.
 
 **Not wired:** in the running system the semantic side is
@@ -111,7 +110,7 @@ structured side is real.
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
-the store cannot become a diary about the student — the boundary is structural
+the store cannot become a diary about the student. The boundary is structural
 rather than a matter of prompt wording.
 
 **Not built:** reflections are meant to be readable, correctable, and deletable
@@ -122,9 +121,9 @@ also meant to weigh a reflection's age; `observed_at` is recorded but unread.
 
 | Tier | What it is | Where it lives |
 |---|---|---|
-| 1 — `HARD_CHECK` | Deterministic, pass or fail | `blossom/verification.py` |
-| 2 — `HEURISTIC_SCORE` | A critic's estimate, not a verified fact | `blossom/heuristic_relevance.py` |
-| 3 — `HER_JUDGMENT` | Whether a plan is right for her | Nowhere, by design |
+| 1: `HARD_CHECK` | Deterministic, pass or fail | `blossom/verification.py` |
+| 2: `HEURISTIC_SCORE` | A critic's estimate, not a verified fact | `blossom/heuristic_relevance.py` |
+| 3: `HER_JUDGMENT` | Whether a plan is right for her | Nowhere, by design |
 
 Keeping them apart is what stops the system claiming more confidence than its
 evidence supports. Tier three has no implementation because no automated check
@@ -133,14 +132,13 @@ weighed against anything the system computed.
 
 `VerificationResult.passed` is a derived property, not a field. There is no
 attribute to assign, so nothing can flip a failed verification to passed. A
-result missing any check does not pass — partial evidence is not a weaker yes.
+result missing any check does not pass; partial evidence is not a weaker yes.
 `CheckOutcome.NOT_IMPLEMENTED` is distinct from `PASSED`, so an unwritten check
 cannot be mistaken for a passing one.
 
-**Consequence worth knowing:** `POLICY_CONFORMANCE` reports `NOT_IMPLEMENTED`,
-so `verify_reconciled_fact` currently cannot return a passing result. That is
-deliberate. The policy check needs the drafts-and-approval rules, which do not
-exist.
+**Consequence:** `POLICY_CONFORMANCE` reports `NOT_IMPLEMENTED`, so
+`verify_reconciled_fact` cannot return a passing result. The policy check needs
+the drafts-and-approval rules, which do not exist.
 
 **Not built:** tier two is `min(len(text) / 100, 1.0)`. It is a placeholder,
 uncalled and untested.
@@ -152,8 +150,7 @@ cannot be recorded without stating what it expected to find. An observation
 alone is data; compared against an expectation it becomes confirmation or
 contradiction.
 
-**Not built, and the gap is larger than it looks.**
-`compare_expectation_to_observation` tests whether the expectation is a
+**Not built:** `compare_expectation_to_observation` tests whether the expectation is a
 substring of the observation, which is not equivalence. In the one place it
 runs, the expectation is a lookup key and the observation is the record id the
 store echoes back, so it compares a string with itself and can never register a
@@ -177,14 +174,13 @@ that capacity is least available exactly when the signal matters most.
 reduces a plan in response, and the response reports only receipt. The design
 requires it to produce an immediate visible result, since a control that
 changes nothing observable gets abandoned. It also requires brief retention,
-visibility to her, and deletion by her — none of which exists.
+visibility to her, and deletion by her. None of that exists.
 
 ## Configuration, time, and lifecycle
 
 Every filesystem path is resolved through `blossom/settings.py`, with relative
 values resolved against the repository root so they mean one fixed location
-regardless of the working directory. Packaged assets are deliberately not
-configurable.
+regardless of the working directory. Packaged assets are not configurable.
 
 Time is read through the `Clock` protocol in `blossom/clock.py`. `SystemClock`
 is the only implementation that touches the operating system; `BLOSSOM_TODAY`
@@ -194,10 +190,10 @@ weekly-window tests honest.
 Stores are opened once by the application lifespan in
 `blossom/dependencies.py` and injected into routes with `Depends`. The SQLite
 connection is shared across FastAPI's worker threads, so it is opened with
-`check_same_thread=False` and every statement is serialised behind a lock.
+`check_same_thread=False` and every statement is serialized behind a lock.
 
-**Not built:** `BLOSSOM_DATABASE_PATH` is read into settings but not honoured.
-Project state is still in memory, because deciding when state becomes durable
+**Not built:** `BLOSSOM_DATABASE_PATH` is read into settings but not honored.
+Project state is in memory, because deciding when state becomes durable
 is a design question rather than a wiring detail.
 
 ## Stack decision, open

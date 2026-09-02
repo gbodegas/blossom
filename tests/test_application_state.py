@@ -1,11 +1,9 @@
 """Tests for the application-scoped store lifecycle.
 
-Three properties matter here, and none of them held before:
+Three properties are checked here:
 
-1. Stores are built once, not per request. The scaffold reopened SQLite and
-   re-seeded every assignment on each call.
-2. A connection shared across FastAPI's worker threads does not raise. This is
-   the hazard the previous per-request connections happened to avoid.
+1. Stores are built once at startup and shared across requests.
+2. One SQLite connection is safe to use from FastAPI's worker threads.
 3. Routes take their stores from a dependency, so a test can substitute them.
 """
 
@@ -62,11 +60,7 @@ def test_using_the_app_without_its_lifespan_fails_with_a_useful_message() -> Non
 
 
 def test_shared_connection_survives_concurrent_reads() -> None:
-    """Synchronous handlers run in a thread pool, so the store is used from many threads.
-
-    Without ``check_same_thread=False`` and the store's lock, this raises
-    ``sqlite3.ProgrammingError``.
-    """
+    """Reads from many threads are safe: ``check_same_thread=False`` plus the store's lock."""
     state = build_application_state(Settings.from_environment({}))
     try:
 

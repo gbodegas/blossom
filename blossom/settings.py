@@ -1,31 +1,16 @@
 """Runtime configuration, resolved once from the environment.
 
-Two problems motivated this module.
+Reads the ``BLOSSOM_*`` variables documented in ``.env.example``. Relative
+values resolve against the repository root, not the current working directory,
+so ``.local/blossom.sqlite3`` names the same file wherever the process is
+launched; absolute values are used as given.
 
-The scaffold hardcoded three relative paths -- ``blossom/static``,
-``blossom/templates`` and ``data/synthetic`` -- so the application only started
-when the current working directory happened to be the repository root. Starting
-it from anywhere else failed at import time, when ``StaticFiles`` checked for a
-directory that was not there.
+The template and static directories come from ``__file__`` and are not
+configurable: they ship with the package, and a deployment that needs to
+relocate them has a packaging problem, not a configuration problem.
 
-Separately, ``.env.example`` documented three ``BLOSSOM_*`` variables that no
-code read. They were decorative. This module makes them real.
-
-Two deliberate choices are worth stating.
-
-Package assets are not configurable. The template and static directories are
-resolved from ``__file__`` and cannot be overridden, because they ship with the
-package and a deployment that needs to relocate them has a packaging problem
-rather than a configuration problem.
-
-Relative values are resolved against the repository root rather than the
-current working directory. ``.env.example`` says ``.local/blossom.sqlite3``,
-and that should mean the same location no matter which directory the process
-was launched from. Absolute values are used as given.
-
-There is no settings library here on purpose. Three paths do not justify a
-dependency, and ``.env`` files can be loaded at the launcher with
-``uv run --env-file .env`` without one.
+There is no settings library. Three paths do not justify a dependency, and
+``.env`` files can be loaded with ``uv run --env-file .env``.
 """
 
 import os

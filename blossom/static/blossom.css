@@ -11,9 +11,9 @@ article {
 }
 
 /*
-  Confidence is never signalled by colour alone. Each banner carries its own
-  wording, so the state survives greyscale printing, low-contrast screens and
-  colour vision differences. The left border and background are reinforcement,
+  Confidence is never signaled by color alone. Each banner carries its own
+  wording, so the state survives grayscale printing, low contrast screens, and
+  color vision differences. The left border and background are reinforcement,
   not the message.
 */
 .confidence {

@@ -1,41 +1,20 @@
-"""Verification, separated into the three tiers the design actually distinguishes.
+"""Verification: the tier-one hard checks, kept separate from the other two tiers.
 
-The previous version of this module named three things "tiers" that are all
-the same tier. ``SOURCE_PRESENT``, ``FACTUAL_CONSISTENCY`` and
-``POLICY_CONFORMANCE`` are three deterministic hard checks; they are tier one,
-three times over. Nothing in the module represented tier two or tier three at
-all.
+The tiers exist so the system cannot claim more confidence than its evidence
+supports. A signal from the third tier must never change an answer produced by
+the first.
 
-That mislabelling is what made the workload override look reasonable. If tier
-three is just the last item in a list of checks, then a tier-three input that
-sets ``passed = True`` reads like an ordinary escalation rule. In the design it
-is nothing of the kind: the tiers exist precisely so the system cannot claim
-more confidence than its evidence supports, and a signal from the third tier
-must never be able to change an answer produced by the first.
+Tier one is a deterministic hard check, pass or fail, and it runs before
+anything is shown or proposed to another person (``HardCheck``). Tier two is a
+heuristic score from a critic; it lives in ``blossom/heuristic_relevance.py``,
+not here, so a score cannot be mistaken for a check. Tier three is whether a
+plan is right for her. No automated check can answer that, so nothing here
+tries; her workload signal settles it directly rather than being weighed
+against anything the system computed.
 
-The three tiers:
-
-Tier one is a hard check. Deterministic, with a clear pass or fail, and it runs
-before anything is shown or proposed to another person. Does a value match the
-source it came from? Do two deadlines conflict? Did an action that requires
-human approval actually stop at the gate? These live here, in ``HardCheck``.
-
-Tier two is a heuristic score produced by a critic: whether a notification is
-worth an interruption, whether one candidate plan reads better than another.
-Useful, but an estimate rather than a verified conclusion. It deliberately does
-not live in this module -- see ``blossom/heuristic_relevance.py`` -- so that a
-score can never be mistaken for a check.
-
-Tier three is whether a plan is actually right for her. No automated check can
-answer that, and this module does not attempt to. Her workload signal settles
-it directly rather than being weighed against anything the system computed. The
-absence of a tier-three implementation here is the design, not a gap.
-
-One structural note. ``passed`` is a derived property, not a field. There is no
-attribute to assign, so no caller -- workload signal, principal, or anything
-added later -- can flip a failed verification to passed. The project already
-argues that a tool which was never built cannot be called; the same reasoning
-applies to a field that does not exist.
+``passed`` is a derived property, not a field, so no caller (workload signal,
+principal, or anything added later) can flip a failed verification to passed.
+A field that does not exist cannot be assigned.
 """
 
 from enum import IntEnum, StrEnum
@@ -82,10 +61,8 @@ ORDERED_HARD_CHECKS: tuple[HardCheck, ...] = (
 class CheckOutcome(StrEnum):
     """The result of one hard check.
 
-    ``NOT_IMPLEMENTED`` is a distinct outcome rather than an optimistic pass.
-    A check that has not been written has produced no evidence, and recording
-    that as a pass would be the module claiming confidence it has not earned --
-    the exact failure the tier separation exists to prevent.
+    ``NOT_IMPLEMENTED`` is distinct from ``PASSED``: a check that has not been
+    written has produced no evidence.
     """
 
     PASSED = "PASSED"
@@ -102,10 +79,9 @@ class VerificationResult(BaseModel):
 
     @property
     def passed(self) -> bool:
-        """True only when every hard check ran and every one of them passed.
+        """True only when every hard check ran and passed.
 
-        A result missing a check does not pass. Partial evidence is not a
-        weaker yes; it is not a yes.
+        A result missing any hard check does not pass.
         """
         if set(self.outcomes) != set(ORDERED_HARD_CHECKS):
             return False
@@ -135,11 +111,9 @@ class Verifier:
     def verify_reconciled_fact(self, reconciliation: ReconciliationResult) -> VerificationResult:
         """Check a fact assembled from source records.
 
-        ``POLICY_CONFORMANCE`` reports ``NOT_IMPLEMENTED``, which means this
-        method cannot currently return a passing result. That is deliberate and
-        honest: the policy check needs the drafts-and-approval rules, which do
-        not exist yet, and reporting an unwritten check as a pass would let a
-        caller act on confidence nothing established.
+        ``POLICY_CONFORMANCE`` reports ``NOT_IMPLEMENTED`` until the
+        drafts-and-approval rules exist, so this method cannot yet return a
+        passing result.
         """
         return VerificationResult(
             outcomes={
