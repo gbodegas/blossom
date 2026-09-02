@@ -1,24 +1,15 @@
 """Store three: what the agent learns about itself, and never about her.
 
-When a plan does not work, the agent records a short note it can read the next
-time it plans something similar. That is the adaptation mechanism, and it is
-the most dangerous component in the system, because the natural way to build it
-drifts straight into profiling a child. The same loop, over the same evidence,
-produces either "evening reminders for long-term projects do not lead to task
-starts" or "she procrastinates on science projects". The first improves the
-planner. The second is behavioural monitoring arriving through a side door, as
-a consequence of an architectural pattern rather than a feature anyone asked
-for.
+When a plan does not work, the agent records a short note to read the next time
+it plans something similar. The same loop over the same evidence can produce
+either "evening reminders for long-term projects do not lead to task starts" or
+"she procrastinates on science projects". The first improves the planner; the
+second is behavioral monitoring of a child. ``ReflectionsStore.write`` refuses
+any subject other than ``SYSTEM`` so the boundary is structural rather than
+left to the wording of a prompt.
 
-``ReflectionsStore.write`` refuses any subject other than ``SYSTEM``. That is
-the boundary made structural rather than left to the wording of a prompt.
-
-Two commitments this store does not yet honour. Reflections are meant to be
-readable, correctable and deletable by her, as a visible part of the interface
-rather than a setting; there is no read-for-her or delete path here. And
-retrieval is meant to weigh a reflection's age, since a September note about
-after-school timing may be wrong by winter. ``observed_at`` is recorded, but
-nothing reads it.
+Not done yet: a path for her to read, correct and delete reflections, and age
+weighting at retrieval time (``observed_at`` is recorded but nothing reads it).
 """
 
 from dataclasses import dataclass
@@ -36,7 +27,7 @@ class ReflectionSubject(StrEnum):
 
 @dataclass(frozen=True)
 class Reflection:
-    """A note the agent wrote about its own behaviour, with the date it wrote it."""
+    """A note the agent wrote about its own behavior, with the date it wrote it."""
 
     reflection_id: str
     subject: ReflectionSubject
@@ -56,9 +47,9 @@ class ReflectionsStore:
     def write(self, reflection: Reflection) -> None:
         """Store a reflection, rejecting any subject other than ``SYSTEM``.
 
-        Raising rather than silently filtering is deliberate. A reflection
-        about her that was quietly dropped would be indistinguishable from one
-        never written, and whatever produced it would go uncorrected.
+        It raises rather than filtering: a reflection about her that was
+        quietly dropped would look like one never written, and whatever
+        produced it would go uncorrected.
         """
         if reflection.subject is not ReflectionSubject.SYSTEM:
             msg = "reflections may only describe the system's own behavior"

@@ -1,21 +1,16 @@
 """Where observations come from, behind one protocol.
 
 ``StateSource`` exists so the rest of the system cannot tell a fixture from a
-school platform. That is not only a testing convenience: school platforms are
-built for administrators, automated access is often unavailable, and anything
-that reads their interface breaks when the vendor changes it. Manual entry and
-fixtures are first-class sources by design rather than a fallback bolted on
-after automated access fails.
+school platform, and that is a design stance, not a testing convenience. School
+platforms are built for administrators, automated access is often unavailable,
+and anything reading their interface breaks when the vendor changes it, so
+manual entry and fixtures are first class sources rather than a fallback.
 
 ``FixtureSource`` is the only working implementation. ``LMSSource`` and
-``EmailSource`` raise ``NotImplementedError`` and are here to mark where
-credentialed access would attach if it is ever approved.
-
-``EmailSource`` carries an unresolved constraint worth stating before anyone
-implements it. Filtering messages after reading them still requires reading
-them all, which is a materially different privacy position from the one
-intended, especially for a parent's mailbox. Selection has to happen before
-access -- an approved sender list, or a dedicated folder -- not afterwards.
+``EmailSource`` raise ``NotImplementedError`` and mark where credentialed
+access would attach if approved. For email, filtering after reading still
+reads the whole mailbox, a parent's mailbox, so selection must happen before
+access (an approved sender list or a dedicated folder), not after it.
 """
 
 import json

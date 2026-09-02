@@ -4,8 +4,8 @@
 `SourceRecord` do not import each other; cross-imports between test files make
 the suite's collection order matter, which it should not.
 
-Deliberately not `conftest.py`. Importing from a conftest works but makes the
-same file reachable under two module names, which mypy rejects outright.
+This is a plain module rather than `conftest.py`: importing from a conftest
+makes the same file reachable under two module names, which mypy rejects.
 """
 
 from datetime import UTC, datetime

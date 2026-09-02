@@ -1,35 +1,11 @@
-"""Retrieval: two mechanisms, and a router that picks between them on key presence.
+"""Retrieval: exact lookup by key, semantic lookup by resemblance, and a router.
 
-The rule is that the method follows the question. A due date has a lookup key,
-so it is fetched by exact query against structured state; retrieving it by
-similarity would return the most similar assignment rather than the correct
-one, and a confidently wrong deadline is worse here than no deadline. Support
-rules and reflections have no key to look them up by, so they are found by
-resemblance to the planning situation.
-
-Two properties matter more than the mechanism.
-
-Every result carries provenance. ``RetrievalResult`` records which store it
-came from, which channel asserted it, when that assertion was observed, and
-when it was retrieved. Those are separate timestamps on purpose: a record can
-be accurate when observed and stale by the time it is read.
-
-Retrieval is allowed to return nothing. ``NothingRetrieved`` is a value, not an
-error, and it carries the reason. A vector search always returns its
-highest-ranked result even when the corpus holds nothing relevant, so without
-an explicit empty answer the agent would receive a rule for every plan and
-apply it, producing plans that appear to carry the authority of an
-accommodation without being supported by one.
-
-Two known gaps, both in ``SemanticRetriever``:
-
-``score = 1.0 - distance`` assumes a distance already normalised to the unit
-interval. Chroma's default space is squared L2, which is unbounded, so the
-score is not a similarity and ``min_score`` has no defined meaning until the
-collection is created with an explicit metric.
-
-``n_results=1`` retrieves only the nearest neighbour, so nothing can tell a
-confident match from the only candidate. The design calls for three to five.
+A question with a lookup key (a due date) goes to structured state: similarity
+would return the most similar assignment rather than the correct one, and a
+confidently wrong deadline is worse than none. Questions with no key go to
+vector search. Every result records its store, source channel, assertion time,
+and retrieval time. ``NothingRetrieved`` is a value, not an error, because vector
+search always returns a top hit even when nothing in the corpus is relevant.
 """
 
 from datetime import UTC, datetime
@@ -39,11 +15,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class RetrievalQuery(BaseModel):
-    """One question, carrying its own answer to how it should be answered.
-
-    ``lookup_key`` is what the router switches on: present means exact,
-    absent means semantic. ``min_score`` is the floor below which a semantic
-    result is discarded rather than returned weakly.
+    """A retrieval question. ``lookup_key`` present means exact lookup, absent
+    means semantic; ``min_score`` is the floor below which a semantic result is
+    discarded.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -54,11 +28,10 @@ class RetrievalQuery(BaseModel):
 
 
 class RetrievalResult(BaseModel):
-    """A retrieved fact, inseparable from where and when it came from.
+    """A retrieved record with its provenance.
 
-    ``asserted_at`` is when the source claimed it. ``retrieved_at`` is when
-    this system read it. Keeping both is what lets staleness be reasoned about
-    rather than assumed away.
+    ``asserted_at`` is when the source claimed it; ``retrieved_at`` is when this
+    system read it. A record can be accurate when observed and stale when read.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -73,11 +46,10 @@ class RetrievalResult(BaseModel):
 
 
 class NothingRetrieved(BaseModel):
-    """A successful retrieval that found nothing worth returning.
+    """A retrieval that found nothing.
 
-    Deliberately a value rather than an exception or an empty list, and it
-    carries ``reason`` so a caller can distinguish "the store was empty" from
-    "the best candidate scored below the threshold".
+    A value rather than an exception or an empty list. ``reason`` distinguishes
+    an empty store from a candidate that scored below the threshold.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -126,11 +98,8 @@ class StructuredRetriever:
 
 
 class Collection(Protocol):
-    """The slice of the Chroma collection API this package depends on.
-
-    Narrow on purpose: depending on the whole client would make the semantic
-    retriever hard to substitute in a test, and this is the entire surface the
-    retriever actually uses.
+    """The part of the Chroma collection API this package uses. Kept narrow so a
+    test can substitute a fake.
     """
 
     def query(
@@ -144,10 +113,13 @@ class Collection(Protocol):
 
 
 class SemanticRetriever:
-    """Approximate retrieval, with a threshold so it can decline to answer.
+    """Approximate retrieval with a threshold so it can decline to answer.
 
-    See the module docstring for two known gaps in this class: the score is not
-    a normalised similarity, and only the single nearest neighbour is fetched.
+    Score is ``1.0 - distance`` and assumes a unit-interval metric; with Chroma's
+    default squared L2 the threshold has no defined meaning until the collection
+    is created with an explicit metric. Only the nearest neighbor is fetched, so
+    nothing distinguishes a confident match from the only candidate; three to
+    five would.
     """
 
     store_name = "semantic"
@@ -192,9 +164,8 @@ class SemanticRetriever:
 class RetrievalRouter:
     """Chooses the retrieval mechanism from the shape of the question.
 
-    The switch is key presence and nothing else. It is not a heuristic, a score
-    or a model call, because a due date reaching the semantic path even
-    occasionally is the specific failure this router exists to prevent.
+    The switch is key presence alone, not a heuristic, a score, or a model call,
+    so a due date never reaches the semantic path.
     """
 
     def __init__(self, structured: Retriever, semantic: Retriever) -> None:

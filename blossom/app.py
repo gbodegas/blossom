@@ -20,14 +20,10 @@ from blossom.settings import Settings, get_settings
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the application.
 
-    ``settings`` is a parameter so a test can point the app at a different
-    fixture set without touching process environment variables. It defaults to
-    the process-wide settings.
-
-    Stores are opened by the lifespan handler, not here, so nothing is
-    constructed by merely importing this module. A consequence worth knowing:
-    ``TestClient`` only runs the lifespan when used as a context manager, so
-    tests must write ``with TestClient(app) as client:``.
+    ``settings`` lets a test point the app at a different fixture set without
+    touching environment variables; it defaults to the process-wide settings.
+    ``TestClient`` only runs the lifespan as a context manager, so tests use
+    ``with TestClient(app) as client:``.
     """
     resolved = get_settings() if settings is None else settings
     app = FastAPI(title="Blossom", lifespan=create_lifespan(resolved))

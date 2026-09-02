@@ -1,17 +1,15 @@
-"""Parent routes: a checkpoint, deliberately not a live feed.
+"""Parent routes: a checkpoint view, not a live feed.
 
 A parent is a collaborator who sets goals, corrects information and reviews
-drafts, which needs a periodic summary rather than continuous visibility. The
-narrower shape is the design; widening it would turn collaboration into
-monitoring.
+drafts, so the route exposes a periodic summary rather than continuous
+visibility. A live feed would turn collaboration into monitoring.
 
-Status: the handler returns a hardcoded literal. It reads no store and is not
+The handler returns a hardcoded placeholder. It reads no store and is not
 connected to project state.
 
-Missing, and specified: if the system notifies a parent that a deadline is at
-risk, she must be able to see that the notification happened. A visibility
-policy she can read but whose consequences she cannot observe is not visible.
-Nothing here implements that yet.
+Not yet implemented: when the system notifies a parent that a deadline is at
+risk, the parent needs to be able to see that the notification happened.
+Without that, the visibility policy is stated but not observable.
 """
 
 from datetime import UTC, datetime
@@ -25,7 +23,7 @@ router = APIRouter(prefix="/parent", tags=["parent"])
 
 @router.get("/checkpoint", response_model=ParentCheckpointView)
 def checkpoint() -> ParentCheckpointView:
-    """Return the parent checkpoint. Currently a fixed placeholder response."""
+    """Return the parent checkpoint as a fixed placeholder response."""
     return ParentCheckpointView(
         checkpoint_at=datetime.now(UTC),
         assignments=[

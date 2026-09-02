@@ -1,9 +1,9 @@
 """Verifier routes: what was claimed, and what backs it.
 
 The verifier is a checking layer between generation and anything that leaves
-the system, not a person. This view exists so the basis of a claim -- which
-channels asserted it, which policy applies, how it was checked -- can be
-inspected rather than inferred from the output.
+the system, not a person. This view exists so the basis of a claim can be
+inspected rather than inferred from the output: which channels asserted it,
+which policy applies, and how it was checked.
 
 Status: the handler returns a hardcoded literal and is not connected to
 ``blossom.verification``.

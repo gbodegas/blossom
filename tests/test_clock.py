@@ -1,9 +1,7 @@
-"""Tests for the injectable clock and the window it drives.
+"""Tests for the injectable clock and the "due this week" window it drives.
 
-The scaffold hardcoded ``date(2026, 8, 19)`` inside ``ProjectStateStore``, so
-the "due this week" window had no relationship to the current date and the
-route test could not fail no matter how much time passed. These tests pin the
-clock explicitly and assert the window moves with it.
+Each test pins the clock to a known date and asserts that the window, the
+asserted_at timestamp, and the rendered student page follow it.
 """
 
 import sqlite3
@@ -82,7 +80,6 @@ def test_window_includes_assignments_due_within_the_next_seven_days() -> None:
 
 
 def test_window_moves_with_the_clock() -> None:
-    """The behaviour the hardcoded date made untestable."""
     store = store_pinned_to(date(2026, 8, 22))
     try:
         result = store.lookup(DUE_THIS_WEEK_KEY)

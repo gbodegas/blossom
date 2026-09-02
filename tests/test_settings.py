@@ -1,10 +1,8 @@
-"""Tests for configuration resolution and working-directory independence.
+"""Tests for settings resolution.
 
-The scaffold hardcoded ``blossom/static``, ``blossom/templates`` and
-``data/synthetic`` as paths relative to the process working directory, so the
-application could only start from the repository root. The final test in this
-module is the regression guard for that: it starts the app from an unrelated
-directory and asserts a page still renders.
+Every configured path resolves to an absolute location under the repository,
+so the application starts from any working directory. The last test starts the
+app from an unrelated directory and asserts a page renders.
 """
 
 import pathlib
@@ -35,10 +33,7 @@ def test_defaults_are_absolute_and_point_at_real_package_assets() -> None:
 
 
 def test_environment_variables_override_every_configurable_path(tmp_path: pathlib.Path) -> None:
-    """``tmp_path`` is used rather than a literal because ``/tmp/x`` is not
-    absolute on Windows: it carries a root but no drive letter, so
-    ``Path.is_absolute()`` is False and it would be treated as configurable
-    relative input."""
+    """Uses ``tmp_path`` because ``/tmp/x`` has no drive letter and is not absolute on Windows."""
     fixtures = tmp_path / "fixtures"
     database = tmp_path / "state.sqlite3"
     chroma = tmp_path / "chroma"
@@ -57,14 +52,14 @@ def test_environment_variables_override_every_configurable_path(tmp_path: pathli
 
 
 def test_blank_environment_values_fall_back_to_defaults() -> None:
-    """An exported-but-empty variable is a common shell accident, not a request for ''."""
+    """An exported but empty variable is usually a shell accident, not a request for ''."""
     settings = Settings.from_environment({FIXTURE_PATH_VARIABLE: "   "})
 
     assert settings.fixture_path == Settings.from_environment({}).fixture_path
 
 
 def test_relative_values_resolve_against_the_repository_not_the_working_directory() -> None:
-    """This is what makes the paths in ``.env.example`` mean one fixed location."""
+    """Repository-relative resolution gives the paths in ``.env.example`` one fixed meaning."""
     resolved = resolve_configured_path(".local/blossom.sqlite3")
 
     assert resolved == (REPOSITORY_ROOT / ".local" / "blossom.sqlite3").resolve()
@@ -73,7 +68,7 @@ def test_relative_values_resolve_against_the_repository_not_the_working_director
 def test_application_serves_a_page_when_started_from_another_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
-    """The regression guard: the scaffold could not start outside the repository root."""
+    """The app starts from a working directory outside the repository."""
     monkeypatch.chdir(tmp_path)
 
     with TestClient(create_app()) as client:

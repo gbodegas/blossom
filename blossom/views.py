@@ -1,17 +1,14 @@
 """What each principal is allowed to see, as three separate models.
 
-There is no shared view with a role flag on it. Each principal has its own
-model, and every one sets ``extra="forbid"`` so a field that does not belong in
-a projection cannot be serialised into it by accident. That is why the parent
-view has no workload field to omit -- it has no such field at all, and adding
-one fails validation rather than leaking.
+There is no shared view with a role flag. Each principal has its own model with
+``extra="forbid"``, so a field that does not belong in a projection cannot be
+serialized into it by accident. The parent view has no workload field to omit;
+it has no such field at all, and adding one fails validation rather than leaking.
 
-Known gap, and a significant one. Separate models make an accidental leak hard,
-but the design calls for something stronger: a visibility policy sitting
-between the shared state and both agents, so that neither can read the store
-directly and each receives only what the policy permits. These models are a
-convention enforced at serialisation time. They are not that policy, and they
-would not stop a future route that reads a store and renders whatever it likes.
+Known gap. These models are a convention enforced at serialization time, not a
+visibility policy between the shared state and the agents. A route that reads a
+store directly and renders whatever it likes would bypass them; the design notes
+call for that policy layer.
 """
 
 from datetime import date, datetime
@@ -24,10 +21,8 @@ from blossom.reconciliation import SourceConfidence
 class StudentAssignmentView(BaseModel):
     """One assignment as she sees it, including how well its date is corroborated.
 
-    ``workload_signal_count`` used to live here, hardcoded to ``1`` for every
-    assignment regardless of anything. It is removed rather than fixed: a
-    workload signal says the current plan is too much, which is a statement
-    about the plan as a whole, not a counter that belongs on an individual row.
+    A workload signal is a statement about the plan as a whole, not a
+    per-assignment counter, so no such field lives on this row.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -70,8 +65,8 @@ class ParentCheckpointAssignmentView(BaseModel):
 class ParentCheckpointView(BaseModel):
     """A checkpoint rather than a live feed.
 
-    A parent gets a periodic summary by design. The narrower shape is the
-    point: it is what keeps a collaborator's view from becoming surveillance.
+    A parent gets a periodic summary by design. The narrow shape keeps a
+    collaborator's view from becoming surveillance.
     """
 
     model_config = ConfigDict(extra="forbid")
