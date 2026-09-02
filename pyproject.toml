@@ -1,7 +1,7 @@
 [project]
 name = "blossom"
 version = "0.1.0"
-description = "Academic planning assistant scaffold for a family"
+description = "Academic planning assistant for a family"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -19,11 +19,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    # httpx2 backs starlette's TestClient from starlette 1.0 onward; using the
-    # original httpx with it is deprecated and, more practically, leaves the
-    # whole TestClient surface untyped so mypy sees Any. httpx itself is still
-    # installed as a transitive dependency of anthropic, but nothing in the
-    # tests relies on it any more.
+    # httpx2 backs starlette's TestClient from starlette 1.0 onward. Plain httpx
+    # is deprecated there and leaves the TestClient surface untyped, so mypy sees
+    # Any. httpx is still installed as a transitive dependency of anthropic; the
+    # tests do not import it.
     "httpx2==2.10.0",
     "mypy==1.17.1",
     "pytest==8.4.1",

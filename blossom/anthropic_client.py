@@ -1,29 +1,26 @@
 """Seam for model access.
 
-Status: unused seam. Nothing in this system calls a model.
+Status: placeholder; nothing in this system calls a model.
 
-``draft_plan`` raises ``NotImplementedError``: there is no generation in this
-system today. The class exists so that when generation arrives it has one
-place to arrive, and the import allowlist in
-``tests/test_capability_boundaries.py`` confines ``anthropic`` to this file.
-That confinement is the point. It means model access cannot spread into a route
-without an explicit, reviewable edit to the allowlist.
+``draft_plan`` raises ``NotImplementedError``. The class exists so generation
+has one place to arrive, and the import allowlist in
+``tests/test_capability_boundaries.py`` confines ``anthropic`` to this file, so
+model access cannot reach a route without a reviewable edit to that allowlist.
 
-Unresolved: the comment this module used to carry said that no agent framework
-belongs here. The design notes specify LangChain for generation and judging and
-LangGraph for control flow, which is the opposite position. That decision is
-open, and whichever way it goes will change what this file becomes.
+Open question: this class assumes direct SDK calls, while the design notes call
+for LangChain for generation and judging and LangGraph for control flow.
+Whichever way that goes changes what this file becomes.
 """
 
 from anthropic import Anthropic
 
 
 class AnthropicGenerator:
-    """Direct Anthropic SDK seam for future generation; no agent framework belongs here."""
+    """Direct Anthropic SDK seam for future generation."""
 
     def __init__(self, client: Anthropic) -> None:
         self._client = client
 
     def draft_plan(self, prompt: str) -> str:
-        """Not implemented. No model is called anywhere in this system yet."""
+        """Not implemented; no model is called anywhere in this system."""
         raise NotImplementedError

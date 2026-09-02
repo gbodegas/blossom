@@ -1,17 +1,12 @@
 """Tests that nothing is hidden from the student's weekly view.
 
-Two failures motivated this module, and the second was worse than the first.
+An assignment whose date no channel corroborates stays on the page and is
+labeled unverified. The design treats an absence of corroboration as a finding
+to surface, not a reason to stay silent.
 
-An assignment whose date no channel corroborates was dropped from the view by
-an `if verification.passed` filter. That alone contradicts the design, which
-treats an absence of corroboration as a finding to surface rather than a reason
-to stay silent.
-
-Underneath that, `Reconciler.reconcile` raised `ValueError` on an empty record
-list, and it ran before the filter. So a single source-less assignment did not
-merely hide itself -- it returned HTTP 500 and took every other assignment on
-the page down with it. The regression test for that is
-`test_a_source_less_assignment_does_not_break_the_page`.
+`Reconciler.reconcile` returns `NoSourceRecords` for an empty record list
+rather than raising, so one source-less assignment cannot take the rest of the
+page down with it.
 """
 
 import json
@@ -48,7 +43,7 @@ def student_page(fixture_root: pathlib.Path | None = None) -> str:
 
 
 def test_reconciler_reports_absence_instead_of_raising() -> None:
-    """It used to raise, which made the absence unreportable."""
+    """An empty record list is a reportable outcome, not an error."""
     assert isinstance(Reconciler().reconcile([]), NoSourceRecords)
 
 
@@ -73,7 +68,7 @@ def test_confidence_classification_covers_every_reconciliation_outcome() -> None
 
 
 def test_a_source_less_assignment_does_not_break_the_page() -> None:
-    """The regression guard. This returned HTTP 500 before, hiding everything."""
+    """One assignment with no sources leaves every other assignment on the page."""
     page = student_page()
 
     assert "Science fair topic proposal" in page
@@ -118,7 +113,7 @@ def test_every_assignment_in_the_window_reaches_the_page(tmp_path: pathlib.Path)
 
 
 def test_the_view_no_longer_carries_a_fabricated_workload_count() -> None:
-    """It was hardcoded to 1 for every assignment, which was simply untrue."""
+    """The view carries no workload count because no data source backs one."""
     from blossom.views import StudentAssignmentView
 
     assert "workload_signal_count" not in StudentAssignmentView.model_fields
@@ -126,5 +121,5 @@ def test_the_view_no_longer_carries_a_fabricated_workload_count() -> None:
 
 @pytest.mark.parametrize("banner", ["Unverified due date", "Sources disagree", "Confirmed by"])
 def test_confidence_is_always_stated_never_left_to_absence(banner: str) -> None:
-    """Every card carries a banner, so 'unverified' is not signalled by silence."""
+    """Every card carries a banner, so 'unverified' is not signaled by silence."""
     assert banner in student_page()

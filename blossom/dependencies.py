@@ -1,21 +1,17 @@
 """Application-scoped objects, built once at startup and injected per request.
 
-The scaffold rebuilt everything inside the request handler: each call to
-``/student/due-this-week`` opened a new in-memory SQLite connection, recreated
-the schema, and re-seeded every assignment from the fixture files. That is
-wasted work, but the more important problem is that it was the pattern every
-future route would have copied.
-
-Construction now happens once, in the application lifespan, and routes receive
-what they need through ``Depends``. That gives tests a seam: overriding
+Construction happens once, in the application lifespan, and routes receive
+what they need through ``Depends``. Building stores inside a request handler
+would open a connection and re-seed fixtures on every call, and every new
+route would copy the pattern. The lifespan also gives tests a seam: overriding
 ``get_application_state`` swaps the whole backing world without touching the
 environment or the filesystem.
 
 On thread safety. FastAPI runs synchronous path operations in a worker thread
 pool, so a connection created once at startup is used from several threads.
 ``sqlite3`` forbids that by default, which is why the connection is opened with
-``check_same_thread=False`` and why ``ProjectStateStore`` serialises access with
-a lock. Per-request connections did not need this; a shared one does.
+``check_same_thread=False`` and why ``ProjectStateStore`` serializes access with
+a lock.
 """
 
 import sqlite3
@@ -53,9 +49,9 @@ class ApplicationState:
 def build_application_state(settings: Settings) -> ApplicationState:
     """Open the stores and seed them from the configured fixture set.
 
-    The project state store is still in memory. ``BLOSSOM_DATABASE_PATH`` is
-    read into settings but deliberately not honoured yet, because choosing when
-    state becomes durable is a design decision rather than a wiring detail.
+    The project state store is in memory. ``BLOSSOM_DATABASE_PATH`` is read
+    into settings but not used here: choosing when state becomes durable is a
+    design decision rather than a wiring detail.
     """
     clock = clock_from(settings.today)
     connection = sqlite3.connect(":memory:", check_same_thread=False)

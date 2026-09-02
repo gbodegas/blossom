@@ -32,17 +32,17 @@ The second thing it does is signal workload without asking the user to articulat
 
 ## Status
 
-Design phase, moving into implementation. The design notes behind it cover the reasoning loop, the memory architecture, the retrieval layer, and search-based replanning; they are kept outside this repository. What lives here is closer to scaffolding than to a working system, and the interfaces are more settled than the implementations behind them.
+The interfaces are more settled than the implementations behind them. The design notes that cover the reasoning loop, the memory architecture, the retrieval layer, and search based replanning are kept outside this repository.
 
-This is a long-running project rather than something with a delivery date. It is built for one household, and it will keep changing for as long as it is useful there.
+It is built for one household, and it will keep changing for as long as it is useful there.
 
-No model is called anywhere in this system yet. There is no agent.
+No model is called yet. There is no agent.
 
 ### What works
 
 The student's weekly view is real end to end. Assignments load from the
 structured store, source records are reconciled without a winner being chosen,
-and every assignment in the window reaches the page labelled with how well its
+and every assignment in the window reaches the page labeled with how well its
 due date is corroborated. Nothing is filtered out, including assignments
 nothing corroborates.
 
@@ -54,11 +54,6 @@ to one file each.
 
 ### What does not work yet
 
-Being specific about this matters more here than it might elsewhere. The whole
-argument of the project is that when the agent is wrong it should be wrong in
-ways that can be detected — so a README that is vague about its own gaps is
-the same failure at the level of the repository.
-
 - **The contradiction check is inert.** `AgentStep` requires an expectation,
   but the comparison is a substring test, and where it runs it compares a
   lookup key against itself. It cannot currently register a contradiction, and
@@ -69,8 +64,8 @@ the same failure at the level of the repository.
 - **The semantic half of retrieval is a stub** in the running system, and the
   support-rules store is neither wired nor tested. Of the three stores, one is
   live.
-- **Tier-one verification cannot pass.** The policy check is honestly reported
-  as not implemented rather than optimistically passed.
+- **Tier-one verification cannot pass.** The policy check reports itself as
+  not implemented.
 - **There is no visibility policy layer.** Separate view models prevent
   accidental leaks; they are not the architectural boundary the design calls
   for.
@@ -91,6 +86,8 @@ uv run uvicorn blossom.app:app --reload
 dependencies from `uv.lock`. There is no separate seed step: the synthetic
 fixtures in `data/synthetic/` are loaded once at startup, so the app serves
 `/student/due-this-week` immediately.
+
+The default data adapter reads from fixtures, so nothing here depends on having school LMS access. That is deliberate. LMS APIs are usually restricted to administrators and scraping breaks when the UI changes, so the system is built to run without either and to treat any real connector as an optional source rather than a dependency.
 
 Those fixtures carry fixed August 2026 due dates, and "due this week" is
 computed from the real clock, so outside that week the page is legitimately
@@ -139,7 +136,7 @@ On macOS or Linux the second line is `source .venv/bin/activate`.
 Two install commands rather than one because the development dependencies live
 in a PEP 735 `[dependency-groups]` table, which pip could not install from
 until 25.1 added `pip install --group dev`. Keep those pins matching
-`pyproject.toml` — a test enforces it, because an editor running a different
+`pyproject.toml`. A test enforces it, because an editor running a different
 mypy than CI will disagree with CI about what passes.
 
 Creating the environment at `.venv` inside the repository also lets editors
@@ -152,8 +149,6 @@ installed in that environment rather than the ones they bundle, so the editor
 and CI check the same things. In VS Code, pick the interpreter with
 **Python: Select Interpreter** from the command palette.
 
-The default data adapter reads from fixtures, so nothing here depends on having school LMS access. That is deliberate. LMS APIs are usually restricted to administrators and scraping breaks when the UI changes, so the system is built to run without either and to treat any real connector as an optional source rather than a dependency.
-
 ## A note on data
 
 No real family data belongs in this repository, and none is checked in. Everything in `data/synthetic/` describes a fictional student. The accommodations corpus is held as operational support rules rather than clinical descriptions, a decision made for privacy reasons that turned out to serve retrieval as well, since an instruction is a self contained unit of meaning and a clinical description is not.
@@ -162,5 +157,5 @@ If you are reading this because you are considering something similar for your o
 
 ## License
 
-See [LICENSE](LICENSE). The design notes that shaped this system are kept outside the repository.
+See [LICENSE](LICENSE).
 

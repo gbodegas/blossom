@@ -5,15 +5,13 @@ structured, and always asked about by exact criteria, which is why this is
 SQLite and not a vector index: retrieving a due date by similarity would return
 the most similar assignment rather than the correct one.
 
-Retention is the academic year, then archive. This is the record that lets the
-system notice a project entered eleven days ago has no progress against it, and
-that comparison needs history.
+Retention is the academic year, then archive. Noticing that a project entered
+eleven days ago has no progress against it needs that history.
 
-Note the name ``reported_submission_status``. It is doing work. A submission
-flag confirms a file was uploaded; it does not confirm the assignment was
-finished, that the right file went up, or that the teacher considers it done.
-The field records what a source reported, not what is true, and code reading it
-should preserve that distinction rather than treating it as completion.
+The field is named ``reported_submission_status`` on purpose: a submission flag
+confirms a file was uploaded, not that the assignment was finished, that the
+right file went up, or that the teacher considers it done. Code reading it must
+not treat it as completion.
 """
 
 import sqlite3
@@ -47,7 +45,7 @@ class ProjectStateStore:
     """SQLite-backed project state, opened once and shared across worker threads.
 
     The connection is created at application startup rather than per request,
-    so every statement is serialised behind a lock. ``sqlite3`` refuses a
+    so every statement is serialized behind a lock. ``sqlite3`` refuses a
     connection used from a thread other than the one that created it, and
     FastAPI runs synchronous handlers in a thread pool.
     """
@@ -58,9 +56,7 @@ class ProjectStateStore:
     def __init__(self, connection: sqlite3.Connection, clock: Clock | None = None) -> None:
         self._connection = connection
         self._clock = SystemClock() if clock is None else clock
-        # The connection is opened once at startup and shared by the worker
-        # threads FastAPI uses for synchronous handlers, so every statement is
-        # serialised. See blossom/dependencies.py for the full rationale.
+        # Shared across FastAPI's handler threads; see blossom/dependencies.py.
         self._lock = threading.Lock()
         self._connection.execute(
             """
@@ -136,11 +132,9 @@ class ProjectStateStore:
     def lookup(self, key: str) -> RetrievalResult | None:
         """Resolve a keyed structured query.
 
-        The window is computed from the injected clock rather than the fixed
-        August 2026 dates the scaffold hardcoded. Defining "this week" as the
-        next seven days inclusive is a placeholder: it preserves the previous
-        behaviour exactly when the clock reads 2026-08-19, and the definition
-        belongs in a calendar policy rather than in a store once there is one.
+        "This week" means today plus the next six days, computed from the
+        injected clock so tests can pin the date. The definition is a placeholder
+        that belongs in a calendar policy once there is one.
         """
         if key != DUE_THIS_WEEK_KEY:
             return None

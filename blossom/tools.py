@@ -1,19 +1,12 @@
 """The tool registry, and the allowlist that bounds what a tool may do.
 
-The project's central safety claim is that there is no send tool: everything
-outbound terminates in a draft that a human transmits by hand. Two things
-enforce that here.
-
-The first is the type. ``ToolCallable`` returns ``Draft`` and nothing else, so
-the registry structurally cannot hold a tool that returns the result of having
-transmitted something. Do not widen this to ``Any`` for convenience; the
-narrowness is the guarantee.
-
-The second is ``ALLOWED_CAPABILITIES``. This used to be checked in the test
-suite against a list of banned strings, which is the wrong shape for a safety
-property: a tool declaring some capability nobody thought to ban would have
-passed. An allowlist inverts that. Adding a capability requires editing this
-set, which is a deliberate act that shows up in review.
+There is no send tool. Everything outbound ends in a draft that a human
+transmits by hand, and two things here enforce that. ``ToolCallable`` returns
+``Draft`` and nothing else, so the registry cannot hold a tool that reports
+having transmitted something; do not widen it to ``Any``, the narrowness is the
+guarantee. ``ALLOWED_CAPABILITIES`` is an allowlist, not a blocklist: a blocklist
+passes any capability nobody thought to ban, an allowlist passes only what is
+listed. Adding a capability means editing this set, which shows up in review.
 """
 
 from collections.abc import Callable, Iterable
@@ -25,7 +18,7 @@ ToolCallable = Callable[[dict[str, object]], Draft]
 
 ALLOWED_CAPABILITIES: frozenset[str] = frozenset(
     {
-        # Produces text for a human to read, copy and send themselves.
+        # Produces text for a human to read, copy, and send themselves.
         "draft",
     }
 )
@@ -33,11 +26,10 @@ ALLOWED_CAPABILITIES: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """One tool: what it is called, what it does, and what it is allowed to do.
+    """One tool: its name, what it does, and what it is allowed to do.
 
-    ``capabilities`` is checked against ``ALLOWED_CAPABILITIES`` at import.
-    ``call`` returns ``Draft`` and nothing else, which is the structural half of
-    the guarantee -- see the module docstring.
+    ``capabilities`` is checked against ``ALLOWED_CAPABILITIES`` at import;
+    ``call`` returns ``Draft`` only.
     """
 
     name: str
@@ -49,9 +41,8 @@ class ToolSpec:
 def validate_capabilities(registry: Iterable[ToolSpec]) -> None:
     """Raise if any tool declares a capability outside ``ALLOWED_CAPABILITIES``.
 
-    Called at import time rather than only from a test, so a tool with an
-    unlisted capability cannot be reached at runtime even if the suite has not
-    been run.
+    Runs at import, so a tool with an unlisted capability fails before anything
+    can call it, whether or not the tests run.
     """
     for tool in registry:
         unlisted = tool.capabilities - ALLOWED_CAPABILITIES
@@ -59,15 +50,15 @@ def validate_capabilities(registry: Iterable[ToolSpec]) -> None:
             msg = (
                 f"tool {tool.name!r} declares capabilities that are not allowed: "
                 f"{sorted(unlisted)}. Adding one requires editing "
-                f"ALLOWED_CAPABILITIES in blossom/tools.py deliberately."
+                f"ALLOWED_CAPABILITIES in blossom/tools.py."
             )
             raise ValueError(msg)
 
 
 def create_draft(tool_input: dict[str, object]) -> Draft:
-    """Produce a draft for a human to read, copy and send by hand.
+    """Produce a draft for a human to read, copy, and send by hand.
 
-    The only tool in the registry. There is no counterpart that transmits.
+    The only tool in the registry; there is no counterpart that transmits.
     """
     body = str(tool_input.get("body", ""))
     return Draft(body=body)

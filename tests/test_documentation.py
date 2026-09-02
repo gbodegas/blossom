@@ -1,16 +1,10 @@
-"""Keeps the package's documentation from drifting back apart.
+"""Docstring coverage checks for the blossom package.
 
-Before this test, 18 of 20 modules had no module docstring and 69 public
-symbols had none. The split was not random: every module written or revised
-recently was documented thoroughly, and every module inherited from the
-original scaffold had nothing at all. That is worse than uniformly sparse
-documentation, because the asymmetry silently implies the documented modules
-are the ones that matter.
-
-These tests are deliberately about presence, not quality. No test can judge
-whether a docstring is any good. What a test can do is make the absence of one
-a visible failure at the moment it is introduced, rather than a slow drift
-nobody notices until the next audit.
+Every module needs a module docstring, and every public class, function and
+method needs a docstring. These tests check presence only; they do not judge
+content. The placeholder modules must also carry a `Status:` or `Known gap`
+paragraph so a reader learns from the file itself, not from a grep, that
+nothing calls it.
 """
 
 import ast
@@ -81,18 +75,10 @@ def test_every_public_symbol_has_a_docstring(path: pathlib.Path) -> None:
 
 
 def test_modules_that_are_placeholders_say_so() -> None:
-    """Several modules are seams or stubs. Each must admit it in its own docstring.
+    """Placeholder modules must carry a literal `Status:` or `Known gap` paragraph.
 
-    These are the files most likely to be mistaken for working code: they are
-    syntactically complete and type-check cleanly. A reader who opens
-    `heuristic_relevance.py` should learn from the module itself that nothing
-    calls it, rather than from a grep.
-
-    The convention enforced here is a literal `Status:` or `Known gap`
-    paragraph, rather than a list of words that might mean "unfinished". A
-    vocabulary guess makes the test both weak and surprising -- it passed a
-    docstring saying "does not work yet" only by accident of phrasing, and
-    failed another that was equally honest.
+    The marker is a literal phrase, not a vocabulary match, so a docstring's
+    phrasing cannot accidentally pass or fail the test.
     """
     admits = ("status:", "known gap")
     for relative in (

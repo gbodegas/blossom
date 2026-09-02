@@ -1,32 +1,17 @@
 """Student routes. She is the primary user, and this is the primary view.
 
-Two commitments shape what is here.
+Nothing is filtered out of her week: an assignment the system cannot corroborate
+is the one she most needs to see, so every assignment in the window reaches the
+page with its date confidence attached. The workload signal takes no argument:
+rating or describing the load requires stepping back, and that capacity is least
+available exactly when the signal matters.
 
-Nothing is filtered out of her week. An assignment the system cannot
-corroborate is the one she most needs to see, so every assignment in the window
-reaches the page carrying how well its date is supported. A confident,
-incomplete week is the failure this view exists to avoid.
-
-The workload signal takes no argument. It does not ask her to rate or describe
-anything, because assigning a rating requires stepping back and assessing, and
-that capacity is least available exactly when the signal matters most. An
-undifferentiated "this is too much" is the whole of the input.
-
-Known gaps:
-
-The workload signal is accepted and discarded. Nothing stores it, nothing
-reduces a plan in response, and the response body reports only that it was
-received. The design requires it to produce an immediate visible result, since
-a control that changes nothing observable gets abandoned.
-
-``EmptySemanticCollection`` is a stub that always returns no candidates, so the
-semantic half of the retrieval router cannot return anything in the running
-system. The structured half is real.
-
-The expectation check is inert here. ``expectation`` is a lookup key and the
-observation is the record id the store echoes back, so the comparison is a
-string against itself and can never register a contradiction. Its result is
-discarded; only ``expectation`` is read from the checked step.
+Gaps: the signal is accepted and discarded; it should produce an immediate
+visible result, since a control that changes nothing observable gets abandoned.
+``EmptySemanticCollection`` returns no candidates, so retrieval is
+structured-only. The expectation check compares the lookup key to the record id
+the store echoes back, so it cannot register a contradiction; only
+``checked_step.expectation`` is used.
 """
 
 from datetime import UTC, datetime
@@ -65,9 +50,8 @@ class WorkloadSignalRequest(BaseModel):
 
 
 class WorkloadSignalResponse(BaseModel):
-    """Acknowledgement that a signal was received.
-
-    It reports receipt and nothing more, because nothing more happens yet.
+    """Acknowledgment that a signal was received. It reports receipt and nothing
+    more, because nothing more happens yet.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -78,11 +62,10 @@ class WorkloadSignalResponse(BaseModel):
 
 
 class EmptySemanticCollection:
-    """A collection that never returns candidates. Stands in for an unwired store.
+    """Stands in for an unwired semantic store and returns no candidates.
 
-    Returning nothing is the safe stub: the retriever's contract already treats
-    an empty result as a legitimate answer, so the router degrades to
-    structured-only rather than inventing matches.
+    An empty result is a legitimate answer under the retriever's contract, so the
+    router degrades to structured-only instead of inventing matches.
     """
 
     def query(self, *, query_texts: list[str], n_results: int) -> dict[str, list[list[object]]]:
@@ -94,12 +77,8 @@ class EmptySemanticCollection:
 def register_workload_signal(
     payload: Annotated[WorkloadSignalRequest | None, Body()] = None,
 ) -> WorkloadSignalResponse:
-    """Accept a workload signal, with or without a body.
-
-    The empty POST is the important case and is why ``payload`` is optional:
-    the signal must work with no navigation, no fields and no decisions.
-
-    Currently records nothing. See the module docstring.
+    """Accept a workload signal. ``payload`` is optional so an empty POST works
+    with no fields and no decisions. Records nothing yet.
     """
     return WorkloadSignalResponse(
         principal=Principal.STUDENT,
@@ -108,11 +87,8 @@ def register_workload_signal(
 
 
 def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisWeekView:
-    """Assemble the student's weekly view from stores opened at startup.
-
-    Previously this function opened a SQLite connection, created the schema and
-    re-seeded every assignment on each request. It now reads the stores that
-    ``ApplicationState`` already holds.
+    """Assemble the student's weekly view from the stores ``ApplicationState``
+    opened at startup; nothing is opened or seeded per request.
     """
     source = state.source
     project_store = state.project_state
@@ -152,9 +128,7 @@ def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisW
                 f"{claim.channel}: {claim.asserted_value}"
                 for claim in reconciliation.conflicting_claims
             ]
-        # Every assignment is appended. Nothing here may filter: an assignment
-        # the system cannot corroborate is precisely the one she most needs to
-        # see, and dropping it would present a confident, incomplete week.
+        # Never filter here; see the module docstring.
         views.append(
             StudentAssignmentView(
                 assignment_id=assignment.assignment_id,
@@ -179,7 +153,7 @@ def due_this_week(
     request: Request,
     state: Annotated[ApplicationState, Depends(get_application_state)],
 ) -> HTMLResponse:
-    """Render her week, every assignment labelled with its source confidence."""
+    """Render her week, every assignment labeled with its source confidence."""
     view = build_student_due_this_week_view(state)
     return templates.TemplateResponse(
         request,

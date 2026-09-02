@@ -1,18 +1,13 @@
 """Tests that the three verification tiers stay separate and tier one stays unfalsifiable.
 
-The scaffold had a method, `Verifier.apply_workload_override`, which took a
-verification that had failed every check and returned it as passed whenever the
-principal was the student and a workload signal was present. Its own test
-asserted that behaviour: `verify_fact("", 0)` failed, then passed.
+The workload signal is a tier-three judgment about whether a plan suits her.
+Tier one is a deterministic check about whether a claim is corroborated. A
+tier-three input must never change a tier-one answer, so the Verifier exposes
+only the hard check and `passed` is derived from the outcomes, never assigned.
+Partial evidence and unimplemented checks do not count as a pass.
 
-Read plainly, that said an unsourced claim becomes true when she is overwhelmed
--- inverting both the safety property and the intent. The workload signal is a
-tier-three judgment about whether a plan suits her. Tier one is a deterministic
-check about whether a claim is corroborated. A tier-three input must never be
-able to change a tier-one answer, which is the whole reason the design keeps
-the tiers apart.
-
-The method is gone. These tests assert it cannot come back by accident.
+These tests pin the Verifier surface and the derived pass/fail so no input can
+override a hard check.
 """
 
 import pytest
@@ -50,14 +45,14 @@ def test_the_three_tiers_are_the_three_the_design_names() -> None:
 
 
 def test_the_verifier_exposes_no_tier_two_or_tier_three_entry_point() -> None:
-    """A scoring or workload method on the Verifier is what collapsed the tiers before."""
+    """The Verifier exposes only the hard check; scoring and judgment live elsewhere."""
     surface = {name for name in dir(Verifier) if not name.startswith("_")}
 
     assert surface == {"verify_reconciled_fact"}
 
 
 def test_passed_is_derived_and_cannot_be_assigned() -> None:
-    """There is no `passed` field, so nothing can set it. This is the structural guarantee."""
+    """`passed` is derived from the outcomes; there is no field to set."""
     assert "passed" not in VerificationResult.model_fields
 
     with pytest.raises(ValidationError):
@@ -128,7 +123,7 @@ def test_a_fact_with_no_sources_fails_both_implemented_checks() -> None:
 
 
 def test_nothing_in_the_package_reintroduces_a_verification_override() -> None:
-    """A grep-level guard, aimed at the specific shape of the removed method."""
+    """No module in the package defines an override, bypass, or force_pass method."""
     import pathlib
     import re
 
@@ -139,7 +134,7 @@ def test_nothing_in_the_package_reintroduces_a_verification_override() -> None:
 
 
 def test_source_record_is_still_required_to_carry_provenance() -> None:
-    """Guards the field the whole tier-one story rests on."""
+    """Tier one depends on every source record carrying channel, value, time, and confidence."""
     assert {"channel", "asserted_value", "observed_at", "confidence"} <= set(
         SourceRecord.model_fields
     )
