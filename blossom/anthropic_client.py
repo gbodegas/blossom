@@ -7,9 +7,8 @@ has one place to arrive, and the import allowlist in
 ``tests/test_capability_boundaries.py`` confines ``anthropic`` to this file, so
 model access cannot reach a route without a reviewable edit to that allowlist.
 
-Open question: this class assumes direct SDK calls, while the design notes call
-for LangChain for generation and judging and LangGraph for control flow.
-Whichever way that goes changes what this file becomes.
+Model calls are routed through LangChain, which wraps this same SDK. This
+direct-SDK seam stays only until the graph replaces it, and is then removed.
 """
 
 from anthropic import Anthropic

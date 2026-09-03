@@ -23,7 +23,7 @@ from typing import cast
 from fastapi import FastAPI, Request
 
 from blossom.clock import Clock, clock_from
-from blossom.settings import Settings
+from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource
 from blossom.stores.project_state import ProjectStateStore
 
@@ -71,6 +71,10 @@ def create_lifespan(settings: Settings) -> Lifespan:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Startup, not import, is where the process environment may be
+        # changed: hosted tracing is forced off here, before any store or
+        # model client exists that could read the old value.
+        enforce_local_only_tracing()
         state = build_application_state(settings)
         setattr(app.state, STATE_ATTRIBUTE, state)
         try:

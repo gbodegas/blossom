@@ -18,12 +18,14 @@ from blossom.settings import Settings, get_settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    """Build the application.
+    """Build the application without starting it.
 
     ``settings`` lets a test point the app at a different fixture set without
     touching environment variables; it defaults to the process-wide settings.
-    ``TestClient`` only runs the lifespan as a context manager, so tests use
-    ``with TestClient(app) as client:``.
+    Construction changes nothing outside the returned object. Opening stores
+    and forcing hosted tracing off both happen in the lifespan, which
+    ``uvicorn`` runs at startup and ``TestClient`` runs only as a context
+    manager, so tests use ``with TestClient(app) as client:``.
     """
     resolved = get_settings() if settings is None else settings
     app = FastAPI(title="Blossom", lifespan=create_lifespan(resolved))

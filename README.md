@@ -97,8 +97,11 @@ empty. To see the fixture data, pin the clock:
 BLOSSOM_TODAY=2026-08-19 uv run uvicorn blossom.app:app --reload
 ```
 
-No credentials are required. Nothing in the package reads an API key yet,
-because nothing calls a model yet.
+No credentials are required for anything the app does today. It reads
+`ANTHROPIC_API_KEY` from the environment when present, for the model calls that
+arrive with the agent, and runs every fixture-backed page without it. Hosted
+tracing for the model framework is forced off at startup, whatever the
+environment says.
 
 Every filesystem location is configurable through the `BLOSSOM_*` variables
 documented in `.env.example`, and all of them have working defaults, so

@@ -1,8 +1,8 @@
 """Allowlist-based guards on what the package is capable of.
 
 Everything the package may import is listed here with a justification, and the
-two dependencies that can reach the network are confined to the single module
-each is allowed to live in. A denylist only enumerates what somebody already
+each dependency that can reach the network is confined to the single module it
+is allowed to live in. A denylist only enumerates what somebody already
 thought of; a tool declaring ``post_to_slack`` or a module importing ``aiohttp``
 would pass one. Adding anything means editing this file, so every new capability
 goes through review.
@@ -40,6 +40,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "fastapi": "the web framework; receives requests, never initiates them",
     "functools": "standard library",
     "json": "standard library; reads fixture files from disk",
+    "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
     "os": "standard library; reads environment variables only",
     "pathlib": "standard library",
     "pydantic": "validation and view models; no I/O",
@@ -56,6 +57,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
 NETWORK_CAPABLE: dict[str, frozenset[str]] = {
     "anthropic": frozenset({"anthropic_client.py"}),
     "chromadb": frozenset({"chroma_client.py"}),
+    "langsmith": frozenset({"settings.py"}),
 }
 
 
@@ -95,7 +97,7 @@ def test_every_imported_module_is_on_the_allowlist() -> None:
 
 
 def test_network_capable_modules_are_confined_to_their_seam() -> None:
-    """`anthropic` and `chromadb` may only be imported where the design says they live."""
+    """Each module in NETWORK_CAPABLE may only be imported where the design says it lives."""
     violations: dict[str, set[str]] = {}
     for relative, modules in imports_by_file().items():
         for module, permitted in NETWORK_CAPABLE.items():
