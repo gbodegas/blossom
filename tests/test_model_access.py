@@ -8,6 +8,7 @@ environment says, carries no provider-side tools, and refuses to exist without
 a key.
 """
 
+import dataclasses
 import os
 from collections.abc import Iterator
 
@@ -28,6 +29,7 @@ from blossom.app import create_app
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
     HOSTED_TRACING_VARIABLES,
+    TRACE_PAYLOAD_VARIABLES,
     Settings,
     enforce_local_only_tracing,
 )
@@ -91,6 +93,16 @@ def test_a_model_needs_a_key_and_says_which() -> None:
         chat_model(Settings.from_environment({}), effort="low")
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_key_on_hand_built_settings_is_refused_too(blank: str) -> None:
+    """Settings built from the environment normalize a blank key to None; a
+    Settings built directly may not, and the factory must not trust it."""
+    settings = dataclasses.replace(Settings.from_environment({}), anthropic_api_key=blank)
+
+    with pytest.raises(ModelUnavailable, match="ANTHROPIC_API_KEY"):
+        chat_model(settings, effort="low")
+
+
 @pytest.mark.parametrize("variable", sorted(REROUTING_VARIABLES))
 def test_no_environment_variable_reroutes_a_request(
     variable: str, monkeypatch: pytest.MonkeyPatch
@@ -133,10 +145,12 @@ def test_the_key_never_appears_in_the_client_repr() -> None:
 
 def test_enforce_local_only_tracing_overrides_an_enabled_environment() -> None:
     environ = {variable: "true" for variable in HOSTED_TRACING_VARIABLES}
+    environ.update({variable: "false" for variable in TRACE_PAYLOAD_VARIABLES})
 
     enforce_local_only_tracing(environ)
 
     assert all(environ[variable] == "false" for variable in HOSTED_TRACING_VARIABLES)
+    assert all(environ[variable] == "true" for variable in TRACE_PAYLOAD_VARIABLES)
 
 
 @pytest.mark.parametrize("variable", HOSTED_TRACING_VARIABLES)

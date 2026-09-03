@@ -62,7 +62,11 @@ def chat_model(settings: Settings, *, effort: Effort) -> ChatAnthropic:
     otherwise ask for summarized reasoning and store it in every message; the
     reasoning summary is not part of the record this system keeps.
     """
-    if settings.anthropic_api_key is None:
+    # Settings built from the environment normalize a blank key to None; a
+    # Settings built by hand may carry an empty or blank string. Both are
+    # refused, so no client is ever constructed with an empty key.
+    key = (settings.anthropic_api_key or "").strip()
+    if not key:
         msg = "no model can be constructed: ANTHROPIC_API_KEY is not set"
         raise ModelUnavailable(msg)
     # The integration declares its fields under aliases (``model_name`` for
@@ -71,7 +75,7 @@ def chat_model(settings: Settings, *, effort: Effort) -> ChatAnthropic:
     # reads the stop-sequence field as required, so its absence is spelled out.
     return ChatAnthropic(
         model_name=MODEL,
-        api_key=SecretStr(settings.anthropic_api_key),
+        api_key=SecretStr(key),
         base_url=ENDPOINT,
         anthropic_proxy=None,
         max_tokens_to_sample=MAX_TOKENS,

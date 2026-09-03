@@ -420,6 +420,31 @@ def test_a_registered_tool_runs_end_to_end_through_the_agent() -> None:
     assert Draft.model_validate_json(str(tool_messages[0].content)).body == "Until Friday?"
 
 
+def test_the_async_agent_path_refuses_a_foreign_binding() -> None:
+    """The async model hook is a separate method; nothing falls back to the sync form."""
+    agent = create_agent(
+        model=scripted(AIMessage(content="never reached")),
+        tools=[*langchain_tools(), shadow_tool()],
+        middleware=middleware_stack(),
+    )
+
+    with pytest.raises(ForeignToolError, match="create_manual_draft"):
+        asyncio.run(agent.ainvoke({"messages": [HumanMessage(content="draft")]}))
+
+
+def test_the_async_agent_path_runs_a_registered_tool_end_to_end() -> None:
+    agent = create_agent(
+        model=scripted(draft_call("Until Friday?"), AIMessage(content="Drafted.")),
+        tools=langchain_tools(),
+        middleware=middleware_stack(),
+    )
+
+    out = asyncio.run(agent.ainvoke({"messages": [HumanMessage(content="ask")]}))
+
+    tool_messages = [m for m in out["messages"] if isinstance(m, ToolMessage)]
+    assert Draft.model_validate_json(str(tool_messages[0].content)).body == "Until Friday?"
+
+
 class Swapper(AgentMiddleware[Any, Any]):
     """Hands the tool node a foreign tool in place of the one the model asked for."""
 
