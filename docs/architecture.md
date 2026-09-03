@@ -36,7 +36,9 @@ enforced three ways rather than by instruction:
   under test, so a tool declaring an unanticipated capability fails at load.
 - `tests/test_capability_boundaries.py` walks the package with `ast` and
   asserts every imported module is on a justified allowlist, and that each
-  network-capable dependency is confined to one file.
+  network-capable dependency is confined to one file. A third list closes
+  paths inside admitted packages that no file may import: the hosted tracer,
+  the context manager that enables it, and the remote graph client.
 
 The claim is not that nothing reaches the network; calling a model
 necessarily would. It is that the ability lives in one named seam per
@@ -229,9 +231,11 @@ is a design question rather than a wiring detail.
 
 The design notes specify LangChain for generation and judging, LangGraph for
 control flow and checkpointed state, and MCP for external tools. LangChain and
-LangGraph are present, and so far they do three things: build the framework's
-tool objects, run the tool backstop, and pause a graph at the approval gate.
-No model is called yet, and nothing here is wired to the FastAPI routes, whose
+LangGraph are present, and so far they do four things: build the framework's
+tool objects, run the tool backstop, pause a graph at the approval gate, and
+construct the model client in one seam, `blossom/anthropic_client.py`, with the
+endpoint fixed in code so that no environment variable decides where a prompt
+is sent. No model is called yet, and nothing here is wired to the FastAPI routes, whose
 control flow is still hand-rolled. MCP is absent. When it arrives, tools it
 loads will be foreign to the backstop until each has a registry entry of its
 own in `blossom/tools.py`, which is the intended path; how a tool that reads

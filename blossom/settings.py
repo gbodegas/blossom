@@ -46,6 +46,14 @@ HOSTED_TRACING_VARIABLES = (
     "LANGCHAIN_TRACING_V2",
 )
 
+# A second lock. If hosted tracing were ever enabled by a route the variables
+# above do not govern, langsmith honors these two and sends runs without their
+# inputs and outputs, so a student's assignments would still not leave.
+TRACE_PAYLOAD_VARIABLES = (
+    "LANGSMITH_HIDE_INPUTS",
+    "LANGSMITH_HIDE_OUTPUTS",
+)
+
 
 def enforce_local_only_tracing(environ: "os._Environ[str] | dict[str, str] | None" = None) -> None:
     """Force hosted tracing off in ``environ`` (the process environment by default).
@@ -57,11 +65,14 @@ def enforce_local_only_tracing(environ: "os._Environ[str] | dict[str, str] | Non
 
     Writing ``false`` rather than deleting the variables matters: the framework
     treats ``false`` as unset, and a legacy ``LANGCHAIN_TRACING=true`` left in
-    place would make every model call raise.
+    place would make every model call raise. The payload variables are written
+    ``true`` as a second lock behind the first.
     """
     target = os.environ if environ is None else environ
     for variable in HOSTED_TRACING_VARIABLES:
         target[variable] = "false"
+    for variable in TRACE_PAYLOAD_VARIABLES:
+        target[variable] = "true"
     if environ is not None:
         return
     # langsmith caches environment reads for the life of the process, so a

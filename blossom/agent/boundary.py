@@ -27,6 +27,15 @@ about intent, because a boundary that can be argued with is not a boundary.
 Both hooks have synchronous and asynchronous forms, since the web app drives
 the graph asynchronously.
 
+Two facts about the framework decide how this middleware is attached. Wrap
+hooks compose with the first middleware in the list outermost, so a middleware
+listed after this one runs inside it and could hand the tool node a different
+tool after the check has passed; ``middleware_stack`` places this middleware
+last, and the agent module builds its list through it. And once any
+``wrap_tool_call`` middleware is attached, the framework stops validating tool
+names itself and hands the hook ``None`` for a name it does not know, which is
+why ``is_permitted_call`` requires a tool object and never trusts a name alone.
+
 The identity registry it consults is a record ``blossom/tools.py`` keeps for
 itself. It tells that module's objects from foreign ones. It is not a defense
 against code inside this package that edits the registry or a built object,
@@ -148,5 +157,19 @@ tool_boundary = ToolBoundary()
 
 
 def boundary_middleware() -> ToolBoundary:
-    """The middleware instance to pass to an agent or graph builder."""
+    """The boundary instance. ``middleware_stack`` appends it; this is for tests."""
     return tool_boundary
+
+
+def middleware_stack(*others: AgentMiddleware[Any, Any]) -> list[AgentMiddleware[Any, Any]]:
+    """Every middleware an agent should carry, with the boundary last.
+
+    Last is innermost for wrap hooks, so whatever the others do to a request is
+    visible to the boundary before a tool runs or a model is called. A second
+    boundary among ``others`` is refused rather than reordered, so the position
+    cannot be argued about in a diff.
+    """
+    if any(isinstance(other, ToolBoundary) for other in others):
+        msg = "the tool boundary is added by middleware_stack; do not list it yourself"
+        raise ValueError(msg)
+    return [*others, tool_boundary]

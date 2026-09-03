@@ -60,6 +60,21 @@ def test_package_contains_no_transmitting_imports_or_calls() -> None:
             assert not pattern.search(content), f"{path} matched {pattern.pattern}"
 
 
+def test_tools_are_bound_only_through_the_agent_factory() -> None:
+    """No module may bind tools to a model directly.
+
+    The tool boundary's bind-time check runs only inside the framework's agent
+    factory. A graph node that binds tools to a model itself never passes
+    through it, and an import scan cannot see a method call, so the source text
+    is checked here.
+    """
+    pattern = re.compile(r"\.bind_tools\(")
+    for path in pathlib.Path("blossom").rglob("*.py"):
+        assert not pattern.search(path.read_text(encoding="utf-8")), (
+            f"{path} binds tools to a model directly, bypassing the tool boundary"
+        )
+
+
 def test_agent_step_requires_expectation_constructor_argument() -> None:
     with pytest.raises(TypeError):
         AgentStep(tool_name="tool", tool_input={}, timestamp=datetime.now(UTC))  # type: ignore[call-arg]

@@ -10,6 +10,9 @@ makes the same file reachable under two module names, which mypy rejects.
 
 from datetime import UTC, datetime
 
+from langchain_core.callbacks.manager import CallbackManager
+from langchain_core.tracers.langchain import LangChainTracer
+
 from blossom.reconciliation import SourceChannel, SourceRecord
 
 OBSERVED_AT = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
@@ -23,3 +26,9 @@ def record(channel: SourceChannel, value: str, *, confidence: float = 0.8) -> So
         observed_at=OBSERVED_AT,
         confidence=confidence,
     )
+
+
+def hosted_tracer_attached() -> bool:
+    """Ask the framework's real consumer whether it would attach a hosted tracer."""
+    handlers = CallbackManager.configure().handlers
+    return any(isinstance(handler, LangChainTracer) for handler in handlers)
