@@ -49,8 +49,11 @@ nothing corroborates.
 Around that: configuration and time are injectable, stores are opened once at
 startup and injected into routes, reflections structurally cannot be written
 about the student, the tool registry structurally cannot hold a tool that
-sends, and the import allowlist confines the two network-capable dependencies
-to one file each.
+sends, the import allowlist confines each network-capable dependency to one
+file, and the model framework's tools pass through a two-layer boundary: only
+one module can construct them, and middleware refuses any call the registry
+does not know. An approval gate pauses the graph with a draft and resumes only
+on a person's decision.
 
 ### What does not work yet
 

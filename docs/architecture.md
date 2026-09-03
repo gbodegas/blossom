@@ -35,15 +35,35 @@ enforced three ways rather than by instruction:
 - `ALLOWED_CAPABILITIES` is an allowlist, validated at import rather than only
   under test, so a tool declaring an unanticipated capability fails at load.
 - `tests/test_capability_boundaries.py` walks the package with `ast` and
-  asserts every imported module is on a justified allowlist, and that the two
-  network-capable dependencies are each confined to one file.
+  asserts every imported module is on a justified allowlist, and that each
+  network-capable dependency is confined to one file.
 
 The claim is not that nothing reaches the network; calling a model
 necessarily would. It is that the ability lives in one named seam per
 dependency instead of anywhere a future route reaches for it.
 
-**Not built:** `DraftStatus.APPROVED_FOR_MANUAL_SEND` is never set, and nothing
-stores a draft once it is created.
+The model framework brings its own tool abstraction, whose tools return
+anything, so the guarantee is carried across it in two layers rather than
+trusted to convention:
+
+- Construction. `as_langchain_tool` in `blossom/tools.py` is the only way a
+  framework tool object comes into being, and it only wraps a spec that passed
+  the allowlist. A test confines the framework's tool constructor to that file.
+- Runtime. `blossom/agent/boundary.py` is middleware that runs on every tool
+  call and refuses any name the registry does not know, without invoking it.
+  It exists for tools that reach the graph by a path construction never saw:
+  a loader for an external server's tools, a prebuilt agent's own tools. A
+  test confines the middleware constructor to that file.
+
+Anything that would leave the family takes two human steps, review and
+dispatch. `blossom/agent/gates.py` is the first: a graph node that pauses
+with the draft and resumes with the decision, recording it in checkpointed
+state. Approval marks the draft for manual send and nothing more; the second
+step is a person copying it out. The node does nothing before it pauses,
+because a resumed graph re-runs the interrupted node from its start.
+
+**Not built:** nothing stores a draft outside a graph's checkpointed state, so
+an approved draft is visible only to the thread that produced it.
 
 ## Sources disagree, and that is the interesting case
 

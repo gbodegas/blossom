@@ -40,6 +40,9 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "fastapi": "the web framework; receives requests, never initiates them",
     "functools": "standard library",
     "json": "standard library; reads fixture files from disk",
+    "langchain": "agent middleware; the tool backstop is confined, see TOOL_CONSTRUCTION",
+    "langchain_core": "tool and message types; construction is confined, see TOOL_CONSTRUCTION",
+    "langgraph": "graph, interrupts, and checkpoints; no network access of its own",
     "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
     "os": "standard library; reads environment variables only",
     "pathlib": "standard library",
@@ -60,9 +63,27 @@ NETWORK_CAPABLE: dict[str, frozenset[str]] = {
     "langsmith": frozenset({"settings.py"}),
 }
 
+# The framework's ways of bringing a tool into existence or intercepting a tool
+# call, mapped to the only files permitted to import them. A framework tool
+# built anywhere but tools.py would skip the capability allowlist; a second
+# middleware could reorder or shadow the backstop. Keys match dotted module
+# paths by prefix.
+TOOL_CONSTRUCTION: dict[str, frozenset[str]] = {
+    "langchain_core.tools": frozenset({"tools.py"}),
+    "langchain.agents.middleware": frozenset({"agent/boundary.py"}),
+}
+
 
 def imports_by_file() -> dict[str, set[str]]:
     """Map each package file to the set of top-level modules it imports."""
+    return {
+        relative: {name.split(".")[0] for name in dotted}
+        for relative, dotted in dotted_imports_by_file().items()
+    }
+
+
+def dotted_imports_by_file() -> dict[str, set[str]]:
+    """Map each package file to the full dotted module paths it imports."""
     found: dict[str, set[str]] = {}
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         relative = path.relative_to(PACKAGE_ROOT).as_posix()
@@ -70,11 +91,23 @@ def imports_by_file() -> dict[str, set[str]]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                modules.update(alias.name.split(".")[0] for alias in node.names)
+                modules.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                modules.add(node.module.split(".")[0])
+                modules.add(node.module)
         found[relative] = modules
     return found
+
+
+def test_tool_construction_is_confined_to_its_seam() -> None:
+    """Only tools.py may build framework tools; only boundary.py may intercept calls."""
+    violations: dict[str, set[str]] = {}
+    for relative, dotted in dotted_imports_by_file().items():
+        for prefix, permitted in TOOL_CONSTRUCTION.items():
+            hits = {name for name in dotted if name == prefix or name.startswith(prefix + ".")}
+            if hits and relative not in permitted:
+                violations.setdefault(relative, set()).update(hits)
+
+    assert not violations, f"tool construction outside its seam: {violations}"
 
 
 def test_the_package_has_files_to_scan() -> None:
@@ -124,6 +157,7 @@ def test_registry_validation_rejects_a_capability_nobody_thought_to_ban() -> Non
         description="Anything a denylist did not anticipate.",
         capabilities=frozenset({"post_to_school_portal"}),
         call=create_draft,
+        args_schema=TOOL_REGISTRY[0].args_schema,
     )
 
     with pytest.raises(ValueError, match="post_to_school_portal"):
