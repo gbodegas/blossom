@@ -43,12 +43,15 @@ def test_tool_registry_declares_no_transmitting_capability() -> None:
 def test_package_contains_no_transmitting_imports_or_calls() -> None:
     package_root = pathlib.Path("blossom")
     banned_patterns = [
-        re.compile(part) for part in [
+        re.compile(part)
+        for part in [
             "smtp" + "lib",
             "send" + "mail",
             r"requests\.post\((?![^)]*(localhost|127\.0\.0\.1))",
             r"httpx\.post\((?![^)]*(localhost|127\.0\.0\.1))",
             r"urllib\.request\.urlopen",
+            r"__import__\(",
+            r"\bimportlib\b",
         ]
     ]
     for path in package_root.rglob("*.py"):

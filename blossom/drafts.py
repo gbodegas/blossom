@@ -4,9 +4,9 @@ Everything outbound terminates here. A draft is text for a human to read and
 transmit by hand, which is why no field on it records a recipient, a channel, or
 a send time. There is nothing to record because there is no sending path.
 
-Known gap: nothing sets ``DraftStatus.APPROVED_FOR_MANUAL_SEND``, and nothing
-stores a draft once ``blossom.tools.create_draft`` returns one. The approval
-step it names is not built.
+``blossom.agent.gates`` sets ``DraftStatus.APPROVED_FOR_MANUAL_SEND`` when a
+person approves at the gate. Nothing stores a draft outside a graph's
+checkpointed state; the persistence a review queue would need is not built.
 """
 
 from datetime import UTC, datetime
