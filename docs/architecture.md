@@ -46,14 +46,19 @@ The model framework brings its own tool abstraction, whose tools return
 anything, so the guarantee is carried across it in two layers rather than
 trusted to convention:
 
-- Construction. `as_langchain_tool` in `blossom/tools.py` is the only way a
-  framework tool object comes into being, and it only wraps a spec that passed
-  the allowlist. A test confines the framework's tool constructor to that file.
-- Runtime. `blossom/agent/boundary.py` is middleware that runs on every tool
-  call and refuses any name the registry does not know, without invoking it.
-  It exists for tools that reach the graph by a path construction never saw:
-  a loader for an external server's tools, a prebuilt agent's own tools. A
-  test confines the middleware constructor to that file.
+- Construction. `as_langchain_tool` in `blossom/tools.py` is the only tool
+  constructor this package provides, and it only wraps a spec that passed the
+  allowlist. It remembers every object it builds. A test confines the
+  framework's direct tool constructors, and its tool node, to named files.
+- Runtime. `blossom/agent/boundary.py` is middleware with two hooks. Before a
+  model call, it refuses to bind any tool the constructor did not build, by
+  identity rather than name, which also catches a provider-executed tool passed
+  as a dictionary. Before a tool call, it refuses any tool object it does not
+  recognize, without invoking it, and a foreign tool that copies a registered
+  name is refused the same way. It exists for tools that reach an agent by a
+  path construction never saw: a loader for an external server's tools, a
+  prebuilt agent's own tools. A test confines the middleware constructor to
+  that file. Nothing attaches this middleware to an agent yet.
 
 Anything that would leave the family takes two human steps, review and
 dispatch. `blossom/agent/gates.py` is the first: a graph node that pauses
@@ -216,14 +221,16 @@ connection is shared across FastAPI's worker threads, so it is opened with
 Project state is in memory, because deciding when state becomes durable
 is a design question rather than a wiring detail.
 
-## Stack decision, open
+## Stack
 
-The design notes specify LangChain for generation and judging,
-LangGraph for control flow and checkpointed state, and MCP for external tools.
-None of those are present; the code is FastAPI with hand-rolled control flow
-and no model calls at all. That decision is unresolved, and it determines what
-the agent trace and the expectation judge should be built on.
+The design notes specify LangChain for generation and judging, LangGraph for
+control flow and checkpointed state, and MCP for external tools. LangChain and
+LangGraph are present, and so far they do three things: build the framework's
+tool objects, run the tool backstop, and pause a graph at the approval gate.
+No model is called yet, and nothing here is wired to the FastAPI routes, whose
+control flow is still hand-rolled. MCP is absent; when it arrives, tools it
+loads will be foreign to the backstop until they are rebuilt through the
+constructor in `blossom/tools.py`, which is the intended path.
 
-The import allowlist means adding any of them fails a test until someone edits
-`ALLOWED_IMPORTS` with a justification, so the choice cannot be made by
-accident.
+Adding any other dependency fails a test until someone edits `ALLOWED_IMPORTS`
+with a justification, so the stack cannot grow by accident.

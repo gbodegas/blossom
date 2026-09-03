@@ -1,45 +1,68 @@
 """Runtime backstop for the tool boundary.
 
-``blossom/tools.py`` is the only place a framework tool object is constructed,
-and every one it builds wraps a spec that passed the capability allowlist. That
-covers tools this package creates. It does not cover tools that reach the graph
-another way: a loader that turns an external server's tools into framework
-tools, a prebuilt agent that injects its own, or anything added by a future
-module that never went through the constructor.
+``blossom/tools.py`` is the only constructor of framework tool objects this
+package provides, and every object it builds wraps a spec that passed the
+capability allowlist. That covers tools this package creates. It does not cover
+tools that reach an agent another way: a loader that turns an external server's
+tools into framework objects, a prebuilt agent's own tools, a plain function
+handed to a tool node, or a provider-executed tool passed to the model as a
+dictionary.
 
-This middleware closes that gap at the last moment a tool call can be stopped.
-Every call is checked against the registry by name before it runs. A name the
-registry does not know is refused with an error message the model can read,
-and the tool itself is never invoked. The check is simple on purpose: a
-registered name, and capabilities within the allowlist. It does not reason
+This middleware closes those gaps at the two points the framework exposes.
+
+Before each model call, every tool about to be bound is checked by identity
+against the objects ``blossom/tools.py`` built. A foreign object, or a
+dictionary describing a provider-executed tool, stops the run with
+``ForeignToolError`` rather than being offered to the model. This is where a
+tool that never went through the constructor is caught, including one that
+copies a registered name.
+
+Before each client-executed tool call, the requested tool object is checked the
+same way: it must be one the constructor built, its name must match the call,
+and its spec must still be within the allowlist. Anything else is refused with
+an error message the model can read, and the tool is never invoked.
+
+The check is simple on purpose: identity, name, allowlist. It does not reason
 about intent, because a boundary that can be argued with is not a boundary.
+Both hooks have synchronous and asynchronous forms, since the web app drives
+the graph asynchronously.
 
-The two layers together are the guarantee. Construction keeps the set of tools
-small and known; this backstop keeps a call from reaching anything outside that
-set even if construction was bypassed. A test confines the middleware
-constructor to this module.
+Outside this middleware's reach: tools a model provider executes on its own
+side because of how the model client itself was constructed. That is governed
+by confining the model client's construction, not by this module.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware, ToolCallRequest, wrap_tool_call
-from langchain_core.messages import ToolMessage
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ExtendedModelResponse,
+    ModelRequest,
+    ModelResponse,
+    ToolCallRequest,
+)
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
-from blossom.tools import ALLOWED_CAPABILITIES, TOOL_REGISTRY, ToolSpec
+from blossom.tools import ALLOWED_CAPABILITIES, TOOL_REGISTRY, ToolSpec, built_here
 
 REGISTERED: dict[str, ToolSpec] = {spec.name: spec for spec in TOOL_REGISTRY}
 
-ToolHandler = Callable[[ToolCallRequest], ToolMessage | Command[Any]]
+ToolResult = ToolMessage | Command[Any]
+ModelResult = ModelResponse[Any] | AIMessage | ExtendedModelResponse[Any]
+
+
+class ForeignToolError(RuntimeError):
+    """Raised before a model call when a tool not built by this package is bound."""
 
 
 def refusal(name: str, tool_call_id: str) -> ToolMessage:
     """The message the model receives instead of a result when a call is refused."""
     return ToolMessage(
         content=(
-            f"blocked: {name!r} is not a registered tool. The only tools available "
-            f"are {sorted(REGISTERED)}, and none of them sends anything."
+            f"blocked: {name!r} is not a tool this system provides. The only tools "
+            f"available are {sorted(REGISTERED)}, and none of them sends anything."
         ),
         tool_call_id=tool_call_id,
         status="error",
@@ -47,20 +70,78 @@ def refusal(name: str, tool_call_id: str) -> ToolMessage:
 
 
 def is_permitted(name: str) -> bool:
-    """True only for a registered tool whose capabilities are all allowed."""
+    """True only for a registered name whose capabilities are all allowed."""
     spec = REGISTERED.get(name)
     return spec is not None and spec.capabilities <= ALLOWED_CAPABILITIES
 
 
-@wrap_tool_call
-def tool_boundary(request: ToolCallRequest, handler: ToolHandler) -> ToolMessage | Command[Any]:
-    """Refuse any tool call the registry does not know; pass the rest through."""
+def is_permitted_call(request: ToolCallRequest) -> bool:
+    """True only when the tool object, its name, and its spec all check out."""
     name = str(request.tool_call["name"])
-    if not is_permitted(name):
-        return refusal(name, str(request.tool_call.get("id") or ""))
-    return handler(request)
+    tool = request.tool
+    return tool is not None and built_here(tool) and tool.name == name and is_permitted(name)
 
 
-def boundary_middleware() -> AgentMiddleware[Any, Any]:
+def foreign_tools(request: ModelRequest[Any]) -> list[str]:
+    """Names, or dictionary descriptions, of bound tools this package did not build."""
+    names: list[str] = []
+    for tool in request.tools or []:
+        if not built_here(tool):
+            names.append(str(getattr(tool, "name", None) or tool))
+    return names
+
+
+class ToolBoundary(AgentMiddleware[Any, Any]):
+    """Refuse tool calls and tool bindings that did not come through the constructor."""
+
+    def wrap_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolResult]
+    ) -> ToolResult:
+        """Refuse the call unless its tool is one this package built; otherwise run it."""
+        if not is_permitted_call(request):
+            return refusal(str(request.tool_call["name"]), str(request.tool_call.get("id") or ""))
+        return handler(request)
+
+    async def awrap_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolResult]]
+    ) -> ToolResult:
+        """Asynchronous form of ``wrap_tool_call``, with the same check."""
+        if not is_permitted_call(request):
+            return refusal(str(request.tool_call["name"]), str(request.tool_call.get("id") or ""))
+        return await handler(request)
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> ModelResult:
+        """Stop the run if any tool about to be bound is foreign; otherwise call the model."""
+        self._reject_foreign(request)
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
+    ) -> ModelResult:
+        """Asynchronous form of ``wrap_model_call``, with the same check."""
+        self._reject_foreign(request)
+        return await handler(request)
+
+    @staticmethod
+    def _reject_foreign(request: ModelRequest[Any]) -> None:
+        foreign = foreign_tools(request)
+        if foreign:
+            msg = (
+                f"refusing to bind tools this system did not build: {foreign}. Every tool "
+                f"must come from blossom.tools.as_langchain_tool."
+            )
+            raise ForeignToolError(msg)
+
+
+tool_boundary = ToolBoundary()
+
+
+def boundary_middleware() -> ToolBoundary:
     """The middleware instance to pass to an agent or graph builder."""
     return tool_boundary

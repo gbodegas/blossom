@@ -42,14 +42,17 @@ def require_human_approval(state: ApprovalState) -> dict[str, Any]:
     """
     draft = state["draft"]
     answer = interrupt({"draft_id": draft.draft_id, "body": draft.body})
-    approved = bool(answer.get("approved", False)) if isinstance(answer, dict) else False
+    # Only the boolean True approves. A string such as "false" or "no", a
+    # number, a missing key, or a payload that is not a dictionary all reject,
+    # because a gate that guesses at a person's meaning fails open.
+    approved = isinstance(answer, dict) and answer.get("approved") is True
     reason = answer.get("reason") if isinstance(answer, dict) else None
     if approved:
         draft = draft.model_copy(update={"status": DraftStatus.APPROVED_FOR_MANUAL_SEND})
     return {
         "draft": draft,
         "decision": "approved" if approved else "rejected",
-        "reason": None if reason is None else str(reason),
+        "reason": reason if isinstance(reason, str) else None,
     }
 
 
@@ -61,9 +64,7 @@ def build_approval_graph(
     A checkpointer is required, not optional: an interrupt with nowhere to
     save its state cannot be resumed.
     """
-    graph: StateGraph[ApprovalState, Any, ApprovalState, ApprovalState] = StateGraph(
-        ApprovalState
-    )
+    graph: StateGraph[ApprovalState, Any, ApprovalState, ApprovalState] = StateGraph(ApprovalState)
     graph.add_node("require_human_approval", require_human_approval)
     graph.add_edge(START, "require_human_approval")
     graph.add_edge("require_human_approval", END)

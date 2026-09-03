@@ -8,12 +8,12 @@ having transmitted something; do not widen it to ``Any``, the narrowness is the
 guarantee. ``ALLOWED_CAPABILITIES`` is an allowlist, not a blocklist: a blocklist
 passes any capability nobody thought to ban, an allowlist passes only what is
 listed. Adding a capability means editing this set, which shows up in review.
-And ``as_langchain_tool`` is the only way a framework tool comes into being:
-this is the only module allowed to import the framework's tool constructor, a
-test enforces that, and every object it builds wraps a spec that passed the
-allowlist. A runtime backstop in ``blossom/agent/boundary.py`` refuses any tool
-call whose name is not in the registry, which covers tools that reach the graph
-by a path this constructor never saw.
+And ``as_langchain_tool`` is the only constructor of framework tool objects
+this package provides: a test confines the framework's direct tool
+constructors to this module, and every object built here wraps a spec that
+passed the allowlist. The objects are also remembered by identity, so the
+runtime backstop in ``blossom/agent/boundary.py`` can tell one of ours from a
+foreign object that copies a registered name.
 """
 
 from collections.abc import Callable, Iterable
@@ -103,27 +103,45 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
 validate_capabilities(TOOL_REGISTRY)
 
 
+# Every framework tool object this module has built, kept so the runtime
+# backstop can check a tool by identity rather than by name.
+_BUILT_HERE: list[StructuredTool] = []
+
+
 def as_langchain_tool(spec: ToolSpec) -> StructuredTool:
     """Build the framework's tool object from a spec that passed the allowlist.
 
     The framework validates arguments against ``spec.args_schema`` and calls
     ``spec.call`` with them. The result is the draft serialized as JSON, which
     is what a tool message can carry; the ``Draft`` return type is still
-    enforced on ``spec.call`` itself.
+    enforced on ``spec.call`` itself. The object is remembered so ``built_here``
+    can vouch for it later.
     """
     validate_capabilities([spec])
 
     def run(**arguments: object) -> str:
         return spec.call(dict(arguments)).model_dump_json()
 
-    return StructuredTool.from_function(
+    tool = StructuredTool.from_function(
         func=run,
         name=spec.name,
         description=spec.description,
         args_schema=spec.args_schema,
     )
+    _BUILT_HERE.append(tool)
+    return tool
+
+
+def built_here(candidate: object) -> bool:
+    """True only for an object this module constructed. Identity, not name."""
+    return any(candidate is tool for tool in _BUILT_HERE)
+
+
+LANGCHAIN_TOOLS: tuple[StructuredTool, ...] = tuple(
+    as_langchain_tool(spec) for spec in TOOL_REGISTRY
+)
 
 
 def langchain_tools() -> list[StructuredTool]:
-    """Every registered tool as a framework tool object, in registry order."""
-    return [as_langchain_tool(spec) for spec in TOOL_REGISTRY]
+    """The registered tools as framework objects, built once, in registry order."""
+    return list(LANGCHAIN_TOOLS)

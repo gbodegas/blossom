@@ -63,14 +63,18 @@ NETWORK_CAPABLE: dict[str, frozenset[str]] = {
     "langsmith": frozenset({"settings.py"}),
 }
 
-# The framework's ways of bringing a tool into existence or intercepting a tool
-# call, mapped to the only files permitted to import them. A framework tool
-# built anywhere but tools.py would skip the capability allowlist; a second
-# middleware could reorder or shadow the backstop. Keys match dotted module
-# paths by prefix.
+# The framework's ways of bringing a tool into existence, wiring tools into a
+# graph, or intercepting a tool call, mapped to the only files permitted to
+# import them. A framework tool built anywhere but tools.py would skip the
+# capability allowlist; a tool node built elsewhere could run without the
+# backstop; a second middleware could reorder or shadow it. Keys match dotted
+# module paths by prefix, and an ``import x.y`` or ``from x import y`` both
+# count as the dotted name ``x.y``.
 TOOL_CONSTRUCTION: dict[str, frozenset[str]] = {
     "langchain_core.tools": frozenset({"tools.py"}),
+    "langchain.tools": frozenset({"tools.py"}),
     "langchain.agents.middleware": frozenset({"agent/boundary.py"}),
+    "langgraph.prebuilt": frozenset({"agent/graph.py"}),
 }
 
 
@@ -94,8 +98,21 @@ def dotted_imports_by_file() -> dict[str, set[str]]:
                 modules.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 modules.add(node.module)
+                modules.update(f"{node.module}.{alias.name}" for alias in node.names)
         found[relative] = modules
     return found
+
+
+def matches(prefix: str, dotted: str) -> bool:
+    """True when ``dotted`` is ``prefix`` itself or a name beneath it."""
+    return dotted == prefix or dotted.startswith(prefix + ".")
+
+
+def test_the_prefix_matcher_does_not_match_by_accident() -> None:
+    assert matches("langchain.tools", "langchain.tools")
+    assert matches("langchain.tools", "langchain.tools.StructuredTool")
+    assert not matches("langchain.tools", "langchain.toolsets")
+    assert not matches("langchain.tools", "langchain")
 
 
 def test_tool_construction_is_confined_to_its_seam() -> None:
@@ -103,11 +120,22 @@ def test_tool_construction_is_confined_to_its_seam() -> None:
     violations: dict[str, set[str]] = {}
     for relative, dotted in dotted_imports_by_file().items():
         for prefix, permitted in TOOL_CONSTRUCTION.items():
-            hits = {name for name in dotted if name == prefix or name.startswith(prefix + ".")}
+            hits = {name for name in dotted if matches(prefix, name)}
             if hits and relative not in permitted:
                 violations.setdefault(relative, set()).update(hits)
 
     assert not violations, f"tool construction outside its seam: {violations}"
+
+
+def test_the_seam_scan_sees_the_imports_it_is_meant_to_confine() -> None:
+    """Positive control: the scan must see the permitted imports where they live.
+
+    Without this, a scan that saw nothing would pass the confinement test.
+    """
+    dotted = dotted_imports_by_file()
+
+    assert "langchain_core.tools.StructuredTool" in dotted["tools.py"]
+    assert "langchain.agents.middleware.AgentMiddleware" in dotted["agent/boundary.py"]
 
 
 def test_the_package_has_files_to_scan() -> None:
