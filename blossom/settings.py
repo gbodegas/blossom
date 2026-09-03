@@ -34,17 +34,26 @@ CHROMA_PATH_VARIABLE = "BLOSSOM_CHROMA_PATH"
 TODAY_VARIABLE = "BLOSSOM_TODAY"
 ANTHROPIC_API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
 
-# LangChain and LangSmith read these to decide whether to ship traces to a
-# hosted service. This system handles a child's school planning, so traces
-# stay on this machine regardless of what the environment says.
-HOSTED_TRACING_VARIABLES = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
+# LangChain and langsmith decide whether to ship traces to a hosted service by
+# reading TRACING and TRACING_V2 under both the LANGSMITH and LANGCHAIN
+# prefixes, LANGSMITH first. All four spellings are written, because leaving
+# any one of them alone leaves a way to turn hosted tracing on. This system
+# handles a child's school planning, so traces stay on this machine.
+HOSTED_TRACING_VARIABLES = (
+    "LANGSMITH_TRACING",
+    "LANGSMITH_TRACING_V2",
+    "LANGCHAIN_TRACING",
+    "LANGCHAIN_TRACING_V2",
+)
 
 
 def enforce_local_only_tracing(environ: "os._Environ[str] | dict[str, str] | None" = None) -> None:
     """Force hosted tracing off in ``environ`` (the process environment by default).
 
-    Called at application startup and wherever a graph is built, so a stray
-    ``LANGSMITH_TRACING=true`` in a shell cannot turn on remote tracing.
+    Called first in ``create_app``, so a tracing variable set in a shell
+    cannot turn on remote tracing. Writing ``false`` rather than deleting the
+    variables matters: the framework treats ``false`` as unset, and a legacy
+    ``LANGCHAIN_TRACING=true`` left in place would make every model call raise.
     """
     target = os.environ if environ is None else environ
     for variable in HOSTED_TRACING_VARIABLES:
@@ -75,7 +84,8 @@ def resolve_configured_path(value: str) -> Path:
 
 @dataclass(frozen=True)
 class Settings:
-    """Every filesystem location the application needs, as absolute paths."""
+    """Runtime configuration: the filesystem locations the application needs as
+    absolute paths, the optional pinned clock, and the optional model API key."""
 
     fixture_path: Path
     database_path: Path
