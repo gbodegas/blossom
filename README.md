@@ -5,117 +5,161 @@
 <h1 align="center">Blossom</h1>
 
 <p align="center">
-  A shared academic planning assistant built around three principals who do not have equal authority over it.
+  A planning assistant for a student whose deadlines don't agree with each other.
 </p>
 
 ---
 
-Blossom is a planning and coordination assistant for a family, and the primary user is my thirteen year old daughter, who also named it. That single fact is the constraint that shapes almost every design decision in here. A system that a family member depends on has to be trustworthy, and most of the interesting work has been figuring out what that means in code rather than in prose.
+## Why this exists
 
-## What it does
+Blossom is a homework and deadline tracker I am building for my thirteen year
+old daughter. She named it.
 
-The system tracks assignments, deadlines, project milestones, and application requirements across sources that routinely disagree with each other. A school LMS reports a submission flag, an email notification says something slightly different, a parent remembers a third thing, and the student has her own account of it. Reconciling those channels is not error handling bolted onto the side. It is the core problem, and treating it as a first class concern is what lets the agent notice a discrepancy rather than confidently assert a wrong deadline.
+Her deadlines come from too many places. The school platform says one thing,
+an email notification says something slightly different, I remember a third
+version, and she has her own account of it. Every planner I have seen picks
+one of those and presents it as the truth. When it picks wrong, she is the one
+who pays for it.
 
-The second thing it does is signal workload without asking the user to articulate distress. A student in the middle of executive dysfunction does not have the capacity to open an app and rate her overwhelm on a scale. The signal has to be as frictionless as squeezing a stress ball, and the system treats that signal as authoritative when it arrives.
+Blossom does not pick. When the sources agree, it says so. When they disagree,
+it shows her every claim and who made it, and leaves the decision with her.
+When nothing confirms a date at all, it says that too, instead of quietly
+showing the date anyway.
 
-## The design in brief
+The second thing it is for is the days when everything is too much. A student
+in the middle of executive dysfunction does not have the capacity to open an
+app and rate her overwhelm on a scale from one to ten. Blossom will have a
+single control that means "too much right now", as frictionless as squeezing a
+stress ball, and it will treat that signal as true the moment it arrives.
 
-**Three principals, not one user with role flags.** The student is the primary user. A parent gets a checkpoint view rather than a live feed. A verifier layer sits between generation and anything that leaves the system. These are separate view models with separate route trees, because collapsing them into a permission check on a shared view is the easier build and the wrong one. Their interests genuinely conflict, and the design should make that conflict visible rather than resolve it silently.
+## What makes it different
 
-**There is no send tool.** The drafts only constraint is implemented as an absent capability rather than a behavioral rule. A rule can be argued around under a plausible sounding situation. A tool that was never built cannot be called. Everything outbound terminates in a draft that a human transmits by hand.
+- **It cannot send anything.** Everything Blossom writes stops in a draft that
+  a person reads and sends by hand. This is not a rule the agent follows. There
+  is no send tool for it to call. A rule can be argued around under a
+  plausible-sounding situation. A tool that was never built cannot be called.
+- **It shows disagreement instead of hiding it.** Reconciling sources that
+  conflict is the core of the system, not an error path. Every due date on
+  screen carries a label saying how well it is corroborated, including the
+  ones nothing corroborates.
+- **It never studies her.** The agent reflects on its own performance, such
+  as learning that its reminders land badly at a certain hour. It is
+  structurally unable to write a reflection about her.
+- **Three people, three views.** She sees her week. A parent sees a checkpoint
+  summary rather than a live feed. A verifier sits between anything the agent
+  writes and anything that leaves the system. Their interests genuinely
+  conflict, and the design keeps that conflict visible instead of resolving it
+  silently.
+- **It says what it expects before it looks.** Before every tool call, the
+  agent states what it expects to get back. That is what turns a surprising
+  result into a noticed contradiction rather than a confidently wrong answer.
 
-**Three stores, two retrieval mechanisms, one router.** Project state is small, structured, and queried by exact criteria, so retrieving a due date by semantic similarity would return the most similar assignment rather than the correct one. Operational support rules and accumulated self reflections are natural language guidance with no key to look them up by, so they are identifiable by resemblance rather than by field. The router selects the mechanism based on whether the query has a lookup key, and every result carries provenance and a timestamp.
+## What it looks like today
 
-**Expectation before action.** The reasoning loop requires the agent to state what it expects a tool call to return before making it. That is what turns an observation into a contradiction, and noticing a contradiction is mechanically what "noticing" means.
+<p align="center">
+  <img src="docs/assets/due-this-week.png" alt="The student's weekly view. Three assignments, each labeled: one unverified, one where two sources disagree, one confirmed by two sources." width="720">
+</p>
 
-**Reflection is scoped to the system.** The agent reflects on its own performance and never on hers. It may learn that its own reminders land badly at a certain hour. It may not infer anything about her internal state.
+The weekly view is real, end to end. The fixture assignments load, their
+sources are reconciled, and each one is labeled with how well its due date is
+corroborated. One is unverified, one has two sources a day apart, and one is
+confirmed by two sources. Nothing is filtered out, including the assignment
+nothing corroborates.
 
 ## Status
 
-The interfaces are more settled than the implementations behind them. The design notes that cover the reasoning loop, the memory architecture, the retrieval layer, and search based replanning are kept outside this repository.
+Blossom is early, and it is built for one household. No model is called yet,
+so there is no agent to talk to. What runs today is the student's weekly view,
+the source reconciliation behind it, and the guardrails that will constrain
+the agent when it arrives: the missing send tool, the reflection boundary,
+and a tool registry that cannot hold anything that reports having sent
+something.
 
-It is built for one household, and it will keep changing for as long as it is useful there.
+The "too much" signal is accepted and not yet acted on. The semantic half of
+retrieval is a stub. Nothing is stored between runs.
+[docs/architecture.md](docs/architecture.md) lists every gap between the
+design and the code.
 
-No model is called yet. There is no agent.
+I do not have a success metric yet. Success looks like the agent making her
+own tracking legible to her rather than replacing it, and I intend to define
+what that means with her rather than on her behalf.
 
-### What works
+## Install
 
-The student's weekly view is real end to end. Assignments load from the
-structured store, source records are reconciled without a winner being chosen,
-and every assignment in the window reaches the page labeled with how well its
-due date is corroborated. Nothing is filtered out, including assignments
-nothing corroborates.
+Blossom needs Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/). If you
+do not have a matching Python, uv downloads one on its own.
 
-Around that: configuration and time are injectable, stores are opened once at
-startup and injected into routes, reflections structurally cannot be written
-about the student, the tool registry structurally cannot hold a tool that
-reports having sent anything, the import allowlist confines each
-network-capable dependency to one file, and a two-layer tool boundary exists:
-one module builds the framework's tool objects, only for entries of its
-registry, and a middleware, not yet attached to any agent, refuses a call or a
-binding of any tool that module did not build. An approval gate pauses a graph
-with a draft and resumes only on a person's decision.
+**Windows** (PowerShell)
 
-### What does not work yet
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
 
-- **The contradiction check is inert.** `AgentStep` requires an expectation,
-  but the comparison is a substring test, and where it runs it compares a
-  lookup key against itself. It cannot currently register a contradiction, and
-  its result is discarded.
-- **No agent trace is persisted.** Steps are built and dropped.
-- **The workload signal is discarded.** The endpoint accepts it and stores
-  nothing; no plan is reduced, and nothing becomes visible to her.
-- **The semantic half of retrieval is a stub** in the running system, and the
-  support-rules store is neither wired nor tested. Of the three stores, one is
-  live.
-- **Tier-one verification cannot pass.** The policy check reports itself as
-  not implemented.
-- **There is no visibility policy layer.** Separate view models prevent
-  accidental leaks; they are not the architectural boundary the design calls
-  for.
-- **Nothing is durable.** Project state is in memory.
-
-`docs/architecture.md` covers each of these in context.
-
-I do not yet have a defined success metric. The honest version is that success looks like the agent making her own tracking legible to her rather than replacing it, and I intend to define what that means with her rather than deciding it on her behalf.
-
-## Running it locally
+**macOS and Linux**
 
 ```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Open a new terminal after installing so `uv` is on your path. Then, on any
+platform:
+
+```bash
+git clone https://github.com/gbodegas/blossom.git
+cd blossom
 uv sync --dev
+```
+
+That creates `.venv` inside the repository and installs the pinned
+dependencies from `uv.lock`. No API key and no school platform access are
+needed. Everything runs against the synthetic fixtures in `data/synthetic/`.
+
+## Getting started
+
+The fixtures carry due dates in the week of August 19, 2026, and "due this
+week" is computed from the real clock, so on any other week the page is
+legitimately empty. Pin the clock to that week to see them.
+
+The easiest way works the same everywhere. Copy `.env.example` to `.env`,
+which already pins the clock, and start the app with that file:
+
+```bash
+cp .env.example .env
+uv run --env-file .env uvicorn blossom.app:app --reload
+```
+
+On Windows, `cp` works in PowerShell. In cmd, use `copy` instead.
+
+Then open <http://127.0.0.1:8000/student/due-this-week>.
+
+Other things to look at while it runs:
+
+- <http://127.0.0.1:8000/parent/checkpoint> is the parent's view: a summary
+  of status and conflicts, not a live feed. JSON for now.
+- <http://127.0.0.1:8000/verifier/claims> is the verifier's view: each factual
+  claim, the policy it was checked against, and the result. JSON for now.
+- <http://127.0.0.1:8000/docs> is the interactive API page, where you can
+  send the "too much" signal by posting to `/student/workload-signals` with no
+  body. Today it is acknowledged and discarded.
+
+If you would rather pin the clock without a `.env` file, the syntax depends on
+your shell.
+
+PowerShell:
+
+```powershell
+$env:BLOSSOM_TODAY = "2026-08-19"
 uv run uvicorn blossom.app:app --reload
 ```
 
-`uv sync --dev` creates `.venv` and installs the pinned runtime and development
-dependencies from `uv.lock`. There is no separate seed step: the synthetic
-fixtures in `data/synthetic/` are loaded once at startup, so the app serves
-`/student/due-this-week` immediately.
-
-The default data adapter reads from fixtures, so nothing here depends on having school LMS access. That is deliberate. LMS APIs are usually restricted to administrators and scraping breaks when the UI changes, so the system is built to run without either and to treat any real connector as an optional source rather than a dependency.
-
-Those fixtures carry fixed August 2026 due dates, and "due this week" is
-computed from the real clock, so outside that week the page is legitimately
-empty. To see the fixture data, pin the clock:
+macOS and Linux:
 
 ```bash
 BLOSSOM_TODAY=2026-08-19 uv run uvicorn blossom.app:app --reload
 ```
 
-No credentials are required for anything the app does today. It reads
-`ANTHROPIC_API_KEY` from the environment when present, for the model calls that
-arrive with the agent, and runs every fixture-backed page without it. Hosted
-tracing for the model framework is forced off at startup, whatever the
-environment says.
-
-Every filesystem location is configurable through the `BLOSSOM_*` variables
-documented in `.env.example`, and all of them have working defaults, so
-copying it to `.env` is optional. Relative values in that file are resolved
-against the repository root rather than the working directory, which means the
-app starts correctly from anywhere. To load the file:
-
-```bash
-uv run --env-file .env uvicorn blossom.app:app --reload
-```
+Every path the app uses is configurable through the `BLOSSOM_*` variables in
+`.env.example`, and all of them have working defaults.
 
 To run the same checks CI runs:
 
@@ -125,44 +169,72 @@ uv run mypy blossom tests
 uv run pytest
 ```
 
-### If your network blocks PyPI
+## Troubleshooting
 
-`uv` downloads from `files.pythonhosted.org` directly, so on a network that
-only permits an internal package proxy it fails at the TLS handshake even
-though `pip` still works. Build the environment with pip instead:
+**The weekly page is empty.** The clock is not pinned, so "this week" is the
+real week and the fixtures fall outside it. Start the app with `--env-file
+.env` or set `BLOSSOM_TODAY` as shown above.
+
+**`uv sync` fails with `HandshakeFailure` or a TLS error.** Your network only
+allows an internal package proxy. `uv` downloads from PyPI directly, while
+`pip` honors your proxy configuration. Build the environment with pip
+instead. If `uv sync` already created `.venv` before failing, reuse it:
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .
-pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
+.venv\Scripts\python -m ensurepip
+.venv\Scripts\python -m pip install -e .
+.venv\Scripts\python -m pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
 ```
 
-On macOS or Linux the second line is `source .venv/bin/activate`.
+On macOS and Linux the path is `.venv/bin/python`. If there is no `.venv` yet,
+create one first with `python -m venv .venv` using a Python 3.12 or 3.13
+interpreter. Then run the app with `.venv\Scripts\python -m uvicorn
+blossom.app:app --reload` instead of `uv run`. Keep the version pins matching
+`pyproject.toml`; a test checks that they do.
 
-Two install commands rather than one because the development dependencies live
-in a PEP 735 `[dependency-groups]` table, which pip could not install from
-until 25.1 added `pip install --group dev`. Keep those pins matching
-`pyproject.toml`. A test enforces it, because an editor running a different
-mypy than CI will disagree with CI about what passes.
+**`uv` is not recognized after installing.** Open a new terminal. The
+installer updates your path for new shells only. If that does not help,
+`pip install uv` works too.
 
-Creating the environment at `.venv` inside the repository also lets editors
-find it without configuration. If your editor reports that `fastapi` or
-`pydantic` cannot be found, it is resolving imports against a different
-interpreter rather than finding a fault in the code.
+**Windows: `BLOSSOM_TODAY=2026-08-19 uv run ...` says the command is not
+recognized.** That is bash syntax. Use the PowerShell form above, or the
+`.env` file.
 
-`.vscode/settings.json` points the mypy and ruff extensions at the versions
-installed in that environment rather than the ones they bundle, so the editor
-and CI check the same things. In VS Code, pick the interpreter with
-**Python: Select Interpreter** from the command palette.
+**Port 8000 is already in use.** Add `--port 8765` (or any free port) to the
+uvicorn command and open that port instead.
+
+**The editor says `fastapi` or `pydantic` cannot be found.** The editor is
+using a different interpreter than the one in `.venv`. In VS Code, run
+**Python: Select Interpreter** from the command palette and pick the one
+under `.venv`.
+
+**mypy or ruff in the editor disagrees with CI.** The editor is running the
+copy bundled with its extension rather than the pinned one. The repository's
+`.vscode/settings.json` points both extensions at the versions in `.venv`, so
+selecting that interpreter fixes it.
 
 ## A note on data
 
-No real family data belongs in this repository, and none is checked in. Everything in `data/synthetic/` describes a fictional student. The accommodations corpus is held as operational support rules rather than clinical descriptions, a decision made for privacy reasons that turned out to serve retrieval as well, since an instruction is a self contained unit of meaning and a clinical description is not.
+No real family data belongs in this repository, and none is checked in.
+Everything in `data/synthetic/` describes a fictional student. The
+accommodations corpus is held as operational support rules rather than
+clinical descriptions, a decision made for privacy reasons that turned out to
+serve retrieval as well, since an instruction is a self contained unit of
+meaning and a clinical description is not.
 
-If you are reading this because you are considering something similar for your own family, the part I would carry over is not the architecture. It is the habit of asking, for every capability, whether the person it is built for would consent to it existing.
+If you are reading this because you are considering something similar for
+your own family, the part I would carry over is not the architecture. It is
+the habit of asking, for every capability, whether the person it is built for
+would consent to it existing.
+
+## How it works
+
+[docs/architecture.md](docs/architecture.md) describes what the code does
+today: the three view models, the ways the missing send path is enforced,
+how sources are reconciled, how retrieval routes between structured and
+semantic stores, and where the code still falls short of the design. The
+design notes behind those decisions are kept outside this repository.
 
 ## License
 
-See [LICENSE](LICENSE).
-
+[MIT](LICENSE).
