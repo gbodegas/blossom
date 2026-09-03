@@ -102,3 +102,20 @@ def test_legacy_tracing_variable_does_not_break_callback_setup(
         pass
 
     assert CallbackManager.configure().handlers == []
+
+
+def test_construction_leaves_the_environment_alone_until_startup(
+    monkeypatch: pytest.MonkeyPatch, fresh_tracing_cache: None
+) -> None:
+    """Importing the module and calling create_app change nothing; the lifespan does.
+
+    uvicorn needs the module-level app object, so anything create_app did to the
+    process environment would run on a bare import by any embedder.
+    """
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+
+    app = create_app()
+
+    assert os.environ["LANGSMITH_TRACING"] == "true"
+    with TestClient(app):
+        assert os.environ["LANGSMITH_TRACING"] == "false"

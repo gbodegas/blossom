@@ -50,8 +50,10 @@ HOSTED_TRACING_VARIABLES = (
 def enforce_local_only_tracing(environ: "os._Environ[str] | dict[str, str] | None" = None) -> None:
     """Force hosted tracing off in ``environ`` (the process environment by default).
 
-    Called first in ``create_app``, so a tracing variable set in a shell
-    cannot turn on remote tracing. Writing ``false`` rather than deleting the
+    Called at application startup, in the lifespan, before any store or model
+    client is built, so a tracing variable set in a shell cannot turn on remote
+    tracing. Not called at import or construction time: importing
+    ``blossom.app`` or calling ``create_app`` leaves the environment alone. Writing ``false`` rather than deleting the
     variables matters: the framework treats ``false`` as unset, and a legacy
     ``LANGCHAIN_TRACING=true`` left in place would make every model call raise.
     """

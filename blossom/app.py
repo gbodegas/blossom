@@ -14,21 +14,19 @@ from fastapi.staticfiles import StaticFiles
 
 from blossom.dependencies import create_lifespan
 from blossom.routes import parent, student, verifier
-from blossom.settings import Settings, enforce_local_only_tracing, get_settings
+from blossom.settings import Settings, get_settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    """Build the application.
+    """Build the application without starting it.
 
     ``settings`` lets a test point the app at a different fixture set without
     touching environment variables; it defaults to the process-wide settings.
-    ``TestClient`` only runs the lifespan as a context manager, so tests use
-    ``with TestClient(app) as client:``.
-
-    Hosted tracing for the model framework is forced off here, before anything
-    else is built, so the process cannot ship traces off this machine.
+    Construction changes nothing outside the returned object. Opening stores
+    and forcing hosted tracing off both happen in the lifespan, which
+    ``uvicorn`` runs at startup and ``TestClient`` runs only as a context
+    manager, so tests use ``with TestClient(app) as client:``.
     """
-    enforce_local_only_tracing()
     resolved = get_settings() if settings is None else settings
     app = FastAPI(title="Blossom", lifespan=create_lifespan(resolved))
     app.mount("/static", StaticFiles(directory=resolved.static_path), name="static")
