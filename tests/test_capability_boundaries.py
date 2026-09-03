@@ -7,6 +7,10 @@ thought of; a tool declaring ``post_to_slack`` or a module importing ``aiohttp``
 would pass one. Adding anything means editing this file, so every new capability
 goes through review.
 
+Three lists do the work. ``ALLOWED_IMPORTS`` admits packages. ``NETWORK_CAPABLE``
+and ``TOOL_CONSTRUCTION`` confine paths to named files. ``CLOSED_PREFIXES``
+names paths inside admitted packages that no file may import at all.
+
 The regex scan in ``test_architecture_constraints.py`` reads source text and
 bans ``__import__`` and ``importlib``, the dynamic imports the AST walk here
 would treat as ordinary calls.
@@ -41,8 +45,15 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "functools": "standard library",
     "json": "standard library; reads fixture files from disk",
     "langchain": "agent middleware; the tool backstop is confined, see TOOL_CONSTRUCTION",
-    "langchain_core": "tool and message types; construction is confined, see TOOL_CONSTRUCTION",
-    "langgraph": "graph, interrupts, and checkpoints; no network access of its own",
+    "langchain_anthropic": "the model client; confined to the model seam, see NETWORK_CAPABLE",
+    "langchain_core": (
+        "tool and message types; construction is confined, see TOOL_CONSTRUCTION, and "
+        "the hosted tracer is closed off, see CLOSED_PREFIXES"
+    ),
+    "langgraph": (
+        "graph, interrupts, and checkpoints; its remote-server client is closed off, "
+        "see CLOSED_PREFIXES"
+    ),
     "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
     "os": "standard library; reads environment variables only",
     "pathlib": "standard library",
@@ -60,7 +71,24 @@ ALLOWED_IMPORTS: dict[str, str] = {
 NETWORK_CAPABLE: dict[str, frozenset[str]] = {
     "anthropic": frozenset({"anthropic_client.py"}),
     "chromadb": frozenset({"chroma_client.py"}),
+    "langchain_anthropic": frozenset({"anthropic_client.py"}),
     "langsmith": frozenset({"settings.py"}),
+}
+
+# Import paths no file in the package may use, each with the reason. They sit
+# inside packages the allowlist admits, so the top-level check cannot see them.
+# Matching is by prefix, as for TOOL_CONSTRUCTION.
+CLOSED_PREFIXES: dict[str, str] = {
+    "langgraph.pregel.remote": (
+        "runs a graph on a remote server through langgraph_sdk and langsmith"
+    ),
+    "langgraph_sdk": "the client for a hosted graph server",
+    "langchain_core.tracers.langchain": (
+        "the hosted tracer, constructible with no environment variable set"
+    ),
+    "langchain_core.tracers.context": (
+        "turns hosted tracing on for a block with no environment variable set"
+    ),
 }
 
 # The framework's ways of bringing a tool into existence, wiring tools into a
@@ -153,6 +181,27 @@ def test_the_seam_scan_sees_the_imports_it_is_meant_to_confine() -> None:
 
     assert "langchain_core.tools.StructuredTool" in dotted["tools.py"]
     assert "langchain.agents.middleware.AgentMiddleware" in dotted["agent/boundary.py"]
+    assert "langchain_anthropic.ChatAnthropic" in dotted["anthropic_client.py"]
+
+
+def test_closed_prefixes_are_imported_nowhere() -> None:
+    """Paths inside admitted packages that no file may import, whatever the reason."""
+    violations: dict[str, set[str]] = {}
+    for relative, dotted in dotted_imports_by_file().items():
+        hits = {name for name in dotted for prefix in CLOSED_PREFIXES if matches(prefix, name)}
+        if hits:
+            violations[relative] = hits
+
+    assert not violations, f"closed import paths in use: {violations}"
+
+
+def test_closed_prefixes_cover_the_hosted_tracer_and_the_remote_client() -> None:
+    """Pin the paths the list exists for, so a rename in the list is noticed."""
+    tracer = "langchain_core.tracers.langchain"
+    assert matches(tracer, f"{tracer}.LangChainTracer")
+    assert matches("langchain_core.tracers.context", "langchain_core.tracers.context")
+    assert matches("langgraph.pregel.remote", "langgraph.pregel.remote.RemoteGraph")
+    assert not matches(tracer, "langchain_core.tracers.base")
 
 
 def test_the_package_has_files_to_scan() -> None:
