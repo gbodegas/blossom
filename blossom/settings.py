@@ -15,7 +15,7 @@ There is no settings library. Three paths do not justify a dependency, and
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +32,37 @@ FIXTURE_PATH_VARIABLE = "BLOSSOM_FIXTURE_PATH"
 DATABASE_PATH_VARIABLE = "BLOSSOM_DATABASE_PATH"
 CHROMA_PATH_VARIABLE = "BLOSSOM_CHROMA_PATH"
 TODAY_VARIABLE = "BLOSSOM_TODAY"
+ANTHROPIC_API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
+
+# LangChain and LangSmith read these to decide whether to ship traces to a
+# hosted service. This system handles a child's school planning, so traces
+# stay on this machine regardless of what the environment says.
+HOSTED_TRACING_VARIABLES = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
+
+
+def enforce_local_only_tracing(environ: "os._Environ[str] | dict[str, str] | None" = None) -> None:
+    """Force hosted tracing off in ``environ`` (the process environment by default).
+
+    Called at application startup and wherever a graph is built, so a stray
+    ``LANGSMITH_TRACING=true`` in a shell cannot turn on remote tracing.
+    """
+    target = os.environ if environ is None else environ
+    for variable in HOSTED_TRACING_VARIABLES:
+        target[variable] = "false"
+    if environ is not None:
+        return
+    # langsmith caches environment reads for the life of the process, so a
+    # check that ran before this call would keep reporting the old value.
+    # Clearing that cache is what makes the setting take effect regardless of
+    # ordering. The import is local and tolerant: it is only here to reach the
+    # cache, and settings must import cleanly without the model framework.
+    try:
+        from langsmith import utils as langsmith_utils
+    except ImportError:
+        return
+    cache_clear = getattr(getattr(langsmith_utils, "get_env_var", None), "cache_clear", None)
+    if cache_clear is not None:
+        cache_clear()
 
 
 def resolve_configured_path(value: str) -> Path:
@@ -51,6 +82,10 @@ class Settings:
     chroma_path: Path
     today: date | None = None
     """Pins the clock when set, from ``BLOSSOM_TODAY``. ``None`` means use the system clock."""
+    anthropic_api_key: str | None = field(default=None, repr=False)
+    """From ``ANTHROPIC_API_KEY``. Excluded from ``repr`` so it never reaches a log line.
+    ``None`` is valid: nothing calls a model until a graph is built, and the app
+    serves every fixture-backed page without a key."""
 
     @property
     def static_path(self) -> Path:
@@ -84,12 +119,16 @@ class Settings:
                 msg = f"{TODAY_VARIABLE} must be an ISO date such as 2026-08-19, got {pinned!r}"
                 raise ValueError(msg) from error
 
+        key = source.get(ANTHROPIC_API_KEY_VARIABLE)
+        anthropic_api_key = key.strip() if key is not None and key.strip() else None
+
         local = REPOSITORY_ROOT / ".local"
         return cls(
             fixture_path=read(FIXTURE_PATH_VARIABLE, REPOSITORY_ROOT / "data" / "synthetic"),
             database_path=read(DATABASE_PATH_VARIABLE, local / "blossom.sqlite3"),
             chroma_path=read(CHROMA_PATH_VARIABLE, local / "chroma"),
             today=today,
+            anthropic_api_key=anthropic_api_key,
         )
 
 

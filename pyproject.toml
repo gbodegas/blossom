@@ -3,9 +3,16 @@ name = "blossom"
 version = "0.1.0"
 description = "Academic planning assistant for a family"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
-    "anthropic==0.64.0",
+    "anthropic==0.125.0",
+    # Model calls go through LangChain; LangGraph runs the graph and holds
+    # checkpointed state. langchain-anthropic caps anthropic below 1.0.
+    "langchain==1.3.18",
+    "langchain-anthropic==1.6.1",
+    "langchain-core==1.6.0",
+    "langgraph==1.2.11",
+    "langgraph-checkpoint-sqlite==3.1.1",
     "fastapi==0.141.1",
     "jinja2==3.1.6",
     "pydantic==2.11.7",

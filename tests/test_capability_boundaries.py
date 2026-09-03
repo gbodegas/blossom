@@ -40,6 +40,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "fastapi": "the web framework; receives requests, never initiates them",
     "functools": "standard library",
     "json": "standard library; reads fixture files from disk",
+    "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
     "os": "standard library; reads environment variables only",
     "pathlib": "standard library",
     "pydantic": "validation and view models; no I/O",
@@ -56,6 +57,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
 NETWORK_CAPABLE: dict[str, frozenset[str]] = {
     "anthropic": frozenset({"anthropic_client.py"}),
     "chromadb": frozenset({"chroma_client.py"}),
+    "langsmith": frozenset({"settings.py"}),
 }
 
 
