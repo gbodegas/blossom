@@ -49,12 +49,12 @@ nothing corroborates.
 Around that: configuration and time are injectable, stores are opened once at
 startup and injected into routes, reflections structurally cannot be written
 about the student, the tool registry structurally cannot hold a tool that
-sends, the import allowlist confines each network-capable dependency to one
-file, and a two-layer tool boundary exists: one module builds the framework's
-tool objects from allowlisted specs, and a middleware, not yet attached to any
-agent, refuses a call or a binding of any tool that module did not build. An
-approval gate pauses a graph with a draft and resumes only on a person's
-decision.
+reports having sent anything, the import allowlist confines each
+network-capable dependency to one file, and a two-layer tool boundary exists:
+one module builds the framework's tool objects, only for entries of its
+registry, and a middleware, not yet attached to any agent, refuses a call or a
+binding of any tool that module did not build. An approval gate pauses a graph
+with a draft and resumes only on a person's decision.
 
 ### What does not work yet
 

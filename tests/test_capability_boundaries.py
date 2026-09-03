@@ -1,15 +1,15 @@
 """Allowlist-based guards on what the package is capable of.
 
-Everything the package may import is listed here with a justification, and the
+Everything the package may import is listed here with a justification, and
 each dependency that can reach the network is confined to the single module it
 is allowed to live in. A denylist only enumerates what somebody already
 thought of; a tool declaring ``post_to_slack`` or a module importing ``aiohttp``
 would pass one. Adding anything means editing this file, so every new capability
 goes through review.
 
-The regex scan in ``test_architecture_constraints.py`` reads source text, so it
-also catches a dynamic ``__import__`` that the AST walk here treats as an
-ordinary call.
+The regex scan in ``test_architecture_constraints.py`` reads source text and
+bans ``__import__`` and ``importlib``, the dynamic imports the AST walk here
+would treat as ordinary calls.
 """
 
 import ast
@@ -64,15 +64,18 @@ NETWORK_CAPABLE: dict[str, frozenset[str]] = {
 }
 
 # The framework's ways of bringing a tool into existence, wiring tools into a
-# graph, or intercepting a tool call, mapped to the only files permitted to
-# import them. A framework tool built anywhere but tools.py would skip the
-# capability allowlist; a tool node built elsewhere could run without the
-# backstop; a second middleware could reorder or shadow it. Keys match dotted
-# module paths by prefix, and an ``import x.y`` or ``from x import y`` both
-# count as the dotted name ``x.y``.
+# graph or an agent, or intercepting a tool call, mapped to the only files
+# permitted to import them. A framework tool built anywhere but tools.py would
+# skip the registry; an agent or tool node built elsewhere could run without
+# the backstop; a second middleware could reorder or shadow it. Keys match
+# dotted module paths by prefix and the longest matching key decides, so
+# ``langchain.agents.middleware`` is governed by its own entry and not by
+# ``langchain.agents``. An ``import x.y`` and a ``from x import y`` both count
+# as the dotted name ``x.y``.
 TOOL_CONSTRUCTION: dict[str, frozenset[str]] = {
     "langchain_core.tools": frozenset({"tools.py"}),
     "langchain.tools": frozenset({"tools.py"}),
+    "langchain.agents": frozenset({"agent/graph.py"}),
     "langchain.agents.middleware": frozenset({"agent/boundary.py"}),
     "langgraph.prebuilt": frozenset({"agent/graph.py"}),
 }
@@ -115,14 +118,28 @@ def test_the_prefix_matcher_does_not_match_by_accident() -> None:
     assert not matches("langchain.tools", "langchain")
 
 
+def governing_prefix(dotted: str) -> str | None:
+    """The longest TOOL_CONSTRUCTION key that covers ``dotted``, if any."""
+    covering = [prefix for prefix in TOOL_CONSTRUCTION if matches(prefix, dotted)]
+    return max(covering, key=len) if covering else None
+
+
+def test_the_longest_matching_prefix_governs() -> None:
+    middleware = "langchain.agents.middleware"
+    assert governing_prefix(f"{middleware}.AgentMiddleware") == middleware
+    assert governing_prefix("langchain.agents.create_agent") == "langchain.agents"
+    assert governing_prefix("langchain.agents") == "langchain.agents"
+    assert governing_prefix("langchain.chat_models") is None
+
+
 def test_tool_construction_is_confined_to_its_seam() -> None:
     """Only tools.py may build framework tools; only boundary.py may intercept calls."""
     violations: dict[str, set[str]] = {}
     for relative, dotted in dotted_imports_by_file().items():
-        for prefix, permitted in TOOL_CONSTRUCTION.items():
-            hits = {name for name in dotted if matches(prefix, name)}
-            if hits and relative not in permitted:
-                violations.setdefault(relative, set()).update(hits)
+        for name in dotted:
+            prefix = governing_prefix(name)
+            if prefix is not None and relative not in TOOL_CONSTRUCTION[prefix]:
+                violations.setdefault(relative, set()).add(name)
 
     assert not violations, f"tool construction outside its seam: {violations}"
 

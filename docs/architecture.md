@@ -47,9 +47,13 @@ anything, so the guarantee is carried across it in two layers rather than
 trusted to convention:
 
 - Construction. `as_langchain_tool` in `blossom/tools.py` is the only tool
-  constructor this package provides, and it only wraps a spec that passed the
-  allowlist. It remembers every object it builds. A test confines the
-  framework's direct tool constructors, and its tool node, to named files.
+  constructor this package provides, and it builds only for an entry of the
+  registry, checked by identity, so a spec assembled anywhere else is refused
+  whatever capability it claims. It remembers every object it builds, and at
+  runtime it accepts nothing but a `Draft` back from the callable. What a
+  registered callable does before it returns is bounded by review of the
+  registry and by the import allowlist, not by this function. A test confines
+  the framework's direct tool constructors, and its tool node, to named files.
 - Runtime. `blossom/agent/boundary.py` is middleware with two hooks. Before a
   model call, it refuses to bind any tool the constructor did not build, by
   identity rather than name, which also catches a provider-executed tool passed
@@ -228,9 +232,11 @@ control flow and checkpointed state, and MCP for external tools. LangChain and
 LangGraph are present, and so far they do three things: build the framework's
 tool objects, run the tool backstop, and pause a graph at the approval gate.
 No model is called yet, and nothing here is wired to the FastAPI routes, whose
-control flow is still hand-rolled. MCP is absent; when it arrives, tools it
-loads will be foreign to the backstop until they are rebuilt through the
-constructor in `blossom/tools.py`, which is the intended path.
+control flow is still hand-rolled. MCP is absent. When it arrives, tools it
+loads will be foreign to the backstop until each has a registry entry of its
+own in `blossom/tools.py`, which is the intended path; how a tool that reads
+rather than drafts fits a registry whose callables return only drafts is an
+open design question.
 
 Adding any other dependency fails a test until someone edits `ALLOWED_IMPORTS`
 with a justification, so the stack cannot grow by accident.

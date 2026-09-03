@@ -1,8 +1,8 @@
 """Runtime backstop for the tool boundary.
 
 ``blossom/tools.py`` is the only constructor of framework tool objects this
-package provides, and every object it builds wraps a spec that passed the
-capability allowlist. That covers tools this package creates. It does not cover
+package provides, and it builds only for entries of its registry, checked by
+identity. That covers tools this package creates. It does not cover
 tools that reach an agent another way: a loader that turns an external server's
 tools into framework objects, a prebuilt agent's own tools, a plain function
 handed to a tool node, or a provider-executed tool passed to the model as a
@@ -27,13 +27,18 @@ about intent, because a boundary that can be argued with is not a boundary.
 Both hooks have synchronous and asynchronous forms, since the web app drives
 the graph asynchronously.
 
+The identity registry it consults is a record ``blossom/tools.py`` keeps for
+itself. It tells that module's objects from foreign ones. It is not a defense
+against code inside this package that edits the registry or a built object,
+which review is for; the middleware trusts the package it belongs to.
+
 Outside this middleware's reach: tools a model provider executes on its own
 side because of how the model client itself was constructed. That is governed
 by confining the model client's construction, not by this module.
 """
 
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, Final
 
 from langchain.agents.middleware import (
     AgentMiddleware,
@@ -47,7 +52,7 @@ from langgraph.types import Command
 
 from blossom.tools import ALLOWED_CAPABILITIES, TOOL_REGISTRY, ToolSpec, built_here
 
-REGISTERED: dict[str, ToolSpec] = {spec.name: spec for spec in TOOL_REGISTRY}
+REGISTERED: Final[Mapping[str, ToolSpec]] = {spec.name: spec for spec in TOOL_REGISTRY}
 
 ToolResult = ToolMessage | Command[Any]
 ModelResult = ModelResponse[Any] | AIMessage | ExtendedModelResponse[Any]

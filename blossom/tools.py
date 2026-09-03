@@ -10,14 +10,28 @@ passes any capability nobody thought to ban, an allowlist passes only what is
 listed. Adding a capability means editing this set, which shows up in review.
 And ``as_langchain_tool`` is the only constructor of framework tool objects
 this package provides: a test confines the framework's direct tool
-constructors to this module, and every object built here wraps a spec that
-passed the allowlist. The objects are also remembered by identity, so the
-runtime backstop in ``blossom/agent/boundary.py`` can tell one of ours from a
-foreign object that copies a registered name.
+constructors to this module, and the constructor builds only for an entry of
+``TOOL_REGISTRY``, checked by identity, so a spec assembled anywhere else is
+refused whatever capability it claims. The objects are remembered by identity
+too, so the runtime backstop in ``blossom/agent/boundary.py`` can tell one of
+ours from a foreign object that copies a registered name.
+
+What a registered callable does before it returns is outside the reach of any
+check here. It is bounded by review of this file, where every entry is visible,
+and by the import scans, which keep the named network-capable dependencies in
+their own seams and ban the transmitting calls somebody already thought of.
+Neither is a sandbox against the author of this file. The one thing enforced at
+runtime is that the callable returned a ``Draft``.
+
+The identity registry is a record this package keeps for itself. It tells this
+module's objects from foreign ones; it does not defend against code inside this
+package that edits it, which is what review is for. The names it rests on are
+declared ``Final`` so a rebinding at least fails type checking.
 """
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Final
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,7 +40,7 @@ from blossom.drafts import Draft
 
 ToolCallable = Callable[[dict[str, object]], Draft]
 
-ALLOWED_CAPABILITIES: frozenset[str] = frozenset(
+ALLOWED_CAPABILITIES: Final[frozenset[str]] = frozenset(
     {
         # Produces text for a human to read, copy, and send themselves.
         "draft",
@@ -85,7 +99,7 @@ def create_draft(tool_input: dict[str, object]) -> Draft:
     return Draft(body=body)
 
 
-TOOL_REGISTRY: tuple[ToolSpec, ...] = (
+TOOL_REGISTRY: Final[tuple[ToolSpec, ...]] = (
     ToolSpec(
         name="create_manual_draft",
         description=(
@@ -103,24 +117,49 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
 validate_capabilities(TOOL_REGISTRY)
 
 
-# Every framework tool object this module has built, kept so the runtime
-# backstop can check a tool by identity rather than by name.
-_BUILT_HERE: list[StructuredTool] = []
+# Every framework tool object this module has built, paired with the function
+# it was built around, so the runtime backstop can check a tool by identity and
+# confirm that what it would run is still what was built.
+_BUILT_HERE: Final[list[tuple[StructuredTool, Callable[..., str]]]] = []
+
+
+def serialize_draft(name: str, result: object) -> str:
+    """Serialize a tool's result for a tool message; refuse anything but a ``Draft``.
+
+    ``ToolCallable`` is a static promise. This is the runtime check behind it,
+    so a callable that returns something other than a ``Draft`` fails here
+    instead of reaching the model as a tool result. It runs after the callable
+    has returned, so it bounds what the model sees, not what the callable did.
+    """
+    if not isinstance(result, Draft):
+        msg = f"tool {name!r} returned {type(result).__name__}, not Draft"
+        raise TypeError(msg)
+    return result.model_dump_json()
 
 
 def as_langchain_tool(spec: ToolSpec) -> StructuredTool:
-    """Build the framework's tool object from a spec that passed the allowlist.
+    """Build the framework's tool object for an entry of ``TOOL_REGISTRY``.
 
+    Membership is checked by identity, not equality, so an equal copy of a
+    registry entry is refused along with anything invented; an allowed
+    capability on its own is not enough. The callable is captured at build
+    time, so a later change to the spec does not reach a tool already built.
     The framework validates arguments against ``spec.args_schema`` and calls
-    ``spec.call`` with them. The result is the draft serialized as JSON, which
-    is what a tool message can carry; the ``Draft`` return type is still
-    enforced on ``spec.call`` itself. The object is remembered so ``built_here``
-    can vouch for it later.
+    the captured callable; the result passes through ``serialize_draft``. The
+    object and its function are remembered so ``built_here`` can vouch for
+    them later.
     """
-    validate_capabilities([spec])
+    if not any(spec is entry for entry in TOOL_REGISTRY):
+        msg = (
+            f"tool {spec.name!r} is not an entry of TOOL_REGISTRY. Only registry "
+            f"entries become framework tools, and adding one means editing "
+            f"blossom/tools.py."
+        )
+        raise ValueError(msg)
+    call = spec.call
 
     def run(**arguments: object) -> str:
-        return spec.call(dict(arguments)).model_dump_json()
+        return serialize_draft(spec.name, call(dict(arguments)))
 
     tool = StructuredTool.from_function(
         func=run,
@@ -128,16 +167,20 @@ def as_langchain_tool(spec: ToolSpec) -> StructuredTool:
         description=spec.description,
         args_schema=spec.args_schema,
     )
-    _BUILT_HERE.append(tool)
+    _BUILT_HERE.append((tool, run))
     return tool
 
 
 def built_here(candidate: object) -> bool:
-    """True only for an object this module constructed. Identity, not name."""
-    return any(candidate is tool for tool in _BUILT_HERE)
+    """True only for an object this module built that still carries its original function.
+
+    Identity, not name: a lookalike is refused. Identity of the function too,
+    so a built object whose function was swapped is not vouched for.
+    """
+    return any(candidate is tool and tool.func is run for tool, run in _BUILT_HERE)
 
 
-LANGCHAIN_TOOLS: tuple[StructuredTool, ...] = tuple(
+LANGCHAIN_TOOLS: Final[tuple[StructuredTool, ...]] = tuple(
     as_langchain_tool(spec) for spec in TOOL_REGISTRY
 )
 
