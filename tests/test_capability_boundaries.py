@@ -33,11 +33,13 @@ PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "blossom"
 
 # Top-level modules the package may import, each with the reason it is here.
 ALLOWED_IMPORTS: dict[str, str] = {
+    "aiosqlite": "async SQLite driver for the checkpoint store; local files only, see LOCAL_STORES",
     "anthropic": "model access; confined to the model seam, see NETWORK_CAPABLE",
     "blossom": "the package itself",
     "chromadb": "vector store; confined to its client module, see NETWORK_CAPABLE",
     "collections": "standard library containers and ABCs",
     "contextlib": "standard library context managers",
+    "ctypes": "standard library; asks Windows whether a drive letter is a network share",
     "dataclasses": "standard library",
     "datetime": "standard library",
     "enum": "standard library",
@@ -75,6 +77,14 @@ NETWORK_CAPABLE: dict[str, frozenset[str]] = {
     "httpx": frozenset({"anthropic_client.py"}),
     "langchain_anthropic": frozenset({"anthropic_client.py"}),
     "langsmith": frozenset({"settings.py"}),
+}
+
+# Storage drivers and the checkpoint saver, mapped to the one module that may
+# open them, so a connection to the checkpoint file cannot be opened by a route
+# or a graph node with different pragmas or a permissive serializer.
+LOCAL_STORES: dict[str, frozenset[str]] = {
+    "aiosqlite": frozenset({"stores/checkpoints.py"}),
+    "langgraph.checkpoint.sqlite": frozenset({"stores/checkpoints.py"}),
 }
 
 # Import paths no file in the package may use, each with the reason. They sit
@@ -201,6 +211,19 @@ def test_the_seam_scan_sees_the_imports_it_is_meant_to_confine() -> None:
     assert "langchain_core.tools.StructuredTool" in dotted["tools.py"]
     assert "langchain.agents.middleware.AgentMiddleware" in dotted["agent/boundary.py"]
     assert "langchain_anthropic.ChatAnthropic" in dotted["anthropic_client.py"]
+
+
+def test_local_stores_are_opened_only_by_the_checkpoint_module() -> None:
+    """The driver and the saver are imported where the pragmas and serializer are set."""
+    violations: dict[str, set[str]] = {}
+    for relative, dotted in dotted_imports_by_file().items():
+        for prefix, permitted in LOCAL_STORES.items():
+            hits = {name for name in dotted if matches(prefix, name)}
+            if hits and relative not in permitted:
+                violations.setdefault(relative, set()).update(hits)
+
+    assert not violations, f"store drivers opened outside the checkpoint module: {violations}"
+    assert "aiosqlite" in dotted_imports_by_file()["stores/checkpoints.py"]
 
 
 def test_closed_prefixes_are_imported_nowhere() -> None:
