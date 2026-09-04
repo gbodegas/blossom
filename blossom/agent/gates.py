@@ -4,7 +4,7 @@ Anything that would leave the family takes two human steps. A person reviews
 the draft and decides, and a person transmits it by hand, because no tool can.
 This module is the first step. The gate is a graph node that pauses with the
 draft and resumes with the decision; the graph cannot continue past it on its
-own, and the decision is recorded in checkpointed state.
+own, and the decision is recorded in the graph's saved state.
 
 One rule shapes the node: nothing happens before ``interrupt``. When a paused
 graph resumes, the framework re-runs the interrupted node from its start, so

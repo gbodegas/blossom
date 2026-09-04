@@ -1,4 +1,4 @@
-"""The checkpoint store: on a safe path, strict about what it revives, versioned.
+"""Saved graph state: on a safe path, strict about what it revives, versioned.
 
 A pause at the approval gate and the decision that ends it survive the process
 that wrote them, come back as the graph's own types, and carry the version of

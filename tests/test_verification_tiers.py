@@ -69,9 +69,7 @@ def test_a_passing_result_cannot_be_mutated_into_a_failing_one_or_back() -> None
 
 def test_a_result_missing_a_check_does_not_pass() -> None:
     """Partial evidence is not a weaker yes."""
-    partial = VerificationResult(
-        outcomes={HardCheck.SOURCE_PRESENT: CheckOutcome.PASSED}
-    )
+    partial = VerificationResult(outcomes={HardCheck.SOURCE_PRESENT: CheckOutcome.PASSED})
 
     assert partial.passed is False
 

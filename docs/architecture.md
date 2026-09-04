@@ -67,14 +67,14 @@ trusted to convention:
   that file. Nothing attaches this middleware to an agent yet.
 
 Anything that would leave the family takes two human steps, review and
-dispatch. `blossom/agent/gates.py` is the first: a graph node that pauses
-with the draft and resumes with the decision, recording it in checkpointed
+dispatch. `blossom/agent/gates.py` is the first: a graph node that pauses with
+the draft and resumes with the decision, recording it in the graph's saved
 state. Approval marks the draft for manual send and nothing more; the second
 step is a person copying it out. The node does nothing before it pauses,
 because a resumed graph re-runs the interrupted node from its start.
 
-**Not built:** nothing stores a draft outside a graph's checkpointed state, so
-an approved draft is visible only to the thread that produced it.
+**Not built:** nothing stores a draft outside the graph's saved state, so an
+approved draft is visible only to the thread that produced it.
 
 ## Sources disagree, and that is the interesting case
 
@@ -227,54 +227,55 @@ connection is shared across FastAPI's worker threads, so it is opened with
 Project state is in memory, because deciding when state becomes durable
 is a design question rather than a wiring detail.
 
-## Checkpoints
+## Saved graph state
 
-A graph's state, including a pause at the approval gate and the draft it
-holds, is persisted by the asynchronous SQLite saver, opened by the lifespan
-from `blossom/stores/checkpoints.py` on the file named by
-`BLOSSOM_CHECKPOINT_PATH`. That file is separate from project state so the two
-writers never contend and deleting a thread touches nothing else. Startup
-refuses a path on a network share or inside a synced folder; deleted rows are
-overwritten.
+A graph's state, including a pause at the approval gate and the draft it holds,
+is saved by the asynchronous SQLite saver, opened by the lifespan from
+`blossom/stores/checkpoints.py` on the file named by `BLOSSOM_CHECKPOINT_PATH`.
+That file is separate from project state so the two writers never contend and
+clearing a thread touches nothing else. Startup refuses a path on a network
+share or inside a synced folder; deleted rows are overwritten.
 
-Deserialization is strict. A checkpoint records every value with the module
-and class that produced it and reconstructs the class by import, so the
-serializer is constructed with an allowlist of the types a graph may carry
+The framework calls each saved snapshot a checkpoint, and its classes and the
+setting above carry that word. This document says saved graph state, because
+the parent's view at `/parent/checkpoint` is a different thing.
+
+Deserialization is strict. Saved state records every value with the module and
+class that produced it and reconstructs the class by import, so the serializer
+is constructed with an allowlist of the types a graph may carry
 (`STATE_TYPES`). A class outside it comes back as plain data, never as an
 object.
 
-Checkpoints outlive the code that wrote them, and the framework versions only
-its own envelope. `blossom/agent/runs.py` therefore stamps `GRAPH_VERSION`
-into every run's metadata and refuses to resume a thread written under another
-version. Four rules keep the version steady across changes: graph state grows
-only by optional keys or keys with a reducer; a value carried in state gains
-fields only with defaults and is never renamed or moved between modules; the
-names and order of nodes ahead of a gate are part of the contract; and every
-node performs at most one side effect, written so that running it twice has
-the same result as once. Any change that breaks a rule bumps the version, and
-paused threads are then drained, with whatever they held re-queued, rather than
-resumed.
+Saved state outlives the code that wrote it, and the framework versions only
+its own storage format. `blossom/agent/runs.py` therefore stamps
+`GRAPH_VERSION` into every run's metadata and refuses to resume a thread
+written under another version. Four rules keep the version steady across
+changes: graph state grows only by optional keys or keys with a reducer; a
+value carried in state gains fields only with defaults and is never renamed or
+moved between modules; the names and order of nodes ahead of a gate are part of
+the contract; and every node performs at most one side effect, written so that
+running it twice has the same result as once. Any change that breaks a rule
+bumps the version, and paused threads are then drained, with whatever they held
+re-queued, rather than resumed.
 
 Every run also carries an explicit recursion limit, because the framework's
-default is ten thousand supersteps, and `durability="sync"`, so a checkpoint is
-on disk before the next step starts. Only scalar values in the run's
-configuration are persisted, in plaintext, as checkpoint metadata; nothing
-about the student goes there.
+default is ten thousand supersteps, and `durability="sync"`, so the state is on
+disk before the next step starts. Only scalar values in the run's configuration
+are saved as metadata, in plaintext; nothing about the student goes there.
 
-**Not built:** retention. Nothing removes old threads, and the saver's only
-pruning primitive is deleting a thread whole. A retention rule, and the
-student's ability to delete what a thread holds, are design decisions still
-open.
+**Not built:** retention. Nothing clears an old thread, and the saver's only
+pruning primitive deletes a thread whole. A retention rule, and the student's
+ability to delete what a thread holds, are design decisions still open.
 
 ## Stack
 
 The design notes specify LangChain for generation and judging, LangGraph for
-control flow and checkpointed state, and MCP for external tools. LangChain and
+control flow and saved state, and MCP for external tools. LangChain and
 LangGraph are present, and so far they do five things: build the framework's
 tool objects, run the tool backstop, pause a graph at the approval gate,
 construct the model client in one seam, `blossom/anthropic_client.py`, with the
 endpoint fixed in code so that no environment variable decides where a prompt
-is sent, and keep a graph's checkpoints in a SQLite file of their own. No model
+is sent, and keep a graph's saved state in a SQLite file of its own. No model
 is called yet, and nothing here is wired to the FastAPI routes, whose
 control flow is still hand-rolled. MCP is absent. When it arrives, tools it
 loads will be foreign to the backstop until each has a registry entry of its

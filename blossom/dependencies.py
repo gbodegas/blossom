@@ -10,7 +10,7 @@ environment or the filesystem.
 Two stores, two disciplines. The project state connection is shared across
 FastAPI's worker threads, which run synchronous path operations, so it is
 opened with ``check_same_thread=False`` and ``ProjectStateStore`` serializes
-access with a lock. The checkpoint store is the asynchronous saver from
+access with a lock. The saved-state store is the asynchronous saver from
 ``blossom/stores/checkpoints.py``: it binds to the event loop it is built on,
 so it is opened inside the lifespan and must be used only from asynchronous
 handlers. A route that drives a graph is ``async def``; a route that reads

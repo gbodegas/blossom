@@ -5,8 +5,8 @@ transmit by hand, which is why no field on it records a recipient, a channel, or
 a send time. There is nothing to record because there is no sending path.
 
 ``blossom.agent.gates`` sets ``DraftStatus.APPROVED_FOR_MANUAL_SEND`` when a
-person approves at the gate. Nothing stores a draft outside a graph's
-checkpointed state; the persistence a review queue would need is not built.
+person approves at the gate. Nothing stores a draft outside the graph's
+saved state; the persistence a review queue would need is not built.
 """
 
 from datetime import UTC, datetime
