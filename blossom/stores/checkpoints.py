@@ -46,7 +46,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from blossom.drafts import Draft, DraftStatus
-from blossom.heuristic_relevance import CriterionFinding, CriticVerdict, Judgment
+from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plan_checks import PlanCheck, PlanVerification
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceConfidence
@@ -67,6 +67,7 @@ STATE_TYPES: Final[tuple[type, ...]] = (
     CheckOutcome,
     CriticVerdict,
     CriterionFinding,
+    Criterion,
     Judgment,
     Draft,
     DraftStatus,

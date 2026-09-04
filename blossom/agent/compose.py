@@ -80,8 +80,9 @@ def compose_draft(
 
     if verdict is not None:
         lines.extend(["", "The reviewer's notes:"])
-        if not verdict.findings:
-            lines.append("- The reviewer returned no findings.")
+        if verdict.missing:
+            skipped = ", ".join(verdict.missing)
+            lines.append(f"- The reviewer did not consider: {skipped}.")
         lines.extend(
             f"- {finding.criterion} ({finding.judgment.value}): {finding.critique}"
             for finding in verdict.findings

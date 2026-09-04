@@ -182,7 +182,10 @@ the drafts-and-approval rules, which do not exist.
 Tier two is a shape rather than a score. `CriticVerdict` holds one finding per
 criterion, each with the critique written before the judgment, and `accepted`
 is derived from them: a critic cannot mark a plan it faulted as fine without
-changing a finding, which is visible in review. `CANNOT_TELL` is a first-class
+changing a finding, which is visible in review. The five criteria are a
+closed list the type carries: the schema the model fills in admits only those,
+the prompt is rendered from the same mapping, and a verdict that leaves one
+out is not an acceptance, with the gate told which was skipped. `CANNOT_TELL` is a first-class
 answer, because a critic forced to choose between pass and fail will invent a
 reason to, and it neither passes a plan nor fails one; it goes to a person.
 

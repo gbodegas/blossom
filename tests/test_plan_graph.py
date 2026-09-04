@@ -35,7 +35,13 @@ from blossom.agent.runs import DURABILITY, RECURSION_LIMIT, run_config
 from blossom.anthropic_client import ModelUnavailable
 from blossom.dependencies import build_application_state
 from blossom.drafts import Draft, DraftStatus
-from blossom.heuristic_relevance import CriterionFinding, CriticVerdict, Judgment
+from blossom.heuristic_relevance import (
+    CRITERIA,
+    Criterion,
+    CriterionFinding,
+    CriticVerdict,
+    Judgment,
+)
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
@@ -116,27 +122,27 @@ def plan_that_forgets_the_problem_set() -> DailyPlan:
 
 
 def finding(
-    judgment: Judgment, criterion: str = "order", critique: str = "reads well"
+    judgment: Judgment, criterion: Criterion = Criterion.ORDER, critique: str = "reads well"
 ) -> CriterionFinding:
     return CriterionFinding(criterion=criterion, critique=critique, judgment=judgment)
 
 
 def accepting() -> CriticVerdict:
-    return CriticVerdict(findings=[finding(Judgment.PASSES), finding(Judgment.PASSES, "sizing")])
+    return CriticVerdict(findings=[finding(Judgment.PASSES, criterion) for criterion in Criterion])
 
 
 def faulting() -> CriticVerdict:
     return CriticVerdict(
         findings=[
             finding(Judgment.PASSES),
-            finding(Judgment.FAILS, "sizing", "an hour is short for a comparison essay"),
+            finding(Judgment.FAILS, Criterion.SIZING, "an hour is short for a comparison essay"),
         ]
     )
 
 
 def undecided() -> CriticVerdict:
     return CriticVerdict(
-        findings=[finding(Judgment.CANNOT_TELL, "support rules", "no rules were given")]
+        findings=[finding(Judgment.CANNOT_TELL, Criterion.SUPPORT_RULES, "no rules were given")]
     )
 
 
@@ -357,7 +363,40 @@ def test_a_critic_that_judged_nothing_is_not_an_acceptance() -> None:
     result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(CriticVerdict(findings=[])))))
 
     assert result["outcome"] == "unsettled"
-    assert "The reviewer returned no findings." in result["__interrupt__"][0].value["body"]
+    body = result["__interrupt__"][0].value["body"]
+    assert "did not consider: order, sizing, deferrals, support rules, rationale." in body
+
+
+def test_a_verdict_that_skips_a_criterion_goes_to_the_gate_as_unsettled() -> None:
+    """Four passes out of five is not an acceptance, and the gate is told which was skipped."""
+    partial = CriticVerdict(
+        findings=[
+            finding(Judgment.PASSES, criterion)
+            for criterion in Criterion
+            if criterion is not Criterion.RATIONALE
+        ]
+    )
+
+    result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(partial))))
+
+    assert result["outcome"] == "unsettled"
+    assert result["rounds"] == 1
+    body = result["__interrupt__"][0].value["body"]
+    assert "The reviewer did not settle on this plan." in body
+    assert "- The reviewer did not consider: rationale." in body
+
+
+def test_the_critic_is_asked_exactly_the_criteria_the_verdict_is_checked_against() -> None:
+    """The prompt is rendered from the same mapping the type reads, so they cannot drift."""
+    critic = Scripted(ok(accepting()))
+
+    run(graph_with(Scripted(ok(good_plan())), critic))
+
+    system = str(critic.briefs[0][0].content)
+    for criterion, question in CRITERIA.items():
+        assert f"- {criterion}: {question}" in system
+    assert set(CRITERIA) == set(Criterion)
+    assert "every one of them" in system
 
 
 def test_the_longest_run_fits_under_the_recursion_limit() -> None:

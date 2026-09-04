@@ -33,7 +33,7 @@ from blossom.agent.runs import (
 from blossom.app import create_app
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft, DraftStatus
-from blossom.heuristic_relevance import CriterionFinding, CriticVerdict, Judgment
+from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plan_checks import PlanCheck, PlanVerification
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceConfidence
@@ -198,6 +198,7 @@ def test_every_type_the_graphs_carry_is_on_the_allowlist() -> None:
         CheckOutcome,
         CriticVerdict,
         CriterionFinding,
+        Criterion,
         Judgment,
         Draft,
         DraftStatus,
@@ -224,7 +225,9 @@ def test_a_plan_and_its_verdict_survive_the_serializer() -> None:
         uncertain_due_dates=("a",),
     )
     verdict = CriticVerdict(
-        findings=[CriterionFinding(criterion="c", critique="k", judgment=Judgment.CANNOT_TELL)]
+        findings=[
+            CriterionFinding(criterion=Criterion.ORDER, critique="k", judgment=Judgment.CANNOT_TELL)
+        ]
     )
     state = {
         "plan": plan,

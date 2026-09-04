@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from pydantic import ValidationError
 
-from blossom.heuristic_relevance import CriterionFinding, CriticVerdict, Judgment
+from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plan_checks import (
     DEFAULT_DAILY_MINUTES,
     ORDERED_PLAN_CHECKS,
@@ -421,41 +421,84 @@ def test_a_verification_missing_a_check_does_not_pass() -> None:
 # ------------------------------------------------------------- the verdict
 
 
-def finding(judgment: Judgment, criterion: str = "order") -> CriterionFinding:
+def finding(judgment: Judgment, criterion: Criterion = Criterion.ORDER) -> CriterionFinding:
     return CriterionFinding(
         criterion=criterion, critique="the essay sits before the problem set", judgment=judgment
     )
 
 
+def every_criterion(judgment: Judgment = Judgment.PASSES) -> list[CriterionFinding]:
+    return [finding(judgment, criterion) for criterion in Criterion]
+
+
 def test_a_verdict_is_accepted_only_when_every_criterion_passed() -> None:
-    verdict = CriticVerdict(findings=[finding(Judgment.PASSES), finding(Judgment.PASSES, "length")])
+    verdict = CriticVerdict(findings=every_criterion())
 
     assert verdict.accepted
+    assert verdict.missing == ()
     assert verdict.failed == ()
     assert verdict.undecided == ()
 
 
 def test_one_failure_is_enough_to_withhold_acceptance() -> None:
-    verdict = CriticVerdict(findings=[finding(Judgment.PASSES), finding(Judgment.FAILS, "length")])
+    verdict = CriticVerdict(
+        findings=[finding(Judgment.PASSES), finding(Judgment.FAILS, Criterion.SIZING)]
+    )
 
     assert not verdict.accepted
-    assert [item.criterion for item in verdict.failed] == ["length"]
+    assert [item.criterion for item in verdict.failed] == [Criterion.SIZING]
 
 
 def test_cannot_tell_neither_passes_nor_fails_a_plan() -> None:
     """A critic that must choose will invent a reason to; an undecided
     criterion goes to a person instead."""
     verdict = CriticVerdict(
-        findings=[finding(Judgment.PASSES), finding(Judgment.CANNOT_TELL, "fit")]
+        findings=[finding(Judgment.PASSES), finding(Judgment.CANNOT_TELL, Criterion.SUPPORT_RULES)]
     )
 
     assert not verdict.accepted
     assert verdict.failed == ()
-    assert [item.criterion for item in verdict.undecided] == ["fit"]
+    assert [item.criterion for item in verdict.undecided] == [Criterion.SUPPORT_RULES]
 
 
 def test_a_verdict_that_judged_nothing_is_not_an_acceptance() -> None:
-    assert not CriticVerdict(findings=[]).accepted
+    empty = CriticVerdict(findings=[])
+
+    assert not empty.accepted
+    assert empty.missing == tuple(Criterion)
+
+
+def test_a_verdict_that_skips_a_criterion_is_not_an_acceptance() -> None:
+    """Four passes out of five is a partly reviewed plan, not an approved one,
+    and the missing criterion is named so the person at the gate sees it."""
+    partial = CriticVerdict(
+        findings=[
+            finding(Judgment.PASSES, criterion)
+            for criterion in Criterion
+            if criterion is not Criterion.RATIONALE
+        ]
+    )
+
+    assert not partial.accepted
+    assert partial.missing == (Criterion.RATIONALE,)
+    assert partial.failed == ()
+    assert partial.undecided == ()
+
+
+def test_a_repeated_criterion_does_not_stand_in_for_a_missing_one() -> None:
+    padded = CriticVerdict(findings=[finding(Judgment.PASSES, Criterion.ORDER) for _ in Criterion])
+
+    assert not padded.accepted
+    assert padded.missing == tuple(c for c in Criterion if c is not Criterion.ORDER)
+
+
+def test_a_criterion_outside_the_list_is_refused_by_the_schema() -> None:
+    """The model fills a schema that admits only the five, so an invented
+    criterion is a validation error rather than a sixth finding."""
+    with pytest.raises(ValidationError):
+        CriterionFinding.model_validate(
+            {"criterion": "vibes", "critique": "fine", "judgment": "PASSES"}
+        )
 
 
 def test_a_verdict_cannot_be_told_it_passed() -> None:
