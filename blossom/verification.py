@@ -5,9 +5,10 @@ supports. A signal from the third tier must never change an answer produced by
 the first.
 
 Tier one is a deterministic hard check, pass or fail, and it runs before
-anything is shown or proposed to another person (``HardCheck``). Tier two is a
-heuristic score from a critic; it lives in ``blossom/heuristic_relevance.py``,
-not here, so a score cannot be mistaken for a check. Tier three is whether a
+anything is shown or proposed to another person (``HardCheck`` for a claim,
+``PlanCheck`` in ``blossom/plan_checks.py`` for a plan). Tier two is a critic's
+judgment; it lives in ``blossom/heuristic_relevance.py``, not here, so an
+opinion cannot be mistaken for a check. Tier three is whether a
 plan is right for her. No automated check can answer that, so nothing here
 tries; her workload signal settles it directly rather than being weighed
 against anything the system computed.
@@ -31,7 +32,7 @@ class VerificationTier(IntEnum):
     """Deterministic, pass or fail. Implemented here as ``HardCheck``."""
 
     HEURISTIC_SCORE = 2
-    """A critic's estimate. Lives in ``blossom/heuristic_relevance.py``, not here."""
+    """A critic's judgment. Lives in ``blossom/heuristic_relevance.py``, not here."""
 
     HER_JUDGMENT = 3
     """Whether the plan is right for her. Not automatable, and not implemented anywhere."""

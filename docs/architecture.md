@@ -152,8 +152,8 @@ also meant to weigh a reflection's age; `observed_at` is recorded but unread.
 
 | Tier | What it is | Where it lives |
 |---|---|---|
-| 1: `HARD_CHECK` | Deterministic, pass or fail | `blossom/verification.py` |
-| 2: `HEURISTIC_SCORE` | A critic's estimate, not a verified fact | `blossom/heuristic_relevance.py` |
+| 1: `HARD_CHECK` | Deterministic, pass or fail | `blossom/verification.py` for a claim, `blossom/plan_checks.py` for a plan |
+| 2: `HEURISTIC_SCORE` | A critic's judgment, not a verified fact | `blossom/heuristic_relevance.py` |
 | 3: `HER_JUDGMENT` | Whether a plan is right for her | Nowhere, by design |
 
 Keeping them apart is what stops the system claiming more confidence than its
@@ -171,8 +171,45 @@ cannot be mistaken for a passing one.
 `verify_reconciled_fact` cannot return a passing result. The policy check needs
 the drafts-and-approval rules, which do not exist.
 
-**Not built:** tier two is `min(len(text) / 100, 1.0)`. It is a placeholder,
-uncalled and untested.
+Tier two is a shape rather than a score. `CriticVerdict` holds one finding per
+criterion, each with the critique written before the judgment, and `accepted`
+is derived from them: a critic cannot mark a plan it faulted as fine without
+changing a finding, which is visible in review. `CANNOT_TELL` is a first-class
+answer, because a critic forced to choose between pass and fail will invent a
+reason to, and it neither passes a plan nor fails one; it goes to a person.
+
+**Not built:** nothing calls the critic yet. The verdict's shape exists ahead
+of the graph that will fill it.
+
+## What a plan is, and what code can decide about one
+
+A plan is data, not prose. `blossom/plans.py` holds `DailyPlan`: blocks of
+wall-clock time in the household's zone, each naming one assignment and the
+reason it sits there, plus deferrals for work in the window that tonight
+leaves for another day. Leaving something out is therefore a statement with a
+reason attached, not an omission, which is the same rule the student view
+follows when it refuses to filter her week.
+
+Block times are wall clock rather than instants because a block is a future
+local event: "six to seven on Thursday" survives a change to the zone rules,
+and an instant computed from it does not. Durations are measured by converting
+both ends to UTC, because Python subtracts two aware datetimes that share a
+zone in wall-clock terms; on the two nights a year when a day is not
+twenty-four hours long, the local reading is wrong by an hour.
+
+`blossom/plan_checks.py` runs the tier-one checks over a proposed plan: every
+assignment it names exists, nothing due in the window is unmentioned, no block
+is scheduled after its deadline, no two blocks claim the same minute, and the
+evening is inside the household's budget. Each failure is reported in words,
+so a critic and a person are told what is wrong rather than left to work it
+out. `PlanVerification.passed` is derived, as tier one's always is.
+
+A due date the sources disagree on, or do not corroborate, does not fail a
+plan. It is carried on the result as a flag, because a plan cannot be more
+certain than the record it was built from.
+
+**Not built:** the daily minute budget is a constant, not a household setting,
+and the window is still a fixed six-day span rather than a school week.
 
 ## Expectation before action
 
