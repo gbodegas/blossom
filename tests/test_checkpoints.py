@@ -53,10 +53,13 @@ from blossom.stores.checkpoints import (
     [
         r"\\server\share\checkpoints.sqlite3",
         "//server/share/checkpoints.sqlite3",
+        r"\\?\UNC\server\share\checkpoints.sqlite3",
         ":memory:",
     ],
 )
 def test_network_shares_and_memory_databases_are_refused(text: str) -> None:
+    """Read from the configured text, so a share is refused on any platform,
+    not only on the one whose slashes it is written in."""
     with pytest.raises(UnsafeCheckpointPath):
         refuse_unsafe_path(pathlib.Path(text), environ={})
 

@@ -106,19 +106,28 @@ def is_synced_folder(part: str) -> bool:
     )
 
 
-def local_form(path: Path) -> str:
-    """The path as the filesystem sees it, with any extended-length prefix off.
+def without_extended_prefix(text: str) -> str:
+    """The same path with the Windows extended-length prefix removed.
 
     ``\\\\?\\C:\\...`` is a local path spelled the long way, and only
-    ``\\\\?\\UNC\\...`` is a share, so the prefix is removed before
-    anything reads the shape of what is left.
+    ``\\\\?\\UNC\\...`` is a share, so the prefix comes off before anything
+    reads the shape of what is left.
     """
-    text = os.path.realpath(path)
     if text.startswith("\\\\?\\"):
         text = text[4:]
         if text.startswith("UNC\\"):
             text = "\\\\" + text[4:]
     return text
+
+
+def looks_like_a_share(text: str) -> bool:
+    """True for a path named as a network share, in either slash."""
+    return without_extended_prefix(text).startswith(("\\\\", "//"))
+
+
+def local_form(path: Path) -> str:
+    """Where the path really lands, with any extended-length prefix removed."""
+    return without_extended_prefix(os.path.realpath(path))
 
 
 def refuse_unsafe_path(path: Path, environ: Mapping[str, str] | None = None) -> Path:
@@ -136,8 +145,14 @@ def refuse_unsafe_path(path: Path, environ: Mapping[str, str] | None = None) -> 
     if text == ":memory:":
         msg = "saved graph state must live in a file; an in-memory database survives nothing"
         raise UnsafeCheckpointPath(msg)
+    # A share is read from the configured text before anything resolves it: it
+    # is named the same way everywhere, while resolving a Windows path on
+    # another platform turns it into an ordinary local name.
+    if looks_like_a_share(text):
+        msg = f"saved graph state may not live on a network share: {text}"
+        raise UnsafeCheckpointPath(msg)
     real = local_form(path)
-    if real.startswith(("\\\\", "//")) or drive_is_network(real):
+    if looks_like_a_share(real) or drive_is_network(real):
         msg = f"saved graph state may not live on a network share: {text}"
         raise UnsafeCheckpointPath(msg)
     if any(is_synced_folder(part) for part in Path(real).parts):
