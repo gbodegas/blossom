@@ -250,10 +250,9 @@ def build_plan_graph(
         )
         answer = await critic(messages)
         failure = answer.failure()
-        if failure is not None:
-            return {"outcome": failure}
         verdict = answer.parsed
-        assert verdict is not None  # failure() returned None, so parsed is set
+        if failure is not None or verdict is None:
+            return {"outcome": failure or "model_unparseable"}
         if verdict.accepted:
             return {"verdict": verdict, "outcome": "accepted"}
         if verdict.failed and state["rounds"] <= MAX_REVISIONS:
