@@ -19,8 +19,9 @@ drives graphs asynchronously. The synchronous saver's async methods raise.
 Deserialization is strict. Saved state records every value with the module and
 class that produced it and reconstructs the class by import on load, so a
 database that anyone else can write is a way to run code. The serializer here
-accepts only the types the graph is known to carry; anything else comes back as
-plain data rather than an object. The framework reads its own strict-mode flag
+adds the graph's own types to the framework's built-in safe set, and a class
+outside both comes back as plain data rather than an object. The framework
+reads its own strict-mode flag
 from the environment at import time, which is too early and too easy to leave
 unset, so the allowlist is passed to the constructor.
 
@@ -52,18 +53,19 @@ BUSY_TIMEOUT_SECONDS: Final = 5.0
 STATE_TYPES: Final[tuple[type, ...]] = (Draft, DraftStatus)
 """Every class a graph may carry in its saved state. Adding one is a reviewed edit."""
 
-# Names a sync client gives its folders, matched case-insensitively as a
-# substring of each part of the path, since a work account's folder is called
-# "OneDrive - <organization>" and iCloud's is "com~apple~CloudDocs" under
-# "Mobile Documents". The environment variables are the roots the client itself
-# reports.
+# Folder names a sync client uses, matched case-insensitively against a whole
+# path component, or against one that starts with the name and a separator,
+# since a work account's folder is called "OneDrive - <organization>" and the
+# macOS mount is "OneDrive-Personal". Matching a bare substring instead would
+# read an ordinary folder called "MyOneDriveBackups" as a synced one.
 SYNCED_FOLDER_MARKERS: Final[frozenset[str]] = frozenset(
     {
         "onedrive",
         "dropbox",
         "google drive",
         "googledrive",
-        "icloud",
+        "icloud drive",
+        "iclouddrive",
         "com~apple~clouddocs",
         "mobile documents",
     }
@@ -93,6 +95,15 @@ def drive_is_network(text: str) -> bool:
     if windll is None:
         return False
     return int(windll.kernel32.GetDriveTypeW(drive + os.sep)) == DRIVE_REMOTE
+
+
+def is_synced_folder(part: str) -> bool:
+    """True when one path component is a folder a sync client owns."""
+    lowered = part.lower()
+    return any(
+        lowered == marker or lowered.startswith((marker + " -", marker + "-"))
+        for marker in SYNCED_FOLDER_MARKERS
+    )
 
 
 def local_form(path: Path) -> str:
@@ -129,8 +140,7 @@ def refuse_unsafe_path(path: Path, environ: Mapping[str, str] | None = None) -> 
     if real.startswith(("\\\\", "//")) or drive_is_network(real):
         msg = f"saved graph state may not live on a network share: {text}"
         raise UnsafeCheckpointPath(msg)
-    parts = Path(real).parts
-    if any(marker in part.lower() for part in parts for marker in SYNCED_FOLDER_MARKERS):
+    if any(is_synced_folder(part) for part in Path(real).parts):
         msg = f"saved graph state may not live inside a synced folder: {text}"
         raise UnsafeCheckpointPath(msg)
     env = os.environ if environ is None else environ

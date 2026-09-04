@@ -16,9 +16,10 @@ names ahead of a gate are part of the contract. Breaking any of them means
 bumping the version and draining paused threads rather than resuming them.
 
 The recursion limit is set here because the framework's default is not a
-safeguard: the installed default is ten thousand supersteps, and a routing
-mistake in a planner-critic loop would make that many model calls before
-failing. ``DURABILITY`` is ``sync`` so the state is on disk before the next
+safeguard: it is ten thousand and seven supersteps, read from the environment
+at import like the strict flag the saved-state store contends with, and a
+routing mistake in a planner-critic loop would make that many model calls
+before failing. ``DURABILITY`` is ``sync`` so the state is on disk before the next
 step starts, rather than while it runs; on one machine with a small graph the
 throughput cost is nothing and the guarantee that a recorded decision survives
 a crash is the point. It is passed at the call site, not carried in the
@@ -55,9 +56,10 @@ class StaleGraphVersion(RuntimeError):
 def run_config(thread_id: str, *, recursion_limit: int = RECURSION_LIMIT) -> RunnableConfig:
     """The configuration every run is invoked with.
 
-    Only scalar values placed here are saved as metadata, in plaintext, so
-    nothing about the student belongs in it: a thread id, the graph version,
-    and the limit. Run-scoped objects travel through the graph's context, which
+    The graph version is what reaches the saved metadata, in plaintext. The
+    thread id is saved in plaintext too, in a column of its own, and the
+    recursion limit is not saved at all. Nothing about the student belongs in
+    any of them. Run-scoped objects travel through the graph's context, which
     is not saved.
     """
     return {

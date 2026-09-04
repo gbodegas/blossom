@@ -243,8 +243,8 @@ the parent's view at `/parent/checkpoint` is a different thing.
 Deserialization is strict. Saved state records every value with the module and
 class that produced it and reconstructs the class by import, so the serializer
 is constructed with an allowlist of the types a graph may carry
-(`STATE_TYPES`). A class outside it comes back as plain data, never as an
-object.
+(`STATE_TYPES`), which adds to the framework's own safe set. A class outside
+both comes back as plain data, never as an object.
 
 Saved state outlives the code that wrote it, and the framework versions only
 its own storage format. `blossom/agent/runs.py` therefore stamps
@@ -259,7 +259,8 @@ bumps the version, and paused threads are then drained, with whatever they held
 re-queued, rather than resumed.
 
 Every run also carries an explicit recursion limit, because the framework's
-default is ten thousand supersteps. Durability is `sync`, so the state is on
+default is ten thousand and seven supersteps, itself read from the
+environment. Durability is `sync`, so the state is on
 disk before the next step starts rather than while it runs; the framework takes
 that as an argument beside the configuration and defaults to `async` when it is
 omitted, so a scan refuses a run that builds a configuration from

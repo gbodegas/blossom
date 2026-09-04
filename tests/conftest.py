@@ -14,11 +14,13 @@ rejects.
 """
 
 import os
+import pathlib
 from collections.abc import Iterator
 
 import pytest
 
-from blossom.settings import enforce_local_only_tracing
+from blossom import settings as settings_module
+from blossom.settings import enforce_local_only_tracing, get_settings
 from tests.support import hosted_tracer_attached
 
 
@@ -34,6 +36,25 @@ def local_only_tracing() -> Iterator[None]:
     os.environ["LANGSMITH_TEST_TRACKING"] = "false"
     assert not hosted_tracer_attached(), "a hosted tracer was attached before the suite began"
     yield
+
+
+@pytest.fixture(autouse=True)
+def saved_state_in_a_temporary_file(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Point every default writable path at a temporary directory for one test.
+
+    The defaults sit inside the checkout, so without this the suite writes into
+    the working tree, and every test that starts the application depends on
+    where the repository happens to sit and on this machine's sync-client
+    variables. Moving the constant covers tests that build settings from an
+    explicit mapping as well as those that read the environment. The tests that
+    exercise the path guard name their own paths and are unaffected.
+    """
+    monkeypatch.setattr(settings_module, "LOCAL_STATE_PATH", tmp_path)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

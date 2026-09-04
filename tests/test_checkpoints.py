@@ -35,9 +35,11 @@ from blossom.drafts import Draft, DraftStatus
 from blossom.settings import CHECKPOINT_PATH_VARIABLE, Settings
 from blossom.stores import checkpoints
 from blossom.stores.checkpoints import (
+    DRIVE_REMOTE,
     STATE_TYPES,
     UnsafeCheckpointPath,
     checkpoint_serializer,
+    drive_is_network,
     local_form,
     open_checkpointer,
     refuse_unsafe_path,
@@ -85,6 +87,17 @@ def test_a_local_file_path_is_accepted(tmp_path: pathlib.Path) -> None:
     assert refuse_unsafe_path(path, environ={}) == path
 
 
+@pytest.mark.parametrize("folder", ["MyOneDriveBackups", "dropboxes", "not-icloud-drive"])
+def test_a_folder_that_merely_contains_a_sync_name_is_accepted(
+    folder: str, tmp_path: pathlib.Path
+) -> None:
+    """A whole component, or one with a separator after the name, is a synced
+    folder. A name that merely contains one is somebody's ordinary directory."""
+    path = tmp_path / folder / "checkpoints.sqlite3"
+
+    assert refuse_unsafe_path(path, environ={}) == path
+
+
 def test_a_path_that_walks_into_a_synced_folder_is_refused(tmp_path: pathlib.Path) -> None:
     """The guard reads where the path lands, not how it was spelled."""
     walked = tmp_path / "plain" / ".." / "OneDrive" / "checkpoints.sqlite3"
@@ -114,6 +127,13 @@ def test_a_drive_letter_mapped_to_a_share_is_refused(
 
     with pytest.raises(UnsafeCheckpointPath, match="network share"):
         refuse_unsafe_path(tmp_path / "checkpoints.sqlite3", environ={})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive letters are a Windows idea")
+def test_a_local_drive_letter_is_not_read_as_a_network_one(tmp_path: pathlib.Path) -> None:
+    """The real call, not the stand-in: a fixed drive must answer no."""
+    assert DRIVE_REMOTE == 4
+    assert drive_is_network(str(tmp_path)) is False
 
 
 @pytest.mark.skipif(os.name != "nt", reason="the extended-length prefix is a Windows spelling")
@@ -229,10 +249,17 @@ def test_run_config_carries_the_thread_the_version_and_the_limit_and_nothing_els
     assert set(config) == {"configurable", "metadata", "recursion_limit"}
 
 
+def test_the_run_contract_holds_the_values_it_promises() -> None:
+    """Asserting the constants against themselves would pass for any value, and
+    both of these exist to be far from what the framework would otherwise do."""
+    assert DURABILITY == "sync"
+    assert RECURSION_LIMIT < 100
+
+
 def test_a_thread_written_by_another_graph_version_is_refused() -> None:
     graph = build_approval_graph(InMemorySaver())
     config = run_config("plan:student:2026-08-20")
-    graph.invoke(ApprovalState(draft=Draft(body="x")), config=config)
+    graph.invoke(ApprovalState(draft=Draft(body="x")), config=config, durability=DURABILITY)
     current = graph.get_state(config)
     ensure_current_version(current)
 
@@ -251,7 +278,7 @@ def test_only_a_whole_number_reads_as_a_version(written: object) -> None:
     in the field. ``True`` matters on its own: Python counts a bool as an int."""
     graph = build_approval_graph(InMemorySaver())
     config = run_config("plan:student:2026-08-21")
-    graph.invoke(ApprovalState(draft=Draft(body="x")), config=config)
+    graph.invoke(ApprovalState(draft=Draft(body="x")), config=config, durability=DURABILITY)
     snapshot = graph.get_state(config)._replace(metadata=cast(Any, {GRAPH_VERSION_KEY: written}))
 
     assert recorded_version(snapshot) is None

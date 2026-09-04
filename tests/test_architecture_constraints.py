@@ -234,42 +234,83 @@ def test_the_wiring_scan_flags_each_bypass_form(snippet: str) -> None:
     assert wiring_violations(snippet, "agent/graph.py")
 
 
+def names_bound_to(source_tree: ast.AST, function: str) -> set[str]:
+    """Variables assigned the result of calling ``function`` anywhere in the tree."""
+    bound: set[str] = set()
+    for node in ast.walk(source_tree):
+        value = getattr(node, "value", None)
+        if not (isinstance(node, ast.Assign | ast.AnnAssign) and isinstance(value, ast.Call)):
+            continue
+        if callee(value.func) != function:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        bound.update(target.id for target in targets if isinstance(target, ast.Name))
+    return bound
+
+
 def run_contract_violations(source: str) -> list[str]:
-    """Runs built from the shared configuration that omit the durability.
+    """Runs built from the shared configuration that do not set ``DURABILITY``.
 
     The framework takes durability as an argument beside the configuration and
     defaults to ``async``, which lets a crash lose the step that recorded a
-    decision, so the two must travel together.
+    decision, so the two travel together. The configuration counts whether it
+    is built inline, held in a variable, or passed positionally, and the value
+    must be the constant: ``None`` and ``"async"`` both ask for the default.
     """
+    tree = ast.parse(source)
+    from_run_config = names_bound_to(tree, "run_config")
     found: list[str] = []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
         config = keywords.get("config")
-        if (
-            isinstance(config, ast.Call)
-            and callee(config.func) == "run_config"
-            and "durability" not in keywords
-        ):
-            found.append(f"line {getattr(node, 'lineno', 0)}: run_config without durability=")
+        if config is None and callee(node.func) in INVOKE_METHODS and len(node.args) >= 2:
+            config = node.args[1]
+        built_here = isinstance(config, ast.Call) and callee(config.func) == "run_config"
+        held = isinstance(config, ast.Name) and config.id in from_run_config
+        if not (built_here or held):
+            continue
+        durability = keywords.get("durability")
+        if not (isinstance(durability, ast.Name) and durability.id == "DURABILITY"):
+            line = getattr(node, "lineno", 0)
+            found.append(f"line {line}: a run from run_config without durability=DURABILITY")
     return found
 
 
 def test_every_run_that_uses_the_shared_config_sets_its_durability() -> None:
-    for path in PACKAGE.rglob("*.py"):
-        source = path.read_text(encoding="utf-8")
-        assert run_contract_violations(source) == [], path.relative_to(PACKAGE).as_posix()
+    """Covers the tests as well as the package, so the rule is live today."""
+    for directory in (PACKAGE, pathlib.Path("tests")):
+        for path in directory.rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            assert run_contract_violations(source) == [], str(path)
 
 
-def test_the_run_contract_scan_flags_a_missing_durability() -> None:
-    assert run_contract_violations("await graph.ainvoke(state, config=run_config(thread))")
-    assert run_contract_violations("graph.invoke(state, config=run_config(thread))")
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "await graph.ainvoke(state, config=run_config(thread))",
+        "graph.invoke(state, config=run_config(thread))",
+        "cfg = run_config(thread)\ngraph.invoke(state, config=cfg)",
+        "graph.invoke(state, run_config(thread))",
+        "graph.invoke(state, config=run_config(thread), durability=None)",
+        "graph.invoke(state, config=run_config(thread), durability='async')",
+    ],
+)
+def test_the_run_contract_scan_flags_each_way_of_losing_the_durability(snippet: str) -> None:
+    assert run_contract_violations(snippet)
 
 
-def test_the_run_contract_scan_accepts_the_sanctioned_form() -> None:
-    sanctioned = "await graph.ainvoke(state, config=run_config(thread), durability=DURABILITY)"
-    assert run_contract_violations(sanctioned) == []
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "await graph.ainvoke(state, config=run_config(thread), durability=DURABILITY)",
+        "cfg = run_config(thread)\ngraph.invoke(state, config=cfg, durability=DURABILITY)",
+        "graph.invoke(state, config=other_config())",
+    ],
+)
+def test_the_run_contract_scan_accepts_the_sanctioned_form(snippet: str) -> None:
+    assert run_contract_violations(snippet) == []
 
 
 def test_the_wiring_scan_accepts_the_sanctioned_form() -> None:

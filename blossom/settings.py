@@ -28,6 +28,11 @@ REPOSITORY_ROOT = PACKAGE_ROOT.parent
 STATIC_PATH = PACKAGE_ROOT / "static"
 TEMPLATE_PATH = PACKAGE_ROOT / "templates"
 
+# Where anything this machine writes goes when no variable says otherwise. A
+# module constant rather than a literal inside the reader, so a test can point
+# the whole set of defaults somewhere temporary in one move.
+LOCAL_STATE_PATH = REPOSITORY_ROOT / ".local"
+
 FIXTURE_PATH_VARIABLE = "BLOSSOM_FIXTURE_PATH"
 DATABASE_PATH_VARIABLE = "BLOSSOM_DATABASE_PATH"
 CHECKPOINT_PATH_VARIABLE = "BLOSSOM_CHECKPOINT_PATH"
@@ -152,7 +157,7 @@ class Settings:
         key = source.get(ANTHROPIC_API_KEY_VARIABLE)
         anthropic_api_key = key.strip() if key is not None and key.strip() else None
 
-        local = REPOSITORY_ROOT / ".local"
+        local = LOCAL_STATE_PATH
         return cls(
             fixture_path=read(FIXTURE_PATH_VARIABLE, REPOSITORY_ROOT / "data" / "synthetic"),
             database_path=read(DATABASE_PATH_VARIABLE, local / "blossom.sqlite3"),
