@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 from blossom.app import create_app
 from blossom.settings import (
     CHECKPOINT_PATH_VARIABLE,
-    CHROMA_PATH_VARIABLE,
     DATABASE_PATH_VARIABLE,
     FIXTURE_PATH_VARIABLE,
     REPOSITORY_ROOT,
@@ -29,7 +28,6 @@ def test_defaults_are_absolute_and_point_at_real_package_assets() -> None:
     assert settings.database_path.is_absolute()
     assert settings.checkpoint_path.is_absolute()
     assert settings.checkpoint_path != settings.database_path
-    assert settings.chroma_path.is_absolute()
     assert (settings.fixture_path / "assignments.json").is_file()
     assert (settings.static_path / "blossom.css").is_file()
     assert (settings.template_path / "student_due_this_week.html").is_file()
@@ -40,21 +38,18 @@ def test_environment_variables_override_every_configurable_path(tmp_path: pathli
     fixtures = tmp_path / "fixtures"
     database = tmp_path / "state.sqlite3"
     checkpoints = tmp_path / "checkpoints.sqlite3"
-    chroma = tmp_path / "chroma"
 
     settings = Settings.from_environment(
         {
             FIXTURE_PATH_VARIABLE: str(fixtures),
             DATABASE_PATH_VARIABLE: str(database),
             CHECKPOINT_PATH_VARIABLE: str(checkpoints),
-            CHROMA_PATH_VARIABLE: str(chroma),
         }
     )
 
     assert settings.fixture_path == fixtures
     assert settings.database_path == database
     assert settings.checkpoint_path == checkpoints
-    assert settings.chroma_path == chroma
 
 
 def test_blank_environment_values_fall_back_to_defaults() -> None:

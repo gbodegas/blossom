@@ -296,8 +296,8 @@ traces/
 Thumbs.db
 
 # Blossom local state
-# BLOSSOM_DATABASE_PATH and BLOSSOM_CHROMA_PATH default under .local/, so this
-# directory holds the sqlite database and the Chroma index once they are wired.
+# BLOSSOM_DATABASE_PATH and BLOSSOM_CHECKPOINT_PATH default under .local/, so
+# this directory holds the sqlite databases.
 .local/
 
 # Blossom real data

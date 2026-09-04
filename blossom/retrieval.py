@@ -100,8 +100,9 @@ class StructuredRetriever:
 
 
 class Collection(Protocol):
-    """The part of the Chroma collection API this package uses. Kept narrow so a
-    test can substitute a fake.
+    """The slice of a vector collection this package would use. Kept narrow so a
+    test can substitute a fake, and so no vector store is a dependency until
+    one is chosen.
     """
 
     def query(
@@ -117,11 +118,15 @@ class Collection(Protocol):
 class SemanticRetriever:
     """Approximate retrieval with a threshold so it can decline to answer.
 
-    Score is ``1.0 - distance`` and assumes a unit-interval metric; with Chroma's
-    default squared L2 the threshold has no defined meaning until the collection
-    is created with an explicit metric. Only the nearest neighbor is fetched, so
-    nothing distinguishes a confident match from the only candidate; three to
-    five would.
+    Score is ``1.0 - distance`` and assumes a unit-interval metric; under an
+    unbounded metric such as squared L2 the threshold has no defined meaning
+    until the collection is created with an explicit one. Only the nearest
+    neighbor is fetched, so nothing distinguishes a confident match from the
+    only candidate; three to five would.
+
+    Nothing wires a collection. The plan graph reads its corpora whole, because
+    they are a few sentences about one student; this retriever remains for the
+    router and for the day a corpus outgrows a prompt.
     """
 
     store_name = "semantic"

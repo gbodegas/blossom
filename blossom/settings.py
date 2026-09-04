@@ -36,7 +36,6 @@ LOCAL_STATE_PATH = REPOSITORY_ROOT / ".local"
 FIXTURE_PATH_VARIABLE = "BLOSSOM_FIXTURE_PATH"
 DATABASE_PATH_VARIABLE = "BLOSSOM_DATABASE_PATH"
 CHECKPOINT_PATH_VARIABLE = "BLOSSOM_CHECKPOINT_PATH"
-CHROMA_PATH_VARIABLE = "BLOSSOM_CHROMA_PATH"
 TODAY_VARIABLE = "BLOSSOM_TODAY"
 TIMEZONE_VARIABLE = "BLOSSOM_TIMEZONE"
 ANTHROPIC_API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
@@ -115,7 +114,6 @@ class Settings:
     """From ``BLOSSOM_CHECKPOINT_PATH``. A graph's checkpoints live in their own
     SQLite file, apart from project state, so the two writers never contend and
     deleting a thread touches nothing else."""
-    chroma_path: Path
     today: date | None = None
     """Pins the clock when set, from ``BLOSSOM_TODAY``. ``None`` means use the system clock."""
     timezone_key: str | None = None
@@ -171,7 +169,6 @@ class Settings:
             fixture_path=read(FIXTURE_PATH_VARIABLE, REPOSITORY_ROOT / "data" / "synthetic"),
             database_path=read(DATABASE_PATH_VARIABLE, local / "blossom.sqlite3"),
             checkpoint_path=read(CHECKPOINT_PATH_VARIABLE, local / "checkpoints.sqlite3"),
-            chroma_path=read(CHROMA_PATH_VARIABLE, local / "chroma"),
             today=today,
             timezone_key=timezone_key,
             anthropic_api_key=anthropic_api_key,
