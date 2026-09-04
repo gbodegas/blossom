@@ -1,0 +1,16 @@
+# Actions are pinned to commits in .github/workflows/ci.yml, which is what
+# keeps a moved tag from running code here. A pinned commit does not receive
+# fixes on its own, so this watches for new releases and opens a pull request
+# that moves the pin, with the version comment updated alongside it.
+#
+# Python dependencies are left out on purpose. They are resolved through a
+# proxy and rewritten by hand, so an automated pull request would produce a
+# lockfile that does not install.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: Pin
