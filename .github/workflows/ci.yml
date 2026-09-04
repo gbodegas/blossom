@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
 
+# Read only, so a step that runs here cannot change the repository.
 permissions:
   contents: read
 
@@ -12,11 +13,28 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # Actions are pinned to commits rather than tags. A tag is a moving
+      # reference, so whoever can move it can run code here. Pinning fixes
+      # which code runs and nothing more: it does not vouch for that code, and
+      # reverting a pin afterward stops the next run without undoing the last.
+      #
+      # What bounds the damage is the token above and the fact that this
+      # repository holds no secrets, so a bad action can neither change
+      # anything nor carry away anything that is not already public. It could
+      # still make these checks report success, which is why a version bump is
+      # read before it is merged rather than waved through.
+      #
+      # Adding a secret to this workflow would undo that reasoning, and is the
+      # moment to revisit every line of this file.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Keeps the token out of .git/config, where every later step in the
+          # job could otherwise read it. Nothing here pushes.
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
       - name: Install dependencies
         run: uv sync --dev
       - name: Ruff
