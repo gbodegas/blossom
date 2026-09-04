@@ -1,37 +1,43 @@
 """The one place a model client is constructed.
 
 Every model call in this system goes through ``chat_model``. The import
-allowlist in ``tests/test_capability_boundaries.py`` confines both the model
-framework's Anthropic integration and the SDK beneath it to this file, so a
-route or a graph node cannot construct a client of its own without a
-reviewable edit to that allowlist.
+allowlist in ``tests/test_capability_boundaries.py`` confines the model
+framework's Anthropic integration, the SDK beneath it, and the HTTP library
+beneath that to this file, so a route or a graph node cannot construct a client
+of its own without a reviewable edit to that allowlist.
 
-Construction pins what the integration would otherwise read from the
-environment. Left to itself, ``ChatAnthropic`` resolves its endpoint from
-``ANTHROPIC_API_URL`` or ``ANTHROPIC_BASE_URL``, an HTTP proxy from
-``ANTHROPIC_PROXY``, and a hosted gateway from ``LANGSMITH_GATEWAY``, all at
-construction time. Here the key comes from ``Settings``, the endpoint is the
-public API, and there is no proxy, so no variable in a shell can reroute a
-request that carries a student's assignments. Two defaults that would surprise
-are pinned as well: the integration takes ``max_tokens`` from the model
-profile, which is 128,000 for the models it names, and sends requests with no
-timeout.
+Construction pins what the integration and the SDK would otherwise read from
+the environment. Left to itself, ``ChatAnthropic`` resolves its endpoint from
+``ANTHROPIC_API_URL`` or ``ANTHROPIC_BASE_URL``, a proxy from
+``ANTHROPIC_PROXY``, and a hosted gateway from ``LANGSMITH_GATEWAY``; the
+SDK's default HTTP client then mounts whatever ``HTTP_PROXY``, ``HTTPS_PROXY``,
+and ``ALL_PROXY`` name and trusts whatever certificate ``SSL_CERT_FILE`` points
+at. Here the key comes from ``Settings``, the endpoint is the public API, and
+the HTTP clients are built in this file with environment trust switched off,
+so no variable in a shell can change where a prompt is sent or which
+certificates the connection trusts. Two defaults that would surprise are
+pinned as well: the integration takes ``max_tokens`` from the model profile,
+which is 128,000 for ``claude-opus-5``, and sends requests with no timeout.
 
 Nothing here binds a tool, names a server-side tool, or lists a beta. Tools
 reach a model only through ``blossom.agent`` and its boundary; a provider-run
 tool would be a sending path the registry cannot see.
 """
 
+from functools import cached_property
 from typing import Final, Literal
 
+import anthropic
+import httpx
 from langchain_anthropic import ChatAnthropic
 from pydantic import SecretStr
 
 from blossom.settings import Settings
 
 MODEL: Final = "claude-opus-5"
-"""One model for every role. Depth is tuned per role with ``effort``, which
-Anthropic recommends over a second, cheaper model."""
+"""One model for every role. Depth is tuned per role with ``effort`` rather
+than with a second, cheaper model, which Anthropic suggests measuring against
+before adding."""
 
 ENDPOINT: Final = "https://api.anthropic.com"
 """The public API. Fixed in code so that no environment variable decides where
@@ -54,6 +60,26 @@ class ModelUnavailable(RuntimeError):
     """Raised when settings carry no API key. Nothing calls a model without one."""
 
 
+class PinnedChatAnthropic(ChatAnthropic):
+    """``ChatAnthropic`` whose HTTP clients ignore the environment.
+
+    The integration exposes no way to supply an HTTP client, and the SDK's
+    default client honors the proxy and certificate variables. These two
+    properties are the integration's own, rebuilt around clients constructed
+    here with ``trust_env`` off and no proxy mounts.
+    """
+
+    @cached_property
+    def _client(self) -> anthropic.Client:
+        http_client = httpx.Client(timeout=TIMEOUT_SECONDS, trust_env=False)
+        return anthropic.Client(**self._client_params, http_client=http_client)
+
+    @cached_property
+    def _async_client(self) -> anthropic.AsyncClient:
+        http_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS, trust_env=False)
+        return anthropic.AsyncClient(**self._client_params, http_client=http_client)
+
+
 def chat_model(settings: Settings, *, effort: Effort) -> ChatAnthropic:
     """Construct the model client for one role.
 
@@ -73,7 +99,7 @@ def chat_model(settings: Settings, *, effort: Effort) -> ChatAnthropic:
     # ``model``, ``max_tokens_to_sample`` for ``max_tokens``); the alias is what
     # the type checker accepts, so the alias is what is written here. It also
     # reads the stop-sequence field as required, so its absence is spelled out.
-    return ChatAnthropic(
+    return PinnedChatAnthropic(
         model_name=MODEL,
         api_key=SecretStr(key),
         base_url=ENDPOINT,

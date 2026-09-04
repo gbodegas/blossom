@@ -31,10 +31,17 @@ Two facts about the framework decide how this middleware is attached. Wrap
 hooks compose with the first middleware in the list outermost, so a middleware
 listed after this one runs inside it and could hand the tool node a different
 tool after the check has passed; ``middleware_stack`` places this middleware
-last, and the agent module builds its list through it. And once any
-``wrap_tool_call`` middleware is attached, the framework stops validating tool
-names itself and hands the hook ``None`` for a name it does not know, which is
-why ``is_permitted_call`` requires a tool object and never trusts a name alone.
+last and is the only sanctioned way to assemble an agent's middleware list,
+which a source scan in the tests enforces. And once any ``wrap_tool_call``
+middleware is attached, the framework defers its own name check until the
+handler runs and hands the hook ``None`` for a name it does not know, so a
+middleware that never calls the handler never meets that check; this is why
+``is_permitted_call`` requires a tool object and never trusts a name alone.
+
+Before each model call the request's settings are checked as well as its
+tools: a middleware outside this one can rewrite the settings the model is
+bound with, and keys such as ``tools`` or ``mcp_servers`` there would hand the
+model a tool the registry never saw.
 
 The identity registry it consults is a record ``blossom/tools.py`` keeps for
 itself. It tells that module's objects from foreign ones. It is not a defense
@@ -62,6 +69,12 @@ from langgraph.types import Command
 from blossom.tools import ALLOWED_CAPABILITIES, TOOL_REGISTRY, ToolSpec, built_here
 
 REGISTERED: Final[Mapping[str, ToolSpec]] = {spec.name: spec for spec in TOOL_REGISTRY}
+
+# Model settings that would bind a tool, a server-side tool, or a beta outside
+# the registry if a middleware placed them on the request.
+FOREIGN_MODEL_SETTINGS: Final[frozenset[str]] = frozenset(
+    {"tools", "mcp_servers", "betas", "model_kwargs"}
+)
 
 ToolResult = ToolMessage | Command[Any]
 ModelResult = ModelResponse[Any] | AIMessage | ExtendedModelResponse[Any]
@@ -149,6 +162,13 @@ class ToolBoundary(AgentMiddleware[Any, Any]):
             msg = (
                 f"refusing to bind tools this system did not build: {foreign}. Every tool "
                 f"must come from blossom.tools.as_langchain_tool."
+            )
+            raise ForeignToolError(msg)
+        settings = FOREIGN_MODEL_SETTINGS & set(request.model_settings or {})
+        if settings:
+            msg = (
+                f"refusing model settings that would bind tools or servers outside the "
+                f"registry: {sorted(settings)}."
             )
             raise ForeignToolError(msg)
 
