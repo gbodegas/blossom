@@ -26,7 +26,7 @@ jobs:
       #
       # Adding a secret to this workflow would undo that reasoning, and is the
       # moment to revisit every line of this file.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Keeps the token out of .git/config, where every later step in the
           # job could otherwise read it. Nothing here pushes.
