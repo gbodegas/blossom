@@ -119,10 +119,12 @@ def foreign_request_keywords(call: ast.Call) -> list[str]:
             reasons.append(f"{keyword.arg} passed to {callee(call.func)}")
         elif keyword.arg is None:
             value = keyword.value
-            if isinstance(value, ast.Dict) and all(
-                isinstance(key, ast.Constant) and isinstance(key.value, str) for key in value.keys
-            ):
-                literal_keys = {key.value for key in value.keys if isinstance(key, ast.Constant)}
+            literal_keys: set[str] = {
+                key.value
+                for key in (value.keys if isinstance(value, ast.Dict) else [])
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            if isinstance(value, ast.Dict) and len(literal_keys) == len(value.keys):
                 for name in sorted(literal_keys & FOREIGN_REQUEST_KEYS):
                     reasons.append(f"{name} expanded into {callee(call.func)}")
             else:
