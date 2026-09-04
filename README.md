@@ -182,15 +182,15 @@ instead. If `uv sync` already created `.venv` before failing, reuse it:
 
 ```bash
 .venv\Scripts\python -m ensurepip
-.venv\Scripts\python -m pip install -e .
-.venv\Scripts\python -m pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
+.venv\Scripts\pip install -e .
+.venv\Scripts\pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
 ```
 
-On macOS and Linux the path is `.venv/bin/python`. If there is no `.venv` yet,
-create one first with `python -m venv .venv` using a Python 3.12 or 3.13
-interpreter. Then run the app with `.venv\Scripts\python -m uvicorn
-blossom.app:app --reload` instead of `uv run`. Keep the version pins matching
-`pyproject.toml`; a test checks that they do.
+On macOS and Linux the paths are `.venv/bin/python` and `.venv/bin/pip`. If
+there is no `.venv` yet, create one first with `python -m venv .venv` using a
+Python 3.12 or 3.13 interpreter. Then run the app with
+`.venv\Scripts\uvicorn blossom.app:app --reload` instead of `uv run`. Keep
+the version pins matching `pyproject.toml`; a test checks that they do.
 
 **`uv` is not recognized after installing.** Open a new terminal. The
 installer updates your path for new shells only. If that does not help,
