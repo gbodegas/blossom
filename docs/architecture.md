@@ -198,15 +198,23 @@ zone in wall-clock terms; on the two nights a year when a day is not
 twenty-four hours long, the local reading is wrong by an hour.
 
 `blossom/plan_checks.py` runs the tier-one checks over a proposed plan: every
-assignment it names exists, nothing due in the window is unmentioned, no block
-is scheduled after its deadline, no two blocks claim the same minute, and the
-evening is inside the household's budget. Each failure is reported in words,
+assignment it names exists, nothing due in the window is unmentioned, each
+assignment is worked on or put off rather than both, no block is scheduled
+after its deadline, no two blocks claim the same minute, and the evening is
+inside the household's budget. Several blocks for one assignment are fine,
+because splitting an essay over two sittings is good planning; being both
+planned and deferred is the plan contradicting itself. A block's rationale and
+a deferral's reason cannot be blank, so putting work off always comes with an
+account of itself. Each failure is reported in words,
 so a critic and a person are told what is wrong rather than left to work it
 out. `PlanVerification.passed` is derived, as tier one's always is.
 
-A due date the sources disagree on, or do not corroborate, does not fail a
-plan. It is carried on the result as a flag, because a plan cannot be more
-certain than the record it was built from.
+A due date that is anything short of corroborated does not fail a plan. It is
+carried on the result as a flag, because a plan cannot be more certain than the
+record it was built from. One source counts as short of corroborated: that is
+the reason `SINGLE_SOURCE` is a state of its own rather than a kind of yes, and
+the flag is read by exclusion so a state added later reads as uncertain until
+somebody decides otherwise.
 
 **Not built:** the daily minute budget is a constant, not a household setting,
 and the window is still a fixed six-day span rather than a school week.

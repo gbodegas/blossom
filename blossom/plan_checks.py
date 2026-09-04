@@ -11,12 +11,14 @@ first two are the critic's, in
 ``blossom/heuristic_relevance.py``, and the last is hers alone. Keeping them
 apart is what stops a heuristic from being read as a check.
 
-A disagreed or uncorroborated due date does not fail a plan. It is carried
-through as a flag on the result, because the plan cannot be more certain than
-the record it was built from, and hiding that would be the system claiming
-more than it knows.
+A due date that is anything short of corroborated does not fail a plan. It is
+carried through as a flag on the result, because the plan cannot be more
+certain than the record it was built from, and hiding that would be the system
+claiming more than it knows. One source counts as short of corroborated: that
+is why it is a state of its own rather than a kind of yes.
 """
 
+from collections import Counter
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
@@ -44,6 +46,10 @@ class PlanCheck(StrEnum):
     NOTHING_OMITTED = "NOTHING_OMITTED"
     """Every assignment due in the window is blocked or deferred with a reason."""
 
+    ONE_DECISION_PER_ASSIGNMENT = "ONE_DECISION_PER_ASSIGNMENT"
+    """Each assignment is worked on or put off, not both, and put off at most
+    once. Several blocks for one assignment are fine: work can be split."""
+
     BLOCKS_MEET_DEADLINES = "BLOCKS_MEET_DEADLINES"
     """No block is scheduled after the day its assignment is due."""
 
@@ -57,6 +63,7 @@ class PlanCheck(StrEnum):
 ORDERED_PLAN_CHECKS: tuple[PlanCheck, ...] = (
     PlanCheck.ASSIGNMENTS_EXIST,
     PlanCheck.NOTHING_OMITTED,
+    PlanCheck.ONE_DECISION_PER_ASSIGNMENT,
     PlanCheck.BLOCKS_MEET_DEADLINES,
     PlanCheck.BLOCKS_DO_NOT_OVERLAP,
     PlanCheck.WITHIN_TIME_BUDGET,
@@ -77,8 +84,10 @@ class PlanVerification(BaseModel):
     """What failed, in words, so a critic and a person are told rather than
     left to work it out from the plan."""
     uncertain_due_dates: tuple[str, ...] = ()
-    """Assignments whose due date the sources disagree on or do not corroborate.
-    Not a failure: a flag the plan carries forward."""
+    """Assignments whose due date is anything short of corroborated: one source
+    only, sources in conflict, or nothing at all. Not a failure, and not a
+    judgment about the plan; a flag it carries forward, because the plan cannot
+    be more certain than the record it was built from."""
 
     @property
     def passed(self) -> bool:
@@ -133,6 +142,17 @@ def check_plan(
         if assignment.assignment_id not in spoken_for
     )
 
+    blocked = set(plan.blocked_ids)
+    findings[PlanCheck.ONE_DECISION_PER_ASSIGNMENT].extend(
+        f"{name} is both worked on and put off"
+        for name in sorted(blocked.intersection(plan.deferred_ids))
+    )
+    findings[PlanCheck.ONE_DECISION_PER_ASSIGNMENT].extend(
+        f"{name} is put off {count} times"
+        for name, count in sorted(Counter(plan.deferred_ids).items())
+        if count > 1
+    )
+
     for block in plan.blocks:
         assignment = known.get(block.assignment_id)
         if assignment is not None and plan.plan_date > assignment.due_date:
@@ -154,11 +174,15 @@ def check_plan(
         )
 
     labels = confidence or {}
+    # Read by exclusion rather than by listing the doubtful states. A single
+    # source is not corroboration, which is the reason it is its own state, and
+    # a state added later should read as uncertain until somebody decides
+    # otherwise rather than passing unnoticed.
     uncertain = tuple(
         sorted(
             name
             for name in set(plan.assignment_ids)
-            if labels.get(name) in (SourceConfidence.SOURCES_DISAGREE, SourceConfidence.UNVERIFIED)
+            if name in labels and labels[name] is not SourceConfidence.CORROBORATED
         )
     )
     return PlanVerification(

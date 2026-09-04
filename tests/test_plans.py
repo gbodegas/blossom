@@ -279,9 +279,16 @@ def test_an_uncertain_due_date_is_flagged_and_does_not_fail_the_plan() -> None:
 
 @pytest.mark.parametrize(
     "label",
-    [SourceConfidence.SOURCES_DISAGREE, SourceConfidence.UNVERIFIED],
+    [
+        SourceConfidence.SOURCES_DISAGREE,
+        SourceConfidence.UNVERIFIED,
+        SourceConfidence.SINGLE_SOURCE,
+    ],
 )
-def test_both_kinds_of_doubt_are_flagged(label: SourceConfidence) -> None:
+def test_every_kind_of_doubt_is_flagged(label: SourceConfidence) -> None:
+    """One source is doubt too. It is a state of its own precisely because a
+    date one channel asserted is not the same claim as one two channels agree
+    on, so reading it as corroboration would undo that distinction here."""
     result = check_plan(
         workable_plan(),
         due_in_window=WINDOW,
@@ -290,6 +297,97 @@ def test_both_kinds_of_doubt_are_flagged(label: SourceConfidence) -> None:
     )
 
     assert result.uncertain_due_dates == ("assignment-canal-essay",)
+
+
+def test_a_corroborated_date_is_not_flagged() -> None:
+    result = check_plan(
+        workable_plan(),
+        due_in_window=WINDOW,
+        zone=ZONE,
+        confidence={name: SourceConfidence.CORROBORATED for name in workable_plan().assignment_ids},
+    )
+
+    assert result.uncertain_due_dates == ()
+
+
+def test_an_assignment_with_no_label_is_not_flagged() -> None:
+    """A plan can be checked before reconciliation has run, and silence about a
+    date is not the same as doubt about it."""
+    assert check_plan(workable_plan(), due_in_window=WINDOW, zone=ZONE).uncertain_due_dates == ()
+
+
+# ------------------------------------------------- one decision per assignment
+
+
+def test_work_may_be_split_across_two_sittings() -> None:
+    """An essay in two blocks is good planning, not a duplicate."""
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            block("assignment-canal-essay", "16:30", "17:00"),
+            block("assignment-canal-essay", "19:00", "19:30", "after dinner, second pass"),
+        ],
+        deferred=[Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday")],
+    )
+
+    assert check_plan(plan, due_in_window=WINDOW, zone=ZONE).passed
+
+
+def test_an_assignment_cannot_be_both_worked_on_and_put_off() -> None:
+    """The plan would be contradicting itself, and the omission check alone
+    reads it as covered because the name appears somewhere."""
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            block("assignment-canal-essay", "16:30", "17:30"),
+            block("assignment-algebra-set", "18:00", "18:30"),
+        ],
+        deferred=[Deferral(assignment_id="assignment-canal-essay", reason="not tonight after all")],
+    )
+
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE)
+
+    assert result.failed_checks == (PlanCheck.ONE_DECISION_PER_ASSIGNMENT,)
+    assert "both worked on and put off" in result.as_findings()[0]
+
+
+def test_an_assignment_cannot_be_put_off_twice() -> None:
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+        deferred=[
+            Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday"),
+            Deferral(assignment_id="assignment-algebra-set", reason="and she is tired"),
+        ],
+    )
+
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE)
+
+    assert result.failed_checks == (PlanCheck.ONE_DECISION_PER_ASSIGNMENT,)
+    assert "put off 2 times" in result.as_findings()[0]
+
+
+# ------------------------------------------------------------ a real reason
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"], ids=["empty", "spaces", "tab-newline"])
+def test_a_block_without_a_rationale_is_refused(blank: str) -> None:
+    with pytest.raises(ValidationError):
+        block("assignment-canal-essay", "16:30", "17:30", blank)
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"], ids=["empty", "spaces", "tab-newline"])
+def test_a_deferral_without_a_reason_is_refused(blank: str) -> None:
+    """Deferring is allowed because it comes with an account of itself. A blank
+    reason would let a plan drop work while looking like it had explained."""
+    with pytest.raises(ValidationError):
+        Deferral(assignment_id="assignment-algebra-set", reason=blank)
+
+
+def test_surrounding_whitespace_is_trimmed_rather_than_counted() -> None:
+    kept = Deferral(assignment_id="assignment-algebra-set", reason="  not due until Monday  ")
+
+    assert kept.reason == "not due until Monday"
 
 
 def test_several_failures_are_all_reported() -> None:

@@ -18,9 +18,15 @@ night.
 """
 
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+Sentence = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+"""Text a person will read. Blank is refused: a reason nobody wrote is not a
+reason, and a field that accepts one lets a plan claim it gave an account of
+itself when it did not."""
 
 
 class PlanBlock(BaseModel):
@@ -31,7 +37,7 @@ class PlanBlock(BaseModel):
     assignment_id: str
     starts_at: time
     ends_at: time
-    rationale: str = Field(
+    rationale: Sentence = Field(
         description="Why this assignment sits here, in a sentence she would recognize."
     )
 
@@ -68,15 +74,17 @@ class Deferral(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     assignment_id: str
-    reason: str = Field(description="Why it can wait, in a sentence she would recognize.")
+    reason: Sentence = Field(description="Why it can wait, in a sentence she would recognize.")
 
 
 class DailyPlan(BaseModel):
     """A plan for one day: what she works on, when, and what waits.
 
-    Every assignment due in the window appears here exactly once, either as a
-    block or as a deferral. A hard check enforces that; the type only makes it
-    expressible.
+    An assignment may hold several blocks: splitting an essay across two
+    sittings is good planning, not a mistake. What it may not do is appear as
+    both worked on and put off, or be put off twice, because those are the
+    plan contradicting itself rather than describing an evening. A hard check
+    enforces that; the type only makes it expressible.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -84,6 +92,16 @@ class DailyPlan(BaseModel):
     plan_date: date
     blocks: list[PlanBlock] = Field(default_factory=list)
     deferred: list[Deferral] = Field(default_factory=list)
+
+    @property
+    def blocked_ids(self) -> tuple[str, ...]:
+        """Assignments with time set aside, in block order and with repeats kept."""
+        return tuple(block.assignment_id for block in self.blocks)
+
+    @property
+    def deferred_ids(self) -> tuple[str, ...]:
+        """Assignments put off, in order and with repeats kept."""
+        return tuple(item.assignment_id for item in self.deferred)
 
     @property
     def assignment_ids(self) -> tuple[str, ...]:
