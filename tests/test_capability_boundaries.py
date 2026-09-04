@@ -33,7 +33,7 @@ PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "blossom"
 
 # Top-level modules the package may import, each with the reason it is here.
 ALLOWED_IMPORTS: dict[str, str] = {
-    "anthropic": "model access; confined to the generation seam, see NETWORK_CAPABLE",
+    "anthropic": "model access; confined to the model seam, see NETWORK_CAPABLE",
     "blossom": "the package itself",
     "chromadb": "vector store; confined to its client module, see NETWORK_CAPABLE",
     "collections": "standard library containers and ABCs",
@@ -43,6 +43,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "enum": "standard library",
     "fastapi": "the web framework; receives requests, never initiates them",
     "functools": "standard library",
+    "httpx": "the HTTP client under the SDK; confined to the model seam, see NETWORK_CAPABLE",
     "json": "standard library; reads fixture files from disk",
     "langchain": "agent middleware; the tool backstop is confined, see TOOL_CONSTRUCTION",
     "langchain_anthropic": "the model client; confined to the model seam, see NETWORK_CAPABLE",
@@ -71,24 +72,29 @@ ALLOWED_IMPORTS: dict[str, str] = {
 NETWORK_CAPABLE: dict[str, frozenset[str]] = {
     "anthropic": frozenset({"anthropic_client.py"}),
     "chromadb": frozenset({"chroma_client.py"}),
+    "httpx": frozenset({"anthropic_client.py"}),
     "langchain_anthropic": frozenset({"anthropic_client.py"}),
     "langsmith": frozenset({"settings.py"}),
 }
 
 # Import paths no file in the package may use, each with the reason. They sit
 # inside packages the allowlist admits, so the top-level check cannot see them.
-# Matching is by prefix, as for TOOL_CONSTRUCTION.
+# Matching is by prefix, as for TOOL_CONSTRUCTION, and a whole subpackage is
+# closed where a narrower path could be reached through a re-export.
 CLOSED_PREFIXES: dict[str, str] = {
-    "langgraph.pregel.remote": (
-        "runs a graph on a remote server through langgraph_sdk and langsmith"
+    "langgraph.pregel": (
+        "the runtime's internals, including the client that runs a graph on a "
+        "remote server through langgraph_sdk and langsmith"
     ),
     "langgraph_sdk": "the client for a hosted graph server",
-    "langchain_core.tracers.langchain": (
-        "the hosted tracer, constructible with no environment variable set"
+    "langchain_core.tracers": (
+        "the hosted tracer, its lazy re-export at the package level, and the "
+        "context manager that turns hosted tracing on with no environment variable set"
     ),
-    "langchain_core.tracers.context": (
-        "turns hosted tracing on for a block with no environment variable set"
+    "langchain.chat_models": (
+        "builds a provider client from the environment; the seam is anthropic_client.py"
     ),
+    "langchain.embeddings": "builds a provider client from the environment",
 }
 
 # The framework's ways of bringing a tool into existence, wiring tools into a
@@ -117,21 +123,34 @@ def imports_by_file() -> dict[str, set[str]]:
     }
 
 
+def dotted_imports(source: str) -> set[str]:
+    """The full dotted paths one source text imports.
+
+    ``import x.y`` records ``x.y``; ``from x import y`` records both ``x`` and
+    ``x.y``, so a name reached through a package re-export is seen under the
+    package as well as under the name.
+    """
+    modules: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            modules.add(node.module)
+            modules.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return modules
+
+
 def dotted_imports_by_file() -> dict[str, set[str]]:
     """Map each package file to the full dotted module paths it imports."""
-    found: dict[str, set[str]] = {}
-    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
-        relative = path.relative_to(PACKAGE_ROOT).as_posix()
-        modules: set[str] = set()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                modules.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                modules.add(node.module)
-                modules.update(f"{node.module}.{alias.name}" for alias in node.names)
-        found[relative] = modules
-    return found
+    return {
+        path.relative_to(PACKAGE_ROOT).as_posix(): dotted_imports(path.read_text(encoding="utf-8"))
+        for path in sorted(PACKAGE_ROOT.rglob("*.py"))
+    }
+
+
+def closed_hits(dotted: set[str]) -> set[str]:
+    """The imported names that fall under a closed prefix."""
+    return {name for name in dotted for prefix in CLOSED_PREFIXES if matches(prefix, name)}
 
 
 def matches(prefix: str, dotted: str) -> bool:
@@ -186,22 +205,39 @@ def test_the_seam_scan_sees_the_imports_it_is_meant_to_confine() -> None:
 
 def test_closed_prefixes_are_imported_nowhere() -> None:
     """Paths inside admitted packages that no file may import, whatever the reason."""
-    violations: dict[str, set[str]] = {}
-    for relative, dotted in dotted_imports_by_file().items():
-        hits = {name for name in dotted for prefix in CLOSED_PREFIXES if matches(prefix, name)}
-        if hits:
-            violations[relative] = hits
+    violations = {
+        relative: hits
+        for relative, dotted in dotted_imports_by_file().items()
+        if (hits := closed_hits(dotted))
+    }
 
     assert not violations, f"closed import paths in use: {violations}"
 
 
-def test_closed_prefixes_cover_the_hosted_tracer_and_the_remote_client() -> None:
-    """Pin the paths the list exists for, so a rename in the list is noticed."""
-    tracer = "langchain_core.tracers.langchain"
-    assert matches(tracer, f"{tracer}.LangChainTracer")
-    assert matches("langchain_core.tracers.context", "langchain_core.tracers.context")
-    assert matches("langgraph.pregel.remote", "langgraph.pregel.remote.RemoteGraph")
-    assert not matches(tracer, "langchain_core.tracers.base")
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "from langchain_core.tracers.langchain import LangChainTracer",
+        "from langchain_core.tracers import LangChainTracer",
+        "from langchain_core import tracers",
+        "import langchain_core.tracers.context",
+        "from langchain_core.tracers.context import tracing_v2_enabled",
+        "import langgraph.pregel.remote as remote",
+        "from langgraph.pregel import remote",
+        "from langgraph import pregel",
+        "from langgraph_sdk import get_client",
+        "from langchain.chat_models import init_chat_model",
+        "def f():\n    from langgraph_sdk import get_client\n    return get_client",
+    ],
+)
+def test_the_closed_prefix_scan_flags_each_spelling(snippet: str) -> None:
+    """Positive control: every way of reaching a closed path is seen by the scan."""
+    assert closed_hits(dotted_imports(snippet))
+
+
+def test_the_closed_prefix_scan_leaves_the_permitted_paths_alone() -> None:
+    assert not closed_hits(dotted_imports("from langgraph.graph import StateGraph"))
+    assert not closed_hits(dotted_imports("from langchain_anthropic import ChatAnthropic"))
 
 
 def test_the_package_has_files_to_scan() -> None:
