@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 
 class DraftStatus(StrEnum):
@@ -31,4 +31,4 @@ class Draft(BaseModel):
     draft_id: str = Field(default_factory=lambda: str(uuid4()))
     body: str
     status: DraftStatus = DraftStatus.DRAFT
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))

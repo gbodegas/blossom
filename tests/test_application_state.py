@@ -23,8 +23,8 @@ from blossom.dependencies import (
     build_application_state,
     get_application_state,
 )
-from blossom.settings import Settings
 from blossom.stores.project_state import Assignment, ProjectStateStore
+from tests.support import fixture_clock, fixture_settings
 
 
 def test_stores_are_built_once_and_shared_across_requests() -> None:
@@ -62,7 +62,7 @@ def test_using_the_app_without_its_lifespan_fails_with_a_useful_message() -> Non
 
 def test_shared_connection_survives_concurrent_reads() -> None:
     """Reads from many threads are safe: ``check_same_thread=False`` plus the store's lock."""
-    state = build_application_state(Settings.from_environment({}), InMemorySaver())
+    state = build_application_state(fixture_settings(), InMemorySaver())
     try:
 
         def read() -> int:
@@ -79,7 +79,7 @@ def test_shared_connection_survives_concurrent_reads() -> None:
 
 def test_concurrent_writes_are_serialised() -> None:
     connection = sqlite3.connect(":memory:", check_same_thread=False)
-    store = ProjectStateStore(connection)
+    store = ProjectStateStore(connection, fixture_clock())
     barrier = threading.Barrier(8)
 
     def write(index: int) -> None:
@@ -111,8 +111,8 @@ def test_dependency_can_be_overridden_to_substitute_stores() -> None:
     """The seam that makes future route tests cheap: no filesystem, no environment."""
     app = create_app()
     connection = sqlite3.connect(":memory:", check_same_thread=False)
-    empty_store = ProjectStateStore(connection)
-    settings = Settings.from_environment({})
+    empty_store = ProjectStateStore(connection, fixture_clock())
+    settings = fixture_settings()
     substitute = build_application_state(settings, InMemorySaver())
     substitute_with_empty_store = ApplicationState(
         settings=settings,

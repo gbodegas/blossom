@@ -25,8 +25,7 @@ from blossom.reconciliation import (
     SourceConfidence,
     classify_confidence,
 )
-from blossom.settings import Settings
-from tests.support import record
+from tests.support import fixture_settings, record
 
 PINNED_TODAY = "2026-08-19"
 
@@ -35,7 +34,7 @@ def student_page(fixture_root: pathlib.Path | None = None) -> str:
     environment = {"BLOSSOM_TODAY": PINNED_TODAY}
     if fixture_root is not None:
         environment["BLOSSOM_FIXTURE_PATH"] = str(fixture_root)
-    settings = Settings.from_environment(environment)
+    settings = fixture_settings(**environment)
     with TestClient(create_app(settings)) as client:
         response = client.get("/student/due-this-week")
     assert response.status_code == 200

@@ -20,7 +20,7 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from blossom.agent.loop import AgentStep, compare_expectation_to_observation
 from blossom.dependencies import ApplicationState, get_application_state
@@ -57,7 +57,7 @@ class WorkloadSignalResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     principal: Principal
-    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    recorded_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     detail_attached: bool
 
 

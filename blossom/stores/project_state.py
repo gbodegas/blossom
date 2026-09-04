@@ -21,7 +21,7 @@ from datetime import date, timedelta
 
 from pydantic import BaseModel, ConfigDict
 
-from blossom.clock import Clock, SystemClock
+from blossom.clock import Clock
 from blossom.retrieval import RetrievalResult
 
 DUE_THIS_WEEK_KEY = "due_this_week"
@@ -53,9 +53,11 @@ class ProjectStateStore:
     name = "project_state"
     retention_policy = "Keep structured assignment state for the academic year, then archive."
 
-    def __init__(self, connection: sqlite3.Connection, clock: Clock | None = None) -> None:
+    def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
         self._connection = connection
-        self._clock = SystemClock() if clock is None else clock
+        # Required, not defaulted: a clock needs the household's zone, and this
+        # store has no business choosing one.
+        self._clock = clock
         # Shared across FastAPI's handler threads; see blossom/dependencies.py.
         self._lock = threading.Lock()
         self._connection.execute(

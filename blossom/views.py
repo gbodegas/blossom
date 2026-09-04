@@ -11,9 +11,9 @@ store directly and renders whatever it likes would bypass them; the design notes
 call for that policy layer.
 """
 
-from datetime import date, datetime
+from datetime import date
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from blossom.reconciliation import SourceConfidence
 
@@ -46,7 +46,7 @@ class StudentDueThisWeekView(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    generated_at: datetime
+    generated_at: AwareDatetime
     expectation: str
     assignments: list[StudentAssignmentView]
 
@@ -71,7 +71,7 @@ class ParentCheckpointView(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    checkpoint_at: datetime
+    checkpoint_at: AwareDatetime
     assignments: list[ParentCheckpointAssignmentView]
 
 

@@ -147,9 +147,12 @@ Other things to look at while it runs:
 
 To customize the configuration, copy `.env.example` to `.env`, edit it, and
 pass `--env-file .env` instead. Every path the app uses is configurable
-through the `BLOSSOM_*` variables listed there, and all of them have working
-defaults. `BLOSSOM_TODAY` can also be set as an ordinary environment variable
-in your shell if you prefer.
+through the `BLOSSOM_*` variables listed there, and each path has a working
+default. One variable has no default and must be set: `BLOSSOM_TIMEZONE`, the
+household's IANA zone, because "due this week" means the days you live in and
+no value is right for everyone. It is set in `.env.example`, which is why the
+first run above needs nothing else. `BLOSSOM_TIMEZONE` and `BLOSSOM_TODAY` can
+also be set as ordinary environment variables in your shell if you prefer.
 
 To run the same checks CI runs:
 

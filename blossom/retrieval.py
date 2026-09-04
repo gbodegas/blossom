@@ -11,7 +11,9 @@ search always returns a top hit even when nothing in the corpus is relevant.
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+
+from blossom.clock import is_aware
 
 
 class RetrievalQuery(BaseModel):
@@ -39,8 +41,8 @@ class RetrievalResult(BaseModel):
     store_name: str
     record_id: str
     source_channel: str
-    retrieved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    asserted_at: datetime
+    retrieved_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    asserted_at: AwareDatetime
     score: float | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -55,7 +57,7 @@ class NothingRetrieved(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str
-    retrieved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    retrieved_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 type RetrievalResponse = RetrievalResult | NothingRetrieved
@@ -146,11 +148,16 @@ class SemanticRetriever:
         metadata_value = metadatas[0] if metadatas else {}
         metadata = dict(metadata_value) if isinstance(metadata_value, dict) else {}
         asserted_at_value = metadata.get("asserted_at")
-        asserted_at = (
-            datetime.fromisoformat(str(asserted_at_value))
-            if asserted_at_value is not None
-            else datetime.now(UTC)
-        )
+        asserted_at = datetime.now(UTC)
+        if asserted_at_value is not None:
+            try:
+                asserted_at = datetime.fromisoformat(str(asserted_at_value))
+            except ValueError:
+                return NothingRetrieved(reason="semantic store returned an unreadable timestamp")
+            if not is_aware(asserted_at):
+                # A stored instant without an offset could mean any of
+                # twenty-some moments, so it is refused rather than guessed at.
+                return NothingRetrieved(reason="semantic store returned a naive timestamp")
         return RetrievalResult(
             store_name=self.store_name,
             record_id=str(ids[0]),

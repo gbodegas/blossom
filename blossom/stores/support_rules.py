@@ -18,6 +18,7 @@ the design notes call for.
 from dataclasses import dataclass
 from datetime import datetime
 
+from blossom.clock import require_aware
 from blossom.retrieval import NothingRetrieved, RetrievalQuery, RetrievalResponse, RetrievalResult
 
 
@@ -28,6 +29,9 @@ class SupportRule:
     rule_id: str
     instruction: str
     asserted_at: datetime
+
+    def __post_init__(self) -> None:
+        require_aware(self.asserted_at, "asserted_at")
 
 
 class SupportRulesStore:

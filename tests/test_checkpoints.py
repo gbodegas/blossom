@@ -32,7 +32,7 @@ from blossom.agent.runs import (
 from blossom.app import create_app
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft, DraftStatus
-from blossom.settings import CHECKPOINT_PATH_VARIABLE, Settings
+from blossom.settings import CHECKPOINT_PATH_VARIABLE
 from blossom.stores import checkpoints
 from blossom.stores.checkpoints import (
     DRIVE_REMOTE,
@@ -44,6 +44,7 @@ from blossom.stores.checkpoints import (
     open_checkpointer,
     refuse_unsafe_path,
 )
+from tests.support import fixture_settings
 
 # ------------------------------------------------------------------- the path
 
@@ -294,7 +295,7 @@ def test_only_a_whole_number_reads_as_a_version(written: object) -> None:
 
 def test_the_lifespan_opens_the_store_on_the_configured_path(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "checkpoints.sqlite3"
-    settings = Settings.from_environment({CHECKPOINT_PATH_VARIABLE: str(path)})
+    settings = fixture_settings(**{CHECKPOINT_PATH_VARIABLE: str(path)})
     app = create_app(settings)
 
     with TestClient(app) as client:
@@ -306,8 +307,8 @@ def test_the_lifespan_opens_the_store_on_the_configured_path(tmp_path: pathlib.P
 
 
 def test_startup_refuses_a_checkpoint_path_inside_a_synced_folder(tmp_path: pathlib.Path) -> None:
-    settings = Settings.from_environment(
-        {CHECKPOINT_PATH_VARIABLE: str(tmp_path / "OneDrive" / "checkpoints.sqlite3")}
+    settings = fixture_settings(
+        **{CHECKPOINT_PATH_VARIABLE: str(tmp_path / "OneDrive" / "checkpoints.sqlite3")}
     )
 
     with pytest.raises(UnsafeCheckpointPath), TestClient(create_app(settings)):

@@ -14,10 +14,9 @@ staleness (accurate when observed, since changed) nor validity (accurate but
 not supporting the conclusion drawn from it) is modeled here.
 """
 
-from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 
 class SourceChannel(StrEnum):
@@ -40,7 +39,7 @@ class SourceRecord(BaseModel):
 
     channel: SourceChannel
     asserted_value: str
-    observed_at: datetime
+    observed_at: AwareDatetime
     confidence: float
 
 
