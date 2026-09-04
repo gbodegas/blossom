@@ -36,13 +36,18 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          # Stated rather than inherited: this action's default turned
-          # caching on at v5, so the behavior would otherwise arrive with a
-          # version bump and go unmentioned. A restored cache is content
-          # from an earlier run entering this one, which is worth naming.
-          # Cache scopes are isolated, so a run from a fork's pull request
-          # reads this branch's cache without writing to it.
-          enable-cache: true
+          # Stated rather than inherited: this action's default turned caching
+          # on at v5, so the behavior would otherwise arrive with a version
+          # bump and go unmentioned. A restored cache is content from an
+          # earlier run entering this one, which is worth naming.
+          #
+          # "auto" is the action's own policy. It caches on hosted runners
+          # except for tag pushes and the pull_request_target, workflow_run
+          # and release events, where an untrusted run could poison what a
+          # later trusted one restores. This workflow triggers on none of
+          # those, so auto and true behave the same here; auto is written
+          # because it keeps deciding correctly if a trigger is ever added.
+          enable-cache: auto
       - name: Install dependencies
         run: uv sync --dev
       - name: Ruff
