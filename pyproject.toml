@@ -17,6 +17,10 @@ dependencies = [
     "langchain-core==1.6.0",
     "langgraph==1.2.11",
     "langgraph-checkpoint-sqlite==3.1.1",
+    # The checkpoint saver's driver. It arrives through the saver anyway, and
+    # is named here because blossom/stores/checkpoints.py opens the connection
+    # itself to set the busy timeout and secure_delete.
+    "aiosqlite==0.22.1",
     "fastapi==0.141.1",
     "jinja2==3.1.6",
     "pydantic==2.11.7",

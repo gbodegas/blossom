@@ -14,6 +14,7 @@ from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
+from langgraph.checkpoint.memory import InMemorySaver
 
 from blossom.app import create_app
 from blossom.dependencies import (
@@ -61,7 +62,7 @@ def test_using_the_app_without_its_lifespan_fails_with_a_useful_message() -> Non
 
 def test_shared_connection_survives_concurrent_reads() -> None:
     """Reads from many threads are safe: ``check_same_thread=False`` plus the store's lock."""
-    state = build_application_state(Settings.from_environment({}))
+    state = build_application_state(Settings.from_environment({}), InMemorySaver())
     try:
 
         def read() -> int:
@@ -112,12 +113,13 @@ def test_dependency_can_be_overridden_to_substitute_stores() -> None:
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     empty_store = ProjectStateStore(connection)
     settings = Settings.from_environment({})
-    substitute = build_application_state(settings)
+    substitute = build_application_state(settings, InMemorySaver())
     substitute_with_empty_store = ApplicationState(
         settings=settings,
         clock=substitute.clock,
         source=substitute.source,
         project_state=empty_store,
+        checkpointer=substitute.checkpointer,
     )
     app.dependency_overrides[get_application_state] = lambda: substitute_with_empty_store
 
