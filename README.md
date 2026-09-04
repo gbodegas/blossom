@@ -60,9 +60,9 @@ nothing corroborates.
   conflict is the core of the system, not an error path. Every due date on
   screen carries a label saying how well it is corroborated, including the
   ones nothing corroborates.
-- **It never studies her.** The agent reflects on its own performance, such
-  as learning that its reminders land badly at a certain hour. It is
-  structurally unable to write a reflection about her.
+- **It never studies her.** The agent will reflect on its own performance,
+  such as learning that its reminders land badly at a certain hour. It will
+  be structurally unable to write a reflection about her.
 - **Three principals, three views.** She sees her week. A parent sees a
   checkpoint summary rather than a live feed. A verifier is designed to sit
   between anything the agent writes and anything that leaves the system.
@@ -71,8 +71,8 @@ nothing corroborates.
 - **It will say what it expects before it looks.** The agent's reasoning loop
   is designed to state what it expects from a tool call before making it.
   That is what turns a surprising result into a noticed contradiction rather
-  than a confidently wrong answer. Today the loop records the expectation but
-  cannot yet act on a mismatch.
+  than a confidently wrong answer. Today the scaffold records the expectation
+  but cannot yet act on a mismatch.
 
 ## Status
 
@@ -221,7 +221,7 @@ No real family data belongs in this repository, and none is checked in.
 Everything in `data/synthetic/` describes a fictional student. The
 support-rules corpus is held as operational instructions rather than
 clinical descriptions, a decision made for privacy reasons that turned out to
-serve retrieval as well, since an instruction is a self contained unit of
+serve retrieval as well, since an instruction is a self-contained unit of
 meaning and a clinical description is not.
 
 If you are reading this because you are considering something similar for
