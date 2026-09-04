@@ -82,7 +82,6 @@ def test_modules_that_are_placeholders_say_so() -> None:
     """
     admits = ("status:", "known gap")
     for relative in (
-        "heuristic_relevance.py",
         "chroma_client.py",
         "stores/support_rules.py",
         "agent/loop.py",
