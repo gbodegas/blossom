@@ -101,7 +101,7 @@ def is_synced_folder(part: str) -> bool:
     """True when one path component is a folder a sync client owns."""
     lowered = part.lower()
     return any(
-        lowered == marker or lowered.startswith((marker + " -", marker + "-"))
+        lowered == marker or lowered.startswith((f"{marker} -", f"{marker}-"))
         for marker in SYNCED_FOLDER_MARKERS
     )
 

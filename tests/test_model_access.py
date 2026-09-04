@@ -200,9 +200,9 @@ def test_the_key_never_appears_in_the_client_repr() -> None:
 
 
 def test_enforce_local_only_tracing_overrides_an_enabled_environment() -> None:
-    environ = {variable: "true" for variable in HOSTED_TRACING_VARIABLES}
-    environ.update({variable: "false" for variable in TRACE_PAYLOAD_VARIABLES})
-
+    environ = {variable: "true" for variable in HOSTED_TRACING_VARIABLES} | {
+        variable: "false" for variable in TRACE_PAYLOAD_VARIABLES
+    }
     enforce_local_only_tracing(environ)
 
     assert all(environ[variable] == "false" for variable in HOSTED_TRACING_VARIABLES)

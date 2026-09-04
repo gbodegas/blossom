@@ -166,7 +166,7 @@ def closed_hits(dotted: set[str]) -> set[str]:
 
 def matches(prefix: str, dotted: str) -> bool:
     """True when ``dotted`` is ``prefix`` itself or a name beneath it."""
-    return dotted == prefix or dotted.startswith(prefix + ".")
+    return dotted == prefix or dotted.startswith(f"{prefix}.")
 
 
 def test_the_prefix_matcher_does_not_match_by_accident() -> None:
