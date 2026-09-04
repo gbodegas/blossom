@@ -66,8 +66,10 @@ PACKAGE = pathlib.Path("blossom")
 # Methods that hand tools to a model outside the agent factory, so outside the
 # tool boundary's bind-time check. ``bind`` is the method ``bind_tools`` ends in.
 MODEL_BINDING_METHODS = frozenset({"bind_tools", "bind"})
-# Invocation methods that accept a ``tools`` keyword straight into the request.
+# Invocation methods whose keywords go straight into the request.
 INVOKE_METHODS = frozenset({"invoke", "ainvoke", "stream", "astream", "batch", "abatch"})
+# Request keys that would bind a tool, a server-side tool, or a beta at an invoke site.
+FOREIGN_REQUEST_KEYS = frozenset({"tools", "mcp_servers", "betas", "model_kwargs"})
 # Structured output binds a tool internally; only the graph module may use it.
 STRUCTURED_OUTPUT_FILES = frozenset({"agent/graph.py"})
 # Names that may appear only where the boundary is defined.
@@ -99,13 +101,33 @@ def binding_violations(source: str, relative: str) -> list[str]:
             found.append(f"line {line}: {name}")
         if "with_structured_output" in names and relative not in STRUCTURED_OUTPUT_FILES:
             found.append(f"line {line}: with_structured_output outside the graph module")
-        if (
-            isinstance(node, ast.Call)
-            and callee(node.func) in INVOKE_METHODS
-            and any(keyword.arg == "tools" for keyword in node.keywords)
-        ):
-            found.append(f"line {line}: tools passed to {callee(node.func)}")
+        if isinstance(node, ast.Call) and callee(node.func) in INVOKE_METHODS:
+            found.extend(f"line {line}: {reason}" for reason in foreign_request_keywords(node))
     return found
+
+
+def foreign_request_keywords(call: ast.Call) -> list[str]:
+    """Keywords at an invoke site that could carry tools into the request.
+
+    A ``**`` expansion is inspected when it is a literal dictionary with string
+    keys and refused outright when it is anything else, because a dynamic
+    mapping cannot be shown not to contain ``tools``.
+    """
+    reasons: list[str] = []
+    for keyword in call.keywords:
+        if keyword.arg in FOREIGN_REQUEST_KEYS:
+            reasons.append(f"{keyword.arg} passed to {callee(call.func)}")
+        elif keyword.arg is None:
+            value = keyword.value
+            if isinstance(value, ast.Dict) and all(
+                isinstance(key, ast.Constant) and isinstance(key.value, str) for key in value.keys
+            ):
+                literal_keys = {key.value for key in value.keys if isinstance(key, ast.Constant)}
+                for name in sorted(literal_keys & FOREIGN_REQUEST_KEYS):
+                    reasons.append(f"{name} expanded into {callee(call.func)}")
+            else:
+                reasons.append(f"dynamic ** expansion into {callee(call.func)}")
+    return reasons
 
 
 def wiring_violations(source: str, relative: str) -> list[str]:
@@ -114,15 +136,19 @@ def wiring_violations(source: str, relative: str) -> list[str]:
     for node in ast.walk(ast.parse(source)):
         line = getattr(node, "lineno", 0)
         if isinstance(node, ast.Call) and callee(node.func) == "create_agent":
+            if any(keyword.arg is None for keyword in node.keywords):
+                found.append(f"line {line}: create_agent with a ** expansion")
             keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
             middleware = keywords.get("middleware")
             if not (
                 isinstance(middleware, ast.Call) and callee(middleware.func) == "middleware_stack"
             ):
-                found.append(f"line {node.lineno}: create_agent without middleware_stack(...)")
+                found.append(f"line {line}: create_agent without middleware_stack(...)")
+            # The model must visibly come from the seam. A name, a string, or any
+            # other factory is refused, since the scan cannot follow what it holds.
             model = keywords.get("model")
-            if isinstance(model, ast.Constant) and isinstance(model.value, str):
-                found.append(f"line {node.lineno}: create_agent given a model name, not a client")
+            if not (isinstance(model, ast.Call) and callee(model.func) == "chat_model"):
+                found.append(f"line {line}: create_agent without model=chat_model(...)")
         if relative == "agent/boundary.py":
             continue
         name = None
@@ -159,6 +185,10 @@ def test_tools_are_bound_only_through_the_agent_factory() -> None:
         "bind = model.bind_tools",
         "model.bind(tools=[server_tool])",
         "model.invoke(prompt, tools=[server_tool])",
+        "model.invoke(prompt, mcp_servers=[server])",
+        "model.invoke(prompt, **{'tools': foreign_tools})",
+        "model.invoke(prompt, **request_options)",
+        "model.stream(prompt, **dict(tools=foreign_tools))",
         "async def run():\n    return await model.ainvoke(prompt, tools=[])",
         "model.with_structured_output(Verdict)",
     ],
@@ -170,6 +200,10 @@ def test_the_binding_scan_flags_each_bypass_form(snippet: str) -> None:
 
 def test_the_binding_scan_allows_structured_output_in_the_graph_module() -> None:
     assert binding_violations("model.with_structured_output(Verdict)", "agent/graph.py") == []
+
+
+def test_the_binding_scan_allows_a_literal_expansion_without_request_keys() -> None:
+    assert binding_violations("model.invoke(prompt, **{'config': config})", "agent/graph.py") == []
 
 
 def test_agents_are_wired_through_the_stack_and_the_seam() -> None:
@@ -187,6 +221,10 @@ def test_agents_are_wired_through_the_stack_and_the_seam() -> None:
         "create_agent(model=m, tools=t, middleware=[*middleware_stack(), Other()])",
         "create_agent(model=m, tools=t)",
         "create_agent(model='anthropic:claude-opus-5', tools=t, middleware=middleware_stack())",
+        "create_agent(model=MODEL, tools=t, middleware=middleware_stack())",
+        "create_agent(model=some_factory(), tools=t, middleware=middleware_stack())",
+        "create_agent(tools=t, middleware=middleware_stack())",
+        "create_agent(model=chat_model(s, effort='low'), tools=t, **options)",
         "from blossom.agent.boundary import tool_boundary",
     ],
 )
