@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from blossom.clock import require_aware
+
 
 class ReflectionSubject(StrEnum):
     """Who a reflection is about. Only ``SYSTEM`` may ever be written."""
@@ -35,9 +37,7 @@ class Reflection:
     observed_at: datetime
 
     def __post_init__(self) -> None:
-        if self.observed_at.tzinfo is None:
-            msg = "observed_at must be an aware instant; a naive one has no fixed meaning"
-            raise ValueError(msg)
+        require_aware(self.observed_at, "observed_at")
 
 
 class ReflectionsStore:

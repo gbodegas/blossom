@@ -48,6 +48,26 @@ def household_zone(key: str | None) -> ZoneInfo:
         raise TimeZoneUnavailable(msg) from error
 
 
+def is_aware(value: datetime) -> bool:
+    """True when ``value`` names a fixed instant.
+
+    Python calls a datetime aware only when it carries a ``tzinfo`` *and* that
+    ``tzinfo`` returns an offset for it, so a partially implemented one reads
+    as naive. Testing ``tzinfo is not None`` would admit such a value, and
+    ``astimezone`` would then reinterpret it as this machine's local time,
+    which is a different moment on every machine.
+    """
+    return value.utcoffset() is not None
+
+
+def require_aware(value: datetime, field: str) -> datetime:
+    """Return ``value`` if it names a fixed instant; raise if it does not."""
+    if not is_aware(value):
+        msg = f"{field} must be an aware instant; a naive one has no fixed meaning"
+        raise ValueError(msg)
+    return value
+
+
 class Clock(Protocol):
     """Reads the current instant and the household's date.
 
@@ -92,10 +112,7 @@ class FrozenClock:
     """A clock pinned to one instant, for tests and for runs against fixture dates."""
 
     def __init__(self, instant: datetime, zone: ZoneInfo) -> None:
-        if instant.tzinfo is None:
-            msg = "a frozen clock needs an aware instant; a naive one has no fixed meaning"
-            raise ValueError(msg)
-        self._instant = instant.astimezone(UTC)
+        self._instant = require_aware(instant, "a frozen clock's instant").astimezone(UTC)
         self._zone = zone
 
     @property

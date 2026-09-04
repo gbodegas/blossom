@@ -8,7 +8,7 @@ This is a plain module rather than `conftest.py`: importing from a conftest
 makes the same file reachable under two module names, which mypy rejects.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, tzinfo
 from zoneinfo import ZoneInfo
 
 from langchain_core.callbacks.manager import CallbackManager
@@ -20,6 +20,35 @@ from blossom.settings import TIMEZONE_VARIABLE, Settings
 
 FIXTURE_TIMEZONE = "America/New_York"
 """The zone the synthetic fixtures are written in. A fictional household's."""
+
+
+class OffsetlessTimeZone(tzinfo):
+    """A zone that names itself and returns no offset.
+
+    Python reads a datetime carrying this as naive, because aware means having
+    a ``tzinfo`` that answers with an offset. A guard that only tests
+    ``tzinfo is not None`` lets it through, and ``astimezone`` then treats it
+    as the running machine's local time.
+    """
+
+    def utcoffset(self, dt: datetime | None) -> timedelta | None:
+        """No offset, which is what makes a datetime carrying this naive."""
+        return None
+
+    def dst(self, dt: datetime | None) -> timedelta | None:
+        """No daylight-saving information either."""
+        return None
+
+    def tzname(self, dt: datetime | None) -> str:
+        """A name, so the value looks aware at a glance."""
+        return "offsetless"
+
+
+NAIVE_INSTANTS = [
+    datetime(2026, 8, 19, 9, 0),
+    datetime(2026, 8, 19, 9, 0, tzinfo=OffsetlessTimeZone()),
+]
+"""The two shapes Python calls naive: no zone at all, and a zone with no offset."""
 
 OBSERVED_AT = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
 

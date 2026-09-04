@@ -13,6 +13,8 @@ from typing import Any, Protocol
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from blossom.clock import is_aware
+
 
 class RetrievalQuery(BaseModel):
     """A retrieval question. ``lookup_key`` present means exact lookup, absent
@@ -152,7 +154,7 @@ class SemanticRetriever:
                 asserted_at = datetime.fromisoformat(str(asserted_at_value))
             except ValueError:
                 return NothingRetrieved(reason="semantic store returned an unreadable timestamp")
-            if asserted_at.tzinfo is None:
+            if not is_aware(asserted_at):
                 # A stored instant without an offset could mean any of
                 # twenty-some moments, so it is refused rather than guessed at.
                 return NothingRetrieved(reason="semantic store returned a naive timestamp")

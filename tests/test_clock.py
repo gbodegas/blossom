@@ -13,7 +13,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
+from blossom.agent.loop import AgentStep
 from blossom.app import create_app
 from blossom.clock import (
     FrozenClock,
@@ -22,6 +24,7 @@ from blossom.clock import (
     clock_from,
     household_zone,
 )
+from blossom.drafts import Draft
 from blossom.retrieval import RetrievalResult
 from blossom.settings import TIMEZONE_VARIABLE, TODAY_VARIABLE, Settings
 from blossom.stores.project_state import (
@@ -29,7 +32,9 @@ from blossom.stores.project_state import (
     Assignment,
     ProjectStateStore,
 )
-from tests.support import FIXTURE_TIMEZONE, fixture_settings
+from blossom.stores.reflections import Reflection, ReflectionSubject
+from blossom.stores.support_rules import SupportRule
+from tests.support import FIXTURE_TIMEZONE, NAIVE_INSTANTS, fixture_settings
 
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
 
@@ -120,9 +125,34 @@ def test_the_daylight_saving_nights_still_read_as_their_own_day(
     assert clock.now() == datetime(day.year, day.month, day.day, offset_hours, tzinfo=UTC)
 
 
-def test_a_frozen_clock_refuses_a_naive_instant() -> None:
+@pytest.mark.parametrize("naive", NAIVE_INSTANTS, ids=["no-zone", "zone-without-an-offset"])
+def test_every_hand_written_guard_uses_pythons_rule_for_aware(naive: datetime) -> None:
+    """Aware means a zone that answers with an offset, not merely a zone.
+
+    A guard testing ``tzinfo is not None`` admits the second shape, and
+    ``astimezone`` then reads it as the running machine's local time, so the
+    same value means a different moment on every machine. The pydantic-typed
+    fields already refuse both; these are the guards written by hand.
+    """
     with pytest.raises(ValueError, match="aware"):
-        FrozenClock(datetime(2026, 8, 19, 12, 0), ZONE)
+        FrozenClock(naive, ZONE)
+    with pytest.raises(ValueError, match="aware"):
+        Reflection(
+            reflection_id="r1",
+            subject=ReflectionSubject.SYSTEM,
+            observation="the plan was rebuilt twice",
+            observed_at=naive,
+        )
+    with pytest.raises(ValueError, match="aware"):
+        SupportRule(rule_id="s1", instruction="Break long tasks up.", asserted_at=naive)
+    with pytest.raises(ValueError, match="aware"):
+        AgentStep(expectation="due_this_week", tool_name="t", tool_input={}, timestamp=naive)
+
+
+@pytest.mark.parametrize("naive", NAIVE_INSTANTS, ids=["no-zone", "zone-without-an-offset"])
+def test_a_pydantic_instant_refuses_both_shapes_too(naive: datetime) -> None:
+    with pytest.raises(ValidationError):
+        Draft(body="Could she have until Friday?", created_at=naive)
 
 
 def test_clock_from_returns_system_clock_when_no_date_is_pinned() -> None:
