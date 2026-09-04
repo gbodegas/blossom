@@ -213,10 +213,37 @@ Every filesystem path is resolved through `blossom/settings.py`, with relative
 values resolved against the repository root so they mean one fixed location
 regardless of the working directory. Packaged assets are not configurable.
 
+## Instants are UTC, dates are hers
+
 Time is read through the `Clock` protocol in `blossom/clock.py`. `SystemClock`
 is the only implementation that touches the operating system; `BLOSSOM_TODAY`
 pins it, which is what makes the fixture-dated demo reproducible and the
 weekly-window tests honest.
+
+Two kinds of time are kept apart. An instant is an aware UTC datetime, which
+is the only form that means the same thing everywhere, and every stored one is
+typed `AwareDatetime` so a naive value fails validation rather than being
+guessed at later. A date is the household's local date, because "due this
+week" is a question about the days she lives in. Taking the date off a UTC
+instant is wrong for most of an American evening: at 20:30 on a Wednesday in
+`America/New_York` the UTC date is already Thursday, so a week window computed
+that way runs a day ahead of her.
+
+`BLOSSOM_TIMEZONE` is therefore required, an IANA key with no default. No
+value is right for every family, and a wrong one moves the school week without
+saying so, so the application refuses to start instead of guessing. The key is
+resolved once at startup, where an unknown one is reported by name. `tzdata`
+is a dependency because Windows ships no time zone database, and without it
+every key fails.
+
+`ProjectStateStore` takes its clock as a required argument for the same
+reason: a store cannot invent a household's zone.
+
+**Not built:** a calendar policy. The weekly window is a fixed six-day span
+from today, not a school week, and nothing yet knows about no-school days,
+bedtimes, or a term calendar. Durations that cross a daylight-saving night
+need to be computed in UTC when that arrives; both transitions fall inside the
+school year and are covered by tests today only at the level of the date.
 
 Stores are opened once by the application lifespan in
 `blossom/dependencies.py` and injected into routes with `Depends`. The SQLite

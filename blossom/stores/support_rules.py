@@ -29,6 +29,11 @@ class SupportRule:
     instruction: str
     asserted_at: datetime
 
+    def __post_init__(self) -> None:
+        if self.asserted_at.tzinfo is None:
+            msg = "asserted_at must be an aware instant; a naive one has no fixed meaning"
+            raise ValueError(msg)
+
 
 class SupportRulesStore:
     """Holds the support rules. Placeholder; nothing constructs it yet."""

@@ -34,6 +34,11 @@ class Reflection:
     observation: str
     observed_at: datetime
 
+    def __post_init__(self) -> None:
+        if self.observed_at.tzinfo is None:
+            msg = "observed_at must be an aware instant; a naive one has no fixed meaning"
+            raise ValueError(msg)
+
 
 class ReflectionsStore:
     """Holds the agent's self-observations, and only those."""

@@ -65,6 +65,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "threading": "standard library; serializes access to the shared connection",
     "typing": "standard library",
     "uuid": "standard library",
+    "zoneinfo": "standard library; resolves the household zone, backed by tzdata",
 }
 
 # Modules that can open a connection to something outside this machine, mapped

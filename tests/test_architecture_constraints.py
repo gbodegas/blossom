@@ -17,10 +17,10 @@ from blossom.retrieval import (
     RetrievalRouter,
     SemanticRetriever,
 )
-from blossom.settings import Settings
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.tools import TOOL_REGISTRY
 from blossom.views import ParentCheckpointView, StudentAssignmentView, VerifierClaimView
+from tests.support import fixture_settings
 
 
 class RecordingRetriever:
@@ -441,7 +441,7 @@ def test_three_principal_views_are_distinct_and_forbid_absent_fields() -> None:
 
 def test_student_due_this_week_renders_disagreement() -> None:
     """The clock is pinned because the fixtures carry fixed August 2026 dates."""
-    settings = Settings.from_environment({"BLOSSOM_TODAY": "2026-08-19"})
+    settings = fixture_settings(BLOSSOM_TODAY="2026-08-19")
 
     with TestClient(create_app(settings)) as client:
         response = client.get("/student/due-this-week")

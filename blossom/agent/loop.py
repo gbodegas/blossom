@@ -41,6 +41,9 @@ class AgentStep:
         if not self.expectation.strip():
             msg = "expectation is required before an action step is recorded"
             raise ValueError(msg)
+        if self.timestamp.tzinfo is None:
+            msg = "timestamp must be an aware instant; a naive one has no fixed meaning"
+            raise ValueError(msg)
 
 
 def compare_expectation_to_observation(step: AgentStep, observation: str) -> AgentStep:

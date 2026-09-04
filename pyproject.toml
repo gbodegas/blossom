@@ -24,6 +24,10 @@ dependencies = [
     "fastapi==0.141.1",
     "jinja2==3.1.6",
     "pydantic==2.11.7",
+    # Windows ships no time zone database, so ZoneInfo raises for every key
+    # without this. The household zone is required configuration, so the
+    # application would not start.
+    "tzdata==2026.3",
     # Pinned directly, though it arrives through fastapi. CVE-2026-54283 and
     # four others are starlette bugs, and fastapi only requires
     # starlette>=0.46.0, a floor that still permits every affected release.

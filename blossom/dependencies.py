@@ -65,7 +65,7 @@ def build_application_state(
     is passed in because it must be opened inside a running event loop, which
     only the lifespan has.
     """
-    clock = clock_from(settings.today)
+    clock = clock_from(settings.today, settings.timezone_key)
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     project_state = ProjectStateStore(connection, clock=clock)
     source = FixtureSource(settings.fixture_path)

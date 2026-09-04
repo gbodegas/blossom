@@ -21,7 +21,7 @@ import pytest
 
 from blossom import settings as settings_module
 from blossom.settings import enforce_local_only_tracing, get_settings
-from tests.support import hosted_tracer_attached
+from tests.support import FIXTURE_TIMEZONE, hosted_tracer_attached
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -42,7 +42,7 @@ def local_only_tracing() -> Iterator[None]:
 def saved_state_in_a_temporary_file(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[None]:
-    """Point every default writable path at a temporary directory for one test.
+    """Give one test a temporary state directory and the fixtures' time zone.
 
     The defaults sit inside the checkout, so without this the suite writes into
     the working tree, and every test that starts the application depends on
@@ -50,8 +50,13 @@ def saved_state_in_a_temporary_file(
     variables. Moving the constant covers tests that build settings from an
     explicit mapping as well as those that read the environment. The tests that
     exercise the path guard name their own paths and are unaffected.
+
+    The zone has no default in the application, so a test that starts it has to
+    supply one. It is set here rather than in each test because almost nothing
+    in the suite is about time zones, and the ones that are name their own.
     """
     monkeypatch.setattr(settings_module, "LOCAL_STATE_PATH", tmp_path)
+    monkeypatch.setenv(settings_module.TIMEZONE_VARIABLE, FIXTURE_TIMEZONE)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

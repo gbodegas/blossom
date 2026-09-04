@@ -38,6 +38,7 @@ DATABASE_PATH_VARIABLE = "BLOSSOM_DATABASE_PATH"
 CHECKPOINT_PATH_VARIABLE = "BLOSSOM_CHECKPOINT_PATH"
 CHROMA_PATH_VARIABLE = "BLOSSOM_CHROMA_PATH"
 TODAY_VARIABLE = "BLOSSOM_TODAY"
+TIMEZONE_VARIABLE = "BLOSSOM_TIMEZONE"
 ANTHROPIC_API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
 
 # LangChain and langsmith decide whether to ship traces to a hosted service by
@@ -117,6 +118,11 @@ class Settings:
     chroma_path: Path
     today: date | None = None
     """Pins the clock when set, from ``BLOSSOM_TODAY``. ``None`` means use the system clock."""
+    timezone_key: str | None = None
+    """The household's IANA zone, from ``BLOSSOM_TIMEZONE``. Held as the key rather
+    than a resolved zone because settings are plain data and resolving reads the
+    system's time zone database. ``None`` here is not a default: the clock refuses
+    to build without one, so the application says so at startup."""
     anthropic_api_key: str | None = field(default=None, repr=False)
     """From ``ANTHROPIC_API_KEY``. Excluded from ``repr`` so it never reaches a log line.
     ``None`` is valid: nothing calls a model until a graph is built, and the app
@@ -157,6 +163,9 @@ class Settings:
         key = source.get(ANTHROPIC_API_KEY_VARIABLE)
         anthropic_api_key = key.strip() if key is not None and key.strip() else None
 
+        zone = source.get(TIMEZONE_VARIABLE)
+        timezone_key = zone.strip() if zone is not None and zone.strip() else None
+
         local = LOCAL_STATE_PATH
         return cls(
             fixture_path=read(FIXTURE_PATH_VARIABLE, REPOSITORY_ROOT / "data" / "synthetic"),
@@ -164,6 +173,7 @@ class Settings:
             checkpoint_path=read(CHECKPOINT_PATH_VARIABLE, local / "checkpoints.sqlite3"),
             chroma_path=read(CHROMA_PATH_VARIABLE, local / "chroma"),
             today=today,
+            timezone_key=timezone_key,
             anthropic_api_key=anthropic_api_key,
         )
 
