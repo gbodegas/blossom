@@ -45,7 +45,8 @@ class OffsetlessTimeZone(tzinfo):
 
 
 NAIVE_INSTANTS = [
-    datetime(2026, 8, 19, 9, 0),
+    # Naive on purpose: this list exists to prove the guards refuse it.
+    datetime(2026, 8, 19, 9, 0),  # noqa: DTZ001
     datetime(2026, 8, 19, 9, 0, tzinfo=OffsetlessTimeZone()),
 ]
 """The two shapes Python calls naive: no zone at all, and a zone with no offset."""

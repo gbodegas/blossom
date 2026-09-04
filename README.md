@@ -158,6 +158,7 @@ To run the same checks CI runs:
 
 ```bash
 uv run ruff check .
+uv run ruff format --check .
 uv run mypy blossom tests
 uv run pytest
 ```

@@ -59,8 +59,67 @@ packages = ["blossom"]
 target-version = "py312"
 line-length = 100
 
+# Ruff is the one linter and the one formatter. Its E and F rules are Flake8's,
+# its S rules are Bandit's, and it covers the Pylint checks that matter here,
+# so none of those runs over this code: a second tool on the same lines with
+# its own defaults reports the same problem twice and disagrees about the rest.
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "ANN"]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP",
+    "ANN",
+    # Bandit's rules. Asserts are allowed in tests below; they are what a test
+    # is made of.
+    "S",
+    # Naive datetimes. The time model exists to keep them out, and this catches
+    # one at the call rather than at validation.
+    "DTZ",
+    # No print. The application speaks through routes and pages.
+    "T20",
+    # Ruff's own rules, including a noqa comment that suppresses nothing.
+    "RUF",
+    # The graph runs asynchronously.
+    "ASYNC",
+    "PIE",
+    # Pytest style: a raises without a match, a compound assert, a yield with
+    # nothing after it.
+    "PT",
+    "C4",
+    # An exception message is assigned to a variable first, as this code does
+    # throughout, so the traceback shows the raise and not the prose.
+    "EM",
+    "SIM",
+]
+ignore = [
+    # A guard clause chain reads as a priority order; folding its tail into a
+    # conditional expression hides that. Declined in .sourcery.yaml for the
+    # same reason.
+    "SIM108",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.ruff.format]
+# Stated rather than inherited. Black would agree at this project's line
+# length and reflow everything at its own default, so the editor is pointed at
+# ruff and Black is not run here.
+quote-style = "double"
+
+# Read by Pylance in the editor. mypy is the type checker of record, pinned
+# above and run in CI, and the mypy extension shows its diagnostics in the
+# editor. A second checker with its own reading of pydantic and TypedDict
+# would mark lines mypy accepts and pass lines it rejects, so Pylance keeps
+# navigation, completion, and unresolved imports, and leaves type errors to
+# mypy.
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "off"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

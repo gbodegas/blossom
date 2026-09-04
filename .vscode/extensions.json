@@ -9,5 +9,15 @@
     "ms-python.python",
     "ms-python.mypy-type-checker",
     "charliermarsh.ruff"
+  ],
+  // Tools ruff already stands in for. Installing them is harmless, since
+  // settings.json turns them off for this workspace, but VS Code will not
+  // suggest them.
+  "unwantedRecommendations": [
+    "ms-python.black-formatter",
+    "ms-python.flake8",
+    "ms-python.isort",
+    "ms-python.pylint",
+    "nwgh.bandit"
   ]
 }

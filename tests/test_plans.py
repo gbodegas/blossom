@@ -304,7 +304,7 @@ def test_a_corroborated_date_is_not_flagged() -> None:
         workable_plan(),
         due_in_window=WINDOW,
         zone=ZONE,
-        confidence={name: SourceConfidence.CORROBORATED for name in workable_plan().assignment_ids},
+        confidence=dict.fromkeys(workable_plan().assignment_ids, SourceConfidence.CORROBORATED),
     )
 
     assert result.uncertain_due_dates == ()

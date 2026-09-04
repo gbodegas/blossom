@@ -1,12 +1,40 @@
 {
-  // Use the mypy and ruff installed in the selected interpreter rather than the
-  // copies bundled with each extension.
+  // One tool per job, and the editor runs the same copy CI runs.
   //
-  // pyproject.toml pins mypy 1.17.1 and ruff 0.12.9, and CI runs exactly those.
-  // Bundled copies follow the extension release schedule, so their diagnostics
-  // can disagree with CI in either direction.
-  "mypy-type-checker.importStrategy": "fromEnvironment",
+  // Ruff lints and formats. mypy checks types. Pylance provides navigation
+  // and completion. pyproject.toml pins mypy 1.17.1 and ruff 0.12.9, CI runs
+  // exactly those, and fromEnvironment makes the extensions use them rather
+  // than the copies they bundle, which follow the extension's own release
+  // schedule and can disagree with CI in either direction.
   "ruff.importStrategy": "fromEnvironment",
+  "mypy-type-checker.importStrategy": "fromEnvironment",
+  // Check the whole package on save, as CI does, rather than the open file.
+  "mypy-type-checker.reportingScope": "workspace",
+
+  // Ruff formats Python here, and organizes imports with the same I rules CI
+  // checks. Black would agree at this project's line length and reflow every
+  // file at its own default of 88, so it is not the formatter for this
+  // workspace.
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+
+  // Flake8, Pylint, and Bandit are off for this workspace. Not because they
+  // are wrong, but because ruff already runs their rules: E and F are
+  // Flake8's, S is Bandit's, and the Pylint checks that matter here have ruff
+  // equivalents. Run with their own defaults they report the same lines again
+  // at a 79-column limit, flag every Protocol body and every test without a
+  // docstring, and disagree with mypy about pydantic. One linter means one
+  // set of squiggles, and it is the set CI enforces.
+  "flake8.enabled": false,
+  "pylint.enabled": false,
+  // The Bandit extension has no off switch, so it is told to skip every file.
+  // Disabling it for the workspace from the Extensions view does the same.
+  "bandit.ignorePatterns": ["**/*.py"],
 
   // Run the suite from the Test Explorer. testpaths is already set in
   // pyproject.toml; this makes the extension agree with it.

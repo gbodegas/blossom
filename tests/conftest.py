@@ -25,7 +25,7 @@ from tests.support import FIXTURE_TIMEZONE, hosted_tracer_attached
 
 
 @pytest.fixture(scope="session", autouse=True)
-def local_only_tracing() -> Iterator[None]:
+def local_only_tracing() -> None:
     """Force hosted tracing off for the whole session.
 
     The langsmith pytest plugin loads in every run of this suite. With test
@@ -35,7 +35,6 @@ def local_only_tracing() -> Iterator[None]:
     enforce_local_only_tracing()
     os.environ["LANGSMITH_TEST_TRACKING"] = "false"
     assert not hosted_tracer_attached(), "a hosted tracer was attached before the suite began"
-    yield
 
 
 @pytest.fixture(autouse=True)

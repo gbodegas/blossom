@@ -290,6 +290,8 @@ def test_the_application_refuses_to_start_without_a_zone(
     monkeypatch.delenv(TIMEZONE_VARIABLE, raising=False)
     settings = Settings.from_environment({TODAY_VARIABLE: "2026-08-19"})
 
-    with pytest.raises(TimeZoneUnavailable, match=TIMEZONE_VARIABLE):
-        with TestClient(create_app(settings)):
-            pass
+    with (
+        pytest.raises(TimeZoneUnavailable, match=TIMEZONE_VARIABLE),
+        TestClient(create_app(settings)),
+    ):
+        pass
