@@ -259,9 +259,13 @@ bumps the version, and paused threads are then drained, with whatever they held
 re-queued, rather than resumed.
 
 Every run also carries an explicit recursion limit, because the framework's
-default is ten thousand supersteps, and `durability="sync"`, so the state is on
-disk before the next step starts. Only scalar values in the run's configuration
-are saved as metadata, in plaintext; nothing about the student goes there.
+default is ten thousand supersteps. Durability is `sync`, so the state is on
+disk before the next step starts rather than while it runs; the framework takes
+that as an argument beside the configuration and defaults to `async` when it is
+omitted, so a scan refuses a run that builds a configuration from
+`blossom/agent/runs.py` and then leaves it out. Only scalar values in the run's
+configuration are saved as metadata, in plaintext; nothing about the student
+goes there.
 
 **Not built:** retention. Nothing clears an old thread, and the saver's only
 pruning primitive deletes a thread whole. A retention rule, and the student's

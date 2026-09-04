@@ -6,6 +6,7 @@ the graph that wrote them so a changed graph does not resume them blindly.
 """
 
 import asyncio
+import os
 import pathlib
 import sqlite3
 from typing import Any, cast
@@ -32,10 +33,12 @@ from blossom.app import create_app
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft, DraftStatus
 from blossom.settings import CHECKPOINT_PATH_VARIABLE, Settings
+from blossom.stores import checkpoints
 from blossom.stores.checkpoints import (
     STATE_TYPES,
     UnsafeCheckpointPath,
     checkpoint_serializer,
+    local_form,
     open_checkpointer,
     refuse_unsafe_path,
 )
@@ -80,6 +83,45 @@ def test_a_local_file_path_is_accepted(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "checkpoints.sqlite3"
 
     assert refuse_unsafe_path(path, environ={}) == path
+
+
+def test_a_path_that_walks_into_a_synced_folder_is_refused(tmp_path: pathlib.Path) -> None:
+    """The guard reads where the path lands, not how it was spelled."""
+    walked = tmp_path / "plain" / ".." / "OneDrive" / "checkpoints.sqlite3"
+
+    with pytest.raises(UnsafeCheckpointPath, match="synced"):
+        refuse_unsafe_path(walked, environ={})
+
+
+def test_a_path_that_walks_out_of_a_synced_folder_is_accepted(tmp_path: pathlib.Path) -> None:
+    walked = tmp_path / "OneDrive" / ".." / "plain" / "checkpoints.sqlite3"
+
+    assert refuse_unsafe_path(walked, environ={}) == walked
+
+
+def test_the_icloud_location_on_macos_is_refused() -> None:
+    icloud = pathlib.Path("/Users/someone/Library/Mobile Documents/com~apple~CloudDocs/cp.sqlite3")
+
+    with pytest.raises(UnsafeCheckpointPath, match="synced"):
+        refuse_unsafe_path(icloud, environ={})
+
+
+def test_a_drive_letter_mapped_to_a_share_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A mapped drive is a network share wearing a local name."""
+    monkeypatch.setattr(checkpoints, "drive_is_network", lambda text: True)
+
+    with pytest.raises(UnsafeCheckpointPath, match="network share"):
+        refuse_unsafe_path(tmp_path / "checkpoints.sqlite3", environ={})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the extended-length prefix is a Windows spelling")
+def test_an_extended_length_local_path_is_not_mistaken_for_a_share(tmp_path: pathlib.Path) -> None:
+    extended = pathlib.Path("\\\\?\\" + str(tmp_path / "checkpoints.sqlite3"))
+
+    assert refuse_unsafe_path(extended, environ={}) == extended
+    assert local_form(extended) == str(tmp_path / "checkpoints.sqlite3")
 
 
 # -------------------------------------------------------------- the serializer
@@ -201,6 +243,20 @@ def test_a_thread_written_by_another_graph_version_is_refused() -> None:
         ensure_current_version(older)
     with pytest.raises(StaleGraphVersion, match="None"):
         ensure_current_version(unstamped)
+
+
+@pytest.mark.parametrize("written", [True, 1.0, "1", None, [1]])
+def test_only_a_whole_number_reads_as_a_version(written: object) -> None:
+    """Metadata is plain JSON, outside the strict serializer, so anything can be
+    in the field. ``True`` matters on its own: Python counts a bool as an int."""
+    graph = build_approval_graph(InMemorySaver())
+    config = run_config("plan:student:2026-08-21")
+    graph.invoke(ApprovalState(draft=Draft(body="x")), config=config)
+    snapshot = graph.get_state(config)._replace(metadata=cast(Any, {GRAPH_VERSION_KEY: written}))
+
+    assert recorded_version(snapshot) is None
+    with pytest.raises(StaleGraphVersion):
+        ensure_current_version(snapshot)
 
 
 # ----------------------------------------------------------------- the lifespan

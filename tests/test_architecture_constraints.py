@@ -234,6 +234,44 @@ def test_the_wiring_scan_flags_each_bypass_form(snippet: str) -> None:
     assert wiring_violations(snippet, "agent/graph.py")
 
 
+def run_contract_violations(source: str) -> list[str]:
+    """Runs built from the shared configuration that omit the durability.
+
+    The framework takes durability as an argument beside the configuration and
+    defaults to ``async``, which lets a crash lose the step that recorded a
+    decision, so the two must travel together.
+    """
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
+        config = keywords.get("config")
+        if (
+            isinstance(config, ast.Call)
+            and callee(config.func) == "run_config"
+            and "durability" not in keywords
+        ):
+            found.append(f"line {getattr(node, 'lineno', 0)}: run_config without durability=")
+    return found
+
+
+def test_every_run_that_uses_the_shared_config_sets_its_durability() -> None:
+    for path in PACKAGE.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        assert run_contract_violations(source) == [], path.relative_to(PACKAGE).as_posix()
+
+
+def test_the_run_contract_scan_flags_a_missing_durability() -> None:
+    assert run_contract_violations("await graph.ainvoke(state, config=run_config(thread))")
+    assert run_contract_violations("graph.invoke(state, config=run_config(thread))")
+
+
+def test_the_run_contract_scan_accepts_the_sanctioned_form() -> None:
+    sanctioned = "await graph.ainvoke(state, config=run_config(thread), durability=DURABILITY)"
+    assert run_contract_violations(sanctioned) == []
+
+
 def test_the_wiring_scan_accepts_the_sanctioned_form() -> None:
     sanctioned = (
         "create_agent(model=chat_model(s, effort='low'), tools=t, "

@@ -39,6 +39,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "chromadb": "vector store; confined to its client module, see NETWORK_CAPABLE",
     "collections": "standard library containers and ABCs",
     "contextlib": "standard library context managers",
+    "ctypes": "standard library; asks Windows whether a drive letter is a network share",
     "dataclasses": "standard library",
     "datetime": "standard library",
     "enum": "standard library",

@@ -18,9 +18,14 @@ bumping the version and draining paused threads rather than resuming them.
 The recursion limit is set here because the framework's default is not a
 safeguard: the installed default is ten thousand supersteps, and a routing
 mistake in a planner-critic loop would make that many model calls before
-failing. Durability is ``sync`` so the state is on disk before the next step
-starts; on one machine with a small graph the throughput cost is nothing and
-the guarantee that a recorded decision survives a crash is the point.
+failing. ``DURABILITY`` is ``sync`` so the state is on disk before the next
+step starts, rather than while it runs; on one machine with a small graph the
+throughput cost is nothing and the guarantee that a recorded decision survives
+a crash is the point. It is passed at the call site, not carried in the
+configuration, because the framework takes it as a separate argument and
+defaults to ``async`` when it is left out. A scan in
+``tests/test_architecture_constraints.py`` refuses a run that builds a
+configuration here and then omits it.
 """
 
 from typing import Final
@@ -37,7 +42,10 @@ RECURSION_LIMIT: Final = 15
 """Supersteps allowed per run: room for a handful of nodes and two critic rounds."""
 
 DURABILITY: Final[Durability] = "sync"
-"""Save the state before the next step starts."""
+"""Save the state before the next step starts.
+
+Passed to ``ainvoke`` beside the configuration; the framework defaults to
+``async``, which lets a crash lose the step that recorded a decision."""
 
 
 class StaleGraphVersion(RuntimeError):
@@ -60,10 +68,18 @@ def run_config(thread_id: str, *, recursion_limit: int = RECURSION_LIMIT) -> Run
 
 
 def recorded_version(snapshot: StateSnapshot) -> int | None:
-    """The graph version a thread's latest saved state was written under, if any."""
+    """The graph version a thread's latest saved state was written under, if any.
+
+    Metadata is stored as plain JSON, outside the strict serializer, so anything
+    at all may be in the field. Only a whole number counts, and ``bool`` is
+    excluded although Python calls it one, so a hand-written ``true`` cannot
+    read as a version.
+    """
     metadata = snapshot.metadata or {}
     value = metadata.get(GRAPH_VERSION_KEY)
-    return value if isinstance(value, int) else None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def ensure_current_version(snapshot: StateSnapshot) -> None:
