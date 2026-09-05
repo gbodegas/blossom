@@ -37,7 +37,7 @@
     {% for draft in waiting %}
       <article class="draft outcome-{{ draft.outcome }}">
         <p class="course">Evening of {{ draft.plan_date }}</p>
-        <h3>{{ draft.plan_date.strftime("%A, %B") }} {{ draft.plan_date.day }}</h3>
+        <h3>{{ draft.plan_date.strftime("%A, %B") }} {{ draft.plan_date.day }}, {{ draft.plan_date.year }}</h3>
         {#
           The reviewer's opinion travels with the plan and never decides for
           it, so the heading says which way it went and the text below
@@ -83,7 +83,7 @@
             <strong>Refused.</strong> Kept as a draft.
           {% endif %}
           {% if draft.reason %}Reason: {{ draft.reason }}.{% endif %}
-          <span class="when">Decided {{ draft.decided_at.strftime("%B") }} {{ draft.decided_at.day }}, {{ draft.decided_at.strftime("%H:%M UTC") }}.</span>
+          <span class="when">Decided {{ draft.decided_at.strftime("%B") }} {{ draft.decided_at.day }}, {{ draft.decided_at.year }}, {{ draft.decided_at.strftime("%H:%M UTC") }}.</span>
         </p>
         <details>
           <summary>The plan as it was reviewed</summary>

@@ -140,6 +140,7 @@ def test_the_plan_form_runs_the_graph_and_the_page_shows_the_draft() -> None:
     assert posted.status_code == 303
     assert posted.headers["location"] == "/parent"
     assert "Evening of 2026-08-19" in page
+    assert "Wednesday, August 19, 2026" in page
     assert "The reviewer accepted this plan." in page
     assert "Plan for Wednesday, August 19" in page
     assert "Canal Era comparison essay" in page
@@ -192,6 +193,7 @@ def test_approving_from_the_page_moves_the_draft_to_decided() -> None:
     assert "Nothing is waiting." in page
     assert "<strong>Approved.</strong> Marked for you to send by hand." in page
     assert "Reason: looks right." in page
+    assert ", 2026, " in page
     assert record["status"] == "APPROVED_FOR_MANUAL_SEND"
     assert record["decision"] == "approved"
 
@@ -293,3 +295,11 @@ def test_without_a_key_the_page_reads_and_the_plan_form_says_why_not() -> None:
     assert 'action="/parent/actions/plan"' not in page.text
     assert posted.status_code == 503
     assert ANTHROPIC_API_KEY_VARIABLE in posted.text
+
+
+def test_dates_on_both_pages_carry_their_year() -> None:
+    """Two evenings a year apart must never read the same."""
+    with browser() as client:
+        student = client.get("/student/due-this-week").text
+
+    assert "Due Friday, August 21, 2026" in student

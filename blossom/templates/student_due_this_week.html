@@ -15,7 +15,7 @@
       <h2>{{ assignment.title }}</h2>
       <p class="due">
         {% if assignment.due_date %}
-          Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}
+          Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}, {{ assignment.due_date.year }}
         {% else %}
           No due date on record
         {% endif %}

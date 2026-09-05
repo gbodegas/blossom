@@ -36,6 +36,7 @@
      read at button size. */
   --blue: #9bb8d3;
   --blue-deep: #6f95b8;
+  --blue-deeper: #5a81a6;
 
   /* Secondary: the petals. Outline buttons, hover states, small highlights. */
   --pink: #e5a8b4;
@@ -403,7 +404,8 @@ button {
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 
-/* Solid: the primary color with white text. */
+/* Solid: the primary color with white text. Hover goes darker, never lighter,
+   so the white label stays readable. */
 button.primary {
   background: var(--blue-deep);
   border-color: var(--blue-deep);
@@ -411,11 +413,13 @@ button.primary {
 }
 
 button.primary:hover {
-  background: var(--blue);
-  border-color: var(--blue);
+  background: var(--blue-deeper);
+  border-color: var(--blue-deeper);
 }
 
-/* Outline: the secondary color for both border and text, no fill until hover. */
+/* Outline: the secondary color for both border and text, no fill until hover.
+   The hover fill is pale, so the label switches to dark text rather than
+   white. */
 button.secondary {
   background: transparent;
   border-color: var(--pink);
@@ -425,7 +429,7 @@ button.secondary {
 button.secondary:hover {
   background: var(--pink);
   border-color: var(--pink);
-  color: #fff;
+  color: var(--text-strong);
 }
 
 .decision .note {
