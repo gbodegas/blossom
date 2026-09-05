@@ -1,0 +1,9 @@
+# Every text file is LF, in the repository and in every working copy, on
+# every platform. Without this a Windows checkout with core.autocrlf writes
+# CRLF, warns on every commit, and leaves the tree mixed the moment a tool
+# writes LF; a formatter then sees two conventions in one project. Python,
+# TOML, YAML, JSON, and Markdown all read LF on Windows.
+* text=auto eol=lf
+
+# Images are never converted.
+*.png binary

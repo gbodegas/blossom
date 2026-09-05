@@ -1,0 +1,30 @@
+# Rules this project turns off, each with the reason. The rules left on are
+# the ones worth reading when they fire; a warning that is always dismissed
+# teaches the reader to dismiss the next one too.
+rule_settings:
+  disable:
+    # tests/support.py is a plain shared module on purpose. Its docstring says
+    # why it is not a conftest: importing from a conftest makes one file
+    # reachable under two module names, which mypy rejects.
+    - dont-import-test-modules
+    # A guard clause chain reads as a priority order: the first condition wins.
+    # Folding the last two into a conditional expression hides that order, and
+    # in ModelAnswer.failure the order is the point.
+    - reintroduce-else
+    - assign-if-exp
+    # The plain form, "not any(...)", matches the sentence the error message
+    # says. Inverting it is a logic puzzle for the same result.
+    - invert-any-all
+    # Assignment on its own line, then the test, is what this code does
+    # throughout. A walrus saves a line and asks the reader to know one more
+    # operator for it.
+    - use-named-expression
+    # Branch order here follows how a reader thinks about the case, first round
+    # before revision, empty before full. Removing a negation is not worth
+    # reversing that.
+    - swap-if-else-branches
+    - swap-if-expression
+    # A loop with an append is easier to step through than extend over a
+    # generator with a two-line condition, and these loops are in the scans
+    # that reviewers read most carefully.
+    - for-append-to-extend

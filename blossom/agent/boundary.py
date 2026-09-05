@@ -111,10 +111,11 @@ def is_permitted_call(request: ToolCallRequest) -> bool:
 
 def foreign_tools(request: ModelRequest[Any]) -> list[str]:
     """Names, or dictionary descriptions, of bound tools this package did not build."""
-    names: list[str] = []
-    for tool in request.tools or []:
-        if not built_here(tool):
-            names.append(str(getattr(tool, "name", None) or tool))
+    names: list[str] = [
+        str(getattr(tool, "name", None) or tool)
+        for tool in request.tools or []
+        if not built_here(tool)
+    ]
     return names
 
 

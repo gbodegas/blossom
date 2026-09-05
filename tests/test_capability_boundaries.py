@@ -166,7 +166,7 @@ def closed_hits(dotted: set[str]) -> set[str]:
 
 def matches(prefix: str, dotted: str) -> bool:
     """True when ``dotted`` is ``prefix`` itself or a name beneath it."""
-    return dotted == prefix or dotted.startswith(prefix + ".")
+    return dotted == prefix or dotted.startswith(f"{prefix}.")
 
 
 def test_the_prefix_matcher_does_not_match_by_accident() -> None:
@@ -301,7 +301,7 @@ def test_every_registered_tool_declares_only_allowed_capabilities() -> None:
 
 def test_the_allowlist_permits_drafting_and_nothing_else() -> None:
     """Drafting is the only capability any tool may declare."""
-    assert ALLOWED_CAPABILITIES == frozenset({"draft"})
+    assert frozenset({"draft"}) == ALLOWED_CAPABILITIES
 
 
 def test_registry_validation_rejects_a_capability_nobody_thought_to_ban() -> None:

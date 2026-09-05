@@ -324,7 +324,7 @@ def test_the_wiring_scan_accepts_the_sanctioned_form() -> None:
 def test_agent_step_requires_expectation_constructor_argument() -> None:
     with pytest.raises(TypeError):
         AgentStep(tool_name="tool", tool_input={}, timestamp=datetime.now(UTC))  # type: ignore[call-arg]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="expectation is required"):
         AgentStep(expectation=" ", tool_name="tool", tool_input={}, timestamp=datetime.now(UTC))
 
 
@@ -383,7 +383,7 @@ def test_below_threshold_semantic_query_returns_nothing() -> None:
 
 def test_reflections_reject_non_system_subjects() -> None:
     store = ReflectionsStore()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="system's own behavior"):
         store.write(
             Reflection(
                 reflection_id="r1",

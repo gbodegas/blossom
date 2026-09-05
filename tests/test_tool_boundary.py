@@ -267,7 +267,8 @@ def test_a_registered_call_passes_through_to_the_handler() -> None:
 @pytest.mark.parametrize("name", ["send_email", "submit_application", "register_for_test"])
 def test_an_unregistered_call_is_refused_without_running_anything(name: str) -> None:
     def handler(request: ToolCallRequest) -> ToolMessage:
-        raise AssertionError("the handler must never run for an unregistered tool")
+        msg = "the handler must never run for an unregistered tool"
+        raise AssertionError(msg)
 
     result = tool_boundary.wrap_tool_call(request_for(name, None), handler)
 
@@ -281,7 +282,8 @@ def test_a_foreign_tool_under_a_registered_name_is_refused() -> None:
     """Name alone is not enough; the object must be one this package built."""
 
     def handler(request: ToolCallRequest) -> ToolMessage:
-        raise AssertionError("a lookalike tool must never run")
+        msg = "a lookalike tool must never run"
+        raise AssertionError(msg)
 
     request = request_for("create_manual_draft", shadow_tool(), {"body": "hi"})
     result = tool_boundary.wrap_tool_call(request, handler)
@@ -298,7 +300,8 @@ def test_a_built_tool_whose_function_was_swapped_is_not_vouched_for() -> None:
     tool.func = send_email
 
     def handler(request: ToolCallRequest) -> ToolMessage:
-        raise AssertionError("a swapped tool must never run")
+        msg = "a swapped tool must never run"
+        raise AssertionError(msg)
 
     assert built_here(tool) is False
     result = tool_boundary.wrap_tool_call(
@@ -310,7 +313,8 @@ def test_a_built_tool_whose_function_was_swapped_is_not_vouched_for() -> None:
 
 def test_a_call_with_no_tool_object_is_refused() -> None:
     def handler(request: ToolCallRequest) -> ToolMessage:
-        raise AssertionError("must not run")
+        msg = "must not run"
+        raise AssertionError(msg)
 
     result = tool_boundary.wrap_tool_call(request_for("create_manual_draft", None), handler)
 
@@ -323,7 +327,8 @@ def test_the_async_path_refuses_and_passes_the_same_way() -> None:
         return ToolMessage(content="ran", tool_call_id="call-create_manual_draft")
 
     async def never(request: ToolCallRequest) -> ToolMessage:
-        raise AssertionError("must not run")
+        msg = "must not run"
+        raise AssertionError(msg)
 
     async def scenario() -> tuple[ToolMessage | Command[Any], ToolMessage | Command[Any]]:
         passed = await tool_boundary.awrap_tool_call(
@@ -334,8 +339,10 @@ def test_the_async_path_refuses_and_passes_the_same_way() -> None:
 
     passed, refused = asyncio.run(scenario())
 
-    assert isinstance(passed, ToolMessage) and passed.content == "ran"
-    assert isinstance(refused, ToolMessage) and refused.status == "error"
+    assert isinstance(passed, ToolMessage)
+    assert passed.content == "ran"
+    assert isinstance(refused, ToolMessage)
+    assert refused.status == "error"
 
 
 def test_permission_is_by_registry_membership_not_by_name_shape() -> None:

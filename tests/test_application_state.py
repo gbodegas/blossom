@@ -74,7 +74,8 @@ def test_shared_connection_survives_concurrent_reads() -> None:
     finally:
         state.close()
 
-    assert counts and len(set(counts)) == 1
+    assert counts
+    assert len(set(counts)) == 1
 
 
 def test_concurrent_writes_are_serialised() -> None:
