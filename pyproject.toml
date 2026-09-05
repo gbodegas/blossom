@@ -71,7 +71,3 @@ python_version = "3.12"
 strict = true
 warn_unreachable = true
 plugins = []
-
-[[tool.mypy.overrides]]
-module = ["chromadb", "chromadb.*"]
-ignore_missing_imports = true

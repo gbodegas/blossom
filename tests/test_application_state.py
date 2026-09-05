@@ -119,6 +119,8 @@ def test_dependency_can_be_overridden_to_substitute_stores() -> None:
         clock=substitute.clock,
         source=substitute.source,
         project_state=empty_store,
+        support_rules=substitute.support_rules,
+        reflections=substitute.reflections,
         checkpointer=substitute.checkpointer,
     )
     app.dependency_overrides[get_application_state] = lambda: substitute_with_empty_store

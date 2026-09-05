@@ -76,16 +76,18 @@ nothing corroborates.
 
 ## Status
 
-Blossom is early, and it is built for one household. No model is called yet,
-so there is no agent to talk to. What runs today is the student's weekly view,
-the source reconciliation behind it, and the guardrails that will constrain
-the agent when it arrives: the missing send tool, the reflection boundary,
-and a tool registry that cannot hold anything that reports having sent
-something.
+Blossom is early, and it is built for one household. What runs today is the
+student's weekly view, the source reconciliation behind it, and the plan graph:
+a planner and a critic, each a single model call returning one typed value,
+with deterministic checks between them and a human gate after them. The graph
+is driven end to end by tests with scripted models; no page starts a run yet,
+so there is nothing to talk to from the browser. Around it are the guardrails
+that constrain it: the missing send tool, the reflection boundary, and a tool
+registry that cannot hold anything that reports having sent something.
 
-The "too much" signal is accepted and not yet acted on. The semantic half of
-retrieval is a stub. Verification cannot yet pass end to end. Nothing is
-stored between runs. [docs/architecture.md](docs/architecture.md) lists every
+The "too much" signal is accepted and not yet acted on. Retrieval reads its
+corpora whole; no vector store is wired. Nothing seeds the support rules, so a
+plan is built without them. [docs/architecture.md](docs/architecture.md) lists every
 gap between the design and the code.
 
 I do not have a success metric yet. Success looks like the agent making her
@@ -246,8 +248,8 @@ data that belongs here.
 
 [docs/architecture.md](docs/architecture.md) describes what the code does
 today: the three principals and their view models, the ways the missing send
-path is enforced, how sources are reconciled, how retrieval routes between
-structured and semantic stores, and where the code still falls short of the
+path is enforced, how sources are reconciled, what a plan is and how the graph
+that proposes one is bounded, and where the code still falls short of the
 design. The design notes behind those decisions are kept outside this
 repository.
 

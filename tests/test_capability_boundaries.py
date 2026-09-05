@@ -36,7 +36,6 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "aiosqlite": "async SQLite driver for the checkpoint store; local files only, see LOCAL_STORES",
     "anthropic": "model access; confined to the model seam, see NETWORK_CAPABLE",
     "blossom": "the package itself",
-    "chromadb": "vector store; confined to its client module, see NETWORK_CAPABLE",
     "collections": "standard library containers and ABCs",
     "contextlib": "standard library context managers",
     "ctypes": "standard library; asks Windows whether a drive letter is a network share",
@@ -45,6 +44,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "enum": "standard library",
     "fastapi": "the web framework; receives requests, never initiates them",
     "functools": "standard library",
+    "html": "standard library; escapes copied text inside a prompt block",
     "httpx": "the HTTP client under the SDK; confined to the model seam, see NETWORK_CAPABLE",
     "json": "standard library; reads fixture files from disk",
     "langchain": "agent middleware; the tool backstop is confined, see TOOL_CONSTRUCTION",
@@ -58,6 +58,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
         "see CLOSED_PREFIXES"
     ),
     "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
+    "operator": "standard library; the reducer on a graph state key",
     "os": "standard library; reads environment variables only",
     "pathlib": "standard library",
     "pydantic": "validation and view models; no I/O",
@@ -74,7 +75,6 @@ ALLOWED_IMPORTS: dict[str, str] = {
 # dependency, not available anywhere a future route might reach for it.
 NETWORK_CAPABLE: dict[str, frozenset[str]] = {
     "anthropic": frozenset({"anthropic_client.py"}),
-    "chromadb": frozenset({"chroma_client.py"}),
     "httpx": frozenset({"anthropic_client.py"}),
     "langchain_anthropic": frozenset({"anthropic_client.py"}),
     "langsmith": frozenset({"settings.py"}),

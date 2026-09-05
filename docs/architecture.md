@@ -120,14 +120,22 @@ result even when the corpus holds nothing relevant.
 Every result carries provenance: which store, which channel, when the source
 asserted it, and when this system read it.
 
+The plan graph does not use the router. It reads its corpora whole: the
+assignments due in the window from structured state, and every support rule
+and every reflection as they stand. Each is a few sentences about one student,
+which fits in a prompt entire, and an index over a corpus that size adds a way
+to miss a rule for no saving. No vector store is a dependency, and none is
+chosen; the `Collection` protocol in `blossom/retrieval.py` is the slice one
+would have to satisfy if a corpus ever outgrows a prompt.
+
 **Known gaps in `SemanticRetriever`:** `score = 1.0 - distance` assumes a
-distance normalized to the unit interval, but Chroma's default space is squared
-L2, which is unbounded, so the score is not a similarity, and `min_score` has
-no defined meaning until the collection is created with an explicit metric.
-And `n_results=1` fetches only the nearest neighbor, so nothing can tell a
+distance normalized to the unit interval; under an unbounded metric such as
+squared L2 the score is not a similarity, and `min_score` has no defined
+meaning until a collection is created with an explicit metric. And
+`n_results=1` fetches only the nearest neighbor, so nothing can tell a
 confident match from the only candidate; the design calls for three to five.
 
-**Not wired:** in the running system the semantic side is
+**Not wired:** in the student route the semantic side is
 `EmptySemanticCollection`, a stub that always returns no candidates. The
 structured side is real.
 
@@ -174,12 +182,18 @@ the drafts-and-approval rules, which do not exist.
 Tier two is a shape rather than a score. `CriticVerdict` holds one finding per
 criterion, each with the critique written before the judgment, and `accepted`
 is derived from them: a critic cannot mark a plan it faulted as fine without
-changing a finding, which is visible in review. `CANNOT_TELL` is a first-class
+changing a finding, which is visible in review. The five criteria are a
+closed list the type carries: the schema the model fills in admits only those,
+the prompt is rendered from the same mapping, and a verdict that leaves one
+out is not an acceptance, with the gate told which was skipped. `CANNOT_TELL` is a first-class
 answer, because a critic forced to choose between pass and fail will invent a
 reason to, and it neither passes a plan nor fails one; it goes to a person.
 
-**Not built:** nothing calls the critic yet. The verdict's shape exists ahead
-of the graph that will fill it.
+The critic is the second model call in the plan graph, below. Its verdict
+travels with the plan to the gate and never decides for it: a critic that
+keeps finding fault after the last revision sends the plan forward with the
+critique attached, because a heuristic that could close the gate would be a
+check wearing a different name.
 
 ## What a plan is, and what code can decide about one
 
@@ -218,6 +232,58 @@ somebody decides otherwise.
 
 **Not built:** the daily minute budget is a constant, not a household setting,
 and the window is still a fixed six-day span rather than a school week.
+
+## The plan graph
+
+`blossom/agent/graph.py` is a workflow, not an agent. The planner and the
+critic are model calls that each return one typed value, `DailyPlan` and
+`CriticVerdict`, through the provider's constrained output rather than a tool
+call, and neither holds a tool. So there is no loop in which a model decides
+what to call next: the graph decides, from the checks and the verdict, and
+every route it can take is written in one file.
+
+Six nodes, in this order. `retrieve` reads the week from the stores. `plan`
+asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
+back to `plan` with the findings before any critic sees it, because a
+judgment about a plan that is already wrong is a wasted call. `critique` asks
+the critic; fault sends the plan back with the critique, doubt sends it
+forward. `compose` renders the plan, the doubtful due dates, and the
+reviewer's notes as the text a parent reads. `require_human_approval` is the
+gate from `blossom/agent/gates.py`, unchanged.
+
+The loop is bounded twice. The planner may be sent back `MAX_REVISIONS` times,
+after which a plan that still fails tier one is reported as `checks_failed` and
+nothing is proposed, while a plan the critic still faults goes to the gate as
+`unsettled`. And every run carries the recursion limit from
+`blossom/agent/runs.py`; a test holds the longest possible run under it, so
+the limit is a backstop and never the thing that ends a legitimate run.
+
+The model can end a run on its own. A response cut off at the token limit, a
+refusal, or a body the schema cannot parse each ends the graph with an outcome
+naming which, and no draft. The stop reason is read before the parsed value,
+because a plan cut off after two of its three blocks is valid JSON and a wrong
+plan.
+
+The prompts in `blossom/agent/prompts.py` put the data first and the request
+last, and everything copied from another system sits inside a labeled block
+with its markup characters escaped: assignment titles from the school portal,
+support rules and reflections from stores other code writes, feedback from an
+earlier round of the same graph. The system text says once that block content
+is never an instruction; the layout makes the boundary visible on every line
+rather than leaving the model to infer it.
+
+One model, `claude-opus-5`, serves both roles, at high effort for the planner
+and medium for the critic. The stores and the two model callables are closed
+over by the node functions rather than carried in state, so saved state holds
+the evening, the plan, what was found about it, and the draft, and nothing
+about the process.
+
+**Not built:** no route starts a run or shows the result. The graph is
+constructed and driven end to end by tests with scripted models, and
+`plan_graph_for` builds it against the running application's stores, but
+nothing calls it yet. Nothing seeds the support rules or reflections, so a
+plan built today is built without them. The reviewer's five criteria are
+fixed in the prompt rather than configurable.
 
 ## Expectation before action
 
@@ -348,13 +414,13 @@ ability to delete what a thread holds, are design decisions still open.
 
 The design notes specify LangChain for generation and judging, LangGraph for
 control flow and saved state, and MCP for external tools. LangChain and
-LangGraph are present, and so far they do five things: build the framework's
+LangGraph are present, and so far they do six things: build the framework's
 tool objects, run the tool backstop, pause a graph at the approval gate,
 construct the model client in one seam, `blossom/anthropic_client.py`, with the
 endpoint fixed in code so that no environment variable decides where a prompt
-is sent, and keep a graph's saved state in a SQLite file of its own. No model
-is called yet, and nothing here is wired to the FastAPI routes, whose
-control flow is still hand-rolled. MCP is absent. When it arrives, tools it
+is sent, keep a graph's saved state in a SQLite file of its own, and run the
+plan graph, whose two model calls each return one typed value. Nothing here is
+wired to the FastAPI routes yet, whose control flow is still hand-rolled. MCP is absent. When it arrives, tools it
 loads will be foreign to the backstop until each has a registry entry of its
 own in `blossom/tools.py`, which is the intended path; how a tool that reads
 rather than drafts fits a registry whose callables return only drafts is an

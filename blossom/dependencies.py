@@ -31,6 +31,8 @@ from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.project_state import ProjectStateStore
+from blossom.stores.reflections import ReflectionsStore
+from blossom.stores.support_rules import SupportRulesStore
 
 Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 
@@ -45,6 +47,8 @@ class ApplicationState:
     clock: Clock
     source: FixtureSource
     project_state: ProjectStateStore
+    support_rules: SupportRulesStore
+    reflections: ReflectionsStore
     checkpointer: BaseCheckpointSaver[str]
     """Where a graph's state and pauses are persisted. Opened and closed by the
     lifespan around this object, so ``close`` does not touch it."""
@@ -75,6 +79,10 @@ def build_application_state(
         clock=clock,
         source=source,
         project_state=project_state,
+        # Empty until seed data exists. The graph reads whichever rules and
+        # notes are here, so an empty store means a plan built without them.
+        support_rules=SupportRulesStore(),
+        reflections=ReflectionsStore(),
         checkpointer=checkpointer,
     )
 

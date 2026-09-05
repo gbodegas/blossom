@@ -10,9 +10,13 @@ a split rule is a fragment that misleads rather than merely truncates.
 The constraints these rules carry are absent from the assignment itself, so a
 plan built only from the assignment misses them.
 
-Status: placeholder. Nothing constructs this store, no route reads it, and no
-test covers it. ``retrieve`` is a substring scan, not the semantic retrieval
-the design notes call for.
+The plan graph reads every rule, in order, rather than searching for the
+relevant ones. The corpus is a few sentences about one student, which fits in
+a prompt whole, and an index over it would add a way to miss a rule for no
+saving. ``retrieve`` remains for the retrieval router and is a substring scan.
+
+Known gap: nothing seeds this store, so the running application plans without
+rules until seed data exists.
 """
 
 from dataclasses import dataclass
@@ -35,7 +39,7 @@ class SupportRule:
 
 
 class SupportRulesStore:
-    """Holds the support rules. Placeholder; nothing constructs it yet."""
+    """Holds the support rules, in the order they were added."""
 
     name = "support_rules"
     retention_policy = "Review accommodation-derived operational guidance each term."
@@ -51,6 +55,10 @@ class SupportRulesStore:
             msg = "one support rule must be stored as one self-contained chunk"
             raise ValueError(msg)
         self._rules[rule.rule_id] = rule
+
+    def list_all(self) -> list[SupportRule]:
+        """Every rule, in insertion order, for a reader that wants the whole corpus."""
+        return list(self._rules.values())
 
     def retrieve(self, query: RetrievalQuery) -> RetrievalResponse:
         """Return the first rule whose instruction contains the query text.

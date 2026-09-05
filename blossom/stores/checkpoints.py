@@ -46,11 +46,32 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from blossom.drafts import Draft, DraftStatus
+from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
+from blossom.plan_checks import PlanCheck, PlanVerification
+from blossom.plans import DailyPlan, Deferral, PlanBlock
+from blossom.reconciliation import SourceConfidence
+from blossom.stores.project_state import Assignment
+from blossom.verification import CheckOutcome
 
 BUSY_TIMEOUT_SECONDS: Final = 5.0
 """How long a write waits on a lock before failing, instead of the driver's default."""
 
-STATE_TYPES: Final[tuple[type, ...]] = (Draft, DraftStatus)
+STATE_TYPES: Final[tuple[type, ...]] = (
+    Assignment,
+    SourceConfidence,
+    DailyPlan,
+    PlanBlock,
+    Deferral,
+    PlanVerification,
+    PlanCheck,
+    CheckOutcome,
+    CriticVerdict,
+    CriterionFinding,
+    Criterion,
+    Judgment,
+    Draft,
+    DraftStatus,
+)
 """Every class a graph may carry in its saved state. Adding one is a reviewed edit."""
 
 # Folder names a sync client uses, matched case-insensitively against a whole

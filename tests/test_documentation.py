@@ -81,11 +81,7 @@ def test_modules_that_are_placeholders_say_so() -> None:
     phrasing cannot accidentally pass or fail the test.
     """
     admits = ("status:", "known gap")
-    for relative in (
-        "chroma_client.py",
-        "stores/support_rules.py",
-        "agent/loop.py",
-    ):
+    for relative in ("agent/loop.py",):
         path = PACKAGE_ROOT / relative
         docstring = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or ""
         assert any(phrase in docstring.lower() for phrase in admits), (

@@ -9,6 +9,7 @@ import asyncio
 import os
 import pathlib
 import sqlite3
+from datetime import date, time
 from typing import Any, cast
 
 import pytest
@@ -32,6 +33,10 @@ from blossom.agent.runs import (
 from blossom.app import create_app
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft, DraftStatus
+from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
+from blossom.plan_checks import PlanCheck, PlanVerification
+from blossom.plans import DailyPlan, Deferral, PlanBlock
+from blossom.reconciliation import SourceConfidence
 from blossom.settings import CHECKPOINT_PATH_VARIABLE
 from blossom.stores import checkpoints
 from blossom.stores.checkpoints import (
@@ -44,6 +49,8 @@ from blossom.stores.checkpoints import (
     open_checkpointer,
     refuse_unsafe_path,
 )
+from blossom.stores.project_state import Assignment
+from blossom.verification import CheckOutcome
 from tests.support import fixture_settings
 
 # ------------------------------------------------------------------- the path
@@ -177,9 +184,64 @@ def test_the_serializer_does_not_revive_a_class_outside_the_allowlist() -> None:
     assert not isinstance(revived, LooksLikeADraft)
 
 
-def test_every_type_a_gate_carries_is_on_the_allowlist() -> None:
-    assert Draft in STATE_TYPES
-    assert DraftStatus in STATE_TYPES
+def test_every_type_the_graphs_carry_is_on_the_allowlist() -> None:
+    """A class missing here comes back from disk as a dictionary, and the node
+    that reads it fails on the first attribute access after a resume."""
+    carried = {
+        Assignment,
+        SourceConfidence,
+        DailyPlan,
+        PlanBlock,
+        Deferral,
+        PlanVerification,
+        PlanCheck,
+        CheckOutcome,
+        CriticVerdict,
+        CriterionFinding,
+        Criterion,
+        Judgment,
+        Draft,
+        DraftStatus,
+    }
+
+    assert carried <= set(STATE_TYPES)
+
+
+def test_a_plan_and_its_verdict_survive_the_serializer() -> None:
+    """The nested shapes: enums inside a pydantic model inside a dictionary."""
+    serde = checkpoint_serializer()
+    plan = DailyPlan(
+        plan_date=date(2026, 8, 19),
+        blocks=[
+            PlanBlock(
+                assignment_id="a", starts_at=time(16, 30), ends_at=time(17, 30), rationale="r"
+            )
+        ],
+        deferred=[Deferral(assignment_id="b", reason="later")],
+    )
+    verification = PlanVerification(
+        outcomes={PlanCheck.ASSIGNMENTS_EXIST: CheckOutcome.PASSED},
+        findings={PlanCheck.NOTHING_OMITTED: ("b is missing",)},
+        uncertain_due_dates=("a",),
+    )
+    verdict = CriticVerdict(
+        findings=[
+            CriterionFinding(criterion=Criterion.ORDER, critique="k", judgment=Judgment.CANNOT_TELL)
+        ]
+    )
+    state = {
+        "plan": plan,
+        "verification": verification,
+        "verdict": verdict,
+        "confidence": {"a": SourceConfidence.SINGLE_SOURCE},
+    }
+
+    revived = serde.loads_typed(serde.dumps_typed(state))
+
+    assert revived == state
+    assert isinstance(revived["plan"], DailyPlan)
+    assert revived["verification"].uncertain_due_dates == ("a",)
+    assert revived["verdict"].undecided[0].judgment is Judgment.CANNOT_TELL
 
 
 # ------------------------------------------------------------------ the store
