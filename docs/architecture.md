@@ -84,7 +84,11 @@ that runs twice leaves one row. The table lives in its own file, under the
 same guard as saved state, with deleted rows overwritten. `GET
 /parent/approvals` reads the table and needs no model, so a parent can always
 see what is waiting; starting or deciding a run needs the model seam and says
-so with a 503 when there is no key.
+so with a 503 when there is no key, and only after the table has answered
+whether the draft exists and still waits. Two decisions about one draft cannot
+both land: the route holds one lock from the table check through the resume,
+and the table refuses a second, different decision, keeping the first and its
+time, which also covers a request from another process.
 
 **Not built:** a page. The parent's routes return JSON, and the interactive
 API page at `/docs` is how a run is started and decided today. Nothing yet

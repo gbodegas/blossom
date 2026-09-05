@@ -15,13 +15,22 @@ records it in the table.
 
 Building the graph needs the model seam, which needs a key. Reading the queue
 does not, so a parent can always see what is waiting; only starting or
-deciding a run answers 503 without one, and it says so.
+deciding a run answers 503 without one, and it says so. The graph is built
+inside the handler, after the table has been consulted, because a dependency
+is resolved before a handler runs: a draft that does not exist is a 404 with
+or without a key, and one already decided is a 409.
+
+Two decisions about one draft cannot both land. The handler holds the
+application's decision lock from the table check through the resume, and the
+table refuses a second, different decision even if a request arrives from
+another process.
 
 Not yet implemented: when the system notifies a parent that a deadline is at
 risk, the parent needs to be able to see that the notification happened.
 Without that, the visibility policy is stated but not observable.
 """
 
+from collections.abc import Callable
 from datetime import date
 from typing import Annotated, Any
 from uuid import uuid4
@@ -34,6 +43,7 @@ from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.anthropic_client import ModelUnavailable
 from blossom.dependencies import ApplicationState, get_application_state
+from blossom.stores.drafts import AlreadyDecided
 from blossom.views import (
     ApprovalQueueView,
     ApprovalView,
@@ -48,21 +58,29 @@ router = APIRouter(prefix="/parent", tags=["parent"])
 State = Annotated[ApplicationState, Depends(get_application_state)]
 
 
-def get_plan_graph(state: State) -> CompiledPlanGraph:
-    """The plan graph over the running application's stores.
+PlanGraphBuilder = Callable[[], CompiledPlanGraph]
 
-    A dependency rather than a module constant so a test can substitute scripted
-    models with ``app.dependency_overrides``, and so the application starts
-    without a key: the graph is built when a route needs it and fails there,
-    with the reason, rather than at startup.
+
+def plan_graph_builder(state: State) -> PlanGraphBuilder:
+    """A way to build the graph later, rather than the graph itself.
+
+    A dependency is resolved before its handler runs. One that built the graph
+    would answer 503 for a missing key before the handler could say 404 or 409
+    about the draft, so the dependency hands back a builder and the handler
+    calls it only when it is about to run a graph. A test substitutes this
+    dependency to supply scripted models over the real stores.
     """
-    try:
-        return plan_graph_for(state)
-    except ModelUnavailable as error:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+
+    def build() -> CompiledPlanGraph:
+        try:
+            return plan_graph_for(state)
+        except ModelUnavailable as error:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+
+    return build
 
 
-Graph = Annotated[CompiledPlanGraph, Depends(get_plan_graph)]
+Builder = Annotated[PlanGraphBuilder, Depends(plan_graph_builder)]
 
 
 class PlanRequest(BaseModel):
@@ -106,8 +124,9 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
 
 
 @router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
-async def start_plan(request: PlanRequest, state: State, graph: Graph) -> PlanRunView:
+async def start_plan(request: PlanRequest, state: State, build: Builder) -> PlanRunView:
     """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
+    graph = build()
     plan_date = request.plan_date or state.clock.today()
     thread_id = thread_for(plan_date)
     result = await graph.ainvoke(
@@ -138,35 +157,53 @@ def approval(draft_id: str, state: State) -> ApprovalView:
 
 @router.post("/approvals/{draft_id}", response_model=DecisionView)
 async def decide(
-    draft_id: str, request: DecisionRequest, state: State, graph: Graph
+    draft_id: str, request: DecisionRequest, state: State, build: Builder
 ) -> DecisionView:
-    """Resume the paused run with the decision, and report what was recorded.
+    """Resume the paused run with the decision, and report what was recorded."""
+    return await decide_draft(state, build, draft_id, request)
 
-    The table is checked first so an unknown or already decided draft is
-    refused without touching graph state. The graph is then asked whether the
-    thread is still waiting at the gate and was written by this version, since
-    the table can say a draft waits while the thread has moved on.
+
+async def decide_draft(
+    state: ApplicationState, build: PlanGraphBuilder, draft_id: str, request: DecisionRequest
+) -> DecisionView:
+    """The decision, from the table check to the resumed thread, under one lock.
+
+    The table is read first, so an unknown or already decided draft is refused
+    without a graph and therefore without a key. The graph is built only after
+    that, and asked whether the thread is still waiting at the gate and was
+    written by this version, since the table can say a draft waits while the
+    thread has moved on. The lock spans the whole sequence: two requests about
+    one draft cannot both see it waiting, and the table's own refusal covers a
+    second process.
     """
-    record = state.drafts.get(draft_id)
-    if record is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no draft {draft_id!r}")
-    if not record.waiting:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} was already {record.decision}"
+    async with state.decision_lock:
+        record = state.drafts.get(draft_id)
+        if record is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no draft {draft_id!r}")
+        if not record.waiting:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail=f"draft {draft_id!r} was already {record.decision}",
+            )
+        graph = build()
+        config = run_config(record.thread_id)
+        snapshot = await graph.aget_state(config)
+        if snapshot.next != ("require_human_approval",):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} is not waiting at the gate"
+            )
+        try:
+            ensure_current_version(snapshot)
+        except StaleGraphVersion as error:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+        resume: Command[Any] = Command(
+            resume={"approved": request.approved, "reason": request.reason}
         )
-    config = run_config(record.thread_id)
-    snapshot = await graph.aget_state(config)
-    if snapshot.next != ("require_human_approval",):
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} is not waiting at the gate"
-        )
-    try:
-        ensure_current_version(snapshot)
-    except StaleGraphVersion as error:
-        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
-    resume: Command[Any] = Command(resume={"approved": request.approved, "reason": request.reason})
-    await graph.ainvoke(resume, config=config, durability=DURABILITY)
-    decided = state.drafts.get(draft_id)
+        try:
+            await graph.ainvoke(resume, config=config, durability=DURABILITY)
+        except AlreadyDecided as error:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+        decided = state.drafts.get(draft_id)
     if decided is None or decided.waiting:
         msg = f"the run resumed but no decision was recorded for {draft_id!r}"
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)

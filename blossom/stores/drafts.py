@@ -34,6 +34,18 @@ Outcome = Literal["accepted", "unsettled"]
 """The two run outcomes that produce a draft. The others end without one."""
 
 
+class AlreadyDecided(RuntimeError):
+    """Raised when a different decision is recorded for a draft that has one.
+
+    Carries the record that stands, so a caller can say what was decided and
+    when without reading the table again.
+    """
+
+    def __init__(self, record: "DraftRecord") -> None:
+        super().__init__(f"draft {record.draft_id!r} was already {record.decision}")
+        self.record = record
+
+
 class DraftRecord(BaseModel):
     """One row: a draft, the run that produced it, and what a person decided."""
 
@@ -138,29 +150,34 @@ class DraftsStore:
     def record_decision(
         self, draft_id: str, *, status: DraftStatus, decision: Decision, reason: str | None
     ) -> DraftRecord:
-        """Save what a person decided about a waiting draft.
+        """Save what a person decided about a waiting draft, once.
 
-        The time is the store's clock, not the caller's, so every decision in
-        the table is stamped the same way. Deciding again overwrites, which is
-        what a resumed node needs and what a route must refuse before calling.
+        The update applies while no decision is recorded, or when the same
+        decision is recorded again, which is what a node that runs twice does;
+        the first time stamp is kept on a repeat. A different decision for a
+        draft that has one is refused with ``AlreadyDecided``, so two people
+        deciding at once cannot overwrite each other: the row is the referee,
+        and the second is told what stood. The time is the store's clock, not
+        the caller's, so every decision is stamped the same way.
         """
+        stamp = self._clock.now().isoformat()
         with self._lock:
             updated = self._connection.execute(
                 """
                 UPDATE drafts
-                SET status=?, decision=?, reason=?, decided_at=?
+                SET status=?, decision=?, reason=?, decided_at=COALESCE(decided_at, ?)
                 WHERE draft_id=?
+                  AND (decision IS NULL OR (decision = ? AND reason IS ?))
                 """,
-                (status.value, decision, reason, self._clock.now().isoformat(), draft_id),
+                (status.value, decision, reason, stamp, draft_id, decision, reason),
             ).rowcount
             self._connection.commit()
-        if updated == 0:
-            msg = f"no draft {draft_id!r} to decide about"
-            raise KeyError(msg)
         record = self.get(draft_id)
         if record is None:
-            msg = f"draft {draft_id!r} was updated and then could not be read back"
-            raise RuntimeError(msg)
+            msg = f"no draft {draft_id!r} to decide about"
+            raise KeyError(msg)
+        if updated == 0:
+            raise AlreadyDecided(record)
         return record
 
     def get(self, draft_id: str) -> DraftRecord | None:

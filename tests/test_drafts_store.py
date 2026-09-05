@@ -8,14 +8,16 @@ still there after the file is closed and reopened.
 
 import pathlib
 import sqlite3
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from blossom.clock import Clock
 from blossom.drafts import Draft, DraftStatus
 from blossom.stores.checkpoints import UnsafeCheckpointPath
-from blossom.stores.drafts import DraftsStore
-from tests.support import fixture_clock
+from blossom.stores.drafts import AlreadyDecided, DraftsStore
+from tests.support import FIXTURE_TIMEZONE, fixture_clock
 
 PLAN_DATE = date(2026, 8, 19)
 CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
@@ -109,6 +111,79 @@ def test_a_refusal_keeps_the_draft_a_draft() -> None:
 
     assert refused.status is DraftStatus.DRAFT
     assert refused.decision == "rejected"
+
+
+class Ticking:
+    """A clock that moves a minute every time it is read, so two stamps differ."""
+
+    def __init__(self) -> None:
+        self._at = CREATED
+        self.zone = ZoneInfo(FIXTURE_TIMEZONE)
+
+    def now(self) -> datetime:
+        self._at += timedelta(minutes=1)
+        return self._at
+
+    def today(self) -> date:
+        return self._at.astimezone(self.zone).date()
+
+
+def ticking_store() -> DraftsStore:
+    clock: Clock = Ticking()
+    return DraftsStore(sqlite3.connect(":memory:", check_same_thread=False), clock)
+
+
+def test_a_different_decision_on_a_decided_draft_is_refused_and_the_first_stands() -> None:
+    """Two people deciding at once: the row is the referee, and the second is told."""
+    store = ticking_store()
+    try:
+        store.record_waiting(draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted")
+        first = store.record_decision(
+            "draft:plan:2026-08-19:abc12345",
+            status=DraftStatus.APPROVED_FOR_MANUAL_SEND,
+            decision="approved",
+            reason="first",
+        )
+        with pytest.raises(AlreadyDecided, match="already approved") as refused:
+            store.record_decision(
+                "draft:plan:2026-08-19:abc12345",
+                status=DraftStatus.DRAFT,
+                decision="rejected",
+                reason="second",
+            )
+        standing = store.get("draft:plan:2026-08-19:abc12345")
+    finally:
+        store.close()
+
+    assert standing == first
+    assert refused.value.record == first
+    assert standing is not None
+    assert standing.decision == "approved"
+    assert standing.reason == "first"
+
+
+def test_the_same_decision_recorded_again_keeps_its_first_time() -> None:
+    """A node that runs twice records the same decision twice; the row does not move."""
+    store = ticking_store()
+    try:
+        store.record_waiting(draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted")
+        first = store.record_decision(
+            "draft:plan:2026-08-19:abc12345",
+            status=DraftStatus.APPROVED_FOR_MANUAL_SEND,
+            decision="approved",
+            reason="looks right",
+        )
+        again = store.record_decision(
+            "draft:plan:2026-08-19:abc12345",
+            status=DraftStatus.APPROVED_FOR_MANUAL_SEND,
+            decision="approved",
+            reason="looks right",
+        )
+    finally:
+        store.close()
+
+    assert again == first
+    assert again.decided_at == first.decided_at
 
 
 def test_deciding_about_an_unknown_draft_is_an_error_not_a_row() -> None:

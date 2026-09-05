@@ -17,10 +17,11 @@ handlers. A route that drives a graph is ``async def``; a route that reads
 project state need not be.
 """
 
+import asyncio
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 from fastapi import FastAPI, Request
@@ -58,6 +59,12 @@ class ApplicationState:
     checkpointer: BaseCheckpointSaver[str]
     """Where a graph's state and pauses are persisted. Opened and closed by the
     lifespan around this object, so ``close`` does not touch it."""
+    decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Held while a decision is checked against the table and carried into the
+    paused thread, so two decisions about one draft cannot both pass the check.
+    One lock for all drafts: decisions are rare and the section is short. It
+    serializes within this process; the table's own refusal of a second,
+    different decision is the backstop across processes."""
 
     def close(self) -> None:
         """Release resources held for the lifetime of the application."""

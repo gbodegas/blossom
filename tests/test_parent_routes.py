@@ -5,21 +5,25 @@ exercise the real application state, the real drafts table, and the real
 saved-state store, with only the two model calls scripted.
 """
 
+import asyncio
 from collections.abc import Callable
 from datetime import date, time
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from fastapi.testclient import TestClient
+from langgraph.checkpoint.memory import InMemorySaver
 
-from blossom.agent.graph import CompiledPlanGraph, plan_graph_for
+from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
+from blossom.agent.runs import DURABILITY, run_config
 from blossom.app import create_app
-from blossom.dependencies import ApplicationState, get_application_state
+from blossom.dependencies import ApplicationState, build_application_state, get_application_state
 from blossom.drafts import DraftStatus
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.routes.parent import get_plan_graph
+from blossom.routes.parent import DecisionRequest, decide_draft, plan_graph_builder
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
+from blossom.views import DecisionView
 from tests.support import Scripted, fixture_settings, ok
 
 PLAN_DATE = date(2026, 8, 19)
@@ -73,13 +77,13 @@ def forgetful_plan() -> DailyPlan:
 
 def scripted(
     planner: Callable[[], list[DailyPlan]], critic: Callable[[], list[CriticVerdict]]
-) -> Callable[..., CompiledPlanGraph]:
-    """A replacement for the route's graph dependency, over the app's own stores."""
+) -> Callable[..., Callable[[], CompiledPlanGraph]]:
+    """A replacement for the route's builder dependency, over the app's own stores."""
 
     def override(
         state: Annotated[ApplicationState, Depends(get_application_state)],
-    ) -> CompiledPlanGraph:
-        return plan_graph_for(
+    ) -> Callable[[], CompiledPlanGraph]:
+        return lambda: plan_graph_for(
             state,
             planner=Scripted(*[ok(plan) for plan in planner()]),
             critic=Scripted(*[ok(verdict) for verdict in critic()]),
@@ -93,7 +97,7 @@ def app_with(
     critic: Callable[[], list[CriticVerdict]] = lambda: [accepting()],
 ) -> TestClient:
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
-    app.dependency_overrides[get_plan_graph] = scripted(planner, critic)
+    app.dependency_overrides[plan_graph_builder] = scripted(planner, critic)
     return TestClient(app)
 
 
@@ -235,6 +239,66 @@ def test_a_draft_cannot_be_decided_twice() -> None:
 
     assert again.status_code == 409
     assert "already approved" in again.json()["detail"]
+
+
+def test_the_table_answers_before_a_model_is_needed() -> None:
+    """A dependency resolves before the handler, so the graph is built inside it:
+    without a key, an unknown draft is still a 404 and a decided one a 409."""
+    with app_with() as client:
+        started = client.post("/parent/plans", json={}).json()
+        client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
+        client.app.dependency_overrides.clear()  # type: ignore[attr-defined]
+
+        unknown = client.post("/parent/approvals/draft:nobody", json={"approved": True})
+        decided = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": False})
+        fresh = client.post("/parent/plans", json={})
+
+    assert unknown.status_code == 404
+    assert decided.status_code == 409
+    assert fresh.status_code == 503
+
+
+def test_two_decisions_at_once_leave_one_winner_and_tell_the_other() -> None:
+    """The route's whole sequence runs under one lock, so the second request sees
+    the draft decided rather than racing the first into the table."""
+    state = build_application_state(
+        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()), InMemorySaver()
+    )
+    try:
+
+        def build() -> CompiledPlanGraph:
+            return plan_graph_for(
+                state, planner=Scripted(ok(good_plan())), critic=Scripted(ok(accepting()))
+            )
+
+        async def scenario() -> tuple[str, list[object]]:
+            config = run_config("plan:2026-08-19:race")
+            paused = await build().ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
+            )
+            draft_id = str(paused["draft"].draft_id)
+            approve = decide_draft(
+                state, build, draft_id, DecisionRequest(approved=True, reason="first")
+            )
+            reject = decide_draft(
+                state, build, draft_id, DecisionRequest(approved=False, reason="second")
+            )
+            outcomes = await asyncio.gather(approve, reject, return_exceptions=True)
+            return draft_id, list(outcomes)
+
+        draft_id, outcomes = asyncio.run(scenario())
+        record = state.drafts.get(draft_id)
+    finally:
+        state.close()
+
+    winners = [outcome for outcome in outcomes if isinstance(outcome, DecisionView)]
+    refusals = [outcome for outcome in outcomes if isinstance(outcome, HTTPException)]
+    assert len(winners) == 1
+    assert len(refusals) == 1
+    assert refusals[0].status_code == 409
+    assert record is not None
+    assert record.decision == winners[0].decision
+    assert record.reason == winners[0].reason
 
 
 # --------------------------------------------------------------- without a key
