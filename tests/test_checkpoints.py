@@ -49,7 +49,7 @@ from blossom.stores.checkpoints import (
     open_checkpointer,
     refuse_unsafe_path,
 )
-from blossom.stores.project_state import Assignment
+from blossom.stores.project_state import Assignment, AssignmentKind
 from blossom.verification import CheckOutcome
 from tests.support import fixture_settings
 
@@ -189,6 +189,7 @@ def test_every_type_the_graphs_carry_is_on_the_allowlist() -> None:
     that reads it fails on the first attribute access after a resume."""
     carried = {
         Assignment,
+        AssignmentKind,
         SourceConfidence,
         DailyPlan,
         PlanBlock,

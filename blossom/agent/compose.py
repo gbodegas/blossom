@@ -58,7 +58,10 @@ def compose_draft(
         item = by_id.get(assignment_id)
         if item is None:
             return assignment_id
-        return f"{item.title} ({item.course}, due {short_date(item.due_date)})"
+        when = (
+            "no due date on record" if item.due_date is None else f"due {short_date(item.due_date)}"
+        )
+        return f"{item.title} ({item.course}, {when})"
 
     lines = [f"Plan for {spoken_date(plan.plan_date)}"]
     if not settled:
@@ -82,6 +85,10 @@ def compose_draft(
         lines.extend(
             f"- {named(assignment_id)}" for assignment_id in verification.uncertain_due_dates
         )
+
+    if verification.undated:
+        lines.extend(["", "No due date on record; worth asking:"])
+        lines.extend(f"- {named(assignment_id)}" for assignment_id in verification.undated)
 
     if verdict is not None:
         lines.extend(["", "The reviewer's notes:"])

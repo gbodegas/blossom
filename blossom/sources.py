@@ -61,7 +61,19 @@ class FixtureSource:
 
 
 class LMSSource:
-    """Real LMS polling belongs here when credentialed connectors are allowed."""
+    """Real LMS polling belongs here when credentialed connectors are allowed.
+
+    The rules the adapter will have to follow, from how a school portal lays a
+    week out. One item appears under an assigned date in one week and under a
+    due date in another: it is one assignment, matched by course and title,
+    with ``assigned_on`` and ``due_date`` as its two dates. A due date may be
+    shown in a day's header, inline in the title, or nowhere; the first two are
+    separate claims from the same channel, recorded with ``seen_in`` so a
+    reader can tell them apart, and the third is an undated assignment.
+    Titles carry punctuation and course codes that belong to the portal, not
+    to the item. Forms to sign and books to cover are listed beside essays and
+    are ``TASK``, not ``HOMEWORK``.
+    """
 
     def assignments(self) -> list[Assignment]:
         """Not implemented. See the class docstring."""

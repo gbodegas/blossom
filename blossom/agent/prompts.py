@@ -44,6 +44,12 @@ Rules for the plan:
 - A due date marked SINGLE_SOURCE, SOURCES_DISAGREE, or UNVERIFIED may be
   wrong. Plan so that an earlier real date would still be met, and say so in
   the rationale.
+- An assignment whose due is "unknown" has no date on record at all. Treat it
+  as due soon, and say in its rationale or reason that the date needs asking
+  about.
+- An assignment of kind TASK is a form to sign or a book to cover: minutes,
+  not a sitting. Give it a short block or put it off with a reason; never
+  stretch it to fill time.
 - A rationale or a reason is one plain sentence she would recognize as true
   about her own work. Write to her, not about her.
 - Follow the support rules. They describe how she works, and a plan that
@@ -90,18 +96,19 @@ def assignments_block(
     assignments: Sequence[Assignment], confidence: dict[str, SourceConfidence]
 ) -> str:
     """Every assignment in the window, with its due date and how sure the family is of it."""
-    lines = [
-        block(
-            "assignment",
-            item.title,
-            id=item.assignment_id,
-            course=item.course,
-            due=item.due_date.isoformat(),
-            due_date_confidence=confidence.get(item.assignment_id, SourceConfidence.UNVERIFIED),
-            status=item.reported_submission_status,
-        )
-        for item in assignments
-    ]
+    lines = []
+    for item in assignments:
+        attributes = {
+            "id": item.assignment_id,
+            "course": item.course,
+            "kind": item.kind.value,
+            "due": "unknown" if item.due_date is None else item.due_date.isoformat(),
+            "due_date_confidence": confidence.get(item.assignment_id, SourceConfidence.UNVERIFIED),
+            "status": item.reported_submission_status,
+        }
+        if item.assigned_on is not None:
+            attributes["assigned"] = item.assigned_on.isoformat()
+        lines.append(block("assignment", item.title, **attributes))
     return "<assignments>\n" + "\n".join(lines) + "\n</assignments>"
 
 
@@ -180,6 +187,7 @@ def critic_brief(
         listed("reflection", "reflections", reflections),
         block("plan", plan.model_dump_json(indent=2)),
         listed("uncertain_due_date", "uncertain_due_dates", verification.uncertain_due_dates),
+        listed("undated", "undated_assignments", verification.undated),
         "Review the plan. One finding per criterion, every criterion, critique before judgment.",
     ]
     return [SystemMessage(CRITIC_SYSTEM), HumanMessage("\n\n".join(parts))]

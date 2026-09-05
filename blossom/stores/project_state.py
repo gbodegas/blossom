@@ -18,6 +18,7 @@ import sqlite3
 import threading
 from collections.abc import Iterable
 from datetime import date, timedelta
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
@@ -28,17 +29,39 @@ DUE_THIS_WEEK_KEY = "due_this_week"
 DUE_THIS_WEEK_SPAN = timedelta(days=6)
 
 
+class AssignmentKind(StrEnum):
+    """What sort of work an item is, so a planner can size it.
+
+    A school portal lists a signed syllabus beside an essay. Both have to be
+    accounted for, but one is minutes of paperwork and the other is a sitting,
+    and a plan that gives each an hour is wrong about one of them.
+    """
+
+    HOMEWORK = "HOMEWORK"
+    TASK = "TASK"
+
+
 class Assignment(BaseModel):
-    """One assignment as structured state, with dependencies and reported status."""
+    """One assignment as structured state, with dependencies and reported status.
+
+    ``due_date`` may be ``None``. A source can list an item and give it no date,
+    and an undated item still occupies the week; hiding it would be the system
+    deciding it does not matter. ``assigned_on`` is when the work became
+    available, which a portal shows as a separate row from the due date; the
+    two are different facts about one item, and an item seen under both is
+    one assignment, not two.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     assignment_id: str
     course: str
     title: str
-    due_date: date
+    due_date: date | None
     dependencies: list[str]
     reported_submission_status: str
+    assigned_on: date | None = None
+    kind: AssignmentKind = AssignmentKind.HOMEWORK
 
 
 class ProjectStateStore:
@@ -66,9 +89,11 @@ class ProjectStateStore:
                 assignment_id TEXT PRIMARY KEY,
                 course TEXT NOT NULL,
                 title TEXT NOT NULL,
-                due_date TEXT NOT NULL,
+                due_date TEXT,
                 dependencies TEXT NOT NULL,
-                reported_submission_status TEXT NOT NULL
+                reported_submission_status TEXT NOT NULL,
+                assigned_on TEXT,
+                kind TEXT NOT NULL
             )
             """
         )
@@ -87,49 +112,69 @@ class ProjectStateStore:
         for assignment in assignments:
             self._connection.execute(
                 """
-                INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(assignment_id) DO UPDATE SET
                     course=excluded.course,
                     title=excluded.title,
                     due_date=excluded.due_date,
                     dependencies=excluded.dependencies,
-                    reported_submission_status=excluded.reported_submission_status
+                    reported_submission_status=excluded.reported_submission_status,
+                    assigned_on=excluded.assigned_on,
+                    kind=excluded.kind
                 """,
                 (
                     assignment.assignment_id,
                     assignment.course,
                     assignment.title,
-                    assignment.due_date.isoformat(),
+                    None if assignment.due_date is None else assignment.due_date.isoformat(),
                     ",".join(assignment.dependencies),
                     assignment.reported_submission_status,
+                    None if assignment.assigned_on is None else assignment.assigned_on.isoformat(),
+                    assignment.kind.value,
                 ),
             )
         self._connection.commit()
 
     def due_between(self, start: date, end: date) -> list[Assignment]:
-        """Return assignments due in ``[start, end]``, ordered by date then course."""
+        """Return assignments due in ``[start, end]``, ordered by date then course.
+
+        An assignment with no due date is not between any two dates and is not
+        returned here; ``undated`` is the other half of the week.
+        """
         with self._lock:
             rows = self._connection.execute(
                 """
                 SELECT assignment_id, course, title, due_date, dependencies,
-                       reported_submission_status
+                       reported_submission_status, assigned_on, kind
                 FROM assignments
                 WHERE due_date BETWEEN ? AND ?
                 ORDER BY due_date, course, title
                 """,
                 (start.isoformat(), end.isoformat()),
             ).fetchall()
-        return [
-            Assignment(
-                assignment_id=str(row[0]),
-                course=str(row[1]),
-                title=str(row[2]),
-                due_date=date.fromisoformat(str(row[3])),
-                dependencies=str(row[4]).split(",") if row[4] else [],
-                reported_submission_status=str(row[5]),
-            )
-            for row in rows
-        ]
+        return [assignment_from(row) for row in rows]
+
+    def week_from(self, start: date) -> list[Assignment]:
+        """The week as every reader sees it: dated work in the window, then undated work.
+
+        The student's page and the plan graph both read this, so an undated
+        item cannot be shown to her and skipped by the planner, or the reverse.
+        """
+        return [*self.due_between(start, start + DUE_THIS_WEEK_SPAN), *self.undated()]
+
+    def undated(self) -> list[Assignment]:
+        """Return every assignment with no due date on record, by course then title."""
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT assignment_id, course, title, due_date, dependencies,
+                       reported_submission_status, assigned_on, kind
+                FROM assignments
+                WHERE due_date IS NULL
+                ORDER BY course, title
+                """
+            ).fetchall()
+        return [assignment_from(row) for row in rows]
 
     def lookup(self, key: str) -> RetrievalResult | None:
         """Resolve a keyed structured query.
@@ -137,19 +182,34 @@ class ProjectStateStore:
         "This week" means today plus the next six days, computed from the
         injected clock so tests can pin the date. The definition is a placeholder
         that belongs in a calendar policy once there is one.
+
+        An assignment with no due date cannot be placed in any week, so it is
+        in every week until it has one, after the dated work. Nothing is
+        filtered, and an undated item is a problem to resolve, not to hide.
         """
         if key != DUE_THIS_WEEK_KEY:
             return None
         today = self._clock.today()
-        end = today + DUE_THIS_WEEK_SPAN
         return RetrievalResult(
             store_name=self.name,
             record_id=key,
             source_channel="fixture",
             asserted_at=self._clock.now(),
             payload={
-                "assignments": [
-                    item.model_dump(mode="json") for item in self.due_between(today, end)
-                ]
+                "assignments": [item.model_dump(mode="json") for item in self.week_from(today)]
             },
         )
+
+
+def assignment_from(row: tuple[object, ...]) -> Assignment:
+    """Build an assignment from a row in the order the two queries select."""
+    return Assignment(
+        assignment_id=str(row[0]),
+        course=str(row[1]),
+        title=str(row[2]),
+        due_date=None if row[3] is None else date.fromisoformat(str(row[3])),
+        dependencies=str(row[4]).split(",") if row[4] else [],
+        reported_submission_status=str(row[5]),
+        assigned_on=None if row[6] is None else date.fromisoformat(str(row[6])),
+        kind=AssignmentKind(str(row[7])),
+    )

@@ -33,6 +33,12 @@ class SourceRecord(BaseModel):
 
     ``confidence`` is the channel's own reported certainty. It is not used to
     resolve a disagreement.
+
+    ``seen_in`` names where in the source the claim was read, for a source that
+    states the same fact in more than one place: a portal can show one date in
+    a day's header and another in the item's own title. Two records from one
+    channel are then two claims a reader can tell apart, rather than the same
+    channel apparently contradicting itself.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -41,6 +47,12 @@ class SourceRecord(BaseModel):
     asserted_value: str
     observed_at: AwareDatetime
     confidence: float
+    seen_in: str | None = None
+
+    def describe(self) -> str:
+        """The claim as a person reads it: the channel, where in it, and the value."""
+        where = f" ({self.seen_in})" if self.seen_in else ""
+        return f"{self.channel}{where}: {self.asserted_value}"
 
 
 class Agreement(BaseModel):

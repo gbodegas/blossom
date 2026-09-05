@@ -88,6 +88,10 @@ class PlanVerification(BaseModel):
     only, sources in conflict, or nothing at all. Not a failure, and not a
     judgment about the plan; a flag it carries forward, because the plan cannot
     be more certain than the record it was built from."""
+    undated: tuple[str, ...] = ()
+    """Assignments in the window with no due date on record. Also a flag rather
+    than a failure: the plan still has to account for them, and the person at
+    the gate is told the date is missing rather than merely doubtful."""
 
     @property
     def passed(self) -> bool:
@@ -155,7 +159,12 @@ def check_plan(
 
     for block in plan.blocks:
         assignment = known.get(block.assignment_id)
-        if assignment is not None and plan.plan_date > assignment.due_date:
+        # An undated assignment has no deadline to run past; it is flagged below.
+        if (
+            assignment is not None
+            and assignment.due_date is not None
+            and plan.plan_date > assignment.due_date
+        ):
             findings[PlanCheck.BLOCKS_MEET_DEADLINES].append(
                 f"{block.assignment_id} is due {assignment.due_date} and is scheduled "
                 f"{plan.plan_date}, after it"
@@ -192,4 +201,7 @@ def check_plan(
         },
         findings={check: tuple(found) for check, found in findings.items() if found},
         uncertain_due_dates=uncertain,
+        undated=tuple(
+            sorted(item.assignment_id for item in due_in_window if item.due_date is None)
+        ),
     )

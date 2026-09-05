@@ -45,7 +45,7 @@ from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
-from blossom.stores.project_state import Assignment, ProjectStateStore
+from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.stores.support_rules import SupportRule, SupportRulesStore
 from tests.support import FIXTURE_TIMEZONE, Scripted, fixture_clock, fixture_settings, ok
@@ -641,3 +641,56 @@ def test_a_paused_plan_survives_the_process_that_wrote_it(tmp_path: pathlib.Path
     assert revived["recorded"].reason == "too late"
     assert revived["recorded"].status is DraftStatus.DRAFT
     assert not revived["recorded"].waiting
+
+
+SIGNED_SYLLABUS = Assignment(
+    assignment_id="assignment-signed-syllabus",
+    course="Geometry",
+    title="Syllabus, signed",
+    due_date=None,
+    dependencies=[],
+    reported_submission_status="not_started",
+    kind=AssignmentKind.TASK,
+)
+
+
+def test_an_undated_task_reaches_the_planner_the_checks_and_the_draft() -> None:
+    """The graph reads the week the way the page does, so an item with no date is
+    planned for, flagged, and written into the draft rather than skipped."""
+    with_task = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+        deferred=[
+            Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday"),
+            Deferral(assignment_id="assignment-signed-syllabus", reason="ask for the date"),
+        ],
+    )
+    planner = Scripted(ok(with_task))
+
+    result = run(
+        graph_with(
+            planner, Scripted(ok(accepting())), assignments=(ESSAY, PROBLEM_SET, SIGNED_SYLLABUS)
+        )
+    )
+
+    brief = human_text(planner.briefs[0])
+    assert 'id="assignment-signed-syllabus"' in brief
+    assert 'kind="TASK"' in brief
+    assert 'due="unknown"' in brief
+    assert result["verification"].undated == ("assignment-signed-syllabus",)
+    assert result["outcome"] == "accepted"
+    body = result["__interrupt__"][0].value["body"]
+    assert "Syllabus, signed (Geometry, no due date on record): ask for the date" in body
+    assert "No due date on record; worth asking:" in body
+
+
+def test_a_plan_that_forgets_an_undated_task_fails_the_omission_check() -> None:
+    planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
+
+    result = run(graph_with(planner, Scripted(), assignments=(ESSAY, PROBLEM_SET, SIGNED_SYLLABUS)))
+
+    assert result["outcome"] == "checks_failed"
+    assert (
+        "assignment-signed-syllabus is due in this window and the plan does not mention it"
+        in (result["feedback"])
+    )

@@ -18,6 +18,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from blossom.drafts import Decision, DraftStatus
 from blossom.reconciliation import SourceConfidence
 from blossom.stores.drafts import DraftRecord
+from blossom.stores.project_state import AssignmentKind
 
 
 class StudentAssignmentView(BaseModel):
@@ -33,6 +34,7 @@ class StudentAssignmentView(BaseModel):
     course: str
     title: str
     due_date: date | None
+    kind: AssignmentKind = AssignmentKind.HOMEWORK
     submission_status: str
     deadline_confidence: SourceConfidence
     source_channels: list[str]

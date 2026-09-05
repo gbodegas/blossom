@@ -68,7 +68,7 @@ from blossom.reconciliation import Reconciler, SourceConfidence, classify_confid
 from blossom.settings import Settings
 from blossom.sources import StateSource
 from blossom.stores.drafts import DraftsStore
-from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, ProjectStateStore
+from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
 
@@ -212,8 +212,7 @@ def build_plan_graph(
 
     def retrieve(state: PlanState) -> dict[str, Any]:
         """Read the week from the stores. Whole corpora, no index: they are small."""
-        start = state["plan_date"]
-        assignments = project_state.due_between(start, start + DUE_THIS_WEEK_SPAN)
+        assignments = project_state.week_from(state["plan_date"])
         confidence = {
             item.assignment_id: classify_confidence(
                 reconciler.reconcile(source.deadline_records(item.assignment_id))
