@@ -62,7 +62,7 @@ from blossom.anthropic_client import (
 from blossom.dependencies import ApplicationState
 from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
-from blossom.noticing import Noticing, expect_due_date, notice_due_date
+from blossom.noticing import Noticing, expect_due_date, in_week, notice_due_date
 from blossom.plan_checks import DEFAULT_DAILY_MINUTES, PlanVerification, check_plan
 from blossom.plans import DailyPlan
 from blossom.reconciliation import Reconciler, SourceConfidence, classify_confidence
@@ -216,23 +216,35 @@ def build_plan_graph(
     def retrieve(state: PlanState) -> dict[str, Any]:
         """Read the week from the stores. Whole corpora, no index: they are small.
 
-        The record's due date for each assignment is stated before its sources
-        are read, then set against them. What the sources say also decides how
-        far the family can trust the date.
+        Every assignment on record has its due date stated before its sources
+        are read, then set against them. The week is selected after that, so
+        a date a source gives can put an item in it that the record alone
+        would leave out. What the sources say also decides how far the family
+        can trust each date.
         """
-        assignments = project_state.week_from(state["plan_date"])
-        expectations = [expect_due_date(item) for item in assignments]
+        everything = project_state.all_assignments()
+        expectations = [expect_due_date(item) for item in everything]
         records = {
-            item.assignment_id: source.deadline_records(item.assignment_id) for item in assignments
+            item.assignment_id: source.deadline_records(item.assignment_id) for item in everything
         }
-        confidence = {
-            name: classify_confidence(reconciler.reconcile(found))
-            for name, found in records.items()
-        }
-        noticings = [
-            notice_due_date(expectation, records[expectation.assignment_id])
+        noticed = {
+            expectation.assignment_id: notice_due_date(
+                expectation, records[expectation.assignment_id]
+            )
             for expectation in expectations
+        }
+        assignments = [
+            item
+            for item in everything
+            if in_week(item, noticed[item.assignment_id], state["plan_date"])
         ]
+        confidence = {
+            item.assignment_id: classify_confidence(
+                reconciler.reconcile(records[item.assignment_id])
+            )
+            for item in assignments
+        }
+        noticings = [noticed[item.assignment_id] for item in assignments]
         return {
             "assignments": assignments,
             "confidence": confidence,

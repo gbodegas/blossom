@@ -155,12 +155,27 @@ class ProjectStateStore:
         return [assignment_from(row) for row in rows]
 
     def week_from(self, start: date) -> list[Assignment]:
-        """The week as every reader sees it: dated work in the window, then undated work.
+        """The week by the record alone: dated work in the window, then undated work.
 
-        The student's page and the plan graph both read this, so an undated
-        item cannot be shown to her and skipped by the planner, or the reverse.
+        The student's page reads this. The plan graph reads ``all_assignments``
+        and selects the same window after the sources have been read, so a
+        date a source gives can put an item in the week that the record leaves
+        out; undated work is in both.
         """
         return [*self.due_between(start, start + DUE_THIS_WEEK_SPAN), *self.undated()]
+
+    def all_assignments(self) -> list[Assignment]:
+        """Every assignment on record, dated work by date then course, undated work last."""
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT assignment_id, course, title, due_date, dependencies,
+                       reported_submission_status, assigned_on, kind
+                FROM assignments
+                ORDER BY due_date IS NULL, due_date, course, title
+                """
+            ).fetchall()
+        return [assignment_from(row) for row in rows]
 
     def undated(self) -> list[Assignment]:
         """Return every assignment with no due date on record, by course then title."""

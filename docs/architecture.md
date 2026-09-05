@@ -290,9 +290,10 @@ call, and neither holds a tool. So there is no loop in which a model decides
 what to call next: the graph decides, from the checks and the verdict, and
 every route it can take is written in one file.
 
-Seven nodes, in this order. `retrieve` reads the week from the stores, stating
-the record's due date for each assignment before it reads the sources and
-setting the two against each other. `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
+Seven nodes, in this order. `retrieve` reads every assignment on record,
+states each one's due date before it reads the sources, sets the two against
+each other, and then selects the week: undated work, and dated work that the
+record or any source puts in the window. `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
 back to `plan` with the findings before any critic sees it, because a
 judgment about a plan that is already wrong is a wasted call. `critique` asks
 the critic; fault sends the plan back with the critique, doubt sends it
@@ -357,7 +358,10 @@ signal under noise about formats and missing sources. No model takes part.
 A contradiction changes three things. The tier-one deadline check measures a
 contradicted assignment against the earliest date anyone gives, record or
 source, so a plan cannot pass by trusting a record the school does not
-support. The planner and the critic are shown the contradiction in its own
+support; the check holds deferrals to the same day, since putting work off
+moves it to another day at the earliest. The week itself is selected after the
+sources are read, so an item the record puts next month and a source puts this
+week is planned for rather than never queried. The planner and the critic are shown the contradiction in its own
 block, with an instruction to plan for the earliest date and to say the record
 needs checking. The draft names it in a section of its own, so the person at
 the gate sees what to correct.

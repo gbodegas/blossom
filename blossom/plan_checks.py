@@ -20,6 +20,7 @@ is why it is a state of its own rather than a kind of yes.
 
 from collections import Counter
 from collections.abc import Sequence
+from datetime import date
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
@@ -53,7 +54,8 @@ class PlanCheck(StrEnum):
     once. Several blocks for one assignment are fine: work can be split."""
 
     BLOCKS_MEET_DEADLINES = "BLOCKS_MEET_DEADLINES"
-    """No block is scheduled after the day its assignment is due."""
+    """No block is scheduled after the day its assignment is due, and nothing
+    due by the plan date is put off, since putting it off moves it past the day."""
 
     BLOCKS_DO_NOT_OVERLAP = "BLOCKS_DO_NOT_OVERLAP"
     """She is in one place at a time."""
@@ -167,18 +169,35 @@ def check_plan(
         if count > 1
     )
 
+    def deadline_of(assignment: Assignment) -> tuple[date | None, str]:
+        """The day the work must be done by, and where that day comes from."""
+        noticed = contradicted.get(assignment.assignment_id)
+        if noticed is None:
+            return assignment.due_date, ""
+        return noticed.earliest_date, " by the earliest date the record or a source gives"
+
     for block in plan.blocks:
         assignment = known.get(block.assignment_id)
         if assignment is None:
             continue
-        noticed = contradicted.get(block.assignment_id)
-        deadline = assignment.due_date if noticed is None else noticed.earliest_date
+        deadline, basis = deadline_of(assignment)
         # An undated assignment has no deadline to run past; it is flagged below.
         if deadline is not None and plan.plan_date > deadline:
-            basis = "" if noticed is None else " by the earliest date the record or a source gives"
             findings[PlanCheck.BLOCKS_MEET_DEADLINES].append(
                 f"{block.assignment_id} is due {deadline}{basis} and is scheduled "
                 f"{plan.plan_date}, after it"
+            )
+
+    for deferral in plan.deferred:
+        assignment = known.get(deferral.assignment_id)
+        if assignment is None:
+            continue
+        deadline, basis = deadline_of(assignment)
+        # Put off means another day at the earliest, so due today is already too late.
+        if deadline is not None and plan.plan_date >= deadline:
+            findings[PlanCheck.BLOCKS_MEET_DEADLINES].append(
+                f"{deferral.assignment_id} is due {deadline}{basis} and is put off from "
+                f"{plan.plan_date}, past it"
             )
 
     findings[PlanCheck.BLOCKS_DO_NOT_OVERLAP].extend(

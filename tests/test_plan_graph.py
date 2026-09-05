@@ -165,15 +165,26 @@ class TwoChannelSource:
 
 
 class SchoolSaysOtherwise(TwoChannelSource):
-    """The portal gives the essay one date and the record holds another."""
+    """The portal gives one assignment a date and the record holds another."""
 
-    def __init__(self, essay_due: str) -> None:
-        self.essay_due = essay_due
+    def __init__(self, due: str, assignment_id: str = ESSAY.assignment_id) -> None:
+        self.due = due
+        self.assignment_id = assignment_id
 
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
-        if assignment_id == ESSAY.assignment_id:
-            return [self.record(SourceChannel.LMS, self.essay_due)]
+        if assignment_id == self.assignment_id:
+            return [self.record(SourceChannel.LMS, self.due)]
         return super().deadline_records(assignment_id)
+
+
+NEXT_MONTH = Assignment(
+    assignment_id="assignment-lab-report",
+    course="Science",
+    title="Lab report",
+    due_date=date(2026, 9, 15),
+    dependencies=[],
+    reported_submission_status="not_started",
+)
 
 
 def stores(
@@ -772,4 +783,70 @@ def test_a_block_after_the_school_date_fails_the_checks_though_the_record_allows
     assert result["feedback"] == [
         "assignment-canal-essay is due 2026-08-18 by the earliest date the record or a "
         "source gives and is scheduled 2026-08-19, after it"
+    ]
+
+
+def test_an_item_the_record_puts_next_month_is_in_the_week_when_a_source_puts_it_here() -> None:
+    """The window is chosen after the sources are read, so the contradiction
+    can act on an item the record alone would have left out."""
+    with_report = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+        deferred=[
+            Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday"),
+            Deferral(assignment_id="assignment-lab-report", reason="the record says next month"),
+        ],
+    )
+    planner = Scripted(ok(with_report))
+    school = SchoolSaysOtherwise("2026-08-20", "assignment-lab-report")
+
+    result = run(
+        graph_with(
+            planner,
+            Scripted(ok(accepting())),
+            assignments=(ESSAY, PROBLEM_SET, NEXT_MONTH),
+            source=school,
+        )
+    )
+
+    assert [item.assignment_id for item in result["assignments"]] == [
+        "assignment-canal-essay",
+        "assignment-algebra-set",
+        "assignment-lab-report",
+    ]
+    assert result["verification"].contradicted == ("assignment-lab-report",)
+    assert (
+        '<contradiction id="assignment-lab-report" record="2026-09-15">LMS: 2026-08-20'
+        in human_text(planner.briefs[0])
+    )
+    body = result["__interrupt__"][0].value["body"]
+    assert "- Lab report (Science, due Sep 15), but the sources say LMS: 2026-08-20" in body
+
+
+def test_an_item_nothing_puts_in_the_week_stays_out_of_it() -> None:
+    planner = Scripted(ok(good_plan()))
+
+    result = run(
+        graph_with(planner, Scripted(ok(accepting())), assignments=(ESSAY, PROBLEM_SET, NEXT_MONTH))
+    )
+
+    assert [item.assignment_id for item in result["assignments"]] == [
+        "assignment-canal-essay",
+        "assignment-algebra-set",
+    ]
+    assert "assignment-lab-report" not in human_text(planner.briefs[0])
+
+
+def test_putting_off_work_the_school_says_is_due_tonight_fails_the_checks() -> None:
+    """The record allows the deferral; the school's date does not, and the
+    plan goes back rather than through."""
+    planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
+    school = SchoolSaysOtherwise("2026-08-19", "assignment-algebra-set")
+
+    result = run(graph_with(planner, Scripted(), source=school))
+
+    assert result["outcome"] == "checks_failed"
+    assert result["feedback"] == [
+        "assignment-algebra-set is due 2026-08-19 by the earliest date the record or a "
+        "source gives and is put off from 2026-08-19, past it"
     ]

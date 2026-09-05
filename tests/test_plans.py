@@ -587,3 +587,57 @@ def test_a_contradiction_about_an_assignment_outside_the_window_is_not_reported(
 
     assert result.passed
     assert result.contradicted == ()
+
+
+def deferring(assignment_id: str, *others: str) -> DailyPlan:
+    """A plan that puts one assignment off and blocks the rest of the window."""
+    return DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block(name, "16:30", "17:30") for name in others],
+        deferred=[Deferral(assignment_id=assignment_id, reason="another day")],
+    )
+
+
+def test_putting_off_work_due_by_the_plan_date_fails_the_deadline_check() -> None:
+    due_tonight = ESSAY.model_copy(update={"due_date": PLAN_DATE})
+
+    result = check_plan(
+        deferring("assignment-canal-essay", "assignment-algebra-set"),
+        due_in_window=[due_tonight, PROBLEM_SET],
+        zone=ZONE,
+    )
+
+    assert result.failed_checks == (PlanCheck.BLOCKS_MEET_DEADLINES,)
+    assert result.findings[PlanCheck.BLOCKS_MEET_DEADLINES] == (
+        "assignment-canal-essay is due 2026-08-19 and is put off from 2026-08-19, past it",
+    )
+
+
+def test_putting_off_work_due_tomorrow_passes() -> None:
+    due_tomorrow = ESSAY.model_copy(update={"due_date": date(2026, 8, 20)})
+
+    result = check_plan(
+        deferring("assignment-canal-essay", "assignment-algebra-set"),
+        due_in_window=[due_tomorrow, PROBLEM_SET],
+        zone=ZONE,
+    )
+
+    assert result.passed
+
+
+def test_putting_off_a_contradicted_record_is_measured_against_the_school_date() -> None:
+    """The record allows the deferral; the school's date does not."""
+    school_says_tonight = noticed(ESSAY.due_date, PLAN_DATE, verdict=Verdict.CONTRADICTED)
+
+    result = check_plan(
+        deferring("assignment-canal-essay", "assignment-algebra-set"),
+        due_in_window=WINDOW,
+        zone=ZONE,
+        noticings=[school_says_tonight],
+    )
+
+    assert result.failed_checks == (PlanCheck.BLOCKS_MEET_DEADLINES,)
+    assert result.findings[PlanCheck.BLOCKS_MEET_DEADLINES] == (
+        "assignment-canal-essay is due 2026-08-19 by the earliest date the record or a "
+        "source gives and is put off from 2026-08-19, past it",
+    )

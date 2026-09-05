@@ -15,8 +15,10 @@ import pytest
 
 from blossom.noticing import (
     DueDateExpectation,
+    Noticing,
     Verdict,
     expect_due_date,
+    in_week,
     notice_due_date,
     read_date,
 )
@@ -118,3 +120,50 @@ def test_only_an_iso_date_is_read_as_a_date(value: str) -> None:
 
 def test_an_iso_date_is_read_with_whitespace_around_it() -> None:
     assert read_date(" 2026-08-21\n") == FRIDAY
+
+
+def observed(*dates: date) -> Noticing:
+    return Noticing(
+        assignment_id="a",
+        expected=None,
+        observed=tuple(f"LMS: {item.isoformat()}" for item in dates),
+        observed_dates=tuple(sorted(dates)),
+        verdict=Verdict.UNDECIDABLE if not dates else Verdict.CONTRADICTED,
+    )
+
+
+def test_undated_work_is_always_in_the_week() -> None:
+    undated = ESSAY.model_copy(update={"due_date": None})
+
+    assert in_week(undated, observed(), FRIDAY)
+    assert in_week(undated, observed(date(2026, 10, 1)), FRIDAY)
+
+
+@pytest.mark.parametrize(
+    ("record", "sources", "expected"),
+    [
+        (date(2026, 8, 21), (), True),
+        (date(2026, 8, 25), (), True),
+        (date(2026, 8, 26), (), False),
+        (date(2026, 8, 18), (), False),
+        (date(2026, 9, 15), (date(2026, 8, 20),), True),
+        (date(2026, 8, 21), (date(2026, 8, 18),), True),
+        (date(2026, 9, 15), (date(2026, 8, 18),), False),
+    ],
+    ids=[
+        "record on the first day",
+        "record on the last day",
+        "record the day after",
+        "record the day before",
+        "record later but a source puts it here",
+        "record here and a source says it was due already",
+        "record later and the source date has passed",
+    ],
+)
+def test_dated_work_is_in_the_week_when_any_date_anyone_gives_falls_in_it(
+    record: date, sources: tuple[date, ...], expected: bool
+) -> None:
+    start = date(2026, 8, 19)
+    dated = ESSAY.model_copy(update={"due_date": record})
+
+    assert in_week(dated, observed(*sources), start) is expected

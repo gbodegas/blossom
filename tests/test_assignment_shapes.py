@@ -307,3 +307,14 @@ def test_the_page_shows_an_undated_task_and_a_self_disagreeing_source(
     assert "a task, not a sitting" in page
     assert "LMS (day header): 2026-08-21" in page
     assert "LMS (title): 2026-08-22" in page
+
+
+def test_the_store_lists_everything_dated_work_first_then_undated() -> None:
+    store = ProjectStateStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    later = ESSAY.model_copy(update={"assignment_id": "later", "due_date": date(2026, 9, 15)})
+    undated = ESSAY.model_copy(update={"assignment_id": "undated", "due_date": None})
+    store.upsert_assignments([later, undated, ESSAY])
+
+    everything = store.all_assignments()
+
+    assert [item.assignment_id for item in everything] == [ESSAY.assignment_id, "later", "undated"]

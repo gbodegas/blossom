@@ -28,7 +28,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
 from blossom.reconciliation import SourceRecord
-from blossom.stores.project_state import Assignment
+from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment
 
 
 class Verdict(StrEnum):
@@ -134,3 +134,17 @@ def notice_due_date(expectation: DueDateExpectation, records: list[SourceRecord]
         observed_dates=tuple(readable),
         verdict=verdict,
     )
+
+
+def in_week(assignment: Assignment, noticing: Noticing, start: date) -> bool:
+    """Whether the record or any source puts the assignment in the week from ``start``.
+
+    Undated work is always in the week. Dated work is in it when any date
+    anyone gives falls inside the window, so an item the record puts next
+    month and a source puts this week is planned for, and so is one the record
+    puts this week and a source says was due already.
+    """
+    if assignment.due_date is None:
+        return True
+    end = start + DUE_THIS_WEEK_SPAN
+    return any(start <= given <= end for given in (assignment.due_date, *noticing.observed_dates))
