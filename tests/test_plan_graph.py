@@ -20,7 +20,6 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
-from pydantic import BaseModel
 
 from blossom.agent.graph import (
     MAX_REVISIONS,
@@ -45,10 +44,11 @@ from blossom.heuristic_relevance import (
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
+from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.stores.support_rules import SupportRule, SupportRulesStore
-from tests.support import FIXTURE_TIMEZONE, fixture_clock, fixture_settings
+from tests.support import FIXTURE_TIMEZONE, Scripted, fixture_clock, fixture_settings, ok
 
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
 PLAN_DATE = date(2026, 8, 19)
@@ -73,29 +73,6 @@ PROBLEM_SET = Assignment(
 
 
 # ------------------------------------------------------------------ scripting
-
-
-class Scripted[T: BaseModel]:
-    """A model callable that answers from a list and keeps every brief it was sent."""
-
-    def __init__(self, *answers: ModelAnswer[T]) -> None:
-        self.answers = list(answers)
-        self.briefs: list[list[BaseMessage]] = []
-
-    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[T]:
-        self.briefs.append(list(messages))
-        if not self.answers:
-            msg = f"the script ran out after {len(self.briefs) - 1} calls"
-            raise AssertionError(msg)
-        return self.answers.pop(0)
-
-    @property
-    def calls(self) -> int:
-        return len(self.briefs)
-
-
-def ok[T: BaseModel](parsed: T) -> ModelAnswer[T]:
-    return ModelAnswer(parsed=parsed, stop_reason="end_turn", parsing_error=None)
 
 
 def block(assignment: str, start: str, end: str) -> PlanBlock:
@@ -193,6 +170,7 @@ def graph_with(
     critic: Scripted[CriticVerdict],
     *,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    drafts: DraftsStore | None = None,
     assignments: Sequence[Assignment] = (ESSAY, PROBLEM_SET),
     rules: Sequence[str] = (),
     notes: Sequence[str] = (),
@@ -216,11 +194,16 @@ def graph_with(
         source=TwoChannelSource(),
         support_rules=support_rules,
         reflections=reflections,
+        drafts=drafts or drafts_in_memory(),
         zone=ZONE,
         planner=planner,
         critic=critic,
         checkpointer=checkpointer or InMemorySaver(),
     )
+
+
+def drafts_in_memory() -> DraftsStore:
+    return DraftsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
 
 
 def run(graph: CompiledPlanGraph, thread: str = "plan:2026-08-19") -> dict[str, Any]:
@@ -567,7 +550,15 @@ def test_the_nodes_ahead_of_the_gate_are_the_ones_the_contract_names() -> None:
 
     nodes = [name for name in graph.get_graph().nodes if not name.startswith("__")]
 
-    assert nodes == ["retrieve", "plan", "verify", "critique", "compose", "require_human_approval"]
+    assert nodes == [
+        "retrieve",
+        "plan",
+        "verify",
+        "critique",
+        "compose",
+        "require_human_approval",
+        "record_decision",
+    ]
 
 
 def test_the_application_graph_needs_a_key_unless_given_models() -> None:
@@ -583,31 +574,50 @@ def test_the_application_graph_needs_a_key_unless_given_models() -> None:
 
 
 def test_a_paused_plan_survives_the_process_that_wrote_it(tmp_path: pathlib.Path) -> None:
-    """Two event loops stand in for two processes, through the real SQLite saver,
-    so every type the state carries is proven to come back as itself."""
+    """Two event loops stand in for two processes, through the real SQLite saver
+    and the real drafts file, so every type the state carries is proven to come
+    back as itself and the decision lands in the table the first process made."""
     path = tmp_path / "checkpoints.sqlite3"
+    drafts_path = tmp_path / "blossom.sqlite3"
     config = run_config("plan:durable")
 
     async def first_process() -> None:
-        async with open_checkpointer(path) as saver:
-            graph = graph_with(
-                Scripted(ok(good_plan())), Scripted(ok(undecided())), checkpointer=saver
-            )
-            paused = await graph.ainvoke(
-                PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
-            )
-            assert len(paused["__interrupt__"]) == 1
+        drafts = DraftsStore.open(drafts_path, fixture_clock())
+        try:
+            async with open_checkpointer(path) as saver:
+                graph = graph_with(
+                    Scripted(ok(good_plan())),
+                    Scripted(ok(undecided())),
+                    checkpointer=saver,
+                    drafts=drafts,
+                )
+                paused = await graph.ainvoke(
+                    PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
+                )
+                assert len(paused["__interrupt__"]) == 1
+                assert [record.draft_id for record in drafts.waiting()] == ["draft:plan:durable"]
+        finally:
+            drafts.close()
 
     async def second_process() -> dict[str, Any]:
-        async with open_checkpointer(path) as saver:
-            graph = graph_with(Scripted(), Scripted(), checkpointer=saver)
-            waiting = await graph.aget_state(config)
-            assert waiting.next == ("require_human_approval",)
-            values = dict(waiting.values)
-            resume: Command[Any] = Command(resume={"approved": False, "reason": "too late"})
-            await graph.ainvoke(resume, config=config, durability=DURABILITY)
-            final = await graph.aget_state(config)
-            return values | {"final_decision": final.values["decision"]}
+        drafts = DraftsStore.open(drafts_path, fixture_clock())
+        try:
+            async with open_checkpointer(path) as saver:
+                graph = graph_with(Scripted(), Scripted(), checkpointer=saver, drafts=drafts)
+                waiting = await graph.aget_state(config)
+                assert waiting.next == ("require_human_approval",)
+                values = dict(waiting.values)
+                resume: Command[Any] = Command(resume={"approved": False, "reason": "too late"})
+                await graph.ainvoke(resume, config=config, durability=DURABILITY)
+                final = await graph.aget_state(config)
+                recorded = drafts.get("draft:plan:durable")
+                assert recorded is not None
+                return values | {
+                    "final_decision": final.values["decision"],
+                    "recorded": recorded,
+                }
+        finally:
+            drafts.close()
 
     asyncio.run(first_process())
     revived = asyncio.run(second_process())
@@ -619,3 +629,7 @@ def test_a_paused_plan_survives_the_process_that_wrote_it(tmp_path: pathlib.Path
     assert isinstance(revived["assignments"][0], Assignment)
     assert revived["outcome"] == "unsettled"
     assert revived["final_decision"] == "rejected"
+    assert revived["recorded"].decision == "rejected"
+    assert revived["recorded"].reason == "too late"
+    assert revived["recorded"].status is DraftStatus.DRAFT
+    assert not revived["recorded"].waiting

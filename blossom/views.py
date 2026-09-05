@@ -15,7 +15,9 @@ from datetime import date
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
+from blossom.drafts import Decision, DraftStatus
 from blossom.reconciliation import SourceConfidence
+from blossom.stores.drafts import DraftRecord
 
 
 class StudentAssignmentView(BaseModel):
@@ -73,6 +75,93 @@ class ParentCheckpointView(BaseModel):
 
     checkpoint_at: AwareDatetime
     assignments: list[ParentCheckpointAssignmentView]
+
+
+class PlanRunView(BaseModel):
+    """How a run of the plan graph ended, for the parent who started it.
+
+    ``waiting`` is true when the run paused at the gate with a draft; then
+    ``draft_id`` names what to look at. Otherwise ``outcome`` says why there
+    is nothing to approve.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str
+    plan_date: date
+    outcome: str
+    draft_id: str | None
+    waiting: bool
+
+
+class ApprovalView(BaseModel):
+    """One draft as the parent sees it: the text, its status, and any decision.
+
+    The body already carries the plan, the doubtful due dates, and the
+    reviewer's notes as prose, so the parent reads one thing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    plan_date: date
+    status: DraftStatus
+    outcome: str
+    body: str
+    created_at: AwareDatetime
+    decision: Decision | None
+    reason: str | None
+    decided_at: AwareDatetime | None
+
+    @classmethod
+    def from_record(cls, record: DraftRecord) -> "ApprovalView":
+        """The parent's projection of a table row. The thread id stays out of it."""
+        return cls(
+            draft_id=record.draft_id,
+            plan_date=record.plan_date,
+            status=record.status,
+            outcome=record.outcome,
+            body=record.body,
+            created_at=record.created_at,
+            decision=record.decision,
+            reason=record.reason,
+            decided_at=record.decided_at,
+        )
+
+
+class ApprovalQueueView(BaseModel):
+    """What waits for a decision, oldest first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    generated_at: AwareDatetime
+    waiting: list[ApprovalView]
+
+
+class DecisionView(BaseModel):
+    """What was recorded when the parent decided."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    status: DraftStatus
+    decision: Decision
+    reason: str | None
+    decided_at: AwareDatetime
+
+    @classmethod
+    def from_record(cls, record: DraftRecord) -> "DecisionView":
+        """A decided row. The caller checks it is decided; here that is required."""
+        if record.decision is None or record.decided_at is None:
+            msg = f"draft {record.draft_id!r} has no decision to show"
+            raise ValueError(msg)
+        return cls(
+            draft_id=record.draft_id,
+            status=record.status,
+            decision=record.decision,
+            reason=record.reason,
+            decided_at=record.decided_at,
+        )
 
 
 class VerifierClaimView(BaseModel):

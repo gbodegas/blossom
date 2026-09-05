@@ -5,15 +5,20 @@ transmit by hand, which is why no field on it records a recipient, a channel, or
 a send time. There is nothing to record because there is no sending path.
 
 ``blossom.agent.gates`` sets ``DraftStatus.APPROVED_FOR_MANUAL_SEND`` when a
-person approves at the gate. Nothing stores a draft outside the graph's
-saved state; the persistence a review queue would need is not built.
+person approves at the gate, and ``blossom.stores.drafts`` keeps the record of
+every draft and every decision across threads.
 """
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+
+Decision = Literal["approved", "rejected"]
+"""What a person can say about a draft at the gate. Two values and no third,
+so a draft is never half approved."""
 
 
 class DraftStatus(StrEnum):

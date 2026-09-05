@@ -8,12 +8,16 @@ This is a plain module rather than `conftest.py`: importing from a conftest
 makes the same file reachable under two module names, which mypy rejects.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta, tzinfo
 from zoneinfo import ZoneInfo
 
 from langchain_core.callbacks.manager import CallbackManager
+from langchain_core.messages import BaseMessage
 from langchain_core.tracers.langchain import LangChainTracer
+from pydantic import BaseModel
 
+from blossom.agent.graph import ModelAnswer
 from blossom.clock import FrozenClock
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.settings import TIMEZONE_VARIABLE, Settings
@@ -77,6 +81,36 @@ def record(channel: SourceChannel, value: str, *, confidence: float = 0.8) -> So
         observed_at=OBSERVED_AT,
         confidence=confidence,
     )
+
+
+class Scripted[T: BaseModel]:
+    """A model callable that answers from a list and keeps every brief it was sent.
+
+    Stands in for the planner or the critic. It raises rather than inventing an
+    answer when the script runs out, so a test that makes one call too many
+    fails there and not on a later assertion.
+    """
+
+    def __init__(self, *answers: ModelAnswer[T]) -> None:
+        self.answers = list(answers)
+        self.briefs: list[list[BaseMessage]] = []
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[T]:
+        self.briefs.append(list(messages))
+        if not self.answers:
+            msg = f"the script ran out after {len(self.briefs) - 1} calls"
+            raise AssertionError(msg)
+        return self.answers.pop(0)
+
+    @property
+    def calls(self) -> int:
+        """How many times the graph asked."""
+        return len(self.briefs)
+
+
+def ok[T: BaseModel](parsed: T) -> ModelAnswer[T]:
+    """A complete, parsed answer, the shape a healthy model call produces."""
+    return ModelAnswer(parsed=parsed, stop_reason="end_turn", parsing_error=None)
 
 
 def hosted_tracer_attached() -> bool:

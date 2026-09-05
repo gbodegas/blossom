@@ -35,6 +35,7 @@ def short_date(value: date) -> str:
 
 def compose_draft(
     *,
+    draft_id: str,
     plan: DailyPlan,
     assignments: Sequence[Assignment],
     verification: PlanVerification,
@@ -46,6 +47,10 @@ def compose_draft(
     ``settled`` is whether the reviewer accepted the plan. When it did not, the
     heading says so, and the notes below show why, so the plan is presented as
     a proposal with a dissent attached rather than as a recommendation.
+
+    ``draft_id`` is given rather than generated because the graph derives it
+    from its thread: a node that runs twice must produce the same draft, and
+    the drafts table keys on it.
     """
     by_id = {item.assignment_id: item for item in assignments}
 
@@ -88,4 +93,4 @@ def compose_draft(
             for finding in verdict.findings
         )
 
-    return create_draft({"body": "\n".join(lines)})
+    return create_draft({"body": "\n".join(lines)}).model_copy(update={"draft_id": draft_id})

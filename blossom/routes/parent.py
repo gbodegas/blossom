@@ -1,31 +1,183 @@
-"""Parent routes: a checkpoint view, not a live feed.
+"""Parent routes: start a plan, see what waits at the gate, and decide.
 
 A parent is a collaborator who sets goals, corrects information and reviews
-drafts, so the route exposes a periodic summary rather than continuous
-visibility. A live feed would turn collaboration into monitoring.
+drafts, so these routes expose a queue and a checkpoint rather than a live
+feed. A live feed would turn collaboration into monitoring.
 
-The handler returns a hardcoded placeholder. It reads no store and is not
-connected to project state.
+Three routes drive the plan graph. ``POST /parent/plans`` starts a run for one
+evening and reports how it ended: at the gate with a draft, or before it with
+a reason. ``GET /parent/approvals`` lists the drafts waiting for a decision,
+read from the drafts table rather than from graph state, because the table is
+the record across threads and needs no model to read. ``POST
+/parent/approvals/{draft_id}`` resumes the paused run with the decision; the
+graph's gate node records it in saved state and the node after the gate
+records it in the table.
+
+Building the graph needs the model seam, which needs a key. Reading the queue
+does not, so a parent can always see what is waiting; only starting or
+deciding a run answers 503 without one, and it says so.
 
 Not yet implemented: when the system notifies a parent that a deadline is at
 risk, the parent needs to be able to see that the notification happened.
 Without that, the visibility policy is stated but not observable.
 """
 
-from datetime import UTC, datetime
+from datetime import date
+from typing import Annotated, Any
+from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, status
+from langgraph.types import Command
+from pydantic import BaseModel, ConfigDict, StrictBool
 
-from blossom.views import ParentCheckpointAssignmentView, ParentCheckpointView
+from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
+from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
+from blossom.anthropic_client import ModelUnavailable
+from blossom.dependencies import ApplicationState, get_application_state
+from blossom.views import (
+    ApprovalQueueView,
+    ApprovalView,
+    DecisionView,
+    ParentCheckpointAssignmentView,
+    ParentCheckpointView,
+    PlanRunView,
+)
 
 router = APIRouter(prefix="/parent", tags=["parent"])
 
+State = Annotated[ApplicationState, Depends(get_application_state)]
+
+
+def get_plan_graph(state: State) -> CompiledPlanGraph:
+    """The plan graph over the running application's stores.
+
+    A dependency rather than a module constant so a test can substitute scripted
+    models with ``app.dependency_overrides``, and so the application starts
+    without a key: the graph is built when a route needs it and fails there,
+    with the reason, rather than at startup.
+    """
+    try:
+        return plan_graph_for(state)
+    except ModelUnavailable as error:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+
+
+Graph = Annotated[CompiledPlanGraph, Depends(get_plan_graph)]
+
+
+class PlanRequest(BaseModel):
+    """Which evening to plan. Defaults to today in the household's zone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_date: date | None = None
+
+
+class DecisionRequest(BaseModel):
+    """What the parent decided.
+
+    ``approved`` is strict: a JSON ``true`` or ``false`` and nothing else. The
+    gate already reads only the boolean ``True``, and the default coercion here
+    would have read the string ``"yes"`` as approval before the gate ever saw
+    it, so the same rule is applied at the boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    approved: StrictBool
+    reason: str | None = None
+
+
+def thread_for(plan_date: date) -> str:
+    """A new thread for one evening. The date is for a person reading the table."""
+    return f"plan:{plan_date.isoformat()}:{uuid4().hex[:8]}"
+
+
+def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRunView:
+    """What a finished or paused run looks like to the parent."""
+    draft = result.get("draft")
+    return PlanRunView(
+        thread_id=thread_id,
+        plan_date=plan_date,
+        outcome=result["outcome"],
+        draft_id=None if draft is None else draft.draft_id,
+        waiting="__interrupt__" in result,
+    )
+
+
+@router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
+async def start_plan(request: PlanRequest, state: State, graph: Graph) -> PlanRunView:
+    """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
+    plan_date = request.plan_date or state.clock.today()
+    thread_id = thread_for(plan_date)
+    result = await graph.ainvoke(
+        PlanState(plan_date=plan_date, rounds=0),
+        config=run_config(thread_id),
+        durability=DURABILITY,
+    )
+    return run_view(thread_id, plan_date, dict(result))
+
+
+@router.get("/approvals", response_model=ApprovalQueueView)
+def approvals(state: State) -> ApprovalQueueView:
+    """Every draft waiting for a decision, oldest first. Needs no model to read."""
+    return ApprovalQueueView(
+        generated_at=state.clock.now(),
+        waiting=[ApprovalView.from_record(record) for record in state.drafts.waiting()],
+    )
+
+
+@router.get("/approvals/{draft_id}", response_model=ApprovalView)
+def approval(draft_id: str, state: State) -> ApprovalView:
+    """One draft, waiting or decided, as the table records it."""
+    record = state.drafts.get(draft_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no draft {draft_id!r}")
+    return ApprovalView.from_record(record)
+
+
+@router.post("/approvals/{draft_id}", response_model=DecisionView)
+async def decide(
+    draft_id: str, request: DecisionRequest, state: State, graph: Graph
+) -> DecisionView:
+    """Resume the paused run with the decision, and report what was recorded.
+
+    The table is checked first so an unknown or already decided draft is
+    refused without touching graph state. The graph is then asked whether the
+    thread is still waiting at the gate and was written by this version, since
+    the table can say a draft waits while the thread has moved on.
+    """
+    record = state.drafts.get(draft_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no draft {draft_id!r}")
+    if not record.waiting:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} was already {record.decision}"
+        )
+    config = run_config(record.thread_id)
+    snapshot = await graph.aget_state(config)
+    if snapshot.next != ("require_human_approval",):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} is not waiting at the gate"
+        )
+    try:
+        ensure_current_version(snapshot)
+    except StaleGraphVersion as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+    resume: Command[Any] = Command(resume={"approved": request.approved, "reason": request.reason})
+    await graph.ainvoke(resume, config=config, durability=DURABILITY)
+    decided = state.drafts.get(draft_id)
+    if decided is None or decided.waiting:
+        msg = f"the run resumed but no decision was recorded for {draft_id!r}"
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
+    return DecisionView.from_record(decided)
+
 
 @router.get("/checkpoint", response_model=ParentCheckpointView)
-def checkpoint() -> ParentCheckpointView:
+def checkpoint(state: State) -> ParentCheckpointView:
     """Return the parent checkpoint as a fixed placeholder response."""
     return ParentCheckpointView(
-        checkpoint_at=datetime.now(UTC),
+        checkpoint_at=state.clock.now(),
         assignments=[
             ParentCheckpointAssignmentView(
                 course="World History",
