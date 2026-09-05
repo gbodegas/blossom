@@ -14,15 +14,19 @@ access (an approved sender list or a dedicated folder), not after it.
 """
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 from blossom.reconciliation import SourceRecord
 from blossom.stores.project_state import Assignment
+from blossom.stores.reflections import Reflection, ReflectionSubject
+from blossom.stores.support_rules import SupportRule
 
 
 class StateSource(Protocol):
-    """Anything that can report assignments and the claims made about their dates."""
+    """Anything that can report assignments, the claims about their dates, and the
+    two small corpora the planner reads whole."""
 
     def assignments(self) -> list[Assignment]:
         """Return every assignment this source knows about."""
@@ -34,6 +38,14 @@ class StateSource(Protocol):
         An empty list is a valid answer and means nothing corroborates the
         date. Callers must handle it; it is not an error.
         """
+        ...
+
+    def support_rules(self) -> list[SupportRule]:
+        """Return the standing rules about how she works. Empty is a valid answer."""
+        ...
+
+    def reflections(self) -> list[Reflection]:
+        """Return the planner's notes about its own past plans. Empty is a valid answer."""
         ...
 
 
@@ -59,6 +71,42 @@ class FixtureSource:
             if item["assignment_id"] == assignment_id
         ]
 
+    def support_rules(self) -> list[SupportRule]:
+        """Load ``support_rules.json``. A fixture set without one has no rules."""
+        return [
+            SupportRule(
+                rule_id=str(item["rule_id"]),
+                instruction=str(item["instruction"]),
+                asserted_at=datetime.fromisoformat(str(item["asserted_at"])),
+            )
+            for item in self._optional("support_rules.json")
+        ]
+
+    def reflections(self) -> list[Reflection]:
+        """Load ``reflections.json``. A fixture set without one has no reflections."""
+        return [
+            Reflection(
+                reflection_id=str(item["reflection_id"]),
+                subject=ReflectionSubject(str(item["subject"])),
+                observation=str(item["observation"]),
+                observed_at=datetime.fromisoformat(str(item["observed_at"])),
+            )
+            for item in self._optional("reflections.json")
+        ]
+
+    def _optional(self, name: str) -> list[dict[str, object]]:
+        """A corpus file that a fixture set may leave out.
+
+        Assignments and their sources are what a fixture set is; the two
+        corpora are context for the planner, and a set written to exercise the
+        page alone need not carry them.
+        """
+        path = self._root / name
+        if not path.exists():
+            return []
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return [dict(item) for item in loaded]
+
 
 class LMSSource:
     """Real LMS polling belongs here when credentialed connectors are allowed.
@@ -83,6 +131,14 @@ class LMSSource:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
 
+    def support_rules(self) -> list[SupportRule]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
+    def reflections(self) -> list[Reflection]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
 
 class EmailSource:
     """Inbound email import belongs here if a local, non-transmitting source is approved."""
@@ -92,5 +148,13 @@ class EmailSource:
         raise NotImplementedError
 
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
+    def support_rules(self) -> list[SupportRule]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
+    def reflections(self) -> list[Reflection]:
         """Not implemented. See the class docstring."""
         raise NotImplementedError

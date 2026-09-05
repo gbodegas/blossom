@@ -148,9 +148,9 @@ again; validity is not. `SourceRecord.observed_at` exists so staleness can
 eventually be reasoned about, but nothing reads it yet.
 
 **Not built:** the adapter that reads a portal. `LMSSource` records the rules
-it will follow and raises. The fixtures carry no undated item, no assigned
-date, and no task; the seed data that mirrors the portal's shapes is separate
-work.
+it will follow and raises. The fixtures mirror the portal's shapes for a
+fictional student: an undated task, assigned dates beside due dates, a source
+that gives one item two dates, and the four confidence states on one page.
 
 ## Retrieval routes on key presence
 
@@ -191,8 +191,8 @@ structured side is real.
 | Store | Contents | State |
 |---|---|---|
 | `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status | Wired and tested; in memory |
-| `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Read whole by the plan graph; nothing seeds it |
-| `ReflectionsStore` | The agent's notes about its own performance | Read whole by the plan graph; nothing seeds it |
+| `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Seeded from the fixtures; read whole by the plan graph |
+| `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, and every decision about it | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 
 They are separate because their retention and access rules differ, not for
@@ -329,9 +329,8 @@ over by the node functions rather than carried in state, so saved state holds
 the evening, the plan, what was found about it, and the draft, and nothing
 about the process.
 
-**Not built:** nothing seeds the support rules or reflections, so a plan
-built today is built without them. The reviewer's five criteria are fixed in
-the prompt rather than configurable.
+**Not built:** the reviewer's five criteria are fixed in the prompt rather
+than configurable.
 
 ## Expectation before action
 

@@ -1,0 +1,22 @@
+[
+  {
+    "rule_id": "rule-stages",
+    "instruction": "Break any assignment longer than thirty minutes into stages small enough that starting is not the hardest part.",
+    "asserted_at": "2026-08-15T09:00:00-04:00"
+  },
+  {
+    "rule_id": "rule-first-ten-minutes",
+    "instruction": "Begin the evening with something that can be finished in under ten minutes.",
+    "asserted_at": "2026-08-15T09:00:00-04:00"
+  },
+  {
+    "rule_id": "rule-stop-time",
+    "instruction": "Nothing new starts after 8:30 in the evening; whatever is unfinished is written down for tomorrow.",
+    "asserted_at": "2026-08-15T09:00:00-04:00"
+  },
+  {
+    "rule_id": "rule-read-aloud",
+    "instruction": "Read the instructions for a writing assignment aloud before starting it.",
+    "asserted_at": "2026-08-15T09:00:00-04:00"
+  }
+]

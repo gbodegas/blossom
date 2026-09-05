@@ -7,7 +7,9 @@
     "dependencies": [
       "outline-canal-essay"
     ],
-    "reported_submission_status": "in_progress"
+    "reported_submission_status": "in_progress",
+    "assigned_on": "2026-08-14",
+    "kind": "HOMEWORK"
   },
   {
     "assignment_id": "assignment-algebra-set",
@@ -15,7 +17,9 @@
     "title": "Quadratic modeling problem set",
     "due_date": "2026-08-24",
     "dependencies": [],
-    "reported_submission_status": "not_started"
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-08-19",
+    "kind": "HOMEWORK"
   },
   {
     "assignment_id": "assignment-science-fair-proposal",
@@ -23,6 +27,38 @@
     "title": "Science fair topic proposal",
     "due_date": "2026-08-20",
     "dependencies": [],
-    "reported_submission_status": "not_started"
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-08-17",
+    "kind": "HOMEWORK"
+  },
+  {
+    "assignment_id": "assignment-textbook-cover",
+    "course": "Science",
+    "title": "Cover the textbook",
+    "due_date": "2026-08-21",
+    "dependencies": [],
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-08-17",
+    "kind": "TASK"
+  },
+  {
+    "assignment_id": "assignment-reading-log",
+    "course": "English",
+    "title": "Reading log, week one",
+    "due_date": "2026-08-25",
+    "dependencies": [],
+    "reported_submission_status": "in_progress",
+    "assigned_on": "2026-08-18",
+    "kind": "HOMEWORK"
+  },
+  {
+    "assignment_id": "assignment-signed-syllabus",
+    "course": "English",
+    "title": "Syllabus, signed",
+    "due_date": null,
+    "dependencies": [],
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-08-17",
+    "kind": "TASK"
   }
 ]
