@@ -106,8 +106,10 @@ ignore = [
 [tool.ruff.format]
 # Stated rather than inherited. Black would agree at this project's line
 # length and reflow everything at its own default, so the editor is pointed at
-# ruff and Black is not run here.
+# ruff and Black is not run here. Line endings match .gitattributes, so the
+# formatter never writes the convention git would undo at commit.
 quote-style = "double"
+line-ending = "lf"
 
 # Read by Pylance in the editor. mypy is the type checker of record, pinned
 # above and run in CI, and the mypy extension shows its diagnostics in the

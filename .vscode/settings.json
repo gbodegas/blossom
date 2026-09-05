@@ -8,6 +8,8 @@
   // schedule and can disagree with CI in either direction.
   "ruff.importStrategy": "fromEnvironment",
   "mypy-type-checker.importStrategy": "fromEnvironment",
+  // New files are LF, as .gitattributes says every file is.
+  "files.eol": "\n",
   // Check the whole package on save, as CI does, rather than the open file.
   "mypy-type-checker.reportingScope": "workspace",
 
