@@ -1,57 +1,63 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <title>Blossom - Due this week</title>
-    <script src="/static/htmx.js"></script>
-    <link rel="stylesheet" href="/static/blossom.css">
-  </head>
-  <body>
-    <main>
-      <h1>Due this week</h1>
-      <p class="expectation">Expectation before action: {{ view.expectation }}</p>
+{% extends "base.html" %}
+{% set page = "student" %}
+{% block title %}Blossom - Due this week{% endblock %}
+{% block content %}
+  <h1>Due this week</h1>
+  <p class="expectation">Expectation before action: {{ view.expectation }}</p>
 
-      {% for assignment in view.assignments %}
-        <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}">
-          <h2>{{ assignment.course }}: {{ assignment.title }}</h2>
-          <p class="due">Due: {{ assignment.due_date }}</p>
+  {% if not view.assignments %}
+    <p class="empty">Nothing is due this week.</p>
+  {% endif %}
 
-          {#
-            The confidence banner is never omitted, including when the date is
-            well corroborated. A marker that only appears when something is
-            wrong teaches the reader to skim past its absence; a marker that is
-            always present makes "unverified" readable at a glance.
-          #}
-          {% if assignment.deadline_confidence == "UNVERIFIED" %}
-            <p class="confidence unverified">
-              <strong>Unverified due date.</strong>
-              Nothing on record confirms this date. Please check it before relying on it.
-            </p>
-          {% elif assignment.deadline_confidence == "SOURCES_DISAGREE" %}
-            <p class="confidence disagree">
-              <strong>Sources disagree</strong> about this due date. Nothing has been chosen for you.
-            </p>
-            <h3>Source disagreement</h3>
-            <ul>
-              {% for claim in assignment.disagreement %}
-                <li>{{ claim }}</li>
-              {% endfor %}
-            </ul>
-          {% elif assignment.deadline_confidence == "SINGLE_SOURCE" %}
-            <p class="confidence single-source">
-              <strong>One source only</strong> ({{ assignment.source_channels|join(", ") }}).
-              Not corroborated by anything else.
-            </p>
-          {% else %}
-            <p class="confidence corroborated">
-              Confirmed by {{ assignment.source_channels|length }} sources
-              ({{ assignment.source_channels|join(", ") }}).
-            </p>
-          {% endif %}
+  {% for assignment in view.assignments %}
+    <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}">
+      <p class="course">{{ assignment.course }}</p>
+      <h2>{{ assignment.title }}</h2>
+      <p class="due">
+        {% if assignment.due_date %}
+          Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}, {{ assignment.due_date.year }}
+        {% else %}
+          No due date on record
+        {% endif %}
+      </p>
 
-          <p class="status">Status: {{ assignment.submission_status }}</p>
-        </article>
-      {% endfor %}
-    </main>
-  </body>
-</html>
+      {#
+        The confidence banner is never omitted, including when the date is
+        well corroborated. A marker that only appears when something is
+        wrong teaches the reader to skim past its absence; a marker that is
+        always present makes "unverified" readable at a glance. Color is
+        reinforcement; the words carry the state.
+      #}
+      {% if assignment.deadline_confidence == "UNVERIFIED" %}
+        <p class="confidence unverified">
+          <strong>Unverified due date.</strong>
+          Nothing on record confirms this date. Please check it before relying on it.
+        </p>
+      {% elif assignment.deadline_confidence == "SOURCES_DISAGREE" %}
+        <p class="confidence disagree">
+          <strong>Sources disagree</strong> about this due date. Nothing has been chosen for you.
+        </p>
+        <div class="claims">
+          <h3>Source disagreement</h3>
+          <ul>
+            {% for claim in assignment.disagreement %}
+              <li>{{ claim }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% elif assignment.deadline_confidence == "SINGLE_SOURCE" %}
+        <p class="confidence single-source">
+          <strong>One source only</strong> ({{ assignment.source_channels|join(", ") }}).
+          Not corroborated by anything else.
+        </p>
+      {% else %}
+        <p class="confidence corroborated">
+          <strong>Confirmed by {{ assignment.source_channels|length }} sources</strong>
+          ({{ assignment.source_channels|join(", ") }}).
+        </p>
+      {% endif %}
+
+      <p class="status">Status: <span class="pill">{{ assignment.submission_status|replace("_", " ") }}</span></p>
+    </article>
+  {% endfor %}
+{% endblock %}

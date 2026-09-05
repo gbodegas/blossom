@@ -24,8 +24,8 @@ from blossom.tools import create_draft
 
 
 def spoken_date(value: date) -> str:
-    """A date the way a person says it: ``Wednesday, August 19``."""
-    return f"{value:%A, %B} {value.day}"
+    """A date the way a person says it, with the year: ``Wednesday, August 19, 2026``."""
+    return f"{value:%A, %B} {value.day}, {value.year}"
 
 
 def short_date(value: date) -> str:

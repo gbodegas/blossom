@@ -1,86 +1,471 @@
-body {
-  font-family: system-ui, sans-serif;
-  max-width: 48rem;
-  margin: 2rem auto;
-  line-height: 1.5;
+/*
+  Blossom's look, from the logo: blush paper, pale pink petals, a powder-blue
+  stone, a rounded lowercase wordmark. Everything below is a token, so both
+  pages draw from one place, and every color used for meaning is paired with
+  words that carry the meaning without it.
+
+  Type is Quicksand for headings, buttons and navigation, and Outfit for body
+  text, both served from this folder under the SIL Open Font License. The
+  license texts sit beside the font files.
+*/
+
+@font-face {
+  font-family: "Quicksand";
+  src: url("/static/fonts/Quicksand-Variable.ttf") format("truetype");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
 }
-article {
-  border: 1px solid #ddd;
-  padding: 1rem;
-  margin-block: 1rem;
+
+@font-face {
+  font-family: "Outfit";
+  src: url("/static/fonts/Outfit-Variable.ttf") format("truetype");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* Canvas: the logo's paper, with ruled lines faint enough to be texture. */
+  --canvas: #fdf5f7;
+  --rule: rgba(155, 184, 211, 0.1);
+
+  /* Primary: the stone and the wordmark. The plain tone is for surfaces,
+     borders, and the wordmark; the deep tone carries the same hue where text
+     sits on it or is made of it, because white on the plain tone does not
+     read at button size. */
+  --blue: #9bb8d3;
+  --blue-deep: #6f95b8;
+  --blue-deeper: #5a81a6;
+
+  /* Secondary: the petals. Outline buttons, hover states, small highlights. */
+  --pink: #e5a8b4;
+  --pink-deep: #c98495;
+
+  /* Text: muted slate, never black or navy. The body tone is a step darker
+     than the reference so it reads at paragraph size; the reference tone is
+     for secondary lines; the strong tone is for the few places that need it. */
+  --text: #56687a;
+  --text-soft: #6a7b8c;
+  --text-strong: #435466;
+
+  /* Surfaces: translucent, so the paper shows through rather than being
+     blocked by white. */
+  --surface: rgba(255, 255, 255, 0.6);
+  --surface-strong: rgba(255, 255, 255, 0.82);
+  --edge: rgba(155, 184, 211, 0.28);
+  --shadow: 0 8px 24px rgba(155, 184, 211, 0.15);
+
+  /* Meaning colors, kept pastel and earthy, each with an ink that reads on it. */
+  --rose-bg: rgba(229, 168, 180, 0.3);
+  --rose-ink: #96505f;
+  --amber-bg: rgba(233, 201, 150, 0.35);
+  --amber-ink: #85652c;
+  --slate-bg: rgba(155, 184, 211, 0.24);
+  --slate-ink: #5b6f82;
+  --sage-bg: rgba(168, 204, 180, 0.35);
+  --sage-ink: #4b7658;
+
+  --radius: 16px;
+  --radius-small: 12px;
+  --pill: 9999px;
+
+  --font-display: "Quicksand", "Nunito", "Varela Round", ui-rounded, system-ui, sans-serif;
+  --font-body: "Outfit", "Rubik", "Quicksand", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-body);
+  font-weight: 400;
+  color: var(--text);
+  line-height: 1.6;
+  background:
+    repeating-linear-gradient(to bottom, transparent 0 2rem, var(--rule) 2rem calc(2rem + 1px)),
+    var(--canvas);
+}
+
+h1,
+h2,
+h3,
+button,
+.places,
+.wordmark,
+summary {
+  font-family: var(--font-display);
+}
+
+/* ------------------------------------------------------------- masthead */
+
+.masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 0.75rem;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  text-decoration: none;
+}
+
+.mark {
+  width: 48px;
+  height: 36px;
+  display: block;
+}
+
+.wordmark {
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--blue);
+}
+
+.places {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.places a {
+  color: var(--text-soft);
+  text-decoration: none;
+  padding: 0.4rem 1rem;
+  border-radius: var(--pill);
+  font-weight: 600;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.places a[aria-current="page"] {
+  background: var(--blue-deep);
+  color: #fff;
+}
+
+.places a:not([aria-current="page"]):hover,
+.places a:not([aria-current="page"]):focus-visible {
+  background: rgba(229, 168, 180, 0.3);
+  color: var(--text-strong);
+}
+
+/* ------------------------------------------------------------- content */
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0.5rem 1.25rem 3rem;
+}
+
+h1 {
+  font-size: 2.1rem;
+  font-weight: 700;
+  color: var(--blue-deep);
+  margin: 0.75rem 0 0.25rem;
+  letter-spacing: 0.01em;
+}
+
+h2 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--blue-deep);
+  margin: 0 0 0.6rem;
+}
+
+h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin: 0.25rem 0 0.35rem;
+}
+
+section {
+  margin-block: 2rem;
+}
+
+.expectation,
+.note,
+.empty,
+.due,
+.status,
+.when {
+  color: var(--text-soft);
+}
+
+.expectation {
+  margin-top: 0;
+}
+
+.empty {
+  padding: 1.25rem;
+  border: 1px dashed rgba(155, 184, 211, 0.55);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+/* ------------------------------------------------------------- cards */
+
+article,
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: 1.35rem 1.6rem;
+  margin-block: 1.1rem;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+}
+
+article h2 {
+  margin-top: 0;
+  color: var(--text-strong);
+}
+
+.course {
+  margin: 0 0 0.1rem;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--pink-deep);
+}
+
+.due {
+  margin: 0.15rem 0 0.75rem;
+}
+
+.status {
+  margin: 0.85rem 0 0;
+}
+
+.pill {
+  display: inline-block;
+  padding: 0.12rem 0.75rem;
+  border-radius: var(--pill);
+  background: rgba(155, 184, 211, 0.24);
+  color: var(--slate-ink);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.88rem;
 }
 
 /*
   Confidence is never signaled by color alone. Each banner carries its own
   wording, so the state survives grayscale printing, low contrast screens, and
-  color vision differences. The left border and background are reinforcement,
-  not the message.
+  color vision differences. The tint and the edge are reinforcement, not the
+  message.
 */
 .confidence {
-  border-left: 4px solid #999;
-  padding: 0.5rem 0.75rem;
-  margin-block: 0.75rem;
-  background: #f6f6f6;
+  border-left: 3px solid var(--slate-ink);
+  border-radius: var(--radius-small);
+  padding: 0.65rem 0.95rem;
+  margin-block: 0.8rem;
+  background: var(--slate-bg);
+  color: var(--slate-ink);
 }
+
 .confidence.unverified {
-  border-left-color: #b3261e;
-  background: #fdecea;
+  border-left-color: var(--rose-ink);
+  background: var(--rose-bg);
+  color: var(--rose-ink);
 }
+
 .confidence.disagree {
-  border-left-color: #a1660a;
-  background: #fdf3e2;
+  border-left-color: var(--amber-ink);
+  background: var(--amber-bg);
+  color: var(--amber-ink);
 }
+
 .confidence.single-source {
-  border-left-color: #6b6b6b;
-  background: #f2f2f2;
+  border-left-color: var(--slate-ink);
+  background: var(--slate-bg);
+  color: var(--slate-ink);
 }
+
 .confidence.corroborated {
-  border-left-color: #2e6b34;
-  background: #eef6ef;
+  border-left-color: var(--sage-ink);
+  background: var(--sage-bg);
+  color: var(--sage-ink);
 }
 
-/* The unverified case is the one most costly to miss, so its card is marked too. */
+/* The unverified case is the one most costly to miss, so its card is edged too. */
 article.confidence-unverified {
-  border-color: #b3261e;
+  border-color: rgba(229, 168, 180, 0.7);
 }
 
-/* The parent's page. */
+.claims h3 {
+  font-size: 0.95rem;
+  color: var(--text-soft);
+  margin-top: 0.75rem;
+}
+
+.claims ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+}
+
+/* ------------------------------------------------------------- the parent's page */
+
 .problem {
-  border-left: 4px solid #b3261e;
-  background: #fdecea;
-  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--rose-ink);
+  background: var(--rose-bg);
+  color: var(--rose-ink);
+  border-radius: var(--radius-small);
+  padding: 0.65rem 0.95rem;
 }
-.note, .empty {
-  color: #555;
-}
+
 pre.body {
   white-space: pre-wrap;
-  background: #f6f6f6;
-  padding: 0.75rem;
+  font-family: var(--font-body);
+  font-size: 0.98rem;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--surface-strong);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-small);
+  padding: 1rem 1.15rem;
+  margin: 0.85rem 0;
   overflow-x: auto;
 }
-.outcome {
-  border-left: 4px solid #999;
-  padding: 0.5rem 0.75rem;
-  background: #f6f6f6;
+
+.plan-form,
+.decision {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: end;
 }
-.outcome.accepted {
-  border-left-color: #2e6b34;
-  background: #eef6ef;
+
+.decision {
+  flex-direction: column;
+  align-items: stretch;
 }
-.outcome.unsettled {
-  border-left-color: #a1660a;
-  background: #fdf3e2;
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text-soft);
 }
-.decision label, .plan-form label {
-  display: block;
-  margin-block: 0.5rem;
-}
-.decision input[type="text"] {
-  width: 100%;
+
+input[type="date"],
+input[type="text"] {
+  font: inherit;
+  font-family: var(--font-body);
+  color: var(--text);
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-small);
+  background: var(--surface-strong);
   max-width: 32rem;
 }
-.actions button {
-  margin-inline-end: 0.5rem;
-  padding: 0.4rem 1rem;
+
+input::placeholder {
+  color: rgba(106, 123, 140, 0.6);
+}
+
+input:focus-visible,
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 3px solid rgba(155, 184, 211, 0.7);
+  outline-offset: 2px;
+}
+
+.actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+button {
+  font: inherit;
+  font-family: var(--font-display);
+  font-weight: 700;
+  padding: 0.6rem 1.35rem;
+  border-radius: var(--pill);
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+/* Solid: the primary color with white text. Hover goes darker, never lighter,
+   so the white label stays readable. */
+button.primary {
+  background: var(--blue-deep);
+  border-color: var(--blue-deep);
+  color: #fff;
+}
+
+button.primary:hover {
+  background: var(--blue-deeper);
+  border-color: var(--blue-deeper);
+}
+
+/* Outline: the secondary color for both border and text, no fill until hover.
+   The hover fill is pale, so the label switches to dark text rather than
+   white. */
+button.secondary {
+  background: transparent;
+  border-color: var(--pink);
+  color: var(--pink-deep);
+}
+
+button.secondary:hover {
+  background: var(--pink);
+  border-color: var(--pink);
+  color: var(--text-strong);
+}
+
+.decision .note {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.decision-line {
+  margin: 0.25rem 0 0.5rem;
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--blue-deep);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------- colophon */
+
+.colophon {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1.25rem 2rem;
+  color: var(--text-soft);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+@media (max-width: 30rem) {
+  .masthead {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  article,
+  .panel {
+    padding: 1.1rem 1.2rem;
+  }
 }

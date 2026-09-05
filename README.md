@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/blossom-mark.png" alt="Blossom" width="160">
+  <img src="blossom/static/mark.svg" alt="Blossom" width="200">
 </p>
 
 <h1 align="center">Blossom</h1>
@@ -38,11 +38,7 @@ on a scale from one to ten. Blossom will have a single control that means
 "too much right now", as frictionless as squeezing a stress ball, and it will
 treat that signal as true the moment it arrives.
 
-## What it looks like today
-
-<p align="center">
-  <img src="docs/assets/due-this-week.png" alt="The student's weekly view. Three assignments, each labeled: one unverified, one where two sources disagree, one confirmed by two sources." width="720">
-</p>
+## What runs today
 
 The weekly view is real, end to end. The fixture assignments load, their
 sources are reconciled, and each one is labeled with how well its due date is
@@ -64,8 +60,9 @@ nothing corroborates.
   such as learning that its reminders land badly at a certain hour. It will
   be structurally unable to write a reflection about her.
 - **Three principals, three views.** She sees her week. A parent sees a
-  checkpoint summary rather than a live feed. A verifier is designed to sit
-  between anything the agent writes and anything that leaves the system.
+  review page, where the planner's proposal waits to be approved or refused,
+  and a checkpoint summary rather than a live feed. A verifier is designed to
+  sit between anything the agent writes and anything that leaves the system.
   Their interests genuinely conflict, and the design keeps that conflict
   visible instead of resolving it silently.
 - **It will say what it expects before it looks.** The agent's reasoning loop
@@ -140,27 +137,35 @@ Then open <http://127.0.0.1:8000/student/due-this-week>.
 
 Other things to look at while it runs:
 
-- <http://127.0.0.1:8000/parent/checkpoint> is the parent's view: a summary
-  of status and conflicts, not a live feed. JSON for now.
-- <http://127.0.0.1:8000/verifier/claims> is the verifier's view: each factual
-  claim, the policy it was checked against, and the result. JSON for now.
 - <http://127.0.0.1:8000/parent> is the parent's page: plan an evening, read
   the draft the planner produced, and approve or refuse it. Planning needs an
-  API key in `.env`; reading and deciding do not.
+  API key; reading and deciding do not, so without one the page says a plan
+  cannot start and everything else works.
 - <http://127.0.0.1:8000/parent/approvals> is the same queue as JSON.
+- <http://127.0.0.1:8000/parent/checkpoint> is the parent's checkpoint: a
+  summary of status and conflicts, not a live feed. A placeholder, JSON for
+  now.
+- <http://127.0.0.1:8000/verifier/claims> is the verifier's view: each factual
+  claim, the policy it was checked against, and the result. JSON for now.
 - <http://127.0.0.1:8000/docs> is the interactive API page, where the parent's
   routes can be driven directly and the "too much" signal sent by posting to
   `/student/workload-signals` with no body; today it is acknowledged and
   discarded.
 
-To customize the configuration, copy `.env.example` to `.env`, edit it, and
-pass `--env-file .env` instead. Every path the app uses is configurable
-through the `BLOSSOM_*` variables listed there, and each path has a working
-default. One variable has no default and must be set: `BLOSSOM_TIMEZONE`, the
-household's IANA zone, because "due this week" means the days you live in and
-no value is right for everyone. It is set in `.env.example`, which is why the
-first run above needs nothing else. `BLOSSOM_TIMEZONE` and `BLOSSOM_TODAY` can
-also be set as ordinary environment variables in your shell if you prefer.
+To run the planner for real, copy `.env.example` to `.env`, put an Anthropic
+API key in `ANTHROPIC_API_KEY`, start the app with `--env-file .env`, and use
+"Plan it" on the parent's page. Each run makes two model calls, a planner and
+a critic, against the synthetic fixtures; it costs a few cents and sends only
+the fixture assignments. The plan stops at the page for a decision. Nothing is
+sent anywhere by approving it.
+
+Every path the app uses is configurable through the `BLOSSOM_*` variables in
+`.env.example`, and `--env-file .env` reads whatever is set there. Each path has a working default. One
+variable has no default and must be set: `BLOSSOM_TIMEZONE`, the household's
+IANA zone, because "due this week" means the days you live in and no value is
+right for everyone. It is set in `.env.example`, which is why the first run
+above needs nothing else. `BLOSSOM_TIMEZONE` and `BLOSSOM_TODAY` can also be
+set as ordinary environment variables in your shell if you prefer.
 
 To run the same checks CI runs:
 
@@ -173,9 +178,19 @@ uv run pytest
 
 ## Troubleshooting
 
+**The app refuses to start and names `BLOSSOM_TIMEZONE`.** The household's
+time zone has no default. Start with `--env-file .env.example`, or set
+`BLOSSOM_TIMEZONE` to an IANA key such as `America/New_York` in `.env` or in
+the shell.
+
 **The weekly page is empty.** The clock is not pinned, so "this week" is the
 real week and the fixtures fall outside it. Start the app with
 `--env-file .env.example` as shown above.
+
+**The parent's page says no API key is configured.** That is the state the
+first run is meant to be in: the queue and the decisions work, and only
+starting a new plan needs a key. To plan for real, follow the paragraph in
+Getting started.
 
 **`uv sync` fails with `HandshakeFailure` or a TLS error.** On a network that
 routes Python packages through an internal proxy or index, `uv` may not pick
@@ -189,7 +204,7 @@ Windows:
 .venv\Scripts\python -m ensurepip
 .venv\Scripts\pip install -e .
 .venv\Scripts\pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
-.venv\Scripts\python -m uvicorn blossom.app:app --reload
+.venv\Scripts\python -m uvicorn blossom.app:app --reload --env-file .env.example
 ```
 
 macOS and Linux:
@@ -198,7 +213,7 @@ macOS and Linux:
 .venv/bin/python -m ensurepip
 .venv/bin/pip install -e .
 .venv/bin/pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
-.venv/bin/python -m uvicorn blossom.app:app --reload
+.venv/bin/python -m uvicorn blossom.app:app --reload --env-file .env.example
 ```
 
 If there is no `.venv` yet, create one first with `python -m venv .venv` using

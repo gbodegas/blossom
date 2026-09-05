@@ -1,101 +1,95 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <title>Blossom - Review</title>
-    <link rel="stylesheet" href="/static/blossom.css">
-  </head>
-  <body>
-    <main>
-      <h1>Review</h1>
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% block title %}Blossom - Review{% endblock %}
+{% block content %}
+  <h1>Review</h1>
 
-      {% if problem %}
-        <p class="problem" role="alert">{{ problem }}</p>
-      {% endif %}
+  {% if problem %}
+    <p class="problem" role="alert">{{ problem }}</p>
+  {% endif %}
 
-      <section>
-        <h2>Plan an evening</h2>
-        {% if model_available %}
-          <form method="post" action="/parent/actions/plan" class="plan-form">
-            <label>Evening of
-              <input type="date" name="plan_date" value="{{ today }}">
-            </label>
-            <button type="submit">Plan it</button>
-          </form>
-          <p class="note">
-            The planner reads what is due, checks its own plan, and stops here for you.
-            Nothing is sent from this page, whatever you decide.
-          </p>
+  <section class="panel">
+    <h2>Plan an evening</h2>
+    {% if model_available %}
+      <form method="post" action="/parent/actions/plan" class="plan-form">
+        <label>Evening of
+          <input type="date" name="plan_date" value="{{ today }}">
+        </label>
+        <button type="submit" class="primary">Plan it</button>
+      </form>
+      <p class="note">
+        The planner reads what is due, checks its own plan, and stops here for you.
+        Nothing is sent from this page, whatever you decide.
+      </p>
+    {% else %}
+      <p class="note">
+        No API key is configured, so a plan cannot be started. What is already
+        waiting still shows below and can still be decided.
+      </p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Waiting for you</h2>
+    {% if not waiting %}
+      <p class="empty">Nothing is waiting.</p>
+    {% endif %}
+    {% for draft in waiting %}
+      <article class="draft outcome-{{ draft.outcome }}">
+        <p class="course">Evening of {{ draft.plan_date }}</p>
+        <h3>{{ draft.plan_date.strftime("%A, %B") }} {{ draft.plan_date.day }}, {{ draft.plan_date.year }}</h3>
+        {#
+          The reviewer's opinion travels with the plan and never decides for
+          it, so the heading says which way it went and the text below
+          carries its notes.
+        #}
+        {% if draft.outcome == "accepted" %}
+          <p class="confidence corroborated">The reviewer accepted this plan.</p>
         {% else %}
-          <p class="note">
-            No API key is configured, so a plan cannot be started. What is already
-            waiting still shows below and can still be decided.
+          <p class="confidence disagree">
+            <strong>The reviewer did not settle on this plan.</strong>
+            Its notes are at the end of the text.
           </p>
         {% endif %}
-      </section>
+        <pre class="body">{{ draft.body }}</pre>
+        <form method="post" action="/parent/actions/decide/{{ draft.draft_id }}" class="decision">
+          <label>Reason (optional)
+            <input type="text" name="reason" maxlength="500" placeholder="A sentence she would recognize">
+          </label>
+          <div class="actions">
+            <button type="submit" name="decision" value="approve" class="primary">Approve</button>
+            <button type="submit" name="decision" value="refuse" class="secondary">Refuse</button>
+          </div>
+          <p class="note">
+            Approving marks the plan for you to send by hand. Nothing leaves here on its own.
+          </p>
+        </form>
+      </article>
+    {% endfor %}
+  </section>
 
-      <section>
-        <h2>Waiting for you</h2>
-        {% if not waiting %}
-          <p class="empty">Nothing is waiting.</p>
-        {% endif %}
-        {% for draft in waiting %}
-          <article class="draft outcome-{{ draft.outcome }}">
-            <h3>Evening of {{ draft.plan_date }}</h3>
-            {#
-              The reviewer's opinion travels with the plan and never decides
-              for it, so the heading says which way it went and the text below
-              carries its notes.
-            #}
-            {% if draft.outcome == "accepted" %}
-              <p class="outcome accepted">The reviewer accepted this plan.</p>
-            {% else %}
-              <p class="outcome unsettled">
-                <strong>The reviewer did not settle on this plan.</strong>
-                Its notes are at the end of the text.
-              </p>
-            {% endif %}
-            <pre class="body">{{ draft.body }}</pre>
-            <form method="post" action="/parent/actions/decide/{{ draft.draft_id }}" class="decision">
-              <label>Reason (optional)
-                <input type="text" name="reason" maxlength="500">
-              </label>
-              <div class="actions">
-                <button type="submit" name="decision" value="approve">Approve</button>
-                <button type="submit" name="decision" value="refuse">Refuse</button>
-              </div>
-              <p class="note">
-                Approving marks the plan for you to send by hand. Nothing leaves here on its own.
-              </p>
-            </form>
-          </article>
-        {% endfor %}
-      </section>
-
-      <section>
-        <h2>Decided</h2>
-        {% if not decided %}
-          <p class="empty">Nothing has been decided yet.</p>
-        {% endif %}
-        {% for draft in decided %}
-          <article class="draft decided-{{ draft.decision }}">
-            <h3>Evening of {{ draft.plan_date }}</h3>
-            <p class="decision-line">
-              {% if draft.decision == "approved" %}
-                <strong>Approved.</strong> Marked for you to send by hand.
-              {% else %}
-                <strong>Refused.</strong> Kept as a draft.
-              {% endif %}
-              {% if draft.reason %}Reason: {{ draft.reason }}.{% endif %}
-              Decided {{ draft.decided_at }}.
-            </p>
-            <details>
-              <summary>The plan as it was reviewed</summary>
-              <pre class="body">{{ draft.body }}</pre>
-            </details>
-          </article>
-        {% endfor %}
-      </section>
-    </main>
-  </body>
-</html>
+  <section>
+    <h2>Decided</h2>
+    {% if not decided %}
+      <p class="empty">Nothing has been decided yet.</p>
+    {% endif %}
+    {% for draft in decided %}
+      <article class="draft decided-{{ draft.decision }}">
+        <p class="course">Evening of {{ draft.plan_date }}</p>
+        <p class="decision-line">
+          {% if draft.decision == "approved" %}
+            <strong>Approved.</strong> Marked for you to send by hand.
+          {% else %}
+            <strong>Refused.</strong> Kept as a draft.
+          {% endif %}
+          {% if draft.reason %}Reason: {{ draft.reason }}.{% endif %}
+          <span class="when">Decided {{ draft.decided_at.strftime("%B") }} {{ draft.decided_at.day }}, {{ draft.decided_at.year }}, {{ draft.decided_at.strftime("%H:%M UTC") }}.</span>
+        </p>
+        <details>
+          <summary>The plan as it was reviewed</summary>
+          <pre class="body">{{ draft.body }}</pre>
+        </details>
+      </article>
+    {% endfor %}
+  </section>
+{% endblock %}
