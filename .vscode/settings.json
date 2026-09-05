@@ -38,6 +38,12 @@
   // Disabling it for the workspace from the Extensions view does the same.
   "bandit.ignorePatterns": ["**/*.py"],
 
+  // The Python Environments extension offers to load .env into every terminal
+  // and repeats the offer whenever a .env file is present. The key in .env is
+  // for one process, the server started with uv run --env-file, not for every
+  // shell and debug session, so no env file is configured for the editor.
+  "python.envFile": "",
+
   // Run the suite from the Test Explorer. testpaths is already set in
   // pyproject.toml; this makes the extension agree with it.
   "python.testing.pytestEnabled": true,
