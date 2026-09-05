@@ -25,6 +25,12 @@ application's decision lock from the table check through the resume, and the
 table refuses a second, different decision even if a request arrives from
 another process.
 
+The page at ``/parent`` is the same three things as a form, for a person
+rather than a client: a date to plan, the drafts waiting with their text and
+two buttons, and what has been decided. Its two form actions call the same
+functions the JSON routes call and redirect back to the page, so there is one
+way to start a run and one way to decide, whichever door it comes through.
+
 Not yet implemented: when the system notifies a parent that a deadline is at
 risk, the parent needs to be able to see that the notification happened.
 Without that, the visibility policy is stated but not observable.
@@ -32,10 +38,12 @@ Without that, the visibility policy is stated but not observable.
 
 from collections.abc import Callable
 from datetime import date
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, StrictBool
 
@@ -43,6 +51,7 @@ from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.anthropic_client import ModelUnavailable
 from blossom.dependencies import ApplicationState, get_application_state
+from blossom.settings import TEMPLATE_PATH
 from blossom.stores.drafts import AlreadyDecided
 from blossom.views import (
     ApprovalQueueView,
@@ -54,6 +63,7 @@ from blossom.views import (
 )
 
 router = APIRouter(prefix="/parent", tags=["parent"])
+templates = Jinja2Templates(directory=TEMPLATE_PATH)
 
 State = Annotated[ApplicationState, Depends(get_application_state)]
 
@@ -123,11 +133,8 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
     )
 
 
-@router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
-async def start_plan(request: PlanRequest, state: State, build: Builder) -> PlanRunView:
-    """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
-    graph = build()
-    plan_date = request.plan_date or state.clock.today()
+async def run_plan(graph: CompiledPlanGraph, plan_date: date) -> PlanRunView:
+    """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped."""
     thread_id = thread_for(plan_date)
     result = await graph.ainvoke(
         PlanState(plan_date=plan_date, rounds=0),
@@ -135,6 +142,13 @@ async def start_plan(request: PlanRequest, state: State, build: Builder) -> Plan
         durability=DURABILITY,
     )
     return run_view(thread_id, plan_date, dict(result))
+
+
+@router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
+async def start_plan(request: PlanRequest, state: State, build: Builder) -> PlanRunView:
+    """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
+    graph = build()
+    return await run_plan(graph, request.plan_date or state.clock.today())
 
 
 @router.get("/approvals", response_model=ApprovalQueueView)
@@ -224,3 +238,84 @@ def checkpoint(state: State) -> ParentCheckpointView:
             )
         ],
     )
+
+
+# --------------------------------------------------------------------- the page
+
+FormDecision = Literal["approve", "refuse"]
+"""The two buttons. Anything else in the field is a 422, not a guess."""
+
+
+def review_page(
+    request: Request,
+    state: ApplicationState,
+    *,
+    problem: str | None = None,
+    status_code: int = status.HTTP_200_OK,
+) -> HTMLResponse:
+    """Render the queue, the decisions, and the form to plan an evening.
+
+    ``problem`` is what a form action could not do, shown once at the top with
+    the status the JSON route would have answered, so the page tells the truth
+    the API tells.
+    """
+    return templates.TemplateResponse(
+        request,
+        "parent_review.html",
+        {
+            "today": state.clock.today(),
+            "model_available": bool((state.settings.anthropic_api_key or "").strip()),
+            "waiting": [ApprovalView.from_record(record) for record in state.drafts.waiting()],
+            "decided": [ApprovalView.from_record(record) for record in state.drafts.decided()],
+            "problem": problem,
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("", response_class=HTMLResponse, include_in_schema=False)
+def review(request: Request, state: State) -> HTMLResponse:
+    """The parent's page: what is waiting, what was decided, and a date to plan."""
+    return review_page(request, state)
+
+
+@router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)
+async def plan_from_the_page(
+    request: Request,
+    state: State,
+    build: Builder,
+    plan_date: Annotated[str, Form()] = "",
+) -> Response:
+    """The plan form. A blank date means today; a bad one is said, not guessed at."""
+    try:
+        evening = date.fromisoformat(plan_date) if plan_date.strip() else state.clock.today()
+    except ValueError:
+        return review_page(
+            request,
+            state,
+            problem=f"{plan_date!r} is not a date. Use the form YYYY-MM-DD.",
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    try:
+        await run_plan(build(), evening)
+    except HTTPException as error:
+        return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
+    return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/actions/decide/{draft_id}", response_class=HTMLResponse, include_in_schema=False)
+async def decide_from_the_page(
+    request: Request,
+    draft_id: str,
+    state: State,
+    build: Builder,
+    decision: Annotated[FormDecision, Form()],
+    reason: Annotated[str, Form()] = "",
+) -> Response:
+    """The two buttons under a waiting draft, through the same path the JSON route takes."""
+    decided = DecisionRequest(approved=decision == "approve", reason=reason.strip() or None)
+    try:
+        await decide_draft(state, build, draft_id, decided)
+    except HTTPException as error:
+        return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
+    return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)

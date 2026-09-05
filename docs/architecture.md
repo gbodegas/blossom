@@ -90,9 +90,16 @@ both land: the route holds one lock from the table check through the resume,
 and the table refuses a second, different decision, keeping the first and its
 time, which also covers a request from another process.
 
-**Not built:** a page. The parent's routes return JSON, and the interactive
-API page at `/docs` is how a run is started and decided today. Nothing yet
-lets her see that a draft was approved.
+The page at `/parent` is the same three things as forms: a date to plan, the
+drafts waiting with their text and two buttons, and what has been decided. Its
+two form actions call the functions the JSON routes call and redirect back to
+the page, so there is one way to start a run and one way to decide whichever
+door it comes through, and a failure renders the page with the same status and
+reason the API would have answered. The decision field admits exactly the two
+button values. Without a key the page still reads and says why a plan cannot
+start.
+
+**Not built:** nothing yet lets her see that a draft was approved.
 
 ## Sources disagree, and that is the interesting case
 
@@ -302,8 +309,7 @@ about the process.
 
 **Not built:** nothing seeds the support rules or reflections, so a plan
 built today is built without them. The reviewer's five criteria are fixed in
-the prompt rather than configurable. The parent's approval is read from JSON
-and given through the API page; there is no page for it.
+the prompt rather than configurable.
 
 ## Expectation before action
 
