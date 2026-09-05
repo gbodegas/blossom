@@ -50,5 +50,13 @@
     "observed_at": "2026-08-19T09:00:00-04:00",
     "confidence": 0.85,
     "seen_in": "day header"
+  },
+  {
+    "assignment_id": "assignment-vocabulary-quiz",
+    "channel": "LMS",
+    "asserted_value": "2026-08-21",
+    "observed_at": "2026-08-19T09:00:00-04:00",
+    "confidence": 0.85,
+    "seen_in": "day header"
   }
 ]

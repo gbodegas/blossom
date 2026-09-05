@@ -56,6 +56,20 @@
         </p>
       {% endif %}
 
+      {% if assignment.contradiction %}
+        <p class="confidence disagree">
+          <strong>The school says otherwise.</strong> The date on record may be wrong.
+        </p>
+        <div class="claims">
+          <h3>What the sources say</h3>
+          <ul>
+            {% for claim in assignment.contradiction %}
+              <li>{{ claim }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
       <p class="status">
         Status: <span class="pill">{{ assignment.submission_status|replace("_", " ") }}</span>
         {% if assignment.kind == "TASK" %}<span class="pill">a task, not a sitting</span>{% endif %}

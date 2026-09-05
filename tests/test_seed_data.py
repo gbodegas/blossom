@@ -14,7 +14,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from blossom.app import create_app
 from blossom.dependencies import build_application_state
-from blossom.noticing import Verdict, expect_due_date, notice_due_date
+from blossom.noticing import Verdict, expect_due_date, notice_due_date, read_week
 from blossom.reconciliation import Reconciler, SourceConfidence, classify_confidence
 from blossom.settings import REPOSITORY_ROOT
 from blossom.sources import FixtureSource
@@ -29,15 +29,15 @@ def test_the_fixture_set_carries_every_shape_the_portal_shows() -> None:
     assignments = FixtureSource(FIXTURES).assignments()
     by_id = {item.assignment_id: item for item in assignments}
 
-    assert len(assignments) == 6
-    assert len(by_id) == 6
+    assert len(assignments) == 7
+    assert len(by_id) == 7
     assert all(item.assigned_on is not None for item in assignments)
     undated = [item for item in assignments if item.due_date is None]
     assert [item.assignment_id for item in undated] == ["assignment-signed-syllabus"]
     assert undated[0].kind is AssignmentKind.TASK
     assert by_id["assignment-textbook-cover"].kind is AssignmentKind.TASK
     assert by_id["assignment-textbook-cover"].due_date is not None
-    assert sum(item.kind is AssignmentKind.HOMEWORK for item in assignments) == 4
+    assert sum(item.kind is AssignmentKind.HOMEWORK for item in assignments) == 5
 
 
 def test_the_sources_produce_every_confidence_state() -> None:
@@ -53,6 +53,7 @@ def test_the_sources_produce_every_confidence_state() -> None:
 
     assert labels["assignment-algebra-set"] is SourceConfidence.CORROBORATED
     assert labels["assignment-reading-log"] is SourceConfidence.SINGLE_SOURCE
+    assert labels["assignment-vocabulary-quiz"] is SourceConfidence.SINGLE_SOURCE
     assert labels["assignment-canal-essay"] is SourceConfidence.SOURCES_DISAGREE
     assert labels["assignment-textbook-cover"] is SourceConfidence.SOURCES_DISAGREE
     assert labels["assignment-science-fair-proposal"] is SourceConfidence.UNVERIFIED
@@ -60,9 +61,9 @@ def test_the_sources_produce_every_confidence_state() -> None:
     assert set(labels.values()) == set(SourceConfidence)
 
 
-def test_the_record_and_the_sources_agree_or_leave_it_open_but_never_contradict() -> None:
-    """The fixture record was written from the same portal the sources describe,
-    so nothing in it is contradicted; the disputed items are open, not wrong."""
+def test_one_record_date_is_contradicted_and_the_rest_agree_or_stay_open() -> None:
+    """The quiz is on the record for the Wednesday after the window and on the
+    portal for the Friday inside it, so the week has one contradiction to show."""
     source = FixtureSource(FIXTURES)
 
     verdicts = {
@@ -79,6 +80,7 @@ def test_the_record_and_the_sources_agree_or_leave_it_open_but_never_contradict(
         "assignment-textbook-cover": Verdict.UNDECIDABLE,
         "assignment-science-fair-proposal": Verdict.UNDECIDABLE,
         "assignment-signed-syllabus": Verdict.UNDECIDABLE,
+        "assignment-vocabulary-quiz": Verdict.CONTRADICTED,
     }
 
 
@@ -149,3 +151,24 @@ def test_the_page_shows_the_whole_week_with_every_state_named() -> None:
     assert "LMS (title): 2026-08-22" in page
     assert "No due date on record" in page
     assert "a task, not a sitting" in page
+    assert "Due Wednesday, August 26, 2026" in page
+    assert "The school says otherwise." in page
+
+
+def test_the_page_and_the_planner_read_the_same_week() -> None:
+    """The quiz is outside the window by the record and inside it by the portal;
+    both readers include it, and the page says why it is there."""
+    settings = fixture_settings(BLOSSOM_TODAY="2026-08-19")
+    state = build_application_state(settings, InMemorySaver())
+    try:
+        week = read_week(state.project_state, state.source, state.clock.today())
+    finally:
+        state.close()
+
+    assert "assignment-vocabulary-quiz" in {item.assignment_id for item in week.assignments}
+    assert week.noticings["assignment-vocabulary-quiz"].contradicted
+
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/student/due-this-week").text
+    assert "Vocabulary quiz, unit one" in page
+    assert "LMS (day header): 2026-08-21" in page

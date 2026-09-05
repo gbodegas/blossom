@@ -60,5 +60,15 @@
     "reported_submission_status": "not_started",
     "assigned_on": "2026-08-17",
     "kind": "TASK"
+  },
+  {
+    "assignment_id": "assignment-vocabulary-quiz",
+    "course": "Spanish",
+    "title": "Vocabulary quiz, unit one",
+    "due_date": "2026-08-26",
+    "dependencies": [],
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-08-18",
+    "kind": "HOMEWORK"
   }
 ]

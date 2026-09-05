@@ -11,6 +11,7 @@ page down with it.
 
 import json
 import pathlib
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,6 +26,7 @@ from blossom.reconciliation import (
     SourceConfidence,
     classify_confidence,
 )
+from blossom.stores.project_state import DUE_THIS_WEEK_SPAN
 from tests.support import fixture_settings, record
 
 PINNED_TODAY = "2026-08-19"
@@ -98,17 +100,26 @@ def test_a_corroborated_assignment_names_the_channels_that_agree() -> None:
 
 
 def test_every_assignment_in_the_window_reaches_the_page(tmp_path: pathlib.Path) -> None:
-    """Nothing filters. The count on the page matches the count in the store."""
+    """Nothing filters. With no sources, the week is the record's alone, and every
+    item the record puts in it is on the page, each marked unverified."""
     fixtures = pathlib.Path("data/synthetic")
     assignments = json.loads((fixtures / "assignments.json").read_text(encoding="utf-8"))
     (tmp_path / "assignments.json").write_text(json.dumps(assignments), encoding="utf-8")
     (tmp_path / "deadline_sources.json").write_text("[]", encoding="utf-8")
+    start = date.fromisoformat(PINNED_TODAY)
+    in_window = [
+        item
+        for item in assignments
+        if item["due_date"] is None
+        or start <= date.fromisoformat(item["due_date"]) <= start + DUE_THIS_WEEK_SPAN
+    ]
+    assert len(in_window) == len(assignments) - 1
 
     page = student_page(tmp_path)
 
-    for assignment in assignments:
+    for assignment in in_window:
         assert assignment["title"] in page, f"{assignment['title']} was dropped"
-    assert page.count("Unverified due date") == len(assignments)
+    assert page.count("Unverified due date") == len(in_window)
 
 
 def test_the_view_no_longer_carries_a_fabricated_workload_count() -> None:
