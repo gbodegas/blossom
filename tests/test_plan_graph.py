@@ -592,6 +592,7 @@ def test_the_nodes_ahead_of_the_gate_are_the_ones_the_contract_names() -> None:
         "compose",
         "require_human_approval",
         "record_decision",
+        "record_run",
     ]
 
 
@@ -966,3 +967,44 @@ def test_a_model_answer_reads_what_the_call_cost_from_the_raw_message() -> None:
 
     assert (priced.input_tokens, priced.output_tokens) == (1777, 863)
     assert (unpriced.input_tokens, unpriced.output_tokens) == (None, None)
+
+
+def test_a_run_that_reaches_the_gate_saves_its_record_with_the_draft() -> None:
+    drafts = drafts_in_memory()
+
+    run(graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())), drafts=drafts))
+
+    assert [item.node for item in drafts.steps_for("plan:2026-08-19")] == [
+        "retrieve",
+        "plan",
+        "verify",
+        "critique",
+    ]
+    assert drafts.runs_without_a_draft() == []
+
+
+def test_a_run_that_ends_before_the_gate_saves_its_record_from_its_last_node() -> None:
+    drafts = drafts_in_memory()
+    planner = Scripted(*[ok(plan_that_forgets_the_problem_set())] * (MAX_REVISIONS + 1))
+
+    result = run(graph_with(planner, Scripted(), drafts=drafts))
+
+    ended = drafts.runs_without_a_draft()
+    assert [(item.thread_id, item.outcome) for item in ended] == [
+        ("plan:2026-08-19", "checks_failed")
+    ]
+    assert ended[0].steps == result["steps"]
+    assert len(ended[0].steps) == 7
+
+
+def test_a_model_that_stops_still_leaves_the_runs_record() -> None:
+    drafts = drafts_in_memory()
+    refused: ModelAnswer[DailyPlan] = ModelAnswer(
+        parsed=None, stop_reason="refusal", parsing_error=None
+    )
+
+    run(graph_with(Scripted(refused), Scripted(), drafts=drafts))
+
+    ended = drafts.runs_without_a_draft()
+    assert [item.outcome for item in ended] == ["model_refused"]
+    assert [item.node for item in ended[0].steps] == ["retrieve", "plan"]

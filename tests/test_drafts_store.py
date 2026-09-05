@@ -9,6 +9,7 @@ still there after the file is closed and reopened.
 import pathlib
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
+from typing import cast
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -312,3 +313,35 @@ def test_runs_that_ended_are_most_recent_first() -> None:
     )
 
     assert [run.thread_id for run in store.runs_without_a_draft()] == ["plan:second", "plan:first"]
+
+
+def test_a_draft_and_the_record_of_its_run_are_saved_together() -> None:
+    store = store_in_memory()
+
+    store.record_waiting(
+        draft(),
+        thread_id="plan:z",
+        plan_date=PLAN_DATE,
+        outcome="accepted",
+        steps=[step("retrieve", 0), step("critique", 1)],
+    )
+
+    assert [item.node for item in store.steps_for("plan:z")] == ["retrieve", "critique"]
+    assert store.runs_without_a_draft() == []
+
+
+def test_a_replacement_that_fails_part_way_leaves_the_earlier_account_standing() -> None:
+    store = store_in_memory()
+    first = [step("retrieve", 0), step("plan", 1)]
+    store.record_run(thread_id="plan:x", plan_date=PLAN_DATE, outcome="model_refused", steps=first)
+    broken = cast(list[StepRecord], [step("retrieve", 0), object()])
+
+    with pytest.raises(AttributeError):
+        store.record_run(
+            thread_id="plan:x", plan_date=PLAN_DATE, outcome="checks_failed", steps=broken
+        )
+
+    assert store.steps_for("plan:x") == first
+    assert [run.outcome for run in store.runs_without_a_draft()] == ["model_refused"]
+    store.record_run(thread_id="plan:y", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+    assert {run.thread_id for run in store.runs_without_a_draft()} == {"plan:x", "plan:y"}

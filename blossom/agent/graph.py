@@ -21,18 +21,20 @@ refusal, or a body the schema cannot parse each ends the graph with an outcome
 naming which, and no draft, because guessing at a truncated plan would be
 worse than having none.
 
-Saved state holds the evening, the plan, what was found about it, and the
-draft. The stores and the two model callables are closed over by the node
-functions rather than carried in state, so nothing about the process is
-written to disk and nothing in the state needs a class the serializer does not
-list.
+Saved state holds the evening, the plan, what was found about it, the draft,
+and one ``StepRecord`` per node run, saying what the node expected and found.
+The stores and the two model callables are closed over by the node functions
+rather than carried in state, so nothing that runs the process is written to
+disk and nothing in the state needs a class the serializer does not list.
 
-Two nodes write to the drafts table, and each performs that one side effect
+Three nodes write to the drafts file, and each performs that one side effect
 in a form that running twice leaves unchanged. ``compose`` saves the draft as
-waiting, keyed by an id derived from the thread, before the gate can pause on
-it, so the parent's queue shows it. ``record_decision``, after the gate, saves
-what the person decided. The table is the record across threads; saved state
-is the record within one.
+waiting, keyed by an id derived from the thread, with the run's record in the
+same transaction, before the gate can pause on it, so the parent's queue shows
+it. ``record_decision``, after the gate, saves what the person decided.
+``record_run`` saves the record of a run that ended before the gate and has no
+draft to carry it. The file is the record across threads; saved state is the
+record within one.
 """
 
 import operator
@@ -93,7 +95,8 @@ NODES_PER_ROUND: Final = 3
 """Plan, verify, critique: the most nodes one round of the loop can run."""
 
 NODES_OUTSIDE_THE_LOOP: Final = 4
-"""Retrieve before it; compose, the gate, and the decision record after it."""
+"""Retrieve before it; compose, the gate, and the decision record after it. A run
+that ends before the gate takes one node there instead, the run's record."""
 
 WORST_CASE_SUPERSTEPS: Final = NODES_OUTSIDE_THE_LOOP + (MAX_REVISIONS + 1) * NODES_PER_ROUND
 """The longest run this graph can take. It must fit under the recursion limit
@@ -368,8 +371,25 @@ def build_plan_graph(
             thread_id=thread_id,
             plan_date=state["plan_date"],
             outcome=cast(Literal["accepted", "unsettled"], outcome),
+            steps=state.get("steps", []),
         )
         return {"draft": draft}
+
+    def record_run(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
+        """Save the record of a run that ended before the gate. Writes nothing to state.
+
+        A run that reaches the gate has its record saved with its draft, in
+        ``compose``; this node is the same save for a run with no draft to
+        attach it to, so the parent's page can say why nothing came of it.
+        """
+        thread_id = str(config["configurable"]["thread_id"])
+        drafts.record_run(
+            thread_id=thread_id,
+            plan_date=state["plan_date"],
+            outcome=state["outcome"],
+            steps=state.get("steps", []),
+        )
+        return {}
 
     def gate(state: PlanState) -> dict[str, Any]:
         """The approval gate, unchanged; the state's gate keys match its own."""
@@ -387,18 +407,18 @@ def build_plan_graph(
         return {}
 
     def after_plan(state: PlanState) -> str:
-        return END if "outcome" in state else "verify"
+        return "record_run" if "outcome" in state else "verify"
 
     def after_verify(state: PlanState) -> str:
         if state["verification"].passed:
             return "critique"
-        return END if "outcome" in state else "plan"
+        return "record_run" if "outcome" in state else "plan"
 
     def after_critique(state: PlanState) -> str:
         outcome = state.get("outcome")
         if outcome is None:
             return "plan"
-        return "compose" if outcome in REACHED_THE_GATE else END
+        return "compose" if outcome in REACHED_THE_GATE else "record_run"
 
     graph: StateGraph[PlanState, Any, PlanState, PlanState] = StateGraph(PlanState)
     graph.add_node("retrieve", retrieve)
@@ -408,18 +428,26 @@ def build_plan_graph(
     graph.add_node("compose", compose)
     graph.add_node("require_human_approval", gate)
     graph.add_node("record_decision", record_decision)
+    graph.add_node("record_run", record_run)
     graph.add_edge(START, "retrieve")
     graph.add_edge("retrieve", "plan")
-    graph.add_conditional_edges("plan", after_plan, {"verify": "verify", END: END})
     graph.add_conditional_edges(
-        "verify", after_verify, {"critique": "critique", "plan": "plan", END: END}
+        "plan", after_plan, {"verify": "verify", "record_run": "record_run"}
     )
     graph.add_conditional_edges(
-        "critique", after_critique, {"compose": "compose", "plan": "plan", END: END}
+        "verify",
+        after_verify,
+        {"critique": "critique", "plan": "plan", "record_run": "record_run"},
+    )
+    graph.add_conditional_edges(
+        "critique",
+        after_critique,
+        {"compose": "compose", "plan": "plan", "record_run": "record_run"},
     )
     graph.add_edge("compose", "require_human_approval")
     graph.add_edge("require_human_approval", "record_decision")
     graph.add_edge("record_decision", END)
+    graph.add_edge("record_run", END)
     return graph.compile(checkpointer=checkpointer)
 
 

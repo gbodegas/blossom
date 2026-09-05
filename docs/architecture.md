@@ -107,9 +107,12 @@ one per node, each saying what the node expected and what it found. A run that
 ended before the gate, because its plan never passed the checks or the model
 did not answer, has no draft to show, so the page lists it under its own
 heading with the same record, and the JSON answer to `POST /parent/plans`
-carries the steps too. The route saves the record to the drafts file once the
-run has stopped, whichever way it stopped, in two tables beside the drafts:
-one row per run and one per step.
+carries the steps too. The graph saves the record, not the route, so a process
+that stops between the run and the page cannot leave a draft without its
+account: `compose` writes the draft and the record in one transaction, and a
+run that ends before the gate writes the record from its last node. The record
+sits in two tables beside the drafts, one row per run and one per step, and a
+replacement that fails part way rolls back whole.
 
 **Not built:** nothing yet lets her see that a draft was approved.
 
@@ -299,7 +302,7 @@ call, and neither holds a tool. So there is no loop in which a model decides
 what to call next: the graph decides, from the checks and the verdict, and
 every route it can take is written in one file.
 
-Seven nodes, in this order. `retrieve` reads every assignment on record,
+Eight nodes. `retrieve` reads every assignment on record,
 states each one's due date before it reads the sources, sets the two against
 each other, and then selects the week: undated work, and dated work that the
 record or any source puts in the window. `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
@@ -311,7 +314,11 @@ reviewer's notes as the text a parent reads, and saves it to the drafts table
 as waiting, under an id derived from the thread. `require_human_approval` is
 the gate from `blossom/agent/gates.py`, unchanged. `record_decision`, after
 the gate, saves what the person decided; it is the only node past the gate,
-and a node there may be added without a version bump.
+and a node there may be added without a version bump. `record_run` is where a
+run goes instead of `compose` when it ends before the gate, with a plan that
+never passed the checks or a model that did not answer: it saves the run's
+record, which `compose` saves with the draft. It is off the path to the gate,
+so a paused thread never meets it and the version stays put.
 
 The loop is bounded twice. The planner may be sent back `MAX_REVISIONS` times,
 after which a plan that still fails tier one is reported as `checks_failed` and

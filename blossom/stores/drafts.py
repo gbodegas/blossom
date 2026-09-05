@@ -155,14 +155,23 @@ class DraftsStore:
             self._connection.close()
 
     def record_waiting(
-        self, draft: Draft, *, thread_id: str, plan_date: date, outcome: Outcome
+        self,
+        draft: Draft,
+        *,
+        thread_id: str,
+        plan_date: date,
+        outcome: Outcome,
+        steps: Sequence[StepRecord] = (),
     ) -> None:
         """Save a draft the moment it exists, before the gate pauses on it.
 
         An upsert: the same draft saved again replaces its text and status and
         keeps its first ``created_at``, so a node that runs twice leaves one row.
+        The record of the run that produced the draft is saved in the same
+        transaction, so a draft is never on the page without its account or
+        the other way around.
         """
-        with self._lock:
+        with self._lock, self._connection:
             self._connection.execute(
                 """
                 INSERT INTO drafts (
@@ -183,7 +192,7 @@ class DraftsStore:
                     draft.created_at.isoformat(),
                 ),
             )
-            self._connection.commit()
+            self._write_run(thread_id, plan_date, outcome, steps)
 
     def record_decision(
         self, draft_id: str, *, status: DraftStatus, decision: Decision, reason: str | None
@@ -223,42 +232,50 @@ class DraftsStore:
     ) -> None:
         """Save how a run went: where it ended and every step on the way.
 
-        Saved once the run has stopped, at the gate or before it, so a run that
-        produced nothing to approve still leaves its record. Saving the same
-        thread again replaces its steps, so a repeat leaves one account.
+        For a run that ended before the gate and so has no draft to carry its
+        record; a run with a draft saves both together in ``record_waiting``.
+        Saving the same thread again replaces its steps, so a repeat leaves one
+        account. The whole replacement is one transaction: a failure part way
+        through rolls it back and the earlier account stands.
         """
+        with self._lock, self._connection:
+            self._write_run(thread_id, plan_date, outcome, steps)
+
+    def _write_run(
+        self, thread_id: str, plan_date: date, outcome: str, steps: Sequence[StepRecord]
+    ) -> None:
+        """The run row and its steps, inside a transaction the caller holds open."""
         stamp = self._clock.now().isoformat()
-        with self._lock:
-            self._connection.execute(
-                """
-                INSERT INTO runs (thread_id, plan_date, outcome, recorded_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(thread_id) DO UPDATE SET
-                    outcome=excluded.outcome,
-                    recorded_at=excluded.recorded_at
-                """,
-                (thread_id, plan_date.isoformat(), outcome, stamp),
+        rows = [
+            (
+                thread_id,
+                position,
+                item.node,
+                item.round,
+                item.expected,
+                item.found,
+                item.recorded_at.isoformat(),
             )
-            self._connection.execute("DELETE FROM steps WHERE thread_id=?", (thread_id,))
-            self._connection.executemany(
-                """
-                INSERT INTO steps (thread_id, position, node, round, expected, found, recorded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        thread_id,
-                        position,
-                        item.node,
-                        item.round,
-                        item.expected,
-                        item.found,
-                        item.recorded_at.isoformat(),
-                    )
-                    for position, item in enumerate(steps)
-                ],
-            )
-            self._connection.commit()
+            for position, item in enumerate(steps)
+        ]
+        self._connection.execute(
+            """
+            INSERT INTO runs (thread_id, plan_date, outcome, recorded_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(thread_id) DO UPDATE SET
+                outcome=excluded.outcome,
+                recorded_at=excluded.recorded_at
+            """,
+            (thread_id, plan_date.isoformat(), outcome, stamp),
+        )
+        self._connection.execute("DELETE FROM steps WHERE thread_id=?", (thread_id,))
+        self._connection.executemany(
+            """
+            INSERT INTO steps (thread_id, position, node, round, expected, found, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
 
     def steps_for(self, thread_id: str) -> list[StepRecord]:
         """The steps of one run, in the order they happened; empty for a thread never saved."""

@@ -151,12 +151,8 @@ def approval_view(drafts: DraftsStore, record: DraftRecord) -> ApprovalView:
     return ApprovalView.from_record(record, drafts.steps_for(record.thread_id))
 
 
-async def run_plan(graph: CompiledPlanGraph, plan_date: date, drafts: DraftsStore) -> PlanRunView:
-    """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped.
-
-    The run's record is saved once it has stopped, whether or not a draft came
-    of it, so a run that produced nothing to approve can still be read.
-    """
+async def run_plan(graph: CompiledPlanGraph, plan_date: date) -> PlanRunView:
+    """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped."""
     thread_id = thread_for(plan_date)
     try:
         result = await graph.ainvoke(
@@ -166,18 +162,14 @@ async def run_plan(graph: CompiledPlanGraph, plan_date: date, drafts: DraftsStor
         )
     except ModelUnavailable as error:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-    view = run_view(thread_id, plan_date, dict(result))
-    drafts.record_run(
-        thread_id=thread_id, plan_date=plan_date, outcome=view.outcome, steps=view.steps
-    )
-    return view
+    return run_view(thread_id, plan_date, dict(result))
 
 
 @router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
 async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> PlanRunView:
     """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
     require_model(graphs)
-    return await run_plan(graphs.build(), request.plan_date or state.clock.today(), state.drafts)
+    return await run_plan(graphs.build(), request.plan_date or state.clock.today())
 
 
 @router.get("/approvals", response_model=ApprovalQueueView)
@@ -328,7 +320,7 @@ async def plan_from_the_page(
         )
     try:
         require_model(graphs)
-        await run_plan(graphs.build(), evening, state.drafts)
+        await run_plan(graphs.build(), evening)
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
