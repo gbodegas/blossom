@@ -145,6 +145,14 @@ class TwoChannelSource:
             ]
         return []
 
+    def support_rules(self) -> list[SupportRule]:
+        """The graph tests seed rules through the store, not the source."""
+        return []
+
+    def reflections(self) -> list[Reflection]:
+        """The graph tests seed notes through the store, not the source."""
+        return []
+
     @staticmethod
     def record(channel: SourceChannel, value: str) -> SourceRecord:
         return SourceRecord(

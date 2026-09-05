@@ -26,5 +26,29 @@
     "asserted_value": "2026-08-24",
     "observed_at": "2026-08-19T11:00:00-04:00",
     "confidence": 0.85
+  },
+  {
+    "assignment_id": "assignment-textbook-cover",
+    "channel": "LMS",
+    "asserted_value": "2026-08-21",
+    "observed_at": "2026-08-19T09:00:00-04:00",
+    "confidence": 0.8,
+    "seen_in": "day header"
+  },
+  {
+    "assignment_id": "assignment-textbook-cover",
+    "channel": "LMS",
+    "asserted_value": "2026-08-22",
+    "observed_at": "2026-08-19T09:00:00-04:00",
+    "confidence": 0.8,
+    "seen_in": "title"
+  },
+  {
+    "assignment_id": "assignment-reading-log",
+    "channel": "LMS",
+    "asserted_value": "2026-08-25",
+    "observed_at": "2026-08-19T09:00:00-04:00",
+    "confidence": 0.85,
+    "seen_in": "day header"
   }
 ]

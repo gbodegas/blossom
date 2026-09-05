@@ -40,11 +40,15 @@ treat that signal as true the moment it arrives.
 
 ## What runs today
 
-The weekly view is real, end to end. The fixture assignments load, their
-sources are reconciled, and each one is labeled with how well its due date is
-corroborated. One is unverified, one has two sources a day apart, and one is
-confirmed by two sources. Nothing is filtered out, including the assignment
-nothing corroborates.
+The weekly view is real, end to end. The fixture set is a fictional
+student's week as a school portal would show it: six items, including a form
+to sign that has no due date and a book to cover whose date the portal gives
+two different ways. Their sources are reconciled, and each one is labeled with
+how well its due date is corroborated: one confirmed by two sources, one
+resting on a single source, two where sources disagree, and one nothing
+corroborates. Nothing is filtered out. The same set carries the household's
+standing rules about how she works and one note the planner kept about a past
+plan, so a run of the planner has both to read.
 
 ## What makes it different
 
@@ -84,9 +88,8 @@ reflection boundary, and a tool registry that cannot hold anything that reports
 having sent something.
 
 The "too much" signal is accepted and not yet acted on. Retrieval reads its
-corpora whole; no vector store is wired. Nothing seeds the support rules, so a
-plan is built without them. [docs/architecture.md](docs/architecture.md) lists every
-gap between the design and the code.
+corpora whole; no vector store is wired. [docs/architecture.md](docs/architecture.md)
+lists every gap between the design and the code.
 
 I do not have a success metric yet. Success looks like the agent making her
 own tracking legible to her rather than replacing it, and I intend to define

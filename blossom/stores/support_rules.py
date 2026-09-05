@@ -15,8 +15,7 @@ relevant ones. The corpus is a few sentences about one student, which fits in
 a prompt whole, and an index over it would add a way to miss a rule for no
 saving. ``retrieve`` remains for the retrieval router and is a substring scan.
 
-Known gap: nothing seeds this store, so the running application plans without
-rules until seed data exists.
+The fixture set seeds it at startup from ``support_rules.json``.
 """
 
 from dataclasses import dataclass

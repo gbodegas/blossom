@@ -41,7 +41,14 @@ def a_plan() -> DailyPlan:
                 rationale="nobody has confirmed this date, so it gets done tonight",
             ),
         ],
-        deferred=[Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday")],
+        deferred=[
+            Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday"),
+            Deferral(
+                assignment_id="assignment-textbook-cover", reason="five minutes on the weekend"
+            ),
+            Deferral(assignment_id="assignment-reading-log", reason="a page a night is on track"),
+            Deferral(assignment_id="assignment-signed-syllabus", reason="ask what the date is"),
+        ],
     )
 
 

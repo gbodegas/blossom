@@ -88,15 +88,19 @@ def build_application_state(
     project_state = ProjectStateStore(connection, clock=clock)
     source = FixtureSource(settings.fixture_path)
     project_state.upsert_assignments(source.assignments())
+    support_rules = SupportRulesStore()
+    for rule in source.support_rules():
+        support_rules.add_rule(rule)
+    reflections = ReflectionsStore()
+    for note in source.reflections():
+        reflections.write(note)
     return ApplicationState(
         settings=settings,
         clock=clock,
         source=source,
         project_state=project_state,
-        # Empty until seed data exists. The graph reads whichever rules and
-        # notes are here, so an empty store means a plan built without them.
-        support_rules=SupportRulesStore(),
-        reflections=ReflectionsStore(),
+        support_rules=support_rules,
+        reflections=reflections,
         drafts=DraftsStore.open(settings.database_path, clock),
         checkpointer=checkpointer,
     )
