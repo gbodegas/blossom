@@ -1,41 +1,76 @@
 /*
-  Blossom's look, taken from the logo: blush paper, pale pink petals, a soft
-  blue stone, ripples. The palette is a small set of tokens so both pages draw
-  from one place, and every color used for meaning is paired with words that
-  carry the same meaning without it.
+  Blossom's look, from the logo: blush paper, pale pink petals, a powder-blue
+  stone, a rounded lowercase wordmark. Everything below is a token, so both
+  pages draw from one place, and every color used for meaning is paired with
+  words that carry the meaning without it.
+
+  Type is Quicksand for headings, buttons and navigation, and Outfit for body
+  text, both served from this folder under the SIL Open Font License. The
+  license texts sit beside the font files.
 */
 
+@font-face {
+  font-family: "Quicksand";
+  src: url("/static/fonts/Quicksand-Variable.ttf") format("truetype");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Outfit";
+  src: url("/static/fonts/Outfit-Variable.ttf") format("truetype");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --blush: #fbf1f3;
-  --blush-deep: #f4e2e7;
-  --card: #fffafb;
-  --line: #ecd9df;
+  /* Canvas: the logo's paper, with ruled lines faint enough to be texture. */
+  --canvas: #fdf5f7;
+  --rule: rgba(155, 184, 211, 0.1);
 
-  --petal: #f4c6d1;
-  --petal-deep: #e8a9ba;
-  --petal-ink: #6e2a3e;
+  /* Primary: the stone and the wordmark. The plain tone is for surfaces,
+     borders, and the wordmark; the deep tone carries the same hue where text
+     sits on it or is made of it, because white on the plain tone does not
+     read at button size. */
+  --blue: #9bb8d3;
+  --blue-deep: #6f95b8;
 
-  --stone: #bfd7e8;
-  --stone-deep: #a6c4da;
-  --sky: #8fb3ce;
-  --sky-ink: #2f5878;
+  /* Secondary: the petals. Outline buttons, hover states, small highlights. */
+  --pink: #e5a8b4;
+  --pink-deep: #c98495;
 
-  --ink: #363b45;
-  --ink-soft: #66707c;
+  /* Text: muted slate, never black or navy. The body tone is a step darker
+     than the reference so it reads at paragraph size; the reference tone is
+     for secondary lines; the strong tone is for the few places that need it. */
+  --text: #56687a;
+  --text-soft: #6a7b8c;
+  --text-strong: #435466;
 
-  --rose-ink: #a02f48;
-  --rose-bg: #fbe3e8;
-  --amber-ink: #85570a;
-  --amber-bg: #fbf0d9;
-  --slate-ink: #4c5c6b;
-  --slate-bg: #eef2f6;
-  --sage-ink: #2f6b43;
-  --sage-bg: #e6f2ea;
+  /* Surfaces: translucent, so the paper shows through rather than being
+     blocked by white. */
+  --surface: rgba(255, 255, 255, 0.6);
+  --surface-strong: rgba(255, 255, 255, 0.82);
+  --edge: rgba(155, 184, 211, 0.28);
+  --shadow: 0 8px 24px rgba(155, 184, 211, 0.15);
 
-  --radius: 1rem;
-  --shadow: 0 8px 24px rgba(150, 100, 120, 0.10);
-  --font: "Nunito", "Quicksand", ui-rounded, "SF Pro Rounded", "Segoe UI Variable",
-    "Segoe UI", system-ui, sans-serif;
+  /* Meaning colors, kept pastel and earthy, each with an ink that reads on it. */
+  --rose-bg: rgba(229, 168, 180, 0.3);
+  --rose-ink: #96505f;
+  --amber-bg: rgba(233, 201, 150, 0.35);
+  --amber-ink: #85652c;
+  --slate-bg: rgba(155, 184, 211, 0.24);
+  --slate-ink: #5b6f82;
+  --sage-bg: rgba(168, 204, 180, 0.35);
+  --sage-ink: #4b7658;
+
+  --radius: 16px;
+  --radius-small: 12px;
+  --pill: 9999px;
+
+  --font-display: "Quicksand", "Nunito", "Varela Round", ui-rounded, system-ui, sans-serif;
+  --font-body: "Outfit", "Rubik", "Quicksand", system-ui, sans-serif;
 }
 
 * {
@@ -49,20 +84,23 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: var(--font);
-  color: var(--ink);
-  line-height: 1.55;
-  /*
-    Blush paper with faint ruled lines, the way the logo sits on a page of
-    notes. The lines are quiet enough to read as texture rather than a grid.
-  */
+  font-family: var(--font-body);
+  font-weight: 400;
+  color: var(--text);
+  line-height: 1.6;
   background:
-    repeating-linear-gradient(
-      to bottom,
-      transparent 0 2rem,
-      rgba(143, 179, 206, 0.09) 2rem calc(2rem + 1px)
-    ),
-    linear-gradient(180deg, var(--blush) 0%, #f9edf1 60%, var(--blush-deep) 100%);
+    repeating-linear-gradient(to bottom, transparent 0 2rem, var(--rule) 2rem calc(2rem + 1px)),
+    var(--canvas);
+}
+
+h1,
+h2,
+h3,
+button,
+.places,
+.wordmark,
+summary {
+  font-family: var(--font-display);
 }
 
 /* ------------------------------------------------------------- masthead */
@@ -74,49 +112,52 @@ body {
   gap: 1rem;
   max-width: 46rem;
   margin: 0 auto;
-  padding: 1.25rem 1.25rem 0.5rem;
+  padding: 1.5rem 1.25rem 0.75rem;
 }
 
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.65rem;
   text-decoration: none;
 }
 
 .mark {
-  width: 44px;
-  height: 33px;
+  width: 48px;
+  height: 36px;
   display: block;
 }
 
 .wordmark {
-  font-size: 1.6rem;
+  font-size: 1.75rem;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--sky);
+  letter-spacing: 0.03em;
+  color: var(--blue);
 }
 
 .places {
   display: flex;
-  gap: 0.25rem;
+  gap: 0.35rem;
 }
 
 .places a {
-  color: var(--sky-ink);
+  color: var(--text-soft);
   text-decoration: none;
-  padding: 0.35rem 0.8rem;
-  border-radius: 999px;
+  padding: 0.4rem 1rem;
+  border-radius: var(--pill);
   font-weight: 600;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .places a[aria-current="page"] {
-  background: var(--stone);
+  background: var(--blue-deep);
+  color: #fff;
 }
 
-.places a:hover,
-.places a:focus-visible {
-  background: var(--blush-deep);
+.places a:not([aria-current="page"]):hover,
+.places a:not([aria-current="page"]):focus-visible {
+  background: rgba(229, 168, 180, 0.3);
+  color: var(--text-strong);
 }
 
 /* ------------------------------------------------------------- content */
@@ -128,36 +169,38 @@ main {
 }
 
 h1 {
-  font-size: 2rem;
+  font-size: 2.1rem;
   font-weight: 700;
-  color: var(--sky-ink);
-  margin: 0.5rem 0 0.25rem;
+  color: var(--blue-deep);
+  margin: 0.75rem 0 0.25rem;
+  letter-spacing: 0.01em;
 }
 
 h2 {
-  font-size: 1.25rem;
-  font-weight: 700;
-  margin: 0 0 0.5rem;
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--blue-deep);
+  margin: 0 0 0.6rem;
 }
 
 h3 {
-  font-size: 1.05rem;
-  font-weight: 700;
-  margin: 0.75rem 0 0.25rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin: 0.25rem 0 0.35rem;
 }
 
 section {
-  margin-block: 1.75rem;
-}
-
-section > h2 {
-  color: var(--sky-ink);
+  margin-block: 2rem;
 }
 
 .expectation,
 .note,
-.empty {
-  color: var(--ink-soft);
+.empty,
+.due,
+.status,
+.when {
+  color: var(--text-soft);
 }
 
 .expectation {
@@ -166,7 +209,7 @@ section > h2 {
 
 .empty {
   padding: 1.25rem;
-  border: 1px dashed var(--stone-deep);
+  border: 1px dashed rgba(155, 184, 211, 0.55);
   border-radius: var(--radius);
   text-align: center;
 }
@@ -175,58 +218,60 @@ section > h2 {
 
 article,
 .panel {
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--edge);
   border-radius: var(--radius);
-  padding: 1.25rem 1.5rem;
-  margin-block: 1rem;
+  padding: 1.35rem 1.6rem;
+  margin-block: 1.1rem;
   box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
 }
 
 article h2 {
   margin-top: 0;
+  color: var(--text-strong);
 }
 
 .course {
-  margin: 0 0 0.15rem;
-  font-size: 0.8rem;
+  margin: 0 0 0.1rem;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--sky-ink);
+  color: var(--pink-deep);
 }
 
 .due {
-  margin: 0.25rem 0 0.75rem;
-  color: var(--ink-soft);
+  margin: 0.15rem 0 0.75rem;
 }
 
 .status {
-  margin: 0.75rem 0 0;
-  color: var(--ink-soft);
+  margin: 0.85rem 0 0;
 }
 
 .pill {
   display: inline-block;
-  padding: 0.1rem 0.7rem;
-  border-radius: 999px;
-  background: var(--stone);
-  color: var(--sky-ink);
+  padding: 0.12rem 0.75rem;
+  border-radius: var(--pill);
+  background: rgba(155, 184, 211, 0.24);
+  color: var(--slate-ink);
+  font-family: var(--font-display);
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.88rem;
 }
 
 /*
   Confidence is never signaled by color alone. Each banner carries its own
   wording, so the state survives grayscale printing, low contrast screens, and
-  color vision differences. The left border and background are reinforcement,
-  not the message.
+  color vision differences. The tint and the edge are reinforcement, not the
+  message.
 */
 .confidence {
-  border-left: 4px solid var(--stone-deep);
-  border-radius: 0.5rem;
-  padding: 0.6rem 0.9rem;
-  margin-block: 0.75rem;
+  border-left: 3px solid var(--slate-ink);
+  border-radius: var(--radius-small);
+  padding: 0.65rem 0.95rem;
+  margin-block: 0.8rem;
   background: var(--slate-bg);
   color: var(--slate-ink);
 }
@@ -255,14 +300,15 @@ article h2 {
   color: var(--sage-ink);
 }
 
-/* The unverified case is the one most costly to miss, so its card is marked too. */
+/* The unverified case is the one most costly to miss, so its card is edged too. */
 article.confidence-unverified {
-  border-color: var(--petal-deep);
+  border-color: rgba(229, 168, 180, 0.7);
 }
 
 .claims h3 {
   font-size: 0.95rem;
-  color: var(--ink-soft);
+  color: var(--text-soft);
+  margin-top: 0.75rem;
 }
 
 .claims ul {
@@ -273,23 +319,24 @@ article.confidence-unverified {
 /* ------------------------------------------------------------- the parent's page */
 
 .problem {
-  border-left: 4px solid var(--rose-ink);
+  border-left: 3px solid var(--rose-ink);
   background: var(--rose-bg);
   color: var(--rose-ink);
-  border-radius: 0.5rem;
-  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius-small);
+  padding: 0.65rem 0.95rem;
 }
 
 pre.body {
   white-space: pre-wrap;
-  font-family: var(--font);
-  font-size: 0.97rem;
-  line-height: 1.5;
-  background: var(--blush);
-  border: 1px solid var(--line);
-  border-radius: 0.75rem;
-  padding: 1rem 1.1rem;
-  margin: 0.75rem 0;
+  font-family: var(--font-body);
+  font-size: 0.98rem;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--surface-strong);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-small);
+  padding: 1rem 1.15rem;
+  margin: 0.85rem 0;
   overflow-x: auto;
 }
 
@@ -309,81 +356,90 @@ pre.body {
 label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.3rem;
+  font-family: var(--font-display);
   font-weight: 600;
-  color: var(--ink-soft);
+  color: var(--text-soft);
 }
 
 input[type="date"],
 input[type="text"] {
   font: inherit;
-  color: var(--ink);
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--stone-deep);
-  border-radius: 0.6rem;
-  background: #fff;
+  font-family: var(--font-body);
+  color: var(--text);
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-small);
+  background: var(--surface-strong);
   max-width: 32rem;
+}
+
+input::placeholder {
+  color: rgba(106, 123, 140, 0.6);
 }
 
 input:focus-visible,
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible {
-  outline: 3px solid var(--sky);
+  outline: 3px solid rgba(155, 184, 211, 0.7);
   outline-offset: 2px;
 }
 
 .actions {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.6rem;
   flex-wrap: wrap;
 }
 
 button {
   font: inherit;
+  font-family: var(--font-display);
   font-weight: 700;
-  padding: 0.55rem 1.2rem;
-  border-radius: 999px;
-  border: 1px solid transparent;
+  padding: 0.6rem 1.35rem;
+  border-radius: var(--pill);
+  border: 1.5px solid transparent;
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 
+/* Solid: the primary color with white text. */
 button.primary {
-  background: var(--stone);
-  border-color: var(--stone-deep);
-  color: var(--sky-ink);
+  background: var(--blue-deep);
+  border-color: var(--blue-deep);
+  color: #fff;
 }
 
 button.primary:hover {
-  background: var(--stone-deep);
+  background: var(--blue);
+  border-color: var(--blue);
 }
 
+/* Outline: the secondary color for both border and text, no fill until hover. */
 button.secondary {
-  background: var(--petal);
-  border-color: var(--petal-deep);
-  color: var(--petal-ink);
+  background: transparent;
+  border-color: var(--pink);
+  color: var(--pink-deep);
 }
 
 button.secondary:hover {
-  background: var(--petal-deep);
+  background: var(--pink);
+  border-color: var(--pink);
+  color: #fff;
 }
 
 .decision .note {
   margin: 0;
-  font-size: 0.9rem;
+  font-size: 0.92rem;
 }
 
 .decision-line {
   margin: 0.25rem 0 0.5rem;
 }
 
-.when {
-  color: var(--ink-soft);
-}
-
 details summary {
   cursor: pointer;
-  color: var(--sky-ink);
+  color: var(--blue-deep);
   font-weight: 600;
 }
 
@@ -393,7 +449,7 @@ details summary {
   max-width: 46rem;
   margin: 0 auto;
   padding: 0 1.25rem 2rem;
-  color: var(--ink-soft);
+  color: var(--text-soft);
   font-size: 0.9rem;
   text-align: center;
 }
@@ -406,6 +462,6 @@ details summary {
 
   article,
   .panel {
-    padding: 1rem 1.1rem;
+    padding: 1.1rem 1.2rem;
   }
 }

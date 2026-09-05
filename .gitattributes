@@ -7,3 +7,6 @@
 
 # Images are never converted.
 *.png binary
+
+# Fonts are binary too.
+*.ttf binary
