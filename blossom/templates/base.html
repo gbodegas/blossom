@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Blossom{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/mark.svg">
+    <link rel="stylesheet" href="/static/blossom.css">
+  </head>
+  <body>
+    <header class="masthead">
+      <a class="brand" href="/student/due-this-week">
+        <img class="mark" src="/static/mark.svg" alt="" width="44" height="33">
+        <span class="wordmark">blossom</span>
+      </a>
+      <nav class="places" aria-label="Pages">
+        <a href="/student/due-this-week"{% if page == "student" %} aria-current="page"{% endif %}>Her week</a>
+        <a href="/parent"{% if page == "parent" %} aria-current="page"{% endif %}>Review</a>
+      </nav>
+    </header>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="colophon">
+      <p>Nothing here sends anything. A person reads, decides, and sends by hand.</p>
+    </footer>
+  </body>
+</html>
