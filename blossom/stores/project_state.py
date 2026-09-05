@@ -154,6 +154,14 @@ class ProjectStateStore:
             ).fetchall()
         return [assignment_from(row) for row in rows]
 
+    def week_from(self, start: date) -> list[Assignment]:
+        """The week as every reader sees it: dated work in the window, then undated work.
+
+        The student's page and the plan graph both read this, so an undated
+        item cannot be shown to her and skipped by the planner, or the reverse.
+        """
+        return [*self.due_between(start, start + DUE_THIS_WEEK_SPAN), *self.undated()]
+
     def undated(self) -> list[Assignment]:
         """Return every assignment with no due date on record, by course then title."""
         with self._lock:
@@ -182,17 +190,13 @@ class ProjectStateStore:
         if key != DUE_THIS_WEEK_KEY:
             return None
         today = self._clock.today()
-        end = today + DUE_THIS_WEEK_SPAN
         return RetrievalResult(
             store_name=self.name,
             record_id=key,
             source_channel="fixture",
             asserted_at=self._clock.now(),
             payload={
-                "assignments": [
-                    item.model_dump(mode="json")
-                    for item in [*self.due_between(today, end), *self.undated()]
-                ]
+                "assignments": [item.model_dump(mode="json") for item in self.week_from(today)]
             },
         )
 
