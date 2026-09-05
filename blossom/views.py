@@ -39,6 +39,8 @@ class StudentAssignmentView(BaseModel):
     deadline_confidence: SourceConfidence
     source_channels: list[str]
     disagreement: list[str]
+    contradiction: list[str] = []
+    """What the sources say when none of them supports the record's date; empty otherwise."""
 
 
 class StudentDueThisWeekView(BaseModel):

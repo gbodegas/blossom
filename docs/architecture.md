@@ -167,9 +167,10 @@ result even when the corpus holds nothing relevant.
 Every result carries provenance: which store, which channel, when the source
 asserted it, and when this system read it.
 
-The plan graph does not use the router. It reads its corpora whole: the
-assignments due in the window from structured state, and every support rule
-and every reflection as they stand. Each is a few sentences about one student,
+Nothing in the package calls the router today. The student's page and the
+plan graph both read the week through `read_week` in `blossom/noticing.py`,
+and the graph reads its other corpora whole: every support rule and every
+reflection as they stand. Each is a few sentences about one student,
 which fits in a prompt entire, and an index over a corpus that size adds a way
 to miss a rule for no saving. No vector store is a dependency, and none is
 chosen; the `Collection` protocol in `blossom/retrieval.py` is the slice one
@@ -182,9 +183,8 @@ meaning until a collection is created with an explicit metric. And
 `n_results=1` fetches only the nearest neighbor, so nothing can tell a
 confident match from the only candidate; the design calls for three to five.
 
-**Not wired:** in the student route the semantic side is
-`EmptySemanticCollection`, a stub that always returns no candidates. The
-structured side is real.
+**Not wired:** no route or node constructs the router. `ProjectStateStore.lookup`
+still answers the structured side for one that would.
 
 ## Four stores, four risk profiles
 
@@ -361,7 +361,10 @@ source, so a plan cannot pass by trusting a record the school does not
 support; the check holds deferrals to the same day, since putting work off
 moves it to another day at the earliest. The week itself is selected after the
 sources are read, so an item the record puts next month and a source puts this
-week is planned for rather than never queried. The planner and the critic are shown the contradiction in its own
+week is planned for rather than never queried. The student's page reads the
+week the same way, so the two cannot differ about what is in it, and an
+assignment whose record date the sources contradict says so on her page beside
+the date on record. The planner and the critic are shown the contradiction in its own
 block, with an instruction to plan for the earliest date and to say the record
 needs checking. The draft names it in a section of its own, so the person at
 the gate sees what to correct.

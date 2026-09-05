@@ -41,12 +41,14 @@ treat that signal as true the moment it arrives.
 ## What runs today
 
 The weekly view is real, end to end. The fixture set is a fictional
-student's week as a school portal would show it: six items, including a form
-to sign that has no due date and a book to cover whose date the portal gives
-two different ways. Their sources are reconciled, and each one is labeled with
-how well its due date is corroborated: one confirmed by two sources, one
-resting on a single source, two where sources disagree, and one nothing
-corroborates. Nothing is filtered out. The same set carries the household's
+student's week as a school portal would show it: seven items, including a
+form to sign that has no due date, a book to cover whose date the portal gives
+two different ways, and a quiz the record puts next week that the portal puts
+this Friday. Their sources are reconciled, and each one is labeled with how
+well its due date is corroborated: one confirmed by two sources, two resting
+on a single source, two where sources disagree, and one nothing corroborates.
+The quiz is in the week because the portal puts it there, and the page says
+the school disagrees with the record. Nothing is filtered out. The same set carries the household's
 standing rules about how she works and one note the planner kept about a past
 plan, so a run of the planner has both to read.
 

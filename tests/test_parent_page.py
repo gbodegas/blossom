@@ -48,6 +48,7 @@ def a_plan() -> DailyPlan:
             ),
             Deferral(assignment_id="assignment-reading-log", reason="a page a night is on track"),
             Deferral(assignment_id="assignment-signed-syllabus", reason="ask what the date is"),
+            Deferral(assignment_id="assignment-vocabulary-quiz", reason="the portal says Friday"),
         ],
     )
 

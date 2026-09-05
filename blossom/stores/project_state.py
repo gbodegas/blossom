@@ -157,10 +157,10 @@ class ProjectStateStore:
     def week_from(self, start: date) -> list[Assignment]:
         """The week by the record alone: dated work in the window, then undated work.
 
-        The student's page reads this. The plan graph reads ``all_assignments``
-        and selects the same window after the sources have been read, so a
-        date a source gives can put an item in the week that the record leaves
-        out; undated work is in both.
+        Served by ``lookup``. The page and the plan graph read the week through
+        ``read_week`` in ``blossom/noticing.py`` instead, which selects the same
+        window after the sources have been read, so a date a source gives can
+        put an item in the week that the record leaves out.
         """
         return [*self.due_between(start, start + DUE_THIS_WEEK_SPAN), *self.undated()]
 

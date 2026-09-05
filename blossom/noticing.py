@@ -28,7 +28,8 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
 from blossom.reconciliation import SourceRecord
-from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment
+from blossom.sources import StateSource
+from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, ProjectStateStore
 
 
 class Verdict(StrEnum):
@@ -148,3 +149,38 @@ def in_week(assignment: Assignment, noticing: Noticing, start: date) -> bool:
         return True
     end = start + DUE_THIS_WEEK_SPAN
     return any(start <= given <= end for given in (assignment.due_date, *noticing.observed_dates))
+
+
+@dataclass(frozen=True, kw_only=True)
+class Week:
+    """The week as both readers see it, with what the sources said about each item."""
+
+    assignments: list[Assignment]
+    records: dict[str, list[SourceRecord]]
+    """Every source's claims about each assignment in the week, by id."""
+    noticings: dict[str, Noticing]
+    """The record set against those claims, by id."""
+
+
+def read_week(project_state: ProjectStateStore, source: StateSource, start: date) -> Week:
+    """Read the week from ``start``: state each record's date, read the sources, then select.
+
+    The student's page and the plan graph both read this, so an item one of
+    them shows is in the other's week too. Every assignment on record is
+    considered, because the sources decide the window along with the record.
+    """
+    everything = project_state.all_assignments()
+    expectations = [expect_due_date(item) for item in everything]
+    records = {
+        item.assignment_id: source.deadline_records(item.assignment_id) for item in everything
+    }
+    noticed = {
+        expectation.assignment_id: notice_due_date(expectation, records[expectation.assignment_id])
+        for expectation in expectations
+    }
+    assignments = [item for item in everything if in_week(item, noticed[item.assignment_id], start)]
+    return Week(
+        assignments=assignments,
+        records={item.assignment_id: records[item.assignment_id] for item in assignments},
+        noticings={item.assignment_id: noticed[item.assignment_id] for item in assignments},
+    )
