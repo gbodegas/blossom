@@ -26,6 +26,13 @@ draft. The stores and the two model callables are closed over by the node
 functions rather than carried in state, so nothing about the process is
 written to disk and nothing in the state needs a class the serializer does not
 list.
+
+Two nodes write to the drafts table, and each performs that one side effect
+in a form that running twice leaves unchanged. ``compose`` saves the draft as
+waiting, keyed by an id derived from the thread, before the gate can pause on
+it, so the parent's queue shows it. ``record_decision``, after the gate, saves
+what the person decided. The table is the record across threads; saved state
+is the record within one.
 """
 
 import operator
@@ -36,23 +43,25 @@ from typing import Annotated, Any, Final, Literal, NotRequired, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from blossom.agent.compose import compose_draft
-from blossom.agent.gates import ApprovalState, Decision, require_human_approval
+from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.prompts import critic_brief, planner_brief
 from blossom.anthropic_client import Effort, chat_model
 from blossom.dependencies import ApplicationState
-from blossom.drafts import Draft
+from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.plan_checks import DEFAULT_DAILY_MINUTES, PlanVerification, check_plan
 from blossom.plans import DailyPlan
 from blossom.reconciliation import Reconciler, SourceConfidence, classify_confidence
 from blossom.settings import Settings
 from blossom.sources import StateSource
+from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
@@ -63,8 +72,8 @@ MAX_REVISIONS: Final = 2
 NODES_PER_ROUND: Final = 3
 """Plan, verify, critique: the most nodes one round of the loop can run."""
 
-NODES_OUTSIDE_THE_LOOP: Final = 3
-"""Retrieve before it, compose and the gate after it."""
+NODES_OUTSIDE_THE_LOOP: Final = 4
+"""Retrieve before it; compose, the gate, and the decision record after it."""
 
 WORST_CASE_SUPERSTEPS: Final = NODES_OUTSIDE_THE_LOOP + (MAX_REVISIONS + 1) * NODES_PER_ROUND
 """The longest run this graph can take. It must fit under the recursion limit
@@ -169,6 +178,7 @@ def build_plan_graph(
     source: StateSource,
     support_rules: SupportRulesStore,
     reflections: ReflectionsStore,
+    drafts: DraftsStore,
     zone: ZoneInfo,
     planner: Ask[DailyPlan],
     critic: Ask[CriticVerdict],
@@ -260,21 +270,49 @@ def build_plan_graph(
             return {"verdict": verdict, "feedback": feedback}
         return {"verdict": verdict, "outcome": "unsettled"}
 
-    def compose(state: PlanState) -> dict[str, Any]:
-        """Render the plan as the text a person will read at the gate."""
-        return {
-            "draft": compose_draft(
-                plan=state["plan"],
-                assignments=state.get("assignments", []),
-                verification=state["verification"],
-                verdict=state.get("verdict"),
-                settled=state.get("outcome") == "accepted",
-            )
-        }
+    def compose(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
+        """Render the plan as the text a person reads at the gate, and save it as waiting.
+
+        The draft id comes from the thread, so this node run twice yields the
+        same draft and the same row. Saving happens here, before the gate,
+        because the gate must do nothing before it pauses and the queue must
+        show the draft while it waits.
+        """
+        thread_id = str(config["configurable"]["thread_id"])
+        outcome = state["outcome"]
+        draft = compose_draft(
+            draft_id=f"draft:{thread_id}",
+            plan=state["plan"],
+            assignments=state.get("assignments", []),
+            verification=state["verification"],
+            verdict=state.get("verdict"),
+            settled=outcome == "accepted",
+        )
+        if outcome not in REACHED_THE_GATE:
+            msg = f"compose reached with outcome {outcome!r}, which produces no draft"
+            raise RuntimeError(msg)
+        drafts.record_waiting(
+            draft,
+            thread_id=thread_id,
+            plan_date=state["plan_date"],
+            outcome=cast(Literal["accepted", "unsettled"], outcome),
+        )
+        return {"draft": draft}
 
     def gate(state: PlanState) -> dict[str, Any]:
         """The approval gate, unchanged; the state's gate keys match its own."""
         return require_human_approval(cast(ApprovalState, state))
+
+    def record_decision(state: PlanState) -> dict[str, Any]:
+        """Save the decision to the table. Writes nothing to state; the gate already did."""
+        draft = state["draft"]
+        drafts.record_decision(
+            draft.draft_id,
+            status=draft.status,
+            decision=state["decision"],
+            reason=state.get("reason"),
+        )
+        return {}
 
     def after_plan(state: PlanState) -> str:
         return END if "outcome" in state else "verify"
@@ -297,6 +335,7 @@ def build_plan_graph(
     graph.add_node("critique", critique)
     graph.add_node("compose", compose)
     graph.add_node("require_human_approval", gate)
+    graph.add_node("record_decision", record_decision)
     graph.add_edge(START, "retrieve")
     graph.add_edge("retrieve", "plan")
     graph.add_conditional_edges("plan", after_plan, {"verify": "verify", END: END})
@@ -307,7 +346,8 @@ def build_plan_graph(
         "critique", after_critique, {"compose": "compose", "plan": "plan", END: END}
     )
     graph.add_edge("compose", "require_human_approval")
-    graph.add_edge("require_human_approval", END)
+    graph.add_edge("require_human_approval", "record_decision")
+    graph.add_edge("record_decision", END)
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -348,6 +388,7 @@ def plan_graph_for(
         source=state.source,
         support_rules=state.support_rules,
         reflections=state.reflections,
+        drafts=state.drafts,
         zone=state.clock.zone,
         planner=planner or structured(state.settings, DailyPlan, effort=PLANNER_EFFORT),
         critic=critic or structured(state.settings, CriticVerdict, effort=CRITIC_EFFORT),

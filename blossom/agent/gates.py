@@ -13,16 +13,14 @@ state, pauses, and writes the outcome. Everything that produces the draft lives
 in earlier nodes, which run exactly once.
 """
 
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from blossom.drafts import Draft, DraftStatus
-
-Decision = Literal["approved", "rejected"]
+from blossom.drafts import Decision, Draft, DraftStatus
 
 
 class ApprovalState(TypedDict):

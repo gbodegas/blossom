@@ -17,10 +17,11 @@ handlers. A route that drives a graph is ``async def``; a route that reads
 project state need not be.
 """
 
+import asyncio
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 from fastapi import FastAPI, Request
@@ -30,6 +31,7 @@ from blossom.clock import Clock, clock_from
 from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource
 from blossom.stores.checkpoints import open_checkpointer
+from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
@@ -49,13 +51,25 @@ class ApplicationState:
     project_state: ProjectStateStore
     support_rules: SupportRulesStore
     reflections: ReflectionsStore
+    drafts: DraftsStore
+    """The record of every draft and decision, in the file at
+    ``BLOSSOM_DATABASE_PATH``. Durable on purpose: the parent's queue has to
+    survive a restart, and the saved-state store answers questions about one
+    thread, not across them."""
     checkpointer: BaseCheckpointSaver[str]
     """Where a graph's state and pauses are persisted. Opened and closed by the
     lifespan around this object, so ``close`` does not touch it."""
+    decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Held while a decision is checked against the table and carried into the
+    paused thread, so two decisions about one draft cannot both pass the check.
+    One lock for all drafts: decisions are rare and the section is short. It
+    serializes within this process; the table's own refusal of a second,
+    different decision is the backstop across processes."""
 
     def close(self) -> None:
         """Release resources held for the lifetime of the application."""
         self.project_state.close()
+        self.drafts.close()
 
 
 def build_application_state(
@@ -63,11 +77,11 @@ def build_application_state(
 ) -> ApplicationState:
     """Open the stores and seed them from the configured fixture set.
 
-    The project state store is in memory. ``BLOSSOM_DATABASE_PATH`` is read
-    into settings but not used here: choosing when project state becomes
-    durable is a design decision rather than a wiring detail. The checkpointer
-    is passed in because it must be opened inside a running event loop, which
-    only the lifespan has.
+    The project state store is in memory; choosing when project state becomes
+    durable is a design decision rather than a wiring detail. The drafts store
+    is a file, at ``BLOSSOM_DATABASE_PATH``, because a queue that forgets its
+    contents at restart is not a record. The checkpointer is passed in because
+    it must be opened inside a running event loop, which only the lifespan has.
     """
     clock = clock_from(settings.today, settings.timezone_key)
     connection = sqlite3.connect(":memory:", check_same_thread=False)
@@ -83,6 +97,7 @@ def build_application_state(
         # notes are here, so an empty store means a plan built without them.
         support_rules=SupportRulesStore(),
         reflections=ReflectionsStore(),
+        drafts=DraftsStore.open(settings.database_path, clock),
         checkpointer=checkpointer,
     )
 

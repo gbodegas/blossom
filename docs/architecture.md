@@ -73,8 +73,26 @@ state. Approval marks the draft for manual send and nothing more; the second
 step is a person copying it out. The node does nothing before it pauses,
 because a resumed graph re-runs the interrupted node from its start.
 
-**Not built:** nothing stores a draft outside the graph's saved state, so an
-approved draft is visible only to the thread that produced it.
+The gate is reached from `POST /parent/plans`, which runs the plan graph for
+one evening, and resumed from `POST /parent/approvals/{draft_id}`, which
+carries the decision back into the paused thread. Between the two, the draft
+sits in the drafts table, `blossom/stores/drafts.py`, which is the record
+across threads: what waits, what was approved, what was refused and why. The
+graph writes it twice, once when the draft is composed and once after the
+gate, each as an upsert keyed by a draft id derived from the thread, so a node
+that runs twice leaves one row. The table lives in its own file, under the
+same guard as saved state, with deleted rows overwritten. `GET
+/parent/approvals` reads the table and needs no model, so a parent can always
+see what is waiting; starting or deciding a run needs the model seam and says
+so with a 503 when there is no key, and only after the table has answered
+whether the draft exists and still waits. Two decisions about one draft cannot
+both land: the route holds one lock from the table check through the resume,
+and the table refuses a second, different decision, keeping the first and its
+time, which also covers a request from another process.
+
+**Not built:** a page. The parent's routes return JSON, and the interactive
+API page at `/docs` is how a run is started and decided today. Nothing yet
+lets her see that a draft was approved.
 
 ## Sources disagree, and that is the interesting case
 
@@ -139,13 +157,14 @@ confident match from the only candidate; the design calls for three to five.
 `EmptySemanticCollection`, a stub that always returns no candidates. The
 structured side is real.
 
-## Three stores, three risk profiles
+## Four stores, four risk profiles
 
 | Store | Contents | State |
 |---|---|---|
-| `ProjectStateStore` | Assignments, dates, dependencies, reported submission status | Wired and tested |
-| `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Not wired, not tested |
-| `ReflectionsStore` | The agent's notes about its own performance | Tested, not wired |
+| `ProjectStateStore` | Assignments, dates, dependencies, reported submission status | Wired and tested; in memory |
+| `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Read whole by the plan graph; nothing seeds it |
+| `ReflectionsStore` | The agent's notes about its own performance | Read whole by the plan graph; nothing seeds it |
+| `DraftsStore` | Every draft that reached the gate, and every decision about it | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -242,14 +261,17 @@ call, and neither holds a tool. So there is no loop in which a model decides
 what to call next: the graph decides, from the checks and the verdict, and
 every route it can take is written in one file.
 
-Six nodes, in this order. `retrieve` reads the week from the stores. `plan`
+Seven nodes, in this order. `retrieve` reads the week from the stores. `plan`
 asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
 back to `plan` with the findings before any critic sees it, because a
 judgment about a plan that is already wrong is a wasted call. `critique` asks
 the critic; fault sends the plan back with the critique, doubt sends it
 forward. `compose` renders the plan, the doubtful due dates, and the
-reviewer's notes as the text a parent reads. `require_human_approval` is the
-gate from `blossom/agent/gates.py`, unchanged.
+reviewer's notes as the text a parent reads, and saves it to the drafts table
+as waiting, under an id derived from the thread. `require_human_approval` is
+the gate from `blossom/agent/gates.py`, unchanged. `record_decision`, after
+the gate, saves what the person decided; it is the only node past the gate,
+and a node there may be added without a version bump.
 
 The loop is bounded twice. The planner may be sent back `MAX_REVISIONS` times,
 after which a plan that still fails tier one is reported as `checks_failed` and
@@ -278,12 +300,10 @@ over by the node functions rather than carried in state, so saved state holds
 the evening, the plan, what was found about it, and the draft, and nothing
 about the process.
 
-**Not built:** no route starts a run or shows the result. The graph is
-constructed and driven end to end by tests with scripted models, and
-`plan_graph_for` builds it against the running application's stores, but
-nothing calls it yet. Nothing seeds the support rules or reflections, so a
-plan built today is built without them. The reviewer's five criteria are
-fixed in the prompt rather than configurable.
+**Not built:** nothing seeds the support rules or reflections, so a plan
+built today is built without them. The reviewer's five criteria are fixed in
+the prompt rather than configurable. The parent's approval is read from JSON
+and given through the API page; there is no page for it.
 
 ## Expectation before action
 
@@ -361,9 +381,9 @@ Stores are opened once by the application lifespan in
 connection is shared across FastAPI's worker threads, so it is opened with
 `check_same_thread=False` and every statement is serialized behind a lock.
 
-**Not built:** `BLOSSOM_DATABASE_PATH` is read into settings but not honored.
-Project state is in memory, because deciding when state becomes durable
-is a design question rather than a wiring detail.
+`BLOSSOM_DATABASE_PATH` holds the drafts table, so the parent's queue survives
+a restart. Project state itself is still in memory, because deciding when it
+becomes durable is a design question rather than a wiring detail.
 
 ## Saved graph state
 

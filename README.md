@@ -79,11 +79,12 @@ nothing corroborates.
 Blossom is early, and it is built for one household. What runs today is the
 student's weekly view, the source reconciliation behind it, and the plan graph:
 a planner and a critic, each a single model call returning one typed value,
-with deterministic checks between them and a human gate after them. The graph
-is driven end to end by tests with scripted models; no page starts a run yet,
-so there is nothing to talk to from the browser. Around it are the guardrails
-that constrain it: the missing send tool, the reflection boundary, and a tool
-registry that cannot hold anything that reports having sent something.
+with deterministic checks between them and a human gate after them. A parent
+starts a run and decides about the draft it produces through the API page; the
+drafts and decisions are kept in a table that survives a restart. There is no
+page for that yet. Around it are the guardrails that constrain it: the missing
+send tool, the reflection boundary, and a tool registry that cannot hold
+anything that reports having sent something.
 
 The "too much" signal is accepted and not yet acted on. Retrieval reads its
 corpora whole; no vector store is wired. Nothing seeds the support rules, so a
@@ -143,9 +144,14 @@ Other things to look at while it runs:
   of status and conflicts, not a live feed. JSON for now.
 - <http://127.0.0.1:8000/verifier/claims> is the verifier's view: each factual
   claim, the policy it was checked against, and the result. JSON for now.
-- <http://127.0.0.1:8000/docs> is the interactive API page, where you can
-  send the "too much" signal by posting to `/student/workload-signals` with no
-  body. Today it is acknowledged and discarded.
+- <http://127.0.0.1:8000/parent/approvals> is the parent's queue: every
+  draft waiting for a decision, with its text. JSON for now, and it needs no
+  API key to read.
+- <http://127.0.0.1:8000/docs> is the interactive API page. With an API key in
+  `.env`, post to `/parent/plans` to run the planner for the pinned evening,
+  then post the decision to `/parent/approvals/{draft_id}`. You can also send
+  the "too much" signal by posting to `/student/workload-signals` with no
+  body; today it is acknowledged and discarded.
 
 To customize the configuration, copy `.env.example` to `.env`, edit it, and
 pass `--env-file .env` instead. Every path the app uses is configurable

@@ -35,6 +35,7 @@ PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "blossom"
 ALLOWED_IMPORTS: dict[str, str] = {
     "aiosqlite": "async SQLite driver for the checkpoint store; local files only, see LOCAL_STORES",
     "anthropic": "model access; confined to the model seam, see NETWORK_CAPABLE",
+    "asyncio": "standard library; the lock that serializes decisions about one draft",
     "blossom": "the package itself",
     "collections": "standard library containers and ABCs",
     "contextlib": "standard library context managers",
