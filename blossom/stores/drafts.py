@@ -87,8 +87,10 @@ class DraftsStore:
 
     name = "drafts"
     retention_policy = (
-        "Keep a draft and its decision for the school year; a refused draft is "
-        "kept so the refusal is visible, not so the text is reused."
+        "Keep a draft, its decision, and the record of the run that made it for the "
+        "school year; a refused draft is kept so the refusal is visible, not so the "
+        "text is reused, and the record of a run that produced no draft is kept for "
+        "the same span so a parent can see why nothing came of it."
     )
 
     def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
@@ -234,9 +236,10 @@ class DraftsStore:
 
         For a run that ended before the gate and so has no draft to carry its
         record; a run with a draft saves both together in ``record_waiting``.
-        Saving the same thread again replaces its steps, so a repeat leaves one
-        account. The whole replacement is one transaction: a failure part way
-        through rolls it back and the earlier account stands.
+        Saving the same thread again replaces its steps and keeps the first
+        time stamp, so a node that runs twice leaves one account dated once.
+        The whole replacement is one transaction: a failure part way through
+        rolls it back and the earlier account stands.
         """
         with self._lock, self._connection:
             self._write_run(thread_id, plan_date, outcome, steps)
@@ -262,9 +265,7 @@ class DraftsStore:
             """
             INSERT INTO runs (thread_id, plan_date, outcome, recorded_at)
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(thread_id) DO UPDATE SET
-                outcome=excluded.outcome,
-                recorded_at=excluded.recorded_at
+            ON CONFLICT(thread_id) DO UPDATE SET outcome=excluded.outcome
             """,
             (thread_id, plan_date.isoformat(), outcome, stamp),
         )
@@ -286,24 +287,45 @@ class DraftsStore:
         return [step_from(row) for row in rows]
 
     def runs_without_a_draft(self) -> list[RunRecord]:
-        """Runs that ended before the gate, most recent first, each with its steps."""
+        """Runs that ended before the gate, most recent first, each with its steps.
+
+        One query joins the runs to their steps, so every record is assembled
+        from a single snapshot and a replacement landing between two reads
+        cannot pair one run's outcome with another's steps.
+        """
         with self._lock:
             rows = self._connection.execute(
                 """
-                SELECT * FROM runs
-                WHERE thread_id NOT IN (SELECT thread_id FROM drafts)
-                ORDER BY recorded_at DESC, thread_id
+                SELECT runs.thread_id, runs.plan_date, runs.outcome, runs.recorded_at,
+                       steps.node, steps.round, steps.expected, steps.found,
+                       steps.recorded_at AS step_recorded_at
+                FROM runs LEFT JOIN steps ON steps.thread_id = runs.thread_id
+                WHERE runs.thread_id NOT IN (SELECT thread_id FROM drafts)
+                ORDER BY runs.recorded_at DESC, runs.thread_id, steps.position
                 """
             ).fetchall()
+        grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
+        for row in rows:
+            _, steps = grouped.setdefault(str(row["thread_id"]), (row, []))
+            if row["node"] is not None:
+                steps.append(
+                    StepRecord(
+                        node=str(row["node"]),
+                        round=int(row["round"]),
+                        expected=str(row["expected"]),
+                        found=str(row["found"]),
+                        recorded_at=datetime.fromisoformat(str(row["step_recorded_at"])),
+                    )
+                )
         return [
             RunRecord(
-                thread_id=str(row["thread_id"]),
+                thread_id=thread_id,
                 plan_date=date.fromisoformat(str(row["plan_date"])),
                 outcome=str(row["outcome"]),
                 recorded_at=datetime.fromisoformat(str(row["recorded_at"])),
-                steps=self.steps_for(str(row["thread_id"])),
+                steps=steps,
             )
-            for row in rows
+            for thread_id, (row, steps) in grouped.items()
         ]
 
     def get(self, draft_id: str) -> DraftRecord | None:

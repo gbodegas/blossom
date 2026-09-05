@@ -111,8 +111,10 @@ carries the steps too. The graph saves the record, not the route, so a process
 that stops between the run and the page cannot leave a draft without its
 account: `compose` writes the draft and the record in one transaction, and a
 run that ends before the gate writes the record from its last node. The record
-sits in two tables beside the drafts, one row per run and one per step, and a
-replacement that fails part way rolls back whole.
+sits in two tables beside the drafts, one row per run and one per step. A
+replacement that fails part way rolls back whole, a repeat keeps the first
+time stamp, and a listing reads runs and steps in one query so no record pairs
+one run's outcome with another's steps.
 
 **Not built:** nothing yet lets her see that a draft was approved.
 

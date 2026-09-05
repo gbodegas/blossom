@@ -9,7 +9,6 @@ still there after the file is closed and reopened.
 import pathlib
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
-from typing import cast
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -273,11 +272,12 @@ def test_a_runs_record_is_saved_with_its_steps_and_read_back_in_order() -> None:
     assert runs[0].recorded_at == fixture_clock().now()
 
 
-def test_saving_a_run_again_replaces_its_steps() -> None:
-    store = store_in_memory()
+def test_saving_a_run_again_replaces_its_steps_and_keeps_its_first_time() -> None:
+    store = ticking_store()
     store.record_run(
         thread_id="plan:x", plan_date=PLAN_DATE, outcome="model_refused", steps=[step("plan", 1)]
     )
+    first_time = store.runs_without_a_draft()[0].recorded_at
 
     store.record_run(
         thread_id="plan:x",
@@ -286,8 +286,9 @@ def test_saving_a_run_again_replaces_its_steps() -> None:
         steps=[step("retrieve", 0), step("plan", 1)],
     )
 
+    saved = store.runs_without_a_draft()
     assert [item.node for item in store.steps_for("plan:x")] == ["retrieve", "plan"]
-    assert [run.outcome for run in store.runs_without_a_draft()] == ["checks_failed"]
+    assert [(run.outcome, run.recorded_at) for run in saved] == [("checks_failed", first_time)]
 
 
 def test_a_run_that_left_a_draft_is_not_among_those_that_ended_without_one() -> None:
@@ -331,17 +332,65 @@ def test_a_draft_and_the_record_of_its_run_are_saved_together() -> None:
 
 
 def test_a_replacement_that_fails_part_way_leaves_the_earlier_account_standing() -> None:
-    store = store_in_memory()
+    """The failure lands inside the transaction, after the run row is rewritten
+    and the old steps are deleted, where a missing rollback would show."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    store = DraftsStore(connection, fixture_clock())
     first = [step("retrieve", 0), step("plan", 1)]
     store.record_run(thread_id="plan:x", plan_date=PLAN_DATE, outcome="model_refused", steps=first)
-    broken = cast(list[StepRecord], [step("retrieve", 0), object()])
+    connection.execute(
+        """
+        CREATE TRIGGER refuse_a_third_step BEFORE INSERT ON steps
+        WHEN NEW.position = 2 BEGIN SELECT RAISE(ABORT, 'no third step'); END
+        """
+    )
 
-    with pytest.raises(AttributeError):
+    with pytest.raises(sqlite3.DatabaseError, match="no third step"):
         store.record_run(
-            thread_id="plan:x", plan_date=PLAN_DATE, outcome="checks_failed", steps=broken
+            thread_id="plan:x",
+            plan_date=PLAN_DATE,
+            outcome="checks_failed",
+            steps=[step("retrieve", 0), step("plan", 1), step("verify", 1)],
         )
 
     assert store.steps_for("plan:x") == first
     assert [run.outcome for run in store.runs_without_a_draft()] == ["model_refused"]
+    connection.execute("DROP TRIGGER refuse_a_third_step")
     store.record_run(thread_id="plan:y", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
     assert {run.thread_id for run in store.runs_without_a_draft()} == {"plan:x", "plan:y"}
+
+
+def test_the_retention_policy_covers_the_runs_and_their_steps() -> None:
+    policy = DraftsStore.retention_policy
+
+    assert "draft" in policy
+    assert "decision" in policy
+    assert "record of the run" in policy
+    assert "produced no draft" in policy
+
+
+def test_a_run_with_no_steps_is_listed_with_an_empty_record() -> None:
+    store = store_in_memory()
+    store.record_run(thread_id="plan:bare", plan_date=PLAN_DATE, outcome="model_refused", steps=[])
+
+    assert [(run.thread_id, run.steps) for run in store.runs_without_a_draft()] == [
+        ("plan:bare", [])
+    ]
+
+
+def test_each_listed_run_carries_only_its_own_steps() -> None:
+    store = ticking_store()
+    store.record_run(
+        thread_id="plan:one", plan_date=PLAN_DATE, outcome="checks_failed", steps=[step("plan", 1)]
+    )
+    store.record_run(
+        thread_id="plan:two",
+        plan_date=PLAN_DATE,
+        outcome="model_refused",
+        steps=[step("retrieve", 0), step("plan", 1)],
+    )
+
+    listed = store.runs_without_a_draft()
+
+    assert [(run.thread_id, len(run.steps)) for run in listed] == [("plan:two", 2), ("plan:one", 1)]
+    assert [item.node for item in listed[0].steps] == ["retrieve", "plan"]
