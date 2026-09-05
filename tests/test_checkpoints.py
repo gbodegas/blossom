@@ -9,7 +9,7 @@ import asyncio
 import os
 import pathlib
 import sqlite3
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 from typing import Any, cast
 
 import pytest
@@ -30,6 +30,7 @@ from blossom.agent.runs import (
     recorded_version,
     run_config,
 )
+from blossom.agent.steps import StepRecord
 from blossom.app import create_app
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft, DraftStatus
@@ -206,6 +207,7 @@ def test_every_type_the_graphs_carry_is_on_the_allowlist() -> None:
         Judgment,
         Draft,
         DraftStatus,
+        StepRecord,
     }
 
     assert carried <= set(STATE_TYPES)
@@ -246,6 +248,15 @@ def test_a_plan_and_its_verdict_survive_the_serializer() -> None:
         "verdict": verdict,
         "confidence": {"a": SourceConfidence.SINGLE_SOURCE},
         "noticings": [noticed],
+        "steps": [
+            StepRecord(
+                node="verify",
+                round=1,
+                expected="every tier-one check passes",
+                found="all 6 checks passed",
+                recorded_at=datetime(2026, 8, 19, 22, 0, tzinfo=UTC),
+            )
+        ],
     }
 
     revived = serde.loads_typed(serde.dumps_typed(state))
@@ -255,6 +266,7 @@ def test_a_plan_and_its_verdict_survive_the_serializer() -> None:
     assert revived["verification"].uncertain_due_dates == ("a",)
     assert revived["verdict"].undecided[0].judgment is Judgment.CANNOT_TELL
     assert isinstance(revived["noticings"][0], Noticing)
+    assert isinstance(revived["steps"][0], StepRecord)
     assert revived["noticings"][0].earliest_date == date(2026, 8, 21)
 
 

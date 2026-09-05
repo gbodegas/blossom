@@ -145,9 +145,10 @@ Then open <http://127.0.0.1:8000/student/due-this-week>.
 Other things to look at while it runs:
 
 - <http://127.0.0.1:8000/parent> is the parent's page: plan an evening, read
-  the draft the planner produced, and approve or refuse it. Planning needs an
-  API key; reading and deciding do not, so without one the page says a plan
-  cannot start and everything else works.
+  the draft the planner produced, see how it was made step by step, and
+  approve or refuse it. A run that ended without a plan is listed with its
+  steps too. Planning needs an API key; reading and deciding do not, so
+  without one the page says a plan cannot start and everything else works.
 - <http://127.0.0.1:8000/parent/approvals> is the same queue as JSON.
 - <http://127.0.0.1:8000/parent/checkpoint> is the parent's checkpoint: a
   summary of status and conflicts, not a live feed. A placeholder, JSON for

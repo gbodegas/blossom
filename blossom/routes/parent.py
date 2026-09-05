@@ -62,6 +62,7 @@ from blossom.views import (
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
+    RunView,
 )
 
 router = APIRouter(prefix="/parent", tags=["parent"])
@@ -141,6 +142,7 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
         outcome=result["outcome"],
         draft_id=None if draft is None else draft.draft_id,
         waiting="__interrupt__" in result,
+        steps=list(result.get("steps", [])),
     )
 
 
@@ -281,6 +283,7 @@ def review_page(
             "model_available": model_configured(state.settings),
             "waiting": [ApprovalView.from_record(record) for record in state.drafts.waiting()],
             "decided": [ApprovalView.from_record(record) for record in state.drafts.decided()],
+            "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
             "problem": problem,
         },
         status_code=status_code,

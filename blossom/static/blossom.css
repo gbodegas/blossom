@@ -442,6 +442,31 @@ details summary {
   font-weight: 600;
 }
 
+.steps ol {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.steps li {
+  margin: 0.6rem 0;
+}
+
+.step-node {
+  font-weight: 600;
+  color: var(--blue-deep);
+}
+
+.step-round {
+  margin-left: 0.4rem;
+  font-size: 0.9rem;
+  color: var(--text-soft);
+}
+
+.step-line {
+  margin: 0.1rem 0;
+  font-size: 0.95rem;
+}
+
 /* ------------------------------------------------------------- colophon */
 
 .colophon {

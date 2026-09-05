@@ -1,6 +1,23 @@
 {% extends "base.html" %}
 {% set page = "parent" %}
 {% block title %}Blossom - Review{% endblock %}
+{% macro steps_list(steps, title) %}
+  {% if steps %}
+    <details class="steps">
+      <summary>{{ title }}</summary>
+      <ol>
+        {% for step in steps %}
+          <li>
+            <span class="step-node">{{ step.node }}</span>
+            <span class="step-round">round {{ step.round }}</span>
+            <p class="step-line">Expected: {{ step.expected }}.</p>
+            <p class="step-line">Found: {{ step.found }}.</p>
+          </li>
+        {% endfor %}
+      </ol>
+    </details>
+  {% endif %}
+{% endmacro %}
 {% block content %}
   <h1>Review</h1>
 
@@ -52,6 +69,7 @@
           </p>
         {% endif %}
         <pre class="body">{{ draft.body }}</pre>
+        {{ steps_list(draft.steps, "How this plan was made") }}
         <form method="post" action="/parent/actions/decide/{{ draft.draft_id }}" class="decision">
           <label>Reason (optional)
             <input type="text" name="reason" maxlength="500" placeholder="A sentence she would recognize">
@@ -67,6 +85,22 @@
       </article>
     {% endfor %}
   </section>
+
+  {% if ended %}
+    <section>
+      <h2>Ended without a plan</h2>
+      {% for run in ended %}
+        <article class="draft outcome-{{ run.outcome }}">
+          <p class="course">Evening of {{ run.plan_date }}</p>
+          <p class="confidence disagree">
+            <strong>{{ run.summary }}</strong>
+            <span class="when">Ended {{ run.recorded_at.strftime("%B") }} {{ run.recorded_at.day }}, {{ run.recorded_at.year }}, {{ run.recorded_at.strftime("%H:%M UTC") }}.</span>
+          </p>
+          {{ steps_list(run.steps, "How this run went") }}
+        </article>
+      {% endfor %}
+    </section>
+  {% endif %}
 
   <section>
     <h2>Decided</h2>
@@ -89,6 +123,7 @@
           <summary>The plan as it was reviewed</summary>
           <pre class="body">{{ draft.body }}</pre>
         </details>
+        {{ steps_list(draft.steps, "How this plan was made") }}
       </article>
     {% endfor %}
   </section>
