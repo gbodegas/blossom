@@ -63,6 +63,8 @@ class DraftRecord(BaseModel):
     decided_at: AwareDatetime | None = None
     decision: Decision | None = None
     reason: str | None = None
+    steps: list[StepRecord] = []
+    """The record of the run that produced the draft, read with it in one query."""
 
     @property
     def waiting(self) -> bool:
@@ -308,15 +310,7 @@ class DraftsStore:
         for row in rows:
             _, steps = grouped.setdefault(str(row["thread_id"]), (row, []))
             if row["node"] is not None:
-                steps.append(
-                    StepRecord(
-                        node=str(row["node"]),
-                        round=int(row["round"]),
-                        expected=str(row["expected"]),
-                        found=str(row["found"]),
-                        recorded_at=datetime.fromisoformat(str(row["step_recorded_at"])),
-                    )
-                )
+                steps.append(joined_step_from(row))
         return [
             RunRecord(
                 thread_id=thread_id,
@@ -329,28 +323,28 @@ class DraftsStore:
         ]
 
     def get(self, draft_id: str) -> DraftRecord | None:
-        """One draft by id, or ``None``."""
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT * FROM drafts WHERE draft_id=?", (draft_id,)
-            ).fetchone()
-        return None if row is None else record_from(row)
+        """One draft by id with its run's record, or ``None``."""
+        found = self._drafts(ONE_DRAFT, (draft_id,))
+        return found[0] if found else None
 
     def waiting(self) -> list[DraftRecord]:
         """Every draft no person has decided about, oldest first."""
-        with self._lock:
-            rows = self._connection.execute(
-                "SELECT * FROM drafts WHERE decision IS NULL ORDER BY created_at, draft_id"
-            ).fetchall()
-        return [record_from(row) for row in rows]
+        return self._drafts(WAITING_DRAFTS, ())
 
     def decided(self) -> list[DraftRecord]:
         """Every draft a person has decided about, most recent decision first."""
+        return self._drafts(DECIDED_DRAFTS, ())
+
+    def _drafts(self, query: str, parameters: tuple[str, ...]) -> list[DraftRecord]:
+        """Drafts and their steps from one query, so each record is one snapshot."""
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT * FROM drafts WHERE decision IS NOT NULL ORDER BY decided_at DESC, draft_id"
-            ).fetchall()
-        return [record_from(row) for row in rows]
+            rows = self._connection.execute(query, parameters).fetchall()
+        grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
+        for row in rows:
+            _, steps = grouped.setdefault(str(row["draft_id"]), (row, []))
+            if row["node"] is not None:
+                steps.append(joined_step_from(row))
+        return [record_from(row, steps) for row, steps in grouped.values()]
 
 
 def step_from(row: sqlite3.Row) -> StepRecord:
@@ -364,8 +358,41 @@ def step_from(row: sqlite3.Row) -> StepRecord:
     )
 
 
-def record_from(row: sqlite3.Row) -> DraftRecord:
-    """Build a record from a row read by column name."""
+DRAFTS_WITH_STEPS = """
+    SELECT drafts.draft_id, drafts.thread_id, drafts.plan_date, drafts.status,
+           drafts.outcome, drafts.body, drafts.created_at, drafts.decided_at,
+           drafts.decision, drafts.reason,
+           steps.node, steps.round, steps.expected, steps.found,
+           steps.recorded_at AS step_recorded_at
+    FROM drafts LEFT JOIN steps ON steps.thread_id = drafts.thread_id
+"""
+"""Every read of a draft starts here, so the steps come from the same snapshot."""
+
+ONE_DRAFT = DRAFTS_WITH_STEPS + "WHERE drafts.draft_id=? ORDER BY steps.position"
+WAITING_DRAFTS = (
+    DRAFTS_WITH_STEPS
+    + "WHERE drafts.decision IS NULL ORDER BY drafts.created_at, drafts.draft_id, steps.position"
+)
+DECIDED_DRAFTS = (
+    DRAFTS_WITH_STEPS
+    + "WHERE drafts.decision IS NOT NULL "
+    + "ORDER BY drafts.decided_at DESC, drafts.draft_id, steps.position"
+)
+
+
+def joined_step_from(row: sqlite3.Row) -> StepRecord:
+    """Build a step from a joined row, where its time is ``step_recorded_at``."""
+    return StepRecord(
+        node=str(row["node"]),
+        round=int(row["round"]),
+        expected=str(row["expected"]),
+        found=str(row["found"]),
+        recorded_at=datetime.fromisoformat(str(row["step_recorded_at"])),
+    )
+
+
+def record_from(row: sqlite3.Row, steps: list[StepRecord]) -> DraftRecord:
+    """Build a record from a row read by column name, with the steps read beside it."""
     decided_at = row["decided_at"]
     decision = row["decision"]
     reason = row["reason"]
@@ -380,4 +407,5 @@ def record_from(row: sqlite3.Row) -> DraftRecord:
         decided_at=None if decided_at is None else datetime.fromisoformat(str(decided_at)),
         decision=cast(Decision | None, None if decision is None else str(decision)),
         reason=None if reason is None else str(reason),
+        steps=steps,
     )

@@ -121,13 +121,16 @@ def describe_verification(verification: PlanVerification) -> str:
 
 
 def describe_verdict(verdict: CriticVerdict, tokens: str) -> str:
-    """What the reviewer said, criterion by criterion where it did not pass."""
+    """Which criteria the reviewer faulted, could not tell, or left out.
+
+    The judgments are typed values; the reviewer's own words are not, so they
+    stay in the draft's notes and out of the record.
+    """
     if verdict.accepted:
         return f"accepted on every criterion{tokens}"
     parts = []
     if verdict.failed:
-        faults = "; ".join(f"{item.criterion}: {item.critique}" for item in verdict.failed)
-        parts.append(f"faulted {faults}")
+        parts.append("faulted " + ", ".join(str(item.criterion) for item in verdict.failed))
     if verdict.undecided:
         parts.append(
             "could not tell on " + ", ".join(str(item.criterion) for item in verdict.undecided)

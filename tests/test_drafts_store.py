@@ -394,3 +394,31 @@ def test_each_listed_run_carries_only_its_own_steps() -> None:
 
     assert [(run.thread_id, len(run.steps)) for run in listed] == [("plan:two", 2), ("plan:one", 1)]
     assert [item.node for item in listed[0].steps] == ["retrieve", "plan"]
+
+
+def test_a_draft_is_read_with_its_steps_from_one_query() -> None:
+    store = store_in_memory()
+    steps = [step("retrieve", 0), step("plan", 1), step("verify", 1), step("critique", 1)]
+    store.record_waiting(
+        draft(), thread_id="plan:one", plan_date=PLAN_DATE, outcome="accepted", steps=steps
+    )
+    other = draft().model_copy(update={"draft_id": "draft:plan:two"})
+    store.record_waiting(other, thread_id="plan:two", plan_date=PLAN_DATE, outcome="unsettled")
+
+    fetched = store.get(draft().draft_id)
+    queue = store.waiting()
+
+    assert fetched is not None
+    assert fetched.steps == steps
+    assert [(record.draft_id, len(record.steps)) for record in queue] == [
+        (draft().draft_id, 4),
+        ("draft:plan:two", 0),
+    ]
+    decided = store.record_decision(
+        draft().draft_id,
+        status=DraftStatus.APPROVED_FOR_MANUAL_SEND,
+        decision="approved",
+        reason=None,
+    )
+    assert decided.steps == steps
+    assert store.decided()[0].steps == steps

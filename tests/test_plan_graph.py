@@ -899,8 +899,9 @@ def test_a_revision_keeps_the_round_that_sent_the_plan_back() -> None:
         ("verify", 2),
         ("critique", 2),
     ]
-    assert steps[3].found.startswith("faulted sizing: an hour is short for a comparison essay")
-    assert "did not consider deferrals, support rules, rationale" in steps[3].found
+    assert steps[3].found == "faulted sizing; did not consider deferrals, support rules, rationale"
+    assert "an hour is short" not in steps[3].found
+    assert "an hour is short for a comparison essay" in human_text(planner.briefs[1])
     assert steps[4].expected == "a revised plan that answers 1 finding"
     assert steps[6].found == "accepted on every criterion"
 

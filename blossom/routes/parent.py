@@ -54,7 +54,7 @@ from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_ver
 from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.settings import TEMPLATE_PATH
-from blossom.stores.drafts import AlreadyDecided, DraftRecord, DraftsStore
+from blossom.stores.drafts import AlreadyDecided
 from blossom.views import (
     ApprovalQueueView,
     ApprovalView,
@@ -146,11 +146,6 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
     )
 
 
-def approval_view(drafts: DraftsStore, record: DraftRecord) -> ApprovalView:
-    """A draft with the record of the run that made it."""
-    return ApprovalView.from_record(record, drafts.steps_for(record.thread_id))
-
-
 async def run_plan(graph: CompiledPlanGraph, plan_date: date) -> PlanRunView:
     """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped."""
     thread_id = thread_for(plan_date)
@@ -177,7 +172,7 @@ def approvals(state: State) -> ApprovalQueueView:
     """Every draft waiting for a decision, oldest first. Needs no model to read."""
     return ApprovalQueueView(
         generated_at=state.clock.now(),
-        waiting=[approval_view(state.drafts, record) for record in state.drafts.waiting()],
+        waiting=[ApprovalView.from_record(record) for record in state.drafts.waiting()],
     )
 
 
@@ -187,7 +182,7 @@ def approval(draft_id: str, state: State) -> ApprovalView:
     record = state.drafts.get(draft_id)
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no draft {draft_id!r}")
-    return approval_view(state.drafts, record)
+    return ApprovalView.from_record(record)
 
 
 @router.post("/approvals/{draft_id}", response_model=DecisionView)
@@ -286,8 +281,8 @@ def review_page(
         {
             "today": state.clock.today(),
             "model_available": model_configured(state.settings),
-            "waiting": [approval_view(state.drafts, record) for record in state.drafts.waiting()],
-            "decided": [approval_view(state.drafts, record) for record in state.drafts.decided()],
+            "waiting": [ApprovalView.from_record(record) for record in state.drafts.waiting()],
+            "decided": [ApprovalView.from_record(record) for record in state.drafts.decided()],
             "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
             "problem": problem,
         },

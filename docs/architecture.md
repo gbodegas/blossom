@@ -113,8 +113,8 @@ account: `compose` writes the draft and the record in one transaction, and a
 run that ends before the gate writes the record from its last node. The record
 sits in two tables beside the drafts, one row per run and one per step. A
 replacement that fails part way rolls back whole, a repeat keeps the first
-time stamp, and a listing reads runs and steps in one query so no record pairs
-one run's outcome with another's steps.
+time stamp, and every read of a draft or a run joins its steps in one query so
+no record pairs one save's outcome with another's steps.
 
 **Not built:** nothing yet lets her see that a draft was approved.
 
@@ -355,8 +355,10 @@ Each of the four nodes before `compose` appends one `StepRecord` from
 expected before acting, what it found, and the household clock's time. The
 words are built from the typed values, never from the model's prose: the
 week's counts, the plan's shape, which checks failed and why, which criteria
-the reviewer faulted or could not tell, and what a model call cost in tokens
-when the answer carried it. The record exists because the final state cannot
+the reviewer faulted, could not tell, or left out, and what a model call cost
+in tokens when the answer carried it. The reviewer's critique is its own
+prose, so it stays in the draft's notes and out of the record; the planner's
+rationales likewise. The record exists because the final state cannot
 say how a run got where it did: a passing check clears the findings that sent
 the plan back, and an accepted verdict says nothing about the one before it.
 Nothing reads the steps to decide what happens next.

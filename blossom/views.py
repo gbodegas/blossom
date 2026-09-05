@@ -142,15 +142,13 @@ class ApprovalView(BaseModel):
     reason: str | None
     decided_at: AwareDatetime | None
     steps: list[StepRecord] = []
-    """How the plan was made, when the run's record was saved."""
+    """How the plan was made, read from the same snapshot as the draft."""
 
     @classmethod
-    def from_record(
-        cls, record: DraftRecord, steps: list[StepRecord] | None = None
-    ) -> "ApprovalView":
+    def from_record(cls, record: DraftRecord) -> "ApprovalView":
         """The parent's projection of a table row. The thread id stays out of it."""
         return cls(
-            steps=steps or [],
+            steps=record.steps,
             draft_id=record.draft_id,
             plan_date=record.plan_date,
             status=record.status,
