@@ -20,12 +20,14 @@ permission was given, and nothing else.
 
 import sqlite3
 import threading
+from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, cast
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
+from blossom.agent.steps import StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.stores.checkpoints import refuse_unsafe_path
@@ -68,13 +70,27 @@ class DraftRecord(BaseModel):
         return self.decision is None
 
 
+class RunRecord(BaseModel):
+    """One run of the plan graph: where it ended, and each step on the way."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    thread_id: str
+    plan_date: date
+    outcome: str
+    recorded_at: AwareDatetime
+    steps: list[StepRecord]
+
+
 class DraftsStore:
     """SQLite-backed drafts, shared across worker threads behind a lock."""
 
     name = "drafts"
     retention_policy = (
-        "Keep a draft and its decision for the school year; a refused draft is "
-        "kept so the refusal is visible, not so the text is reused."
+        "Keep a draft, its decision, and the record of the run that made it for the "
+        "school year; a refused draft is kept so the refusal is visible, not so the "
+        "text is reused, and the record of a run that produced no draft is kept for "
+        "the same span so a parent can see why nothing came of it."
     )
 
     def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
@@ -100,6 +116,30 @@ class DraftsStore:
             )
             """
         )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runs (
+                thread_id TEXT PRIMARY KEY,
+                plan_date TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS steps (
+                thread_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                node TEXT NOT NULL,
+                round INTEGER NOT NULL,
+                expected TEXT NOT NULL,
+                found TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                PRIMARY KEY (thread_id, position)
+            )
+            """
+        )
         self._connection.commit()
 
     @classmethod
@@ -117,14 +157,23 @@ class DraftsStore:
             self._connection.close()
 
     def record_waiting(
-        self, draft: Draft, *, thread_id: str, plan_date: date, outcome: Outcome
+        self,
+        draft: Draft,
+        *,
+        thread_id: str,
+        plan_date: date,
+        outcome: Outcome,
+        steps: Sequence[StepRecord] = (),
     ) -> None:
         """Save a draft the moment it exists, before the gate pauses on it.
 
         An upsert: the same draft saved again replaces its text and status and
         keeps its first ``created_at``, so a node that runs twice leaves one row.
+        The record of the run that produced the draft is saved in the same
+        transaction, so a draft is never on the page without its account or
+        the other way around.
         """
-        with self._lock:
+        with self._lock, self._connection:
             self._connection.execute(
                 """
                 INSERT INTO drafts (
@@ -145,7 +194,7 @@ class DraftsStore:
                     draft.created_at.isoformat(),
                 ),
             )
-            self._connection.commit()
+            self._write_run(thread_id, plan_date, outcome, steps)
 
     def record_decision(
         self, draft_id: str, *, status: DraftStatus, decision: Decision, reason: str | None
@@ -180,6 +229,105 @@ class DraftsStore:
             raise AlreadyDecided(record)
         return record
 
+    def record_run(
+        self, *, thread_id: str, plan_date: date, outcome: str, steps: Sequence[StepRecord]
+    ) -> None:
+        """Save how a run went: where it ended and every step on the way.
+
+        For a run that ended before the gate and so has no draft to carry its
+        record; a run with a draft saves both together in ``record_waiting``.
+        Saving the same thread again replaces its steps and keeps the first
+        time stamp, so a node that runs twice leaves one account dated once.
+        The whole replacement is one transaction: a failure part way through
+        rolls it back and the earlier account stands.
+        """
+        with self._lock, self._connection:
+            self._write_run(thread_id, plan_date, outcome, steps)
+
+    def _write_run(
+        self, thread_id: str, plan_date: date, outcome: str, steps: Sequence[StepRecord]
+    ) -> None:
+        """The run row and its steps, inside a transaction the caller holds open."""
+        stamp = self._clock.now().isoformat()
+        rows = [
+            (
+                thread_id,
+                position,
+                item.node,
+                item.round,
+                item.expected,
+                item.found,
+                item.recorded_at.isoformat(),
+            )
+            for position, item in enumerate(steps)
+        ]
+        self._connection.execute(
+            """
+            INSERT INTO runs (thread_id, plan_date, outcome, recorded_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(thread_id) DO UPDATE SET outcome=excluded.outcome
+            """,
+            (thread_id, plan_date.isoformat(), outcome, stamp),
+        )
+        self._connection.execute("DELETE FROM steps WHERE thread_id=?", (thread_id,))
+        self._connection.executemany(
+            """
+            INSERT INTO steps (thread_id, position, node, round, expected, found, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+    def steps_for(self, thread_id: str) -> list[StepRecord]:
+        """The steps of one run, in the order they happened; empty for a thread never saved."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM steps WHERE thread_id=? ORDER BY position", (thread_id,)
+            ).fetchall()
+        return [step_from(row) for row in rows]
+
+    def runs_without_a_draft(self) -> list[RunRecord]:
+        """Runs that ended before the gate, most recent first, each with its steps.
+
+        One query joins the runs to their steps, so every record is assembled
+        from a single snapshot and a replacement landing between two reads
+        cannot pair one run's outcome with another's steps.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT runs.thread_id, runs.plan_date, runs.outcome, runs.recorded_at,
+                       steps.node, steps.round, steps.expected, steps.found,
+                       steps.recorded_at AS step_recorded_at
+                FROM runs LEFT JOIN steps ON steps.thread_id = runs.thread_id
+                WHERE runs.thread_id NOT IN (SELECT thread_id FROM drafts)
+                ORDER BY runs.recorded_at DESC, runs.thread_id, steps.position
+                """
+            ).fetchall()
+        grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
+        for row in rows:
+            _, steps = grouped.setdefault(str(row["thread_id"]), (row, []))
+            if row["node"] is not None:
+                steps.append(
+                    StepRecord(
+                        node=str(row["node"]),
+                        round=int(row["round"]),
+                        expected=str(row["expected"]),
+                        found=str(row["found"]),
+                        recorded_at=datetime.fromisoformat(str(row["step_recorded_at"])),
+                    )
+                )
+        return [
+            RunRecord(
+                thread_id=thread_id,
+                plan_date=date.fromisoformat(str(row["plan_date"])),
+                outcome=str(row["outcome"]),
+                recorded_at=datetime.fromisoformat(str(row["recorded_at"])),
+                steps=steps,
+            )
+            for thread_id, (row, steps) in grouped.items()
+        ]
+
     def get(self, draft_id: str) -> DraftRecord | None:
         """One draft by id, or ``None``."""
         with self._lock:
@@ -203,6 +351,17 @@ class DraftsStore:
                 "SELECT * FROM drafts WHERE decision IS NOT NULL ORDER BY decided_at DESC, draft_id"
             ).fetchall()
         return [record_from(row) for row in rows]
+
+
+def step_from(row: sqlite3.Row) -> StepRecord:
+    """Build a step from a row read by column name."""
+    return StepRecord(
+        node=str(row["node"]),
+        round=int(row["round"]),
+        expected=str(row["expected"]),
+        found=str(row["found"]),
+        recorded_at=datetime.fromisoformat(str(row["recorded_at"])),
+    )
 
 
 def record_from(row: sqlite3.Row) -> DraftRecord:

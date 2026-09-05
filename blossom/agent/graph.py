@@ -21,18 +21,20 @@ refusal, or a body the schema cannot parse each ends the graph with an outcome
 naming which, and no draft, because guessing at a truncated plan would be
 worse than having none.
 
-Saved state holds the evening, the plan, what was found about it, and the
-draft. The stores and the two model callables are closed over by the node
-functions rather than carried in state, so nothing about the process is
-written to disk and nothing in the state needs a class the serializer does not
-list.
+Saved state holds the evening, the plan, what was found about it, the draft,
+and one ``StepRecord`` per node run, saying what the node expected and found.
+The stores and the two model callables are closed over by the node functions
+rather than carried in state, so nothing that runs the process is written to
+disk and nothing in the state needs a class the serializer does not list.
 
-Two nodes write to the drafts table, and each performs that one side effect
+Three nodes write to the drafts file, and each performs that one side effect
 in a form that running twice leaves unchanged. ``compose`` saves the draft as
-waiting, keyed by an id derived from the thread, before the gate can pause on
-it, so the parent's queue shows it. ``record_decision``, after the gate, saves
-what the person decided. The table is the record across threads; saved state
-is the record within one.
+waiting, keyed by an id derived from the thread, with the run's record in the
+same transaction, before the gate can pause on it, so the parent's queue shows
+it. ``record_decision``, after the gate, saves what the person decided.
+``record_run`` saves the record of a run that ended before the gate and has no
+draft to carry it. The file is the record across threads; saved state is the
+record within one.
 """
 
 import operator
@@ -40,7 +42,6 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Annotated, Any, Final, Literal, NotRequired, TypedDict, cast
-from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
@@ -52,6 +53,19 @@ from pydantic import BaseModel
 from blossom.agent.compose import compose_draft
 from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.prompts import critic_brief, planner_brief
+from blossom.agent.steps import (
+    EXPECT_ACCEPTANCE,
+    EXPECT_ALL_CHECKS,
+    EXPECT_RECORD_HOLDS,
+    StepRecord,
+    describe_failure,
+    describe_plan,
+    describe_verdict,
+    describe_verification,
+    describe_week,
+    expect_plan,
+    tokens_note,
+)
 from blossom.anthropic_client import (
     MISSING_KEY,
     Effort,
@@ -59,6 +73,7 @@ from blossom.anthropic_client import (
     chat_model,
     model_configured,
 )
+from blossom.clock import Clock
 from blossom.dependencies import ApplicationState
 from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
@@ -80,7 +95,8 @@ NODES_PER_ROUND: Final = 3
 """Plan, verify, critique: the most nodes one round of the loop can run."""
 
 NODES_OUTSIDE_THE_LOOP: Final = 4
-"""Retrieve before it; compose, the gate, and the decision record after it."""
+"""Retrieve before it; compose, the gate, and the decision record after it. A run
+that ends before the gate takes one node there instead, the run's record."""
 
 WORST_CASE_SUPERSTEPS: Final = NODES_OUTSIDE_THE_LOOP + (MAX_REVISIONS + 1) * NODES_PER_ROUND
 """The longest run this graph can take. It must fit under the recursion limit
@@ -121,6 +137,9 @@ class ModelAnswer[T: BaseModel]:
     parsed: T | None
     stop_reason: str | None
     parsing_error: str | None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    """What the call cost, as the provider counted it; absent from a scripted answer."""
 
     @classmethod
     def from_structured(cls, answer: Mapping[str, Any]) -> "ModelAnswer[T]":
@@ -129,11 +148,14 @@ class ModelAnswer[T: BaseModel]:
         stop_reason = (
             raw.response_metadata.get("stop_reason") if isinstance(raw, AIMessage) else None
         )
+        usage = raw.usage_metadata if isinstance(raw, AIMessage) else None
         error = answer.get("parsing_error")
         return cls(
             parsed=answer.get("parsed"),
             stop_reason=str(stop_reason) if stop_reason is not None else None,
             parsing_error=str(error) if error is not None else None,
+            input_tokens=None if usage is None else int(usage["input_tokens"]),
+            output_tokens=None if usage is None else int(usage["output_tokens"]),
         )
 
     def failure(self) -> Outcome | None:
@@ -155,13 +177,15 @@ two, and a test substitutes both."""
 class PlanState(TypedDict):
     """Everything a run of the plan graph saves.
 
-    ``rounds`` counts how many times the planner has run and is the only key
-    with a reducer. The gate's three keys are named exactly as in
-    ``ApprovalState`` so the same node serves both graphs.
+    ``rounds`` counts how many times the planner has run, and ``steps`` is the
+    record of what each node expected and found; both accumulate across nodes.
+    The gate's three keys are named exactly as in ``ApprovalState`` so the same
+    node serves both graphs.
     """
 
     plan_date: date
     rounds: Annotated[int, operator.add]
+    steps: NotRequired[Annotated[list[StepRecord], operator.add]]
     assignments: NotRequired[list[Assignment]]
     confidence: NotRequired[dict[str, SourceConfidence]]
     noticings: NotRequired[list[Noticing]]
@@ -187,7 +211,7 @@ def build_plan_graph(
     support_rules: SupportRulesStore,
     reflections: ReflectionsStore,
     drafts: DraftsStore,
-    zone: ZoneInfo,
+    clock: Clock,
     planner: Ask[DailyPlan],
     critic: Ask[CriticVerdict],
     checkpointer: BaseCheckpointSaver[Any],
@@ -199,6 +223,13 @@ def build_plan_graph(
     data. A checkpointer is required because the gate cannot pause without one.
     """
     reconciler = Reconciler()
+    zone = clock.zone
+
+    def step(node: str, round_number: int, expected: str, found: str) -> StepRecord:
+        """One line of the run's record, stamped by the household's clock."""
+        return StepRecord(
+            node=node, round=round_number, expected=expected, found=found, recorded_at=clock.now()
+        )
 
     def evening(state: PlanState) -> dict[str, Any]:
         """The arguments both briefs share, read from state."""
@@ -226,26 +257,44 @@ def build_plan_graph(
             name: classify_confidence(reconciler.reconcile(found))
             for name, found in week.records.items()
         }
+        noticings = [week.noticings[item.assignment_id] for item in week.assignments]
+        rules = [rule.instruction for rule in support_rules.list_all()]
+        notes = [note.observation for note in reflections.list_all()]
+        found = describe_week(
+            week.assignments, noticings, confidence, rules=len(rules), notes=len(notes)
+        )
         return {
             "assignments": week.assignments,
             "confidence": confidence,
-            "noticings": [week.noticings[item.assignment_id] for item in week.assignments],
-            "support_rules": [rule.instruction for rule in support_rules.list_all()],
-            "reflections": [note.observation for note in reflections.list_all()],
+            "noticings": noticings,
+            "support_rules": rules,
+            "reflections": notes,
+            "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found)],
         }
 
     async def plan(state: PlanState) -> dict[str, Any]:
         """Ask the planner. Counts the round whether or not a plan comes back."""
-        messages = planner_brief(
-            **evening(state),
-            feedback=state.get("feedback", []),
-            round_number=state["rounds"] + 1,
-        )
+        round_number = state["rounds"] + 1
+        feedback = state.get("feedback", [])
+        messages = planner_brief(**evening(state), feedback=feedback, round_number=round_number)
+        expected = expect_plan(round_number, len(feedback), daily_minutes)
         answer = await planner(messages)
+        tokens = tokens_note(answer.input_tokens, answer.output_tokens)
         failure = answer.failure()
-        if failure is not None:
-            return {"rounds": 1, "outcome": failure}
-        return {"rounds": 1, "plan": answer.parsed}
+        if failure is not None or answer.parsed is None:
+            outcome: Outcome = failure or "model_unparseable"
+            found = describe_failure(outcome, "plan", tokens)
+            return {
+                "rounds": 1,
+                "outcome": outcome,
+                "steps": [step("plan", round_number, expected, found)],
+            }
+        found = describe_plan(answer.parsed, zone, tokens)
+        return {
+            "rounds": 1,
+            "plan": answer.parsed,
+            "steps": [step("plan", round_number, expected, found)],
+        }
 
     def verify(state: PlanState) -> dict[str, Any]:
         """Tier one. A failing plan becomes feedback, or the end when rounds are spent."""
@@ -257,11 +306,15 @@ def build_plan_graph(
             noticings=state.get("noticings", []),
             daily_minutes=daily_minutes,
         )
+        record = step(
+            "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
+        )
         if verification.passed:
-            return {"verification": verification, "feedback": []}
+            return {"verification": verification, "feedback": [], "steps": [record]}
         update: dict[str, Any] = {
             "verification": verification,
             "feedback": list(verification.as_findings()),
+            "steps": [record],
         }
         if state["rounds"] > MAX_REVISIONS:
             update["outcome"] = "checks_failed"
@@ -273,16 +326,23 @@ def build_plan_graph(
             **evening(state), plan=state["plan"], verification=state["verification"]
         )
         answer = await critic(messages)
+        tokens = tokens_note(answer.input_tokens, answer.output_tokens)
         failure = answer.failure()
         verdict = answer.parsed
         if failure is not None or verdict is None:
-            return {"outcome": failure or "model_unparseable"}
+            outcome: Outcome = failure or "model_unparseable"
+            found = describe_failure(outcome, "verdict", tokens)
+            record = step("critique", state["rounds"], EXPECT_ACCEPTANCE, found)
+            return {"outcome": outcome, "steps": [record]}
+        record = step(
+            "critique", state["rounds"], EXPECT_ACCEPTANCE, describe_verdict(verdict, tokens)
+        )
         if verdict.accepted:
-            return {"verdict": verdict, "outcome": "accepted"}
+            return {"verdict": verdict, "outcome": "accepted", "steps": [record]}
         if verdict.failed and state["rounds"] <= MAX_REVISIONS:
             feedback = [f"{item.criterion}: {item.critique}" for item in verdict.failed]
-            return {"verdict": verdict, "feedback": feedback}
-        return {"verdict": verdict, "outcome": "unsettled"}
+            return {"verdict": verdict, "feedback": feedback, "steps": [record]}
+        return {"verdict": verdict, "outcome": "unsettled", "steps": [record]}
 
     def compose(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
         """Render the plan as the text a person reads at the gate, and save it as waiting.
@@ -311,8 +371,25 @@ def build_plan_graph(
             thread_id=thread_id,
             plan_date=state["plan_date"],
             outcome=cast(Literal["accepted", "unsettled"], outcome),
+            steps=state.get("steps", []),
         )
         return {"draft": draft}
+
+    def record_run(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
+        """Save the record of a run that ended before the gate. Writes nothing to state.
+
+        A run that reaches the gate has its record saved with its draft, in
+        ``compose``; this node is the same save for a run with no draft to
+        attach it to, so the parent's page can say why nothing came of it.
+        """
+        thread_id = str(config["configurable"]["thread_id"])
+        drafts.record_run(
+            thread_id=thread_id,
+            plan_date=state["plan_date"],
+            outcome=state["outcome"],
+            steps=state.get("steps", []),
+        )
+        return {}
 
     def gate(state: PlanState) -> dict[str, Any]:
         """The approval gate, unchanged; the state's gate keys match its own."""
@@ -330,18 +407,18 @@ def build_plan_graph(
         return {}
 
     def after_plan(state: PlanState) -> str:
-        return END if "outcome" in state else "verify"
+        return "record_run" if "outcome" in state else "verify"
 
     def after_verify(state: PlanState) -> str:
         if state["verification"].passed:
             return "critique"
-        return END if "outcome" in state else "plan"
+        return "record_run" if "outcome" in state else "plan"
 
     def after_critique(state: PlanState) -> str:
         outcome = state.get("outcome")
         if outcome is None:
             return "plan"
-        return "compose" if outcome in REACHED_THE_GATE else END
+        return "compose" if outcome in REACHED_THE_GATE else "record_run"
 
     graph: StateGraph[PlanState, Any, PlanState, PlanState] = StateGraph(PlanState)
     graph.add_node("retrieve", retrieve)
@@ -351,18 +428,26 @@ def build_plan_graph(
     graph.add_node("compose", compose)
     graph.add_node("require_human_approval", gate)
     graph.add_node("record_decision", record_decision)
+    graph.add_node("record_run", record_run)
     graph.add_edge(START, "retrieve")
     graph.add_edge("retrieve", "plan")
-    graph.add_conditional_edges("plan", after_plan, {"verify": "verify", END: END})
     graph.add_conditional_edges(
-        "verify", after_verify, {"critique": "critique", "plan": "plan", END: END}
+        "plan", after_plan, {"verify": "verify", "record_run": "record_run"}
     )
     graph.add_conditional_edges(
-        "critique", after_critique, {"compose": "compose", "plan": "plan", END: END}
+        "verify",
+        after_verify,
+        {"critique": "critique", "plan": "plan", "record_run": "record_run"},
+    )
+    graph.add_conditional_edges(
+        "critique",
+        after_critique,
+        {"compose": "compose", "plan": "plan", "record_run": "record_run"},
     )
     graph.add_edge("compose", "require_human_approval")
     graph.add_edge("require_human_approval", "record_decision")
     graph.add_edge("record_decision", END)
+    graph.add_edge("record_run", END)
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -433,7 +518,7 @@ def plan_graph_for(
         support_rules=state.support_rules,
         reflections=state.reflections,
         drafts=state.drafts,
-        zone=state.clock.zone,
+        clock=state.clock,
         planner=planner,
         critic=critic,
         checkpointer=state.checkpointer,

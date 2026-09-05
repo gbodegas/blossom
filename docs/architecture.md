@@ -102,6 +102,20 @@ reason the API would have answered. The decision field admits exactly the two
 button values. Without a key the page still reads and says why a plan cannot
 start.
 
+Under each draft the page shows how the plan was made: the run's step records,
+one per node, each saying what the node expected and what it found. A run that
+ended before the gate, because its plan never passed the checks or the model
+did not answer, has no draft to show, so the page lists it under its own
+heading with the same record, and the JSON answer to `POST /parent/plans`
+carries the steps too. The graph saves the record, not the route, so a process
+that stops between the run and the page cannot leave a draft without its
+account: `compose` writes the draft and the record in one transaction, and a
+run that ends before the gate writes the record from its last node. The record
+sits in two tables beside the drafts, one row per run and one per step. A
+replacement that fails part way rolls back whole, a repeat keeps the first
+time stamp, and a listing reads runs and steps in one query so no record pairs
+one run's outcome with another's steps.
+
 **Not built:** nothing yet lets her see that a draft was approved.
 
 ## Sources disagree, and that is the interesting case
@@ -193,7 +207,7 @@ still answers the structured side for one that would.
 | `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status | Wired and tested; in memory |
 | `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Seeded from the fixtures; read whole by the plan graph |
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
-| `DraftsStore` | Every draft that reached the gate, and every decision about it | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
+| `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -290,7 +304,7 @@ call, and neither holds a tool. So there is no loop in which a model decides
 what to call next: the graph decides, from the checks and the verdict, and
 every route it can take is written in one file.
 
-Seven nodes, in this order. `retrieve` reads every assignment on record,
+Eight nodes. `retrieve` reads every assignment on record,
 states each one's due date before it reads the sources, sets the two against
 each other, and then selects the week: undated work, and dated work that the
 record or any source puts in the window. `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
@@ -302,7 +316,11 @@ reviewer's notes as the text a parent reads, and saves it to the drafts table
 as waiting, under an id derived from the thread. `require_human_approval` is
 the gate from `blossom/agent/gates.py`, unchanged. `record_decision`, after
 the gate, saves what the person decided; it is the only node past the gate,
-and a node there may be added without a version bump.
+and a node there may be added without a version bump. `record_run` is where a
+run goes instead of `compose` when it ends before the gate, with a plan that
+never passed the checks or a model that did not answer: it saves the run's
+record, which `compose` saves with the draft. It is off the path to the gate,
+so a paused thread never meets it and the version stays put.
 
 The loop is bounded twice. The planner may be sent back `MAX_REVISIONS` times,
 after which a plan that still fails tier one is reported as `checks_failed` and
@@ -328,8 +346,20 @@ rather than leaving the model to infer it.
 One model, `claude-opus-5`, serves both roles, at high effort for the planner
 and medium for the critic. The stores and the two model callables are closed
 over by the node functions rather than carried in state, so saved state holds
-the evening, the plan, what was found about it, and the draft, and nothing
-about the process.
+the evening, the plan, what was found about it, the draft, and the record of
+each step, and nothing that runs the process.
+
+Each of the four nodes before `compose` appends one `StepRecord` from
+`blossom/agent/steps.py` to the state's `steps` key, under the same reducer
+`rounds` uses: the node's name, the planner round it belongs to, what it
+expected before acting, what it found, and the household clock's time. The
+words are built from the typed values, never from the model's prose: the
+week's counts, the plan's shape, which checks failed and why, which criteria
+the reviewer faulted or could not tell, and what a model call cost in tokens
+when the answer carried it. The record exists because the final state cannot
+say how a run got where it did: a passing check clears the findings that sent
+the plan back, and an accepted verdict says nothing about the one before it.
+Nothing reads the steps to decide what happens next.
 
 **Not built:** the reviewer's five criteria are fixed in the prompt rather
 than configurable.
@@ -374,11 +404,15 @@ and confirmations with a separate group of undecidable rows, and
 `tests/test_noticing.py` reports precision and recall for the contradicted
 verdict as counts. The comparator is deterministic, so both are held at one.
 
+The plan graph carries the same discipline into its own nodes. Each states
+what it expects before it acts and records what it found, and the records are
+saved with the run; the plan graph section says how.
+
 **Not built:** only the due date is compared. The design's example is a
 submission status the record holds and a portal can confirm or deny, and
-nothing observes submission status yet. Nothing persists a step either: the
-saved graph state holds each run's noticings, but the checkable trace of what
-each node expected and found does not exist.
+nothing observes submission status yet. The step records are Blossom's own
+account of a run; the framework's trace of every call beneath them, with its
+inputs and outputs, is not kept anywhere.
 
 ## The workload signal
 

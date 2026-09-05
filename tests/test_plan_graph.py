@@ -31,6 +31,7 @@ from blossom.agent.graph import (
     plan_graph_for,
 )
 from blossom.agent.runs import DURABILITY, RECURSION_LIMIT, run_config
+from blossom.agent.steps import StepRecord
 from blossom.anthropic_client import ModelUnavailable
 from blossom.dependencies import build_application_state
 from blossom.drafts import Draft, DraftStatus
@@ -227,7 +228,7 @@ def graph_with(
         support_rules=support_rules,
         reflections=reflections,
         drafts=drafts or drafts_in_memory(),
-        zone=ZONE,
+        clock=fixture_clock(),
         planner=planner,
         critic=critic,
         checkpointer=checkpointer or InMemorySaver(),
@@ -591,6 +592,7 @@ def test_the_nodes_ahead_of_the_gate_are_the_ones_the_contract_names() -> None:
         "compose",
         "require_human_approval",
         "record_decision",
+        "record_run",
     ]
 
 
@@ -666,6 +668,8 @@ def test_a_paused_plan_survives_the_process_that_wrote_it(tmp_path: pathlib.Path
     assert isinstance(revived["plan"], DailyPlan)
     assert revived["plan"] == good_plan()
     assert revived["verification"].uncertain_due_dates == ("assignment-algebra-set",)
+    assert all(isinstance(item, StepRecord) for item in revived["steps"])
+    assert [item.node for item in revived["steps"]] == ["retrieve", "plan", "verify", "critique"]
     assert revived["verdict"].undecided[0].judgment is Judgment.CANNOT_TELL
     assert isinstance(revived["assignments"][0], Assignment)
     assert revived["outcome"] == "unsettled"
@@ -850,3 +854,157 @@ def test_putting_off_work_the_school_says_is_due_tonight_fails_the_checks() -> N
         "assignment-algebra-set is due 2026-08-19 by the earliest date the record or a "
         "source gives and is put off from 2026-08-19, past it"
     ]
+
+
+# ------------------------------------------------------------- the run's record
+
+
+def test_every_node_leaves_a_step_saying_what_it_expected_and_found() -> None:
+    result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting()))))
+
+    steps = result["steps"]
+    assert [(item.node, item.round) for item in steps] == [
+        ("retrieve", 0),
+        ("plan", 1),
+        ("verify", 1),
+        ("critique", 1),
+    ]
+    assert steps[0].expected == "the record's due dates hold against the school's sources"
+    assert steps[0].found == (
+        "2 assignments in the week: 0 contradicted, 1 uncertain, 0 undated; "
+        "0 rules and 0 notes to follow"
+    )
+    assert steps[1].expected == "a plan that accounts for every assignment inside 150 minutes"
+    assert steps[1].found == "1 block and 1 deferral asking 60 minutes"
+    assert steps[2].expected == "every tier-one check passes"
+    assert steps[2].found == "all 6 checks passed"
+    assert steps[3].expected == "the reviewer passes every criterion"
+    assert steps[3].found == "accepted on every criterion"
+    assert all(item.recorded_at == fixture_clock().now() for item in steps)
+
+
+def test_a_revision_keeps_the_round_that_sent_the_plan_back() -> None:
+    planner = Scripted(ok(good_plan()), ok(good_plan()))
+    critic = Scripted(ok(faulting()), ok(accepting()))
+
+    result = run(graph_with(planner, critic))
+
+    steps = result["steps"]
+    assert [(item.node, item.round) for item in steps] == [
+        ("retrieve", 0),
+        ("plan", 1),
+        ("verify", 1),
+        ("critique", 1),
+        ("plan", 2),
+        ("verify", 2),
+        ("critique", 2),
+    ]
+    assert steps[3].found.startswith("faulted sizing: an hour is short for a comparison essay")
+    assert "did not consider deferrals, support rules, rationale" in steps[3].found
+    assert steps[4].expected == "a revised plan that answers 1 finding"
+    assert steps[6].found == "accepted on every criterion"
+
+
+def test_a_run_that_fails_its_checks_records_every_attempt() -> None:
+    planner = Scripted(*[ok(plan_that_forgets_the_problem_set())] * (MAX_REVISIONS + 1))
+
+    result = run(graph_with(planner, Scripted()))
+
+    steps = result["steps"]
+    assert [item.node for item in steps] == [
+        "retrieve",
+        "plan",
+        "verify",
+        "plan",
+        "verify",
+        "plan",
+        "verify",
+    ]
+    assert steps[2].found == (
+        "1 of 6 checks failed: assignment-algebra-set is due in this window and the plan "
+        "does not mention it"
+    )
+    assert steps[3].expected == "a revised plan that answers 1 finding"
+    assert result["outcome"] == "checks_failed"
+
+
+def test_a_model_that_stops_leaves_the_reason_and_the_cost_in_the_record() -> None:
+    cut_off: ModelAnswer[DailyPlan] = ModelAnswer(
+        parsed=good_plan(),
+        stop_reason="max_tokens",
+        parsing_error=None,
+        input_tokens=1200,
+        output_tokens=4096,
+    )
+
+    result = run(graph_with(Scripted(cut_off), Scripted()))
+
+    assert result["outcome"] == "model_truncated"
+    assert result["steps"][-1].found == "no plan: the answer was cut off (1200 tokens in, 4096 out)"
+
+
+def test_a_critic_that_cannot_tell_is_recorded_as_such() -> None:
+    result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(undecided()))))
+
+    assert result["steps"][-1].found.startswith("could not tell on support rules")
+    assert "did not consider order, sizing, deferrals, rationale" in result["steps"][-1].found
+
+
+def test_a_model_answer_reads_what_the_call_cost_from_the_raw_message() -> None:
+    raw = AIMessage(
+        content="{}",
+        response_metadata={"stop_reason": "end_turn"},
+        usage_metadata={"input_tokens": 1777, "output_tokens": 863, "total_tokens": 2640},
+    )
+    bare = AIMessage(content="{}")
+
+    priced: ModelAnswer[DailyPlan] = ModelAnswer.from_structured(
+        {"raw": raw, "parsed": good_plan(), "parsing_error": None}
+    )
+    unpriced: ModelAnswer[DailyPlan] = ModelAnswer.from_structured(
+        {"raw": bare, "parsed": None, "parsing_error": None}
+    )
+
+    assert (priced.input_tokens, priced.output_tokens) == (1777, 863)
+    assert (unpriced.input_tokens, unpriced.output_tokens) == (None, None)
+
+
+def test_a_run_that_reaches_the_gate_saves_its_record_with_the_draft() -> None:
+    drafts = drafts_in_memory()
+
+    run(graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())), drafts=drafts))
+
+    assert [item.node for item in drafts.steps_for("plan:2026-08-19")] == [
+        "retrieve",
+        "plan",
+        "verify",
+        "critique",
+    ]
+    assert drafts.runs_without_a_draft() == []
+
+
+def test_a_run_that_ends_before_the_gate_saves_its_record_from_its_last_node() -> None:
+    drafts = drafts_in_memory()
+    planner = Scripted(*[ok(plan_that_forgets_the_problem_set())] * (MAX_REVISIONS + 1))
+
+    result = run(graph_with(planner, Scripted(), drafts=drafts))
+
+    ended = drafts.runs_without_a_draft()
+    assert [(item.thread_id, item.outcome) for item in ended] == [
+        ("plan:2026-08-19", "checks_failed")
+    ]
+    assert ended[0].steps == result["steps"]
+    assert len(ended[0].steps) == 7
+
+
+def test_a_model_that_stops_still_leaves_the_runs_record() -> None:
+    drafts = drafts_in_memory()
+    refused: ModelAnswer[DailyPlan] = ModelAnswer(
+        parsed=None, stop_reason="refusal", parsing_error=None
+    )
+
+    run(graph_with(Scripted(refused), Scripted(), drafts=drafts))
+
+    ended = drafts.runs_without_a_draft()
+    assert [item.outcome for item in ended] == ["model_refused"]
+    assert [item.node for item in ended[0].steps] == ["retrieve", "plan"]

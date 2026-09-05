@@ -76,6 +76,7 @@ def undecided() -> CriticVerdict:
 
 def scripted_graphs(
     verdict: Callable[[], CriticVerdict] = accepting,
+    plans: Callable[[], list[DailyPlan]] = lambda: [a_plan()],
 ) -> Callable[..., PlanGraphs]:
     """Scripted models with permission to start, over the app's own stores."""
 
@@ -84,7 +85,9 @@ def scripted_graphs(
     ) -> PlanGraphs:
         return PlanGraphs(
             build=lambda: plan_graph_for(
-                state, planner=Scripted(ok(a_plan())), critic=Scripted(ok(verdict()))
+                state,
+                planner=Scripted(*[ok(plan) for plan in plans()]),
+                critic=Scripted(ok(verdict())),
             ),
             may_start=True,
         )
@@ -92,7 +95,10 @@ def scripted_graphs(
     return override
 
 
-def browser(verdict: Callable[[], CriticVerdict] = accepting) -> TestClient:
+def browser(
+    verdict: Callable[[], CriticVerdict] = accepting,
+    plans: Callable[[], list[DailyPlan]] = lambda: [a_plan()],
+) -> TestClient:
     """A client that does not follow redirects, so the redirect itself is visible.
 
     It carries a key so the page shows the plan form; the models are scripted,
@@ -100,7 +106,7 @@ def browser(verdict: Callable[[], CriticVerdict] = accepting) -> TestClient:
     """
     with_key = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"}
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **with_key))
-    app.dependency_overrides[plan_graphs] = scripted_graphs(verdict)
+    app.dependency_overrides[plan_graphs] = scripted_graphs(verdict, plans)
     return TestClient(app, follow_redirects=False)
 
 
@@ -311,3 +317,48 @@ def test_dates_on_both_pages_carry_their_year() -> None:
         student = client.get("/student/due-this-week").text
 
     assert "Due Friday, August 21, 2026" in student
+
+
+# ------------------------------------------------------------- the run's record
+
+
+def test_the_page_shows_how_a_waiting_plan_was_made() -> None:
+    with browser() as client:
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        page = client.get("/parent").text
+
+    assert "How this plan was made" in page
+    assert '<span class="step-node">retrieve</span>' in page
+    assert "Expected: the record&#39;s due dates hold against the school&#39;s sources." in page
+    assert "Found: all 6 checks passed." in page
+    assert "Found: accepted on every criterion." in page
+    assert "Ended without a plan" not in page
+
+
+def test_a_decided_plan_keeps_the_record_of_how_it_was_made() -> None:
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        page = client.get("/parent").text
+
+    assert page.count("How this plan was made") == 1
+    assert "Found: accepted on every criterion." in page
+
+
+def forgetful() -> DailyPlan:
+    """Leaves the whole week but one item unmentioned, so tier one fails every round."""
+    return DailyPlan(plan_date=PLAN_DATE, blocks=a_plan().blocks[:1])
+
+
+def test_a_run_that_ended_without_a_plan_is_on_the_page_with_its_steps() -> None:
+    with browser(plans=lambda: [forgetful()] * 3) as client:
+        posted = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        page = client.get("/parent").text
+
+    assert posted.status_code == 303
+    assert "Ended without a plan" in page
+    assert "The plan failed its checks after every revision." in page
+    assert "How this run went" in page
+    assert page.count('<span class="step-node">plan</span>') == 3
+    assert "Found: 1 of 6 checks failed:" in page
+    assert "Nothing is waiting." in page

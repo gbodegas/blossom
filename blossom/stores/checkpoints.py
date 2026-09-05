@@ -45,6 +45,7 @@ import aiosqlite
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from blossom.agent.steps import StepRecord
 from blossom.drafts import Draft, DraftStatus
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.noticing import Noticing, Verdict
@@ -75,6 +76,7 @@ STATE_TYPES: Final[tuple[type, ...]] = (
     Judgment,
     Draft,
     DraftStatus,
+    StepRecord,
 )
 """Every class a graph may carry in its saved state. Adding one is a reviewed edit."""
 
