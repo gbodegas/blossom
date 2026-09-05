@@ -7,7 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from blossom.agent.loop import AgentStep, compare_expectation_to_observation
 from blossom.app import create_app
 from blossom.reconciliation import Disagreement, Reconciler, SourceChannel, SourceRecord
 from blossom.retrieval import (
@@ -319,24 +318,6 @@ def test_the_wiring_scan_accepts_the_sanctioned_form() -> None:
         "middleware=middleware_stack(Limit()))"
     )
     assert wiring_violations(sanctioned, "agent/graph.py") == []
-
-
-def test_agent_step_requires_expectation_constructor_argument() -> None:
-    with pytest.raises(TypeError):
-        AgentStep(tool_name="tool", tool_input={}, timestamp=datetime.now(UTC))  # type: ignore[call-arg]
-    with pytest.raises(ValueError, match="expectation is required"):
-        AgentStep(expectation=" ", tool_name="tool", tool_input={}, timestamp=datetime.now(UTC))
-
-
-def test_expectation_comparison_sets_contradiction() -> None:
-    step = AgentStep(
-        expectation="deadline is Friday",
-        tool_name="lookup",
-        tool_input={},
-        timestamp=datetime.now(UTC),
-    )
-    checked = compare_expectation_to_observation(step, "deadline is Thursday")
-    assert checked.contradiction is True
 
 
 def test_retrieval_router_never_sends_keyed_query_to_semantic_path() -> None:

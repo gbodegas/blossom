@@ -17,6 +17,7 @@ from datetime import date
 
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import CriticVerdict
+from blossom.noticing import Noticing
 from blossom.plan_checks import PlanVerification
 from blossom.plans import DailyPlan
 from blossom.stores.project_state import Assignment
@@ -41,6 +42,7 @@ def compose_draft(
     verification: PlanVerification,
     verdict: CriticVerdict | None,
     settled: bool,
+    noticings: Sequence[Noticing] = (),
 ) -> Draft:
     """The draft a parent reads: the evening, then what is uncertain, then the review.
 
@@ -89,6 +91,14 @@ def compose_draft(
     if verification.undated:
         lines.extend(["", "No due date on record; worth asking:"])
         lines.extend(f"- {named(assignment_id)}" for assignment_id in verification.undated)
+
+    contradicted = [item for item in noticings if item.contradicted]
+    if contradicted:
+        lines.extend(["", "The record and the school disagree; the record may need correcting:"])
+        lines.extend(
+            f"- {named(item.assignment_id)}, but the sources say {item.sources_say()}"
+            for item in contradicted
+        )
 
     if verdict is not None:
         lines.extend(["", "The reviewer's notes:"])

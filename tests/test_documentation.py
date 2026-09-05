@@ -2,9 +2,7 @@
 
 Every module needs a module docstring, and every public class, function and
 method needs a docstring. These tests check presence only; they do not judge
-content. The placeholder modules must also carry a `Status:` or `Known gap`
-paragraph so a reader learns from the file itself, not from a grep, that
-nothing calls it.
+content.
 """
 
 import ast
@@ -72,18 +70,3 @@ def test_every_public_symbol_has_a_docstring(path: pathlib.Path) -> None:
         f"{path.relative_to(PACKAGE_ROOT.parent)} has undocumented public symbols: "
         f"{', '.join(undocumented)}"
     )
-
-
-def test_modules_that_are_placeholders_say_so() -> None:
-    """Placeholder modules must carry a literal `Status:` or `Known gap` paragraph.
-
-    The marker is a literal phrase, not a vocabulary match, so a docstring's
-    phrasing cannot accidentally pass or fail the test.
-    """
-    admits = ("status:", "known gap")
-    for relative in ("agent/loop.py",):
-        path = PACKAGE_ROOT / relative
-        docstring = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or ""
-        assert any(phrase in docstring.lower() for phrase in admits), (
-            f"{relative} is a placeholder but its docstring does not say so"
-        )

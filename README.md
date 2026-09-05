@@ -69,11 +69,13 @@ plan, so a run of the planner has both to read.
   sit between anything the agent writes and anything that leaves the system.
   Their interests genuinely conflict, and the design keeps that conflict
   visible instead of resolving it silently.
-- **It will say what it expects before it looks.** The agent's reasoning loop
-  is designed to state what it expects from a tool call before making it.
-  That is what turns a surprising result into a noticed contradiction rather
-  than a confidently wrong answer. Today the scaffold records the expectation
-  but cannot yet act on a mismatch.
+- **It says what it expects before it looks.** Before the planner reads what
+  the school says about a due date, it states what the family's record says.
+  A date the sources do not support is a contradiction, and a contradiction
+  changes the plan: the deadline becomes the earliest date anyone gives, the
+  planner is told to say the record needs checking, and the draft names it.
+  The comparison is typed and deterministic, and "cannot tell" is its own
+  verdict rather than a contradiction by default.
 
 ## Status
 

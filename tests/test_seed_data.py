@@ -14,6 +14,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from blossom.app import create_app
 from blossom.dependencies import build_application_state
+from blossom.noticing import Verdict, expect_due_date, notice_due_date
 from blossom.reconciliation import Reconciler, SourceConfidence, classify_confidence
 from blossom.settings import REPOSITORY_ROOT
 from blossom.sources import FixtureSource
@@ -57,6 +58,28 @@ def test_the_sources_produce_every_confidence_state() -> None:
     assert labels["assignment-science-fair-proposal"] is SourceConfidence.UNVERIFIED
     assert labels["assignment-signed-syllabus"] is SourceConfidence.UNVERIFIED
     assert set(labels.values()) == set(SourceConfidence)
+
+
+def test_the_record_and_the_sources_agree_or_leave_it_open_but_never_contradict() -> None:
+    """The fixture record was written from the same portal the sources describe,
+    so nothing in it is contradicted; the disputed items are open, not wrong."""
+    source = FixtureSource(FIXTURES)
+
+    verdicts = {
+        item.assignment_id: notice_due_date(
+            expect_due_date(item), source.deadline_records(item.assignment_id)
+        ).verdict
+        for item in source.assignments()
+    }
+
+    assert verdicts == {
+        "assignment-algebra-set": Verdict.CONFIRMED,
+        "assignment-reading-log": Verdict.CONFIRMED,
+        "assignment-canal-essay": Verdict.UNDECIDABLE,
+        "assignment-textbook-cover": Verdict.UNDECIDABLE,
+        "assignment-science-fair-proposal": Verdict.UNDECIDABLE,
+        "assignment-signed-syllabus": Verdict.UNDECIDABLE,
+    }
 
 
 def test_one_source_gives_the_textbook_cover_two_dates_in_two_places() -> None:

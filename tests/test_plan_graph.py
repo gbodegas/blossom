@@ -41,8 +41,9 @@ from blossom.heuristic_relevance import (
     CriticVerdict,
     Judgment,
 )
+from blossom.noticing import Verdict
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.reconciliation import SourceChannel, SourceRecord
+from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
@@ -163,6 +164,18 @@ class TwoChannelSource:
         )
 
 
+class SchoolSaysOtherwise(TwoChannelSource):
+    """The portal gives the essay one date and the record holds another."""
+
+    def __init__(self, essay_due: str) -> None:
+        self.essay_due = essay_due
+
+    def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
+        if assignment_id == ESSAY.assignment_id:
+            return [self.record(SourceChannel.LMS, self.essay_due)]
+        return super().deadline_records(assignment_id)
+
+
 def stores(
     assignments: Sequence[Assignment] = (ESSAY, PROBLEM_SET),
 ) -> tuple[ProjectStateStore, SupportRulesStore, ReflectionsStore]:
@@ -182,6 +195,7 @@ def graph_with(
     assignments: Sequence[Assignment] = (ESSAY, PROBLEM_SET),
     rules: Sequence[str] = (),
     notes: Sequence[str] = (),
+    source: TwoChannelSource | None = None,
 ) -> CompiledPlanGraph:
     project_state, support_rules, reflections = stores(assignments)
     for index, rule in enumerate(rules):
@@ -199,7 +213,6 @@ def graph_with(
         )
     return build_plan_graph(
         project_state=project_state,
-        source=TwoChannelSource(),
         support_rules=support_rules,
         reflections=reflections,
         drafts=drafts or drafts_in_memory(),
@@ -207,6 +220,7 @@ def graph_with(
         planner=planner,
         critic=critic,
         checkpointer=checkpointer or InMemorySaver(),
+        source=source or TwoChannelSource(),
     )
 
 
@@ -702,3 +716,60 @@ def test_a_plan_that_forgets_an_undated_task_fails_the_omission_check() -> None:
         "assignment-signed-syllabus is due in this window and the plan does not mention it"
         in (result["feedback"])
     )
+
+
+# ------------------------------------------- the record against the school
+
+
+def test_the_record_is_stated_before_the_school_is_read_and_set_against_it() -> None:
+    result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting()))))
+
+    by_id = {item.assignment_id: item for item in result["noticings"]}
+    essay, problem_set = by_id[ESSAY.assignment_id], by_id[PROBLEM_SET.assignment_id]
+    assert essay.expected == ESSAY.due_date
+    assert essay.verdict is Verdict.CONFIRMED
+    assert problem_set.expected == PROBLEM_SET.due_date
+    assert problem_set.verdict is Verdict.UNDECIDABLE
+    assert result["confidence"][PROBLEM_SET.assignment_id] is SourceConfidence.SOURCES_DISAGREE
+
+
+def test_no_contradiction_is_shown_as_none_rather_than_left_out() -> None:
+    planner = Scripted(ok(good_plan()))
+
+    run(graph_with(planner, Scripted(ok(accepting()))))
+
+    assert "<contradictions />" in human_text(planner.briefs[0])
+
+
+def test_a_contradicted_record_reaches_the_planner_the_critic_and_the_draft() -> None:
+    planner = Scripted(ok(good_plan()))
+    critic = Scripted(ok(accepting()))
+
+    result = run(graph_with(planner, critic, source=SchoolSaysOtherwise("2026-08-20")))
+
+    expected_block = (
+        '<contradiction id="assignment-canal-essay" record="2026-08-21">'
+        "LMS: 2026-08-20</contradiction>"
+    )
+    assert expected_block in human_text(planner.briefs[0])
+    assert expected_block in human_text(critic.briefs[0])
+    assert result["verification"].contradicted == ("assignment-canal-essay",)
+    assert result["outcome"] == "accepted"
+    body = result["__interrupt__"][0].value["body"]
+    assert "The record and the school disagree; the record may need correcting:" in body
+    assert (
+        "- Canal Era comparison essay (World History, due Aug 21), but the sources say "
+        "LMS: 2026-08-20"
+    ) in body
+
+
+def test_a_block_after_the_school_date_fails_the_checks_though_the_record_allows_it() -> None:
+    planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
+
+    result = run(graph_with(planner, Scripted(), source=SchoolSaysOtherwise("2026-08-18")))
+
+    assert result["outcome"] == "checks_failed"
+    assert result["feedback"] == [
+        "assignment-canal-essay is due 2026-08-18 by the earliest date the record or a "
+        "source gives and is scheduled 2026-08-19, after it"
+    ]

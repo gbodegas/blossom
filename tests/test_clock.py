@@ -15,7 +15,6 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from blossom.agent.loop import AgentStep
 from blossom.app import create_app
 from blossom.clock import (
     FrozenClock,
@@ -145,8 +144,6 @@ def test_every_hand_written_guard_uses_pythons_rule_for_aware(naive: datetime) -
         )
     with pytest.raises(ValueError, match="aware"):
         SupportRule(rule_id="s1", instruction="Break long tasks up.", asserted_at=naive)
-    with pytest.raises(ValueError, match="aware"):
-        AgentStep(expectation="due_this_week", tool_name="t", tool_input={}, timestamp=naive)
 
 
 @pytest.mark.parametrize("naive", NAIVE_INSTANTS, ids=["no-zone", "zone-without-an-offset"])

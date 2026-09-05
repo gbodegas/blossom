@@ -47,6 +47,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from blossom.drafts import Draft, DraftStatus
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
+from blossom.noticing import Noticing, Verdict
 from blossom.plan_checks import PlanCheck, PlanVerification
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceConfidence
@@ -60,6 +61,8 @@ STATE_TYPES: Final[tuple[type, ...]] = (
     Assignment,
     AssignmentKind,
     SourceConfidence,
+    Noticing,
+    Verdict,
     DailyPlan,
     PlanBlock,
     Deferral,
