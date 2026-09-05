@@ -42,16 +42,11 @@ class StudentAssignmentView(BaseModel):
 
 
 class StudentDueThisWeekView(BaseModel):
-    """Her week. Every assignment in the window appears, nothing is filtered out.
-
-    ``expectation`` carries what the agent said it expected to retrieve before
-    it looked, so the page shows the belief the data was gathered against.
-    """
+    """Her week. Every assignment in the window appears, nothing is filtered out."""
 
     model_config = ConfigDict(extra="forbid")
 
     generated_at: AwareDatetime
-    expectation: str
     assignments: list[StudentAssignmentView]
 
 

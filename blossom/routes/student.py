@@ -9,9 +9,9 @@ available exactly when the signal matters.
 Gaps: the signal is accepted and discarded; it should produce an immediate
 visible result, since a control that changes nothing observable gets abandoned.
 ``EmptySemanticCollection`` returns no candidates, so retrieval is
-structured-only. The expectation check compares the lookup key to the record id
-the store echoes back, so it cannot register a contradiction; only
-``checked_step.expectation`` is used.
+structured-only. The record is not yet set against the sources here as the
+plan graph does it; the page shows each source's claim beside the record and
+leaves the comparison to the reader.
 """
 
 from datetime import UTC, datetime
@@ -22,7 +22,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from blossom.agent.loop import AgentStep, compare_expectation_to_observation
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.principals import Principal
 from blossom.reconciliation import Disagreement, Reconciler, classify_confidence
@@ -100,23 +99,13 @@ def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisW
             source_channel="synthetic",
         ),
     )
-    expectation = "due_this_week"
-    step = AgentStep(
-        expectation=expectation,
-        tool_name="retrieval_router.retrieve",
-        tool_input={"lookup_key": expectation},
-        timestamp=datetime.now(UTC),
-    )
     retrieved = router_for_retrieval.retrieve(
-        RetrievalQuery(text="what is due this week", lookup_key=expectation)
+        RetrievalQuery(text="what is due this week", lookup_key="due_this_week")
     )
     if isinstance(retrieved, NothingRetrieved):
-        observation = retrieved.reason
         assignments: list[Assignment] = []
     else:
-        observation = retrieved.record_id
         assignments = [Assignment.model_validate(item) for item in retrieved.payload["assignments"]]
-    checked_step = compare_expectation_to_observation(step, observation)
     reconciler = Reconciler()
     views: list[StudentAssignmentView] = []
     for assignment in assignments:
@@ -139,11 +128,7 @@ def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisW
                 disagreement=disagreement,
             )
         )
-    return StudentDueThisWeekView(
-        generated_at=datetime.now(UTC),
-        expectation=checked_step.expectation,
-        assignments=views,
-    )
+    return StudentDueThisWeekView(generated_at=datetime.now(UTC), assignments=views)
 
 
 @router.get("/due-this-week", response_class=HTMLResponse)

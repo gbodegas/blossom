@@ -34,6 +34,7 @@ from blossom.app import create_app
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft, DraftStatus
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
+from blossom.noticing import Noticing, Verdict
 from blossom.plan_checks import PlanCheck, PlanVerification
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceConfidence
@@ -191,6 +192,8 @@ def test_every_type_the_graphs_carry_is_on_the_allowlist() -> None:
         Assignment,
         AssignmentKind,
         SourceConfidence,
+        Noticing,
+        Verdict,
         DailyPlan,
         PlanBlock,
         Deferral,
@@ -230,11 +233,19 @@ def test_a_plan_and_its_verdict_survive_the_serializer() -> None:
             CriterionFinding(criterion=Criterion.ORDER, critique="k", judgment=Judgment.CANNOT_TELL)
         ]
     )
+    noticed = Noticing(
+        assignment_id="a",
+        expected=None,
+        observed=("LMS: 2026-08-21",),
+        observed_dates=(date(2026, 8, 21),),
+        verdict=Verdict.CONTRADICTED,
+    )
     state = {
         "plan": plan,
         "verification": verification,
         "verdict": verdict,
         "confidence": {"a": SourceConfidence.SINGLE_SOURCE},
+        "noticings": [noticed],
     }
 
     revived = serde.loads_typed(serde.dumps_typed(state))
@@ -243,6 +254,8 @@ def test_a_plan_and_its_verdict_survive_the_serializer() -> None:
     assert isinstance(revived["plan"], DailyPlan)
     assert revived["verification"].uncertain_due_dates == ("a",)
     assert revived["verdict"].undecided[0].judgment is Judgment.CANNOT_TELL
+    assert isinstance(revived["noticings"][0], Noticing)
+    assert revived["noticings"][0].earliest_date == date(2026, 8, 21)
 
 
 # ------------------------------------------------------------------ the store

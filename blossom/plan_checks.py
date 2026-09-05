@@ -19,11 +19,14 @@ is why it is a state of its own rather than a kind of yes.
 """
 
 from collections import Counter
+from collections.abc import Sequence
+from datetime import date
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict
 
+from blossom.noticing import Noticing
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence
 from blossom.stores.project_state import Assignment
@@ -51,7 +54,8 @@ class PlanCheck(StrEnum):
     once. Several blocks for one assignment are fine: work can be split."""
 
     BLOCKS_MEET_DEADLINES = "BLOCKS_MEET_DEADLINES"
-    """No block is scheduled after the day its assignment is due."""
+    """No block is scheduled after the day its assignment is due, and nothing
+    due by the plan date is put off, since putting it off moves it past the day."""
 
     BLOCKS_DO_NOT_OVERLAP = "BLOCKS_DO_NOT_OVERLAP"
     """She is in one place at a time."""
@@ -92,6 +96,10 @@ class PlanVerification(BaseModel):
     """Assignments in the window with no due date on record. Also a flag rather
     than a failure: the plan still has to account for them, and the person at
     the gate is told the date is missing rather than merely doubtful."""
+    contradicted: tuple[str, ...] = ()
+    """Assignments whose due date on record no source supports. The deadline
+    check measures these against the earliest date anyone gives, record or
+    source, so a plan built on the record alone cannot pass by trusting it."""
 
     @property
     def passed(self) -> bool:
@@ -122,6 +130,7 @@ def check_plan(
     due_in_window: list[Assignment],
     zone: ZoneInfo,
     confidence: dict[str, SourceConfidence] | None = None,
+    noticings: Sequence[Noticing] = (),
     daily_minutes: int = DEFAULT_DAILY_MINUTES,
 ) -> PlanVerification:
     """Run every tier-one check over ``plan`` and report what failed and why.
@@ -129,9 +138,12 @@ def check_plan(
     ``due_in_window`` is what the store says is due; the plan is measured
     against it rather than against itself. ``confidence`` is optional because
     a plan can be checked before reconciliation has run, and an absent label
-    is simply not flagged.
+    is simply not flagged. ``noticings`` are the record's due dates set against
+    the sources; where the sources contradict the record, the deadline is the
+    earliest date either gives.
     """
     known = {assignment.assignment_id: assignment for assignment in due_in_window}
+    contradicted = {item.assignment_id: item for item in noticings if item.contradicted}
     findings: dict[PlanCheck, list[str]] = {check: [] for check in ORDERED_PLAN_CHECKS}
 
     unknown = [name for name in plan.assignment_ids if name not in known]
@@ -157,17 +169,35 @@ def check_plan(
         if count > 1
     )
 
+    def deadline_of(assignment: Assignment) -> tuple[date | None, str]:
+        """The day the work must be done by, and where that day comes from."""
+        noticed = contradicted.get(assignment.assignment_id)
+        if noticed is None:
+            return assignment.due_date, ""
+        return noticed.earliest_date, " by the earliest date the record or a source gives"
+
     for block in plan.blocks:
         assignment = known.get(block.assignment_id)
+        if assignment is None:
+            continue
+        deadline, basis = deadline_of(assignment)
         # An undated assignment has no deadline to run past; it is flagged below.
-        if (
-            assignment is not None
-            and assignment.due_date is not None
-            and plan.plan_date > assignment.due_date
-        ):
+        if deadline is not None and plan.plan_date > deadline:
             findings[PlanCheck.BLOCKS_MEET_DEADLINES].append(
-                f"{block.assignment_id} is due {assignment.due_date} and is scheduled "
+                f"{block.assignment_id} is due {deadline}{basis} and is scheduled "
                 f"{plan.plan_date}, after it"
+            )
+
+    for deferral in plan.deferred:
+        assignment = known.get(deferral.assignment_id)
+        if assignment is None:
+            continue
+        deadline, basis = deadline_of(assignment)
+        # Put off means another day at the earliest, so due today is already too late.
+        if deadline is not None and plan.plan_date >= deadline:
+            findings[PlanCheck.BLOCKS_MEET_DEADLINES].append(
+                f"{deferral.assignment_id} is due {deadline}{basis} and is put off from "
+                f"{plan.plan_date}, past it"
             )
 
     findings[PlanCheck.BLOCKS_DO_NOT_OVERLAP].extend(
@@ -204,4 +234,5 @@ def check_plan(
         undated=tuple(
             sorted(item.assignment_id for item in due_in_window if item.due_date is None)
         ),
+        contradicted=tuple(sorted(name for name in contradicted if name in known)),
     )

@@ -195,17 +195,12 @@ section {
   margin-block: 2rem;
 }
 
-.expectation,
 .note,
 .empty,
 .due,
 .status,
 .when {
   color: var(--text-soft);
-}
-
-.expectation {
-  margin-top: 0;
 }
 
 .empty {

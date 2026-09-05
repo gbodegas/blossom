@@ -290,8 +290,10 @@ call, and neither holds a tool. So there is no loop in which a model decides
 what to call next: the graph decides, from the checks and the verdict, and
 every route it can take is written in one file.
 
-Seven nodes, in this order. `retrieve` reads the week from the stores. `plan`
-asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
+Seven nodes, in this order. `retrieve` reads every assignment on record,
+states each one's due date before it reads the sources, sets the two against
+each other, and then selects the week: undated work, and dated work that the
+record or any source puts in the window. `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
 back to `plan` with the findings before any critic sees it, because a
 judgment about a plan that is already wrong is a wasted call. `critique` asks
 the critic; fault sends the plan back with the critique, doubt sends it
@@ -334,24 +336,46 @@ than configurable.
 
 ## Expectation before action
 
-`AgentStep` requires a non-blank expectation as a keyword argument, so a step
-cannot be recorded without stating what it expected to find. An observation
-alone is data; compared against an expectation it becomes confirmation or
-contradiction.
+An observation alone is data. Set against an expectation stated before the
+look, it becomes confirmation or contradiction, and contradiction is the signal
+the design most wants noticed: the family's record and the school disagree, and
+nobody has been told.
 
-**Not built:** `compare_expectation_to_observation` tests whether the expectation is a
-substring of the observation, which is not equivalence. In the one place it
-runs, the expectation is a lookup key and the observation is the record id the
-store echoes back, so it compares a string with itself and can never register a
-contradiction. The result is discarded; only `expectation` is read.
+`blossom/noticing.py` makes the expectation a value of its own.
+`expect_due_date` builds one from the record alone, `notice_due_date` takes it
+beside the source records and returns a `Noticing`, and the graph's `retrieve`
+node calls them in that order, so the belief is committed before the sources
+are read. The comparison is typed: each source value is read as an ISO date or
+not read at all, and dates are compared with dates. There are three verdicts.
+Confirmed means every readable source date is the record's. Contradicted means
+at least one source gives a readable date and none gives the record's, which
+includes a record with no date set against a source that has one. Undecidable
+covers the rest: no sources, no readable dates, or sources that name the
+record's date beside another. "Cannot tell" stays distinct from "these
+disagree" because reading the undecidable as contradiction would bury the
+signal under noise about formats and missing sources. No model takes part.
 
-Making this real needs a typed expectation, so a claim about a value is checked
-deterministically, and a three-way verdict, so "cannot tell" stays distinct
-from "these disagree". Defaulting an undecidable comparison to contradiction
-would flood the one signal the system most needs to keep clean.
+A contradiction changes three things. The tier-one deadline check measures a
+contradicted assignment against the earliest date anyone gives, record or
+source, so a plan cannot pass by trusting a record the school does not
+support; the check holds deferrals to the same day, since putting work off
+moves it to another day at the earliest. The week itself is selected after the
+sources are read, so an item the record puts next month and a source puts this
+week is planned for rather than never queried. The planner and the critic are shown the contradiction in its own
+block, with an instruction to plan for the earliest date and to say the record
+needs checking. The draft names it in a section of its own, so the person at
+the gate sees what to correct.
 
-**Not built:** nothing persists a step. The checkable trace the design promises
-does not exist.
+`tests/noticing_cases.py` is a labeled table, balanced between contradictions
+and confirmations with a separate group of undecidable rows, and
+`tests/test_noticing.py` reports precision and recall for the contradicted
+verdict as counts. The comparator is deterministic, so both are held at one.
+
+**Not built:** only the due date is compared. The design's example is a
+submission status the record holds and a portal can confirm or deny, and
+nothing observes submission status yet. Nothing persists a step either: the
+saved graph state holds each run's noticings, but the checkable trace of what
+each node expected and found does not exist.
 
 ## The workload signal
 
