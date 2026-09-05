@@ -13,12 +13,13 @@ the record across threads and needs no model to read. ``POST
 graph's gate node records it in saved state and the node after the gate
 records it in the table.
 
-Building the graph needs the model seam, which needs a key. Reading the queue
-does not, so a parent can always see what is waiting; only starting or
-deciding a run answers 503 without one, and it says so. The graph is built
-inside the handler, after the table has been consulted, because a dependency
-is resolved before a handler runs: a draft that does not exist is a 404 with
-or without a key, and one already decided is a 409.
+Starting a run needs the model seam, which needs a key, and says so with a
+503 when there is none. Reading the queue and deciding do not: nothing past
+the gate asks a model, so a graph built without a key can still resume a
+paused thread and record the decision. The graph is built inside the handler,
+after the table has been consulted, because a dependency is resolved before a
+handler runs: a draft that does not exist is a 404 with or without a key, and
+one already decided is a 409.
 
 Two decisions about one draft cannot both land. The handler holds the
 application's decision lock from the table check through the resume, and the
@@ -37,8 +38,9 @@ Without that, the visibility policy is stated but not observable.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
@@ -49,7 +51,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
-from blossom.anthropic_client import ModelUnavailable
+from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.settings import TEMPLATE_PATH
 from blossom.stores.drafts import AlreadyDecided
@@ -71,26 +73,35 @@ State = Annotated[ApplicationState, Depends(get_application_state)]
 PlanGraphBuilder = Callable[[], CompiledPlanGraph]
 
 
-def plan_graph_builder(state: State) -> PlanGraphBuilder:
-    """A way to build the graph later, rather than the graph itself.
+@dataclass(frozen=True)
+class PlanGraphs:
+    """What a route needs from the graph: a way to build it, and whether it may start one.
 
-    A dependency is resolved before its handler runs. One that built the graph
-    would answer 503 for a missing key before the handler could say 404 or 409
-    about the draft, so the dependency hands back a builder and the handler
-    calls it only when it is about to run a graph. A test substitutes this
-    dependency to supply scripted models over the real stores.
+    A dependency is resolved before its handler runs, so this hands back a
+    builder rather than a graph, and the handler calls it after consulting the
+    table. ``may_start`` is whether a run can be started at all, which needs a
+    model; resuming a paused thread does not. A test substitutes the whole
+    object, scripted models and permission together, over the real stores.
     """
 
-    def build() -> CompiledPlanGraph:
-        try:
-            return plan_graph_for(state)
-        except ModelUnavailable as error:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-
-    return build
+    build: PlanGraphBuilder
+    may_start: bool
 
 
-Builder = Annotated[PlanGraphBuilder, Depends(plan_graph_builder)]
+def plan_graphs(state: State) -> PlanGraphs:
+    """The application's graphs: built from the seam, allowed to start when there is a key."""
+    return PlanGraphs(
+        build=lambda: plan_graph_for(state), may_start=model_configured(state.settings)
+    )
+
+
+def require_model(graphs: PlanGraphs) -> None:
+    """Refuse to start a run without a model, before any thread is written."""
+    if not graphs.may_start:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=MISSING_KEY)
+
+
+Graphs = Annotated[PlanGraphs, Depends(plan_graphs)]
 
 
 class PlanRequest(BaseModel):
@@ -136,19 +147,22 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
 async def run_plan(graph: CompiledPlanGraph, plan_date: date) -> PlanRunView:
     """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped."""
     thread_id = thread_for(plan_date)
-    result = await graph.ainvoke(
-        PlanState(plan_date=plan_date, rounds=0),
-        config=run_config(thread_id),
-        durability=DURABILITY,
-    )
+    try:
+        result = await graph.ainvoke(
+            PlanState(plan_date=plan_date, rounds=0),
+            config=run_config(thread_id),
+            durability=DURABILITY,
+        )
+    except ModelUnavailable as error:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
     return run_view(thread_id, plan_date, dict(result))
 
 
 @router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
-async def start_plan(request: PlanRequest, state: State, build: Builder) -> PlanRunView:
+async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> PlanRunView:
     """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
-    graph = build()
-    return await run_plan(graph, request.plan_date or state.clock.today())
+    require_model(graphs)
+    return await run_plan(graphs.build(), request.plan_date or state.clock.today())
 
 
 @router.get("/approvals", response_model=ApprovalQueueView)
@@ -171,10 +185,10 @@ def approval(draft_id: str, state: State) -> ApprovalView:
 
 @router.post("/approvals/{draft_id}", response_model=DecisionView)
 async def decide(
-    draft_id: str, request: DecisionRequest, state: State, build: Builder
+    draft_id: str, request: DecisionRequest, state: State, graphs: Graphs
 ) -> DecisionView:
     """Resume the paused run with the decision, and report what was recorded."""
-    return await decide_draft(state, build, draft_id, request)
+    return await decide_draft(state, graphs.build, draft_id, request)
 
 
 async def decide_draft(
@@ -242,8 +256,8 @@ def checkpoint(state: State) -> ParentCheckpointView:
 
 # --------------------------------------------------------------------- the page
 
-FormDecision = Literal["approve", "refuse"]
-"""The two buttons. Anything else in the field is a 422, not a guess."""
+DECISIONS: Final = ("approve", "refuse")
+"""The two buttons. Anything else in the field is a 422 page, not a guess."""
 
 
 def review_page(
@@ -264,7 +278,7 @@ def review_page(
         "parent_review.html",
         {
             "today": state.clock.today(),
-            "model_available": bool((state.settings.anthropic_api_key or "").strip()),
+            "model_available": model_configured(state.settings),
             "waiting": [ApprovalView.from_record(record) for record in state.drafts.waiting()],
             "decided": [ApprovalView.from_record(record) for record in state.drafts.decided()],
             "problem": problem,
@@ -283,7 +297,7 @@ def review(request: Request, state: State) -> HTMLResponse:
 async def plan_from_the_page(
     request: Request,
     state: State,
-    build: Builder,
+    graphs: Graphs,
     plan_date: Annotated[str, Form()] = "",
 ) -> Response:
     """The plan form. A blank date means today; a bad one is said, not guessed at."""
@@ -297,7 +311,8 @@ async def plan_from_the_page(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     try:
-        await run_plan(build(), evening)
+        require_model(graphs)
+        await run_plan(graphs.build(), evening)
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
@@ -308,14 +323,26 @@ async def decide_from_the_page(
     request: Request,
     draft_id: str,
     state: State,
-    build: Builder,
-    decision: Annotated[FormDecision, Form()],
+    graphs: Graphs,
+    decision: Annotated[str, Form()] = "",
     reason: Annotated[str, Form()] = "",
 ) -> Response:
-    """The two buttons under a waiting draft, through the same path the JSON route takes."""
+    """The two buttons under a waiting draft, through the same path the JSON route takes.
+
+    The field is read as text and checked here rather than typed as a literal,
+    because the framework's own validation would answer a bad value with a
+    JSON error, and a form failure is promised as this page with the problem.
+    """
+    if decision not in DECISIONS:
+        return review_page(
+            request,
+            state,
+            problem=f"{decision!r} is not one of the two buttons, approve or refuse.",
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
     decided = DecisionRequest(approved=decision == "approve", reason=reason.strip() or None)
     try:
-        await decide_draft(state, build, draft_id, decided)
+        await decide_draft(state, graphs.build, draft_id, decided)
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)

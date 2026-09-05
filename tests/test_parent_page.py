@@ -12,12 +12,12 @@ from typing import Annotated
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from blossom.agent.graph import CompiledPlanGraph, plan_graph_for
+from blossom.agent.graph import plan_graph_for
 from blossom.app import create_app
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.routes.parent import plan_graph_builder
+from blossom.routes.parent import PlanGraphs, plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from tests.support import Scripted, fixture_settings, ok
 
@@ -66,14 +66,19 @@ def undecided() -> CriticVerdict:
     )
 
 
-def scripted_builder(
+def scripted_graphs(
     verdict: Callable[[], CriticVerdict] = accepting,
-) -> Callable[..., Callable[[], CompiledPlanGraph]]:
+) -> Callable[..., PlanGraphs]:
+    """Scripted models with permission to start, over the app's own stores."""
+
     def override(
         state: Annotated[ApplicationState, Depends(get_application_state)],
-    ) -> Callable[[], CompiledPlanGraph]:
-        return lambda: plan_graph_for(
-            state, planner=Scripted(ok(a_plan())), critic=Scripted(ok(verdict()))
+    ) -> PlanGraphs:
+        return PlanGraphs(
+            build=lambda: plan_graph_for(
+                state, planner=Scripted(ok(a_plan())), critic=Scripted(ok(verdict()))
+            ),
+            may_start=True,
         )
 
     return override
@@ -87,7 +92,7 @@ def browser(verdict: Callable[[], CriticVerdict] = accepting) -> TestClient:
     """
     with_key = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"}
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **with_key))
-    app.dependency_overrides[plan_graph_builder] = scripted_builder(verdict)
+    app.dependency_overrides[plan_graphs] = scripted_graphs(verdict)
     return TestClient(app, follow_redirects=False)
 
 
@@ -218,14 +223,37 @@ def test_a_blank_reason_is_no_reason() -> None:
     assert record["reason"] is None
 
 
-def test_only_the_two_buttons_are_decisions() -> None:
+def test_only_the_two_buttons_are_decisions_and_a_bad_one_is_a_page() -> None:
+    """A tampered form value is answered as this page with the problem, not as
+    the framework's JSON validation error."""
     with browser() as client:
         draft_id = waiting_draft_id(client)
         response = client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "yes"})
         record = client.get(f"/parent/approvals/{draft_id}").json()
 
     assert response.status_code == 422
+    assert response.headers["content-type"].startswith("text/html")
+    assert "<h1>Review</h1>" in response.text
+    assert "is not one of the two buttons" in response.text
     assert record["decision"] is None
+
+
+def test_a_waiting_draft_can_be_decided_from_the_page_without_a_key() -> None:
+    """The page says deciding needs no key, so it must not."""
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
+    app.dependency_overrides[plan_graphs] = scripted_graphs()
+    with TestClient(app, follow_redirects=False) as client:
+        draft_id = waiting_draft_id(client)
+        app.dependency_overrides.clear()
+
+        page_before = client.get("/parent").text
+        posted = client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+
+    assert "No API key is configured" in page_before
+    assert 'name="decision" value="approve"' in page_before
+    assert posted.status_code == 303
+    assert record["status"] == "APPROVED_FOR_MANUAL_SEND"
 
 
 def test_an_unknown_draft_is_a_page_that_says_so() -> None:

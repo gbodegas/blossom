@@ -21,7 +21,7 @@ from blossom.dependencies import ApplicationState, build_application_state, get_
 from blossom.drafts import DraftStatus
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.routes.parent import DecisionRequest, decide_draft, plan_graph_builder
+from blossom.routes.parent import DecisionRequest, PlanGraphs, decide_draft, plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.views import DecisionView
 from tests.support import Scripted, fixture_settings, ok
@@ -77,16 +77,23 @@ def forgetful_plan() -> DailyPlan:
 
 def scripted(
     planner: Callable[[], list[DailyPlan]], critic: Callable[[], list[CriticVerdict]]
-) -> Callable[..., Callable[[], CompiledPlanGraph]]:
-    """A replacement for the route's builder dependency, over the app's own stores."""
+) -> Callable[..., PlanGraphs]:
+    """A replacement for the route's graphs dependency, over the app's own stores.
+
+    Scripted models, and permission to start, so a run can be driven in an
+    application that has no key; the models are never asked for one.
+    """
 
     def override(
         state: Annotated[ApplicationState, Depends(get_application_state)],
-    ) -> Callable[[], CompiledPlanGraph]:
-        return lambda: plan_graph_for(
-            state,
-            planner=Scripted(*[ok(plan) for plan in planner()]),
-            critic=Scripted(*[ok(verdict) for verdict in critic()]),
+    ) -> PlanGraphs:
+        return PlanGraphs(
+            build=lambda: plan_graph_for(
+                state,
+                planner=Scripted(*[ok(plan) for plan in planner()]),
+                critic=Scripted(*[ok(verdict) for verdict in critic()]),
+            ),
+            may_start=True,
         )
 
     return override
@@ -97,7 +104,7 @@ def app_with(
     critic: Callable[[], list[CriticVerdict]] = lambda: [accepting()],
 ) -> TestClient:
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
-    app.dependency_overrides[plan_graph_builder] = scripted(planner, critic)
+    app.dependency_overrides[plan_graphs] = scripted(planner, critic)
     return TestClient(app)
 
 
@@ -256,6 +263,23 @@ def test_the_table_answers_before_a_model_is_needed() -> None:
     assert unknown.status_code == 404
     assert decided.status_code == 409
     assert fresh.status_code == 503
+
+
+def test_deciding_needs_no_key_because_nothing_past_the_gate_asks_a_model() -> None:
+    """A thread paused on a machine with a key can be decided on one without."""
+    with app_with() as client:
+        started = client.post("/parent/plans", json={}).json()
+        client.app.dependency_overrides.clear()  # type: ignore[attr-defined]
+
+        decided = client.post(
+            f"/parent/approvals/{started['draft_id']}",
+            json={"approved": True, "reason": "decided without a key"},
+        )
+        record = client.get(f"/parent/approvals/{started['draft_id']}").json()
+
+    assert decided.status_code == 200
+    assert record["status"] == DraftStatus.APPROVED_FOR_MANUAL_SEND.value
+    assert record["reason"] == "decided without a key"
 
 
 def test_two_decisions_at_once_leave_one_winner_and_tell_the_other() -> None:

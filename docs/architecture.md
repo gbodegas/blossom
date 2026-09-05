@@ -83,9 +83,12 @@ gate, each as an upsert keyed by a draft id derived from the thread, so a node
 that runs twice leaves one row. The table lives in its own file, under the
 same guard as saved state, with deleted rows overwritten. `GET
 /parent/approvals` reads the table and needs no model, so a parent can always
-see what is waiting; starting or deciding a run needs the model seam and says
-so with a 503 when there is no key, and only after the table has answered
-whether the draft exists and still waits. Two decisions about one draft cannot
+see what is waiting. Starting a run needs the model seam and says so with a
+503 when there is no key. Deciding does not: nothing past the gate asks a
+model, so a graph built without a key can resume a paused thread and record
+the decision, and the table is consulted before the graph is built, so a
+draft that does not exist or is already decided is answered as such with or
+without a key. Two decisions about one draft cannot
 both land: the route holds one lock from the table check through the resume,
 and the table refuses a second, different decision, keeping the first and its
 time, which also covers a request from another process.

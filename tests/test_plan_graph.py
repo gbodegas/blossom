@@ -561,16 +561,24 @@ def test_the_nodes_ahead_of_the_gate_are_the_ones_the_contract_names() -> None:
     ]
 
 
-def test_the_application_graph_needs_a_key_unless_given_models() -> None:
+def test_without_a_key_the_application_graph_builds_but_cannot_start() -> None:
+    """Resuming a paused thread asks no model, so the graph must exist without a
+    key; starting one does, and fails at the planner with the seam's reason."""
     state = build_application_state(fixture_settings(), InMemorySaver())
     try:
+        graph = plan_graph_for(state)
+
+        async def start() -> None:
+            await graph.ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0),
+                config=run_config("plan:no-key"),
+                durability=DURABILITY,
+            )
+
         with pytest.raises(ModelUnavailable, match="ANTHROPIC_API_KEY"):
-            plan_graph_for(state)
-        built = plan_graph_for(state, planner=Scripted(), critic=Scripted())
+            asyncio.run(start())
     finally:
         state.close()
-
-    assert built is not None
 
 
 def test_a_paused_plan_survives_the_process_that_wrote_it(tmp_path: pathlib.Path) -> None:

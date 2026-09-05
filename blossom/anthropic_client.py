@@ -60,6 +60,18 @@ class ModelUnavailable(RuntimeError):
     """Raised when settings carry no API key. Nothing calls a model without one."""
 
 
+MISSING_KEY: Final = "no model can be constructed: ANTHROPIC_API_KEY is not set"
+
+
+def model_configured(settings: Settings) -> bool:
+    """True when settings carry a key that is not blank.
+
+    The one definition of "there is a model", used by the seam that refuses to
+    build without one and by the pages that say whether a run can start.
+    """
+    return bool((settings.anthropic_api_key or "").strip())
+
+
 class PinnedChatAnthropic(ChatAnthropic):
     """``ChatAnthropic`` whose HTTP clients ignore the environment.
 
@@ -92,9 +104,8 @@ def chat_model(settings: Settings, *, effort: Effort) -> ChatAnthropic:
     # Settings built by hand may carry an empty or blank string. Both are
     # refused, so no client is ever constructed with an empty key.
     key = (settings.anthropic_api_key or "").strip()
-    if not key:
-        msg = "no model can be constructed: ANTHROPIC_API_KEY is not set"
-        raise ModelUnavailable(msg)
+    if not model_configured(settings):
+        raise ModelUnavailable(MISSING_KEY)
     # The integration declares its fields under aliases (``model_name`` for
     # ``model``, ``max_tokens_to_sample`` for ``max_tokens``); the alias is what
     # the type checker accepts, so the alias is what is written here. It also
