@@ -15,9 +15,10 @@ from datetime import date
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
+from blossom.agent.steps import StepRecord, describe_outcome
 from blossom.drafts import Decision, DraftStatus
 from blossom.reconciliation import SourceConfidence
-from blossom.stores.drafts import DraftRecord
+from blossom.stores.drafts import DraftRecord, RunRecord
 from blossom.stores.project_state import AssignmentKind
 
 
@@ -91,6 +92,35 @@ class PlanRunView(BaseModel):
     outcome: str
     draft_id: str | None
     waiting: bool
+    steps: list[StepRecord] = []
+    """What each node expected and found, in order, so the run explains itself."""
+
+
+class RunView(BaseModel):
+    """A run that ended before the gate, for the parent who would have decided.
+
+    ``summary`` says in one sentence why there is nothing to approve, and the
+    steps say what happened on the way.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_date: date
+    outcome: str
+    summary: str
+    recorded_at: AwareDatetime
+    steps: list[StepRecord]
+
+    @classmethod
+    def from_record(cls, record: RunRecord) -> "RunView":
+        """The parent's projection of a run row. The thread id stays out of it."""
+        return cls(
+            plan_date=record.plan_date,
+            outcome=record.outcome,
+            summary=describe_outcome(record.outcome),
+            recorded_at=record.recorded_at,
+            steps=record.steps,
+        )
 
 
 class ApprovalView(BaseModel):
@@ -111,11 +141,16 @@ class ApprovalView(BaseModel):
     decision: Decision | None
     reason: str | None
     decided_at: AwareDatetime | None
+    steps: list[StepRecord] = []
+    """How the plan was made, when the run's record was saved."""
 
     @classmethod
-    def from_record(cls, record: DraftRecord) -> "ApprovalView":
+    def from_record(
+        cls, record: DraftRecord, steps: list[StepRecord] | None = None
+    ) -> "ApprovalView":
         """The parent's projection of a table row. The thread id stays out of it."""
         return cls(
+            steps=steps or [],
             draft_id=record.draft_id,
             plan_date=record.plan_date,
             status=record.status,

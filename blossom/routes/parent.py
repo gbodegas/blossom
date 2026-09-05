@@ -54,7 +54,7 @@ from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_ver
 from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.settings import TEMPLATE_PATH
-from blossom.stores.drafts import AlreadyDecided
+from blossom.stores.drafts import AlreadyDecided, DraftRecord, DraftsStore
 from blossom.views import (
     ApprovalQueueView,
     ApprovalView,
@@ -62,6 +62,7 @@ from blossom.views import (
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
+    RunView,
 )
 
 router = APIRouter(prefix="/parent", tags=["parent"])
@@ -141,11 +142,21 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
         outcome=result["outcome"],
         draft_id=None if draft is None else draft.draft_id,
         waiting="__interrupt__" in result,
+        steps=list(result.get("steps", [])),
     )
 
 
-async def run_plan(graph: CompiledPlanGraph, plan_date: date) -> PlanRunView:
-    """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped."""
+def approval_view(drafts: DraftsStore, record: DraftRecord) -> ApprovalView:
+    """A draft with the record of the run that made it."""
+    return ApprovalView.from_record(record, drafts.steps_for(record.thread_id))
+
+
+async def run_plan(graph: CompiledPlanGraph, plan_date: date, drafts: DraftsStore) -> PlanRunView:
+    """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped.
+
+    The run's record is saved once it has stopped, whether or not a draft came
+    of it, so a run that produced nothing to approve can still be read.
+    """
     thread_id = thread_for(plan_date)
     try:
         result = await graph.ainvoke(
@@ -155,14 +166,18 @@ async def run_plan(graph: CompiledPlanGraph, plan_date: date) -> PlanRunView:
         )
     except ModelUnavailable as error:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-    return run_view(thread_id, plan_date, dict(result))
+    view = run_view(thread_id, plan_date, dict(result))
+    drafts.record_run(
+        thread_id=thread_id, plan_date=plan_date, outcome=view.outcome, steps=view.steps
+    )
+    return view
 
 
 @router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
 async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> PlanRunView:
     """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
     require_model(graphs)
-    return await run_plan(graphs.build(), request.plan_date or state.clock.today())
+    return await run_plan(graphs.build(), request.plan_date or state.clock.today(), state.drafts)
 
 
 @router.get("/approvals", response_model=ApprovalQueueView)
@@ -170,7 +185,7 @@ def approvals(state: State) -> ApprovalQueueView:
     """Every draft waiting for a decision, oldest first. Needs no model to read."""
     return ApprovalQueueView(
         generated_at=state.clock.now(),
-        waiting=[ApprovalView.from_record(record) for record in state.drafts.waiting()],
+        waiting=[approval_view(state.drafts, record) for record in state.drafts.waiting()],
     )
 
 
@@ -180,7 +195,7 @@ def approval(draft_id: str, state: State) -> ApprovalView:
     record = state.drafts.get(draft_id)
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no draft {draft_id!r}")
-    return ApprovalView.from_record(record)
+    return approval_view(state.drafts, record)
 
 
 @router.post("/approvals/{draft_id}", response_model=DecisionView)
@@ -279,8 +294,9 @@ def review_page(
         {
             "today": state.clock.today(),
             "model_available": model_configured(state.settings),
-            "waiting": [ApprovalView.from_record(record) for record in state.drafts.waiting()],
-            "decided": [ApprovalView.from_record(record) for record in state.drafts.decided()],
+            "waiting": [approval_view(state.drafts, record) for record in state.drafts.waiting()],
+            "decided": [approval_view(state.drafts, record) for record in state.drafts.decided()],
+            "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
             "problem": problem,
         },
         status_code=status_code,
@@ -312,7 +328,7 @@ async def plan_from_the_page(
         )
     try:
         require_model(graphs)
-        await run_plan(graphs.build(), evening)
+        await run_plan(graphs.build(), evening, state.drafts)
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)

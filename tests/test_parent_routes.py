@@ -349,3 +349,39 @@ def test_the_queue_reads_without_a_model_and_a_run_says_why_it_cannot_start() ->
     assert queue.json()["waiting"] == []
     assert started.status_code == 503
     assert ANTHROPIC_API_KEY_VARIABLE in started.json()["detail"]
+
+
+# ------------------------------------------------------------- the run's record
+
+
+def test_a_run_answers_with_its_steps_and_the_queue_carries_them() -> None:
+    with app_with() as client:
+        started = client.post("/parent/plans", json={}).json()
+        detail = client.get(f"/parent/approvals/{started['draft_id']}").json()
+        queue = client.get("/parent/approvals").json()
+
+    nodes = [item["node"] for item in started["steps"]]
+    assert nodes == ["retrieve", "plan", "verify", "critique"]
+    assert started["steps"][0]["found"].startswith("7 assignments in the week: 1 contradicted")
+    assert [item["node"] for item in detail["steps"]] == nodes
+    assert [item["node"] for item in queue["waiting"][0]["steps"]] == nodes
+
+
+def test_a_run_that_produced_nothing_still_leaves_its_record() -> None:
+    with app_with(planner=lambda: [forgetful_plan()] * 3, critic=list) as client:
+        started = client.post("/parent/plans", json={}).json()
+        page = client.get("/parent").text
+
+    assert started["outcome"] == "checks_failed"
+    assert [item["node"] for item in started["steps"]] == [
+        "retrieve",
+        "plan",
+        "verify",
+        "plan",
+        "verify",
+        "plan",
+        "verify",
+    ]
+    assert "Ended without a plan" in page
+    assert "The plan failed its checks after every revision." in page
+    assert "How this run went" in page

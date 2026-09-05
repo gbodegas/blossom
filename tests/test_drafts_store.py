@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from blossom.agent.steps import StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Draft, DraftStatus
 from blossom.stores.checkpoints import UnsafeCheckpointPath
@@ -242,3 +243,72 @@ def test_the_file_is_refused_where_the_saved_state_store_refuses_it(
     """Same guard, same reason: a refused draft is still text about her."""
     with pytest.raises(UnsafeCheckpointPath):
         DraftsStore.open(tmp_path / "OneDrive" / "blossom.sqlite3", fixture_clock())
+
+
+# ------------------------------------------------------------- the run's record
+
+
+def step(node: str, round_number: int, found: str = "as expected") -> StepRecord:
+    return StepRecord(
+        node=node, round=round_number, expected="something", found=found, recorded_at=CREATED
+    )
+
+
+def test_a_runs_record_is_saved_with_its_steps_and_read_back_in_order() -> None:
+    store = store_in_memory()
+    steps = [step("retrieve", 0), step("plan", 1), step("verify", 1, "1 of 6 checks failed")]
+
+    store.record_run(
+        thread_id="plan:2026-08-19:x", plan_date=PLAN_DATE, outcome="checks_failed", steps=steps
+    )
+
+    assert store.steps_for("plan:2026-08-19:x") == steps
+    runs = store.runs_without_a_draft()
+    assert [(run.thread_id, run.outcome) for run in runs] == [
+        ("plan:2026-08-19:x", "checks_failed")
+    ]
+    assert runs[0].steps == steps
+    assert runs[0].plan_date == PLAN_DATE
+    assert runs[0].recorded_at == fixture_clock().now()
+
+
+def test_saving_a_run_again_replaces_its_steps() -> None:
+    store = store_in_memory()
+    store.record_run(
+        thread_id="plan:x", plan_date=PLAN_DATE, outcome="model_refused", steps=[step("plan", 1)]
+    )
+
+    store.record_run(
+        thread_id="plan:x",
+        plan_date=PLAN_DATE,
+        outcome="checks_failed",
+        steps=[step("retrieve", 0), step("plan", 1)],
+    )
+
+    assert [item.node for item in store.steps_for("plan:x")] == ["retrieve", "plan"]
+    assert [run.outcome for run in store.runs_without_a_draft()] == ["checks_failed"]
+
+
+def test_a_run_that_left_a_draft_is_not_among_those_that_ended_without_one() -> None:
+    store = store_in_memory()
+    store.record_waiting(draft(), thread_id="plan:y", plan_date=PLAN_DATE, outcome="accepted")
+    store.record_run(
+        thread_id="plan:y", plan_date=PLAN_DATE, outcome="accepted", steps=[step("critique", 1)]
+    )
+
+    assert store.runs_without_a_draft() == []
+    assert [item.node for item in store.steps_for("plan:y")] == ["critique"]
+
+
+def test_a_thread_never_saved_has_no_steps() -> None:
+    assert store_in_memory().steps_for("plan:nobody") == []
+
+
+def test_runs_that_ended_are_most_recent_first() -> None:
+    store = ticking_store()
+    store.record_run(thread_id="plan:first", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+    store.record_run(
+        thread_id="plan:second", plan_date=PLAN_DATE, outcome="model_refused", steps=[]
+    )
+
+    assert [run.thread_id for run in store.runs_without_a_draft()] == ["plan:second", "plan:first"]
