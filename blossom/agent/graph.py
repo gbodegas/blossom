@@ -52,7 +52,13 @@ from pydantic import BaseModel
 from blossom.agent.compose import compose_draft
 from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.prompts import critic_brief, planner_brief
-from blossom.anthropic_client import Effort, chat_model
+from blossom.anthropic_client import (
+    MISSING_KEY,
+    Effort,
+    ModelUnavailable,
+    chat_model,
+    model_configured,
+)
 from blossom.dependencies import ApplicationState
 from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
@@ -371,6 +377,21 @@ def structured[T: BaseModel](settings: Settings, schema: type[T], *, effort: Eff
     return ask
 
 
+def unavailable[T: BaseModel]() -> Ask[T]:
+    """A model callable for a graph that may be resumed but not started.
+
+    Without a key the graph is still built, so a thread paused at the gate can
+    be resumed and its decision recorded on a machine that has no key: nothing
+    past the gate asks a model. Asking raises the error the seam would have
+    raised, so a start without a key fails with the reason.
+    """
+
+    async def ask(messages: Sequence[BaseMessage]) -> ModelAnswer[T]:
+        raise ModelUnavailable(MISSING_KEY)
+
+    return ask
+
+
 def plan_graph_for(
     state: ApplicationState,
     *,
@@ -379,10 +400,24 @@ def plan_graph_for(
 ) -> CompiledPlanGraph:
     """The graph for the running application, with the seam's models unless given others.
 
-    Raises ``ModelUnavailable`` when settings carry no key and no substitute
-    was given, so a run without a model fails here rather than at the first
-    call inside the graph.
+    Always builds. With no key and no substitute, the two model callables
+    raise ``ModelUnavailable`` when asked, which a start does at its first node
+    and a resume never does. Callers that start a run check the key first, so
+    the refusal arrives before any thread is written.
     """
+    configured = model_configured(state.settings)
+    if planner is None:
+        planner = (
+            structured(state.settings, DailyPlan, effort=PLANNER_EFFORT)
+            if configured
+            else unavailable()
+        )
+    if critic is None:
+        critic = (
+            structured(state.settings, CriticVerdict, effort=CRITIC_EFFORT)
+            if configured
+            else unavailable()
+        )
     return build_plan_graph(
         project_state=state.project_state,
         source=state.source,
@@ -390,7 +425,7 @@ def plan_graph_for(
         reflections=state.reflections,
         drafts=state.drafts,
         zone=state.clock.zone,
-        planner=planner or structured(state.settings, DailyPlan, effort=PLANNER_EFFORT),
-        critic=critic or structured(state.settings, CriticVerdict, effort=CRITIC_EFFORT),
+        planner=planner,
+        critic=critic,
         checkpointer=state.checkpointer,
     )

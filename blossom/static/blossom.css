@@ -43,3 +43,44 @@ article {
 article.confidence-unverified {
   border-color: #b3261e;
 }
+
+/* The parent's page. */
+.problem {
+  border-left: 4px solid #b3261e;
+  background: #fdecea;
+  padding: 0.5rem 0.75rem;
+}
+.note, .empty {
+  color: #555;
+}
+pre.body {
+  white-space: pre-wrap;
+  background: #f6f6f6;
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+.outcome {
+  border-left: 4px solid #999;
+  padding: 0.5rem 0.75rem;
+  background: #f6f6f6;
+}
+.outcome.accepted {
+  border-left-color: #2e6b34;
+  background: #eef6ef;
+}
+.outcome.unsettled {
+  border-left-color: #a1660a;
+  background: #fdf3e2;
+}
+.decision label, .plan-form label {
+  display: block;
+  margin-block: 0.5rem;
+}
+.decision input[type="text"] {
+  width: 100%;
+  max-width: 32rem;
+}
+.actions button {
+  margin-inline-end: 0.5rem;
+  padding: 0.4rem 1rem;
+}

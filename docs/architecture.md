@@ -83,16 +83,26 @@ gate, each as an upsert keyed by a draft id derived from the thread, so a node
 that runs twice leaves one row. The table lives in its own file, under the
 same guard as saved state, with deleted rows overwritten. `GET
 /parent/approvals` reads the table and needs no model, so a parent can always
-see what is waiting; starting or deciding a run needs the model seam and says
-so with a 503 when there is no key, and only after the table has answered
-whether the draft exists and still waits. Two decisions about one draft cannot
+see what is waiting. Starting a run needs the model seam and says so with a
+503 when there is no key. Deciding does not: nothing past the gate asks a
+model, so a graph built without a key can resume a paused thread and record
+the decision, and the table is consulted before the graph is built, so a
+draft that does not exist or is already decided is answered as such with or
+without a key. Two decisions about one draft cannot
 both land: the route holds one lock from the table check through the resume,
 and the table refuses a second, different decision, keeping the first and its
 time, which also covers a request from another process.
 
-**Not built:** a page. The parent's routes return JSON, and the interactive
-API page at `/docs` is how a run is started and decided today. Nothing yet
-lets her see that a draft was approved.
+The page at `/parent` is the same three things as forms: a date to plan, the
+drafts waiting with their text and two buttons, and what has been decided. Its
+two form actions call the functions the JSON routes call and redirect back to
+the page, so there is one way to start a run and one way to decide whichever
+door it comes through, and a failure renders the page with the same status and
+reason the API would have answered. The decision field admits exactly the two
+button values. Without a key the page still reads and says why a plan cannot
+start.
+
+**Not built:** nothing yet lets her see that a draft was approved.
 
 ## Sources disagree, and that is the interesting case
 
@@ -302,8 +312,7 @@ about the process.
 
 **Not built:** nothing seeds the support rules or reflections, so a plan
 built today is built without them. The reviewer's five criteria are fixed in
-the prompt rather than configurable. The parent's approval is read from JSON
-and given through the API page; there is no page for it.
+the prompt rather than configurable.
 
 ## Expectation before action
 
