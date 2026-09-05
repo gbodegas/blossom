@@ -57,7 +57,10 @@
         </p>
       {% endif %}
 
-      <p class="status">Status: <span class="pill">{{ assignment.submission_status|replace("_", " ") }}</span></p>
+      <p class="status">
+        Status: <span class="pill">{{ assignment.submission_status|replace("_", " ") }}</span>
+        {% if assignment.kind == "TASK" %}<span class="pill">a task, not a sitting</span>{% endif %}
+      </p>
     </article>
   {% endfor %}
 {% endblock %}

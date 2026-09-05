@@ -50,7 +50,7 @@ from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdi
 from blossom.plan_checks import PlanCheck, PlanVerification
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceConfidence
-from blossom.stores.project_state import Assignment
+from blossom.stores.project_state import Assignment, AssignmentKind
 from blossom.verification import CheckOutcome
 
 BUSY_TIMEOUT_SECONDS: Final = 5.0
@@ -58,6 +58,7 @@ BUSY_TIMEOUT_SECONDS: Final = 5.0
 
 STATE_TYPES: Final[tuple[type, ...]] = (
     Assignment,
+    AssignmentKind,
     SourceConfidence,
     DailyPlan,
     PlanBlock,

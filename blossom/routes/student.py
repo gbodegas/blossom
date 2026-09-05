@@ -124,10 +124,7 @@ def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisW
         reconciliation = reconciler.reconcile(records)
         disagreement = []
         if isinstance(reconciliation, Disagreement):
-            disagreement = [
-                f"{claim.channel}: {claim.asserted_value}"
-                for claim in reconciliation.conflicting_claims
-            ]
+            disagreement = [claim.describe() for claim in reconciliation.conflicting_claims]
         # Never filter here; see the module docstring.
         views.append(
             StudentAssignmentView(
@@ -135,6 +132,7 @@ def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisW
                 course=assignment.course,
                 title=assignment.title,
                 due_date=assignment.due_date,
+                kind=assignment.kind,
                 submission_status=assignment.reported_submission_status,
                 deadline_confidence=classify_confidence(reconciliation),
                 source_channels=[record.channel for record in records],

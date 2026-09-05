@@ -126,12 +126,31 @@ carrying its confidence, and every card states its confidence even when the
 date is well corroborated. A marker that appears only when something is wrong
 trains a reader to skim past its absence.
 
+A source can contradict itself. A school portal shows one due date in a
+day's header and another inline in the item's title, and both are claims from
+the same channel. `SourceRecord.seen_in` names where in the source a claim was
+read, so two records from one channel render as "LMS (day header)" and "LMS
+(title)" rather than as the channel disagreeing with itself.
+
+An assignment's shape follows the portal too. `due_date` may be absent: an
+undated item still occupies the week, appears in every week until it has a
+date, and is flagged on a plan rather than failing it. `assigned_on` is when
+the work became available, a separate fact from when it is due, so an item
+seen under both dates across two weeks is one assignment. `kind` separates
+`HOMEWORK`, a sitting, from `TASK`, a form to sign or a book to cover, so the
+planner is told what it is sizing.
+
 **Not modeled:** the distinction between a record that is *stale* (accurate
 when observed, since changed) and one that is *invalid* (accurate, but does not
 support the conclusion drawn from it). A submission flag confirms a file was
 uploaded, not that the work was finished. Staleness is answered by observing
 again; validity is not. `SourceRecord.observed_at` exists so staleness can
 eventually be reasoned about, but nothing reads it yet.
+
+**Not built:** the adapter that reads a portal. `LMSSource` records the rules
+it will follow and raises. The fixtures carry no undated item, no assigned
+date, and no task; the seed data that mirrors the portal's shapes is separate
+work.
 
 ## Retrieval routes on key presence
 
@@ -171,7 +190,7 @@ structured side is real.
 
 | Store | Contents | State |
 |---|---|---|
-| `ProjectStateStore` | Assignments, dates, dependencies, reported submission status | Wired and tested; in memory |
+| `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status | Wired and tested; in memory |
 | `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Read whole by the plan graph; nothing seeds it |
 | `ReflectionsStore` | The agent's notes about its own performance | Read whole by the plan graph; nothing seeds it |
 | `DraftsStore` | Every draft that reached the gate, and every decision about it | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
