@@ -158,8 +158,10 @@ async def run_plan(
     """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped.
 
     A run that stops before the gate has nothing left to resume, and its
-    record is already in the drafts file, so its saved state is cleared here.
-    A run paused at the gate keeps its state until a decision or its expiry.
+    record is already in the drafts file, so its saved state is cleared here;
+    so is the state of a run that raised, since a raise never pauses at the
+    gate and the first node had already been saved. A run paused at the gate
+    keeps its state until a decision or its expiry.
     """
     thread_id = thread_for(plan_date)
     try:
@@ -169,7 +171,11 @@ async def run_plan(
             durability=DURABILITY,
         )
     except ModelUnavailable as error:
+        await clear_thread(checkpointer, thread_id)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+    except Exception:
+        await clear_thread(checkpointer, thread_id)
+        raise
     view = run_view(thread_id, plan_date, dict(result))
     if not view.waiting:
         await clear_thread(checkpointer, thread_id)
