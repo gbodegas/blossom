@@ -7,6 +7,7 @@ hold the store, the graph, the routes, and the page to that.
 
 import asyncio
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -258,7 +259,7 @@ def test_a_press_is_answered_with_what_it_changed() -> None:
     assert response.status_code == 201
     body = response.json()
     assert body["principal"] == "STUDENT"
-    assert body["detail_attached"] is False
+    assert body["signal"]["detail"] is None
     assert body["signal"]["evening"] == "2026-08-19"
     assert [item["signal_id"] for item in listed] == [body["signal"]["signal_id"]]
 
@@ -401,3 +402,50 @@ def test_reads_leave_out_a_signal_past_its_week_before_any_sweep() -> None:
     assert now.for_evening(PLAN_DATE) == []
     assert now.held() == []
     assert now.sweep() == 1
+
+
+def test_a_decided_draft_is_not_measured_against_the_evening_again() -> None:
+    with browser() as client:
+        started = client.post("/parent/plans", json={}).json()
+        client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
+        client.post("/student/actions/too-much")
+        decided = client.get(f"/parent/approvals/{started['draft_id']}").json()
+        page = client.get("/parent").text
+
+    assert decided["decision"] == "approved"
+    assert decided["stale"] is None
+    assert "Plan again." not in page
+
+
+# ---------------------------------------------------- her words, and the lock
+
+
+def test_her_words_are_shown_back_to_her_exactly_as_kept() -> None:
+    with browser() as client:
+        pressed = client.post("/student/workload-signals", json={"detail": "everything at once"})
+        listed = client.get("/student/workload-signals").json()
+        page = client.get("/student/due-this-week").text
+
+    assert pressed.json()["signal"]["detail"] == "everything at once"
+    assert [item["detail"] for item in listed] == ["everything at once"]
+    assert page.count("You added <q>everything at once</q>.") == 2
+
+
+def test_a_press_waits_while_a_decision_is_being_recorded() -> None:
+    """A decision is checked against the evening as signaled, which holds still until it lands."""
+    with browser() as client, ThreadPoolExecutor(max_workers=1) as pool:
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        portal = client.portal
+        assert portal is not None
+        portal.call(state.decision_lock.acquire)
+        pressing = pool.submit(client.post, "/student/actions/too-much")
+        _, still_waiting = wait([pressing], timeout=0.3)
+        held_while_locked = state.workload_signals.held()
+        portal.call(state.decision_lock.release)
+        pressed = pressing.result(timeout=10)
+        held_after = state.workload_signals.held()
+
+    assert pressing in still_waiting
+    assert held_while_locked == []
+    assert pressed.status_code == 303
+    assert len(held_after) == 1

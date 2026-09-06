@@ -9,6 +9,7 @@
       <p class="confidence disagree">
         <strong>You said it was too much</strong> at {{ view.too_much.given_local.strftime("%H:%M") }}.
         Tonight's plan is kept to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
+        {% if view.too_much.detail %}You added <q>{{ view.too_much.detail }}</q>.{% endif %}
       </p>
       <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="actions">
         <button type="submit" class="secondary">Take it back</button>
@@ -104,6 +105,7 @@
           <li>
             Too much on {{ signal.evening.strftime("%A, %B") }} {{ signal.evening.day }}, {{ signal.evening.year }},
             said at {{ signal.given_local.strftime("%H:%M") }}.
+            {% if signal.detail %}You added <q>{{ signal.detail }}</q>.{% endif %}
             <form method="post" action="/student/actions/take-back/{{ signal.signal_id }}" class="inline">
               <button type="submit" class="secondary">Remove</button>
             </form>

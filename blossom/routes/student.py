@@ -46,44 +46,55 @@ class WorkloadSignalRequest(BaseModel):
 
 
 class WorkloadSignalResponse(BaseModel):
-    """What one press did: the signal as kept, and the budget tonight's plan now has."""
+    """What one press did: the signal exactly as kept, words included."""
 
     model_config = ConfigDict(extra="forbid")
 
     principal: Principal
     signal: WorkloadSignalView
-    detail_attached: bool
 
 
 def signal_view(state: ApplicationState, signal: WorkloadSignal) -> WorkloadSignalView:
-    """Her projection of a signal, with the time in the household's zone."""
+    """Her projection of a signal, with the time in the household's zone.
+
+    Everything the store holds about a signal is in it, her words included, so
+    what she can see is what is kept.
+    """
     return WorkloadSignalView(
         signal_id=signal.signal_id,
         evening=signal.evening,
         given_at=signal.given_at,
         given_local=signal.given_at.astimezone(state.clock.zone),
-        detail_attached=signal.detail is not None,
+        detail=signal.detail,
     )
 
 
-def record_signal(state: ApplicationState, detail: str | None) -> WorkloadSignal:
-    """Keep one press, about today by the household's clock."""
-    return state.workload_signals.record(state.clock.today(), detail)
+async def record_signal(state: ApplicationState, detail: str | None) -> WorkloadSignal:
+    """Keep one press, about today by the household's clock.
+
+    Written under the decision lock: a decision is checked against the evening
+    as signaled, and the evening must not change between that check and the
+    decision landing. A press during a decision waits the moment it takes.
+    """
+    async with state.decision_lock:
+        return state.workload_signals.record(state.clock.today(), detail)
+
+
+async def withdraw_signal(state: ApplicationState, signal_id: str) -> bool:
+    """Take one signal back, under the same lock and for the same reason."""
+    async with state.decision_lock:
+        return state.workload_signals.withdraw(signal_id)
 
 
 @router.post("/workload-signals", status_code=status.HTTP_201_CREATED)
-def register_workload_signal(
+async def register_workload_signal(
     state: State,
     payload: Annotated[WorkloadSignalRequest | None, Body()] = None,
 ) -> WorkloadSignalResponse:
     """Record that today is too much. ``payload`` is optional so an empty POST works."""
     detail = None if payload is None else payload.detail
-    signal = record_signal(state, detail)
-    return WorkloadSignalResponse(
-        principal=Principal.STUDENT,
-        signal=signal_view(state, signal),
-        detail_attached=detail is not None,
-    )
+    signal = await record_signal(state, detail)
+    return WorkloadSignalResponse(principal=Principal.STUDENT, signal=signal_view(state, signal))
 
 
 @router.get("/workload-signals")
@@ -93,9 +104,9 @@ def held_workload_signals(state: State) -> list[WorkloadSignalView]:
 
 
 @router.delete("/workload-signals/{signal_id}", status_code=status.HTTP_204_NO_CONTENT)
-def withdraw_workload_signal(signal_id: str, state: State) -> Response:
+async def withdraw_workload_signal(signal_id: str, state: State) -> Response:
     """Take a signal back. It is gone, not marked; the record is hers to remove."""
-    if not state.workload_signals.withdraw(signal_id):
+    if not await withdraw_signal(state, signal_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no signal {signal_id!r}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -149,14 +160,14 @@ def due_this_week(request: Request, state: State) -> HTMLResponse:
 
 
 @router.post("/actions/too-much", response_class=HTMLResponse, include_in_schema=False)
-def too_much_from_the_page(state: State) -> Response:
+async def too_much_from_the_page(state: State) -> Response:
     """The one control on her page. Records the signal and returns to the page, which shows it."""
-    record_signal(state, None)
+    await record_signal(state, None)
     return RedirectResponse("/student/due-this-week", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/actions/take-back/{signal_id}", response_class=HTMLResponse, include_in_schema=False)
-def take_back_from_the_page(signal_id: str, state: State) -> Response:
+async def take_back_from_the_page(signal_id: str, state: State) -> Response:
     """Remove a signal from her page. A signal already gone is not an error here."""
-    state.workload_signals.withdraw(signal_id)
+    await withdraw_signal(state, signal_id)
     return RedirectResponse("/student/due-this-week", status_code=status.HTTP_303_SEE_OTHER)

@@ -403,7 +403,7 @@ def test_empty_workload_signal_post_succeeds() -> None:
 
     assert response.status_code == 201
     assert response.json()["principal"] == "STUDENT"
-    assert response.json()["detail_attached"] is False
+    assert response.json()["signal"]["detail"] is None
 
 
 def test_three_principal_views_are_distinct_and_forbid_absent_fields() -> None:

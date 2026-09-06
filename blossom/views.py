@@ -45,7 +45,11 @@ class StudentAssignmentView(BaseModel):
 
 
 class WorkloadSignalView(BaseModel):
-    """One press of her control as she sees it: which evening, and when, in her zone."""
+    """One press of her control as she sees it: which evening, when, and her words.
+
+    This is the whole of what the store keeps about a press. What she can see
+    on her page and what is kept are the same thing.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -53,7 +57,8 @@ class WorkloadSignalView(BaseModel):
     evening: date
     given_at: AwareDatetime
     given_local: AwareDatetime
-    detail_attached: bool
+    detail: str | None = None
+    """Words she chose to add, exactly as kept; ``None`` when she pressed and said nothing."""
 
 
 class StudentDueThisWeekView(BaseModel):

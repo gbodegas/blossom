@@ -163,8 +163,12 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
     A draft is made for the evening as she had described it at the time. When
     her signal has changed since, the plan on the page is not the plan the
     checks held to the current budget, so it is not approved as it stands.
-    Refusing it is still allowed; refusing never sends anything.
+    Refusing it is still allowed; refusing never sends anything. Only a
+    waiting draft can be stale: a decided one is a record of what was decided,
+    and is not measured against the evening again.
     """
+    if not record.waiting:
+        return None
     signaled = bool(state.workload_signals.for_evening(record.plan_date))
     if signaled == record.too_much:
         return None

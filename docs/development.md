@@ -84,8 +84,8 @@ files under `.local/` outlive it:
 - `blossom.sqlite3` holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
-  evening is closed as expired. Her "too much" signals live here too, kept
-  for a week and removable from her page.
+  evening is closed as expired. Her "too much" signals live here too, with
+  any words she added, kept for a week and removable from her page.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
   and an expired draft's state goes with it, so it holds only what is
@@ -93,7 +93,9 @@ files under `.local/` outlive it:
 - `traces.sqlite3` holds the framework's trace of each run: every node and
   model call with what went in and came out, for looking into a run that
   went wrong. It holds prompts and answers verbatim, so rows older than two
-  weeks are swept at startup and after each run. A redaction hook in
+  weeks are swept at startup, after each run, and every hour the process is
+  up; the same hourly sweep expires drafts and removes old signals. A
+  redaction hook in
   `blossom/agent/trace.py` is the place to keep names or dates out of it;
   the default keeps everything.
 

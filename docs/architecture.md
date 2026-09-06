@@ -424,7 +424,8 @@ with the run, and the hosted tracer stays closed: the boundary scan opens the
 tracer base and its run schema to this one file and nothing else, and the
 package-level re-export stays closed even there. The trace holds the
 student's schoolwork verbatim, so it is its own file, and rows older than
-`TRACE_RETENTION_DAYS` are swept at startup and after each run. The store
+`TRACE_RETENTION_DAYS` are swept at startup, after each run, and every hour
+the process is up. The store
 stamps and sweeps by the real clock even when the household clock is pinned
 for the fixtures, since a pinned clock would never move the cutoff. Nothing
 reads it to decide anything; it is for finding out why a run did what it did.
@@ -459,12 +460,17 @@ for. When her signal changes after that, a press after a full-evening plan or
 a take-back after a reduced one, the parent's page says to plan again, the
 approve button is gone, and the approval route refuses with the same sentence;
 refusing still works, since refusing sends nothing. A plan made after the
-change fits again.
+change fits again, and a decided draft is not measured against the evening
+again. A signal is recorded or taken back under the lock a decision holds, so
+the evening a decision was checked against cannot change before the decision
+lands.
 
 The store keeps a signal for `SIGNAL_RETENTION_DAYS`, seven, stamped and swept
 by the real clock even when the household clock is pinned, and every read
 applies the same cutoff, so a signal past its week stops counting whether or
-not a sweep has run since. Her page lists
+not a sweep has run since. The sweep runs at startup and then every hour the
+process is up, with the trace sweep and the saved-state rules, so nothing
+waits for a restart to be gone. Her page lists
 everything still kept, each with a way to remove it, and the JSON routes list
 and delete the same. The store answers one question for the planner, whether
 an evening was signaled, and offers nothing about patterns: no query groups
@@ -576,7 +582,9 @@ records itself, and its thread is cleared with it. At startup a sweep applies
 both rules to whatever the last process left behind: it expires the drafts
 that waited too long, then clears every thread that no waiting draft refers
 to, which covers finished runs whose thread was never removed and runs that
-never finished. The saver's only pruning primitive deletes a thread whole, and
+never finished. The same sweep runs every hour the process is up, under the
+decision lock, so a draft's fortnight ends when it ends rather than at the
+next restart. The saver's only pruning primitive deletes a thread whole, and
 that is the only granularity the rule needs.
 
 **Not built:** the student's ability to see and delete what a thread holds.

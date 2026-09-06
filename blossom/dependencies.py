@@ -18,11 +18,12 @@ project state need not be.
 """
 
 import asyncio
+import logging
 import sqlite3
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Final, cast
 
 from fastapi import FastAPI, Request
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -39,6 +40,13 @@ from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
 from blossom.stores.traces import TraceStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
+
+logger = logging.getLogger(__name__)
+
+SWEEP_INTERVAL_SECONDS: Final = 60 * 60
+"""How often a running process sweeps what has aged out. Retention is stated in
+days, so an hour is often enough for a signal's week or a draft's fortnight to
+end within the hour it ends, and rare enough to cost nothing."""
 
 Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 
@@ -74,9 +82,12 @@ class ApplicationState:
     decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held while a decision is checked against the table and carried into the
     paused thread, so two decisions about one draft cannot both pass the check.
-    One lock for all drafts: decisions are rare and the section is short. It
-    serializes within this process; the table's own refusal of a second,
-    different decision is the backstop across processes."""
+    Also held while her signal is recorded or taken back, and while the
+    scheduled sweep expires drafts, since a decision is checked against the
+    evening as signaled and that must not change before the decision lands.
+    One lock for all of it: each section is short and none of them is
+    frequent. It serializes within this process; the table's own refusal of a
+    second, different decision is the backstop across processes."""
 
     def close(self) -> None:
         """Release resources held for the lifetime of the application."""
@@ -148,6 +159,33 @@ def build_application_state(
     )
 
 
+async def sweep_aged(state: ApplicationState) -> None:
+    """Apply every retention rule once: expired drafts, old traces, old signals.
+
+    The saved-state sweep records decisions, so it runs under the decision
+    lock like any other decision. The other two delete rows nothing reads any
+    more, since both stores already leave aged rows out of every read.
+    """
+    async with state.decision_lock:
+        await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+    state.traces.sweep()
+    state.workload_signals.sweep()
+
+
+async def repeat(interval: float, tick: Callable[[], Awaitable[None]]) -> None:
+    """Run ``tick`` every ``interval`` seconds until the task is canceled.
+
+    A tick that fails is logged and the schedule goes on, because a sweep that
+    fails once is a reason to look, not a reason to stop keeping the rules.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await tick()
+        except Exception:
+            logger.exception("a scheduled sweep failed; the next one runs in %s seconds", interval)
+
+
 def create_lifespan(settings: Settings) -> Lifespan:
     """Build the lifespan handler that owns application state for one process."""
 
@@ -159,14 +197,24 @@ def create_lifespan(settings: Settings) -> Lifespan:
         enforce_local_only_tracing()
         async with open_checkpointer(settings.checkpoint_path) as checkpointer:
             state = build_application_state(settings, checkpointer)
+            sweeper: asyncio.Task[None] | None = None
             try:
                 # Whatever the last process left behind: finished threads never
                 # cleared, runs that never finished, drafts that waited too long.
                 # Inside the block, so a sweep that fails still closes the stores.
                 await sweep_saved_state(checkpointer, state.drafts, state.clock)
                 setattr(app.state, STATE_ATTRIBUTE, state)
+                # The same rules on a schedule, so a process that outlives a
+                # signal's week or a draft's fortnight keeps them without a restart.
+                sweeper = asyncio.create_task(
+                    repeat(SWEEP_INTERVAL_SECONDS, lambda: sweep_aged(state))
+                )
                 yield
             finally:
+                if sweeper is not None:
+                    # Wait for the task to end; what ended it is not raised here.
+                    sweeper.cancel()
+                    await asyncio.wait([sweeper])
                 state.close()
 
     return lifespan
