@@ -24,6 +24,7 @@ from langgraph.types import Command
 from blossom.agent.graph import (
     MAX_REVISIONS,
     WORST_CASE_SUPERSTEPS,
+    Ask,
     CompiledPlanGraph,
     ModelAnswer,
     PlanState,
@@ -199,8 +200,8 @@ def stores(
 
 
 def graph_with(
-    planner: Scripted[DailyPlan],
-    critic: Scripted[CriticVerdict],
+    planner: Ask[DailyPlan],
+    critic: Ask[CriticVerdict],
     *,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     drafts: DraftsStore | None = None,

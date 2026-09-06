@@ -29,8 +29,10 @@ defaults to ``async`` when it is left out. A scan in
 configuration here and then omits it.
 """
 
+from collections.abc import Sequence
 from typing import Final
 
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Durability, StateSnapshot
 
@@ -38,6 +40,9 @@ GRAPH_VERSION: Final = 1
 """Bumped whenever a change would mislead a thread paused under the old graph."""
 
 GRAPH_VERSION_KEY: Final = "graph_version"
+
+THREAD_ID_KEY: Final = "thread_id"
+"""The thread id's name in a run's metadata, where the tracer reads it."""
 
 RECURSION_LIMIT: Final = 15
 """Supersteps allowed per run: room for a handful of nodes and two critic rounds."""
@@ -53,20 +58,31 @@ class StaleGraphVersion(RuntimeError):
     """Raised when a thread was written by a different graph version than the one running."""
 
 
-def run_config(thread_id: str, *, recursion_limit: int = RECURSION_LIMIT) -> RunnableConfig:
+def run_config(
+    thread_id: str,
+    *,
+    recursion_limit: int = RECURSION_LIMIT,
+    callbacks: Sequence[BaseCallbackHandler] = (),
+) -> RunnableConfig:
     """The configuration every run is invoked with.
 
-    The graph version is what reaches the saved metadata, in plaintext. The
-    thread id is saved in plaintext too, in a column of its own, and the
+    The graph version and the thread id are what reach the saved metadata, in
+    plaintext; the thread id is also saved in a column of its own, and the
     recursion limit is not saved at all. Nothing about the student belongs in
-    any of them. Run-scoped objects travel through the graph's context, which
-    is not saved.
+    any of them. The thread id is stated in the metadata rather than left for
+    the framework to copy there, because the tracer reads it from the run's
+    metadata and the copy is the framework's habit, not its promise. Run-scoped
+    objects travel through the graph's context, which is not saved;
+    ``callbacks`` is where the local tracer rides, and it is never saved either.
     """
-    return {
-        "configurable": {"thread_id": thread_id},
-        "metadata": {GRAPH_VERSION_KEY: GRAPH_VERSION},
+    config: RunnableConfig = {
+        "configurable": {THREAD_ID_KEY: thread_id},
+        "metadata": {GRAPH_VERSION_KEY: GRAPH_VERSION, THREAD_ID_KEY: thread_id},
         "recursion_limit": recursion_limit,
     }
+    if callbacks:
+        config["callbacks"] = list(callbacks)
+    return config
 
 
 def recorded_version(snapshot: StateSnapshot) -> int | None:

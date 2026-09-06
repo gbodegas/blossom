@@ -51,6 +51,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
+from blossom.agent.trace import LocalRunTracer
 from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.settings import TEMPLATE_PATH
@@ -146,13 +147,15 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
     )
 
 
-async def run_plan(graph: CompiledPlanGraph, plan_date: date) -> PlanRunView:
+async def run_plan(
+    graph: CompiledPlanGraph, plan_date: date, tracer: LocalRunTracer
+) -> PlanRunView:
     """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped."""
     thread_id = thread_for(plan_date)
     try:
         result = await graph.ainvoke(
             PlanState(plan_date=plan_date, rounds=0),
-            config=run_config(thread_id),
+            config=run_config(thread_id, callbacks=[tracer]),
             durability=DURABILITY,
         )
     except ModelUnavailable as error:
@@ -164,7 +167,7 @@ async def run_plan(graph: CompiledPlanGraph, plan_date: date) -> PlanRunView:
 async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> PlanRunView:
     """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
     require_model(graphs)
-    return await run_plan(graphs.build(), request.plan_date or state.clock.today())
+    return await run_plan(graphs.build(), request.plan_date or state.clock.today(), state.tracer)
 
 
 @router.get("/approvals", response_model=ApprovalQueueView)
@@ -216,7 +219,7 @@ async def decide_draft(
                 detail=f"draft {draft_id!r} was already {record.decision}",
             )
         graph = build()
-        config = run_config(record.thread_id)
+        config = run_config(record.thread_id, callbacks=[state.tracer])
         snapshot = await graph.aget_state(config)
         if snapshot.next != ("require_human_approval",):
             raise HTTPException(
@@ -315,7 +318,7 @@ async def plan_from_the_page(
         )
     try:
         require_model(graphs)
-        await run_plan(graphs.build(), evening)
+        await run_plan(graphs.build(), evening, state.tracer)
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)

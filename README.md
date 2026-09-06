@@ -195,7 +195,7 @@ usage page says after a run. All of this happens before the plan reaches the
 page for a decision.
 Approving it sends nothing anywhere.
 
-The fixture folder and the two files the app writes are configurable through
+The fixture folder and the three files the app writes are configurable through
 the `BLOSSOM_*` variables in `.env.example`, and `--env-file .env` reads
 whatever is set there; the packaged templates and static assets are not. Each
 path has a working default. One variable has no default and must be set:
@@ -205,12 +205,15 @@ the days you live in and no value is right for everyone. It is set in
 `BLOSSOM_TIMEZONE` and `BLOSSOM_TODAY` can also be set as ordinary environment
 variables in your shell if you prefer.
 
-Assignments are read from the fixtures into memory at every start. Two files
-under `.local/` outlive it: `blossom.sqlite3` holds the drafts, the decisions,
-and the record of every run, and `checkpoints.sqlite3` holds a graph's saved
-state, including a pause at the approval gate. Nothing clears old threads
-yet. Deleting both files resets the demo, and with it every saved draft,
-decision, and run.
+Assignments are read from the fixtures into memory at every start. Three
+files under `.local/` outlive it: `blossom.sqlite3` holds the drafts, the
+decisions, and the record of every run; `checkpoints.sqlite3` holds a graph's
+saved state, including a pause at the approval gate; and `traces.sqlite3`
+holds the framework's trace of each run, every node and model call with what
+went in and came out, for looking into a run that went wrong. The trace holds
+prompts and answers verbatim, so it is swept after two weeks. Nothing clears
+old threads yet. Deleting the three files resets the demo, and with it every
+saved draft, decision, run, and trace.
 
 To run the same checks CI runs:
 
@@ -236,11 +239,11 @@ or pin `BLOSSOM_TODAY` to a day in the fixture week.
 **The app refuses to start and says saved state may not live on a network
 share or in a synced folder.** The repository is inside a folder that OneDrive,
 Dropbox, iCloud Drive, or Google Drive syncs, or on a mapped drive, and the
-two files the app writes would go there with it. Point `BLOSSOM_DATABASE_PATH`
-and `BLOSSOM_CHECKPOINT_PATH` at an ordinary local folder instead, in `.env`
-or in the shell, for example `C:\blossom-state\blossom.sqlite3` and
-`C:\blossom-state\checkpoints.sqlite3` on Windows or `~/blossom-state/...`
-elsewhere.
+files the app writes would go there with it. Point `BLOSSOM_DATABASE_PATH`,
+`BLOSSOM_CHECKPOINT_PATH`, and `BLOSSOM_TRACE_PATH` at an ordinary local
+folder instead, in `.env` or in the shell, for example
+`C:\blossom-state\blossom.sqlite3` on Windows or `~/blossom-state/blossom.sqlite3`
+elsewhere, and the same folder for the other two.
 
 **The parent's page says no API key is configured.** That is the state the
 first run is meant to be in: the queue and the decisions work, and only
