@@ -7,6 +7,7 @@ Three properties are checked here:
 3. Routes take their stores from a dependency, so a test can substitute them.
 """
 
+import pathlib
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -17,12 +18,16 @@ from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
 from blossom.app import create_app
+from blossom.clock import Clock
 from blossom.dependencies import (
     STATE_ATTRIBUTE,
     ApplicationState,
     build_application_state,
     get_application_state,
 )
+from blossom.settings import TRACE_PATH_VARIABLE
+from blossom.stores.checkpoints import UnsafeCheckpointPath
+from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from tests.support import fixture_clock, fixture_settings
 
@@ -139,3 +144,27 @@ def test_dependency_can_be_overridden_to_substitute_stores() -> None:
 
     assert response.status_code == 200
     assert "Canal Era comparison essay" not in response.text
+
+
+def test_a_startup_that_fails_late_closes_what_it_opened(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A refused trace path must not leave the drafts file open behind it."""
+    opened: list[DraftsStore] = []
+    real_open = DraftsStore.open
+
+    def remembering_open(path: pathlib.Path, clock: Clock) -> DraftsStore:
+        store = real_open(path, clock)
+        opened.append(store)
+        return store
+
+    monkeypatch.setattr(DraftsStore, "open", staticmethod(remembering_open))
+    synced = tmp_path / "OneDrive" / "traces.sqlite3"
+    settings = fixture_settings(**{TRACE_PATH_VARIABLE: str(synced)})
+
+    with pytest.raises(UnsafeCheckpointPath):
+        build_application_state(settings, InMemorySaver())
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].waiting()

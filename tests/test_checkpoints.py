@@ -25,6 +25,7 @@ from blossom.agent.runs import (
     GRAPH_VERSION,
     GRAPH_VERSION_KEY,
     RECURSION_LIMIT,
+    THREAD_ID_KEY,
     StaleGraphVersion,
     ensure_current_version,
     recorded_version,
@@ -336,7 +337,10 @@ def test_run_config_carries_the_thread_the_version_and_the_limit_and_nothing_els
     config = run_config("plan:student:2026-08-19")
 
     assert config["configurable"] == {"thread_id": "plan:student:2026-08-19"}
-    assert config["metadata"] == {GRAPH_VERSION_KEY: GRAPH_VERSION}
+    assert config["metadata"] == {
+        GRAPH_VERSION_KEY: GRAPH_VERSION,
+        THREAD_ID_KEY: "plan:student:2026-08-19",
+    }
     assert config["recursion_limit"] == RECURSION_LIMIT
     assert set(config) == {"configurable", "metadata", "recursion_limit"}
 

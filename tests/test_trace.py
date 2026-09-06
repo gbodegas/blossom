@@ -9,15 +9,17 @@ import pathlib
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.tracers.schemas import Run
 from langgraph.types import Command
 
 from blossom.agent.graph import PlanState
 from blossom.agent.runs import DURABILITY, run_config
-from blossom.agent.trace import LocalRunTracer, Redactor, as_json, unredacted
+from blossom.agent.trace import LocalRunTracer, Redactor, as_json, traced, unredacted
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
@@ -245,3 +247,27 @@ def test_the_application_traces_the_runs_its_routes_start(tmp_path: pathlib.Path
     assert [row.name for row in rows if row.parent_run_id is None] == ["LangGraph"]
     assert "compose" in {row.name for row in rows}
     assert trace_file.is_file()
+
+
+def test_the_thread_id_comes_from_the_metadata_the_run_configuration_states() -> None:
+    """The framework also copies it there on its own; the configuration does not rely on that."""
+    config = run_config("plan:stated")
+    stated = Run(
+        id=uuid4(),
+        name="LangGraph",
+        run_type="chain",
+        inputs={},
+        start_time=datetime(2026, 8, 19, 22, 0, tzinfo=UTC),
+        extra={"metadata": dict(config["metadata"])},
+    )
+    unstated = Run(
+        id=uuid4(),
+        name="LangGraph",
+        run_type="chain",
+        inputs={},
+        start_time=datetime(2026, 8, 19, 22, 0, tzinfo=UTC),
+        extra={},
+    )
+
+    assert traced(stated, unredacted).thread_id == "plan:stated"
+    assert traced(unstated, unredacted).thread_id is None

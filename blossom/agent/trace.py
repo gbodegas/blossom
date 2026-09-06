@@ -19,6 +19,7 @@ from collections.abc import Callable
 from langchain_core.tracers.base import BaseTracer
 from langchain_core.tracers.schemas import Run
 
+from blossom.agent.runs import THREAD_ID_KEY
 from blossom.stores.traces import TracedRun, TraceStore
 
 Redactor = Callable[[str], str]
@@ -47,7 +48,7 @@ class LocalRunTracer(BaseTracer):
 def traced(run: Run, redact: Redactor) -> TracedRun:
     """The framework's run as the store's record, every text passed through ``redact``."""
     metadata = (run.extra or {}).get("metadata") or {}
-    thread_id = metadata.get("thread_id")
+    thread_id = metadata.get(THREAD_ID_KEY)
     return TracedRun(
         run_id=str(run.id),
         trace_id=str(run.trace_id or run.id),

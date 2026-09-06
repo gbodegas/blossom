@@ -95,16 +95,28 @@ def build_application_state(
     clock = clock_from(settings.today, settings.timezone_key)
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     project_state = ProjectStateStore(connection, clock=clock)
-    source = FixtureSource(settings.fixture_path)
-    project_state.upsert_assignments(source.assignments())
-    support_rules = SupportRulesStore()
-    for rule in source.support_rules():
-        support_rules.add_rule(rule)
-    reflections = ReflectionsStore()
-    for note in source.reflections():
-        reflections.write(note)
-    traces = TraceStore.open(settings.trace_path, clock)
-    traces.sweep()
+    opened: list[ProjectStateStore | DraftsStore | TraceStore] = [project_state]
+    # A later step can refuse its path or fail to open its file. Whatever was
+    # opened before it is closed on the way out, so a startup that fails and is
+    # retried leaves no connection behind.
+    try:
+        source = FixtureSource(settings.fixture_path)
+        project_state.upsert_assignments(source.assignments())
+        support_rules = SupportRulesStore()
+        for rule in source.support_rules():
+            support_rules.add_rule(rule)
+        reflections = ReflectionsStore()
+        for note in source.reflections():
+            reflections.write(note)
+        drafts = DraftsStore.open(settings.database_path, clock)
+        opened.append(drafts)
+        traces = TraceStore.open(settings.trace_path, clock)
+        opened.append(traces)
+        traces.sweep()
+    except Exception:
+        for store in reversed(opened):
+            store.close()
+        raise
     return ApplicationState(
         settings=settings,
         clock=clock,
@@ -112,7 +124,7 @@ def build_application_state(
         project_state=project_state,
         support_rules=support_rules,
         reflections=reflections,
-        drafts=DraftsStore.open(settings.database_path, clock),
+        drafts=drafts,
         checkpointer=checkpointer,
         traces=traces,
         tracer=LocalRunTracer(traces),
