@@ -46,13 +46,17 @@ def test_documented_uvicorn_targets_are_importable() -> None:
 def test_documented_python_module_targets_are_importable() -> None:
     """Every ``python -m module`` target in the README must exist.
 
-    ``pip`` is the one exception: the fallback bootstraps it with ``ensurepip``
-    in the line before, and a venv made by uv does not carry it.
+    ``pip`` is exempt only where the same block has already run ``ensurepip``,
+    which is what puts it there; a venv made by uv does not carry it.
     """
-    for module_path in PYTHON_MODULE_TARGET.findall(readme_shell_text()):
-        if module_path == "pip":
-            continue
-        assert importlib.util.find_spec(module_path) is not None, f"no module {module_path}"
+    for block in BASH_FENCE.findall(README.read_text(encoding="utf-8")):
+        bootstrapped = False
+        for module_path in PYTHON_MODULE_TARGET.findall(block):
+            if module_path == "ensurepip":
+                bootstrapped = True
+            if module_path == "pip" and bootstrapped:
+                continue
+            assert importlib.util.find_spec(module_path) is not None, f"no module {module_path}"
 
 
 def test_readme_only_documents_extras_the_project_defines() -> None:

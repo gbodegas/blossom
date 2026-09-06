@@ -258,12 +258,12 @@ the first run needs in the shell instead.
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python -m ensurepip
-.venv\Scripts\python -m pip install -e .
-.venv\Scripts\python -m pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
+.\.venv\Scripts\python -m ensurepip
+.\.venv\Scripts\python -m pip install -e .
+.\.venv\Scripts\python -m pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
 $env:BLOSSOM_TIMEZONE = "America/New_York"
 $env:BLOSSOM_TODAY = "2026-08-19"
-.venv\Scripts\python -m uvicorn blossom.app:app --reload
+.\.venv\Scripts\python -m uvicorn blossom.app:app --reload
 ```
 
 macOS and Linux:
