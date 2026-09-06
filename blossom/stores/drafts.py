@@ -37,6 +37,10 @@ Outcome = Literal["accepted", "unsettled"]
 SUPERSEDED_REASON: Final = "she planned again, and the later plan for the evening took its place"
 """The reason recorded on a waiting draft when a newer one for the same evening
 is saved. System-recorded, like an expiry: no person said it."""
+
+INTERRUPTED: Final = "interrupted"
+"""The outcome recorded on a run that saved its draft and then failed before the
+draft could wait for review. The draft is taken back; the run keeps its steps."""
 """The two run outcomes that produce a draft. The others end without one."""
 
 
@@ -124,7 +128,8 @@ class DraftsStore:
                 decided_at TEXT,
                 decision TEXT,
                 reason TEXT,
-                too_much INTEGER NOT NULL DEFAULT 0
+                too_much INTEGER NOT NULL DEFAULT 0,
+                superseded_by TEXT
             )
             """
         )
@@ -137,6 +142,10 @@ class DraftsStore:
             self._connection.execute(
                 "ALTER TABLE drafts ADD COLUMN too_much INTEGER NOT NULL DEFAULT 0"
             )
+        if "superseded_by" not in columns:
+            # A file written before one draft could take another's place: nothing
+            # in it was superseded, so nothing needs the pointer.
+            self._connection.execute("ALTER TABLE drafts ADD COLUMN superseded_by TEXT")
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS runs (
@@ -198,7 +207,10 @@ class DraftsStore:
         At most one draft waits per evening. Any other draft for the same
         evening still waiting is closed as superseded in the same transaction,
         so her page and the parent's queue always mean the same plan: the one
-        she sees is the one a review can land on.
+        she sees is the one a review can land on. Only a draft that is itself
+        still waiting takes another's place: a node replayed for a draft that
+        was already superseded saves its text again and displaces nothing, so
+        a replay after a crash cannot retire the plan that is current.
         """
         stamp = self._clock.now().isoformat()
         with self._lock, self._connection:
@@ -227,12 +239,53 @@ class DraftsStore:
             self._connection.execute(
                 """
                 UPDATE drafts
-                SET decision='superseded', reason=?, decided_at=?
+                SET decision='superseded', reason=?, decided_at=?, superseded_by=?
                 WHERE plan_date=? AND decision IS NULL AND draft_id<>?
+                  AND EXISTS (
+                    SELECT 1 FROM drafts AS saved
+                    WHERE saved.draft_id=? AND saved.decision IS NULL
+                  )
                 """,
-                (SUPERSEDED_REASON, stamp, plan_date.isoformat(), draft.draft_id),
+                (
+                    SUPERSEDED_REASON,
+                    stamp,
+                    draft.draft_id,
+                    plan_date.isoformat(),
+                    draft.draft_id,
+                    draft.draft_id,
+                ),
             )
             self._write_run(thread_id, plan_date, outcome, steps)
+
+    def withdraw(self, draft_id: str) -> bool:
+        """Take back a draft whose run failed after saving it and before it could pause.
+
+        The draft never became a plan anyone could review, so its row goes,
+        any draft it had taken the place of waits again, and its run is kept
+        with its steps under the outcome ``interrupted``, so the account of
+        what happened survives while the plan does not. False when there is no
+        such draft. A draft with a decision is left alone: a person, or the
+        system in its stead, has already closed it.
+        """
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT thread_id, decision FROM drafts WHERE draft_id=?", (draft_id,)
+            ).fetchone()
+            if row is None or row["decision"] is not None:
+                return False
+            self._connection.execute(
+                """
+                UPDATE drafts
+                SET decision=NULL, reason=NULL, decided_at=NULL, superseded_by=NULL
+                WHERE superseded_by=?
+                """,
+                (draft_id,),
+            )
+            self._connection.execute("DELETE FROM drafts WHERE draft_id=?", (draft_id,))
+            self._connection.execute(
+                "UPDATE runs SET outcome=? WHERE thread_id=?", (INTERRUPTED, str(row["thread_id"]))
+            )
+        return True
 
     def record_decision(
         self, draft_id: str, *, status: DraftStatus, decision: Decision, reason: str | None

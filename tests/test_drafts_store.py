@@ -17,7 +17,7 @@ from blossom.agent.steps import StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Draft, DraftStatus
 from blossom.stores.checkpoints import UnsafeCheckpointPath
-from blossom.stores.drafts import SUPERSEDED_REASON, AlreadyDecided, DraftsStore
+from blossom.stores.drafts import INTERRUPTED, SUPERSEDED_REASON, AlreadyDecided, DraftsStore
 from tests.support import FIXTURE_TIMEZONE, fixture_clock
 
 PLAN_DATE = date(2026, 8, 19)
@@ -237,6 +237,77 @@ def test_a_later_draft_for_the_same_evening_takes_the_place_of_the_one_waiting()
     assert latest is not None
     assert latest.draft_id == "draft:b"
     assert latest.waiting
+
+
+def test_a_replayed_save_of_a_superseded_draft_displaces_nothing() -> None:
+    """A node replayed after a crash saves its text again and leaves the current plan waiting."""
+    store = store_in_memory()
+    try:
+        first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
+        second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
+        store.record_waiting(first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+        store.record_waiting(second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+        store.record_waiting(
+            first.model_copy(update={"body": "a, again"}),
+            thread_id="ta",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        waiting = [record.draft_id for record in store.waiting()]
+        replayed = store.get("draft:a")
+    finally:
+        store.close()
+
+    assert waiting == ["draft:b"]
+    assert replayed is not None
+    assert replayed.decision == "superseded"
+    assert replayed.body == "a, again"
+
+
+def test_a_draft_taken_back_restores_the_one_it_displaced_and_keeps_its_run() -> None:
+    """The failed run's plan never existed for anyone; its account does."""
+    store = store_in_memory()
+    try:
+        first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
+        second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
+        store.record_waiting(first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+        store.record_waiting(
+            second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted", steps=[step("plan", 1)]
+        )
+        taken_back = store.withdraw("draft:b")
+        again = store.withdraw("draft:b")
+        waiting = store.waiting()
+        gone = store.get("draft:b")
+        runs = store.runs_without_a_draft()
+    finally:
+        store.close()
+
+    assert taken_back is True
+    assert again is False
+    assert [record.draft_id for record in waiting] == ["draft:a"]
+    assert waiting[0].decision is None
+    assert waiting[0].reason is None
+    assert gone is None
+    assert [(run.thread_id, run.outcome, len(run.steps)) for run in runs] == [
+        ("tb", INTERRUPTED, 1)
+    ]
+
+
+def test_a_decided_draft_is_not_taken_back() -> None:
+    store = store_in_memory()
+    try:
+        store.record_waiting(draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted")
+        store.record_decision(
+            draft().draft_id, status=DraftStatus.DRAFT, decision="rejected", reason="no"
+        )
+        taken_back = store.withdraw(draft().draft_id)
+        kept = store.get(draft().draft_id)
+    finally:
+        store.close()
+
+    assert taken_back is False
+    assert kept is not None
+    assert kept.decision == "rejected"
 
 
 def test_rows_survive_closing_and_reopening_the_file(tmp_path: pathlib.Path) -> None:
@@ -480,8 +551,16 @@ def test_a_file_written_before_drafts_carried_the_signal_gains_the_column() -> N
         draft(), thread_id="plan:new", plan_date=PLAN_DATE, outcome="accepted", too_much=True
     )
     new = store.get(draft().draft_id)
+    displaced = store.get("draft:old")
+    taken_back = store.withdraw(draft().draft_id)
+    restored = store.get("draft:old")
 
     assert old is not None
     assert old.too_much is False
     assert new is not None
     assert new.too_much is True
+    assert displaced is not None
+    assert displaced.decision == "superseded"
+    assert taken_back is True
+    assert restored is not None
+    assert restored.decision is None

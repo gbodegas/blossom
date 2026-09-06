@@ -10,8 +10,16 @@ import pathlib
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import (
+    BaseCheckpointSaver,
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+)
 from langgraph.checkpoint.memory import InMemorySaver
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
@@ -46,9 +54,12 @@ PLAN_DATE = date(2026, 8, 19)
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
 
 
-def application(**environ: str) -> ApplicationState:
+def application(
+    *, saver: BaseCheckpointSaver[str] | None = None, **environ: str
+) -> ApplicationState:
     return build_application_state(
-        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **environ), InMemorySaver()
+        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **environ),
+        saver if saver is not None else InMemorySaver(),
     )
 
 
@@ -289,3 +300,66 @@ def test_planning_again_clears_the_thread_of_the_plan_it_replaces() -> None:
 
     assert first != second
     assert threads == {second}
+
+
+class SaverFailingAfterCompose(InMemorySaver):
+    """A saver that cannot write the checkpoint carrying the draft, once armed.
+
+    The draft is in the table by then, since ``compose`` saved it in its own
+    transaction, and the run has not paused. This is the gap between the two.
+    """
+
+    armed = False
+
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        if self.armed and checkpoint["channel_values"].get("draft") is not None:
+            msg = "the checkpoint could not be written"
+            raise RuntimeError(msg)
+        return await super().aput(config, checkpoint, metadata, new_versions)
+
+
+def test_a_run_that_fails_after_saving_its_draft_takes_it_back() -> None:
+    """Whatever the pages showed before the run is what they show after the failure."""
+    saver = SaverFailingAfterCompose()
+    state = application(saver=saver)
+    try:
+
+        async def scenario() -> tuple[str, set[str]]:
+            first = await run_plan(
+                graph_for(state, fixture_week_plan()),
+                PLAN_DATE,
+                state.tracer,
+                state.checkpointer,
+                state.drafts,
+            )
+            saver.armed = True
+            with pytest.raises(RuntimeError, match="checkpoint could not be written"):
+                await run_plan(
+                    graph_for(state, fixture_week_plan()),
+                    PLAN_DATE,
+                    state.tracer,
+                    state.checkpointer,
+                    state.drafts,
+                )
+            return first.thread_id, await thread_ids(state)
+
+        first, threads = asyncio.run(scenario())
+        waiting = state.drafts.waiting()
+        interrupted = state.drafts.runs_without_a_draft()
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert threads == {first}
+    assert [record.thread_id for record in waiting] == [first]
+    assert waiting[0].decision is None
+    assert [run.outcome for run in interrupted] == ["interrupted"]
+    assert interrupted[0].thread_id != first
+    assert latest is not None
+    assert latest.thread_id == first

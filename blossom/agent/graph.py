@@ -53,6 +53,7 @@ from pydantic import BaseModel
 from blossom.agent.compose import compose_draft
 from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.prompts import critic_brief, planner_brief
+from blossom.agent.runs import draft_id_for
 from blossom.agent.steps import (
     EXPECT_ACCEPTANCE,
     EXPECT_ALL_CHECKS,
@@ -380,7 +381,7 @@ def build_plan_graph(
         thread_id = str(config["configurable"]["thread_id"])
         outcome = state["outcome"]
         draft = compose_draft(
-            draft_id=f"draft:{thread_id}",
+            draft_id=draft_id_for(thread_id),
             plan=state["plan"],
             assignments=state.get("assignments", []),
             verification=state["verification"],

@@ -16,7 +16,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread
-from blossom.agent.runs import DURABILITY, run_config
+from blossom.agent.runs import DURABILITY, draft_id_for, run_config
 from blossom.agent.trace import LocalRunTracer
 from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
 from blossom.dependencies import ApplicationState, get_application_state
@@ -97,6 +97,12 @@ async def run_plan(
     waiting for the same evening; the table closed those as superseded when
     the draft was saved, and their threads are cleared here, since nothing can
     resume them.
+
+    A run can fail between saving its draft and pausing with it, since the
+    save is a transaction of its own and the checkpoint after it is another.
+    The draft is then taken back: its row goes, the draft it displaced waits
+    again with its thread untouched, and the run is kept as interrupted. So
+    whatever a page showed before the run is what it shows after a failure.
     """
     thread_id = thread_for(plan_date)
     try:
@@ -107,9 +113,11 @@ async def run_plan(
         )
     except ModelUnavailable as error:
         await clear_thread(checkpointer, thread_id)
+        drafts.withdraw(draft_id_for(thread_id))
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
     except Exception:
         await clear_thread(checkpointer, thread_id)
+        drafts.withdraw(draft_id_for(thread_id))
         raise
     view = run_view(thread_id, plan_date, dict(result))
     if not view.waiting:

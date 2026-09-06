@@ -52,6 +52,9 @@ OUTCOMES = {
     "model_truncated": "The model's answer was cut off.",
     "model_refused": "The model declined to answer.",
     "model_unparseable": "The model's answer did not parse.",
+    "interrupted": (
+        "The run stopped before its plan could wait for review, so the plan was set aside."
+    ),
 }
 
 

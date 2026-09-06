@@ -317,6 +317,8 @@ def test_planning_again_retires_the_plan_before_it_on_the_page() -> None:
         "<strong>Superseded.</strong> She planned again, and this one was never reviewed." in page
     )
     assert "she planned again, and the later plan" not in page
+    assert "Closed " in page
+    assert "Reviewed " not in page
 
 
 def test_a_failure_on_the_way_is_said_on_the_page_and_the_queue_stays() -> None:

@@ -594,7 +594,13 @@ then. A draft nobody decides within `PAUSED_RETENTION_DAYS` of its evening is
 closed as expired, and a draft she plans again over is closed as superseded
 the moment the newer one is saved, so at most one draft waits per evening and
 the plan on her page is the one a review can land on; those are the two
-decision values the system records itself, and a thread is cleared with each. At startup a sweep applies
+decision values the system records itself, and a thread is cleared with each.
+Only a draft that is itself still waiting takes another's place, so a node
+replayed after a crash for a draft already superseded displaces nothing. A run
+that fails after saving its draft and before pausing with it takes the draft
+back: the row goes, the draft it displaced waits again, and the run is kept
+with its steps as interrupted, so a page shows after the failure exactly what
+it showed before. At startup a sweep applies
 both rules to whatever the last process left behind: it expires the drafts
 that waited too long, then clears every thread that no waiting draft refers
 to, which covers finished runs whose thread was never removed and runs that
