@@ -5,6 +5,7 @@ redirect back to the page, and the page read again. The models are scripted
 through the route's builder dependency, over the real stores.
 """
 
+import re
 from collections.abc import Callable
 from datetime import date, time
 from typing import Annotated
@@ -17,7 +18,7 @@ from blossom.app import create_app
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.routes.parent import PlanGraphs, plan_graphs
+from blossom.routes.parent import REASON_MAX_LENGTH, PlanGraphs, plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from tests.support import Scripted, fixture_settings, ok
 
@@ -252,6 +253,42 @@ def test_only_the_two_buttons_are_decisions_and_a_bad_one_is_a_page() -> None:
     assert "<h1>Review</h1>" in response.text
     assert "is not one of the two buttons" in response.text
     assert record["decision"] is None
+
+
+def test_a_reason_over_the_cap_from_the_page_is_answered_as_the_page() -> None:
+    """The form caps the field; a request around the form meets the same cap here."""
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        response = client.post(
+            f"/parent/actions/decide/{draft_id}",
+            data={"decision": "approve", "reason": "r" * (REASON_MAX_LENGTH + 1)},
+        )
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+
+    assert response.status_code == 422
+    assert f"A reason is at most {REASON_MAX_LENGTH} characters; this one is 501." in response.text
+    assert f'maxlength="{REASON_MAX_LENGTH}"' in response.text
+    assert record["decision"] is None
+
+
+def test_each_decision_button_says_which_draft_it_decides() -> None:
+    """One waiting draft is named by its evening; two share the evening and get a position."""
+    with browser() as client:
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        one_waiting = client.get("/parent").text
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        two_waiting = client.get("/parent").text
+
+    named = r'aria-label="((?:Approve|Refuse) the plan for [^"]+)"'
+    assert re.findall(named, one_waiting) == [
+        "Approve the plan for Wednesday, August 19",
+        "Refuse the plan for Wednesday, August 19",
+    ]
+    labels = re.findall(named, two_waiting)
+    assert len(labels) == 4
+    assert len(set(labels)) == 4
+    assert "Approve the plan for Wednesday, August 19, 1 of 2" in labels
+    assert "Refuse the plan for Wednesday, August 19, 2 of 2" in labels
 
 
 def test_a_waiting_draft_can_be_decided_from_the_page_without_a_key() -> None:

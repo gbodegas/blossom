@@ -20,7 +20,12 @@ from blossom.dependencies import build_application_state
 from blossom.drafts import DraftStatus
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.plans import DailyPlan
-from blossom.routes.parent import DecisionRequest, decide_draft, plan_graphs
+from blossom.routes.parent import (
+    REASON_MAX_LENGTH,
+    DecisionRequest,
+    decide_draft,
+    plan_graphs,
+)
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.views import DecisionView
 from tests.support import (
@@ -151,6 +156,25 @@ def test_approving_marks_the_draft_for_manual_send_and_clears_the_queue() -> Non
     assert queue["waiting"] == []
     assert detail["decision"] == "approved"
     assert detail["status"] == DraftStatus.APPROVED_FOR_MANUAL_SEND.value
+
+
+def test_a_reason_over_the_cap_is_refused_and_the_draft_still_waits() -> None:
+    with app_with() as client:
+        started = client.post("/parent/plans", json={}).json()
+        over = client.post(
+            f"/parent/approvals/{started['draft_id']}",
+            json={"approved": True, "reason": "r" * (REASON_MAX_LENGTH + 1)},
+        )
+        still_waiting = client.get(f"/parent/approvals/{started['draft_id']}").json()
+        at_the_cap = client.post(
+            f"/parent/approvals/{started['draft_id']}",
+            json={"approved": True, "reason": "r" * REASON_MAX_LENGTH},
+        )
+
+    assert over.status_code == 422
+    assert still_waiting["decision"] is None
+    assert at_the_cap.status_code == 200
+    assert at_the_cap.json()["reason"] == "r" * REASON_MAX_LENGTH
 
 
 def test_refusing_leaves_the_draft_a_draft_and_records_why() -> None:

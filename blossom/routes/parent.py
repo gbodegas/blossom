@@ -48,7 +48,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
-from pydantic import BaseModel, ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread
@@ -116,6 +116,12 @@ class PlanRequest(BaseModel):
     plan_date: date | None = None
 
 
+REASON_MAX_LENGTH: Final = 500
+"""The most that is kept of a reason: a sentence or two she would recognize.
+The form and the JSON route hold to the same number, so a reason that fits
+one fits the other."""
+
+
 class DecisionRequest(BaseModel):
     """What the parent decided.
 
@@ -128,7 +134,7 @@ class DecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     approved: StrictBool
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=REASON_MAX_LENGTH)
 
 
 def thread_for(plan_date: date) -> str:
@@ -353,6 +359,7 @@ def review_page(
             "decided": [approval_view(state, record) for record in state.drafts.decided()],
             "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
             "problem": problem,
+            "reason_max_length": REASON_MAX_LENGTH,
         },
         status_code=status_code,
     )
@@ -411,7 +418,17 @@ async def decide_from_the_page(
             problem=f"{decision!r} is not one of the two buttons, approve or refuse.",
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    decided = DecisionRequest(approved=decision == "approve", reason=reason.strip() or None)
+    reason = reason.strip()
+    if len(reason) > REASON_MAX_LENGTH:
+        return review_page(
+            request,
+            state,
+            problem=(
+                f"A reason is at most {REASON_MAX_LENGTH} characters; this one is {len(reason)}."
+            ),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    decided = DecisionRequest(approved=decision == "approve", reason=reason or None)
     try:
         await decide_draft(state, graphs.build, draft_id, decided)
     except HTTPException as error:

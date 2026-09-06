@@ -99,8 +99,12 @@ two form actions call the functions the JSON routes call and redirect back to
 the page, so there is one way to start a run and one way to decide whichever
 door it comes through, and a failure renders the page with the same status and
 reason the API would have answered. The decision field admits exactly the two
-button values. Without a key the page still reads and says why a plan cannot
-start.
+button values, and the reason is capped at `REASON_MAX_LENGTH`, five hundred
+characters, on the form and on the JSON request alike, so a longer one is
+refused at the boundary rather than stored. Each Approve and Refuse button
+carries an accessible name with the draft's evening, and its position when
+several wait, so the controls can be told apart without reading around them.
+Without a key the page still reads and says why a plan cannot start.
 
 Under each draft the page shows how the plan was made: the run's step records,
 one per node, each saying what the node expected and what it found. A run that

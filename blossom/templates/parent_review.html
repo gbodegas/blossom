@@ -73,15 +73,24 @@
         {% if draft.stale %}
           <p class="confidence disagree" role="alert"><strong>Plan again.</strong> {{ draft.stale }}</p>
         {% endif %}
+        {#
+          Each button names the draft it decides, so several waiting drafts
+          can be told apart by their controls alone: the evening, and the
+          position when more than one waits.
+        #}
+        {% set evening = draft.plan_date.strftime("%A, %B") ~ " " ~ draft.plan_date.day %}
+        {% set which = (", " ~ loop.index ~ " of " ~ loop.length) if loop.length > 1 else "" %}
         <form method="post" action="/parent/actions/decide/{{ draft.draft_id }}" class="decision">
           <label>Reason (optional)
-            <input type="text" name="reason" maxlength="500" placeholder="A sentence she would recognize">
+            <input type="text" name="reason" maxlength="{{ reason_max_length }}" placeholder="A sentence she would recognize">
           </label>
           <div class="actions">
             {% if not draft.stale %}
-              <button type="submit" name="decision" value="approve" class="primary">Approve</button>
+              <button type="submit" name="decision" value="approve" class="primary"
+                      aria-label="Approve the plan for {{ evening }}{{ which }}">Approve</button>
             {% endif %}
-            <button type="submit" name="decision" value="refuse" class="secondary">Refuse</button>
+            <button type="submit" name="decision" value="refuse" class="secondary"
+                    aria-label="Refuse the plan for {{ evening }}{{ which }}">Refuse</button>
           </div>
           <p class="note">
             Approving marks the plan for you to send by hand. Nothing leaves here on its own.
