@@ -55,6 +55,9 @@ def test_taking_up_then_resolving_moves_the_state_and_keeps_the_words_back() -> 
 
     taken_up = store.accept(asked.request_id, "on my way")
     again = store.accept(asked.request_id, "ignored")
+    kept = store.get(asked.request_id)
+    assert kept is not None
+    assert kept.response == "on my way"
     resolved = store.resolve(asked.request_id, "we did the outline together")
 
     assert taken_up.state == "accepted"
@@ -105,9 +108,13 @@ def test_a_resolved_request_is_kept_two_weeks_and_an_open_one_indefinitely() -> 
     now = HelpRequestsStore(connection, FrozenClock(later, ZONE))
 
     before_sweep = now.recently_resolved()
+    gone_before_sweep = now.get(resolved.request_id)
+    with pytest.raises(KeyError):
+        now.accept(resolved.request_id)
     swept = now.sweep()
 
     assert before_sweep == []
+    assert gone_before_sweep is None
     assert swept == 1
     assert now.get(resolved.request_id) is None
     assert [item.request_id for item in now.open_requests()] == [still_open.request_id]
@@ -281,6 +288,15 @@ def test_the_parents_page_lists_what_is_open_and_moves_it_with_two_buttons() -> 
     assert "Resolved in the last two weeks" in after
     assert "Resolved with <q>sorted</q>" in after
     assert "<strong>Resolved.</strong> They said: <q>sorted</q>" in hers
+
+
+def test_taking_back_a_request_that_is_not_there_is_said_on_her_page() -> None:
+    with browser() as client:
+        response = client.post("/student/actions/take-back-help/nobody")
+
+    assert response.status_code == 404
+    assert "That request is not here any more; nothing was changed." in response.text
+    assert "<h1>Due this week</h1>" in response.text
 
 
 def test_taking_back_a_request_a_parent_has_taken_up_is_said_on_her_page() -> None:

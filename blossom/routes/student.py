@@ -422,10 +422,17 @@ def ask_for_help_from_the_page(
 def take_back_help_from_the_page(request: Request, request_id: str, state: State) -> Response:
     """Remove a request from her page while nobody has taken it up; otherwise the page says why."""
     try:
-        state.help_requests.take_back(request_id)
+        removed = state.help_requests.take_back(request_id)
     except RequestClosed as error:
         return student_page(
             request, state, problem=str(error), status_code=status.HTTP_409_CONFLICT
+        )
+    if not removed:
+        return student_page(
+            request,
+            state,
+            problem="That request is not here any more; nothing was changed.",
+            status_code=status.HTTP_404_NOT_FOUND,
         )
     return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
 

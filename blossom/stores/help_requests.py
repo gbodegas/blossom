@@ -153,21 +153,26 @@ class HelpRequestsStore:
         return True
 
     def accept(self, request_id: str, response: str | None = None) -> HelpRequest:
-        """A parent takes the request up. Taking up one already taken up changes nothing."""
+        """A parent takes the request up, with a word back if given.
+
+        Taking up one already taken up changes nothing, words included: the
+        word she has already read stays, whatever comes with the repeat.
+        """
         stamp = self._clock.now().isoformat()
         with self._lock, self._connection:
             current = self._read(request_id)
             if current.state == "resolved":
                 raise RequestClosed(current, "taken up")
-            if current.state == "requested":
-                self._connection.execute(
-                    """
-                    UPDATE help_requests
-                    SET state='accepted', accepted_at=?, response=COALESCE(?, response)
-                    WHERE request_id=?
-                    """,
-                    (stamp, response, request_id),
-                )
+            if current.state == "accepted":
+                return current
+            self._connection.execute(
+                """
+                UPDATE help_requests
+                SET state='accepted', accepted_at=?, response=?
+                WHERE request_id=?
+                """,
+                (stamp, response, request_id),
+            )
             return self._read(request_id)
 
     def resolve(self, request_id: str, response: str | None = None) -> HelpRequest:
@@ -189,10 +194,18 @@ class HelpRequestsStore:
             return self._read(request_id)
 
     def get(self, request_id: str) -> HelpRequest | None:
-        """One request by id, or ``None``."""
+        """One request by id, or ``None``, a resolved one past retention counting as none.
+
+        The cutoff applies on every read, so a request that has aged out is
+        gone the moment it ages out, whether or not a sweep has run since.
+        """
         with self._lock:
             row = self._connection.execute(
-                "SELECT * FROM help_requests WHERE request_id=?", (request_id,)
+                """
+                SELECT * FROM help_requests
+                WHERE request_id=? AND (state<>'resolved' OR resolved_at >= ?)
+                """,
+                (request_id, self._cutoff()),
             ).fetchone()
         return None if row is None else request_from(row)
 
@@ -231,9 +244,17 @@ class HelpRequestsStore:
         return int(removed)
 
     def _read(self, request_id: str) -> HelpRequest:
-        """One request inside a held lock, or a ``KeyError`` for one that does not exist."""
+        """One request inside a held lock, or a ``KeyError`` for one that does not exist.
+
+        A resolved request past retention does not exist here either, so no
+        move can be made on it.
+        """
         row = self._connection.execute(
-            "SELECT * FROM help_requests WHERE request_id=?", (request_id,)
+            """
+            SELECT * FROM help_requests
+            WHERE request_id=? AND (state<>'resolved' OR resolved_at >= ?)
+            """,
+            (request_id, self._cutoff()),
         ).fetchone()
         if row is None:
             msg = f"no help request {request_id!r}"
