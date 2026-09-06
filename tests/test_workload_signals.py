@@ -336,7 +336,8 @@ def test_a_press_after_a_draft_is_waiting_makes_it_stale() -> None:
         approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
 
     assert queue[0]["stale"] == (
-        "She has said today is too much since this plan was made. Plan again before approving."
+        "She has said today is too much, and this plan was made for the full evening. "
+        "Plan again before approving."
     )
     assert "Plan again." in page
     assert 'value="approve"' not in page
@@ -364,7 +365,7 @@ def test_taking_the_signal_back_after_a_reduced_draft_makes_it_stale() -> None:
         approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
 
     assert queue[0]["stale"] == (
-        "Her signal for this evening has ended, taken back or past its week, and this plan "
+        "Her signal for this evening is gone, taken back or past its week, and this plan "
         "was kept short for it. Plan again for the full evening."
     )
     assert approve.status_code == 409

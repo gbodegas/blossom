@@ -239,11 +239,10 @@ def test_a_press_after_the_plan_tells_her_to_plan_again_in_her_words() -> None:
         today = client.get("/student/plans/today").json()
 
     assert today["stale"] == (
-        "You said today is too much after this plan was made. Plan again to make it smaller."
+        "You have said today is too much, and this plan was made for the full evening. "
+        "Plan again to make it smaller."
     )
-    assert (
-        "<strong>Plan again.</strong> You said today is too much after this plan was made." in page
-    )
+    assert "<strong>Plan again.</strong> You have said today is too much, and this plan" in page
     assert "Your next plan for today is held to 75 minutes instead of 150." in page
 
 
@@ -259,7 +258,8 @@ def test_her_page_measures_the_plan_against_the_evening_whatever_a_parent_said()
 
     assert today["decision"] == "approved"
     assert today["stale"] == (
-        "You said today is too much after this plan was made. Plan again to make it smaller."
+        "You have said today is too much, and this plan was made for the full evening. "
+        "Plan again to make it smaller."
     )
     assert reviewed["stale"] is None
 
@@ -276,7 +276,7 @@ def test_taking_the_signal_back_after_a_reduced_plan_says_so_in_her_words() -> N
     assert reduced["too_much"] is True
     assert reduced["stale"] is None
     assert today["stale"] == (
-        "Your signal ended after this plan was made, and the plan was kept short for it. "
+        "This plan was kept short for a signal that is not there now. "
         "Plan again for the full evening."
     )
     assert "because you said today was too much" in page

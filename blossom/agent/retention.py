@@ -15,9 +15,11 @@ decided, and the record says so rather than pretending someone did.
 
 The sweep at startup applies both rules to whatever a crash left behind. A
 draft saved but never published belongs to a run that died on the way: if its
-thread paused with the draft, the sweep publishes it as the run would have,
-and if the thread is missing or never reached the draft, the sweep takes it
-back, since nothing could ever review it. A waiting draft whose thread holds
+thread paused at the gate, which the interrupt left pending on the saved
+state shows, the sweep publishes it as the run would have, several in the
+order their checkpoints say they paused, and if the thread is missing, never
+reached the draft, or holds the draft without having paused, the sweep takes
+it back, since nothing could ever review it. A waiting draft whose thread holds
 a review that never landed in the table, because recording it failed, has that
 review recorded, since a review that reached the thread is never lost and
 never expired away. Then any thread no waiting draft refers to is cleared,
@@ -39,7 +41,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from blossom.clock import Clock
 from blossom.drafts import Decision, DraftStatus
-from blossom.stores.drafts import DraftsStore
+from blossom.stores.drafts import DraftRecord, DraftsStore
 
 PAUSED_RETENTION_DAYS: Final = 14
 """How long a draft may wait at the gate past its evening before it is closed as expired."""
@@ -66,45 +68,54 @@ async def clear_thread(checkpointer: BaseCheckpointSaver[Any], thread_id: str) -
     await checkpointer.adelete_thread(thread_id)
 
 
-async def saved_values(
+INTERRUPT_CHANNEL: Final = "__interrupt__"
+"""The framework's name for the pending write an interrupt leaves on a thread's
+latest checkpoint. A thread paused at the gate carries one; a thread whose
+process died after the checkpoint before the gate and before the gate paused
+does not, though its saved state holds the draft."""
+
+
+@dataclass(frozen=True)
+class SavedThread:
+    """What a thread's latest saved state says about its run, as much as the sweep needs."""
+
+    has_draft: bool
+    """The state carries the draft: the run got past ``compose``."""
+    paused: bool
+    """An interrupt is pending: the gate paused, and a review could resume it."""
+    held: tuple[Decision, str | None] | None
+    """A review the gate passed on that the table never recorded, with its reason."""
+    saved_at: str
+    """When the latest checkpoint was written, as the framework stamps it. The
+    checkpoint before the gate is written in the instant before the gate
+    pauses, so this is the order runs paused in, as far as anything durable
+    records it."""
+
+
+async def saved_thread(
     checkpointer: BaseCheckpointSaver[Any], thread_id: str
-) -> dict[str, Any] | None:
-    """The channel values of a thread's latest checkpoint, or ``None`` for a missing thread."""
+) -> SavedThread | None:
+    """Read a thread's latest checkpoint, or ``None`` for a thread the saver does not hold."""
     saved = await checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     if saved is None:
         return None
-    return dict(saved.checkpoint["channel_values"])
-
-
-async def paused_with_its_draft(checkpointer: BaseCheckpointSaver[Any], thread_id: str) -> bool:
-    """Whether a thread's saved state carries the draft, so a review could resume it.
-
-    A run saves its draft in the drafts file and then writes the checkpoint
-    that carries it; a run that died between the two left a waiting draft with
-    a thread that is missing or stops before the draft. Such a thread cannot
-    be resumed into a review, and the draft was never anyone's plan.
-    """
-    values = await saved_values(checkpointer, thread_id)
-    return values is not None and values.get("draft") is not None
-
-
-async def held_review(
-    checkpointer: BaseCheckpointSaver[Any], thread_id: str
-) -> tuple[Decision, str | None] | None:
-    """The review a thread holds past the gate when its record never landed, or ``None``.
-
-    The gate writes the decision and its reason into saved state before the
-    node after it records them in the table; a failure between the two leaves
-    the thread holding a review the table does not know about.
-    """
-    values = await saved_values(checkpointer, thread_id)
-    if values is None:
-        return None
+    values = saved.checkpoint["channel_values"]
     decision = values.get("decision")
-    if decision not in ("approved", "rejected"):
-        return None
-    reason = values.get("reason")
-    return decision, reason if isinstance(reason, str) else None
+    held: tuple[Decision, str | None] | None = None
+    if decision in ("approved", "rejected"):
+        reason = values.get("reason")
+        held = (decision, reason if isinstance(reason, str) else None)
+    return SavedThread(
+        has_draft=values.get("draft") is not None,
+        paused=any(channel == INTERRUPT_CHANNEL for _, channel, _ in saved.pending_writes or ()),
+        held=held,
+        saved_at=str(saved.checkpoint["ts"]),
+    )
+
+
+def reviewable(saved: SavedThread | None) -> bool:
+    """Whether a review could resume the thread: it paused at the gate with the draft."""
+    return saved is not None and saved.paused and saved.has_draft
 
 
 async def sweep_saved_state(
@@ -121,49 +132,54 @@ async def sweep_saved_state(
     and pausing with it is not a run that died there. Empty at startup.
 
     An unpublished draft whose run is not in flight belongs to a run that died
-    between saving and pausing, or between pausing and publishing. The thread
-    tells which: one paused with the draft is published here, and displaces
-    and clears as the run would have; one missing or short of the draft is
-    taken back. A published draft whose thread cannot review it, which only a
-    file from before publication can hold, is taken back too.
+    on the way. Its thread tells where: one paused at the gate, with the
+    interrupt still pending, is published here as the run would have, and
+    where several are, in the order their checkpoints were written, which is
+    the order they paused in; one missing, short of the draft, or holding the
+    draft without the pause is taken back, since no review could resume it. A
+    published waiting draft is finished when its thread holds a review the
+    table never recorded, and taken back when no review could resume it, which
+    only a file from before publication can hold.
     """
     published: list[str] = []
     withdrawn: list[str] = []
     cleared: list[str] = []
+    paused: list[tuple[str, DraftRecord]] = []
     for record in drafts.unpublished():
         if record.thread_id in in_flight:
             continue
-        if await paused_with_its_draft(checkpointer, record.thread_id):
-            for displaced in drafts.publish(record.draft_id):
-                await checkpointer.adelete_thread(displaced.thread_id)
-                cleared.append(displaced.thread_id)
-            published.append(record.draft_id)
+        saved = await saved_thread(checkpointer, record.thread_id)
+        if reviewable(saved):
+            paused.append((saved.saved_at if saved else "", record))
         else:
             drafts.withdraw(record.draft_id)
             withdrawn.append(record.draft_id)
-    for record in drafts.waiting():
-        if record.thread_id in in_flight:
-            continue
-        if not await paused_with_its_draft(checkpointer, record.thread_id):
-            drafts.withdraw(record.draft_id)
-            withdrawn.append(record.draft_id)
+    for _, record in sorted(
+        paused, key=lambda item: (item[0], item[1].created_at, item[1].draft_id)
+    ):
+        for displaced in drafts.publish(record.draft_id):
+            await checkpointer.adelete_thread(displaced.thread_id)
+            cleared.append(displaced.thread_id)
+        published.append(record.draft_id)
 
     finished: list[str] = []
     for record in drafts.waiting():
         if record.thread_id in in_flight:
             continue
-        held = await held_review(checkpointer, record.thread_id)
-        if held is None:
-            continue
-        decision, reason = held
-        approved = decision == "approved"
-        drafts.record_decision(
-            record.draft_id,
-            status=DraftStatus.APPROVED_FOR_MANUAL_SEND if approved else DraftStatus.DRAFT,
-            decision=decision,
-            reason=reason,
-        )
-        finished.append(record.draft_id)
+        saved = await saved_thread(checkpointer, record.thread_id)
+        if saved is not None and saved.held is not None:
+            decision, reason = saved.held
+            approved = decision == "approved"
+            drafts.record_decision(
+                record.draft_id,
+                status=DraftStatus.APPROVED_FOR_MANUAL_SEND if approved else DraftStatus.DRAFT,
+                decision=decision,
+                reason=reason,
+            )
+            finished.append(record.draft_id)
+        elif not reviewable(saved):
+            drafts.withdraw(record.draft_id)
+            withdrawn.append(record.draft_id)
 
     today = clock.today()
     expired: list[str] = []
@@ -175,10 +191,10 @@ async def sweep_saved_state(
             expired.append(record.draft_id)
 
     keep = {record.thread_id for record in drafts.waiting()} | set(in_flight)
-    saved: set[str] = set()
+    saved_threads: set[str] = set()
     async for item in checkpointer.alist(None):
-        saved.add(str(item.config["configurable"]["thread_id"]))
-    for thread_id in sorted(thread_id for thread_id in saved if thread_id not in keep):
+        saved_threads.add(str(item.config["configurable"]["thread_id"]))
+    for thread_id in sorted(thread_id for thread_id in saved_threads if thread_id not in keep):
         await checkpointer.adelete_thread(thread_id)
         cleared.append(thread_id)
     return Swept(

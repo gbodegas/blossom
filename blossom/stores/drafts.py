@@ -23,7 +23,7 @@ import threading
 from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Final, Literal, NamedTuple, cast
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
@@ -42,6 +42,13 @@ is published, from whichever page. System-recorded, like an expiry: no person sa
 INTERRUPTED: Final = "interrupted"
 """The outcome recorded on a run that saved its draft and then failed before the
 draft could wait for review. The draft is taken back; the run keeps its steps."""
+
+
+class Displaced(NamedTuple):
+    """A draft a publication displaced, read before the commit; enough to clear its thread."""
+
+    draft_id: str
+    thread_id: str
 
 
 class AlreadyDecided(RuntimeError):
@@ -329,7 +336,7 @@ class DraftsStore:
             )
             self._write_run(thread_id, plan_date, outcome, steps)
 
-    def publish(self, draft_id: str) -> list[DraftRecord]:
+    def publish(self, draft_id: str) -> list[Displaced]:
         """Put a draft on the pages, once its run has paused with it, and return what it displaced.
 
         The draft takes the next place in the published order and, in the same
@@ -340,7 +347,10 @@ class DraftsStore:
         a repeated call leaves, keeps its place and displaces nothing more. The
         caller clears the threads of what was displaced, since no review can
         reach them from then on; it holds the decision lock while doing both, so
-        a review in progress lands or is refused before its thread goes.
+        a review in progress lands or is refused before its thread goes. What
+        is returned was read inside the transaction, so nothing can fail after
+        the commit and leave a caller thinking a committed publication did not
+        happen.
         """
         stamp = self._clock.now().isoformat()
         with self._lock, self._connection:
@@ -361,13 +371,17 @@ class DraftsStore:
                 """,
                 (draft_id,),
             )
-            displaced = self._connection.execute(
-                """
-                SELECT draft_id FROM drafts
-                WHERE plan_date=? AND published=1 AND decision IS NULL AND draft_id<>?
-                """,
-                (str(row["plan_date"]), draft_id),
-            ).fetchall()
+            displaced = [
+                Displaced(str(found["draft_id"]), str(found["thread_id"]))
+                for found in self._connection.execute(
+                    """
+                    SELECT draft_id, thread_id FROM drafts
+                    WHERE plan_date=? AND published=1 AND decision IS NULL AND draft_id<>?
+                    ORDER BY published_order
+                    """,
+                    (str(row["plan_date"]), draft_id),
+                ).fetchall()
+            ]
             self._connection.execute(
                 """
                 UPDATE drafts
@@ -376,7 +390,7 @@ class DraftsStore:
                 """,
                 (SUPERSEDED_REASON, stamp, draft_id, str(row["plan_date"]), draft_id),
             )
-        return [record for row in displaced if (record := self.get(str(row["draft_id"])))]
+        return displaced
 
     def withdraw(self, draft_id: str) -> bool:
         """Take back a waiting draft nobody can review, whose run failed or died before its pause.

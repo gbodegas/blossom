@@ -7,7 +7,7 @@ both rules to whatever a crash left behind.
 
 import asyncio
 import pathlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
@@ -984,3 +984,129 @@ def test_a_publication_that_fails_is_a_failed_run(monkeypatch: pytest.MonkeyPatc
     assert swept.published == ()
     assert swept.withdrawn == ()
     assert state.in_flight == set()
+
+
+def test_recovered_plans_are_published_in_the_order_their_runs_paused() -> None:
+    """Two runs saved in one order, paused in the other, and the process died before publishing."""
+    state = application()
+    try:
+        made_first = Draft(draft_id="draft:plan:alpha", body="alpha", created_at=CREATED_LATER)
+        made_second = Draft(
+            draft_id="draft:plan:zed",
+            body="zed",
+            created_at=CREATED_LATER.replace(hour=23, minute=30),
+        )
+        state.drafts.record_waiting(
+            made_first, thread_id="plan:alpha", plan_date=PLAN_DATE, outcome="accepted"
+        )
+        state.drafts.record_waiting(
+            made_second, thread_id="plan:zed", plan_date=PLAN_DATE, outcome="accepted"
+        )
+
+        async def scenario() -> Swept:
+            for thread in ("plan:zed", "plan:alpha"):
+                await graph_for(state, fixture_week_plan()).ainvoke(
+                    PlanState(plan_date=PLAN_DATE, rounds=0),
+                    config=run_config(thread),
+                    durability=DURABILITY,
+                )
+            return await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+
+        swept = asyncio.run(scenario())
+        waiting = [record.thread_id for record in state.drafts.waiting()]
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert swept.published == ("draft:plan:zed", "draft:plan:alpha")
+    assert waiting == ["plan:alpha"]
+    assert latest is not None
+    assert latest.thread_id == "plan:alpha"
+
+
+class SaverLosingTheInterrupt(InMemorySaver):
+    """A saver that writes the checkpoint before the gate and then cannot write the pause."""
+
+    armed = False
+
+    async def aput_writes(
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        if self.armed and any(channel == "__interrupt__" for channel, _ in writes):
+            msg = "the pause could not be written"
+            raise RuntimeError(msg)
+        await super().aput_writes(config, writes, task_id, task_path)
+
+
+def test_a_draft_whose_thread_never_paused_is_taken_back_not_published() -> None:
+    """The checkpoint before the gate carries the draft; without the pause nothing can resume it."""
+    saver = SaverLosingTheInterrupt()
+    state = application(saver=saver)
+    try:
+
+        async def scenario() -> tuple[str, Swept, set[str]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            saver.armed = True
+            with pytest.raises(RuntimeError, match="pause could not be written"):
+                await graph_for(state, fixture_week_plan()).ainvoke(
+                    PlanState(plan_date=PLAN_DATE, rounds=0),
+                    config=run_config("plan:unpaused"),
+                    durability=DURABILITY,
+                )
+            saver.armed = False
+            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return first.thread_id, swept, await thread_ids(state)
+
+        first, swept, threads = asyncio.run(scenario())
+        waiting = [record.thread_id for record in state.drafts.waiting()]
+    finally:
+        state.close()
+
+    assert swept.published == ()
+    assert swept.withdrawn == ("draft:plan:unpaused",)
+    assert waiting == [first]
+    assert threads == {first}
+
+
+def test_a_retry_with_the_same_button_and_other_words_is_told_the_first_words_stand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = application()
+    try:
+        monkeypatch.setattr(state.drafts, "record_decision", failing_once_then(state.drafts))
+
+        async def scenario() -> tuple[str, int]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            assert first.draft_id is not None
+            with pytest.raises(RuntimeError, match="database is locked"):
+                await decide_draft(
+                    state,
+                    lambda: graph_for(state),
+                    first.draft_id,
+                    DecisionRequest(approved=True, reason="fine"),
+                )
+            try:
+                await decide_draft(
+                    state,
+                    lambda: graph_for(state),
+                    first.draft_id,
+                    DecisionRequest(approved=True, reason="fine, but start earlier"),
+                )
+            except HTTPException as error:
+                return first.draft_id, error.status_code
+            msg = "a retry with other words was reported as its own success"
+            raise AssertionError(msg)
+
+        draft_id, status_code = asyncio.run(scenario())
+        decided = state.drafts.get(draft_id)
+    finally:
+        state.close()
+
+    assert status_code == 409
+    assert decided is not None
+    assert decided.decision == "approved"
+    assert decided.reason == "fine"

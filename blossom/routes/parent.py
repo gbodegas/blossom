@@ -110,10 +110,11 @@ class DecisionRequest(BaseModel):
 
 
 SIGNALED_SINCE: Final = (
-    "She has said today is too much since this plan was made. Plan again before approving."
+    "She has said today is too much, and this plan was made for the full evening. "
+    "Plan again before approving."
 )
 SIGNAL_ENDED: Final = (
-    "Her signal for this evening has ended, taken back or past its week, and this plan "
+    "Her signal for this evening is gone, taken back or past its week, and this plan "
     "was kept short for it. Plan again for the full evening."
 )
 
@@ -121,9 +122,12 @@ SIGNAL_ENDED: Final = (
 def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
     """Why a waiting draft has stopped fitting the evening, or ``None`` while it fits.
 
-    A draft is made for the evening as she had described it at the time. When
-    her signal has changed since, the plan on the page is not the plan the
-    checks held to the current budget, so it is not approved as it stands.
+    A draft is made for the evening as she had described it when the run
+    read it. When her signal as it stands is not that one, the plan on the
+    page is not the plan the checks held to the current budget, so it is not
+    approved as it stands. Neither message says which came first: her signal
+    can change while a run is still on its way to the draft, so the pages say
+    only that the two do not match.
     Refusing it is still allowed; refusing never sends anything. Only a
     waiting draft can be stale: a decided one is a record of what was decided,
     and is not measured against the evening again.
@@ -266,7 +270,12 @@ async def decide_draft(
     if decided is None or decided.waiting:
         msg = f"the run resumed but no decision was recorded for {draft_id!r}"
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
-    if resume is None and (decided.decision == "approved") != request.approved:
+    if resume is None and (
+        (decided.decision == "approved") != request.approved or decided.reason != request.reason
+    ):
+        # The review that reached the thread first stands, words and all, as
+        # it would had it been recorded at once; a request that differs in
+        # either is told so rather than reported as its own success.
         raise HTTPException(
             status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} was already {decided.decision}"
         )

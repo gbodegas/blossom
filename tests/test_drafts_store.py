@@ -825,6 +825,41 @@ def test_a_draft_taken_back_before_publication_leaves_the_plan_before_it_untouch
     ]
 
 
+def test_what_a_publication_displaced_is_read_before_the_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing after the commit can fail and make a committed publication look failed."""
+    store = store_in_memory()
+    try:
+        save_and_publish(
+            store,
+            Draft(draft_id="draft:a", body="a", created_at=CREATED),
+            thread_id="ta",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        store.record_waiting(
+            Draft(draft_id="draft:b", body="b", created_at=CREATED),
+            thread_id="tb",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+
+        def broken(draft_id: str) -> None:
+            msg = "no reads after the commit"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(store, "get", broken)
+        displaced = store.publish("draft:b")
+        monkeypatch.undo()
+        waiting = [record.draft_id for record in store.waiting()]
+    finally:
+        store.close()
+
+    assert [(item.draft_id, item.thread_id) for item in displaced] == [("draft:a", "ta")]
+    assert waiting == ["draft:b"]
+
+
 def test_publishing_an_unknown_draft_is_an_error() -> None:
     store = store_in_memory()
     try:

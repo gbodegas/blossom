@@ -210,11 +210,11 @@ def create_lifespan(settings: Settings) -> Lifespan:
         # changed: hosted tracing is forced off here, before any store or
         # model client exists that could read the old value.
         enforce_local_only_tracing()
-        # One process serves a household. The claim is taken before any file
-        # is opened, so a second process is refused with a sentence rather
-        # than left to share state it would then corrupt, and released when
-        # this process stops.
-        claim = claim_household(settings.database_path)
+        # One process serves a household. The claim covers both files that
+        # make up its state, is taken before either is opened, so a second
+        # process is refused with a sentence rather than left to share state
+        # it would then corrupt, and is released when this process stops.
+        claim = claim_household(settings.database_path, settings.checkpoint_path)
         try:
             async with open_checkpointer(settings.checkpoint_path) as checkpointer:
                 state = build_application_state(settings, checkpointer)

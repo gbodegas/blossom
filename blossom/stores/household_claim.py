@@ -10,7 +10,10 @@ beside the drafts file, holds it for as long as it runs, and a second process
 is refused with a sentence naming the file, before it opens anything.
 
 The lock is the operating system's, so a process that dies releases it, and
-nothing stale has to be cleaned up by hand.
+nothing stale has to be cleaned up by hand. Both files that make up the
+household's state are claimed, the drafts file and the saved-state file, since
+each can be pointed elsewhere on its own, and the path is resolved before the
+lock file is named, so two spellings of one file claim one lock.
 """
 
 import sys
@@ -52,29 +55,44 @@ class AnotherProcessHasTheHousehold(RuntimeError):
 class HouseholdClaim:
     """An exclusive claim on a household's files, held until released."""
 
-    def __init__(self, lock_path: Path) -> None:
-        self.lock_path = lock_path
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle: IO[bytes] = lock_path.open("a+b")
-        try:
-            _lock(self._handle)
-        except OSError as error:
-            self._handle.close()
-            raise AnotherProcessHasTheHousehold(lock_path) from error
+    def __init__(self, *lock_paths: Path) -> None:
+        self.lock_paths = lock_paths
+        self._handles: list[IO[bytes]] = []
+        for lock_path in lock_paths:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            handle: IO[bytes] = lock_path.open("a+b")
+            try:
+                _lock(handle)
+            except OSError as error:
+                handle.close()
+                self.release()
+                raise AnotherProcessHasTheHousehold(lock_path) from error
+            self._handles.append(handle)
 
     def release(self) -> None:
         """Let another process claim the household; called when this one stops."""
-        try:
-            _unlock(self._handle)
-        finally:
-            self._handle.close()
+        handles, self._handles = self._handles, []
+        for handle in handles:
+            try:
+                _unlock(handle)
+            finally:
+                handle.close()
 
 
-def lock_path_for(database_path: Path) -> Path:
-    """Beside the drafts file: ``blossom.sqlite3`` is claimed through ``blossom.lock``."""
-    return database_path.with_suffix(".lock")
+def lock_path_for(state_path: Path) -> Path:
+    """The lock file beside a state file, named for the file as it really is.
+
+    ``blossom.sqlite3`` is claimed through ``blossom.lock`` in the same
+    folder. The path is resolved first, so a file reached by two spellings,
+    through a link or a relative path, is claimed through one lock.
+    """
+    return state_path.resolve().with_suffix(".lock")
 
 
-def claim_household(database_path: Path) -> HouseholdClaim:
-    """Claim the household whose drafts live at ``database_path``, or refuse."""
-    return HouseholdClaim(lock_path_for(database_path))
+def claim_household(*state_paths: Path) -> HouseholdClaim:
+    """Claim the household whose state lives in ``state_paths``, or refuse.
+
+    One lock per distinct file, in the order given, so a claim refused on the
+    second releases the first before it raises.
+    """
+    return HouseholdClaim(*dict.fromkeys(lock_path_for(path) for path in state_paths))

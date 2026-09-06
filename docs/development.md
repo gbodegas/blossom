@@ -194,8 +194,9 @@ other two.
 
 **The app refuses to start and says another Blossom process has this
 household's files open.** One process serves a household; the file it names,
-`blossom.lock` beside the drafts file, is held by the process already running,
-and released when that process stops. Stop the other server, or point this one
+`blossom.lock` beside the drafts file or `checkpoints.lock` beside the
+saved-state file, is held by the process already running, and released when
+that process stops. Stop the other server, or point this one
 at other files with the three path variables above. A process that was killed
 releases the lock on its own, so nothing needs deleting.
 

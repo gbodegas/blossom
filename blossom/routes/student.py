@@ -52,11 +52,11 @@ logger = logging.getLogger(__name__)
 PAGE: Final = "/student/due-this-week"
 
 SIGNALED_SINCE: Final = (
-    "You said today is too much after this plan was made. Plan again to make it smaller."
+    "You have said today is too much, and this plan was made for the full evening. "
+    "Plan again to make it smaller."
 )
 SIGNAL_ENDED: Final = (
-    "Your signal ended after this plan was made, and the plan was kept short for it. "
-    "Plan again for the full evening."
+    "This plan was kept short for a signal that is not there now. Plan again for the full evening."
 )
 
 router = APIRouter(prefix="/student", tags=["student"])
