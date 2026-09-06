@@ -399,6 +399,7 @@ def build_plan_graph(
             plan_date=state["plan_date"],
             outcome=cast(Literal["accepted", "unsettled"], outcome),
             steps=state.get("steps", []),
+            too_much=state.get("too_much", False),
         )
         return {"draft": draft}
 

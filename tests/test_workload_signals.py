@@ -327,3 +327,77 @@ def test_the_application_keeps_her_signals_in_the_drafts_file_swept_by_the_real_
     assert len(held) == 1
     assert held[0].evening == date(2026, 8, 19)
     assert held[0].given_at.date() > date(2026, 8, 19)
+
+
+# ----------------------------------------------- a draft made for another evening
+
+
+def test_a_press_after_a_draft_is_waiting_makes_it_stale() -> None:
+    with browser() as client:
+        started = client.post("/parent/plans", json={}).json()
+        client.post("/student/actions/too-much")
+        queue = client.get("/parent/approvals").json()["waiting"]
+        page = client.get("/parent").text
+        approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
+
+    assert queue[0]["stale"] == (
+        "She has said today is too much since this plan was made. Plan again before approving."
+    )
+    assert "Plan again." in page
+    assert 'value="approve"' not in page
+    assert 'value="refuse"' in page
+    assert approve.status_code == 409
+    assert approve.json()["detail"] == queue[0]["stale"]
+
+
+def test_a_stale_draft_can_still_be_refused() -> None:
+    with browser() as client:
+        started = client.post("/parent/plans", json={}).json()
+        client.post("/student/actions/too-much")
+        refused = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": False})
+
+    assert refused.status_code == 200
+    assert refused.json()["decision"] == "rejected"
+
+
+def test_taking_the_signal_back_after_a_reduced_draft_makes_it_stale() -> None:
+    with browser() as client:
+        signal_id = client.post("/student/workload-signals").json()["signal"]["signal_id"]
+        started = client.post("/parent/plans", json={}).json()
+        client.delete(f"/student/workload-signals/{signal_id}")
+        queue = client.get("/parent/approvals").json()["waiting"]
+        approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
+
+    assert queue[0]["stale"] == (
+        "She took back her signal since this plan was made. "
+        "Plan again to give her the full evening."
+    )
+    assert approve.status_code == 409
+
+
+def test_a_plan_made_after_the_press_fits_and_can_be_approved() -> None:
+    with browser() as client:
+        client.post("/student/actions/too-much")
+        started = client.post("/parent/plans", json={}).json()
+        queue = client.get("/parent/approvals").json()["waiting"]
+        approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
+
+    assert queue[0]["stale"] is None
+    assert started["steps"][0]["found"].endswith("so the budget is 75 minutes")
+    assert approve.status_code == 200
+    assert approve.json()["decision"] == "approved"
+
+
+# ------------------------------------------------------------- retention on reads
+
+
+def test_reads_leave_out_a_signal_past_its_week_before_any_sweep() -> None:
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    then = WorkloadSignalsStore(connection, FrozenClock(OBSERVED_AT, ZONE))
+    then.record(PLAN_DATE)
+    later = OBSERVED_AT + timedelta(days=SIGNAL_RETENTION_DAYS + 1)
+    now = WorkloadSignalsStore(connection, FrozenClock(later, ZONE))
+
+    assert now.for_evening(PLAN_DATE) == []
+    assert now.held() == []
+    assert now.sweep() == 1

@@ -70,12 +70,17 @@
         {% endif %}
         <pre class="body">{{ draft.body }}</pre>
         {{ steps_list(draft.steps, "How this plan was made") }}
+        {% if draft.stale %}
+          <p class="confidence disagree" role="alert"><strong>Plan again.</strong> {{ draft.stale }}</p>
+        {% endif %}
         <form method="post" action="/parent/actions/decide/{{ draft.draft_id }}" class="decision">
           <label>Reason (optional)
             <input type="text" name="reason" maxlength="500" placeholder="A sentence she would recognize">
           </label>
           <div class="actions">
-            <button type="submit" name="decision" value="approve" class="primary">Approve</button>
+            {% if not draft.stale %}
+              <button type="submit" name="decision" value="approve" class="primary">Approve</button>
+            {% endif %}
             <button type="submit" name="decision" value="refuse" class="secondary">Refuse</button>
           </div>
           <p class="note">

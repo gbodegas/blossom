@@ -165,11 +165,15 @@ class ApprovalView(BaseModel):
     decided_at: AwareDatetime | None
     steps: list[StepRecord] = []
     """How the plan was made, read from the same snapshot as the draft."""
+    stale: str | None = None
+    """Why this draft is not approved as it stands, when her signal has changed
+    since it was made; ``None`` while the draft still fits the evening."""
 
     @classmethod
-    def from_record(cls, record: DraftRecord) -> "ApprovalView":
+    def from_record(cls, record: DraftRecord, stale: str | None = None) -> "ApprovalView":
         """The parent's projection of a table row. The thread id stays out of it."""
         return cls(
+            stale=stale,
             steps=record.steps,
             draft_id=record.draft_id,
             plan_date=record.plan_date,

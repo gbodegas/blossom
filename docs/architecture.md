@@ -454,8 +454,17 @@ reduced budget because she said so. This is the third tier of verification
 acting the only way it can: her judgment overrides the plan directly rather
 than becoming one more input to a score.
 
+A draft already waiting for the evening carries the signal state it was made
+for. When her signal changes after that, a press after a full-evening plan or
+a take-back after a reduced one, the parent's page says to plan again, the
+approve button is gone, and the approval route refuses with the same sentence;
+refusing still works, since refusing sends nothing. A plan made after the
+change fits again.
+
 The store keeps a signal for `SIGNAL_RETENTION_DAYS`, seven, stamped and swept
-by the real clock even when the household clock is pinned. Her page lists
+by the real clock even when the household clock is pinned, and every read
+applies the same cutoff, so a signal past its week stops counting whether or
+not a sweep has run since. Her page lists
 everything still kept, each with a way to remove it, and the JSON routes list
 and delete the same. The store answers one question for the planner, whether
 an evening was signaled, and offers nothing about patterns: no query groups

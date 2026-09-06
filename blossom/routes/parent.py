@@ -57,7 +57,7 @@ from blossom.agent.trace import LocalRunTracer
 from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.settings import TEMPLATE_PATH
-from blossom.stores.drafts import AlreadyDecided
+from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.views import (
     ApprovalQueueView,
     ApprovalView,
@@ -149,6 +149,33 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
     )
 
 
+SIGNALED_SINCE: Final = (
+    "She has said today is too much since this plan was made. Plan again before approving."
+)
+WITHDRAWN_SINCE: Final = (
+    "She took back her signal since this plan was made. Plan again to give her the full evening."
+)
+
+
+def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
+    """Why a waiting draft has stopped fitting the evening, or ``None`` while it fits.
+
+    A draft is made for the evening as she had described it at the time. When
+    her signal has changed since, the plan on the page is not the plan the
+    checks held to the current budget, so it is not approved as it stands.
+    Refusing it is still allowed; refusing never sends anything.
+    """
+    signaled = bool(state.workload_signals.for_evening(record.plan_date))
+    if signaled == record.too_much:
+        return None
+    return SIGNALED_SINCE if signaled else WITHDRAWN_SINCE
+
+
+def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
+    """A draft as the parent sees it, with whether it still fits the evening."""
+    return ApprovalView.from_record(record, stale=stale_reason(state, record))
+
+
 async def run_plan(
     graph: CompiledPlanGraph,
     plan_date: date,
@@ -199,7 +226,7 @@ def approvals(state: State) -> ApprovalQueueView:
     """Every draft waiting for a decision, oldest first. Needs no model to read."""
     return ApprovalQueueView(
         generated_at=state.clock.now(),
-        waiting=[ApprovalView.from_record(record) for record in state.drafts.waiting()],
+        waiting=[approval_view(state, record) for record in state.drafts.waiting()],
     )
 
 
@@ -209,7 +236,7 @@ def approval(draft_id: str, state: State) -> ApprovalView:
     record = state.drafts.get(draft_id)
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no draft {draft_id!r}")
-    return ApprovalView.from_record(record)
+    return approval_view(state, record)
 
 
 @router.post("/approvals/{draft_id}", response_model=DecisionView)
@@ -242,6 +269,9 @@ async def decide_draft(
                 status.HTTP_409_CONFLICT,
                 detail=f"draft {draft_id!r} was already {record.decision}",
             )
+        stale = stale_reason(state, record)
+        if request.approved and stale is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=stale)
         graph = build()
         config = run_config(record.thread_id, callbacks=[state.tracer])
         snapshot = await graph.aget_state(config)
@@ -310,8 +340,8 @@ def review_page(
         {
             "today": state.clock.today(),
             "model_available": model_configured(state.settings),
-            "waiting": [ApprovalView.from_record(record) for record in state.drafts.waiting()],
-            "decided": [ApprovalView.from_record(record) for record in state.drafts.decided()],
+            "waiting": [approval_view(state, record) for record in state.drafts.waiting()],
+            "decided": [approval_view(state, record) for record in state.drafts.decided()],
             "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
             "problem": problem,
         },

@@ -105,30 +105,47 @@ class WorkloadSignalsStore:
         return removed > 0
 
     def for_evening(self, evening: date) -> list[WorkloadSignal]:
-        """Every signal about one evening, earliest first."""
+        """Every signal about one evening still within retention, earliest first.
+
+        The cutoff is applied on the read as well as by the sweep, so a signal
+        past its week stops counting the moment it ages out, whether or not a
+        sweep has run since.
+        """
         with self._lock:
             rows = self._connection.execute(
-                "SELECT * FROM workload_signals WHERE evening=? ORDER BY given_at, signal_id",
-                (evening.isoformat(),),
+                """
+                SELECT * FROM workload_signals
+                WHERE evening=? AND given_at >= ?
+                ORDER BY given_at, signal_id
+                """,
+                (evening.isoformat(), self._cutoff()),
             ).fetchall()
         return [signal_from(row) for row in rows]
 
     def held(self) -> list[WorkloadSignal]:
-        """Everything the store holds, most recent first: what she can see and take back."""
+        """Everything still within retention, most recent first: what she can see and take back."""
         with self._lock:
             rows = self._connection.execute(
-                "SELECT * FROM workload_signals ORDER BY given_at DESC, signal_id"
+                """
+                SELECT * FROM workload_signals
+                WHERE given_at >= ?
+                ORDER BY given_at DESC, signal_id
+                """,
+                (self._cutoff(),),
             ).fetchall()
         return [signal_from(row) for row in rows]
 
-    def sweep(self, keep_days: int = SIGNAL_RETENTION_DAYS) -> int:
-        """Delete every signal given more than ``keep_days`` ago; return how many went."""
-        cutoff = (self._clock.now() - timedelta(days=keep_days)).isoformat()
+    def sweep(self) -> int:
+        """Delete every signal past retention; return how many went."""
         with self._lock, self._connection:
             removed = self._connection.execute(
-                "DELETE FROM workload_signals WHERE given_at < ?", (cutoff,)
+                "DELETE FROM workload_signals WHERE given_at < ?", (self._cutoff(),)
             ).rowcount
         return int(removed)
+
+    def _cutoff(self) -> str:
+        """The oldest instant still within retention, by the store's clock."""
+        return (self._clock.now() - timedelta(days=SIGNAL_RETENTION_DAYS)).isoformat()
 
 
 def signal_from(row: sqlite3.Row) -> WorkloadSignal:

@@ -53,9 +53,9 @@ one, by sources that disagree, or by nothing. Nothing is left off for being
 doubtful. The bundled data is a fictional student's week with the awkward
 cases included on purpose: a form to sign with no due date, a book to cover
 whose date the portal gives two ways, and a quiz the family's record puts
-next week while the portal puts it this Friday. When no source supports the
-record, the page says the school disagrees, and a plan is held to the
-earliest date anyone gives.
+next week while the portal puts it this Friday. When sources give dates but
+none matches the record, the page says the school disagrees, and a plan is
+held to the earliest date anyone gives.
 
 **A parent's review.** From a second page, a parent asks for an evening's
 plan. A planner proposes one, deterministic checks hold it to the record, a
