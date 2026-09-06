@@ -35,8 +35,8 @@ showing the date anyway.
 The second thing it is for is the days when everything is already too much.
 Nobody in that state has the capacity to open an app and rate their overwhelm
 on a scale from one to ten. Blossom will have a single control that means
-"too much right now", as frictionless as squeezing a stress ball, and it will
-treat that signal as true the moment it arrives.
+"too much right now", as frictionless as squeezing a stress ball, and it
+treats that signal as true the moment it arrives.
 
 I do not have a success metric yet. Success looks like the agent making her
 own tracking legible to her rather than replacing it, and I intend to define
@@ -44,7 +44,7 @@ what that means with her rather than on her behalf.
 
 ## What works today
 
-Blossom is early, and it is built for one household. Two things work end to
+Blossom is early, and it is built for one household. Three things work end to
 end.
 
 **Her week.** A page lists everything due in the coming days, each item
@@ -53,9 +53,9 @@ one, by sources that disagree, or by nothing. Nothing is left off for being
 doubtful. The bundled data is a fictional student's week with the awkward
 cases included on purpose: a form to sign with no due date, a book to cover
 whose date the portal gives two ways, and a quiz the family's record puts
-next week while the portal puts it this Friday. When no source supports the
-record, the page says the school disagrees, and a plan is held to the
-earliest date anyone gives.
+next week while the portal puts it this Friday. When sources give dates but
+none matches the record, the page says the school disagrees, and a plan is
+held to the earliest date anyone gives.
 
 **A parent's review.** From a second page, a parent asks for an evening's
 plan. A planner proposes one, deterministic checks hold it to the record, a
@@ -73,10 +73,14 @@ the store refuses any reflection whose subject is not the system. That checks
 the label, not the words: a note filed under the system could still be about
 her, and nothing yet reads the text to tell.
 
-Two things the design calls for are not built. There is no login: the
-student, parent, and verifier views are separate pages, not separate people,
-and anyone who can reach the server can open all of them, so run it on your
-own machine. And the "too much" control is accepted and changes nothing yet.
+**Too much right now.** One button on her page, no rating and no reason
+asked. Pressing it shows at once what changed: tonight's plan is held to half
+the usual time, and the planner is told her word on the evening is final. The
+press is kept for a week where she can see it, and she can take it back.
+
+One thing the design calls for is not built. There is no login: the student,
+parent, and verifier views are separate pages, not separate people, and anyone
+who can reach the server can open all of them, so run it on your own machine.
 [docs/architecture.md](docs/architecture.md) lists every gap between the
 design and the code.
 

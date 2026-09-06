@@ -81,8 +81,10 @@ def describe_week(
     *,
     rules: int,
     notes: int,
+    budget: int,
+    too_much: bool,
 ) -> str:
-    """The week in one line: how much there is and how much of it is in doubt."""
+    """The week in one line: how much there is, how much is in doubt, and tonight's budget."""
     contradicted = sum(item.contradicted for item in noticings)
     uncertain = sum(
         label is not SourceConfidence.CORROBORATED
@@ -90,10 +92,15 @@ def describe_week(
         if name in {item.assignment_id for item in assignments}
     )
     undated = sum(item.due_date is None for item in assignments)
+    evening = (
+        f"she said today is too much, so the budget is {budget} minutes"
+        if too_much
+        else f"budget {budget} minutes"
+    )
     return (
         f"{count(len(assignments), 'assignment')} in the week: {contradicted} contradicted, "
         f"{uncertain} uncertain, {undated} undated; {count(rules, 'rule')} and "
-        f"{count(notes, 'note')} to follow"
+        f"{count(notes, 'note')} to follow; {evening}"
     )
 
 

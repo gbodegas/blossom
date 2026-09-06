@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends
 from langchain_core.callbacks.manager import CallbackManager
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tracers.langchain import LangChainTracer
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -43,6 +43,7 @@ from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.stores.support_rules import SupportRule, SupportRulesStore
+from blossom.stores.workload_signals import WorkloadSignalsStore
 
 FIXTURE_TIMEZONE = "America/New_York"
 """The zone the synthetic fixtures are written in. A fictional household's."""
@@ -257,6 +258,7 @@ def graph_with(
     rules: Sequence[str] = (),
     notes: Sequence[str] = (),
     source: TwoChannelSource | None = None,
+    signals: WorkloadSignalsStore | None = None,
 ) -> CompiledPlanGraph:
     project_state, support_rules, reflections = stores(assignments)
     for index, rule in enumerate(rules):
@@ -277,6 +279,7 @@ def graph_with(
         support_rules=support_rules,
         reflections=reflections,
         drafts=drafts or drafts_in_memory(),
+        signals=signals or signals_in_memory(),
         clock=fixture_clock(),
         planner=planner,
         critic=critic,
@@ -287,6 +290,12 @@ def graph_with(
 
 def drafts_in_memory() -> DraftsStore:
     return DraftsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+
+
+def signals_in_memory() -> WorkloadSignalsStore:
+    return WorkloadSignalsStore(
+        sqlite3.connect(":memory:", check_same_thread=False), fixture_clock()
+    )
 
 
 # ------------------------------------------------- the fixture week through the app
@@ -359,3 +368,9 @@ def scripted_graphs(
         )
 
     return override
+
+
+def human_text(brief: Sequence[BaseMessage]) -> str:
+    human = [message for message in brief if isinstance(message, HumanMessage)]
+    assert len(human) == 1
+    return str(human[0].content)

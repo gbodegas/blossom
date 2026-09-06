@@ -422,3 +422,38 @@ def test_a_draft_is_read_with_its_steps_from_one_query() -> None:
     )
     assert decided.steps == steps
     assert store.decided()[0].steps == steps
+
+
+def test_a_file_written_before_drafts_carried_the_signal_gains_the_column() -> None:
+    """Every draft in such a file was made for a full evening."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        """
+        CREATE TABLE drafts (
+            draft_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, plan_date TEXT NOT NULL,
+            status TEXT NOT NULL, outcome TEXT NOT NULL, body TEXT NOT NULL,
+            created_at TEXT NOT NULL, decided_at TEXT, decision TEXT, reason TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO drafts VALUES (
+            'draft:old', 'plan:old', '2026-08-19', 'DRAFT', 'accepted', 'Plan',
+            '2026-08-19T22:00:00+00:00', NULL, NULL, NULL
+        )
+        """
+    )
+    connection.commit()
+
+    store = DraftsStore(connection, fixture_clock())
+    old = store.get("draft:old")
+    store.record_waiting(
+        draft(), thread_id="plan:new", plan_date=PLAN_DATE, outcome="accepted", too_much=True
+    )
+    new = store.get(draft().draft_id)
+
+    assert old is not None
+    assert old.too_much is False
+    assert new is not None
+    assert new.too_much is True

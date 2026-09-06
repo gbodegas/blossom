@@ -65,6 +65,9 @@ class DraftRecord(BaseModel):
     reason: str | None = None
     steps: list[StepRecord] = []
     """The record of the run that produced the draft, read with it in one query."""
+    too_much: bool = False
+    """Whether she had said the evening was too much when this draft was made. A
+    draft made for one kind of evening is not approved for the other."""
 
     @property
     def waiting(self) -> bool:
@@ -116,10 +119,20 @@ class DraftsStore:
                 created_at TEXT NOT NULL,
                 decided_at TEXT,
                 decision TEXT,
-                reason TEXT
+                reason TEXT,
+                too_much INTEGER NOT NULL DEFAULT 0
             )
             """
         )
+        columns = {
+            str(row["name"]) for row in self._connection.execute("PRAGMA table_info(drafts)")
+        }
+        if "too_much" not in columns:
+            # A file written before drafts carried the signal: every draft in it
+            # was made for a full evening.
+            self._connection.execute(
+                "ALTER TABLE drafts ADD COLUMN too_much INTEGER NOT NULL DEFAULT 0"
+            )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS runs (
@@ -168,6 +181,7 @@ class DraftsStore:
         plan_date: date,
         outcome: Outcome,
         steps: Sequence[StepRecord] = (),
+        too_much: bool = False,
     ) -> None:
         """Save a draft the moment it exists, before the gate pauses on it.
 
@@ -181,12 +195,13 @@ class DraftsStore:
             self._connection.execute(
                 """
                 INSERT INTO drafts (
-                    draft_id, thread_id, plan_date, status, outcome, body, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    draft_id, thread_id, plan_date, status, outcome, body, created_at, too_much
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
                     status=excluded.status,
                     outcome=excluded.outcome,
-                    body=excluded.body
+                    body=excluded.body,
+                    too_much=excluded.too_much
                 """,
                 (
                     draft.draft_id,
@@ -196,6 +211,7 @@ class DraftsStore:
                     outcome,
                     draft.body,
                     draft.created_at.isoformat(),
+                    int(too_much),
                 ),
             )
             self._write_run(thread_id, plan_date, outcome, steps)
@@ -363,7 +379,7 @@ def step_from(row: sqlite3.Row) -> StepRecord:
 DRAFTS_WITH_STEPS = """
     SELECT drafts.draft_id, drafts.thread_id, drafts.plan_date, drafts.status,
            drafts.outcome, drafts.body, drafts.created_at, drafts.decided_at,
-           drafts.decision, drafts.reason,
+           drafts.decision, drafts.reason, drafts.too_much,
            steps.node, steps.round, steps.expected, steps.found,
            steps.recorded_at AS step_recorded_at
     FROM drafts LEFT JOIN steps ON steps.thread_id = drafts.thread_id
@@ -410,4 +426,5 @@ def record_from(row: sqlite3.Row, steps: list[StepRecord]) -> DraftRecord:
         decision=cast(Decision | None, None if decision is None else str(decision)),
         reason=None if reason is None else str(reason),
         steps=steps,
+        too_much=bool(row["too_much"]),
     )

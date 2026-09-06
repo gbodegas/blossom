@@ -44,13 +44,40 @@ class StudentAssignmentView(BaseModel):
     """What the sources say when none of them supports the record's date; empty otherwise."""
 
 
+class WorkloadSignalView(BaseModel):
+    """One press of her control as she sees it: which evening, when, and her words.
+
+    This is the whole of what the store keeps about a press. What she can see
+    on her page and what is kept are the same thing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    signal_id: str
+    evening: date
+    given_at: AwareDatetime
+    given_local: AwareDatetime
+    detail: str | None = None
+    """Words she chose to add, exactly as kept; ``None`` when she pressed and said nothing."""
+
+
 class StudentDueThisWeekView(BaseModel):
-    """Her week. Every assignment in the window appears, nothing is filtered out."""
+    """Her week. Every assignment in the window appears, nothing is filtered out.
+
+    ``too_much`` is tonight's signal when she has given one, and
+    ``budget_minutes`` is what the evening's plan is held to as a result.
+    ``signals`` is everything the store still keeps, so she can see it and take
+    any of it back.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     generated_at: AwareDatetime
     assignments: list[StudentAssignmentView]
+    full_budget_minutes: int
+    budget_minutes: int
+    too_much: WorkloadSignalView | None = None
+    signals: list[WorkloadSignalView] = []
 
 
 class ParentCheckpointAssignmentView(BaseModel):
@@ -143,11 +170,15 @@ class ApprovalView(BaseModel):
     decided_at: AwareDatetime | None
     steps: list[StepRecord] = []
     """How the plan was made, read from the same snapshot as the draft."""
+    stale: str | None = None
+    """Why this draft is not approved as it stands, when her signal has changed
+    since it was made; ``None`` while the draft still fits the evening."""
 
     @classmethod
-    def from_record(cls, record: DraftRecord) -> "ApprovalView":
+    def from_record(cls, record: DraftRecord, stale: str | None = None) -> "ApprovalView":
         """The parent's projection of a table row. The thread id stays out of it."""
         return cls(
+            stale=stale,
             steps=record.steps,
             draft_id=record.draft_id,
             plan_date=record.plan_date,

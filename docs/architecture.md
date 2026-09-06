@@ -99,8 +99,12 @@ two form actions call the functions the JSON routes call and redirect back to
 the page, so there is one way to start a run and one way to decide whichever
 door it comes through, and a failure renders the page with the same status and
 reason the API would have answered. The decision field admits exactly the two
-button values. Without a key the page still reads and says why a plan cannot
-start.
+button values, and the reason is capped at `REASON_MAX_LENGTH`, five hundred
+characters, on the form and on the JSON request alike, so a longer one is
+refused at the boundary rather than stored. Each Approve and Refuse button
+carries an accessible name with the draft's evening, and its position when
+several wait, so the controls can be told apart without reading around them.
+Without a key the page still reads and says why a plan cannot start.
 
 Under each draft the page shows how the plan was made: the run's step records,
 one per node, each saying what the node expected and what it found. A run that
@@ -200,7 +204,7 @@ confident match from the only candidate; the design calls for three to five.
 **Not wired:** no route or node constructs the router. `ProjectStateStore.lookup`
 still answers the structured side for one that would.
 
-## Five stores, five risk profiles
+## Six stores, six risk profiles
 
 | Store | Contents | State |
 |---|---|---|
@@ -209,6 +213,7 @@ still answers the structured side for one that would.
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
+| `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -423,7 +428,8 @@ with the run, and the hosted tracer stays closed: the boundary scan opens the
 tracer base and its run schema to this one file and nothing else, and the
 package-level re-export stays closed even there. The trace holds the
 student's schoolwork verbatim, so it is its own file, and rows older than
-`TRACE_RETENTION_DAYS` are swept at startup and after each run. The store
+`TRACE_RETENTION_DAYS` are swept at startup, after each run, and every hour
+the process is up. The store
 stamps and sweeps by the real clock even when the household clock is pinned
 for the fixtures, since a pinned clock would never move the cutoff. Nothing
 reads it to decide anything; it is for finding out why a run did what it did.
@@ -435,15 +441,55 @@ the file.
 
 ## The workload signal
 
-`POST /student/workload-signals` takes no body. It does not ask her to rate or
-describe anything: assigning a rating requires stepping back and assessing, and
-that capacity is least available exactly when the signal matters most.
+The control is one press. `POST /student/workload-signals` takes no body, and
+the button on her page sends nothing but the press. It does not ask her to
+rate or describe anything: assigning a rating requires stepping back and
+assessing, and that capacity is least available exactly when the signal
+matters most. Words may be attached, and are never asked for.
 
-**Not built:** the signal is accepted and discarded. Nothing stores it, nothing
-reduces a plan in response, and the response reports only receipt. The design
-requires it to produce an immediate visible result, since a control that
-changes nothing observable gets abandoned. It also requires brief retention,
-visibility to her, and deletion by her. None of that exists.
+A press records that today, by the household's clock, is too much, in
+`WorkloadSignalsStore`, `blossom/stores/workload_signals.py`. Three things
+follow, each visible at once. Her page shows the signal, the time she gave it,
+and what it changes, with a button to take it back. The evening's budget is
+cut to half (`reduced_budget`), and the cut is made in the graph's `retrieve`
+node before the planner is asked, so the tier-one budget check enforces it and
+the planner is told, in a block written by this system, that her word on the
+evening is final. The draft the parent reads says the plan was kept to the
+reduced budget because she said so. This is the third tier of verification
+acting the only way it can: her judgment overrides the plan directly rather
+than becoming one more input to a score.
+
+A draft already waiting for the evening carries the signal state it was made
+for. When her signal changes after that, a press after a full-evening plan or
+a signal ending after a reduced one, the parent's page says to plan again, the
+approve button is gone, and the approval route refuses with the same sentence;
+refusing still works, since refusing sends nothing. A plan made after the
+change fits again, and a decided draft is not measured against the evening
+again. A signal is recorded or taken back under the lock a decision holds, so
+the evening a decision was checked against cannot change before the decision
+lands. A signal that is gone was taken back or aged out, and the store does
+not say which, so the message names both rather than putting an action on her
+that she may not have taken.
+
+Words she adds are capped at `DETAIL_MAX_LENGTH`, five hundred characters, at
+the boundary and in the store, so a request cannot grow the file or every
+later page. The store keeps a signal for `SIGNAL_RETENTION_DAYS`, seven, stamped and swept
+by the real clock even when the household clock is pinned, and every read
+applies the same cutoff, so a signal past its week stops counting whether or
+not a sweep has run since. The sweep runs at startup and then every hour the
+process is up, with the trace sweep and the saved-state rules, so nothing
+waits for a restart to be gone. Her page lists
+everything still kept, each with a way to remove it, and the JSON routes list
+and delete the same. The store answers one question for the planner, whether
+an evening was signaled, and offers nothing about patterns: no query groups
+signals by weekday or counts them over a month, because a record like that
+would be about her rather than about the plan.
+
+**Not built:** the design wants the control to be closer to a stress ball than
+a button on a page, a hardware button, a lock screen control, or a single-tap
+shortcut, and whether asking for a coping strategy is the same gesture or a
+second one is a question for her. The page's button is the form the control
+takes until those are decided with her.
 
 ## Configuration, time, and lifecycle
 
@@ -544,7 +590,9 @@ records itself, and its thread is cleared with it. At startup a sweep applies
 both rules to whatever the last process left behind: it expires the drafts
 that waited too long, then clears every thread that no waiting draft refers
 to, which covers finished runs whose thread was never removed and runs that
-never finished. The saver's only pruning primitive deletes a thread whole, and
+never finished. The same sweep runs every hour the process is up, under the
+decision lock, so a draft's fortnight ends when it ends rather than at the
+next restart. The saver's only pruning primitive deletes a thread whole, and
 that is the only granularity the rule needs.
 
 **Not built:** the student's ability to see and delete what a thread holds.

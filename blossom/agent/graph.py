@@ -78,7 +78,12 @@ from blossom.dependencies import ApplicationState
 from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.noticing import Noticing, read_week
-from blossom.plan_checks import DEFAULT_DAILY_MINUTES, PlanVerification, check_plan
+from blossom.plan_checks import (
+    DEFAULT_DAILY_MINUTES,
+    PlanVerification,
+    check_plan,
+    reduced_budget,
+)
 from blossom.plans import DailyPlan
 from blossom.reconciliation import Reconciler, SourceConfidence, classify_confidence
 from blossom.settings import Settings
@@ -87,6 +92,7 @@ from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
+from blossom.stores.workload_signals import WorkloadSignalsStore
 
 MAX_REVISIONS: Final = 2
 """How many times the planner may be sent back. It runs at most one more time than this."""
@@ -189,6 +195,8 @@ class PlanState(TypedDict):
     assignments: NotRequired[list[Assignment]]
     confidence: NotRequired[dict[str, SourceConfidence]]
     noticings: NotRequired[list[Noticing]]
+    too_much: NotRequired[bool]
+    budget_minutes: NotRequired[int]
     support_rules: NotRequired[list[str]]
     reflections: NotRequired[list[str]]
     feedback: NotRequired[list[str]]
@@ -211,6 +219,7 @@ def build_plan_graph(
     support_rules: SupportRulesStore,
     reflections: ReflectionsStore,
     drafts: DraftsStore,
+    signals: WorkloadSignalsStore,
     clock: Clock,
     planner: Ask[DailyPlan],
     critic: Ask[CriticVerdict],
@@ -236,7 +245,8 @@ def build_plan_graph(
         return {
             "plan_date": state["plan_date"],
             "zone": zone.key,
-            "budget_minutes": daily_minutes,
+            "budget_minutes": state.get("budget_minutes", daily_minutes),
+            "too_much": state.get("too_much", False),
             "assignments": state.get("assignments", []),
             "confidence": state.get("confidence", {}),
             "noticings": state.get("noticings", []),
@@ -250,7 +260,10 @@ def build_plan_graph(
         The week is the one the student's page shows, read the same way: each
         record's date stated before its sources are read, then set against
         them, then the window chosen. What the sources say also decides how far
-        the family can trust each date.
+        the family can trust each date. Her signal that today is too much cuts
+        the evening's budget here, before the planner is asked, so it is a
+        constraint the checks enforce rather than an argument the planner may
+        answer.
         """
         week = read_week(project_state, source, state["plan_date"])
         confidence = {
@@ -260,13 +273,23 @@ def build_plan_graph(
         noticings = [week.noticings[item.assignment_id] for item in week.assignments]
         rules = [rule.instruction for rule in support_rules.list_all()]
         notes = [note.observation for note in reflections.list_all()]
+        too_much = bool(signals.for_evening(state["plan_date"]))
+        budget = reduced_budget(daily_minutes) if too_much else daily_minutes
         found = describe_week(
-            week.assignments, noticings, confidence, rules=len(rules), notes=len(notes)
+            week.assignments,
+            noticings,
+            confidence,
+            rules=len(rules),
+            notes=len(notes),
+            budget=budget,
+            too_much=too_much,
         )
         return {
             "assignments": week.assignments,
             "confidence": confidence,
             "noticings": noticings,
+            "too_much": too_much,
+            "budget_minutes": budget,
             "support_rules": rules,
             "reflections": notes,
             "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found)],
@@ -277,7 +300,9 @@ def build_plan_graph(
         round_number = state["rounds"] + 1
         feedback = state.get("feedback", [])
         messages = planner_brief(**evening(state), feedback=feedback, round_number=round_number)
-        expected = expect_plan(round_number, len(feedback), daily_minutes)
+        expected = expect_plan(
+            round_number, len(feedback), state.get("budget_minutes", daily_minutes)
+        )
         answer = await planner(messages)
         tokens = tokens_note(answer.input_tokens, answer.output_tokens)
         failure = answer.failure()
@@ -304,7 +329,7 @@ def build_plan_graph(
             zone=zone,
             confidence=state.get("confidence", {}),
             noticings=state.get("noticings", []),
-            daily_minutes=daily_minutes,
+            daily_minutes=state.get("budget_minutes", daily_minutes),
         )
         record = step(
             "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
@@ -362,6 +387,8 @@ def build_plan_graph(
             verdict=state.get("verdict"),
             settled=outcome == "accepted",
             noticings=state.get("noticings", []),
+            too_much=state.get("too_much", False),
+            budget_minutes=state.get("budget_minutes", daily_minutes),
         )
         if outcome not in REACHED_THE_GATE:
             msg = f"compose reached with outcome {outcome!r}, which produces no draft"
@@ -372,6 +399,7 @@ def build_plan_graph(
             plan_date=state["plan_date"],
             outcome=cast(Literal["accepted", "unsettled"], outcome),
             steps=state.get("steps", []),
+            too_much=state.get("too_much", False),
         )
         return {"draft": draft}
 
@@ -518,6 +546,7 @@ def plan_graph_for(
         support_rules=state.support_rules,
         reflections=state.reflections,
         drafts=state.drafts,
+        signals=state.workload_signals,
         clock=state.clock,
         planner=planner,
         critic=critic,

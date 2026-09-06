@@ -4,6 +4,26 @@
 {% block content %}
   <h1>Due this week</h1>
 
+  <section class="panel too-much">
+    {% if view.too_much %}
+      <p class="confidence disagree">
+        <strong>You said it was too much</strong> at {{ view.too_much.given_local.strftime("%H:%M") }}.
+        Tonight's plan is kept to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
+        {% if view.too_much.detail %}You added <q>{{ view.too_much.detail }}</q>.{% endif %}
+      </p>
+      <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="actions">
+        <button type="submit" class="secondary">Take it back</button>
+      </form>
+    {% else %}
+      <form method="post" action="/student/actions/too-much" class="actions">
+        <button type="submit" class="primary">Too much right now</button>
+      </form>
+      <p class="note">
+        One press, no rating, no reason. Tonight's plan gets lighter, and you can take it back.
+      </p>
+    {% endif %}
+  </section>
+
   {% if not view.assignments %}
     <p class="empty">Nothing is due this week.</p>
   {% endif %}
@@ -76,4 +96,24 @@
       </p>
     </article>
   {% endfor %}
+
+  {% if view.signals %}
+    <details class="steps kept">
+      <summary>What Blossom keeps about this</summary>
+      <ul>
+        {% for signal in view.signals %}
+          <li>
+            Too much on {{ signal.evening.strftime("%A, %B") }} {{ signal.evening.day }}, {{ signal.evening.year }},
+            said at {{ signal.given_local.strftime("%H:%M") }}.
+            {% if signal.detail %}You added <q>{{ signal.detail }}</q>.{% endif %}
+            <form method="post" action="/student/actions/take-back/{{ signal.signal_id }}" class="inline">
+              <button type="submit" class="secondary"
+                      aria-label="Remove the signal from {{ signal.evening.strftime("%A, %B") }} {{ signal.evening.day }} at {{ signal.given_local.strftime("%H:%M") }}">Remove</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="note">Kept for seven days, then gone. Nothing is ever worked out from the pattern of these.</p>
+    </details>
+  {% endif %}
 {% endblock %}
