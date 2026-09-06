@@ -347,7 +347,9 @@ class DraftsStore:
         a repeated call leaves, keeps its place and displaces nothing more. The
         caller clears the threads of what was displaced, since no review can
         reach them from then on; it holds the decision lock while doing both, so
-        a review in progress lands or is refused before its thread goes. What
+        a review in progress lands or is refused before its thread goes, and it
+        records first any review a waiting draft's thread holds that the table
+        never got, so no such review is superseded away. What
         is returned was read inside the transaction, so nothing can fail after
         the commit and leave a caller thinking a committed publication did not
         happen.

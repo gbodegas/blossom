@@ -34,7 +34,7 @@ running and the sweep leaves them and their drafts alone.
 
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any, Final
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -118,6 +118,43 @@ def reviewable(saved: SavedThread | None) -> bool:
     return saved is not None and saved.paused and saved.has_draft
 
 
+async def finish_held_reviews(
+    checkpointer: BaseCheckpointSaver[Any],
+    drafts: DraftsStore,
+    *,
+    plan_date: date | None = None,
+    in_flight: Collection[str] = (),
+) -> list[tuple[str, str]]:
+    """Record every review a waiting draft's thread holds that the table never got.
+
+    Returns the draft and thread of each review recorded, so the caller can
+    clear the threads: a review recorded is a decision landed, and the thread
+    has nothing left to do. Over one evening when ``plan_date`` is given, so a
+    run about to publish a plan can finish the reviews its plan would otherwise
+    take the place of, and over every evening for the sweep. Runs in flight are
+    left alone.
+    """
+    finished: list[tuple[str, str]] = []
+    for record in drafts.waiting():
+        if record.thread_id in in_flight:
+            continue
+        if plan_date is not None and record.plan_date != plan_date:
+            continue
+        saved = await saved_thread(checkpointer, record.thread_id)
+        if saved is None or saved.held is None:
+            continue
+        decision, reason = saved.held
+        approved = decision == "approved"
+        drafts.record_decision(
+            record.draft_id,
+            status=DraftStatus.APPROVED_FOR_MANUAL_SEND if approved else DraftStatus.DRAFT,
+            decision=decision,
+            reason=reason,
+        )
+        finished.append((record.draft_id, record.thread_id))
+    return finished
+
+
 async def sweep_saved_state(
     checkpointer: BaseCheckpointSaver[Any],
     drafts: DraftsStore,
@@ -131,16 +168,19 @@ async def sweep_saved_state(
     they and their drafts are left alone, since a run between saving its draft
     and pausing with it is not a run that died there. Empty at startup.
 
-    An unpublished draft whose run is not in flight belongs to a run that died
-    on the way. Its thread tells where: one paused at the gate, with the
-    interrupt still pending, is published here as the run would have, and
-    where several are, in the order their checkpoints were written, which is
-    the order they paused in; one missing, short of the draft, or holding the
-    draft without the pause is taken back, since no review could resume it. A
-    published waiting draft is finished when its thread holds a review the
-    table never recorded, and taken back when no review could resume it, which
-    only a file from before publication can hold.
+    Reviews a thread holds that the table never recorded are finished first,
+    so nothing published afterwards can take the place of a draft a parent had
+    in fact reviewed. Then an unpublished draft whose run is not in flight,
+    which belongs to a run that died on the way, is published if its thread
+    paused at the gate, the interrupt still pending, several in the order
+    their checkpoints were written, which is the order they paused in; and
+    taken back if its thread is missing, short of the draft, or holds the draft
+    without the pause, since no review could resume it. A published waiting
+    draft no review could resume, which only a file from before publication
+    can hold, is taken back too.
     """
+    finished = await finish_held_reviews(checkpointer, drafts, in_flight=in_flight)
+
     published: list[str] = []
     withdrawn: list[str] = []
     cleared: list[str] = []
@@ -162,22 +202,10 @@ async def sweep_saved_state(
             cleared.append(displaced.thread_id)
         published.append(record.draft_id)
 
-    finished: list[str] = []
     for record in drafts.waiting():
         if record.thread_id in in_flight:
             continue
-        saved = await saved_thread(checkpointer, record.thread_id)
-        if saved is not None and saved.held is not None:
-            decision, reason = saved.held
-            approved = decision == "approved"
-            drafts.record_decision(
-                record.draft_id,
-                status=DraftStatus.APPROVED_FOR_MANUAL_SEND if approved else DraftStatus.DRAFT,
-                decision=decision,
-                reason=reason,
-            )
-            finished.append(record.draft_id)
-        elif not reviewable(saved):
+        if not reviewable(await saved_thread(checkpointer, record.thread_id)):
             drafts.withdraw(record.draft_id)
             withdrawn.append(record.draft_id)
 
@@ -201,6 +229,6 @@ async def sweep_saved_state(
         expired=tuple(expired),
         cleared=tuple(sorted(cleared)),
         withdrawn=tuple(withdrawn),
-        finished=tuple(finished),
+        finished=tuple(draft_id for draft_id, _ in finished),
         published=tuple(published),
     )

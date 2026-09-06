@@ -41,7 +41,7 @@ from blossom.plans import DailyPlan
 from blossom.routes.parent import DecisionRequest, decide_draft
 from blossom.routes.runs import plan_graphs, run_plan
 from blossom.settings import CHECKPOINT_PATH_VARIABLE, DATABASE_PATH_VARIABLE, TRACE_PATH_VARIABLE
-from blossom.stores.drafts import DraftRecord, DraftsStore
+from blossom.stores.drafts import Displaced, DraftRecord, DraftsStore
 from tests.support import (
     FIXTURE_TIMEZONE,
     OBSERVED_AT,
@@ -1110,3 +1110,79 @@ def test_a_retry_with_the_same_button_and_other_words_is_told_the_first_words_st
     assert decided is not None
     assert decided.decision == "approved"
     assert decided.reason == "fine"
+
+
+def test_a_review_the_thread_holds_is_recorded_before_a_later_plan_takes_its_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A review whose record failed, then a new plan: the review lands, and the plan is hers."""
+    state = application()
+    try:
+        monkeypatch.setattr(state.drafts, "record_decision", failing_once_then(state.drafts))
+
+        async def scenario() -> tuple[str, str, set[str]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            assert first.draft_id is not None
+            with pytest.raises(RuntimeError, match="database is locked"):
+                await decide_draft(
+                    state,
+                    lambda: graph_for(state),
+                    first.draft_id,
+                    DecisionRequest(approved=True, reason="good pacing"),
+                )
+            second = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            return first.draft_id, second.thread_id, await thread_ids(state)
+
+        draft_id, second, threads = asyncio.run(scenario())
+        reviewed = state.drafts.get(draft_id)
+        waiting = [record.thread_id for record in state.drafts.waiting()]
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert reviewed is not None
+    assert reviewed.decision == "approved"
+    assert reviewed.reason == "good pacing"
+    assert waiting == [second]
+    assert latest is not None
+    assert latest.thread_id == second
+    assert threads == {second}
+
+
+def test_a_draft_that_cannot_be_taken_back_still_loses_its_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sweep then finds a draft with no thread to take back, not a paused plan to publish."""
+    state = application()
+    try:
+
+        def refusing_publish(draft_id: str) -> list[Displaced]:
+            msg = "database or disk is full"
+            raise RuntimeError(msg)
+
+        def refusing_withdraw(draft_id: str) -> bool:
+            msg = "database is locked"
+            raise RuntimeError(msg)
+
+        async def scenario() -> tuple[str, set[str], Swept]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            monkeypatch.setattr(state.drafts, "publish", refusing_publish)
+            monkeypatch.setattr(state.drafts, "withdraw", refusing_withdraw)
+            with pytest.raises(RuntimeError, match="disk is full"):
+                await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            monkeypatch.undo()
+            threads = await thread_ids(state)
+            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return first.thread_id, threads, swept
+
+        first, threads, swept = asyncio.run(scenario())
+        waiting = [record.thread_id for record in state.drafts.waiting()]
+        unpublished = state.drafts.unpublished()
+    finally:
+        state.close()
+
+    assert threads == {first}
+    assert len(swept.withdrawn) == 1
+    assert swept.published == ()
+    assert waiting == [first]
+    assert unpublished == []

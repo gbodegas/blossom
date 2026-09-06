@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from blossom.app import create_app
 from blossom.settings import CHECKPOINT_PATH_VARIABLE, DATABASE_PATH_VARIABLE, TRACE_PATH_VARIABLE
+from blossom.stores.checkpoints import UnsafeCheckpointPath
 from blossom.stores.household_claim import (
     AnotherProcessHasTheHousehold,
     claim_household,
@@ -39,6 +40,19 @@ def test_both_state_files_are_claimed_and_a_refused_second_lock_releases_the_fir
         first.release()
 
     assert first.lock_paths == (lock_path_for(drafts), lock_path_for(saved_state))
+
+
+def test_a_place_the_state_may_not_live_is_refused_before_any_lock_file_is_made(
+    tmp_path: pathlib.Path,
+) -> None:
+    synced = tmp_path / "OneDrive" / "blossom.sqlite3"
+    with pytest.raises(UnsafeCheckpointPath):
+        claim_household(tmp_path / "state" / "blossom.sqlite3", synced)
+    with pytest.raises(UnsafeCheckpointPath):
+        claim_household(pathlib.Path(":memory:"))
+
+    assert not (tmp_path / "OneDrive").exists()
+    assert not (tmp_path / "state").exists()
 
 
 def test_a_second_claim_is_refused_until_the_first_is_released(tmp_path: pathlib.Path) -> None:

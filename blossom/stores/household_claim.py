@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 from typing import IO
 
+from blossom.stores.checkpoints import refuse_unsafe_path
+
 if sys.platform == "win32":
     import msvcrt
 
@@ -92,7 +94,11 @@ def lock_path_for(state_path: Path) -> Path:
 def claim_household(*state_paths: Path) -> HouseholdClaim:
     """Claim the household whose state lives in ``state_paths``, or refuse.
 
-    One lock per distinct file, in the order given, so a claim refused on the
-    second releases the first before it raises.
+    Each path passes the guard the stores apply first, so a place the state
+    may not live, an in-memory database, a network share, a synced folder, is
+    refused before any lock file is opened there. One lock per distinct file,
+    in the order given, so a claim refused on the second releases the first
+    before it raises.
     """
-    return HouseholdClaim(*dict.fromkeys(lock_path_for(path) for path in state_paths))
+    safe = [refuse_unsafe_path(path) for path in state_paths]
+    return HouseholdClaim(*dict.fromkeys(lock_path_for(path) for path in safe))

@@ -15,7 +15,7 @@ from uuid import uuid4
 from fastapi import Depends, HTTPException, status
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
-from blossom.agent.retention import clear_thread
+from blossom.agent.retention import clear_thread, finish_held_reviews
 from blossom.agent.runs import DURABILITY, draft_id_for, run_config
 from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
 from blossom.dependencies import ApplicationState, get_application_state
@@ -84,10 +84,19 @@ async def abandon(thread_id: str, state: ApplicationState) -> None:
     The draft comes first because the pages read the drafts file, and because
     the saved-state store is the likelier of the two to be what failed: a
     checkpoint that could not be written is followed by a delete on the same
-    file. A thread that cannot be cleared now is left to the sweep; the failure
-    that ended the run is the one the caller sees, not the failure to tidy.
+    file. Each is attempted whatever became of the other: a draft that cannot
+    be taken back now is logged and its thread cleared all the same, so the
+    sweep finds a draft with no thread and takes it back rather than a paused
+    thread it would publish; a thread that cannot be cleared now is left to the
+    sweep. The failure that ended the run is the one the caller sees, not the
+    failure to tidy.
     """
-    state.drafts.withdraw(draft_id_for(thread_id))
+    try:
+        state.drafts.withdraw(draft_id_for(thread_id))
+    except Exception:
+        logger.exception(
+            "the draft of the failed run %s not taken back; the sweep takes it", thread_id
+        )
     await tidy_thread(thread_id, state)
 
 
@@ -121,10 +130,11 @@ async def run_plan(
     gate and the first node had already been saved. A run paused at the gate
     keeps its state until a review or its expiry.
 
-    A run that pauses with a draft publishes it, under the decision lock: the
-    draft reaches the pages, takes the place of any published draft still
-    waiting for the evening, and the threads of those are cleared, since no
-    review can reach them. The lock means a review in progress lands or is
+    A run that pauses with a draft publishes it, under the decision lock: any
+    review a waiting draft's thread holds that the table never got is recorded
+    first, then the draft reaches the pages, takes the place of any published
+    draft still waiting for the evening, and the threads of those are cleared,
+    since no review can reach them. The lock means a review in progress lands or is
     refused before its thread goes, and nothing the pages show is ever a draft
     whose run might still fail. A publication that fails is a failed run: the
     draft is taken back and the thread cleared before the failure reaches the
@@ -159,8 +169,18 @@ async def run_plan(
             return view
         try:
             async with state.decision_lock:
-                for displaced in state.drafts.publish(draft_id_for(thread_id)):
-                    await tidy_thread(displaced.thread_id, state)
+                # A review a waiting draft's thread holds, that the table never
+                # got, is recorded before this plan takes the draft's place, so
+                # the review is never superseded away with the thread.
+                finished = await finish_held_reviews(
+                    state.checkpointer, state.drafts, plan_date=plan_date, in_flight=state.in_flight
+                )
+                displaced = state.drafts.publish(draft_id_for(thread_id))
+                for thread in [
+                    *(thread for _, thread in finished),
+                    *(d.thread_id for d in displaced),
+                ]:
+                    await tidy_thread(thread, state)
         except Exception:
             # The run paused but its draft could not be published. Left as it
             # is, the sweep would publish it later, after the page had said

@@ -98,7 +98,7 @@ both land: the route holds one lock from the table check through the resume,
 and the table refuses a second, different decision, keeping the first and its
 time. One process serves a household: at startup the process takes an
 exclusive lock on a file beside the drafts file and another beside the
-saved-state file, each named for the file as it really is so two spellings of
+saved-state file, after each path has passed the guard the stores apply, each named for the file as it really is so two spellings of
 one file claim one lock, and holds them while it runs, so a second process
 over either file is refused with a sentence naming the lock, and the decision
 lock, the set of runs in flight, and the sweep cover everything that happens
@@ -632,7 +632,10 @@ takes its draft back: the row goes and the run is kept with its steps as
 interrupted. It displaced nothing, so the pages are what they were before the
 run, and the run itself is listed among those that ended without a plan. A
 publication that fails is treated the same way, before the failure reaches
-the page. A run joins the set of runs in flight under the decision lock, so
+the page, and each half of taking back is attempted whatever became of the
+other. Before a plan is published, any review a waiting draft's thread holds
+that the table never got is recorded, so a review that reached the thread is
+never superseded away with it. A run joins the set of runs in flight under the decision lock, so
 it starts either before a sweep or after one and a sweep never counts threads
 while a run is joining. The
 draft is taken back first and the thread cleared second, because the
