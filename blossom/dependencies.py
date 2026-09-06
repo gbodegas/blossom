@@ -27,6 +27,7 @@ from typing import cast
 from fastapi import FastAPI, Request
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from blossom.agent.trace import LocalRunTracer
 from blossom.clock import Clock, clock_from
 from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource
@@ -35,6 +36,7 @@ from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
+from blossom.stores.traces import TraceStore
 
 Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 
@@ -59,6 +61,12 @@ class ApplicationState:
     checkpointer: BaseCheckpointSaver[str]
     """Where a graph's state and pauses are persisted. Opened and closed by the
     lifespan around this object, so ``close`` does not touch it."""
+    traces: TraceStore
+    """The framework's trace of every run, in the file at ``BLOSSOM_TRACE_PATH``,
+    kept for two weeks."""
+    tracer: LocalRunTracer
+    """The callback that writes each run's tree to ``traces``. Attached to every
+    run the routes start or resume; never saved with the run."""
     decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held while a decision is checked against the table and carried into the
     paused thread, so two decisions about one draft cannot both pass the check.
@@ -70,6 +78,7 @@ class ApplicationState:
         """Release resources held for the lifetime of the application."""
         self.project_state.close()
         self.drafts.close()
+        self.traces.close()
 
 
 def build_application_state(
@@ -94,6 +103,8 @@ def build_application_state(
     reflections = ReflectionsStore()
     for note in source.reflections():
         reflections.write(note)
+    traces = TraceStore.open(settings.trace_path, clock)
+    traces.sweep()
     return ApplicationState(
         settings=settings,
         clock=clock,
@@ -103,6 +114,8 @@ def build_application_state(
         reflections=reflections,
         drafts=DraftsStore.open(settings.database_path, clock),
         checkpointer=checkpointer,
+        traces=traces,
+        tracer=LocalRunTracer(traces),
     )
 
 

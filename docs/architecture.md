@@ -200,7 +200,7 @@ confident match from the only candidate; the design calls for three to five.
 **Not wired:** no route or node constructs the router. `ProjectStateStore.lookup`
 still answers the structured side for one that would.
 
-## Four stores, four risk profiles
+## Five stores, five risk profiles
 
 | Store | Contents | State |
 |---|---|---|
@@ -208,6 +208,7 @@ still answers the structured side for one that would.
 | `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Seeded from the fixtures; read whole by the plan graph |
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
+| `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -410,11 +411,25 @@ The plan graph carries the same discipline into its own nodes. Each states
 what it expects before it acts and records what it found, and the records are
 saved with the run; the plan graph section says how.
 
+The framework's own trace is kept too. `LocalRunTracer` in
+`blossom/agent/trace.py` subclasses the framework's tracer base, the class
+that assembles a tree of runs for the graph, each node, and each model call,
+and writes the finished tree to `TraceStore` in `blossom/stores/traces.py`.
+Every input, output, and error passes through a redaction hook first, a plain
+function from text to text whose default changes nothing and which a household
+replaces in one place. The tracer is attached to every run the routes start
+or resume through the run configuration's callbacks, which are never saved
+with the run, and the hosted tracer stays closed: the boundary scan opens the
+tracer base and its run schema to this one file and nothing else, and the
+package-level re-export stays closed even there. The trace holds the
+student's schoolwork verbatim, so it is its own file, and rows older than
+`TRACE_RETENTION_DAYS` are swept at startup and after each run. Nothing reads
+it to decide anything; it is for finding out why a run did what it did.
+
 **Not built:** only the due date is compared. The design's example is a
 submission status the record holds and a portal can confirm or deny, and
-nothing observes submission status yet. The step records are Blossom's own
-account of a run; the framework's trace of every call beneath them, with its
-inputs and outputs, is not kept anywhere.
+nothing observes submission status yet. No page shows a trace; it is read from
+the file.
 
 ## The workload signal
 

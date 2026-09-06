@@ -29,8 +29,10 @@ defaults to ``async`` when it is left out. A scan in
 configuration here and then omits it.
 """
 
+from collections.abc import Sequence
 from typing import Final
 
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Durability, StateSnapshot
 
@@ -53,20 +55,29 @@ class StaleGraphVersion(RuntimeError):
     """Raised when a thread was written by a different graph version than the one running."""
 
 
-def run_config(thread_id: str, *, recursion_limit: int = RECURSION_LIMIT) -> RunnableConfig:
+def run_config(
+    thread_id: str,
+    *,
+    recursion_limit: int = RECURSION_LIMIT,
+    callbacks: Sequence[BaseCallbackHandler] = (),
+) -> RunnableConfig:
     """The configuration every run is invoked with.
 
     The graph version is what reaches the saved metadata, in plaintext. The
     thread id is saved in plaintext too, in a column of its own, and the
     recursion limit is not saved at all. Nothing about the student belongs in
     any of them. Run-scoped objects travel through the graph's context, which
-    is not saved.
+    is not saved; ``callbacks`` is where the local tracer rides, and it is
+    never saved either.
     """
-    return {
+    config: RunnableConfig = {
         "configurable": {"thread_id": thread_id},
         "metadata": {GRAPH_VERSION_KEY: GRAPH_VERSION},
         "recursion_limit": recursion_limit,
     }
+    if callbacks:
+        config["callbacks"] = list(callbacks)
+    return config
 
 
 def recorded_version(snapshot: StateSnapshot) -> int | None:

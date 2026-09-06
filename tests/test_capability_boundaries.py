@@ -52,7 +52,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "langchain_anthropic": "the model client; confined to the model seam, see NETWORK_CAPABLE",
     "langchain_core": (
         "tool and message types; construction is confined, see TOOL_CONSTRUCTION, and "
-        "the hosted tracer is closed off, see CLOSED_PREFIXES"
+        "the hosted tracer is closed off, see CLOSED_PREFIXES and OPENED_PATHS"
     ),
     "langgraph": (
         "graph, interrupts, and checkpoints; its remote-server client is closed off, "
@@ -101,12 +101,23 @@ CLOSED_PREFIXES: dict[str, str] = {
     "langgraph_sdk": "the client for a hosted graph server",
     "langchain_core.tracers": (
         "the hosted tracer, its lazy re-export at the package level, and the "
-        "context manager that turns hosted tracing on with no environment variable set"
+        "context manager that turns hosted tracing on with no environment variable set; "
+        "the local tracer's two base paths are opened for one file, see OPENED_PATHS"
     ),
     "langchain.chat_models": (
         "builds a provider client from the environment; the seam is anthropic_client.py"
     ),
     "langchain.embeddings": "builds a provider client from the environment",
+}
+
+# Paths under a closed prefix that one file may import after all, because the
+# capability it needs sits beside the one that is closed. The local tracer
+# subclasses the framework's tracer base and reads its run schema; both live in
+# the package that also holds the hosted tracer. Only the named file may reach
+# them, and the package-level re-export stays closed even there.
+OPENED_PATHS: dict[str, frozenset[str]] = {
+    "langchain_core.tracers.base": frozenset({"agent/trace.py"}),
+    "langchain_core.tracers.schemas": frozenset({"agent/trace.py"}),
 }
 
 # The framework's ways of bringing a tool into existence, wiring tools into a
@@ -160,9 +171,19 @@ def dotted_imports_by_file() -> dict[str, set[str]]:
     }
 
 
-def closed_hits(dotted: set[str]) -> set[str]:
-    """The imported names that fall under a closed prefix."""
-    return {name for name in dotted for prefix in CLOSED_PREFIXES if matches(prefix, name)}
+def closed_hits(dotted: set[str], relative: str | None = None) -> set[str]:
+    """The imported names that fall under a closed prefix and are not opened for ``relative``."""
+    return {
+        name
+        for name in dotted
+        for prefix in CLOSED_PREFIXES
+        if matches(prefix, name) and not opened(name, relative)
+    }
+
+
+def opened(dotted: str, relative: str | None) -> bool:
+    """True when ``dotted`` sits under a path opened for the file ``relative``."""
+    return any(matches(path, dotted) and relative in files for path, files in OPENED_PATHS.items())
 
 
 def matches(prefix: str, dotted: str) -> bool:
@@ -233,10 +254,23 @@ def test_closed_prefixes_are_imported_nowhere() -> None:
     violations = {
         relative: hits
         for relative, dotted in dotted_imports_by_file().items()
-        if (hits := closed_hits(dotted))
+        if (hits := closed_hits(dotted, relative))
     }
 
     assert not violations, f"closed import paths in use: {violations}"
+
+
+def test_the_tracer_base_is_open_to_one_file_and_closed_to_every_other() -> None:
+    base = dotted_imports("from langchain_core.tracers.base import BaseTracer")
+    schema = dotted_imports("from langchain_core.tracers.schemas import Run")
+    reexport = dotted_imports("from langchain_core.tracers import BaseTracer")
+
+    assert not closed_hits(base, "agent/trace.py")
+    assert not closed_hits(schema, "agent/trace.py")
+    assert closed_hits(base, "agent/graph.py")
+    assert closed_hits(base, None)
+    assert closed_hits(reexport, "agent/trace.py")
+    assert "langchain_core.tracers.base" in dotted_imports_by_file()["agent/trace.py"]
 
 
 @pytest.mark.parametrize(

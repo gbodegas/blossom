@@ -1,0 +1,77 @@
+"""A tracer that keeps the framework's run tree on this machine and nowhere else.
+
+``BaseTracer`` is the framework's own callback base. It assembles a tree of
+runs, one for the graph, one per node, one per model call, and hands the
+finished tree to ``_persist_run`` once the root ends. ``LocalRunTracer`` writes
+that tree to the trace store after passing every input, output, and error
+through a redaction hook. The hook is a plain function from text to text. The
+default keeps the text as it is; a household that wants names or dates kept
+out of the file replaces it in one place.
+
+This is the one module allowed to import from the framework's tracer package.
+The hosted tracer lives in the same package, and the boundary scan opens
+exactly two paths here and nothing else.
+"""
+
+import json
+from collections.abc import Callable
+
+from langchain_core.tracers.base import BaseTracer
+from langchain_core.tracers.schemas import Run
+
+from blossom.stores.traces import TracedRun, TraceStore
+
+Redactor = Callable[[str], str]
+"""Text in, text out, applied to every input, output, and error before it is written."""
+
+
+def unredacted(text: str) -> str:
+    """The default hook: the text as it is."""
+    return text
+
+
+class LocalRunTracer(BaseTracer):
+    """Writes each finished run tree to the trace store, redacted, and sweeps old ones."""
+
+    def __init__(self, store: TraceStore, *, redact: Redactor = unredacted) -> None:
+        super().__init__()
+        self._store = store
+        self._redact = redact
+
+    def _persist_run(self, run: Run) -> None:
+        """Called by the framework once per root run, with the whole tree beneath it."""
+        self._store.record(traced(run, self._redact))
+        self._store.sweep()
+
+
+def traced(run: Run, redact: Redactor) -> TracedRun:
+    """The framework's run as the store's record, every text passed through ``redact``."""
+    metadata = (run.extra or {}).get("metadata") or {}
+    thread_id = metadata.get("thread_id")
+    return TracedRun(
+        run_id=str(run.id),
+        trace_id=str(run.trace_id or run.id),
+        parent_run_id=None if run.parent_run_id is None else str(run.parent_run_id),
+        thread_id=None if thread_id is None else str(thread_id),
+        name=run.name,
+        run_type=run.run_type,
+        started_at=run.start_time,
+        ended_at=run.end_time,
+        inputs=redact(as_json(run.inputs)),
+        outputs=None if run.outputs is None else redact(as_json(run.outputs)),
+        error=None if run.error is None else redact(run.error),
+        children=tuple(traced(child, redact) for child in run.child_runs),
+    )
+
+
+def as_json(value: object) -> str:
+    """Serialize what the framework recorded, pydantic values by their fields, the rest by name."""
+    return json.dumps(value, default=plain, sort_keys=True)
+
+
+def plain(value: object) -> object:
+    """What ``json`` cannot serialize on its own: a model's fields, or its text."""
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return dump(mode="json")
+    return str(value)
