@@ -1,8 +1,8 @@
-"""Guards the setup instructions in ``README.md`` against drift.
+"""Guards the setup instructions in the README and the development guide against drift.
 
-These tests parse the shell commands out of the README's bash and PowerShell
-fences and check that every module path, extra, and version pin they name
-exists in the project. They do not run the commands.
+These tests parse the shell commands out of the bash and PowerShell fences in
+both documents and check that every module path, extra, and version pin they
+name exists in the project. They do not run the commands.
 """
 
 import importlib
@@ -14,7 +14,8 @@ import tomllib
 import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-README = REPO_ROOT / "README.md"
+DOCUMENTS = (REPO_ROOT / "README.md", REPO_ROOT / "docs" / "development.md")
+"""Every file whose shell fences a reader might paste from."""
 
 SHELL_FENCE = re.compile(r"```(?:bash|powershell)\n(.*?)```", re.DOTALL)
 UVICORN_TARGET = re.compile(r"uvicorn\s+([\w.]+):(\w+)")
@@ -23,15 +24,33 @@ PINNED_INSTALL = re.compile(r"pip install ([^\n]+)")
 REQUIREMENT = re.compile(r"([A-Za-z][\w.-]*)==([\w.]+)")
 
 
+def shell_blocks() -> list[str]:
+    """Every bash and PowerShell fence in the documents, in order."""
+    return [
+        block
+        for document in DOCUMENTS
+        for block in SHELL_FENCE.findall(document.read_text(encoding="utf-8"))
+    ]
+
+
 def readme_shell_text() -> str:
-    """Return the concatenated contents of every bash and PowerShell fence in the README."""
-    blocks = SHELL_FENCE.findall(README.read_text(encoding="utf-8"))
-    return "\n".join(blocks)
+    """Return the concatenated contents of every shell fence in the documents."""
+    return "\n".join(shell_blocks())
 
 
 def test_readme_documents_at_least_one_shell_command() -> None:
     """Fail loudly if the fences disappear, so the other tests cannot pass vacuously."""
     assert readme_shell_text().strip()
+    for document in DOCUMENTS:
+        assert SHELL_FENCE.search(document.read_text(encoding="utf-8")), document.name
+
+
+def test_the_readme_links_to_the_documents_it_leans_on() -> None:
+    """The README points at the development guide and the architecture doc, and both exist."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    for target in ("docs/development.md", "docs/architecture.md", "LICENSE"):
+        assert f"({target})" in readme, f"README does not link to {target}"
+        assert (REPO_ROOT / target).exists(), f"{target} is missing"
 
 
 def test_documented_uvicorn_targets_are_importable() -> None:
@@ -49,7 +68,7 @@ def test_documented_python_module_targets_are_importable() -> None:
     ``pip`` is exempt only where the same block has already run ``ensurepip``,
     which is what puts it there; a venv made by uv does not carry it.
     """
-    for block in SHELL_FENCE.findall(README.read_text(encoding="utf-8")):
+    for block in shell_blocks():
         bootstrapped = False
         for module_path in PYTHON_MODULE_TARGET.findall(block):
             if module_path == "ensurepip":
