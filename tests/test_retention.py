@@ -83,6 +83,7 @@ def test_a_run_that_ends_before_the_gate_leaves_no_saved_state() -> None:
                 PLAN_DATE,
                 state.tracer,
                 state.checkpointer,
+                state.drafts,
             )
             return view.outcome, await thread_ids(state)
 
@@ -104,7 +105,9 @@ def test_a_run_the_model_cannot_serve_leaves_no_saved_state_either() -> None:
 
         async def scenario() -> tuple[int, set[str]]:
             try:
-                await run_plan(plan_graph_for(state), PLAN_DATE, state.tracer, state.checkpointer)
+                await run_plan(
+                    plan_graph_for(state), PLAN_DATE, state.tracer, state.checkpointer, state.drafts
+                )
             except HTTPException as error:
                 return error.status_code, await thread_ids(state)
             msg = "a graph with no key started a run"
@@ -124,7 +127,11 @@ def test_a_run_paused_at_the_gate_keeps_its_state_until_the_decision() -> None:
 
         async def scenario() -> tuple[set[str], set[str]]:
             view = await run_plan(
-                graph_for(state, fixture_week_plan()), PLAN_DATE, state.tracer, state.checkpointer
+                graph_for(state, fixture_week_plan()),
+                PLAN_DATE,
+                state.tracer,
+                state.checkpointer,
+                state.drafts,
             )
             while_waiting = await thread_ids(state)
             assert view.draft_id is not None
@@ -252,3 +259,33 @@ def test_a_restart_expires_a_stale_draft_and_the_page_says_so(tmp_path: pathlib.
     assert "Expired." in page
     assert "The evening passed without a review." in page
     assert "Reason:" not in page
+
+
+def test_planning_again_clears_the_thread_of_the_plan_it_replaces() -> None:
+    """The superseded draft can never be resumed, so its saved state goes at once."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[str, str, set[str]]:
+            first = await run_plan(
+                graph_for(state, fixture_week_plan()),
+                PLAN_DATE,
+                state.tracer,
+                state.checkpointer,
+                state.drafts,
+            )
+            second = await run_plan(
+                graph_for(state, fixture_week_plan()),
+                PLAN_DATE,
+                state.tracer,
+                state.checkpointer,
+                state.drafts,
+            )
+            return first.thread_id, second.thread_id, await thread_ids(state)
+
+        first, second, threads = asyncio.run(scenario())
+    finally:
+        state.close()
+
+    assert first != second
+    assert threads == {second}

@@ -152,6 +152,45 @@ def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() ->
     assert over_json.status_code == 409
 
 
+def test_a_failure_on_the_way_is_said_on_the_page_and_the_plan_stays() -> None:
+    """A planner that raises is not a refusal; the page still says so and keeps its plan."""
+    app = create_app(
+        fixture_settings(
+            BLOSSOM_TODAY=PLAN_DATE.isoformat(), ANTHROPIC_API_KEY="not-a-key-and-never-sent"
+        )
+    )
+    app.dependency_overrides[plan_graphs] = scripted_graphs(
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
+    with TestClient(app, follow_redirects=False) as client:
+        client.post("/student/actions/plan")
+        app.dependency_overrides[plan_graphs] = scripted_graphs(list, lambda: [accepting()])
+        response = client.post("/student/actions/plan")
+        today = client.get("/student/plans/today").json()
+
+    assert response.status_code == 500
+    assert (
+        "Blossom could not make a plan: something went wrong on the way. "
+        "The plan already here, if any, is unchanged."
+    ) in response.text
+    assert "Plan for Wednesday, August 19, 2026" in response.text
+    assert today["decision"] is None
+
+
+def test_planning_again_replaces_the_plan_on_both_pages() -> None:
+    with browser() as client:
+        client.post("/student/actions/plan")
+        first = client.get("/student/plans/today").json()["draft_id"]
+        client.post("/student/actions/plan")
+        today = client.get("/student/plans/today").json()
+        queue = client.get("/parent/approvals").json()["waiting"]
+        earlier = client.get(f"/parent/approvals/{first}").json()
+
+    assert today["draft_id"] != first
+    assert [item["draft_id"] for item in queue] == [today["draft_id"]]
+    assert earlier["decision"] == "superseded"
+
+
 # ------------------------------------------------------- the parent's review
 
 

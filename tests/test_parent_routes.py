@@ -110,16 +110,22 @@ def test_the_queue_shows_the_waiting_draft_with_its_text() -> None:
     assert "thread_id" not in detail
 
 
-def test_two_runs_wait_in_the_order_they_were_started() -> None:
+def test_a_second_run_for_the_evening_takes_the_place_of_the_first() -> None:
+    """One plan waits per evening: the one she sees is the one a review can land on."""
     with app_with() as client:
         first = client.post("/parent/plans", json={}).json()
         second = client.post("/parent/plans", json={}).json()
         queue = client.get("/parent/approvals").json()
+        earlier = client.get(f"/parent/approvals/{first['draft_id']}").json()
+        review = client.post(f"/parent/approvals/{first['draft_id']}", json={"approved": True})
 
-    assert [item["draft_id"] for item in queue["waiting"]] == [
-        first["draft_id"],
-        second["draft_id"],
-    ]
+    assert [item["draft_id"] for item in queue["waiting"]] == [second["draft_id"]]
+    assert earlier["decision"] == "superseded"
+    assert (
+        earlier["reason"] == "she planned again, and the later plan for the evening took its place"
+    )
+    assert review.status_code == 409
+    assert "already superseded" in review.json()["detail"]
 
 
 def test_an_unknown_draft_is_not_found() -> None:

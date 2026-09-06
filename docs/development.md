@@ -89,7 +89,8 @@ files under `.local/` outlive it:
 - `blossom.sqlite3` holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
-  evening is closed as expired. Her "too much" signals live here too, with
+  evening is closed as expired, and one she plans again over is closed as
+  superseded, so one plan waits per evening. Her "too much" signals live here too, with
   any words she added, kept for a week and removable from her page.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,

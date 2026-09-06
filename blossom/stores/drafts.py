@@ -23,7 +23,7 @@ import threading
 from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Final, Literal, cast
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
@@ -33,6 +33,10 @@ from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.stores.checkpoints import refuse_unsafe_path
 
 Outcome = Literal["accepted", "unsettled"]
+
+SUPERSEDED_REASON: Final = "she planned again, and the later plan for the evening took its place"
+"""The reason recorded on a waiting draft when a newer one for the same evening
+is saved. System-recorded, like an expiry: no person said it."""
 """The two run outcomes that produce a draft. The others end without one."""
 
 
@@ -190,7 +194,13 @@ class DraftsStore:
         The record of the run that produced the draft is saved in the same
         transaction, so a draft is never on the page without its account or
         the other way around.
+
+        At most one draft waits per evening. Any other draft for the same
+        evening still waiting is closed as superseded in the same transaction,
+        so her page and the parent's queue always mean the same plan: the one
+        she sees is the one a review can land on.
         """
+        stamp = self._clock.now().isoformat()
         with self._lock, self._connection:
             self._connection.execute(
                 """
@@ -213,6 +223,14 @@ class DraftsStore:
                     draft.created_at.isoformat(),
                     int(too_much),
                 ),
+            )
+            self._connection.execute(
+                """
+                UPDATE drafts
+                SET decision='superseded', reason=?, decided_at=?
+                WHERE plan_date=? AND decision IS NULL AND draft_id<>?
+                """,
+                (SUPERSEDED_REASON, stamp, plan_date.isoformat(), draft.draft_id),
             )
             self._write_run(thread_id, plan_date, outcome, steps)
 
@@ -353,6 +371,10 @@ class DraftsStore:
         """Every draft a person has decided about, most recent decision first."""
         return self._drafts(DECIDED_DRAFTS, ())
 
+    def superseded_for(self, plan_date: date) -> list[DraftRecord]:
+        """Every draft for one evening that a later one took the place of."""
+        return self._drafts(SUPERSEDED_DRAFTS, (plan_date.isoformat(),))
+
     def latest_for(self, plan_date: date) -> DraftRecord | None:
         """The most recent draft for one evening, reviewed or not; ``None`` when there is none.
 
@@ -404,6 +426,11 @@ DECIDED_DRAFTS = (
     DRAFTS_WITH_STEPS
     + "WHERE drafts.decision IS NOT NULL "
     + "ORDER BY drafts.decided_at DESC, drafts.draft_id, steps.position"
+)
+SUPERSEDED_DRAFTS = (
+    DRAFTS_WITH_STEPS
+    + "WHERE drafts.plan_date=? AND drafts.decision='superseded' "
+    + "ORDER BY drafts.created_at, drafts.draft_id, steps.position"
 )
 LATEST_FOR_EVENING = (
     DRAFTS_WITH_STEPS

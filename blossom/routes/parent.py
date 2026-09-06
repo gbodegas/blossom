@@ -45,6 +45,7 @@ risk, the parent needs to be able to see that the notification happened.
 Without that, the visibility policy is stated but not observable.
 """
 
+import logging
 from datetime import date
 from typing import Annotated, Any, Final
 
@@ -71,6 +72,8 @@ from blossom.views import (
     PlanRunView,
     RunView,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/parent", tags=["parent"])
 templates = Jinja2Templates(directory=TEMPLATE_PATH)
@@ -155,6 +158,7 @@ async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> Plan
         request.plan_date or state.clock.today(),
         state.tracer,
         state.checkpointer,
+        state.drafts,
     )
 
 
@@ -300,7 +304,12 @@ async def plan_from_the_page(
     graphs: Graphs,
     plan_date: Annotated[str, Form()] = "",
 ) -> Response:
-    """The plan form. A blank date means today; a bad one is said, not guessed at."""
+    """The plan form. A blank date means today; a bad one is said, not guessed at.
+
+    A run that fails on the way for any reason other than a refusal is said on
+    the page too, with the queue below unchanged; the run has already cleared
+    its thread, and the failure goes to the process log.
+    """
     try:
         evening = date.fromisoformat(plan_date) if plan_date.strip() else state.clock.today()
     except ValueError:
@@ -312,9 +321,20 @@ async def plan_from_the_page(
         )
     try:
         require_model(graphs)
-        await run_plan(graphs.build(), evening, state.tracer, state.checkpointer)
+        await run_plan(graphs.build(), evening, state.tracer, state.checkpointer, state.drafts)
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
+    except Exception:
+        logger.exception("the plan for %s failed on the way; its thread was cleared", evening)
+        return review_page(
+            request,
+            state,
+            problem=(
+                "The plan could not be made: something went wrong on the way. "
+                "What is waiting below is unchanged."
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
 

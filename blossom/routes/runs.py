@@ -20,6 +20,7 @@ from blossom.agent.runs import DURABILITY, run_config
 from blossom.agent.trace import LocalRunTracer
 from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
 from blossom.dependencies import ApplicationState, get_application_state
+from blossom.stores.drafts import DraftsStore
 from blossom.views import PlanRunView
 
 State = Annotated[ApplicationState, Depends(get_application_state)]
@@ -82,6 +83,7 @@ async def run_plan(
     plan_date: date,
     tracer: LocalRunTracer,
     checkpointer: BaseCheckpointSaver[Any],
+    drafts: DraftsStore,
 ) -> PlanRunView:
     """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped.
 
@@ -89,7 +91,12 @@ async def run_plan(
     record is already in the drafts file, so its saved state is cleared here;
     so is the state of a run that raised, since a raise never pauses at the
     gate and the first node had already been saved. A run paused at the gate
-    keeps its state until a decision or its expiry.
+    keeps its state until a review or its expiry.
+
+    A run that pauses with a draft has taken the place of any draft still
+    waiting for the same evening; the table closed those as superseded when
+    the draft was saved, and their threads are cleared here, since nothing can
+    resume them.
     """
     thread_id = thread_for(plan_date)
     try:
@@ -107,4 +114,8 @@ async def run_plan(
     view = run_view(thread_id, plan_date, dict(result))
     if not view.waiting:
         await clear_thread(checkpointer, thread_id)
+        return view
+    for superseded in drafts.superseded_for(plan_date):
+        if superseded.thread_id != thread_id:
+            await clear_thread(checkpointer, superseded.thread_id)
     return view

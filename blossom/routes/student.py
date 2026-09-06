@@ -20,6 +20,7 @@ take it back. The page also lists every signal still kept, each with a way to
 remove it, because the record is hers.
 """
 
+import logging
 from datetime import UTC, datetime
 from typing import Annotated, Final
 
@@ -45,6 +46,8 @@ from blossom.views import (
     StudentPlanView,
     WorkloadSignalView,
 )
+
+logger = logging.getLogger(__name__)
 
 PAGE: Final = "/student/due-this-week"
 
@@ -188,7 +191,9 @@ async def make_todays_plan(state: State, graphs: Graphs) -> StudentPlanView:
     whatever plan it had.
     """
     require_model(graphs)
-    run = await run_plan(graphs.build(), state.clock.today(), state.tracer, state.checkpointer)
+    run = await run_plan(
+        graphs.build(), state.clock.today(), state.tracer, state.checkpointer, state.drafts
+    )
     if run.draft_id is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT, detail=f"no plan was made: the run ended with {run.outcome}"
@@ -272,17 +277,33 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
 
     A run that could not start or ended without a plan is said on the page
     with the status the JSON route would have answered, and whatever plan the
-    page already had stays.
+    page already had stays. So is a run that failed on the way, for any other
+    reason: the run has already cleared its thread by then, the failure goes
+    to the process log, and the page says something went wrong rather than
+    answering with a bare error.
     """
     try:
         require_model(graphs)
-        run = await run_plan(graphs.build(), state.clock.today(), state.tracer, state.checkpointer)
+        run = await run_plan(
+            graphs.build(), state.clock.today(), state.tracer, state.checkpointer, state.drafts
+        )
     except HTTPException as error:
         return student_page(
             request,
             state,
             problem=f"Blossom could not make a plan: {error.detail}",
             status_code=error.status_code,
+        )
+    except Exception:
+        logger.exception("today's plan failed on the way; its thread was cleared")
+        return student_page(
+            request,
+            state,
+            problem=(
+                "Blossom could not make a plan: something went wrong on the way. "
+                "The plan already here, if any, is unchanged."
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     if run.draft_id is None:
         return student_page(

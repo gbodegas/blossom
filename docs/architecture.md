@@ -591,8 +591,10 @@ stops before the gate has its thread cleared by the route as soon as it
 returns, since its record is already in the drafts file; a run paused at the
 gate keeps its thread until a decision is recorded, and the route clears it
 then. A draft nobody decides within `PAUSED_RETENTION_DAYS` of its evening is
-closed as expired, the third decision value and the only one the system
-records itself, and its thread is cleared with it. At startup a sweep applies
+closed as expired, and a draft she plans again over is closed as superseded
+the moment the newer one is saved, so at most one draft waits per evening and
+the plan on her page is the one a review can land on; those are the two
+decision values the system records itself, and a thread is cleared with each. At startup a sweep applies
 both rules to whatever the last process left behind: it expires the drafts
 that waited too long, then clears every thread that no waiting draft refers
 to, which covers finished runs whose thread was never removed and runs that

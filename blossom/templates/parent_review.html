@@ -35,8 +35,10 @@
         <button type="submit" class="primary">Plan it</button>
       </form>
       <p class="note">
-        She usually plans from her own page. A plan made here goes to her page the
-        moment it is made, and waits below for your review.
+        She usually plans from her own page. A plan made here for today is on her page
+        the moment it is made; one for another evening reaches her page on that day.
+        Either waits below for your review, and takes the place of any plan still
+        waiting for the same evening.
       </p>
     {% else %}
       <p class="note">
@@ -93,7 +95,12 @@
                     aria-label="Ask for a change to the plan for {{ evening }}{{ which }}">Ask for a change</button>
           </div>
           <p class="note">
-            She has this plan on her page already. What you say here shows there, under it.
+            {% if draft.plan_date == today %}
+              She has this plan on her page already. What you say here shows there, under it.
+            {% else %}
+              This plan is for {{ evening }}. It reaches her page on that day, with what you say
+              here under it.
+            {% endif %}
             Nothing leaves here on its own.
           </p>
         </form>
@@ -118,9 +125,9 @@
   {% endif %}
 
   <section>
-    <h2>Reviewed</h2>
+    <h2>Earlier plans</h2>
     {% if not decided %}
-      <p class="empty">Nothing has been reviewed yet.</p>
+      <p class="empty">No earlier plans yet.</p>
     {% endif %}
     {% for draft in decided %}
       <article class="draft decided-{{ draft.decision }}">
@@ -130,10 +137,12 @@
             <strong>Looks good.</strong> Said on her page.
           {% elif draft.decision == "rejected" %}
             <strong>Change asked.</strong> Said on her page; the plan stays as it was until she plans again.
+          {% elif draft.decision == "superseded" %}
+            <strong>Superseded.</strong> She planned again, and this one was never reviewed.
           {% else %}
             <strong>Expired.</strong> The evening passed without a review.
           {% endif %}
-          {% if draft.reason and draft.decision != "expired" %}Reason: {{ draft.reason }}.{% endif %}
+          {% if draft.reason and draft.decision in ("approved", "rejected") %}Reason: {{ draft.reason }}.{% endif %}
           <span class="when">Reviewed {{ draft.decided_at.strftime("%B") }} {{ draft.decided_at.day }}, {{ draft.decided_at.year }}, {{ draft.decided_at.strftime("%H:%M UTC") }}.</span>
         </p>
         <details>

@@ -59,7 +59,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
         "see CLOSED_PREFIXES"
     ),
     "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
-    "logging": "standard library; reports a scheduled sweep that failed, to the process log only",
+    "logging": "standard library; reports failures to the process log only, never to a page",
     "operator": "standard library; the reducer on a graph state key",
     "os": "standard library; reads environment variables only",
     "pathlib": "standard library",

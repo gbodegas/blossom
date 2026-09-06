@@ -7,7 +7,7 @@ through the route's builder dependency, over the real stores.
 
 import re
 from collections.abc import Callable
-from datetime import date, time
+from datetime import date, time, timedelta
 from typing import Annotated
 
 from fastapi import Depends
@@ -132,7 +132,7 @@ def test_the_page_renders_with_nothing_waiting() -> None:
     assert response.headers["content-type"].startswith("text/html")
     assert "<h1>Review</h1>" in response.text
     assert "Nothing is waiting." in response.text
-    assert "Nothing has been reviewed yet." in response.text
+    assert "No earlier plans yet." in response.text
     assert 'value="2026-08-19"' in response.text
 
 
@@ -272,12 +272,22 @@ def test_a_reason_over_the_cap_from_the_page_is_answered_as_the_page() -> None:
     assert record["decision"] is None
 
 
+def tomorrows_plan() -> DailyPlan:
+    """The same plan, made for the evening after the fixture date."""
+    return a_plan().model_copy(update={"plan_date": PLAN_DATE + timedelta(days=1)})
+
+
 def test_each_decision_button_says_which_draft_it_decides() -> None:
-    """One waiting draft is named by its evening; two share the evening and get a position."""
-    with browser() as client:
+    """One waiting draft is named by its evening; two evenings waiting get a position each."""
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
+    app.dependency_overrides[plan_graphs] = scripted_graphs()
+    with TestClient(app, follow_redirects=False) as client:
         client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         one_waiting = client.get("/parent").text
-        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        app.dependency_overrides[plan_graphs] = scripted_graphs(plans=lambda: [tomorrows_plan()])
+        client.post(
+            "/parent/actions/plan", data={"plan_date": (PLAN_DATE + timedelta(days=1)).isoformat()}
+        )
         two_waiting = client.get("/parent").text
 
     named = r'aria-label="((?:Say|Ask for a change to) the plan for [^"]+)"'
@@ -289,7 +299,43 @@ def test_each_decision_button_says_which_draft_it_decides() -> None:
     assert len(labels) == 4
     assert len(set(labels)) == 4
     assert "Say the plan for Wednesday, August 19, 1 of 2 looks good" in labels
-    assert "Ask for a change to the plan for Wednesday, August 19, 2 of 2" in labels
+    assert "Ask for a change to the plan for Thursday, August 20, 2 of 2" in labels
+    assert "She has this plan on her page already." in two_waiting
+    assert "This plan is for Thursday, August 20. It reaches her page on that day" in two_waiting
+
+
+def test_planning_again_retires_the_plan_before_it_on_the_page() -> None:
+    with browser() as client:
+        first = waiting_draft_id(client)
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        page = client.get("/parent").text
+        queue = client.get("/parent/approvals").json()["waiting"]
+
+    assert len(queue) == 1
+    assert queue[0]["draft_id"] != first
+    assert (
+        "<strong>Superseded.</strong> She planned again, and this one was never reviewed." in page
+    )
+    assert "she planned again, and the later plan" not in page
+
+
+def test_a_failure_on_the_way_is_said_on_the_page_and_the_queue_stays() -> None:
+    """A planner that raises is not a refusal; the page still says so and keeps its queue."""
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
+    app.dependency_overrides[plan_graphs] = scripted_graphs()
+    with TestClient(app, follow_redirects=False) as client:
+        draft_id = waiting_draft_id(client)
+        app.dependency_overrides[plan_graphs] = scripted_graphs(plans=list)
+        response = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        queue = client.get("/parent/approvals").json()["waiting"]
+
+    assert response.status_code == 500
+    assert (
+        "The plan could not be made: something went wrong on the way. "
+        "What is waiting below is unchanged."
+    ) in response.text
+    assert "<h1>Review</h1>" in response.text
+    assert [item["draft_id"] for item in queue] == [draft_id]
 
 
 def test_a_waiting_draft_can_be_decided_from_the_page_without_a_key() -> None:

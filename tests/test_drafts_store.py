@@ -17,7 +17,7 @@ from blossom.agent.steps import StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Draft, DraftStatus
 from blossom.stores.checkpoints import UnsafeCheckpointPath
-from blossom.stores.drafts import AlreadyDecided, DraftsStore
+from blossom.stores.drafts import SUPERSEDED_REASON, AlreadyDecided, DraftsStore
 from tests.support import FIXTURE_TIMEZONE, fixture_clock
 
 PLAN_DATE = date(2026, 8, 19)
@@ -204,13 +204,39 @@ def test_the_queue_is_oldest_first() -> None:
     try:
         newer = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
         older = Draft(draft_id="draft:a", body="a", created_at=CREATED)
-        store.record_waiting(newer, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+        next_evening = PLAN_DATE + timedelta(days=1)
+        store.record_waiting(newer, thread_id="tb", plan_date=next_evening, outcome="accepted")
         store.record_waiting(older, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
         order = [record.draft_id for record in store.waiting()]
     finally:
         store.close()
 
     assert order == ["draft:a", "draft:b"]
+
+
+def test_a_later_draft_for_the_same_evening_takes_the_place_of_the_one_waiting() -> None:
+    """One draft waits per evening; the earlier one is closed as superseded, store-stamped."""
+    store = store_in_memory()
+    try:
+        first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
+        second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
+        store.record_waiting(first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+        store.record_waiting(second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+        store.record_waiting(second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+        waiting = [record.draft_id for record in store.waiting()]
+        superseded = store.superseded_for(PLAN_DATE)
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert waiting == ["draft:b"]
+    assert [record.draft_id for record in superseded] == ["draft:a"]
+    assert superseded[0].decision == "superseded"
+    assert superseded[0].reason == SUPERSEDED_REASON
+    assert superseded[0].decided_at == fixture_clock().now()
+    assert latest is not None
+    assert latest.draft_id == "draft:b"
+    assert latest.waiting
 
 
 def test_rows_survive_closing_and_reopening_the_file(tmp_path: pathlib.Path) -> None:
@@ -403,7 +429,9 @@ def test_a_draft_is_read_with_its_steps_from_one_query() -> None:
         draft(), thread_id="plan:one", plan_date=PLAN_DATE, outcome="accepted", steps=steps
     )
     other = draft().model_copy(update={"draft_id": "draft:plan:two"})
-    store.record_waiting(other, thread_id="plan:two", plan_date=PLAN_DATE, outcome="unsettled")
+    store.record_waiting(
+        other, thread_id="plan:two", plan_date=PLAN_DATE + timedelta(days=1), outcome="unsettled"
+    )
 
     fetched = store.get(draft().draft_id)
     queue = store.waiting()
