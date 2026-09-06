@@ -14,22 +14,20 @@ date, an undecided draft is closed as expired and its thread cleared. Nobody
 decided, and the record says so rather than pretending someone did.
 
 The sweep at startup applies both rules to whatever a crash left behind. A
-draft left waiting by a run that died after saving it and before pausing with
-it, whose thread is missing or never reached the draft, is taken back first,
-since nothing could ever review it; taking one back can leave another waiting
-in its stead, so the pass repeats until every waiting draft has a thread that
-could review it. A waiting draft whose thread holds a review that never landed
-in the table, because recording it failed, has that review recorded, since a
-review that reached the thread is never lost and never expired away. Then any
-thread no waiting draft refers to is cleared, which covers runs that ended
-without their thread being removed and runs that never finished.
+draft saved but never published belongs to a run that died on the way: if its
+thread paused with the draft, the sweep publishes it as the run would have,
+and if the thread is missing or never reached the draft, the sweep takes it
+back, since nothing could ever review it. A waiting draft whose thread holds
+a review that never landed in the table, because recording it failed, has that
+review recorded, since a review that reached the thread is never lost and
+never expired away. Then any thread no waiting draft refers to is cleared,
+which covers runs that ended without their thread being removed and runs that
+never finished.
 
 The same sweep runs on a schedule while the process is up, when runs may be in
 flight. A run between saving its draft and pausing with it looks, from the
 tables, like a run that died there, so the caller names the threads it is
-running and the sweep leaves them, their drafts, and the threads of the drafts
-they have displaced alone: a run that pauses clears those itself, and a run
-that fails gives the displaced draft back, thread and all.
+running and the sweep leaves them and their drafts alone.
 """
 
 from collections.abc import Collection
@@ -39,7 +37,6 @@ from typing import Any, Final
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from blossom.agent.runs import draft_id_for
 from blossom.clock import Clock
 from blossom.drafts import Decision, DraftStatus
 from blossom.stores.drafts import DraftsStore
@@ -60,6 +57,8 @@ class Swept:
     """Drafts left waiting by a run that died before pausing with them, now taken back."""
     finished: tuple[str, ...] = ()
     """Drafts whose thread held a review that had not landed in the table, now recorded."""
+    published: tuple[str, ...] = ()
+    """Drafts whose run paused and died before publishing them, now published."""
 
 
 async def clear_thread(checkpointer: BaseCheckpointSaver[Any], thread_id: str) -> None:
@@ -115,23 +114,37 @@ async def sweep_saved_state(
     *,
     in_flight: Collection[str] = (),
 ) -> Swept:
-    """Take back drafts no thread can review, close those that waited too long, clear the rest.
+    """Finish or take back what a run left, close what waited too long, clear the rest.
 
     ``in_flight`` names the threads of runs the caller is running right now;
     they and their drafts are left alone, since a run between saving its draft
     and pausing with it is not a run that died there. Empty at startup.
+
+    An unpublished draft whose run is not in flight belongs to a run that died
+    between saving and pausing, or between pausing and publishing. The thread
+    tells which: one paused with the draft is published here, and displaces
+    and clears as the run would have; one missing or short of the draft is
+    taken back. A published draft whose thread cannot review it, which only a
+    file from before publication can hold, is taken back too.
     """
+    published: list[str] = []
     withdrawn: list[str] = []
-    while True:
-        orphaned = [
-            record
-            for record in drafts.waiting()
-            if record.thread_id not in in_flight
-            and not await paused_with_its_draft(checkpointer, record.thread_id)
-        ]
-        if not orphaned:
-            break
-        for record in orphaned:
+    cleared: list[str] = []
+    for record in drafts.unpublished():
+        if record.thread_id in in_flight:
+            continue
+        if await paused_with_its_draft(checkpointer, record.thread_id):
+            for displaced in drafts.publish(record.draft_id):
+                await checkpointer.adelete_thread(displaced.thread_id)
+                cleared.append(displaced.thread_id)
+            published.append(record.draft_id)
+        else:
+            drafts.withdraw(record.draft_id)
+            withdrawn.append(record.draft_id)
+    for record in drafts.waiting():
+        if record.thread_id in in_flight:
+            continue
+        if not await paused_with_its_draft(checkpointer, record.thread_id):
             drafts.withdraw(record.draft_id)
             withdrawn.append(record.draft_id)
 
@@ -162,17 +175,16 @@ async def sweep_saved_state(
             expired.append(record.draft_id)
 
     keep = {record.thread_id for record in drafts.waiting()} | set(in_flight)
-    for thread_id in in_flight:
-        keep.update(record.thread_id for record in drafts.displaced_by(draft_id_for(thread_id)))
     saved: set[str] = set()
     async for item in checkpointer.alist(None):
         saved.add(str(item.config["configurable"]["thread_id"]))
-    cleared = sorted(thread_id for thread_id in saved if thread_id not in keep)
-    for thread_id in cleared:
+    for thread_id in sorted(thread_id for thread_id in saved if thread_id not in keep):
         await checkpointer.adelete_thread(thread_id)
+        cleared.append(thread_id)
     return Swept(
         expired=tuple(expired),
-        cleared=tuple(cleared),
+        cleared=tuple(sorted(cleared)),
         withdrawn=tuple(withdrawn),
         finished=tuple(finished),
+        published=tuple(published),
     )

@@ -54,7 +54,9 @@ def test_the_latest_plan_for_an_evening_is_read_whatever_was_said_about_it() -> 
     first = draft("draft:plan:a", "First plan")
     second = draft("draft:plan:b", "Second plan", hour=23)
     store.record_waiting(first, thread_id="plan:a", plan_date=PLAN_DATE, outcome="accepted")
+    store.publish(first.draft_id)
     store.record_waiting(second, thread_id="plan:b", plan_date=PLAN_DATE, outcome="accepted")
+    store.publish(second.draft_id)
     store.record_decision(
         "draft:plan:b",
         status=first.status,

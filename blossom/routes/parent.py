@@ -253,14 +253,11 @@ async def decide_draft(
             await graph.ainvoke(resume, config=config, durability=DURABILITY)
         except AlreadyDecided as error:
             # The review reached the thread, so the gate is passed and the
-            # thread cannot pause again; the table refused because a later plan
-            # took the draft's place in the same moment. The draft is settled
-            # first, so it cannot come back as the current plan should that
-            # later one fail, since its pause is spent; then the thread goes,
-            # and a thread that cannot be cleared now is left to the sweep, so
-            # the refusal is what the caller sees whatever the saved-state
-            # store does.
-            state.drafts.settle(draft_id)
+            # thread cannot pause again, and the table refused because the
+            # draft was closed meanwhile: a later plan published from another
+            # process, since publication in this one waits for the lock this
+            # review holds. Nothing can resume the thread, so it goes, and a
+            # thread that cannot be cleared now is left to the sweep.
             await tidy_thread(record.thread_id, state)
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
         decided = state.drafts.get(draft_id)

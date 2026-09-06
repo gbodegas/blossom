@@ -32,7 +32,7 @@ from blossom.agent.retention import (
     Swept,
     sweep_saved_state,
 )
-from blossom.agent.runs import DURABILITY, draft_id_for, run_config
+from blossom.agent.runs import DURABILITY, run_config
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import ApplicationState, build_application_state
@@ -179,6 +179,7 @@ def test_the_sweep_clears_what_no_waiting_draft_needs_and_keeps_what_one_does() 
                 config=run_config("plan:waiting"),
                 durability=DURABILITY,
             )
+            state.drafts.publish("draft:plan:waiting")
             await graph_for(
                 state, forgetful_fixture_plan(), forgetful_fixture_plan(), forgetful_fixture_plan()
             ).ainvoke(
@@ -209,6 +210,7 @@ def test_a_draft_that_waited_past_its_evening_is_closed_as_expired_and_its_threa
                 config=run_config("plan:stale"),
                 durability=DURABILITY,
             )
+            state.drafts.publish("draft:plan:stale")
             long_after = FrozenClock(OBSERVED_AT + timedelta(days=PAUSED_RETENTION_DAYS + 2), ZONE)
             swept = await sweep_saved_state(state.checkpointer, state.drafts, long_after)
             return swept, await thread_ids(state)
@@ -238,6 +240,7 @@ def test_a_draft_still_within_the_window_is_left_waiting() -> None:
                 config=run_config("plan:fresh"),
                 durability=DURABILITY,
             )
+            state.drafts.publish("draft:plan:fresh")
             on_the_last_day = FrozenClock(OBSERVED_AT + timedelta(days=PAUSED_RETENTION_DAYS), ZONE)
             return await sweep_saved_state(state.checkpointer, state.drafts, on_the_last_day)
 
@@ -448,7 +451,7 @@ def test_the_sweep_takes_back_a_draft_whose_run_died_before_pausing() -> None:
 
 
 class DisplacedDuringReview:
-    """A graph whose resume first saves a later draft for the evening, as another run might."""
+    """A graph whose resume first publishes a later draft, as another process might have."""
 
     def __init__(self, inner: CompiledPlanGraph, state: ApplicationState) -> None:
         self._inner = inner
@@ -466,48 +469,8 @@ class DisplacedDuringReview:
             plan_date=PLAN_DATE,
             outcome="accepted",
         )
+        self._state.drafts.publish("draft:plan:later")
         return dict(await self._inner.ainvoke(resume, config=config, durability=durability))
-
-
-def test_a_review_that_meets_a_later_draft_settles_the_displaced_one_for_good() -> None:
-    """The gate is passed and the table refuses: the thread goes, and the draft cannot come back."""
-    state = application()
-    try:
-
-        async def scenario() -> tuple[str, int, set[str]]:
-            first = await run_plan(
-                graph_for(state, fixture_week_plan()),
-                PLAN_DATE,
-                state,
-            )
-            assert first.draft_id is not None
-            build = lambda: cast(  # noqa: E731
-                "CompiledPlanGraph", DisplacedDuringReview(graph_for(state), state)
-            )
-            try:
-                await decide_draft(
-                    state, build, first.draft_id, DecisionRequest(approved=True, reason=None)
-                )
-            except HTTPException as error:
-                return first.draft_id, error.status_code, await thread_ids(state)
-            msg = "the review was accepted although a later draft had taken the draft's place"
-            raise AssertionError(msg)
-
-        draft_id, status_code, threads = asyncio.run(scenario())
-        displaced = state.drafts.get(draft_id)
-        taken_back = state.drafts.withdraw("draft:plan:later")
-        waiting = state.drafts.waiting()
-        latest = state.drafts.latest_for(PLAN_DATE)
-    finally:
-        state.close()
-
-    assert status_code == 409
-    assert threads == set()
-    assert displaced is not None
-    assert displaced.decision == "superseded"
-    assert taken_back is True
-    assert waiting == []
-    assert latest is None
 
 
 class SaverSweepingBeforeTheDraft(InMemorySaver):
@@ -583,7 +546,7 @@ def test_the_sweep_keeps_taking_back_until_the_plan_left_waiting_has_a_thread() 
     finally:
         state.close()
 
-    assert swept.withdrawn == ("draft:plan:crash-c", "draft:plan:crash-b")
+    assert set(swept.withdrawn) == {"draft:plan:crash-b", "draft:plan:crash-c"}
     assert swept.cleared == ("plan:crash-b", "plan:crash-c")
     assert [record.thread_id for record in waiting] == [first]
     assert latest is not None
@@ -621,95 +584,6 @@ class SaverRefusingDeletes(InMemorySaver):
             msg = "database is locked"
             raise RuntimeError(msg)
         await super().adelete_thread(thread_id)
-
-
-def test_a_displaced_draft_is_settled_before_its_spent_thread_is_cleared() -> None:
-    """The table is consistent whatever the saved-state store does; the thread goes at the sweep."""
-    saver = SaverRefusingDeletes()
-    state = application(saver=saver)
-    try:
-
-        async def scenario() -> tuple[str, int, set[str], Swept]:
-            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
-            assert first.draft_id is not None
-            build = lambda: cast(  # noqa: E731
-                "CompiledPlanGraph", DisplacedDuringReview(graph_for(state), state)
-            )
-            saver.armed = True
-            try:
-                await decide_draft(
-                    state, build, first.draft_id, DecisionRequest(approved=True, reason=None)
-                )
-            except HTTPException as error:
-                status_code = error.status_code
-            else:
-                msg = "the review was accepted although a later draft had taken the draft's place"
-                raise AssertionError(msg)
-            state.drafts.withdraw("draft:plan:later")
-            before = await thread_ids(state)
-            saver.armed = False
-            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
-            return first.thread_id, status_code, before, swept
-
-        first, status_code, before, swept = asyncio.run(scenario())
-        waiting = state.drafts.waiting()
-        latest = state.drafts.latest_for(PLAN_DATE)
-    finally:
-        state.close()
-
-    assert status_code == 409
-    assert before == {first}
-    assert waiting == []
-    assert latest is None
-    assert swept.cleared == (first,)
-
-
-class SaverSweepingThenFailing(SaverSweepingBeforeTheDraft):
-    """The scheduled sweep fires in a run's gap, and then the run's checkpoint fails."""
-
-    async def aput(
-        self,
-        config: RunnableConfig,
-        checkpoint: Checkpoint,
-        metadata: CheckpointMetadata,
-        new_versions: ChannelVersions,
-    ) -> RunnableConfig:
-        if self.sweep is not None and checkpoint["channel_values"].get("draft") is not None:
-            sweep, self.sweep = self.sweep, None
-            self.swept = await sweep()
-            msg = "the checkpoint could not be written"
-            raise RuntimeError(msg)
-        return await super().aput(config, checkpoint, metadata, new_versions)
-
-
-def test_the_sweep_in_a_runs_gap_keeps_the_thread_of_the_plan_that_run_displaced() -> None:
-    """The run then fails and gives the plan back, thread and all."""
-    saver = SaverSweepingThenFailing()
-    state = application(saver=saver)
-    try:
-
-        async def scenario() -> tuple[str, set[str]]:
-            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
-            saver.sweep = lambda: sweep_saved_state(
-                state.checkpointer, state.drafts, state.clock, in_flight=state.in_flight
-            )
-            with pytest.raises(RuntimeError, match="checkpoint could not be written"):
-                await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
-            return first.thread_id, await thread_ids(state)
-
-        first, threads = asyncio.run(scenario())
-        waiting = state.drafts.waiting()
-        latest = state.drafts.latest_for(PLAN_DATE)
-    finally:
-        state.close()
-
-    assert saver.swept is not None
-    assert saver.swept.cleared == ()
-    assert saver.swept.withdrawn == ()
-    assert [record.thread_id for record in waiting] == [first]
-    assert latest is not None
-    assert latest.thread_id == first
-    assert threads == {first}
 
 
 def test_a_thread_that_cannot_be_tidied_after_a_pause_does_not_fail_the_run() -> None:
@@ -919,64 +793,131 @@ class SaverActingBeforeTheDraft(InMemorySaver):
         return await super().aput(config, checkpoint, metadata, new_versions)
 
 
-def test_a_pausing_run_leaves_the_thread_of_a_run_in_flight_alone() -> None:
-    """The run in flight clears what it displaced when it pauses; until then its thread stays."""
+def test_a_review_that_meets_a_later_plan_is_refused_and_its_spent_thread_goes() -> None:
+    """Publication in this process waits for the lock a review holds; another process would not."""
     state = application()
     try:
 
-        async def scenario() -> tuple[str, str, set[str], set[str]]:
+        async def scenario() -> tuple[str, int, set[str]]:
             first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
-            state.in_flight.add(first.thread_id)
-            second = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
-            while_in_flight = await thread_ids(state)
-            state.in_flight.discard(first.thread_id)
-            await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
-            return first.thread_id, second.thread_id, while_in_flight, await thread_ids(state)
+            assert first.draft_id is not None
+            build = lambda: cast(  # noqa: E731
+                "CompiledPlanGraph", DisplacedDuringReview(graph_for(state), state)
+            )
+            try:
+                await decide_draft(
+                    state, build, first.draft_id, DecisionRequest(approved=True, reason=None)
+                )
+            except HTTPException as error:
+                return first.draft_id, error.status_code, await thread_ids(state)
+            msg = "the review was accepted although a later plan had taken the draft's place"
+            raise AssertionError(msg)
 
-        first, second, while_in_flight, after = asyncio.run(scenario())
+        draft_id, status_code, threads = asyncio.run(scenario())
+        displaced = state.drafts.get(draft_id)
         waiting = state.drafts.waiting()
     finally:
         state.close()
 
-    assert [record.thread_id for record in waiting] == [second]
-    assert while_in_flight == {first, second}
-    assert after == {second}
+    assert status_code == 409
+    assert threads == set()
+    assert displaced is not None
+    assert displaced.decision == "superseded"
+    assert [record.draft_id for record in waiting] == ["draft:plan:later"]
 
 
-def test_a_run_displaced_while_pausing_keeps_its_thread_for_the_draft_to_come_back_to() -> None:
-    """A run in flight displaced this one's draft; that run then fails and gives the draft back."""
+def test_a_draft_is_on_no_page_until_its_run_has_paused() -> None:
+    """In the gap between the save and the pause, both pages still show the plan before it."""
     saver = SaverActingBeforeTheDraft()
     state = application(saver=saver)
     try:
+        seen: dict[str, object] = {}
 
-        def another_run_saves_its_draft() -> None:
-            state.in_flight.add("plan:later")
-            state.drafts.record_waiting(
-                Draft(draft_id="draft:plan:later", body="later", created_at=CREATED_LATER),
-                thread_id="plan:later",
-                plan_date=PLAN_DATE,
-                outcome="accepted",
+        def look_at_the_pages() -> None:
+            latest = state.drafts.latest_for(PLAN_DATE)
+            seen["latest"] = None if latest is None else latest.thread_id
+            seen["waiting"] = [record.thread_id for record in state.drafts.waiting()]
+            seen["unpublished"] = [record.thread_id for record in state.drafts.unpublished()]
+
+        async def scenario() -> tuple[str, str]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            saver.act = look_at_the_pages
+            second = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            return first.thread_id, second.thread_id
+
+        first, second = asyncio.run(scenario())
+        waiting_after = [record.thread_id for record in state.drafts.waiting()]
+        latest_after = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert seen["latest"] == first
+    assert seen["waiting"] == [first]
+    assert seen["unpublished"] == [second]
+    assert waiting_after == [second]
+    assert latest_after is not None
+    assert latest_after.thread_id == second
+
+
+def test_publication_waits_for_a_review_in_progress() -> None:
+    """The lock a review holds is the lock a pausing run needs before it clears anything."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[str, str, bool, set[str], set[str]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            await state.decision_lock.acquire()
+            pausing = asyncio.create_task(
+                run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            )
+            await asyncio.sleep(0.3)
+            done_while_held = pausing.done()
+            threads_while_held = await thread_ids(state)
+            state.decision_lock.release()
+            second = await pausing
+            return (
+                first.thread_id,
+                second.thread_id,
+                done_while_held,
+                threads_while_held,
+                await thread_ids(state),
             )
 
-        saver.act = another_run_saves_its_draft
+        first, second, done_while_held, while_held, after = asyncio.run(scenario())
+        waiting = [record.thread_id for record in state.drafts.waiting()]
+    finally:
+        state.close()
 
-        async def scenario() -> tuple[str, set[str]]:
-            view = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
-            assert view.waiting
-            displaced = state.drafts.get(draft_id_for(view.thread_id))
-            assert displaced is not None
-            assert displaced.decision == "superseded"
-            state.drafts.withdraw("draft:plan:later")
-            state.in_flight.discard("plan:later")
-            return view.thread_id, await thread_ids(state)
+    assert done_while_held is False
+    assert while_held == {first, second}
+    assert after == {second}
+    assert waiting == [second]
 
-        thread, threads = asyncio.run(scenario())
-        waiting = state.drafts.waiting()
+
+def test_the_sweep_publishes_a_draft_whose_run_paused_and_died_before_publishing() -> None:
+    state = application()
+    try:
+
+        async def scenario() -> tuple[str, str, Swept, set[str]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            await graph_for(state, fixture_week_plan()).ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0),
+                config=run_config("plan:paused-unpublished"),
+                durability=DURABILITY,
+            )
+            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return first.thread_id, "plan:paused-unpublished", swept, await thread_ids(state)
+
+        first, second, swept, threads = asyncio.run(scenario())
+        waiting = [record.thread_id for record in state.drafts.waiting()]
         latest = state.drafts.latest_for(PLAN_DATE)
     finally:
         state.close()
 
-    assert [record.thread_id for record in waiting] == [thread]
+    assert swept.published == ("draft:plan:paused-unpublished",)
+    assert swept.withdrawn == ()
+    assert first in swept.cleared
+    assert waiting == [second]
     assert latest is not None
-    assert latest.thread_id == thread
-    assert threads == {thread}
+    assert latest.thread_id == second
+    assert threads == {second}

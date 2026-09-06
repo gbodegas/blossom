@@ -371,12 +371,13 @@ def build_plan_graph(
         return {"verdict": verdict, "outcome": "unsettled", "steps": [record]}
 
     def compose(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
-        """Render the plan as the text a person reads at the gate, and save it as waiting.
+        """Render the plan as the text she reads, and save it as the record of this run.
 
         The draft id comes from the thread, so this node run twice yields the
         same draft and the same row. Saving happens here, before the gate,
-        because the gate must do nothing before it pauses and the queue must
-        show the draft while it waits.
+        because the gate must do nothing before it pauses and the record must
+        survive whatever happens next; the draft reaches the pages only when
+        the route publishes it, once the run has paused.
         """
         thread_id = str(config["configurable"]["thread_id"])
         outcome = state["outcome"]

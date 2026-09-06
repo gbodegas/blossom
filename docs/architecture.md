@@ -325,8 +325,8 @@ judgment about a plan that is already wrong is a wasted call. `critique` asks
 the critic; fault sends the plan back with the critique, doubt sends it
 forward. `compose` renders the plan, the doubtful due dates, and the
 reviewer's notes as the text she reads, and saves it to the drafts table
-under an id derived from the thread; from that moment the plan is on her
-page. `require_human_approval` is the gate from `blossom/agent/gates.py`,
+under an id derived from the thread, as the record; the route publishes it
+once the run has paused, and from that moment the plan is on her page. `require_human_approval` is the gate from `blossom/agent/gates.py`,
 unchanged in mechanism and narrowed in meaning: it pauses the thread for a
 parent's review, which she does not wait for. Ordinary planning is hers, so
 the review is shown under the plan on her page, looks good or a change asked
@@ -601,58 +601,50 @@ stops before the gate has its thread cleared by the route as soon as it
 returns, since its record is already in the drafts file; a run paused at the
 gate keeps its thread until a decision is recorded, and the route clears it
 then. A draft nobody decides within `PAUSED_RETENTION_DAYS` of its evening is
-closed as expired, and a draft a later plan for the same evening is saved
-over is closed as superseded the moment the newer one is saved, so at most
-one draft waits per evening and
-the plan on her page is the one a review can land on; those are the two
-decision values the system records itself, and a thread is cleared with each.
-Drafts are numbered in the order they are saved, under the store's lock, and
-that one order decides both which draft displaces which and which plan her
-page shows, so two runs whose drafts were made in one order and saved in the
-other still leave both pages naming the same plan. Only a draft that is itself
-still waiting takes another's place, so a node replayed after a crash for a
-draft already superseded displaces nothing. A run that fails after saving its
-draft and before pausing with it takes the draft back: the row goes and the
-run is kept with its steps as interrupted. If the failed draft was still the
-current one, the draft it displaced waits again with its thread untouched; if
-a later draft had already displaced it, what it displaced is handed on to that
-later draft, so two runs failing in either order always leave waiting a plan
-whose thread exists. The plan on her page and the parent's queue are then what
-they were before the run, and the run itself is listed among those that ended
-without a plan. A review that reaches a thread in the same moment a later
-draft takes the draft's place passes the gate and is refused by the table; the
-thread is cleared, since nothing can pause it again, and the draft is settled
-as superseded for good, so a failure of the later draft cannot bring back a
-plan nobody could review. The draft is taken back first and the thread
-cleared second, because the saved-state store is the likelier of the two to
-be what failed; a thread that cannot be cleared is left to the sweep. Opening
-a drafts file restores two invariants whatever version wrote it: every draft
-has its place in the saved order, and one draft waits per evening, the rest
-closed as superseded by the evening's latest, so a file from before these
-rules, or one a dying process left half opened, is brought into line and the
-startup sweep clears the threads of what was closed. At startup a sweep
-applies the rules to whatever the last process left behind: it takes back any
-waiting draft whose thread is missing or never reached the draft, since a run
-died between saving the draft and pausing with it, repeating until every
-waiting draft has a thread that could review it, then expires the drafts
-that waited too long, then clears every thread that no waiting draft refers
-to, which covers finished runs whose thread was never removed and runs that
-never finished. The same sweep runs every hour the process is up, under the
-decision lock, so a draft's fortnight ends when it ends rather than at the
-next restart; it is told which threads the process is running at that moment
-and leaves those runs, their drafts, and the threads of the drafts they have
-displaced alone, since a run between saving its draft and pausing with it is
-not a run that died there, and a run that pauses clears what it displaced
-itself. A pausing run leaves the threads of runs still in flight alone for
-the same reason, its own included when a run in flight has displaced its
-draft, since that run may fail and give the draft back. A review that reaches a thread and then fails to land in the table
-leaves the thread past the gate with the decision it holds; the next review of
-that draft, or the next sweep, finishes the record with that decision rather
-than taking a new one, whatever the request or the evening's signal says by
-then, and a request that disagrees is told what stood. Such a draft is never
-expired away. Tidying a thread after a run or a
-review has its outcome is never what a caller hears about: a thread that
-cannot be cleared is left to the sweep. The saver's only pruning primitive deletes a thread whole, and
+closed as expired, and a draft a later plan for the same evening is published
+over is closed as superseded, so at most one draft waits per evening and the
+plan on her page is the one a review can land on; those are the two decision
+values the system records itself, and a thread is cleared with each.
+
+A draft is saved when it is composed and published when its run pauses, and
+the two are different acts. The save is the record: it survives whatever
+happens next, and a node replayed after a crash saves its text again and
+changes nothing else. Publication, done by the route under the decision lock
+once the run has paused, is what puts the draft on the pages: it takes the
+next place in the published order, closes any published draft still waiting
+for the evening as superseded by it, and clears their threads, since no review
+can reach them. So nothing either page shows is a draft whose run might still
+fail, a review in progress lands or is refused before its thread goes, and
+which plan is current follows the order runs paused in, whatever order their
+drafts were composed or saved in. A run that fails between saving and pausing
+takes its draft back: the row goes and the run is kept with its steps as
+interrupted. It displaced nothing, so the pages are what they were before the
+run, and the run itself is listed among those that ended without a plan. The
+draft is taken back first and the thread cleared second, because the
+saved-state store is the likelier of the two to be what failed; a thread that
+cannot be cleared is left to the sweep. Opening a drafts file restores two
+invariants whatever version wrote it: every published draft has its place in
+the published order, and one draft waits per evening, the rest closed as
+superseded by the evening's latest, so a file from before these rules, or one
+a dying process left half opened, is brought into line and the startup sweep
+clears the threads of what was closed. At startup a sweep applies the rules to
+whatever the last process left behind: a draft saved but never published is
+published if its thread paused with it and taken back if the thread is missing
+or never reached it, a published draft no thread can review is taken back too,
+the drafts that waited too long are expired, and every thread that no waiting
+draft refers to is cleared, which covers finished runs whose thread was never
+removed and runs that never finished. The same sweep runs every hour the
+process is up, under the decision lock, so a draft's fortnight ends when it
+ends rather than at the next restart; it is told which threads the process is
+running at that moment and leaves those runs and their drafts alone. A review
+that reaches a thread and then fails to land in the table leaves the thread
+past the gate with the decision it holds; the next review of that draft, or
+the next sweep, finishes the record with that decision rather than taking a
+new one, whatever the request or the evening's signal says by then, and a
+request that disagrees is told what stood. Such a draft is never expired away.
+Tidying a thread after a run or a review has its outcome is never what a
+caller hears about: a thread that cannot be cleared is left to the sweep.
+The saver's only pruning primitive deletes a thread whole, and
 that is the only granularity the rule needs.
 
 **Not built:** the student's ability to see and delete what a thread holds.

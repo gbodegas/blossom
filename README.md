@@ -134,7 +134,8 @@ page, or "Plan it" on the parent's.
 Each run sends requests to Anthropic. They carry the week's assignments with
 their courses, dates, and confidence labels, the household's standing rules,
 the planner's notes about past plans, whether she has said the evening is too
-much, and, on later calls, the proposed plan and what was wrong with it. With the bundled fixtures all of that is
+much, and, on later calls, the proposed plan and what was wrong with it, which
+is also what her page tells her. With the bundled fixtures all of that is
 synthetic. A run is one to six calls depending on revisions, and the cost
 varies with the week. All of it happens before the plan reaches the page, and
 approving a draft sends nothing anywhere. The model, the call routing, and the

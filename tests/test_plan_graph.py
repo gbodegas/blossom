@@ -502,7 +502,9 @@ def test_a_paused_plan_survives_the_process_that_wrote_it(tmp_path: pathlib.Path
                     PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
                 )
                 assert len(paused["__interrupt__"]) == 1
-                assert [record.draft_id for record in drafts.waiting()] == ["draft:plan:durable"]
+                assert [record.draft_id for record in drafts.unpublished()] == [
+                    "draft:plan:durable"
+                ]
         finally:
             drafts.close()
 

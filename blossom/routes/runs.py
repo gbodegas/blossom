@@ -119,23 +119,19 @@ async def run_plan(
     gate and the first node had already been saved. A run paused at the gate
     keeps its state until a review or its expiry.
 
-    A run that pauses with a draft has taken the place of any draft still
-    waiting for the same evening; the table closed those as superseded when
-    the draft was saved, and their threads are cleared here, since nothing can
-    resume them. The threads of runs still in flight are left alone, this
-    run's own among them: a run in flight clears what it displaced when it
-    pauses, and gives it back if it fails, so a thread it displaced must
-    survive until then, and a run whose own draft was displaced by one still in
-    flight keeps its thread for the same reason. What such a run leaves behind
-    goes when the displacing run pauses, or at the next sweep.
+    A run that pauses with a draft publishes it, under the decision lock: the
+    draft reaches the pages, takes the place of any published draft still
+    waiting for the evening, and the threads of those are cleared, since no
+    review can reach them. The lock means a review in progress lands or is
+    refused before its thread goes, and nothing the pages show is ever a draft
+    whose run might still fail.
 
     A run can fail between saving its draft and pausing with it, since the
     save is a transaction of its own and the checkpoint after it is another.
-    The draft is then taken back by the store's rule: its row goes, the run is
-    kept as interrupted, and the draft it displaced waits again or is handed on
-    to a draft that had already displaced the failed one. So the plan on her
-    page and the parent's queue are what they were before the run, and the
-    run itself appears among the runs that ended without a plan.
+    The draft, never published, is taken back: its row goes and the run is
+    kept as interrupted. It displaced nothing, so the plan on her page and the
+    parent's queue are what they were before the run, and the run itself
+    appears among the runs that ended without a plan.
     """
     thread_id = thread_for(plan_date)
     state.in_flight.add(thread_id)
@@ -156,9 +152,9 @@ async def run_plan(
         if not view.waiting:
             await tidy_thread(thread_id, state)
             return view
-        for superseded in state.drafts.superseded_for(plan_date):
-            if superseded.thread_id not in state.in_flight:
-                await tidy_thread(superseded.thread_id, state)
+        async with state.decision_lock:
+            for displaced in state.drafts.publish(draft_id_for(thread_id)):
+                await tidy_thread(displaced.thread_id, state)
         return view
     finally:
         state.in_flight.discard(thread_id)

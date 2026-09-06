@@ -319,6 +319,7 @@ def test_a_past_evening_is_refused_by_the_form_and_a_past_draft_says_it_is_not_o
             plan_date=PLAN_DATE - timedelta(days=1),
             outcome="accepted",
         )
+        state.drafts.publish("draft:plan:past")
         page = client.get("/parent").text
 
     assert refused.status_code == 422
@@ -337,6 +338,7 @@ def test_a_waiting_draft_for_a_past_evening_is_never_told_to_plan_again() -> Non
             outcome="accepted",
             too_much=True,
         )
+        state.drafts.publish("draft:plan:past")
         record = client.get("/parent/approvals/draft:plan:past").json()
         page = client.get("/parent").text
 
