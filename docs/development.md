@@ -89,8 +89,8 @@ files under `.local/` outlive it:
 - `blossom.sqlite3` holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
-  evening is closed as expired, and one she plans again over is closed as
-  superseded, so one plan waits per evening. Her "too much" signals live here too, with
+  evening is closed as expired, and one a later plan for the same evening is
+  saved over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
   any words she added, kept for a week and removable from her page.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
@@ -118,16 +118,17 @@ The endpoint is fixed in code, so no shell variable can change where a prompt
 is sent.
 
 Each request carries the week's assignments with their courses, dates, and
-confidence labels, the household's standing rules, and the planner's notes
-about past plans; the critic also receives the proposed plan, and a revision
-receives what was wrong with the last one. With the bundled fixtures, all of
+confidence labels, the household's standing rules, the planner's notes about
+past plans, and whether she has said the evening is too much; the critic also
+receives the proposed plan, and a revision receives what was wrong with the
+last one. With the bundled fixtures, all of
 that is synthetic. A run is one to six calls. The planner is one; only a plan
 that passes the checks goes to the critic, which is another; and a plan that
 fails the checks or the critic's review goes back to the planner, up to two
 more times. A run the model cuts short ends with the call that failed. What
 it costs depends on the week and the revisions; the API's usage page says
-after a run. All of this happens before the plan reaches the page for a
-decision, and approving the draft sends nothing anywhere.
+after a run. All of this happens before the plan reaches her page and the
+parent's for review, and a review sends nothing anywhere.
 
 ## When uv cannot download
 

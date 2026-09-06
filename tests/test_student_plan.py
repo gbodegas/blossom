@@ -245,6 +245,23 @@ def test_a_press_after_the_plan_tells_her_to_plan_again_in_her_words() -> None:
     assert "Your next plan for today is held to 75 minutes instead of 150." in page
 
 
+def test_her_page_measures_the_plan_against_the_evening_whatever_a_parent_said() -> None:
+    """A parent's review is not a reason to keep a plan that has stopped fitting the evening."""
+    with browser() as client:
+        client.post("/student/actions/plan")
+        draft_id = client.get("/student/plans/today").json()["draft_id"]
+        client.post(f"/parent/approvals/{draft_id}", json={"approved": True})
+        client.post("/student/actions/too-much")
+        today = client.get("/student/plans/today").json()
+        reviewed = client.get(f"/parent/approvals/{draft_id}").json()
+
+    assert today["decision"] == "approved"
+    assert today["stale"] == (
+        "You said today is too much after this plan was made. Plan again to make it smaller."
+    )
+    assert reviewed["stale"] is None
+
+
 def test_taking_the_signal_back_after_a_reduced_plan_says_so_in_her_words() -> None:
     with browser(plan=light_fixture_plan) as client:
         signal_id = client.post("/student/workload-signals").json()["signal"]["signal_id"]

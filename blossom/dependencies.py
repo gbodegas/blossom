@@ -79,6 +79,12 @@ class ApplicationState:
     run the routes start or resume; never saved with the run."""
     workload_signals: WorkloadSignalsStore
     """Her signals that a day is too much, in the drafts file, kept for a week."""
+    in_flight: set[str] = field(default_factory=set)
+    """The threads of runs this process is running right now, from the moment a
+    run starts to the moment it pauses or ends. The scheduled sweep leaves them
+    alone: a run between saving its draft and pausing with it looks, from the
+    tables, like a run that died there, and only the process running it can
+    tell the difference. Empty at startup, when nothing is in flight."""
     decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held while a decision is checked against the table and carried into the
     paused thread, so two decisions about one draft cannot both pass the check.
@@ -167,7 +173,9 @@ async def sweep_aged(state: ApplicationState) -> None:
     more, since both stores already leave aged rows out of every read.
     """
     async with state.decision_lock:
-        await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+        await sweep_saved_state(
+            state.checkpointer, state.drafts, state.clock, in_flight=state.in_flight
+        )
     state.traces.sweep()
     state.workload_signals.sweep()
 

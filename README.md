@@ -69,7 +69,9 @@ survive a restart.
 
 Around that sit the guardrails. Blossom has no tool for emailing a teacher,
 messaging her, or submitting schoolwork, so there is nothing for a model to
-call; everything it writes stops in a draft that a person sends by hand.
+call; nothing it writes leaves the family on its own. A plan goes to her page,
+and anything meant for a teacher or the school would stop in a draft that a
+person sends by hand.
 Planning does talk to a model, which is a request to Anthropic; the planner
 section says what goes in it. The agent reflects on its own performance, and
 the store refuses any reflection whose subject is not the system. That checks
@@ -126,13 +128,13 @@ paths to point elsewhere.
 
 The planner is optional, and it costs money. To run it for real, copy
 `.env.example` to `.env`, put an Anthropic API key in `ANTHROPIC_API_KEY`,
-start the app with `--env-file .env` instead, and use "Plan it" on the
-parent's page.
+start the app with `--env-file .env` instead, and press "Plan today" on her
+page, or "Plan it" on the parent's.
 
 Each run sends requests to Anthropic. They carry the week's assignments with
 their courses, dates, and confidence labels, the household's standing rules,
-the planner's notes about past plans, and, on later calls, the proposed plan
-and what was wrong with it. With the bundled fixtures all of that is
+the planner's notes about past plans, whether she has said the evening is too
+much, and, on later calls, the proposed plan and what was wrong with it. With the bundled fixtures all of that is
 synthetic. A run is one to six calls depending on revisions, and the cost
 varies with the week. All of it happens before the plan reaches the page, and
 approving a draft sends nothing anywhere. The model, the call routing, and the

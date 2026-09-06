@@ -192,7 +192,9 @@ async def make_todays_plan(state: State, graphs: Graphs) -> StudentPlanView:
     """
     require_model(graphs)
     run = await run_plan(
-        graphs.build(), state.clock.today(), state.tracer, state.checkpointer, state.drafts
+        graphs.build(),
+        state.clock.today(),
+        state,
     )
     if run.draft_id is None:
         raise HTTPException(
@@ -278,14 +280,16 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     A run that could not start or ended without a plan is said on the page
     with the status the JSON route would have answered, and whatever plan the
     page already had stays. So is a run that failed on the way, for any other
-    reason: the run has already cleared its thread by then, the failure goes
-    to the process log, and the page says something went wrong rather than
-    answering with a bare error.
+    reason: the run has already taken back what it left by then, the failure
+    goes to the process log, and the page says something went wrong rather
+    than answering with a bare error.
     """
     try:
         require_model(graphs)
         run = await run_plan(
-            graphs.build(), state.clock.today(), state.tracer, state.checkpointer, state.drafts
+            graphs.build(),
+            state.clock.today(),
+            state,
         )
     except HTTPException as error:
         return student_page(
@@ -295,7 +299,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             status_code=error.status_code,
         )
     except Exception:
-        logger.exception("today's plan failed on the way; its thread was cleared")
+        logger.exception("today's plan failed on the way")
         return student_page(
             request,
             state,

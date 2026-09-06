@@ -33,15 +33,15 @@ from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.stores.checkpoints import refuse_unsafe_path
 
 Outcome = Literal["accepted", "unsettled"]
+"""The two run outcomes that produce a draft. The others end without one."""
 
-SUPERSEDED_REASON: Final = "she planned again, and the later plan for the evening took its place"
+SUPERSEDED_REASON: Final = "a later plan for the evening took its place"
 """The reason recorded on a waiting draft when a newer one for the same evening
-is saved. System-recorded, like an expiry: no person said it."""
+is saved, from whichever page. System-recorded, like an expiry: no person said it."""
 
 INTERRUPTED: Final = "interrupted"
 """The outcome recorded on a run that saved its draft and then failed before the
 draft could wait for review. The draft is taken back; the run keeps its steps."""
-"""The two run outcomes that produce a draft. The others end without one."""
 
 
 class AlreadyDecided(RuntimeError):
@@ -105,7 +105,9 @@ class DraftsStore:
         "text is reused, and the record of a run that produced no draft is kept for "
         "the same span so a parent can see why nothing came of it. A draft nobody "
         "decided within two weeks of its evening is closed as expired and kept the "
-        "same way."
+        "same way, and so is a draft a later plan for the same evening took the place "
+        "of. A draft whose run failed before it could wait for review is the one row "
+        "removed, since it was never anyone's plan; its run stays."
     )
 
     def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
@@ -115,6 +117,11 @@ class DraftsStore:
         self._connection.row_factory = sqlite3.Row
         self._clock = clock
         self._lock = threading.Lock()
+        # One transaction for the whole of opening: the tables, any column an
+        # older file lacks, and the two invariants below commit together or not
+        # at all, so a process that dies half way through leaves the file as it
+        # found it and the next open starts over.
+        self._connection.execute("BEGIN")
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS drafts (
@@ -129,7 +136,8 @@ class DraftsStore:
                 decision TEXT,
                 reason TEXT,
                 too_much INTEGER NOT NULL DEFAULT 0,
-                superseded_by TEXT
+                superseded_by TEXT,
+                saved_order INTEGER
             )
             """
         )
@@ -142,15 +150,20 @@ class DraftsStore:
             self._connection.execute(
                 "ALTER TABLE drafts ADD COLUMN too_much INTEGER NOT NULL DEFAULT 0"
             )
+        if "saved_order" not in columns:
+            self._connection.execute("ALTER TABLE drafts ADD COLUMN saved_order INTEGER")
         if "superseded_by" not in columns:
-            # A file written before one draft could take another's place. It may
-            # hold several drafts waiting for one evening, which was allowed
-            # then; every evening is brought to one waiting draft here, the
-            # latest by the order her page reads, and the rest are closed as
-            # superseded by it. Their threads go at the startup sweep, which
-            # clears every thread no waiting draft refers to.
             self._connection.execute("ALTER TABLE drafts ADD COLUMN superseded_by TEXT")
-            self._keep_one_waiting_per_evening()
+        # Two invariants, restored on every open rather than only when a column
+        # is added, so a file an older version wrote, or one left half way by a
+        # process that died while opening it, is brought into line by the next
+        # open. Every draft has a place in the saved order, older files' drafts
+        # taking theirs by when they were made; and one draft waits per evening,
+        # the rest closed as superseded by the evening's latest. The threads of
+        # drafts closed here go at the startup sweep, which clears every thread
+        # no waiting draft refers to.
+        self._number_in_order_made()
+        self._keep_one_waiting_per_evening()
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS runs (
@@ -177,30 +190,57 @@ class DraftsStore:
         )
         self._connection.commit()
 
-    def _keep_one_waiting_per_evening(self) -> None:
-        """Close every waiting draft but the latest per evening, in the caller's transaction."""
-        stamp = self._clock.now().isoformat()
-        waiting = self._connection.execute(
-            """
-            SELECT draft_id, plan_date FROM drafts
-            WHERE decision IS NULL
-            ORDER BY plan_date, created_at DESC, draft_id DESC
-            """
+    def _number_in_order_made(self) -> None:
+        """Give every unnumbered draft its place in the saved order, after those numbered.
+
+        Unnumbered drafts are ordered by when they were made, then by id. A
+        file with nothing unnumbered is left as it is, so this runs on every
+        open at no cost.
+        """
+        (highest,) = self._connection.execute(
+            "SELECT COALESCE(MAX(saved_order), 0) FROM drafts"
+        ).fetchone()
+        rows = self._connection.execute(
+            "SELECT draft_id FROM drafts WHERE saved_order IS NULL ORDER BY created_at, draft_id"
         ).fetchall()
-        latest: dict[str, str] = {}
-        for row in waiting:
-            latest.setdefault(str(row["plan_date"]), str(row["draft_id"]))
         self._connection.executemany(
+            "UPDATE drafts SET saved_order=? WHERE draft_id=?",
+            [
+                (position, str(row["draft_id"]))
+                for position, row in enumerate(rows, start=int(highest) + 1)
+            ],
+        )
+
+    def _keep_one_waiting_per_evening(self, plan_date: str | None = None) -> None:
+        """Close every waiting draft saved before the evening's latest, whatever its state.
+
+        The latest draft for an evening is the one her page shows: the last
+        saved that no later draft displaced, decided or not. A draft still
+        waiting behind it would be a plan the queue holds and her page does
+        not, so it is closed as superseded by the latest. A superseded draft is
+        never the latest here, as it is not for her page. Runs in the caller's
+        transaction, over one evening when ``plan_date`` is given and over the
+        whole file otherwise, and does nothing to what is already in line.
+        """
+        self._connection.execute(
             """
             UPDATE drafts
-            SET decision='superseded', reason=?, decided_at=?, superseded_by=?
-            WHERE draft_id=?
+            SET decision='superseded', reason=?, decided_at=?,
+                superseded_by=(
+                    SELECT latest.draft_id FROM drafts AS latest
+                    WHERE latest.plan_date=drafts.plan_date
+                      AND (latest.decision IS NULL OR latest.decision<>'superseded')
+                    ORDER BY latest.saved_order DESC LIMIT 1
+                )
+            WHERE decision IS NULL
+              AND (? IS NULL OR plan_date=?)
+              AND saved_order < (
+                SELECT MAX(latest.saved_order) FROM drafts AS latest
+                WHERE latest.plan_date=drafts.plan_date
+                  AND (latest.decision IS NULL OR latest.decision<>'superseded')
+              )
             """,
-            [
-                (SUPERSEDED_REASON, stamp, latest[str(row["plan_date"])], str(row["draft_id"]))
-                for row in waiting
-                if str(row["draft_id"]) != latest[str(row["plan_date"])]
-            ],
+            (SUPERSEDED_REASON, self._clock.now().isoformat(), plan_date, plan_date),
         )
 
     @classmethod
@@ -238,18 +278,26 @@ class DraftsStore:
         At most one draft waits per evening. Any other draft for the same
         evening still waiting is closed as superseded in the same transaction,
         so her page and the parent's queue always mean the same plan: the one
-        she sees is the one a review can land on. Only a draft that is itself
-        still waiting takes another's place: a node replayed for a draft that
-        was already superseded saves its text again and displaces nothing, so
-        a replay after a crash cannot retire the plan that is current.
+        she sees is the one a review can land on. Which plan that is follows
+        one order, the order drafts were saved in, kept as ``saved_order`` and
+        given here under the store's lock: a draft's first save takes the next
+        number, a repeat keeps its number, and only a draft that is itself
+        still waiting displaces those saved before it. So a node replayed for
+        a draft that was already superseded saves its text again and displaces
+        nothing, and her page, which reads the last saved, and the queue,
+        which holds the one left waiting, name the same plan whatever order two
+        runs' drafts were made in or arrived here in.
         """
         stamp = self._clock.now().isoformat()
         with self._lock, self._connection:
             self._connection.execute(
                 """
                 INSERT INTO drafts (
-                    draft_id, thread_id, plan_date, status, outcome, body, created_at, too_much
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    draft_id, thread_id, plan_date, status, outcome, body, created_at, too_much,
+                    saved_order
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(saved_order), 0) + 1 FROM drafts)
+                )
                 ON CONFLICT(draft_id) DO UPDATE SET
                     status=excluded.status,
                     outcome=excluded.outcome,
@@ -272,6 +320,9 @@ class DraftsStore:
                 UPDATE drafts
                 SET decision='superseded', reason=?, decided_at=?, superseded_by=?
                 WHERE plan_date=? AND decision IS NULL AND draft_id<>?
+                  AND saved_order < (
+                    SELECT saved.saved_order FROM drafts AS saved WHERE saved.draft_id=?
+                  )
                   AND EXISTS (
                     SELECT 1 FROM drafts AS saved
                     WHERE saved.draft_id=? AND saved.decision IS NULL
@@ -284,6 +335,7 @@ class DraftsStore:
                     plan_date.isoformat(),
                     draft.draft_id,
                     draft.draft_id,
+                    draft.draft_id,
                 ),
             )
             self._write_run(thread_id, plan_date, outcome, steps)
@@ -291,32 +343,87 @@ class DraftsStore:
     def withdraw(self, draft_id: str) -> bool:
         """Take back a draft whose run failed after saving it and before it could pause.
 
-        The draft never became a plan anyone could review, so its row goes,
-        any draft it had taken the place of waits again, and its run is kept
-        with its steps under the outcome ``interrupted``, so the account of
-        what happened survives while the plan does not. False when there is no
-        such draft. A draft with a decision is left alone: a person, or the
-        system in its stead, has already closed it.
+        The draft never became a plan anyone could review, so its row goes and
+        its run is kept with its steps under the outcome ``interrupted``, so
+        the account of what happened survives while the plan does not. What
+        happens to the draft it displaced depends on where the failed draft
+        stood. If it was still the current one, the draft it displaced waits
+        again; its thread is untouched, since only a run that pauses clears
+        the threads of what it displaced. If a later draft had already taken
+        its place, the failed one was never going to be reviewed anyway, and
+        the draft it displaced is handed on to that later draft, so that if
+        the later one fails in turn it comes back then and not before. Two
+        runs can fail in either order and the plan left waiting is always one
+        whose thread still exists. Should several drafts point at the failed
+        one, as they can after an older file was brought into line, the last
+        saved of them waits again and the others are handed on to it; and a
+        draft restored behind one a person has since decided is closed again
+        as superseded by that decided one, since her page shows the decided
+        one and the queue must not hold a plan her page does not. So one draft
+        waits per evening whatever happens. False when there is no such draft,
+        and a draft a person decided, or one that expired, is left alone.
         """
         with self._lock, self._connection:
             row = self._connection.execute(
-                "SELECT thread_id, decision FROM drafts WHERE draft_id=?", (draft_id,)
-            ).fetchone()
-            if row is None or row["decision"] is not None:
-                return False
-            self._connection.execute(
-                """
-                UPDATE drafts
-                SET decision=NULL, reason=NULL, decided_at=NULL, superseded_by=NULL
-                WHERE superseded_by=?
-                """,
+                "SELECT thread_id, decision, superseded_by, plan_date FROM drafts WHERE draft_id=?",
                 (draft_id,),
-            )
+            ).fetchone()
+            if row is None or row["decision"] not in (None, "superseded"):
+                return False
+            if row["decision"] is None:
+                displaced = self._connection.execute(
+                    "SELECT draft_id FROM drafts WHERE superseded_by=? ORDER BY saved_order DESC",
+                    (draft_id,),
+                ).fetchall()
+                if displaced:
+                    restored = str(displaced[0]["draft_id"])
+                    self._connection.execute(
+                        """
+                        UPDATE drafts
+                        SET decision=NULL, reason=NULL, decided_at=NULL, superseded_by=NULL
+                        WHERE draft_id=?
+                        """,
+                        (restored,),
+                    )
+                    self._connection.execute(
+                        "UPDATE drafts SET superseded_by=? WHERE superseded_by=?",
+                        (restored, draft_id),
+                    )
+            else:
+                self._connection.execute(
+                    "UPDATE drafts SET superseded_by=? WHERE superseded_by=?",
+                    (row["superseded_by"], draft_id),
+                )
             self._connection.execute("DELETE FROM drafts WHERE draft_id=?", (draft_id,))
             self._connection.execute(
                 "UPDATE runs SET outcome=? WHERE thread_id=?", (INTERRUPTED, str(row["thread_id"]))
             )
+            self._keep_one_waiting_per_evening(str(row["plan_date"]))
         return True
+
+    def displaced_by(self, draft_id: str) -> list[DraftRecord]:
+        """Every draft that ``draft_id`` took the place of, earliest saved first.
+
+        The sweep asks this for each run in flight, so the threads of what a
+        run has displaced survive until the run pauses and clears them itself,
+        or fails and gives them back.
+        """
+        return self._drafts(DISPLACED_BY, (draft_id,))
+
+    def settle(self, draft_id: str) -> None:
+        """Leave a superseded draft superseded whatever becomes of the draft that displaced it.
+
+        For a draft whose pause was spent: a review reached its thread in the
+        same moment a later draft took its place, so the thread moved past the
+        gate and nothing can resume it. Were the later draft to fail, taking it
+        back must not bring this one back as a plan nobody can review. A draft
+        in any other state is left as it is.
+        """
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE drafts SET superseded_by=NULL WHERE draft_id=? AND decision='superseded'",
+                (draft_id,),
+            )
 
     def record_decision(
         self, draft_id: str, *, status: DraftStatus, decision: Decision, reason: str | None
@@ -460,10 +567,14 @@ class DraftsStore:
         return self._drafts(SUPERSEDED_DRAFTS, (plan_date.isoformat(),))
 
     def latest_for(self, plan_date: date) -> DraftRecord | None:
-        """The most recent draft for one evening, reviewed or not; ``None`` when there is none.
+        """The last draft saved for one evening that no later draft displaced; ``None`` when none.
 
         Her page shows the evening's latest plan whatever a parent has said
-        about it, since the plan is hers from the moment it is made.
+        about it, since the plan is hers from the moment it is made. Latest is
+        by the saved order, the order supersession follows, never by a clock.
+        A superseded draft is never the latest: another took its place, and if
+        that other was taken back, whatever it displaced waits again in its
+        stead or nothing does.
         """
         found = self._drafts(LATEST_FOR_EVENING, (plan_date.isoformat(),))
         return found[0] if found else None
@@ -514,13 +625,18 @@ DECIDED_DRAFTS = (
 SUPERSEDED_DRAFTS = (
     DRAFTS_WITH_STEPS
     + "WHERE drafts.plan_date=? AND drafts.decision='superseded' "
-    + "ORDER BY drafts.created_at, drafts.draft_id, steps.position"
+    + "ORDER BY drafts.saved_order, steps.position"
+)
+DISPLACED_BY = (
+    DRAFTS_WITH_STEPS + "WHERE drafts.superseded_by=? ORDER BY drafts.saved_order, steps.position"
 )
 LATEST_FOR_EVENING = (
     DRAFTS_WITH_STEPS
-    + "WHERE drafts.plan_date=? "
-    + "ORDER BY drafts.created_at DESC, drafts.draft_id DESC, steps.position"
+    + "WHERE drafts.plan_date=? AND (drafts.decision IS NULL OR drafts.decision<>'superseded') "
+    + "ORDER BY drafts.saved_order DESC, steps.position"
 )
+"""The last draft saved for the evening that was not displaced: the same order
+supersession follows, so the plan her page shows is the plan the queue holds."""
 
 
 def joined_step_from(row: sqlite3.Row) -> StepRecord:

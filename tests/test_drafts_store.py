@@ -239,6 +239,80 @@ def test_a_later_draft_for_the_same_evening_takes_the_place_of_the_one_waiting()
     assert latest.waiting
 
 
+def test_the_current_plan_is_the_last_saved_whatever_the_clock_said_when_it_was_made() -> None:
+    """Two runs can make their drafts in one order and save them in the other."""
+    store = store_in_memory()
+    try:
+        made_later = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
+        made_earlier = Draft(draft_id="draft:a", body="a", created_at=CREATED)
+        store.record_waiting(made_later, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+        store.record_waiting(made_earlier, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+        waiting = [record.draft_id for record in store.waiting()]
+        latest = store.latest_for(PLAN_DATE)
+        displaced = store.get("draft:b")
+    finally:
+        store.close()
+
+    assert waiting == ["draft:a"]
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+    assert displaced is not None
+    assert displaced.decision == "superseded"
+
+
+def test_a_failed_draft_already_displaced_hands_what_it_displaced_to_its_successor() -> None:
+    """Three runs, the middle one failing after being displaced: the chain ends on a live plan."""
+    store = store_in_memory()
+    try:
+        for name in ("a", "b", "c"):
+            store.record_waiting(
+                Draft(draft_id=f"draft:{name}", body=name, created_at=CREATED),
+                thread_id=f"t{name}",
+                plan_date=PLAN_DATE,
+                outcome="accepted",
+            )
+        middle_taken_back = store.withdraw("draft:b")
+        after_middle = [record.draft_id for record in store.waiting()]
+        last_taken_back = store.withdraw("draft:c")
+        after_last = [record.draft_id for record in store.waiting()]
+        first = store.get("draft:a")
+        interrupted = sorted(run.thread_id for run in store.runs_without_a_draft())
+    finally:
+        store.close()
+
+    assert middle_taken_back is True
+    assert after_middle == ["draft:c"]
+    assert last_taken_back is True
+    assert after_last == ["draft:a"]
+    assert first is not None
+    assert first.decision is None
+    assert interrupted == ["tb", "tc"]
+
+
+def test_two_failed_drafts_taken_back_in_the_other_order_end_on_the_same_live_plan() -> None:
+    store = store_in_memory()
+    try:
+        for name in ("a", "b", "c"):
+            store.record_waiting(
+                Draft(draft_id=f"draft:{name}", body=name, created_at=CREATED),
+                thread_id=f"t{name}",
+                plan_date=PLAN_DATE,
+                outcome="accepted",
+            )
+        store.withdraw("draft:c")
+        after_last = [record.draft_id for record in store.waiting()]
+        store.withdraw("draft:b")
+        after_both = [record.draft_id for record in store.waiting()]
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert after_last == ["draft:b"]
+    assert after_both == ["draft:a"]
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+
+
 def test_a_replayed_save_of_a_superseded_draft_displaces_nothing() -> None:
     """A node replayed after a crash saves its text again and leaves the current plan waiting."""
     store = store_in_memory()
@@ -572,11 +646,247 @@ def test_an_older_file_with_two_drafts_waiting_for_one_evening_keeps_the_latest(
     assert latest is not None
     assert latest.draft_id == "draft:late"
     assert store.withdraw("draft:late") is True
-    assert [record.draft_id for record in store.waiting()] == [
-        "draft:early",
-        "draft:middle",
-        "draft:other",
-    ]
+    assert [record.draft_id for record in store.waiting()] == ["draft:middle", "draft:other"]
+    early_again = store.get("draft:early")
+    assert early_again is not None
+    assert early_again.decision == "superseded"
+    assert store.withdraw("draft:middle") is True
+    assert [record.draft_id for record in store.waiting()] == ["draft:early", "draft:other"]
+
+
+def test_a_file_from_the_previous_version_is_brought_into_line_behind_a_reviewed_draft() -> None:
+    """The schema with the signal column but not the two newer ones, holding two waiting drafts
+    behind one a parent already reviewed: the reviewed one is the evening's latest, so both
+    waiting drafts close as superseded by it, and her page and the queue agree."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        """
+        CREATE TABLE drafts (
+            draft_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, plan_date TEXT NOT NULL,
+            status TEXT NOT NULL, outcome TEXT NOT NULL, body TEXT NOT NULL,
+            created_at TEXT NOT NULL, decided_at TEXT, decision TEXT, reason TEXT,
+            too_much INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    connection.executemany(
+        """
+        INSERT INTO drafts VALUES (?, ?, '2026-08-19', 'DRAFT', 'accepted', ?, ?, ?, ?, ?, 0)
+        """,
+        [
+            ("draft:a", "plan:a", "a", "2026-08-19T20:00:00+00:00", None, None, None),
+            ("draft:b", "plan:b", "b", "2026-08-19T21:00:00+00:00", None, None, None),
+            (
+                "draft:c",
+                "plan:c",
+                "c",
+                "2026-08-19T22:00:00+00:00",
+                "2026-08-19T22:30:00+00:00",
+                "rejected",
+                "too late",
+            ),
+        ],
+    )
+    connection.commit()
+
+    store = DraftsStore(connection, fixture_clock())
+    latest = store.latest_for(PLAN_DATE)
+    closed = {record.draft_id: record.decision for record in store.decided()}
+
+    assert store.waiting() == []
+    assert latest is not None
+    assert latest.draft_id == "draft:c"
+    assert closed == {"draft:a": "superseded", "draft:b": "superseded", "draft:c": "rejected"}
+
+
+def test_a_draft_restored_behind_a_decided_one_is_closed_again_by_it() -> None:
+    """An older file: a plan waiting, then one a parent approved, then one whose run died.
+
+    Opening it closes the first behind the third; the sweep takes the third
+    back; the first must not wait behind the approved one her page shows."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        """
+        CREATE TABLE drafts (
+            draft_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, plan_date TEXT NOT NULL,
+            status TEXT NOT NULL, outcome TEXT NOT NULL, body TEXT NOT NULL,
+            created_at TEXT NOT NULL, decided_at TEXT, decision TEXT, reason TEXT,
+            too_much INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    connection.executemany(
+        """
+        INSERT INTO drafts VALUES (?, ?, '2026-08-19', ?, 'accepted', ?, ?, ?, ?, NULL, 0)
+        """,
+        [
+            ("draft:w1", "plan:w1", "DRAFT", "w1", "2026-08-19T20:00:00+00:00", None, None),
+            (
+                "draft:a",
+                "plan:a",
+                "APPROVED_FOR_MANUAL_SEND",
+                "a",
+                "2026-08-19T21:00:00+00:00",
+                "2026-08-19T21:30:00+00:00",
+                "approved",
+            ),
+            ("draft:w2", "plan:w2", "DRAFT", "w2", "2026-08-19T22:00:00+00:00", None, None),
+        ],
+    )
+    connection.commit()
+
+    store = DraftsStore(connection, fixture_clock())
+    after_open = [record.draft_id for record in store.waiting()]
+    taken_back = store.withdraw("draft:w2")
+    waiting = store.waiting()
+    latest = store.latest_for(PLAN_DATE)
+    first = store.get("draft:w1")
+
+    assert after_open == ["draft:w2"]
+    assert taken_back is True
+    assert waiting == []
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+    assert first is not None
+    assert first.decision == "superseded"
+
+
+def test_a_file_with_a_superseded_draft_numbered_above_the_waiting_one_keeps_the_waiting_one() -> (
+    None
+):
+    """A superseded draft is never the evening's latest, on open as on her page."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        """
+        CREATE TABLE drafts (
+            draft_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, plan_date TEXT NOT NULL,
+            status TEXT NOT NULL, outcome TEXT NOT NULL, body TEXT NOT NULL,
+            created_at TEXT NOT NULL, decided_at TEXT, decision TEXT, reason TEXT,
+            too_much INTEGER NOT NULL DEFAULT 0, superseded_by TEXT
+        )
+        """
+    )
+    connection.executemany(
+        """
+        INSERT INTO drafts VALUES (?, ?, '2026-08-19', 'DRAFT', 'accepted', ?, ?, ?, ?, ?, 0, ?)
+        """,
+        [
+            (
+                "draft:a",
+                "plan:a",
+                "a",
+                "2026-08-19T22:00:00+00:00",
+                "2026-08-19T22:05:00+00:00",
+                "superseded",
+                "a later plan for the evening took its place",
+                "draft:b",
+            ),
+            ("draft:b", "plan:b", "b", "2026-08-19T21:00:00+00:00", None, None, None, None),
+        ],
+    )
+    connection.commit()
+
+    store = DraftsStore(connection, fixture_clock())
+    waiting = [record.draft_id for record in store.waiting()]
+    latest = store.latest_for(PLAN_DATE)
+
+    assert waiting == ["draft:b"]
+    assert latest is not None
+    assert latest.draft_id == "draft:b"
+
+
+def test_a_file_left_half_opened_is_finished_by_the_next_open() -> None:
+    """The saved-order column exists but nothing was numbered and duplicates still wait."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        """
+        CREATE TABLE drafts (
+            draft_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, plan_date TEXT NOT NULL,
+            status TEXT NOT NULL, outcome TEXT NOT NULL, body TEXT NOT NULL,
+            created_at TEXT NOT NULL, decided_at TEXT, decision TEXT, reason TEXT,
+            too_much INTEGER NOT NULL DEFAULT 0, saved_order INTEGER
+        )
+        """
+    )
+    connection.executemany(
+        """
+        INSERT INTO drafts VALUES
+        (?, ?, '2026-08-19', 'DRAFT', 'accepted', ?, ?, NULL, NULL, NULL, 0, NULL)
+        """,
+        [
+            ("draft:a", "plan:a", "a", "2026-08-19T20:00:00+00:00"),
+            ("draft:b", "plan:b", "b", "2026-08-19T21:00:00+00:00"),
+        ],
+    )
+    connection.commit()
+
+    store = DraftsStore(connection, fixture_clock())
+    waiting = [record.draft_id for record in store.waiting()]
+    store.record_waiting(draft(), thread_id="plan:new", plan_date=PLAN_DATE, outcome="accepted")
+    latest = store.latest_for(PLAN_DATE)
+
+    assert waiting == ["draft:b"]
+    assert latest is not None
+    assert latest.draft_id == draft().draft_id
+
+
+def test_a_settled_draft_stays_superseded_when_the_draft_that_displaced_it_is_taken_back() -> None:
+    store = store_in_memory()
+    try:
+        for name in ("a", "b"):
+            store.record_waiting(
+                Draft(draft_id=f"draft:{name}", body=name, created_at=CREATED),
+                thread_id=f"t{name}",
+                plan_date=PLAN_DATE,
+                outcome="accepted",
+            )
+        store.settle("draft:a")
+        store.withdraw("draft:b")
+        waiting = store.waiting()
+        first = store.get("draft:a")
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert waiting == []
+    assert first is not None
+    assert first.decision == "superseded"
+    assert latest is None
+
+
+def test_a_superseded_draft_is_never_the_latest() -> None:
+    store = store_in_memory()
+    try:
+        store.record_waiting(
+            Draft(draft_id="draft:a", body="a", created_at=CREATED),
+            thread_id="ta",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        store.record_decision(
+            "draft:a", status=DraftStatus.APPROVED_FOR_MANUAL_SEND, decision="approved", reason=None
+        )
+        store.record_waiting(
+            Draft(draft_id="draft:b", body="b", created_at=CREATED),
+            thread_id="tb",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        store.record_waiting(
+            Draft(draft_id="draft:c", body="c", created_at=CREATED),
+            thread_id="tc",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        store.settle("draft:b")
+        store.withdraw("draft:c")
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+    assert latest.decision == "approved"
 
 
 def test_a_file_written_before_drafts_carried_the_signal_gains_the_column() -> None:

@@ -110,6 +110,18 @@ def test_the_queue_shows_the_waiting_draft_with_its_text() -> None:
     assert "thread_id" not in detail
 
 
+def test_an_evening_that_has_passed_is_refused_before_anything_runs() -> None:
+    with app_with() as client:
+        response = client.post("/parent/plans", json={"plan_date": "2026-08-18"})
+        queue = client.get("/parent/approvals").json()["waiting"]
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "The evening of 2026-08-18 has passed. Plans are for today or a later evening."
+    )
+    assert queue == []
+
+
 def test_a_second_run_for_the_evening_takes_the_place_of_the_first() -> None:
     """One plan waits per evening: the one she sees is the one a review can land on."""
     with app_with() as client:
@@ -121,9 +133,7 @@ def test_a_second_run_for_the_evening_takes_the_place_of_the_first() -> None:
 
     assert [item["draft_id"] for item in queue["waiting"]] == [second["draft_id"]]
     assert earlier["decision"] == "superseded"
-    assert (
-        earlier["reason"] == "she planned again, and the later plan for the evening took its place"
-    )
+    assert earlier["reason"] == "a later plan for the evening took its place"
     assert review.status_code == 409
     assert "already superseded" in review.json()["detail"]
 

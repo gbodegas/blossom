@@ -388,3 +388,37 @@ def test_traces_are_stamped_by_the_real_clock_even_when_the_household_clock_is_p
     assert rows
     assert all(row.recorded_at is not None for row in rows)
     assert all(row.recorded_at.date() > PLAN_DATE for row in rows if row.recorded_at is not None)
+
+
+class RefusingStore(TraceStore):
+    """A trace store whose file is full or locked: every record fails."""
+
+    def record(self, run: TracedRun) -> None:
+        msg = "database or disk is full"
+        raise sqlite3.OperationalError(msg)
+
+
+def test_a_store_that_cannot_take_the_tree_leaves_the_tracer_empty_all_the_same(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = RefusingStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    tracer = LocalRunTracer(store)
+    graph = graph_with(
+        Scripted(ok(good_plan()), ok(good_plan())), Scripted(ok(accepting()), ok(accepting()))
+    )
+
+    async def go() -> None:
+        for thread in ("plan:one", "plan:two"):
+            await graph.ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0),
+                config=run_config(thread, callbacks=[tracer]),
+                durability=DURABILITY,
+            )
+
+    with caplog.at_level(logging.ERROR, logger="blossom.agent.trace"):
+        asyncio.run(go())
+
+    assert tracer.order_map == {}
+    assert tracer.run_map == {}
+    assert [record.getMessage() for record in caplog.records].count("") == 0
+    assert sum("could not be kept" in record.getMessage() for record in caplog.records) == 2

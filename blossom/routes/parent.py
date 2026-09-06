@@ -55,12 +55,11 @@ from fastapi.templating import Jinja2Templates
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from blossom.agent.retention import clear_thread
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.anthropic_client import model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
-from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan
+from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
 from blossom.settings import TEMPLATE_PATH
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.views import (
@@ -131,9 +130,12 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
 
     A signal that is gone was either taken back or aged out of the store, and
     the store does not say which, so the message names both rather than
-    putting an action on her that she may not have taken.
+    putting an action on her that she may not have taken. A draft for an
+    evening that has passed is never stale: it cannot be planned again, since
+    the pages refuse a past evening, and it reaches no page of hers, so there
+    is nothing a fresh plan would put right.
     """
-    if not record.waiting:
+    if not record.waiting or record.plan_date < state.clock.today():
         return None
     match staleness(state.workload_signals, record):
         case Staleness.SIGNALED_SINCE:
@@ -149,16 +151,27 @@ def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
     return ApprovalView.from_record(record, stale=stale_reason(state, record))
 
 
+def passed(evening: date) -> str:
+    """Why a plan for a past evening is refused: no page of hers would ever show it."""
+    return (
+        f"The evening of {evening.isoformat()} has passed. Plans are for today or a later evening."
+    )
+
+
 @router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
 async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> PlanRunView:
-    """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
+    """Run the plan graph for one evening, up to the gate or to the reason it stopped.
+
+    An evening that has passed is refused with 422 before anything runs.
+    """
+    evening = request.plan_date or state.clock.today()
+    if evening < state.clock.today():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=passed(evening))
     require_model(graphs)
     return await run_plan(
         graphs.build(),
-        request.plan_date or state.clock.today(),
-        state.tracer,
-        state.checkpointer,
-        state.drafts,
+        evening,
+        state,
     )
 
 
@@ -200,6 +213,13 @@ async def decide_draft(
     thread has moved on. The lock spans the whole sequence: two requests about
     one draft cannot both see it waiting, and the table's own refusal covers a
     second process.
+
+    A thread past the gate with its record unwritten is a review that reached
+    the thread and then failed to land in the table. It is finished with the
+    decision the thread holds rather than given a new one, whatever the request
+    says and whatever the evening's signal says now, since the review was
+    checked against the evening when it was given; a request that disagrees
+    with what stood is told so.
     """
     async with state.decision_lock:
         record = state.drafts.get(draft_id)
@@ -210,13 +230,18 @@ async def decide_draft(
                 status.HTTP_409_CONFLICT,
                 detail=f"draft {draft_id!r} was already {record.decision}",
             )
-        stale = stale_reason(state, record)
-        if request.approved and stale is not None:
-            raise HTTPException(status.HTTP_409_CONFLICT, detail=stale)
         graph = build()
         config = run_config(record.thread_id, callbacks=[state.tracer])
         snapshot = await graph.aget_state(config)
-        if snapshot.next != ("require_human_approval",):
+        resume: Command[Any] | None
+        if snapshot.next == ("require_human_approval",):
+            stale = stale_reason(state, record)
+            if request.approved and stale is not None:
+                raise HTTPException(status.HTTP_409_CONFLICT, detail=stale)
+            resume = Command(resume={"approved": request.approved, "reason": request.reason})
+        elif snapshot.next == ("record_decision",):
+            resume = None
+        else:
             raise HTTPException(
                 status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} is not waiting at the gate"
             )
@@ -224,19 +249,30 @@ async def decide_draft(
             ensure_current_version(snapshot)
         except StaleGraphVersion as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
-        resume: Command[Any] = Command(
-            resume={"approved": request.approved, "reason": request.reason}
-        )
         try:
             await graph.ainvoke(resume, config=config, durability=DURABILITY)
         except AlreadyDecided as error:
+            # The review reached the thread, so the gate is passed and the
+            # thread cannot pause again; the table refused because a later plan
+            # took the draft's place in the same moment. The draft is settled
+            # first, so it cannot come back as the current plan should that
+            # later one fail, since its pause is spent; then the thread goes,
+            # and a thread that cannot be cleared now is left to the sweep, so
+            # the refusal is what the caller sees whatever the saved-state
+            # store does.
+            state.drafts.settle(draft_id)
+            await tidy_thread(record.thread_id, state)
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
         decided = state.drafts.get(draft_id)
         # The decision is in the table; the loop is over and its state is cleared.
-        await clear_thread(state.checkpointer, record.thread_id)
+        await tidy_thread(record.thread_id, state)
     if decided is None or decided.waiting:
         msg = f"the run resumed but no decision was recorded for {draft_id!r}"
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
+    if resume is None and (decided.decision == "approved") != request.approved:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} was already {decided.decision}"
+        )
     return DecisionView.from_record(decided)
 
 
@@ -307,8 +343,10 @@ async def plan_from_the_page(
     """The plan form. A blank date means today; a bad one is said, not guessed at.
 
     A run that fails on the way for any reason other than a refusal is said on
-    the page too, with the queue below unchanged; the run has already cleared
-    its thread, and the failure goes to the process log.
+    the page too, with the queue below unchanged; the run has already taken
+    back what it left, and the failure goes to the process log. An evening that
+    has passed is refused before anything runs: a plan for it could reach no
+    page of hers.
     """
     try:
         evening = date.fromisoformat(plan_date) if plan_date.strip() else state.clock.today()
@@ -319,13 +357,24 @@ async def plan_from_the_page(
             problem=f"{plan_date!r} is not a date. Use the form YYYY-MM-DD.",
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
+    if evening < state.clock.today():
+        return review_page(
+            request,
+            state,
+            problem=passed(evening),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
     try:
         require_model(graphs)
-        await run_plan(graphs.build(), evening, state.tracer, state.checkpointer, state.drafts)
+        await run_plan(
+            graphs.build(),
+            evening,
+            state,
+        )
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     except Exception:
-        logger.exception("the plan for %s failed on the way; its thread was cleared", evening)
+        logger.exception("the plan for %s failed on the way", evening)
         return review_page(
             request,
             state,

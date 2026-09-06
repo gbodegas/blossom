@@ -7,7 +7,7 @@ through the route's builder dependency, over the real stores.
 
 import re
 from collections.abc import Callable
-from datetime import date, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 
 from fastapi import Depends
@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 
 from blossom.agent.graph import plan_graph_for
 from blossom.app import create_app
-from blossom.dependencies import ApplicationState, get_application_state
+from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
+from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.parent import REASON_MAX_LENGTH
@@ -24,6 +25,7 @@ from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from tests.support import Scripted, fixture_settings, ok
 
 PLAN_DATE = date(2026, 8, 19)
+CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
 
 
 def a_plan() -> DailyPlan:
@@ -207,7 +209,8 @@ def test_approving_from_the_page_moves_the_draft_to_decided() -> None:
     assert posted.status_code == 303
     assert posted.headers["location"] == "/parent"
     assert "Nothing is waiting." in page
-    assert "<strong>Looks good.</strong> Said on her page." in page
+    assert "<strong>Looks good.</strong>" in page
+    assert "Said on her page" not in page
     assert "Reason: looks right." in page
     assert ", 2026, " in page
     assert record["status"] == "APPROVED_FOR_MANUAL_SEND"
@@ -224,7 +227,7 @@ def test_refusing_from_the_page_keeps_the_draft_a_draft() -> None:
         page = client.get("/parent").text
         record = client.get(f"/parent/approvals/{draft_id}").json()
 
-    assert "<strong>Change asked.</strong> Said on her page" in page
+    assert "<strong>Change asked.</strong> The plan stays as it was until she plans again." in page
     assert "Reason: too late in the evening." in page
     assert record["status"] == "DRAFT"
     assert record["decision"] == "rejected"
@@ -304,6 +307,44 @@ def test_each_decision_button_says_which_draft_it_decides() -> None:
     assert "This plan is for Thursday, August 20. It reaches her page on that day" in two_waiting
 
 
+def test_a_past_evening_is_refused_by_the_form_and_a_past_draft_says_it_is_not_on_her_page() -> (
+    None
+):
+    with browser() as client:
+        refused = client.post("/parent/actions/plan", data={"plan_date": "2026-08-18"})
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        state.drafts.record_waiting(
+            Draft(draft_id="draft:plan:past", body="Plan for Tuesday", created_at=CREATED),
+            thread_id="plan:past",
+            plan_date=PLAN_DATE - timedelta(days=1),
+            outcome="accepted",
+        )
+        page = client.get("/parent").text
+
+    assert refused.status_code == 422
+    assert "The evening of 2026-08-18 has passed." in refused.text
+    assert "This plan was for Tuesday, August 18, which has passed. It is not on her page" in page
+
+
+def test_a_waiting_draft_for_a_past_evening_is_never_told_to_plan_again() -> None:
+    """A reduced plan left unreviewed past its signal's week: no fresh plan could put it right."""
+    with browser() as client:
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        state.drafts.record_waiting(
+            Draft(draft_id="draft:plan:past", body="Plan for Tuesday", created_at=CREATED),
+            thread_id="plan:past",
+            plan_date=PLAN_DATE - timedelta(days=1),
+            outcome="accepted",
+            too_much=True,
+        )
+        record = client.get("/parent/approvals/draft:plan:past").json()
+        page = client.get("/parent").text
+
+    assert record["stale"] is None
+    assert "Plan again." not in page
+    assert 'value="approve"' in page
+
+
 def test_planning_again_retires_the_plan_before_it_on_the_page() -> None:
     with browser() as client:
         first = waiting_draft_id(client)
@@ -314,9 +355,12 @@ def test_planning_again_retires_the_plan_before_it_on_the_page() -> None:
     assert len(queue) == 1
     assert queue[0]["draft_id"] != first
     assert (
-        "<strong>Superseded.</strong> She planned again, and this one was never reviewed." in page
+        "<strong>Superseded.</strong> A later plan for this evening took its place, "
+        "and this one was never reviewed." in page
     )
-    assert "she planned again, and the later plan" not in page
+    assert "a later plan for the evening took its place" not in page
+    assert "<summary>The plan as it was</summary>" in page
+    assert "The plan as it was reviewed" not in page
     assert "Closed " in page
     assert "Reviewed " not in page
 

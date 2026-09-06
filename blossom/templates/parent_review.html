@@ -97,9 +97,12 @@
           <p class="note">
             {% if draft.plan_date == today %}
               She has this plan on her page already. What you say here shows there, under it.
-            {% else %}
+            {% elif draft.plan_date > today %}
               This plan is for {{ evening }}. It reaches her page on that day, with what you say
               here under it.
+            {% else %}
+              This plan was for {{ evening }}, which has passed. It is not on her page, and what
+              you say here stays here.
             {% endif %}
             Nothing leaves here on its own.
           </p>
@@ -134,11 +137,11 @@
         <p class="course">Evening of {{ draft.plan_date }}</p>
         <p class="decision-line">
           {% if draft.decision == "approved" %}
-            <strong>Looks good.</strong> Said on her page.
+            <strong>Looks good.</strong>
           {% elif draft.decision == "rejected" %}
-            <strong>Change asked.</strong> Said on her page; the plan stays as it was until she plans again.
+            <strong>Change asked.</strong> The plan stays as it was until she plans again.
           {% elif draft.decision == "superseded" %}
-            <strong>Superseded.</strong> She planned again, and this one was never reviewed.
+            <strong>Superseded.</strong> A later plan for this evening took its place, and this one was never reviewed.
           {% else %}
             <strong>Expired.</strong> The evening passed without a review.
           {% endif %}
@@ -146,7 +149,7 @@
           <span class="when">{% if draft.decision in ("approved", "rejected") %}Reviewed{% else %}Closed{% endif %} {{ draft.decided_at.strftime("%B") }} {{ draft.decided_at.day }}, {{ draft.decided_at.year }}, {{ draft.decided_at.strftime("%H:%M UTC") }}.</span>
         </p>
         <details>
-          <summary>The plan as it was reviewed</summary>
+          <summary>{% if draft.decision in ("approved", "rejected") %}The plan as it was reviewed{% else %}The plan as it was{% endif %}</summary>
           <pre class="body">{{ draft.body }}</pre>
         </details>
         {{ steps_list(draft.steps, "How this plan was made") }}

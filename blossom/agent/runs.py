@@ -45,17 +45,6 @@ THREAD_ID_KEY: Final = "thread_id"
 """The thread id's name in a run's metadata, where the tracer reads it."""
 
 RECURSION_LIMIT: Final = 15
-
-
-def draft_id_for(thread_id: str) -> str:
-    """The one draft a thread can produce, named after it.
-
-    A node run twice names the same row, and a route that needs to take a
-    draft back after its run failed can name it without the graph.
-    """
-    return f"draft:{thread_id}"
-
-
 """Supersteps allowed per run: room for a handful of nodes and two critic rounds."""
 
 DURABILITY: Final[Durability] = "sync"
@@ -67,6 +56,15 @@ Passed to ``ainvoke`` beside the configuration; the framework defaults to
 
 class StaleGraphVersion(RuntimeError):
     """Raised when a thread was written by a different graph version than the one running."""
+
+
+def draft_id_for(thread_id: str) -> str:
+    """The one draft a thread can produce, named after it.
+
+    A node run twice names the same row, and a route that needs to take a
+    draft back after its run failed can name it without the graph.
+    """
+    return f"draft:{thread_id}"
 
 
 def run_config(
