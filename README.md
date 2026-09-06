@@ -5,7 +5,7 @@
 <h1 align="center">Blossom</h1>
 
 <p align="center">
-  A planning assistant for a student whose deadlines don't agree with each other.
+  A planning assistant to help a student make sense of schoolwork and deadlines.
 </p>
 
 <p align="center">
