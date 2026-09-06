@@ -1,8 +1,8 @@
 """Guards the setup instructions in ``README.md`` against drift.
 
-These tests parse the shell commands out of the README's bash fences and
-check that every module path, extra, and version pin they name exists in
-the project. They do not run the commands.
+These tests parse the shell commands out of the README's bash and PowerShell
+fences and check that every module path, extra, and version pin they name
+exists in the project. They do not run the commands.
 """
 
 import importlib
@@ -16,7 +16,7 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 README = REPO_ROOT / "README.md"
 
-BASH_FENCE = re.compile(r"```bash\n(.*?)```", re.DOTALL)
+SHELL_FENCE = re.compile(r"```(?:bash|powershell)\n(.*?)```", re.DOTALL)
 UVICORN_TARGET = re.compile(r"uvicorn\s+([\w.]+):(\w+)")
 PYTHON_MODULE_TARGET = re.compile(r"python\s+-m\s+([\w.]+)")
 PINNED_INSTALL = re.compile(r"pip install ([^\n]+)")
@@ -24,8 +24,8 @@ REQUIREMENT = re.compile(r"([A-Za-z][\w.-]*)==([\w.]+)")
 
 
 def readme_shell_text() -> str:
-    """Return the concatenated contents of every ```bash fence in the README."""
-    blocks = BASH_FENCE.findall(README.read_text(encoding="utf-8"))
+    """Return the concatenated contents of every bash and PowerShell fence in the README."""
+    blocks = SHELL_FENCE.findall(README.read_text(encoding="utf-8"))
     return "\n".join(blocks)
 
 
@@ -49,7 +49,7 @@ def test_documented_python_module_targets_are_importable() -> None:
     ``pip`` is exempt only where the same block has already run ``ensurepip``,
     which is what puts it there; a venv made by uv does not carry it.
     """
-    for block in BASH_FENCE.findall(README.read_text(encoding="utf-8")):
+    for block in SHELL_FENCE.findall(README.read_text(encoding="utf-8")):
         bootstrapped = False
         for module_path in PYTHON_MODULE_TARGET.findall(block):
             if module_path == "ensurepip":

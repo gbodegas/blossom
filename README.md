@@ -186,11 +186,13 @@ model `claude-opus-5`. Each request carries the week's assignments with their
 courses, dates, and confidence labels, the household's standing rules, and the
 planner's notes about past plans; the critic also receives the proposed plan,
 and a revision receives what was wrong with the last one. With the bundled
-fixtures, all of that is synthetic. A first pass is two calls, one planner and
-one critic. A plan that fails its checks or the critic's review goes back for
-revision, up to two more times, so a run can take as many as six. What it
-costs depends on the week and the revisions; the API's usage page says after
-a run. All of this happens before the plan reaches the page for a decision.
+fixtures, all of that is synthetic. A run is one to six calls. The planner is
+one; only a plan that passes the checks goes to the critic, which is another;
+and a plan that fails the checks or the critic's review goes back to the
+planner, up to two more times. A run the model cuts short ends with the call
+that failed. What it costs depends on the week and the revisions; the API's
+usage page says after a run. All of this happens before the plan reaches the
+page for a decision.
 Approving it sends nothing anywhere.
 
 The fixture folder and the two files the app writes are configurable through
