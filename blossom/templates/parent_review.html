@@ -113,10 +113,12 @@
         <p class="decision-line">
           {% if draft.decision == "approved" %}
             <strong>Approved.</strong> Marked for you to send by hand.
-          {% else %}
+          {% elif draft.decision == "rejected" %}
             <strong>Refused.</strong> Kept as a draft.
+          {% else %}
+            <strong>Expired.</strong> The evening passed without a decision.
           {% endif %}
-          {% if draft.reason %}Reason: {{ draft.reason }}.{% endif %}
+          {% if draft.reason and draft.decision != "expired" %}Reason: {{ draft.reason }}.{% endif %}
           <span class="when">Decided {{ draft.decided_at.strftime("%B") }} {{ draft.decided_at.day }}, {{ draft.decided_at.year }}, {{ draft.decided_at.strftime("%H:%M UTC") }}.</span>
         </p>
         <details>

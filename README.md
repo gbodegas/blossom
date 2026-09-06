@@ -211,9 +211,11 @@ decisions, and the record of every run; `checkpoints.sqlite3` holds a graph's
 saved state, including a pause at the approval gate; and `traces.sqlite3`
 holds the framework's trace of each run, every node and model call with what
 went in and came out, for looking into a run that went wrong. The trace holds
-prompts and answers verbatim, so it is swept after two weeks. Nothing clears
-old threads yet. Deleting the three files resets the demo, and with it every
-saved draft, decision, run, and trace.
+prompts and answers verbatim, so it is swept after two weeks. Saved state is
+cleared as soon as a run ends or a decision is made, and a draft nobody
+decides within two weeks of its evening is closed as expired. Deleting the
+three files resets the demo, and with it every saved draft, decision, run,
+and trace.
 
 To run the same checks CI runs:
 

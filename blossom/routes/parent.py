@@ -46,10 +46,12 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, StrictBool
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
+from blossom.agent.retention import clear_thread
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.agent.trace import LocalRunTracer
 from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
@@ -148,9 +150,19 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
 
 
 async def run_plan(
-    graph: CompiledPlanGraph, plan_date: date, tracer: LocalRunTracer
+    graph: CompiledPlanGraph,
+    plan_date: date,
+    tracer: LocalRunTracer,
+    checkpointer: BaseCheckpointSaver[Any],
 ) -> PlanRunView:
-    """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped."""
+    """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped.
+
+    A run that stops before the gate has nothing left to resume, and its
+    record is already in the drafts file, so its saved state is cleared here;
+    so is the state of a run that raised, since a raise never pauses at the
+    gate and the first node had already been saved. A run paused at the gate
+    keeps its state until a decision or its expiry.
+    """
     thread_id = thread_for(plan_date)
     try:
         result = await graph.ainvoke(
@@ -159,15 +171,27 @@ async def run_plan(
             durability=DURABILITY,
         )
     except ModelUnavailable as error:
+        await clear_thread(checkpointer, thread_id)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-    return run_view(thread_id, plan_date, dict(result))
+    except Exception:
+        await clear_thread(checkpointer, thread_id)
+        raise
+    view = run_view(thread_id, plan_date, dict(result))
+    if not view.waiting:
+        await clear_thread(checkpointer, thread_id)
+    return view
 
 
 @router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
 async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> PlanRunView:
     """Run the plan graph for one evening, up to the gate or to the reason it stopped."""
     require_model(graphs)
-    return await run_plan(graphs.build(), request.plan_date or state.clock.today(), state.tracer)
+    return await run_plan(
+        graphs.build(),
+        request.plan_date or state.clock.today(),
+        state.tracer,
+        state.checkpointer,
+    )
 
 
 @router.get("/approvals", response_model=ApprovalQueueView)
@@ -237,6 +261,8 @@ async def decide_draft(
         except AlreadyDecided as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
         decided = state.drafts.get(draft_id)
+        # The decision is in the table; the loop is over and its state is cleared.
+        await clear_thread(state.checkpointer, record.thread_id)
     if decided is None or decided.waiting:
         msg = f"the run resumed but no decision was recorded for {draft_id!r}"
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
@@ -318,7 +344,7 @@ async def plan_from_the_page(
         )
     try:
         require_model(graphs)
-        await run_plan(graphs.build(), evening, state.tracer)
+        await run_plan(graphs.build(), evening, state.tracer, state.checkpointer)
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
