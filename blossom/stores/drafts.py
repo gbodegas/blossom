@@ -353,6 +353,15 @@ class DraftsStore:
         """Every draft a person has decided about, most recent decision first."""
         return self._drafts(DECIDED_DRAFTS, ())
 
+    def latest_for(self, plan_date: date) -> DraftRecord | None:
+        """The most recent draft for one evening, reviewed or not; ``None`` when there is none.
+
+        Her page shows the evening's latest plan whatever a parent has said
+        about it, since the plan is hers from the moment it is made.
+        """
+        found = self._drafts(LATEST_FOR_EVENING, (plan_date.isoformat(),))
+        return found[0] if found else None
+
     def _drafts(self, query: str, parameters: tuple[str, ...]) -> list[DraftRecord]:
         """Drafts and their steps from one query, so each record is one snapshot."""
         with self._lock:
@@ -395,6 +404,11 @@ DECIDED_DRAFTS = (
     DRAFTS_WITH_STEPS
     + "WHERE drafts.decision IS NOT NULL "
     + "ORDER BY drafts.decided_at DESC, drafts.draft_id, steps.position"
+)
+LATEST_FOR_EVENING = (
+    DRAFTS_WITH_STEPS
+    + "WHERE drafts.plan_date=? "
+    + "ORDER BY drafts.created_at DESC, drafts.draft_id DESC, steps.position"
 )
 
 

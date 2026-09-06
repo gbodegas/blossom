@@ -37,7 +37,7 @@ from blossom.dependencies import ApplicationState, get_application_state
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceRecord
-from blossom.routes.parent import PlanGraphs
+from blossom.routes.runs import PlanGraphs
 from blossom.settings import TIMEZONE_VARIABLE, Settings
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import Assignment, ProjectStateStore
@@ -327,6 +327,21 @@ def fixture_week_plan() -> DailyPlan:
             Deferral(assignment_id="assignment-reading-log", reason="a page a night is on track"),
             Deferral(assignment_id="assignment-signed-syllabus", reason="ask what the date is"),
             Deferral(assignment_id="assignment-vocabulary-quiz", reason="the portal says Friday"),
+        ],
+    )
+
+
+def light_fixture_plan() -> DailyPlan:
+    """The fixture week's plan cut to fit a reduced evening: the essay, and the rest put off."""
+    whole = fixture_week_plan()
+    return DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=whole.blocks[:1],
+        deferred=[
+            *whole.deferred,
+            Deferral(
+                assignment_id="assignment-science-fair-proposal", reason="tonight is too much"
+            ),
         ],
     )
 

@@ -318,11 +318,17 @@ back to `plan` with the findings before any critic sees it, because a
 judgment about a plan that is already wrong is a wasted call. `critique` asks
 the critic; fault sends the plan back with the critique, doubt sends it
 forward. `compose` renders the plan, the doubtful due dates, and the
-reviewer's notes as the text a parent reads, and saves it to the drafts table
-as waiting, under an id derived from the thread. `require_human_approval` is
-the gate from `blossom/agent/gates.py`, unchanged. `record_decision`, after
-the gate, saves what the person decided; it is the only node past the gate,
-and a node there may be added without a version bump. `record_run` is where a
+reviewer's notes as the text she reads, and saves it to the drafts table
+under an id derived from the thread; from that moment the plan is on her
+page. `require_human_approval` is the gate from `blossom/agent/gates.py`,
+unchanged in mechanism and narrowed in meaning: it pauses the thread for a
+parent's review, which she does not wait for. Ordinary planning is hers, so
+the review is shown under the plan on her page, looks good or a change asked
+for, and is never a condition on her using it. The pause is the same one that
+will hold a note to a teacher or a request for help until a person decides,
+where a decision is the point. `record_decision`, after the gate, saves what
+the parent said; it is the only node past the gate, and a node there may be
+added without a version bump. `record_run` is where a
 run goes instead of `compose` when it ends before the gate, with a plan that
 never passed the checks or a model that did not answer: it saves the run's
 record, which `compose` saves with the draft. It is off the path to the gate,

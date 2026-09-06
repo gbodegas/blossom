@@ -20,12 +20,8 @@ from blossom.dependencies import build_application_state
 from blossom.drafts import DraftStatus
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.plans import DailyPlan
-from blossom.routes.parent import (
-    REASON_MAX_LENGTH,
-    DecisionRequest,
-    decide_draft,
-    plan_graphs,
-)
+from blossom.routes.parent import REASON_MAX_LENGTH, DecisionRequest, decide_draft
+from blossom.routes.runs import plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.views import DecisionView
 from tests.support import (

@@ -27,7 +27,7 @@ from blossom.agent.trace import LocalRunTracer, Redactor, as_json, traced, unred
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, build_application_state
-from blossom.routes.parent import plan_graphs
+from blossom.routes.runs import plan_graphs
 from blossom.settings import TRACE_PATH_VARIABLE
 from blossom.stores.checkpoints import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment

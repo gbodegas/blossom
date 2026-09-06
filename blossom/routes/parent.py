@@ -1,17 +1,24 @@
-"""Parent routes: start a plan, see what waits at the gate, and decide.
+"""Parent routes: review the plan she has, and start one for her when asked.
 
 A parent is a collaborator who sets goals, corrects information and reviews
 drafts, so these routes expose a queue and a checkpoint rather than a live
 feed. A live feed would turn collaboration into monitoring.
 
+The plan is hers from the moment it is made: it is on her page before anyone
+here has seen it, and nothing she does with it waits for this page. What a
+parent records here is a review, looks good or a change asked for, and the
+review shows on her page under the plan. The pause at the gate is the same
+mechanism that will one day hold a note to a teacher until a person decides;
+for an evening's plan it holds only the review.
+
 Three routes drive the plan graph. ``POST /parent/plans`` starts a run for one
-evening and reports how it ended: at the gate with a draft, or before it with
-a reason. ``GET /parent/approvals`` lists the drafts waiting for a decision,
-read from the drafts table rather than from graph state, because the table is
-the record across threads and needs no model to read. ``POST
-/parent/approvals/{draft_id}`` resumes the paused run with the decision; the
-graph's gate node records it in saved state and the node after the gate
-records it in the table.
+evening, the same run her page starts, and reports how it ended: at the gate
+with a draft, or before it with a reason. ``GET /parent/approvals`` lists the
+drafts waiting for a review, read from the drafts table rather than from graph
+state, because the table is the record across threads and needs no model to
+read. ``POST /parent/approvals/{draft_id}`` resumes the paused run with the
+review; the graph's gate node records it in saved state and the node after the
+gate records it in the table.
 
 Starting a run needs the model seam, which needs a key, and says so with a
 503 when there is none. Reading the queue and deciding do not: nothing past
@@ -27,35 +34,32 @@ table refuses a second, different decision even if a request arrives from
 another process.
 
 The page at ``/parent`` is the same three things as a form, for a person
-rather than a client: a date to plan, the drafts waiting with their text and
-two buttons, and what has been decided. Its two form actions call the same
-functions the JSON routes call and redirect back to the page, so there is one
-way to start a run and one way to decide, whichever door it comes through.
+rather than a client: a date to plan for her, the drafts waiting with their
+text and two buttons, and what has been reviewed. Its two form actions call
+the same functions the JSON routes call and redirect back to the page, so
+there is one way to start a run and one way to review, whichever door it
+comes through.
 
 Not yet implemented: when the system notifies a parent that a deadline is at
 risk, the parent needs to be able to see that the notification happened.
 Without that, the visibility policy is stated but not observable.
 """
 
-from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import date
 from typing import Annotated, Any, Final
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
-from blossom.agent.trace import LocalRunTracer
-from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
+from blossom.anthropic_client import model_configured
 from blossom.dependencies import ApplicationState, get_application_state
+from blossom.evening import Staleness, staleness
+from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan
 from blossom.settings import TEMPLATE_PATH
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.views import (
@@ -72,40 +76,6 @@ router = APIRouter(prefix="/parent", tags=["parent"])
 templates = Jinja2Templates(directory=TEMPLATE_PATH)
 
 State = Annotated[ApplicationState, Depends(get_application_state)]
-
-
-PlanGraphBuilder = Callable[[], CompiledPlanGraph]
-
-
-@dataclass(frozen=True)
-class PlanGraphs:
-    """What a route needs from the graph: a way to build it, and whether it may start one.
-
-    A dependency is resolved before its handler runs, so this hands back a
-    builder rather than a graph, and the handler calls it after consulting the
-    table. ``may_start`` is whether a run can be started at all, which needs a
-    model; resuming a paused thread does not. A test substitutes the whole
-    object, scripted models and permission together, over the real stores.
-    """
-
-    build: PlanGraphBuilder
-    may_start: bool
-
-
-def plan_graphs(state: State) -> PlanGraphs:
-    """The application's graphs: built from the seam, allowed to start when there is a key."""
-    return PlanGraphs(
-        build=lambda: plan_graph_for(state), may_start=model_configured(state.settings)
-    )
-
-
-def require_model(graphs: PlanGraphs) -> None:
-    """Refuse to start a run without a model, before any thread is written."""
-    if not graphs.may_start:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=MISSING_KEY)
-
-
-Graphs = Annotated[PlanGraphs, Depends(plan_graphs)]
 
 
 class PlanRequest(BaseModel):
@@ -137,24 +107,6 @@ class DecisionRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=REASON_MAX_LENGTH)
 
 
-def thread_for(plan_date: date) -> str:
-    """A new thread for one evening. The date is for a person reading the table."""
-    return f"plan:{plan_date.isoformat()}:{uuid4().hex[:8]}"
-
-
-def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRunView:
-    """What a finished or paused run looks like to the parent."""
-    draft = result.get("draft")
-    return PlanRunView(
-        thread_id=thread_id,
-        plan_date=plan_date,
-        outcome=result["outcome"],
-        draft_id=None if draft is None else draft.draft_id,
-        waiting="__interrupt__" in result,
-        steps=list(result.get("steps", [])),
-    )
-
-
 SIGNALED_SINCE: Final = (
     "She has said today is too much since this plan was made. Plan again before approving."
 )
@@ -180,48 +132,18 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
     """
     if not record.waiting:
         return None
-    signaled = bool(state.workload_signals.for_evening(record.plan_date))
-    if signaled == record.too_much:
-        return None
-    return SIGNALED_SINCE if signaled else SIGNAL_ENDED
+    match staleness(state.workload_signals, record):
+        case Staleness.SIGNALED_SINCE:
+            return SIGNALED_SINCE
+        case Staleness.SIGNAL_ENDED:
+            return SIGNAL_ENDED
+        case None:
+            return None
 
 
 def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
     """A draft as the parent sees it, with whether it still fits the evening."""
     return ApprovalView.from_record(record, stale=stale_reason(state, record))
-
-
-async def run_plan(
-    graph: CompiledPlanGraph,
-    plan_date: date,
-    tracer: LocalRunTracer,
-    checkpointer: BaseCheckpointSaver[Any],
-) -> PlanRunView:
-    """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped.
-
-    A run that stops before the gate has nothing left to resume, and its
-    record is already in the drafts file, so its saved state is cleared here;
-    so is the state of a run that raised, since a raise never pauses at the
-    gate and the first node had already been saved. A run paused at the gate
-    keeps its state until a decision or its expiry.
-    """
-    thread_id = thread_for(plan_date)
-    try:
-        result = await graph.ainvoke(
-            PlanState(plan_date=plan_date, rounds=0),
-            config=run_config(thread_id, callbacks=[tracer]),
-            durability=DURABILITY,
-        )
-    except ModelUnavailable as error:
-        await clear_thread(checkpointer, thread_id)
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-    except Exception:
-        await clear_thread(checkpointer, thread_id)
-        raise
-    view = run_view(thread_id, plan_date, dict(result))
-    if not view.waiting:
-        await clear_thread(checkpointer, thread_id)
-    return view
 
 
 @router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)

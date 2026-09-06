@@ -26,7 +26,7 @@
   {% endif %}
 
   <section class="panel">
-    <h2>Plan an evening</h2>
+    <h2>Plan an evening for her</h2>
     {% if model_available %}
       <form method="post" action="/parent/actions/plan" class="plan-form">
         <label>Evening of
@@ -35,19 +35,19 @@
         <button type="submit" class="primary">Plan it</button>
       </form>
       <p class="note">
-        The planner reads what is due, checks its own plan, and stops here for you.
-        Nothing is sent from this page, whatever you decide.
+        She usually plans from her own page. A plan made here goes to her page the
+        moment it is made, and waits below for your review.
       </p>
     {% else %}
       <p class="note">
         No API key is configured, so a plan cannot be started. What is already
-        waiting still shows below and can still be decided.
+        waiting still shows below and can still be reviewed.
       </p>
     {% endif %}
   </section>
 
   <section>
-    <h2>Waiting for you</h2>
+    <h2>Waiting for your review</h2>
     {% if not waiting %}
       <p class="empty">Nothing is waiting.</p>
     {% endif %}
@@ -87,13 +87,14 @@
           <div class="actions">
             {% if not draft.stale %}
               <button type="submit" name="decision" value="approve" class="primary"
-                      aria-label="Approve the plan for {{ evening }}{{ which }}">Approve</button>
+                      aria-label="Say the plan for {{ evening }}{{ which }} looks good">Looks good</button>
             {% endif %}
             <button type="submit" name="decision" value="refuse" class="secondary"
-                    aria-label="Refuse the plan for {{ evening }}{{ which }}">Refuse</button>
+                    aria-label="Ask for a change to the plan for {{ evening }}{{ which }}">Ask for a change</button>
           </div>
           <p class="note">
-            Approving marks the plan for you to send by hand. Nothing leaves here on its own.
+            She has this plan on her page already. What you say here shows there, under it.
+            Nothing leaves here on its own.
           </p>
         </form>
       </article>
@@ -117,23 +118,23 @@
   {% endif %}
 
   <section>
-    <h2>Decided</h2>
+    <h2>Reviewed</h2>
     {% if not decided %}
-      <p class="empty">Nothing has been decided yet.</p>
+      <p class="empty">Nothing has been reviewed yet.</p>
     {% endif %}
     {% for draft in decided %}
       <article class="draft decided-{{ draft.decision }}">
         <p class="course">Evening of {{ draft.plan_date }}</p>
         <p class="decision-line">
           {% if draft.decision == "approved" %}
-            <strong>Approved.</strong> Marked for you to send by hand.
+            <strong>Looks good.</strong> Said on her page.
           {% elif draft.decision == "rejected" %}
-            <strong>Refused.</strong> Kept as a draft.
+            <strong>Change asked.</strong> Said on her page; the plan stays as it was until she plans again.
           {% else %}
-            <strong>Expired.</strong> The evening passed without a decision.
+            <strong>Expired.</strong> The evening passed without a review.
           {% endif %}
           {% if draft.reason and draft.decision != "expired" %}Reason: {{ draft.reason }}.{% endif %}
-          <span class="when">Decided {{ draft.decided_at.strftime("%B") }} {{ draft.decided_at.day }}, {{ draft.decided_at.year }}, {{ draft.decided_at.strftime("%H:%M UTC") }}.</span>
+          <span class="when">Reviewed {{ draft.decided_at.strftime("%B") }} {{ draft.decided_at.day }}, {{ draft.decided_at.year }}, {{ draft.decided_at.strftime("%H:%M UTC") }}.</span>
         </p>
         <details>
           <summary>The plan as it was reviewed</summary>

@@ -27,7 +27,8 @@ from blossom.clock import FrozenClock
 from blossom.dependencies import ApplicationState, build_application_state
 from blossom.drafts import DraftStatus
 from blossom.plans import DailyPlan
-from blossom.routes.parent import DecisionRequest, decide_draft, plan_graphs, run_plan
+from blossom.routes.parent import DecisionRequest, decide_draft
+from blossom.routes.runs import plan_graphs, run_plan
 from blossom.settings import CHECKPOINT_PATH_VARIABLE, DATABASE_PATH_VARIABLE, TRACE_PATH_VARIABLE
 from tests.support import (
     FIXTURE_TIMEZONE,
@@ -249,5 +250,5 @@ def test_a_restart_expires_a_stale_draft_and_the_page_says_so(tmp_path: pathlib.
 
     assert queue["waiting"] == []
     assert "Expired." in page
-    assert "The evening passed without a decision." in page
+    assert "The evening passed without a review." in page
     assert "Reason:" not in page

@@ -24,7 +24,7 @@ from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.plan_checks import DEFAULT_DAILY_MINUTES, PlanCheck, reduced_budget
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.routes.parent import plan_graphs
+from blossom.routes.runs import plan_graphs
 from blossom.routes.student import templates
 from blossom.stores.workload_signals import (
     DETAIL_MAX_LENGTH,
@@ -40,10 +40,10 @@ from tests.support import (
     accepting,
     fixture_clock,
     fixture_settings,
-    fixture_week_plan,
     good_plan,
     graph_with,
     human_text,
+    light_fixture_plan,
     ok,
     scripted_graphs,
     signals_in_memory,
@@ -221,7 +221,7 @@ def test_the_critic_and_the_draft_are_told() -> None:
 
     assert "<too_much>" in human_text(critic.briefs[0])
     body = result["__interrupt__"][0].value["body"]
-    assert "She said today was too much, so this plan is kept to 75 minutes." in body
+    assert "You said today was too much, so this plan is kept to 75 minutes." in body
 
 
 def test_a_signal_about_another_evening_changes_nothing_tonight() -> None:
@@ -235,21 +235,6 @@ def test_a_signal_about_another_evening_changes_nothing_tonight() -> None:
 
 
 # ------------------------------------------------------- the routes and the page
-
-
-def light_fixture_plan() -> DailyPlan:
-    """The fixture week's plan cut to fit a reduced evening: the essay, and the rest put off."""
-    whole = fixture_week_plan()
-    return DailyPlan(
-        plan_date=PLAN_DATE,
-        blocks=whole.blocks[:1],
-        deferred=[
-            *whole.deferred,
-            Deferral(
-                assignment_id="assignment-science-fair-proposal", reason="tonight is too much"
-            ),
-        ],
-    )
 
 
 def browser() -> TestClient:
@@ -296,10 +281,10 @@ def test_the_page_offers_the_control_and_then_shows_what_it_changed() -> None:
     assert pressed.status_code == 303
     assert pressed.headers["location"] == "/student/due-this-week"
     assert "You said it was too much" in after
-    assert "kept to 75 minutes instead of 150" in after
+    assert "held to 75 minutes instead of 150" in after
     assert "Take it back" in after
     assert "What Blossom keeps about this" in after
-    assert "Too much right now" not in after
+    assert 'action="/student/actions/too-much"' not in after
 
 
 def test_taking_it_back_from_the_page_restores_the_evening() -> None:
@@ -325,7 +310,7 @@ def test_a_press_on_her_page_reaches_the_parents_plan() -> None:
     assert started["steps"][0]["found"].endswith(
         "she said today is too much, so the budget is 75 minutes"
     )
-    assert "She said today was too much, so this plan is kept to 75 minutes." in page
+    assert "You said today was too much, so this plan is kept to 75 minutes." in page
 
 
 def test_the_application_keeps_her_signals_in_the_drafts_file_swept_by_the_real_clock() -> None:

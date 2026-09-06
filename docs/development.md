@@ -31,14 +31,19 @@ downloads one on its own when it builds the environment.
 
 With the app running as the README describes:
 
-- <http://127.0.0.1:8000/student/due-this-week> is her week, every assignment
-  labeled with how well its due date is corroborated.
-- <http://127.0.0.1:8000/parent> is the parent's page: plan an evening, read
-  the draft the planner produced, see how it was made step by step, and
-  approve or refuse it. A run that ended without a plan is listed with its
-  steps too. Planning needs an API key; reading and deciding do not, so
-  without one the page says a plan cannot start and everything else works.
-- <http://127.0.0.1:8000/parent/approvals> is the same queue as JSON.
+- <http://127.0.0.1:8000/student/due-this-week> is her page: today's plan,
+  which she asks for there and which appears the moment it is made, with a
+  parent's review under it once there is one; then her week, every
+  assignment labeled with how well its due date is corroborated.
+- <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
+  to `/student/plans` makes one.
+- <http://127.0.0.1:8000/parent> is the parent's page: read the plan she has,
+  see how it was made step by step, and say it looks good or ask for a
+  change. A parent can also start an evening's plan for her there. A run that
+  ended without a plan is listed with its steps too. Planning needs an API
+  key; reading and reviewing do not, so without one either page says a plan
+  cannot start and everything else works.
+- <http://127.0.0.1:8000/parent/approvals> is the review queue as JSON.
 - <http://127.0.0.1:8000/parent/checkpoint> is the parent's checkpoint, a
   summary of status and conflicts rather than a live feed. A placeholder,
   JSON for now.

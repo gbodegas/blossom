@@ -18,7 +18,8 @@ from blossom.app import create_app
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.routes.parent import REASON_MAX_LENGTH, PlanGraphs, plan_graphs
+from blossom.routes.parent import REASON_MAX_LENGTH
+from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from tests.support import Scripted, fixture_settings, ok
 
@@ -131,7 +132,7 @@ def test_the_page_renders_with_nothing_waiting() -> None:
     assert response.headers["content-type"].startswith("text/html")
     assert "<h1>Review</h1>" in response.text
     assert "Nothing is waiting." in response.text
-    assert "Nothing has been decided yet." in response.text
+    assert "Nothing has been reviewed yet." in response.text
     assert 'value="2026-08-19"' in response.text
 
 
@@ -206,7 +207,7 @@ def test_approving_from_the_page_moves_the_draft_to_decided() -> None:
     assert posted.status_code == 303
     assert posted.headers["location"] == "/parent"
     assert "Nothing is waiting." in page
-    assert "<strong>Approved.</strong> Marked for you to send by hand." in page
+    assert "<strong>Looks good.</strong> Said on her page." in page
     assert "Reason: looks right." in page
     assert ", 2026, " in page
     assert record["status"] == "APPROVED_FOR_MANUAL_SEND"
@@ -223,7 +224,7 @@ def test_refusing_from_the_page_keeps_the_draft_a_draft() -> None:
         page = client.get("/parent").text
         record = client.get(f"/parent/approvals/{draft_id}").json()
 
-    assert "<strong>Refused.</strong> Kept as a draft." in page
+    assert "<strong>Change asked.</strong> Said on her page" in page
     assert "Reason: too late in the evening." in page
     assert record["status"] == "DRAFT"
     assert record["decision"] == "rejected"
@@ -279,16 +280,16 @@ def test_each_decision_button_says_which_draft_it_decides() -> None:
         client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         two_waiting = client.get("/parent").text
 
-    named = r'aria-label="((?:Approve|Refuse) the plan for [^"]+)"'
+    named = r'aria-label="((?:Say|Ask for a change to) the plan for [^"]+)"'
     assert re.findall(named, one_waiting) == [
-        "Approve the plan for Wednesday, August 19",
-        "Refuse the plan for Wednesday, August 19",
+        "Say the plan for Wednesday, August 19 looks good",
+        "Ask for a change to the plan for Wednesday, August 19",
     ]
     labels = re.findall(named, two_waiting)
     assert len(labels) == 4
     assert len(set(labels)) == 4
-    assert "Approve the plan for Wednesday, August 19, 1 of 2" in labels
-    assert "Refuse the plan for Wednesday, August 19, 2 of 2" in labels
+    assert "Say the plan for Wednesday, August 19, 1 of 2 looks good" in labels
+    assert "Ask for a change to the plan for Wednesday, August 19, 2 of 2" in labels
 
 
 def test_a_waiting_draft_can_be_decided_from_the_page_without_a_key() -> None:
