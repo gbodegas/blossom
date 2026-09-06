@@ -44,13 +44,35 @@ class StudentAssignmentView(BaseModel):
     """What the sources say when none of them supports the record's date; empty otherwise."""
 
 
+class WorkloadSignalView(BaseModel):
+    """One press of her control as she sees it: which evening, and when, in her zone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    signal_id: str
+    evening: date
+    given_at: AwareDatetime
+    given_local: AwareDatetime
+    detail_attached: bool
+
+
 class StudentDueThisWeekView(BaseModel):
-    """Her week. Every assignment in the window appears, nothing is filtered out."""
+    """Her week. Every assignment in the window appears, nothing is filtered out.
+
+    ``too_much`` is tonight's signal when she has given one, and
+    ``budget_minutes`` is what the evening's plan is held to as a result.
+    ``signals`` is everything the store still keeps, so she can see it and take
+    any of it back.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     generated_at: AwareDatetime
     assignments: list[StudentAssignmentView]
+    full_budget_minutes: int
+    budget_minutes: int
+    too_much: WorkloadSignalView | None = None
+    signals: list[WorkloadSignalView] = []
 
 
 class ParentCheckpointAssignmentView(BaseModel):

@@ -47,9 +47,9 @@ With the app running as the README describes:
   placeholder: one fixed example of the shape, not a report on the latest
   run. JSON for now.
 - <http://127.0.0.1:8000/docs> is the interactive API page, where the
-  parent's routes can be driven directly and the "too much" signal sent by
-  posting to `/student/workload-signals` with no body. Today it is
-  acknowledged and discarded.
+  parent's routes can be driven directly. The "too much" signal is sent by
+  posting to `/student/workload-signals` with no body; the same path lists
+  the signals still kept, and a delete on one removes it.
 
 Nothing here has a login. The three views are separate pages, not separate
 people, and anyone who can reach the server can open all of them. The
@@ -84,7 +84,8 @@ files under `.local/` outlive it:
 - `blossom.sqlite3` holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
-  evening is closed as expired.
+  evening is closed as expired. Her "too much" signals live here too, kept
+  for a week and removable from her page.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
   and an expired draft's state goes with it, so it holds only what is

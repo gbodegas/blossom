@@ -9,12 +9,11 @@ because where a title sits in the message is a security property.
 
 import asyncio
 import pathlib
-from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -57,6 +56,7 @@ from tests.support import (
     fixture_settings,
     good_plan,
     graph_with,
+    human_text,
     ok,
 )
 
@@ -121,12 +121,6 @@ def run(graph: CompiledPlanGraph, thread: str = "plan:2026-08-19") -> dict[str, 
         return dict(result)
 
     return asyncio.run(go())
-
-
-def human_text(brief: Sequence[BaseMessage]) -> str:
-    human = [message for message in brief if isinstance(message, HumanMessage)]
-    assert len(human) == 1
-    return str(human[0].content)
 
 
 # --------------------------------------------------------------- the happy path
@@ -742,7 +736,7 @@ def test_every_node_leaves_a_step_saying_what_it_expected_and_found() -> None:
     assert steps[0].expected == "the record's due dates hold against the school's sources"
     assert steps[0].found == (
         "2 assignments in the week: 0 contradicted, 1 uncertain, 0 undated; "
-        "0 rules and 0 notes to follow"
+        "0 rules and 0 notes to follow; budget 150 minutes"
     )
     assert steps[1].expected == "a plan that accounts for every assignment inside 150 minutes"
     assert steps[1].found == "1 block and 1 deferral asking 60 minutes"

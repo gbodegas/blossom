@@ -401,7 +401,7 @@ def test_empty_workload_signal_post_succeeds() -> None:
     with TestClient(create_app()) as client:
         response = client.post("/student/workload-signals")
 
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert response.json()["principal"] == "STUDENT"
     assert response.json()["detail_attached"] is False
 

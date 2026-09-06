@@ -467,6 +467,29 @@ details summary {
   font-size: 0.95rem;
 }
 
+.too-much .actions {
+  margin-top: 0.5rem;
+}
+
+.kept ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.kept li {
+  margin: 0.5rem 0;
+}
+
+form.inline {
+  display: inline;
+  margin-left: 0.5rem;
+}
+
+form.inline button {
+  padding: 0.25rem 0.85rem;
+  font-size: 0.9rem;
+}
+
 /* ------------------------------------------------------------- colophon */
 
 .colophon {

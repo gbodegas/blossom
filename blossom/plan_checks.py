@@ -33,6 +33,17 @@ from blossom.stores.project_state import Assignment
 from blossom.verification import CheckOutcome
 
 DEFAULT_DAILY_MINUTES = 150
+
+
+def reduced_budget(minutes: int) -> int:
+    """The evening's budget once she has said today is too much: half.
+
+    Her signal overrides the plan rather than joining a score, so the cut is a
+    fixed rule the checks enforce, not a judgment the planner is asked to make.
+    """
+    return minutes // 2
+
+
 """How much work a plan may ask for in one evening before a check fails.
 
 A placeholder for a household decision, not a finding about her. It is a

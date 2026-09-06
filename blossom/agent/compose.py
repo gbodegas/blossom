@@ -43,6 +43,8 @@ def compose_draft(
     verdict: CriticVerdict | None,
     settled: bool,
     noticings: Sequence[Noticing] = (),
+    too_much: bool = False,
+    budget_minutes: int | None = None,
 ) -> Draft:
     """The draft a parent reads: the evening, then what is uncertain, then the review.
 
@@ -66,6 +68,10 @@ def compose_draft(
         return f"{item.title} ({item.course}, {when})"
 
     lines = [f"Plan for {spoken_date(plan.plan_date)}"]
+    if too_much:
+        lines.append(
+            f"She said today was too much, so this plan is kept to {budget_minutes} minutes."
+        )
     if not settled:
         lines.append("The reviewer did not settle on this plan. Its notes are at the end.")
     lines.append("")

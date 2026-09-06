@@ -200,7 +200,7 @@ confident match from the only candidate; the design calls for three to five.
 **Not wired:** no route or node constructs the router. `ProjectStateStore.lookup`
 still answers the structured side for one that would.
 
-## Five stores, five risk profiles
+## Six stores, six risk profiles
 
 | Store | Contents | State |
 |---|---|---|
@@ -209,6 +209,7 @@ still answers the structured side for one that would.
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
+| `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -435,15 +436,37 @@ the file.
 
 ## The workload signal
 
-`POST /student/workload-signals` takes no body. It does not ask her to rate or
-describe anything: assigning a rating requires stepping back and assessing, and
-that capacity is least available exactly when the signal matters most.
+The control is one press. `POST /student/workload-signals` takes no body, and
+the button on her page sends nothing but the press. It does not ask her to
+rate or describe anything: assigning a rating requires stepping back and
+assessing, and that capacity is least available exactly when the signal
+matters most. Words may be attached, and are never asked for.
 
-**Not built:** the signal is accepted and discarded. Nothing stores it, nothing
-reduces a plan in response, and the response reports only receipt. The design
-requires it to produce an immediate visible result, since a control that
-changes nothing observable gets abandoned. It also requires brief retention,
-visibility to her, and deletion by her. None of that exists.
+A press records that today, by the household's clock, is too much, in
+`WorkloadSignalsStore`, `blossom/stores/workload_signals.py`. Three things
+follow, each visible at once. Her page shows the signal, the time she gave it,
+and what it changes, with a button to take it back. The evening's budget is
+cut to half (`reduced_budget`), and the cut is made in the graph's `retrieve`
+node before the planner is asked, so the tier-one budget check enforces it and
+the planner is told, in a block written by this system, that her word on the
+evening is final. The draft the parent reads says the plan was kept to the
+reduced budget because she said so. This is the third tier of verification
+acting the only way it can: her judgment overrides the plan directly rather
+than becoming one more input to a score.
+
+The store keeps a signal for `SIGNAL_RETENTION_DAYS`, seven, stamped and swept
+by the real clock even when the household clock is pinned. Her page lists
+everything still kept, each with a way to remove it, and the JSON routes list
+and delete the same. The store answers one question for the planner, whether
+an evening was signaled, and offers nothing about patterns: no query groups
+signals by weekday or counts them over a month, because a record like that
+would be about her rather than about the plan.
+
+**Not built:** the design wants the control to be closer to a stress ball than
+a button on a page, a hardware button, a lock screen control, or a single-tap
+shortcut, and whether asking for a coping strategy is the same gesture or a
+second one is a question for her. The page's button is the form the control
+takes until those are decided with her.
 
 ## Configuration, time, and lifecycle
 

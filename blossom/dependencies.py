@@ -38,6 +38,7 @@ from blossom.stores.project_state import ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
 from blossom.stores.traces import TraceStore
+from blossom.stores.workload_signals import WorkloadSignalsStore
 
 Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 
@@ -68,6 +69,8 @@ class ApplicationState:
     tracer: LocalRunTracer
     """The callback that writes each run's tree to ``traces``. Attached to every
     run the routes start or resume; never saved with the run."""
+    workload_signals: WorkloadSignalsStore
+    """Her signals that a day is too much, in the drafts file, kept for a week."""
     decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held while a decision is checked against the table and carried into the
     paused thread, so two decisions about one draft cannot both pass the check.
@@ -80,6 +83,7 @@ class ApplicationState:
         self.project_state.close()
         self.drafts.close()
         self.traces.close()
+        self.workload_signals.close()
 
 
 def build_application_state(
@@ -96,7 +100,9 @@ def build_application_state(
     clock = clock_from(settings.today, settings.timezone_key)
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     project_state = ProjectStateStore(connection, clock=clock)
-    opened: list[ProjectStateStore | DraftsStore | TraceStore] = [project_state]
+    opened: list[ProjectStateStore | DraftsStore | TraceStore | WorkloadSignalsStore] = [
+        project_state
+    ]
     # A later step can refuse its path or fail to open its file. Whatever was
     # opened before it is closed on the way out, so a startup that fails and is
     # retried leaves no connection behind.
@@ -117,6 +123,12 @@ def build_application_state(
         traces = TraceStore.open(settings.trace_path, SystemClock(clock.zone))
         opened.append(traces)
         traces.sweep()
+        # Her signals share the drafts file and, like the trace, are stamped and
+        # swept by the real clock; which evening a signal is about comes from
+        # the household clock when it is recorded.
+        signals = WorkloadSignalsStore.open(settings.database_path, SystemClock(clock.zone))
+        opened.append(signals)
+        signals.sweep()
     except Exception:
         for store in reversed(opened):
             store.close()
@@ -132,6 +144,7 @@ def build_application_state(
         checkpointer=checkpointer,
         traces=traces,
         tracer=LocalRunTracer(traces),
+        workload_signals=signals,
     )
 
 
