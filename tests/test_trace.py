@@ -35,12 +35,17 @@ from blossom.stores.traces import TRACE_RETENTION_DAYS, TracedRun, TraceStore
 from tests.support import (
     FIXTURE_TIMEZONE,
     OBSERVED_AT,
+    PLAN_DATE,
     Scripted,
+    accepting,
     fixture_clock,
     fixture_settings,
+    fixture_week_plan,
+    good_plan,
+    graph_with,
     ok,
+    scripted_graphs,
 )
-from tests.test_plan_graph import PLAN_DATE, accepting, good_plan, graph_with
 
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
 
@@ -230,17 +235,13 @@ def test_pydantic_values_are_written_by_their_fields() -> None:
 
 
 def test_the_application_traces_the_runs_its_routes_start(tmp_path: pathlib.Path) -> None:
-    from tests.test_parent_routes import accepting as route_accepting
-    from tests.test_parent_routes import good_plan as route_plan
-    from tests.test_parent_routes import scripted
-
     trace_file = tmp_path / "traces.sqlite3"
     settings = fixture_settings(
         BLOSSOM_TODAY=PLAN_DATE.isoformat(), **{TRACE_PATH_VARIABLE: str(trace_file)}
     )
     app = create_app(settings)
-    app.dependency_overrides[plan_graphs] = scripted(
-        lambda: [route_plan()], lambda: [route_accepting()]
+    app.dependency_overrides[plan_graphs] = scripted_graphs(
+        lambda: [fixture_week_plan()], lambda: [accepting()]
     )
 
     with TestClient(app) as running:

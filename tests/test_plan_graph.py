@@ -9,26 +9,21 @@ because where a title sits in the message is a security property.
 
 import asyncio
 import pathlib
-import sqlite3
 from collections.abc import Sequence
-from datetime import UTC, date, datetime, time
+from datetime import date
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from blossom.agent.graph import (
     MAX_REVISIONS,
     WORST_CASE_SUPERSTEPS,
-    Ask,
     CompiledPlanGraph,
     ModelAnswer,
     PlanState,
-    build_plan_graph,
     plan_graph_for,
 )
 from blossom.agent.runs import DURABILITY, RECURSION_LIMIT, run_config
@@ -39,76 +34,39 @@ from blossom.drafts import Draft, DraftStatus
 from blossom.heuristic_relevance import (
     CRITERIA,
     Criterion,
-    CriterionFinding,
     CriticVerdict,
     Judgment,
 )
 from blossom.noticing import Verdict
-from blossom.plans import DailyPlan, Deferral, PlanBlock
+from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
-from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
-from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
-from blossom.stores.support_rules import SupportRule, SupportRulesStore
-from tests.support import FIXTURE_TIMEZONE, Scripted, fixture_clock, fixture_settings, ok
-
-ZONE = ZoneInfo(FIXTURE_TIMEZONE)
-PLAN_DATE = date(2026, 8, 19)
-OBSERVED = datetime(2026, 8, 18, 9, 0, tzinfo=UTC)
-
-ESSAY = Assignment(
-    assignment_id="assignment-canal-essay",
-    course="World History",
-    title="Canal Era comparison essay",
-    due_date=date(2026, 8, 21),
-    dependencies=[],
-    reported_submission_status="in_progress",
+from blossom.stores.project_state import Assignment, AssignmentKind
+from tests.support import (
+    ESSAY,
+    PLAN_DATE,
+    PROBLEM_SET,
+    Scripted,
+    TwoChannelSource,
+    accepting,
+    block,
+    drafts_in_memory,
+    finding,
+    fixture_clock,
+    fixture_settings,
+    good_plan,
+    graph_with,
+    ok,
 )
-PROBLEM_SET = Assignment(
-    assignment_id="assignment-algebra-set",
-    course="Algebra II",
-    title="Quadratic modeling problem set",
-    due_date=date(2026, 8, 24),
-    dependencies=[],
-    reported_submission_status="not_started",
-)
-
 
 # ------------------------------------------------------------------ scripting
-
-
-def block(assignment: str, start: str, end: str) -> PlanBlock:
-    return PlanBlock(
-        assignment_id=assignment,
-        starts_at=time.fromisoformat(start),
-        ends_at=time.fromisoformat(end),
-        rationale="the hardest thing first, while she is fresh",
-    )
-
-
-def good_plan() -> DailyPlan:
-    return DailyPlan(
-        plan_date=PLAN_DATE,
-        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
-        deferred=[Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday")],
-    )
 
 
 def plan_that_forgets_the_problem_set() -> DailyPlan:
     return DailyPlan(
         plan_date=PLAN_DATE, blocks=[block("assignment-canal-essay", "16:30", "17:30")]
     )
-
-
-def finding(
-    judgment: Judgment, criterion: Criterion = Criterion.ORDER, critique: str = "reads well"
-) -> CriterionFinding:
-    return CriterionFinding(criterion=criterion, critique=critique, judgment=judgment)
-
-
-def accepting() -> CriticVerdict:
-    return CriticVerdict(findings=[finding(Judgment.PASSES, criterion) for criterion in Criterion])
 
 
 def faulting() -> CriticVerdict:
@@ -127,43 +85,6 @@ def undecided() -> CriticVerdict:
 
 
 # ------------------------------------------------------------------ the world
-
-
-class TwoChannelSource:
-    """Deadline records for the two fixture assignments: one corroborated, one disputed."""
-
-    def assignments(self) -> list[Assignment]:
-        return [ESSAY, PROBLEM_SET]
-
-    def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
-        if assignment_id == ESSAY.assignment_id:
-            return [
-                self.record(SourceChannel.LMS, "2026-08-21"),
-                self.record(SourceChannel.PARENT_ENTRY, "2026-08-21"),
-            ]
-        if assignment_id == PROBLEM_SET.assignment_id:
-            return [
-                self.record(SourceChannel.LMS, "2026-08-24"),
-                self.record(SourceChannel.PARENT_ENTRY, "2026-08-25"),
-            ]
-        return []
-
-    def support_rules(self) -> list[SupportRule]:
-        """The graph tests seed rules through the store, not the source."""
-        return []
-
-    def reflections(self) -> list[Reflection]:
-        """The graph tests seed notes through the store, not the source."""
-        return []
-
-    @staticmethod
-    def record(channel: SourceChannel, value: str) -> SourceRecord:
-        return SourceRecord(
-            channel=channel,
-            asserted_value=value,
-            observed_at=OBSERVED,
-            confidence=0.8,
-        )
 
 
 class SchoolSaysOtherwise(TwoChannelSource):
@@ -187,58 +108,6 @@ NEXT_MONTH = Assignment(
     dependencies=[],
     reported_submission_status="not_started",
 )
-
-
-def stores(
-    assignments: Sequence[Assignment] = (ESSAY, PROBLEM_SET),
-) -> tuple[ProjectStateStore, SupportRulesStore, ReflectionsStore]:
-    project_state = ProjectStateStore(
-        sqlite3.connect(":memory:", check_same_thread=False), fixture_clock()
-    )
-    project_state.upsert_assignments(list(assignments))
-    return project_state, SupportRulesStore(), ReflectionsStore()
-
-
-def graph_with(
-    planner: Ask[DailyPlan],
-    critic: Ask[CriticVerdict],
-    *,
-    checkpointer: BaseCheckpointSaver[Any] | None = None,
-    drafts: DraftsStore | None = None,
-    assignments: Sequence[Assignment] = (ESSAY, PROBLEM_SET),
-    rules: Sequence[str] = (),
-    notes: Sequence[str] = (),
-    source: TwoChannelSource | None = None,
-) -> CompiledPlanGraph:
-    project_state, support_rules, reflections = stores(assignments)
-    for index, rule in enumerate(rules):
-        support_rules.add_rule(
-            SupportRule(rule_id=f"rule-{index}", instruction=rule, asserted_at=OBSERVED)
-        )
-    for index, note in enumerate(notes):
-        reflections.write(
-            Reflection(
-                reflection_id=f"note-{index}",
-                subject=ReflectionSubject.SYSTEM,
-                observation=note,
-                observed_at=OBSERVED,
-            )
-        )
-    return build_plan_graph(
-        project_state=project_state,
-        support_rules=support_rules,
-        reflections=reflections,
-        drafts=drafts or drafts_in_memory(),
-        clock=fixture_clock(),
-        planner=planner,
-        critic=critic,
-        checkpointer=checkpointer or InMemorySaver(),
-        source=source or TwoChannelSource(),
-    )
-
-
-def drafts_in_memory() -> DraftsStore:
-    return DraftsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
 
 
 def run(graph: CompiledPlanGraph, thread: str = "plan:2026-08-19") -> dict[str, Any]:

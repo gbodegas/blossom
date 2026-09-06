@@ -5,8 +5,8 @@ the checks, the pause at the gate. It is kept while the loop runs and cleared
 when the loop finishes, because whatever should outlive the run has already
 been written elsewhere: the draft and the decision in the drafts table, the
 run's record beside them, the framework's trace in its own file. So a thread
-is cleared the moment its run ends, at the gate or before it, and again once a
-decision is recorded.
+is cleared as soon as its run stops before the gate, and a thread that paused
+at the gate is cleared once a decision is recorded.
 
 A thread waiting at the gate waits as long as its draft does, but not past the
 point where the evening is long gone. ``PAUSED_RETENTION_DAYS`` after its plan
@@ -43,7 +43,7 @@ class Swept:
 
 
 async def clear_thread(checkpointer: BaseCheckpointSaver[Any], thread_id: str) -> None:
-    """Remove one thread's saved state. Called when its run has ended."""
+    """Remove one thread's saved state, once nothing will resume it."""
     await checkpointer.adelete_thread(thread_id)
 
 

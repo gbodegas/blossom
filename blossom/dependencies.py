@@ -146,11 +146,12 @@ def create_lifespan(settings: Settings) -> Lifespan:
         enforce_local_only_tracing()
         async with open_checkpointer(settings.checkpoint_path) as checkpointer:
             state = build_application_state(settings, checkpointer)
-            # Whatever the last process left behind: finished threads never
-            # cleared, runs that never finished, drafts that waited too long.
-            await sweep_saved_state(checkpointer, state.drafts, state.clock)
-            setattr(app.state, STATE_ATTRIBUTE, state)
             try:
+                # Whatever the last process left behind: finished threads never
+                # cleared, runs that never finished, drafts that waited too long.
+                # Inside the block, so a sweep that fails still closes the stores.
+                await sweep_saved_state(checkpointer, state.drafts, state.clock)
+                setattr(app.state, STATE_ATTRIBUTE, state)
                 yield
             finally:
                 state.close()

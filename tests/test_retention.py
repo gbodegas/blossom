@@ -29,8 +29,17 @@ from blossom.drafts import DraftStatus
 from blossom.plans import DailyPlan
 from blossom.routes.parent import DecisionRequest, decide_draft, plan_graphs, run_plan
 from blossom.settings import CHECKPOINT_PATH_VARIABLE, DATABASE_PATH_VARIABLE, TRACE_PATH_VARIABLE
-from tests.support import FIXTURE_TIMEZONE, OBSERVED_AT, Scripted, fixture_settings, ok
-from tests.test_parent_routes import accepting, forgetful_plan, good_plan, scripted
+from tests.support import (
+    FIXTURE_TIMEZONE,
+    OBSERVED_AT,
+    Scripted,
+    accepting,
+    fixture_settings,
+    fixture_week_plan,
+    forgetful_fixture_plan,
+    ok,
+    scripted_graphs,
+)
 
 PLAN_DATE = date(2026, 8, 19)
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
@@ -64,7 +73,12 @@ def test_a_run_that_ends_before_the_gate_leaves_no_saved_state() -> None:
 
         async def scenario() -> tuple[str, set[str]]:
             view = await run_plan(
-                graph_for(state, forgetful_plan(), forgetful_plan(), forgetful_plan()),
+                graph_for(
+                    state,
+                    forgetful_fixture_plan(),
+                    forgetful_fixture_plan(),
+                    forgetful_fixture_plan(),
+                ),
                 PLAN_DATE,
                 state.tracer,
                 state.checkpointer,
@@ -109,7 +123,7 @@ def test_a_run_paused_at_the_gate_keeps_its_state_until_the_decision() -> None:
 
         async def scenario() -> tuple[set[str], set[str]]:
             view = await run_plan(
-                graph_for(state, good_plan()), PLAN_DATE, state.tracer, state.checkpointer
+                graph_for(state, fixture_week_plan()), PLAN_DATE, state.tracer, state.checkpointer
             )
             while_waiting = await thread_ids(state)
             assert view.draft_id is not None
@@ -136,12 +150,14 @@ def test_the_sweep_clears_what_no_waiting_draft_needs_and_keeps_what_one_does() 
     try:
 
         async def scenario() -> tuple[Swept, set[str]]:
-            waiting = await graph_for(state, good_plan()).ainvoke(
+            waiting = await graph_for(state, fixture_week_plan()).ainvoke(
                 PlanState(plan_date=PLAN_DATE, rounds=0),
                 config=run_config("plan:waiting"),
                 durability=DURABILITY,
             )
-            await graph_for(state, forgetful_plan(), forgetful_plan(), forgetful_plan()).ainvoke(
+            await graph_for(
+                state, forgetful_fixture_plan(), forgetful_fixture_plan(), forgetful_fixture_plan()
+            ).ainvoke(
                 PlanState(plan_date=PLAN_DATE, rounds=0),
                 config=run_config("plan:finished"),
                 durability=DURABILITY,
@@ -164,7 +180,7 @@ def test_a_draft_that_waited_past_its_evening_is_closed_as_expired_and_its_threa
     try:
 
         async def scenario() -> tuple[Swept, set[str]]:
-            await graph_for(state, good_plan()).ainvoke(
+            await graph_for(state, fixture_week_plan()).ainvoke(
                 PlanState(plan_date=PLAN_DATE, rounds=0),
                 config=run_config("plan:stale"),
                 durability=DURABILITY,
@@ -193,7 +209,7 @@ def test_a_draft_still_within_the_window_is_left_waiting() -> None:
     try:
 
         async def scenario() -> Swept:
-            await graph_for(state, good_plan()).ainvoke(
+            await graph_for(state, fixture_week_plan()).ainvoke(
                 PlanState(plan_date=PLAN_DATE, rounds=0),
                 config=run_config("plan:fresh"),
                 durability=DURABILITY,
@@ -218,7 +234,9 @@ def test_a_restart_expires_a_stale_draft_and_the_page_says_so(tmp_path: pathlib.
         TRACE_PATH_VARIABLE: str(tmp_path / "traces.sqlite3"),
     }
     first = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **files))
-    first.dependency_overrides[plan_graphs] = scripted(lambda: [good_plan()], lambda: [accepting()])
+    first.dependency_overrides[plan_graphs] = scripted_graphs(
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
     with TestClient(first) as client:
         started = client.post("/parent/plans", json={}).json()
         assert started["waiting"] is True

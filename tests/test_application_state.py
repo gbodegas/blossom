@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
+from blossom import dependencies
 from blossom.app import create_app
 from blossom.clock import Clock
 from blossom.dependencies import (
@@ -164,6 +165,33 @@ def test_a_startup_that_fails_late_closes_what_it_opened(
 
     with pytest.raises(UnsafeCheckpointPath):
         build_application_state(settings, InMemorySaver())
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].waiting()
+
+
+def test_a_startup_whose_sweep_fails_still_closes_the_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sweep runs inside the block that owns the state, so a failure still closes it."""
+    opened: list[DraftsStore] = []
+    real_open = DraftsStore.open
+
+    def remembering_open(path: pathlib.Path, clock: Clock) -> DraftsStore:
+        store = real_open(path, clock)
+        opened.append(store)
+        return store
+
+    async def failing_sweep(*args: object, **kwargs: object) -> None:
+        msg = "the saved state could not be read"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(DraftsStore, "open", staticmethod(remembering_open))
+    monkeypatch.setattr(dependencies, "sweep_saved_state", failing_sweep)
+
+    with pytest.raises(RuntimeError, match="could not be read"), TestClient(create_app()):
+        pass
 
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError):

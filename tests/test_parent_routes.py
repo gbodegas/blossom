@@ -7,112 +7,41 @@ saved-state store, with only the two model calls scripted.
 
 import asyncio
 from collections.abc import Callable
-from datetime import date, time
-from typing import Annotated
+from datetime import date
 
-from fastapi import Depends, HTTPException
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.runs import DURABILITY, run_config
 from blossom.app import create_app
-from blossom.dependencies import ApplicationState, build_application_state, get_application_state
+from blossom.dependencies import build_application_state
 from blossom.drafts import DraftStatus
-from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
-from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.routes.parent import DecisionRequest, PlanGraphs, decide_draft, plan_graphs
+from blossom.heuristic_relevance import CriticVerdict
+from blossom.plans import DailyPlan
+from blossom.routes.parent import DecisionRequest, decide_draft, plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.views import DecisionView
-from tests.support import Scripted, fixture_settings, ok
+from tests.support import (
+    Scripted,
+    accepting,
+    fixture_settings,
+    fixture_week_plan,
+    forgetful_fixture_plan,
+    ok,
+    scripted_graphs,
+)
 
 PLAN_DATE = date(2026, 8, 19)
 
 
-def good_plan() -> DailyPlan:
-    """A plan that passes every check against the fixture week."""
-    return DailyPlan(
-        plan_date=PLAN_DATE,
-        blocks=[
-            PlanBlock(
-                assignment_id="assignment-canal-essay",
-                starts_at=time(16, 30),
-                ends_at=time(17, 30),
-                rationale="the essay first, while she is fresh",
-            ),
-            PlanBlock(
-                assignment_id="assignment-science-fair-proposal",
-                starts_at=time(18, 0),
-                ends_at=time(18, 30),
-                rationale="nobody has confirmed this date, so it gets done tonight",
-            ),
-        ],
-        deferred=[
-            Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday"),
-            Deferral(
-                assignment_id="assignment-textbook-cover", reason="five minutes on the weekend"
-            ),
-            Deferral(assignment_id="assignment-reading-log", reason="a page a night is on track"),
-            Deferral(assignment_id="assignment-signed-syllabus", reason="ask what the date is"),
-            Deferral(assignment_id="assignment-vocabulary-quiz", reason="the portal says Friday"),
-        ],
-    )
-
-
-def accepting() -> CriticVerdict:
-    return CriticVerdict(
-        findings=[
-            CriterionFinding(criterion=criterion, critique="reads well", judgment=Judgment.PASSES)
-            for criterion in Criterion
-        ]
-    )
-
-
-def forgetful_plan() -> DailyPlan:
-    """Leaves two assignments unmentioned, so tier one fails every round."""
-    return DailyPlan(
-        plan_date=PLAN_DATE,
-        blocks=[
-            PlanBlock(
-                assignment_id="assignment-canal-essay",
-                starts_at=time(16, 30),
-                ends_at=time(17, 30),
-                rationale="the essay first",
-            )
-        ],
-    )
-
-
-def scripted(
-    planner: Callable[[], list[DailyPlan]], critic: Callable[[], list[CriticVerdict]]
-) -> Callable[..., PlanGraphs]:
-    """A replacement for the route's graphs dependency, over the app's own stores.
-
-    Scripted models, and permission to start, so a run can be driven in an
-    application that has no key; the models are never asked for one.
-    """
-
-    def override(
-        state: Annotated[ApplicationState, Depends(get_application_state)],
-    ) -> PlanGraphs:
-        return PlanGraphs(
-            build=lambda: plan_graph_for(
-                state,
-                planner=Scripted(*[ok(plan) for plan in planner()]),
-                critic=Scripted(*[ok(verdict) for verdict in critic()]),
-            ),
-            may_start=True,
-        )
-
-    return override
-
-
 def app_with(
-    planner: Callable[[], list[DailyPlan]] = lambda: [good_plan()],
+    planner: Callable[[], list[DailyPlan]] = lambda: [fixture_week_plan()],
     critic: Callable[[], list[CriticVerdict]] = lambda: [accepting()],
 ) -> TestClient:
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
-    app.dependency_overrides[plan_graphs] = scripted(planner, critic)
+    app.dependency_overrides[plan_graphs] = scripted_graphs(planner, critic)
     return TestClient(app)
 
 
@@ -149,7 +78,7 @@ def test_a_request_with_an_unknown_field_is_refused() -> None:
 
 
 def test_a_run_that_never_passes_the_checks_queues_nothing() -> None:
-    with app_with(planner=lambda: [forgetful_plan()] * 3, critic=list) as client:
+    with app_with(planner=lambda: [forgetful_fixture_plan()] * 3, critic=list) as client:
         response = client.post("/parent/plans", json={})
         queue = client.get("/parent/approvals").json()
 
@@ -300,7 +229,7 @@ def test_two_decisions_at_once_leave_one_winner_and_tell_the_other() -> None:
 
         def build() -> CompiledPlanGraph:
             return plan_graph_for(
-                state, planner=Scripted(ok(good_plan())), critic=Scripted(ok(accepting()))
+                state, planner=Scripted(ok(fixture_week_plan())), critic=Scripted(ok(accepting()))
             )
 
         async def scenario() -> tuple[str, list[object]]:
@@ -368,7 +297,7 @@ def test_a_run_answers_with_its_steps_and_the_queue_carries_them() -> None:
 
 
 def test_a_run_that_produced_nothing_still_leaves_its_record() -> None:
-    with app_with(planner=lambda: [forgetful_plan()] * 3, critic=list) as client:
+    with app_with(planner=lambda: [forgetful_fixture_plan()] * 3, critic=list) as client:
         started = client.post("/parent/plans", json={}).json()
         page = client.get("/parent").text
 
