@@ -152,8 +152,9 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
 SIGNALED_SINCE: Final = (
     "She has said today is too much since this plan was made. Plan again before approving."
 )
-WITHDRAWN_SINCE: Final = (
-    "She took back her signal since this plan was made. Plan again to give her the full evening."
+SIGNAL_ENDED: Final = (
+    "Her signal for this evening has ended, taken back or past its week, and this plan "
+    "was kept short for it. Plan again for the full evening."
 )
 
 
@@ -166,13 +167,17 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
     Refusing it is still allowed; refusing never sends anything. Only a
     waiting draft can be stale: a decided one is a record of what was decided,
     and is not measured against the evening again.
+
+    A signal that is gone was either taken back or aged out of the store, and
+    the store does not say which, so the message names both rather than
+    putting an action on her that she may not have taken.
     """
     if not record.waiting:
         return None
     signaled = bool(state.workload_signals.for_evening(record.plan_date))
     if signaled == record.too_much:
         return None
-    return SIGNALED_SINCE if signaled else WITHDRAWN_SINCE
+    return SIGNALED_SINCE if signaled else SIGNAL_ENDED
 
 
 def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:

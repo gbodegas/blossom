@@ -6,13 +6,16 @@ hold the store, the graph, the routes, and the page to that.
 """
 
 import asyncio
+import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState
 from blossom.agent.runs import DURABILITY, run_config
@@ -22,7 +25,13 @@ from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.plan_checks import DEFAULT_DAILY_MINUTES, PlanCheck, reduced_budget
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.parent import plan_graphs
-from blossom.stores.workload_signals import SIGNAL_RETENTION_DAYS, WorkloadSignalsStore
+from blossom.routes.student import templates
+from blossom.stores.workload_signals import (
+    DETAIL_MAX_LENGTH,
+    SIGNAL_RETENTION_DAYS,
+    WorkloadSignalsStore,
+)
+from blossom.views import StudentDueThisWeekView, WorkloadSignalView
 from tests.support import (
     FIXTURE_TIMEZONE,
     OBSERVED_AT,
@@ -370,8 +379,8 @@ def test_taking_the_signal_back_after_a_reduced_draft_makes_it_stale() -> None:
         approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
 
     assert queue[0]["stale"] == (
-        "She took back her signal since this plan was made. "
-        "Plan again to give her the full evening."
+        "Her signal for this evening has ended, taken back or past its week, and this plan "
+        "was kept short for it. Plan again for the full evening."
     )
     assert approve.status_code == 409
 
@@ -449,3 +458,55 @@ def test_a_press_waits_while_a_decision_is_being_recorded() -> None:
     assert held_while_locked == []
     assert pressed.status_code == 303
     assert len(held_after) == 1
+
+
+# ------------------------------------------------ her words are capped, and named
+
+
+def test_her_words_are_capped_at_the_boundary_and_in_the_store() -> None:
+    with browser() as client:
+        at_the_cap = client.post(
+            "/student/workload-signals", json={"detail": "w" * DETAIL_MAX_LENGTH}
+        )
+        over = client.post(
+            "/student/workload-signals", json={"detail": "w" * (DETAIL_MAX_LENGTH + 1)}
+        )
+        listed = client.get("/student/workload-signals").json()
+
+    assert at_the_cap.status_code == 201
+    assert over.status_code == 422
+    assert len(listed) == 1
+    with pytest.raises(ValidationError):
+        store_in_memory().record(PLAN_DATE, "w" * (DETAIL_MAX_LENGTH + 1))
+
+
+def test_each_remove_button_says_which_signal_it_removes() -> None:
+    """Two kept signals, two controls, each named by its own date and time."""
+    given = OBSERVED_AT.astimezone(ZONE)
+
+    def kept(days_ago: int) -> WorkloadSignalView:
+        moment = given - timedelta(days=days_ago)
+        return WorkloadSignalView(
+            signal_id=f"signal-{days_ago}",
+            evening=moment.date(),
+            given_at=moment,
+            given_local=moment,
+        )
+
+    view = StudentDueThisWeekView(
+        generated_at=OBSERVED_AT,
+        assignments=[],
+        full_budget_minutes=DEFAULT_DAILY_MINUTES,
+        budget_minutes=DEFAULT_DAILY_MINUTES,
+        signals=[kept(0), kept(1)],
+    )
+
+    page = templates.get_template("student_due_this_week.html").render(view=view)
+
+    labels = re.findall(r'aria-label="(Remove the signal from [^"]+)"', page)
+    assert len(labels) == 2
+    assert len(set(labels)) == 2
+    for label, signal in zip(labels, view.signals, strict=True):
+        assert signal.evening.strftime("%B") in label
+        assert str(signal.evening.day) in label
+        assert signal.given_local.strftime("%H:%M") in label

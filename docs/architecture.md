@@ -457,15 +457,19 @@ than becoming one more input to a score.
 
 A draft already waiting for the evening carries the signal state it was made
 for. When her signal changes after that, a press after a full-evening plan or
-a take-back after a reduced one, the parent's page says to plan again, the
+a signal ending after a reduced one, the parent's page says to plan again, the
 approve button is gone, and the approval route refuses with the same sentence;
 refusing still works, since refusing sends nothing. A plan made after the
 change fits again, and a decided draft is not measured against the evening
 again. A signal is recorded or taken back under the lock a decision holds, so
 the evening a decision was checked against cannot change before the decision
-lands.
+lands. A signal that is gone was taken back or aged out, and the store does
+not say which, so the message names both rather than putting an action on her
+that she may not have taken.
 
-The store keeps a signal for `SIGNAL_RETENTION_DAYS`, seven, stamped and swept
+Words she adds are capped at `DETAIL_MAX_LENGTH`, five hundred characters, at
+the boundary and in the store, so a request cannot grow the file or every
+later page. The store keeps a signal for `SIGNAL_RETENTION_DAYS`, seven, stamped and swept
 by the real clock even when the household clock is pinned, and every read
 applies the same cutoff, so a signal past its week stops counting whether or
 not a sweep has run since. The sweep runs at startup and then every hour the

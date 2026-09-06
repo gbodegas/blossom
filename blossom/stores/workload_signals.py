@@ -18,13 +18,18 @@ from pathlib import Path
 from typing import Final
 from uuid import uuid4
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from blossom.clock import Clock
 from blossom.stores.checkpoints import refuse_unsafe_path
 
 SIGNAL_RETENTION_DAYS: Final = 7
 """How long a signal is kept: long enough for her to see it and take it back."""
+
+DETAIL_MAX_LENGTH: Final = 500
+"""The most that is kept of the words she adds: a sentence or two, the same
+cap as the parent's reason. The signal is the press; the words are an aside,
+and the store takes no more of them than a page can show."""
 
 
 class WorkloadSignal(BaseModel):
@@ -37,8 +42,9 @@ class WorkloadSignal(BaseModel):
     """The household date the signal is about, by the household's clock."""
     given_at: AwareDatetime
     """When it was given, by the real clock, so retention runs even when the clock is pinned."""
-    detail: str | None = None
-    """Words she chose to add. Never asked for, and never required."""
+    detail: str | None = Field(default=None, max_length=DETAIL_MAX_LENGTH)
+    """Words she chose to add. Never asked for, never required, and capped here
+    as well as at the boundary, so nothing longer is ever stored."""
 
 
 class WorkloadSignalsStore:

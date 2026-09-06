@@ -20,7 +20,7 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.noticing import read_week
@@ -28,7 +28,7 @@ from blossom.plan_checks import DEFAULT_DAILY_MINUTES, reduced_budget
 from blossom.principals import Principal
 from blossom.reconciliation import Disagreement, Reconciler, classify_confidence
 from blossom.settings import TEMPLATE_PATH
-from blossom.stores.workload_signals import WorkloadSignal
+from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.views import StudentAssignmentView, StudentDueThisWeekView, WorkloadSignalView
 
 router = APIRouter(prefix="/student", tags=["student"])
@@ -38,11 +38,15 @@ State = Annotated[ApplicationState, Depends(get_application_state)]
 
 
 class WorkloadSignalRequest(BaseModel):
-    """Optional detail attached to a signal. The signal itself needs no body."""
+    """Optional detail attached to a signal. The signal itself needs no body.
+
+    The words are capped at the boundary, so a request cannot grow the drafts
+    file or every later page by sending more than a sentence or two.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    detail: str | None = None
+    detail: str | None = Field(default=None, max_length=DETAIL_MAX_LENGTH)
 
 
 class WorkloadSignalResponse(BaseModel):
