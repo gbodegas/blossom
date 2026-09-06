@@ -423,8 +423,10 @@ with the run, and the hosted tracer stays closed: the boundary scan opens the
 tracer base and its run schema to this one file and nothing else, and the
 package-level re-export stays closed even there. The trace holds the
 student's schoolwork verbatim, so it is its own file, and rows older than
-`TRACE_RETENTION_DAYS` are swept at startup and after each run. Nothing reads
-it to decide anything; it is for finding out why a run did what it did.
+`TRACE_RETENTION_DAYS` are swept at startup and after each run. The store
+stamps and sweeps by the real clock even when the household clock is pinned
+for the fixtures, since a pinned clock would never move the cutoff. Nothing
+reads it to decide anything; it is for finding out why a run did what it did.
 
 **Not built:** only the due date is compared. The design's example is a
 submission status the record holds and a portal can confirm or deny, and

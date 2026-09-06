@@ -28,7 +28,7 @@ from fastapi import FastAPI, Request
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from blossom.agent.trace import LocalRunTracer
-from blossom.clock import Clock, clock_from
+from blossom.clock import Clock, SystemClock, clock_from
 from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource
 from blossom.stores.checkpoints import open_checkpointer
@@ -110,7 +110,10 @@ def build_application_state(
             reflections.write(note)
         drafts = DraftsStore.open(settings.database_path, clock)
         opened.append(drafts)
-        traces = TraceStore.open(settings.trace_path, clock)
+        # Retention runs on the real clock even when the household clock is
+        # pinned for the fixtures: a pinned clock would stamp every trace with
+        # the same day and never move the cutoff, so nothing would age out.
+        traces = TraceStore.open(settings.trace_path, SystemClock(clock.zone))
         opened.append(traces)
         traces.sweep()
     except Exception:

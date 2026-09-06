@@ -45,6 +45,8 @@ class TracedRun:
     outputs: str | None
     error: str | None
     children: tuple["TracedRun", ...] = ()
+    recorded_at: datetime | None = None
+    """When the store wrote the row, by the store's clock; unset until it is read back."""
 
 
 class TraceStore:
@@ -178,4 +180,5 @@ def run_from(row: sqlite3.Row) -> TracedRun:
         inputs=str(row["inputs"]),
         outputs=None if row["outputs"] is None else str(row["outputs"]),
         error=None if row["error"] is None else str(row["error"]),
+        recorded_at=datetime.fromisoformat(str(row["recorded_at"])),
     )

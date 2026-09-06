@@ -7,6 +7,7 @@ the real one the framework builds, with no model and no network.
 import asyncio
 import pathlib
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -14,15 +15,18 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import BaseMessage
 from langchain_core.tracers.schemas import Run
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from blossom.agent.graph import PlanState
+from blossom.agent.graph import ModelAnswer, PlanState
 from blossom.agent.runs import DURABILITY, run_config
 from blossom.agent.trace import LocalRunTracer, Redactor, as_json, traced, unredacted
 from blossom.app import create_app
 from blossom.clock import FrozenClock
-from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
+from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, build_application_state
 from blossom.routes.parent import plan_graphs
 from blossom.settings import TRACE_PATH_VARIABLE
 from blossom.stores.checkpoints import UnsafeCheckpointPath
@@ -271,3 +275,107 @@ def test_the_thread_id_comes_from_the_metadata_the_run_configuration_states() ->
 
     assert traced(stated, unredacted).thread_id == "plan:stated"
     assert traced(unstated, unredacted).thread_id is None
+
+
+class ThroughAModel:
+    """A planner or critic that goes through a framework chat model, as the real seam does.
+
+    The fake model answers with a fixed line; the parsed value comes from the
+    script. What matters is that the framework sees a model call inside the
+    node.
+    """
+
+    def __init__(self, parsed: object) -> None:
+        self.model = FakeListChatModel(responses=["{}"])
+        self.parsed = parsed
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[Any]:
+        await self.model.ainvoke(list(messages))
+        return ModelAnswer(parsed=self.parsed, stop_reason="end_turn", parsing_error=None)
+
+
+def test_a_model_call_inside_a_node_is_a_run_beneath_that_node() -> None:
+    store = TraceStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    tracer = LocalRunTracer(store)
+    graph = graph_with(ThroughAModel(good_plan()), ThroughAModel(accepting()))
+
+    async def go() -> None:
+        await graph.ainvoke(
+            PlanState(plan_date=PLAN_DATE, rounds=0),
+            config=run_config("plan:modeled", callbacks=[tracer]),
+            durability=DURABILITY,
+        )
+
+    asyncio.run(go())
+
+    rows = store.runs_for_thread("plan:modeled")
+    by_id = {row.run_id: row for row in rows}
+    model_runs = [row for row in rows if row.run_type == "llm"]
+    assert [by_id[str(row.parent_run_id)].name for row in model_runs] == ["plan", "critique"]
+    assert all(row.outputs is not None and "generations" in row.outputs for row in model_runs)
+    assert all(row.inputs for row in model_runs)
+
+
+def test_a_persisted_tree_is_forgotten_by_the_tracer() -> None:
+    store = TraceStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    tracer = LocalRunTracer(store)
+    graph = graph_with(
+        Scripted(ok(good_plan()), ok(good_plan())), Scripted(ok(accepting()), ok(accepting()))
+    )
+
+    async def go() -> None:
+        for thread in ("plan:one", "plan:two"):
+            await graph.ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0),
+                config=run_config(thread, callbacks=[tracer]),
+                durability=DURABILITY,
+            )
+
+    asyncio.run(go())
+
+    assert store.count() > 0
+    assert tracer.order_map == {}
+    assert tracer.run_map == {}
+
+
+def test_the_redactor_sees_names_as_written_not_as_escapes() -> None:
+    run = Run(
+        id=uuid4(),
+        name="plan",
+        run_type="chain",
+        inputs={"title": "Ensayo de José"},
+        outputs={"note": "para José"},
+        start_time=datetime(2026, 8, 19, 22, 0, tzinfo=UTC),
+        extra={},
+    )
+
+    recorded = traced(run, lambda text: text.replace("José", "[name]"))
+
+    assert "José" not in recorded.inputs
+    assert "José" not in (recorded.outputs or "")
+    assert "[name]" in recorded.inputs
+    assert as_json({"title": "José"}) == '{"title": "José"}'
+
+
+def test_traces_are_stamped_by_the_real_clock_even_when_the_household_clock_is_pinned() -> None:
+    settings = fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat())
+    state = build_application_state(settings, InMemorySaver())
+    try:
+        graph = graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())))
+
+        async def go() -> None:
+            await graph.ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0),
+                config=run_config("plan:pinned", callbacks=[state.tracer]),
+                durability=DURABILITY,
+            )
+
+        asyncio.run(go())
+        rows = state.traces.runs_for_thread("plan:pinned")
+    finally:
+        state.close()
+
+    assert state.clock.today() == PLAN_DATE
+    assert rows
+    assert all(row.recorded_at is not None for row in rows)
+    assert all(row.recorded_at.date() > PLAN_DATE for row in rows if row.recorded_at is not None)
