@@ -32,7 +32,7 @@ from blossom.agent.retention import (
     Swept,
     sweep_saved_state,
 )
-from blossom.agent.runs import DURABILITY, run_config
+from blossom.agent.runs import DURABILITY, draft_id_for, run_config
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import ApplicationState, build_application_state
@@ -899,3 +899,84 @@ def test_a_held_review_is_finished_whatever_the_evening_says_by_then(
     assert decision == "approved"
     assert decided is not None
     assert decided.decision == "approved"
+
+
+class SaverActingBeforeTheDraft(InMemorySaver):
+    """A saver that lets the test act once in a run's gap, before the checkpoint with the draft."""
+
+    act: Callable[[], None] | None = None
+
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        if self.act is not None and checkpoint["channel_values"].get("draft") is not None:
+            act, self.act = self.act, None
+            act()
+        return await super().aput(config, checkpoint, metadata, new_versions)
+
+
+def test_a_pausing_run_leaves_the_thread_of_a_run_in_flight_alone() -> None:
+    """The run in flight clears what it displaced when it pauses; until then its thread stays."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[str, str, set[str], set[str]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            state.in_flight.add(first.thread_id)
+            second = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            while_in_flight = await thread_ids(state)
+            state.in_flight.discard(first.thread_id)
+            await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return first.thread_id, second.thread_id, while_in_flight, await thread_ids(state)
+
+        first, second, while_in_flight, after = asyncio.run(scenario())
+        waiting = state.drafts.waiting()
+    finally:
+        state.close()
+
+    assert [record.thread_id for record in waiting] == [second]
+    assert while_in_flight == {first, second}
+    assert after == {second}
+
+
+def test_a_run_displaced_while_pausing_keeps_its_thread_for_the_draft_to_come_back_to() -> None:
+    """A run in flight displaced this one's draft; that run then fails and gives the draft back."""
+    saver = SaverActingBeforeTheDraft()
+    state = application(saver=saver)
+    try:
+
+        def another_run_saves_its_draft() -> None:
+            state.in_flight.add("plan:later")
+            state.drafts.record_waiting(
+                Draft(draft_id="draft:plan:later", body="later", created_at=CREATED_LATER),
+                thread_id="plan:later",
+                plan_date=PLAN_DATE,
+                outcome="accepted",
+            )
+
+        saver.act = another_run_saves_its_draft
+
+        async def scenario() -> tuple[str, set[str]]:
+            view = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            assert view.waiting
+            displaced = state.drafts.get(draft_id_for(view.thread_id))
+            assert displaced is not None
+            assert displaced.decision == "superseded"
+            state.drafts.withdraw("draft:plan:later")
+            state.in_flight.discard("plan:later")
+            return view.thread_id, await thread_ids(state)
+
+        thread, threads = asyncio.run(scenario())
+        waiting = state.drafts.waiting()
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert [record.thread_id for record in waiting] == [thread]
+    assert latest is not None
+    assert latest.thread_id == thread
+    assert threads == {thread}

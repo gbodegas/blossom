@@ -122,7 +122,12 @@ async def run_plan(
     A run that pauses with a draft has taken the place of any draft still
     waiting for the same evening; the table closed those as superseded when
     the draft was saved, and their threads are cleared here, since nothing can
-    resume them.
+    resume them. The threads of runs still in flight are left alone, this
+    run's own among them: a run in flight clears what it displaced when it
+    pauses, and gives it back if it fails, so a thread it displaced must
+    survive until then, and a run whose own draft was displaced by one still in
+    flight keeps its thread for the same reason. What such a run leaves behind
+    goes when the displacing run pauses, or at the next sweep.
 
     A run can fail between saving its draft and pausing with it, since the
     save is a transaction of its own and the checkpoint after it is another.
@@ -152,7 +157,7 @@ async def run_plan(
             await tidy_thread(thread_id, state)
             return view
         for superseded in state.drafts.superseded_for(plan_date):
-            if superseded.thread_id != thread_id:
+            if superseded.thread_id not in state.in_flight:
                 await tidy_thread(superseded.thread_id, state)
         return view
     finally:

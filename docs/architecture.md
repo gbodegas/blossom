@@ -643,7 +643,9 @@ next restart; it is told which threads the process is running at that moment
 and leaves those runs, their drafts, and the threads of the drafts they have
 displaced alone, since a run between saving its draft and pausing with it is
 not a run that died there, and a run that pauses clears what it displaced
-itself. A review that reaches a thread and then fails to land in the table
+itself. A pausing run leaves the threads of runs still in flight alone for
+the same reason, its own included when a run in flight has displaced its
+draft, since that run may fail and give the draft back. A review that reaches a thread and then fails to land in the table
 leaves the thread past the gate with the decision it holds; the next review of
 that draft, or the next sweep, finishes the record with that decision rather
 than taking a new one, whatever the request or the evening's signal says by
