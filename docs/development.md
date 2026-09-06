@@ -31,14 +31,19 @@ downloads one on its own when it builds the environment.
 
 With the app running as the README describes:
 
-- <http://127.0.0.1:8000/student/due-this-week> is her week, every assignment
-  labeled with how well its due date is corroborated.
-- <http://127.0.0.1:8000/parent> is the parent's page: plan an evening, read
-  the draft the planner produced, see how it was made step by step, and
-  approve or refuse it. A run that ended without a plan is listed with its
-  steps too. Planning needs an API key; reading and deciding do not, so
-  without one the page says a plan cannot start and everything else works.
-- <http://127.0.0.1:8000/parent/approvals> is the same queue as JSON.
+- <http://127.0.0.1:8000/student/due-this-week> is her page: today's plan,
+  which she asks for there and which appears the moment it is made, with a
+  parent's review under it once there is one; then her week, every
+  assignment labeled with how well its due date is corroborated.
+- <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
+  to `/student/plans` makes one.
+- <http://127.0.0.1:8000/parent> is the parent's page: read the plan she has,
+  see how it was made step by step, and say it looks good or ask for a
+  change. A parent can also start an evening's plan for her there. A run that
+  ended without a plan is listed with its steps too. Planning needs an API
+  key; reading and reviewing do not, so without one either page says a plan
+  cannot start and everything else works.
+- <http://127.0.0.1:8000/parent/approvals> is the review queue as JSON.
 - <http://127.0.0.1:8000/parent/checkpoint> is the parent's checkpoint, a
   summary of status and conflicts rather than a live feed. A placeholder,
   JSON for now.
@@ -84,7 +89,8 @@ files under `.local/` outlive it:
 - `blossom.sqlite3` holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
-  evening is closed as expired. Her "too much" signals live here too, with
+  evening is closed as expired, and one a later plan for the same evening is
+  published over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
   any words she added, kept for a week and removable from her page.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
@@ -112,16 +118,17 @@ The endpoint is fixed in code, so no shell variable can change where a prompt
 is sent.
 
 Each request carries the week's assignments with their courses, dates, and
-confidence labels, the household's standing rules, and the planner's notes
-about past plans; the critic also receives the proposed plan, and a revision
-receives what was wrong with the last one. With the bundled fixtures, all of
+confidence labels, the household's standing rules, the planner's notes about
+past plans, and whether she has said the evening is too much; the critic also
+receives the proposed plan, and a revision receives what was wrong with the
+last one. With the bundled fixtures, all of
 that is synthetic. A run is one to six calls. The planner is one; only a plan
 that passes the checks goes to the critic, which is another; and a plan that
 fails the checks or the critic's review goes back to the planner, up to two
 more times. A run the model cuts short ends with the call that failed. What
 it costs depends on the week and the revisions; the API's usage page says
-after a run. All of this happens before the plan reaches the page for a
-decision, and approving the draft sends nothing anywhere.
+after a run. All of this happens before the plan reaches her page and the
+parent's for review, and a review sends nothing anywhere.
 
 ## When uv cannot download
 
@@ -184,6 +191,14 @@ at an ordinary local folder instead, in `.env` or in the shell, for example
 `C:\blossom-state\blossom.sqlite3` on Windows or
 `~/blossom-state/blossom.sqlite3` elsewhere, and the same folder for the
 other two.
+
+**The app refuses to start and says another Blossom process has this
+household's files open.** One process serves a household; the file it names,
+`blossom.lock` beside the drafts file or `checkpoints.lock` beside the
+saved-state file, is held by the process already running, and released when
+that process stops. Stop the other server, or point this one
+at other files with the three path variables above. A process that was killed
+releases the lock on its own, so nothing needs deleting.
 
 **The parent's page says no API key is configured.** That is the state the
 first run is meant to be in: the queue and the decisions work, and only

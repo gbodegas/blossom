@@ -7,7 +7,7 @@ through the route's builder dependency, over the real stores.
 
 import re
 from collections.abc import Callable
-from datetime import date, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 
 from fastapi import Depends
@@ -15,14 +15,17 @@ from fastapi.testclient import TestClient
 
 from blossom.agent.graph import plan_graph_for
 from blossom.app import create_app
-from blossom.dependencies import ApplicationState, get_application_state
+from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
+from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.routes.parent import REASON_MAX_LENGTH, PlanGraphs, plan_graphs
+from blossom.routes.parent import REASON_MAX_LENGTH
+from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from tests.support import Scripted, fixture_settings, ok
 
 PLAN_DATE = date(2026, 8, 19)
+CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
 
 
 def a_plan() -> DailyPlan:
@@ -131,7 +134,7 @@ def test_the_page_renders_with_nothing_waiting() -> None:
     assert response.headers["content-type"].startswith("text/html")
     assert "<h1>Review</h1>" in response.text
     assert "Nothing is waiting." in response.text
-    assert "Nothing has been decided yet." in response.text
+    assert "No earlier plans yet." in response.text
     assert 'value="2026-08-19"' in response.text
 
 
@@ -206,7 +209,8 @@ def test_approving_from_the_page_moves_the_draft_to_decided() -> None:
     assert posted.status_code == 303
     assert posted.headers["location"] == "/parent"
     assert "Nothing is waiting." in page
-    assert "<strong>Approved.</strong> Marked for you to send by hand." in page
+    assert "<strong>Looks good.</strong>" in page
+    assert "Said on her page" not in page
     assert "Reason: looks right." in page
     assert ", 2026, " in page
     assert record["status"] == "APPROVED_FOR_MANUAL_SEND"
@@ -223,7 +227,7 @@ def test_refusing_from_the_page_keeps_the_draft_a_draft() -> None:
         page = client.get("/parent").text
         record = client.get(f"/parent/approvals/{draft_id}").json()
 
-    assert "<strong>Refused.</strong> Kept as a draft." in page
+    assert "<strong>Change asked.</strong> The plan stays as it was until she plans again." in page
     assert "Reason: too late in the evening." in page
     assert record["status"] == "DRAFT"
     assert record["decision"] == "rejected"
@@ -271,24 +275,115 @@ def test_a_reason_over_the_cap_from_the_page_is_answered_as_the_page() -> None:
     assert record["decision"] is None
 
 
+def tomorrows_plan() -> DailyPlan:
+    """The same plan, made for the evening after the fixture date."""
+    return a_plan().model_copy(update={"plan_date": PLAN_DATE + timedelta(days=1)})
+
+
 def test_each_decision_button_says_which_draft_it_decides() -> None:
-    """One waiting draft is named by its evening; two share the evening and get a position."""
-    with browser() as client:
+    """One waiting draft is named by its evening; two evenings waiting get a position each."""
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
+    app.dependency_overrides[plan_graphs] = scripted_graphs()
+    with TestClient(app, follow_redirects=False) as client:
         client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         one_waiting = client.get("/parent").text
-        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        app.dependency_overrides[plan_graphs] = scripted_graphs(plans=lambda: [tomorrows_plan()])
+        client.post(
+            "/parent/actions/plan", data={"plan_date": (PLAN_DATE + timedelta(days=1)).isoformat()}
+        )
         two_waiting = client.get("/parent").text
 
-    named = r'aria-label="((?:Approve|Refuse) the plan for [^"]+)"'
+    named = r'aria-label="((?:Say|Ask for a change to) the plan for [^"]+)"'
     assert re.findall(named, one_waiting) == [
-        "Approve the plan for Wednesday, August 19",
-        "Refuse the plan for Wednesday, August 19",
+        "Say the plan for Wednesday, August 19 looks good",
+        "Ask for a change to the plan for Wednesday, August 19",
     ]
     labels = re.findall(named, two_waiting)
     assert len(labels) == 4
     assert len(set(labels)) == 4
-    assert "Approve the plan for Wednesday, August 19, 1 of 2" in labels
-    assert "Refuse the plan for Wednesday, August 19, 2 of 2" in labels
+    assert "Say the plan for Wednesday, August 19, 1 of 2 looks good" in labels
+    assert "Ask for a change to the plan for Thursday, August 20, 2 of 2" in labels
+    assert "She has this plan on her page already." in two_waiting
+    assert "This plan is for Thursday, August 20. It reaches her page on that day" in two_waiting
+
+
+def test_a_past_evening_is_refused_by_the_form_and_a_past_draft_says_it_is_not_on_her_page() -> (
+    None
+):
+    with browser() as client:
+        refused = client.post("/parent/actions/plan", data={"plan_date": "2026-08-18"})
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        state.drafts.record_waiting(
+            Draft(draft_id="draft:plan:past", body="Plan for Tuesday", created_at=CREATED),
+            thread_id="plan:past",
+            plan_date=PLAN_DATE - timedelta(days=1),
+            outcome="accepted",
+        )
+        state.drafts.publish("draft:plan:past")
+        page = client.get("/parent").text
+
+    assert refused.status_code == 422
+    assert "The evening of 2026-08-18 has passed." in refused.text
+    assert "This plan was for Tuesday, August 18, which has passed. It is not on her page" in page
+
+
+def test_a_waiting_draft_for_a_past_evening_is_never_told_to_plan_again() -> None:
+    """A reduced plan left unreviewed past its signal's week: no fresh plan could put it right."""
+    with browser() as client:
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        state.drafts.record_waiting(
+            Draft(draft_id="draft:plan:past", body="Plan for Tuesday", created_at=CREATED),
+            thread_id="plan:past",
+            plan_date=PLAN_DATE - timedelta(days=1),
+            outcome="accepted",
+            too_much=True,
+        )
+        state.drafts.publish("draft:plan:past")
+        record = client.get("/parent/approvals/draft:plan:past").json()
+        page = client.get("/parent").text
+
+    assert record["stale"] is None
+    assert "Plan again." not in page
+    assert 'value="approve"' in page
+
+
+def test_planning_again_retires_the_plan_before_it_on_the_page() -> None:
+    with browser() as client:
+        first = waiting_draft_id(client)
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        page = client.get("/parent").text
+        queue = client.get("/parent/approvals").json()["waiting"]
+
+    assert len(queue) == 1
+    assert queue[0]["draft_id"] != first
+    assert (
+        "<strong>Superseded.</strong> A later plan for this evening took its place, "
+        "and this one was never reviewed." in page
+    )
+    assert "a later plan for the evening took its place" not in page
+    assert "<summary>The plan as it was</summary>" in page
+    assert "The plan as it was reviewed" not in page
+    assert "Closed " in page
+    assert "Reviewed " not in page
+
+
+def test_a_failure_on_the_way_is_said_on_the_page_and_the_queue_stays() -> None:
+    """A planner that raises is not a refusal; the page still says so and keeps its queue."""
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
+    app.dependency_overrides[plan_graphs] = scripted_graphs()
+    with TestClient(app, follow_redirects=False) as client:
+        draft_id = waiting_draft_id(client)
+        app.dependency_overrides[plan_graphs] = scripted_graphs(plans=list)
+        response = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        queue = client.get("/parent/approvals").json()["waiting"]
+
+    assert response.status_code == 500
+    assert (
+        "The plan could not be made: something went wrong on the way. "
+        "What is waiting below is unchanged."
+    ) in response.text
+    assert "<h1>Review</h1>" in response.text
+    assert [item["draft_id"] for item in queue] == [draft_id]
 
 
 def test_a_waiting_draft_can_be_decided_from_the_page_without_a_key() -> None:

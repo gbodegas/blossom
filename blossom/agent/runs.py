@@ -58,6 +58,15 @@ class StaleGraphVersion(RuntimeError):
     """Raised when a thread was written by a different graph version than the one running."""
 
 
+def draft_id_for(thread_id: str) -> str:
+    """The one draft a thread can produce, named after it.
+
+    A node run twice names the same row, and a route that needs to take a
+    draft back after its run failed can name it without the graph.
+    """
+    return f"draft:{thread_id}"
+
+
 def run_config(
     thread_id: str,
     *,

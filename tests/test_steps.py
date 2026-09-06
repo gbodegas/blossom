@@ -78,4 +78,7 @@ def test_the_reviewers_words_stay_out_of_the_record() -> None:
 def test_an_outcome_reads_as_one_sentence_for_the_page() -> None:
     assert describe_outcome("checks_failed") == "The plan failed its checks after every revision."
     assert describe_outcome("model_truncated") == "The model's answer was cut off."
+    assert describe_outcome("interrupted") == (
+        "The run stopped before its plan could wait for review, so the plan was set aside."
+    )
     assert describe_outcome("something_new") == "The run ended with something_new."

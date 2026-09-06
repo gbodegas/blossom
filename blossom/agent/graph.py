@@ -28,10 +28,12 @@ rather than carried in state, so nothing that runs the process is written to
 disk and nothing in the state needs a class the serializer does not list.
 
 Three nodes write to the drafts file, and each performs that one side effect
-in a form that running twice leaves unchanged. ``compose`` saves the draft as
-waiting, keyed by an id derived from the thread, with the run's record in the
-same transaction, before the gate can pause on it, so the parent's queue shows
-it. ``record_decision``, after the gate, saves what the person decided.
+in a form that running twice leaves unchanged. ``compose`` saves the draft,
+unpublished, keyed by an id derived from the thread, with the run's record in
+the same transaction, before the gate can pause on it, so the record survives
+whatever happens next; the route publishes the draft, and so puts it on the
+pages, once the run has paused. ``record_decision``, after the gate, saves
+what the person decided.
 ``record_run`` saves the record of a run that ended before the gate and has no
 draft to carry it. The file is the record across threads; saved state is the
 record within one.
@@ -53,6 +55,7 @@ from pydantic import BaseModel
 from blossom.agent.compose import compose_draft
 from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.prompts import critic_brief, planner_brief
+from blossom.agent.runs import draft_id_for
 from blossom.agent.steps import (
     EXPECT_ACCEPTANCE,
     EXPECT_ALL_CHECKS,
@@ -370,17 +373,18 @@ def build_plan_graph(
         return {"verdict": verdict, "outcome": "unsettled", "steps": [record]}
 
     def compose(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
-        """Render the plan as the text a person reads at the gate, and save it as waiting.
+        """Render the plan as the text she reads, and save it as the record of this run.
 
         The draft id comes from the thread, so this node run twice yields the
         same draft and the same row. Saving happens here, before the gate,
-        because the gate must do nothing before it pauses and the queue must
-        show the draft while it waits.
+        because the gate must do nothing before it pauses and the record must
+        survive whatever happens next; the draft reaches the pages only when
+        the route publishes it, once the run has paused.
         """
         thread_id = str(config["configurable"]["thread_id"])
         outcome = state["outcome"]
         draft = compose_draft(
-            draft_id=f"draft:{thread_id}",
+            draft_id=draft_id_for(thread_id),
             plan=state["plan"],
             assignments=state.get("assignments", []),
             verification=state["verification"],

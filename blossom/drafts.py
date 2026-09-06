@@ -16,10 +16,12 @@ from uuid import uuid4
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-Decision = Literal["approved", "rejected", "expired"]
-"""What a person can say about a draft at the gate, approved or rejected, and
-the one thing the system records when nobody said either in time. No value
-means half approved: an expired draft was never approved."""
+Decision = Literal["approved", "rejected", "expired", "superseded"]
+"""What a person can say about a draft, approved or rejected, and the two things
+the system records itself: expired, when nobody said either within the
+retention window, and superseded, when a later draft for the same evening took
+its place. No value means half approved: neither an expired nor a superseded
+draft was ever approved, and neither was ever reviewed."""
 
 
 class DraftStatus(StrEnum):

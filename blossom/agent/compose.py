@@ -1,11 +1,13 @@
-"""Turn a plan, and what was found about it, into the text a parent reads at the gate.
+"""Turn a plan, and what was found about it, into the text she reads on her page.
 
-The gate pauses with a draft, and a draft is text. This is where the plan
-stops being data and becomes a page a person can read in one look: the blocks
-in order with their reasons, what was put off and why, the due dates that are
-not settled, and what the reviewer thought. The reviewer's notes travel with
-the plan rather than deciding for it, because tier two informs the person at
-the gate and never closes it.
+The draft is text, and one text serves both readers: she reads it as her plan
+for the evening, and a parent reads the same words when reviewing it, so
+nothing is said to one that the other cannot see. It is written to her. This is
+where the plan stops being data and becomes a page a person can read in one
+look: the blocks in order with their reasons, what was put off and why, the
+due dates that are not settled, and what the reviewer thought. The reviewer's
+notes travel with the plan rather than deciding for it, because tier two
+informs the person reading and never decides for them.
 
 The draft is made through ``create_draft``, the one registered way anything
 leaves the agent, called directly rather than through a tool loop. A model
@@ -46,7 +48,7 @@ def compose_draft(
     too_much: bool = False,
     budget_minutes: int | None = None,
 ) -> Draft:
-    """The draft a parent reads: the evening, then what is uncertain, then the review.
+    """The draft she reads: the evening, then what is uncertain, then the review.
 
     ``settled`` is whether the reviewer accepted the plan. When it did not, the
     heading says so, and the notes below show why, so the plan is presented as
@@ -70,7 +72,7 @@ def compose_draft(
     lines = [f"Plan for {spoken_date(plan.plan_date)}"]
     if too_much:
         lines.append(
-            f"She said today was too much, so this plan is kept to {budget_minutes} minutes."
+            f"You said today was too much, so this plan is kept to {budget_minutes} minutes."
         )
     if not settled:
         lines.append("The reviewer did not settle on this plan. Its notes are at the end.")

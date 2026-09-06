@@ -35,6 +35,7 @@ from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
+from blossom.stores.household_claim import claim_household
 from blossom.stores.project_state import ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
@@ -79,15 +80,27 @@ class ApplicationState:
     run the routes start or resume; never saved with the run."""
     workload_signals: WorkloadSignalsStore
     """Her signals that a day is too much, in the drafts file, kept for a week."""
+    in_flight: set[str] = field(default_factory=set)
+    """The threads of runs this process is running right now, from the moment a
+    run starts to the moment it pauses or ends. The scheduled sweep leaves them
+    alone: a run between saving its draft and pausing with it looks, from the
+    tables, like a run that died there, and only the process running it can
+    tell the difference, which is why one process serves a household and says
+    so by claiming its files at startup. A run joins the set under the decision
+    lock, so it starts either before a sweep or after one, never during its
+    count of threads. Empty at startup, when nothing is in flight."""
     decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held while a decision is checked against the table and carried into the
     paused thread, so two decisions about one draft cannot both pass the check.
-    Also held while her signal is recorded or taken back, and while the
-    scheduled sweep expires drafts, since a decision is checked against the
-    evening as signaled and that must not change before the decision lands.
-    One lock for all of it: each section is short and none of them is
-    frequent. It serializes within this process; the table's own refusal of a
-    second, different decision is the backstop across processes."""
+    Also held while her signal is recorded or taken back, while a run starts
+    and while it publishes its draft, and while the scheduled sweep runs, since
+    a decision is checked against the evening as signaled and that must not
+    change before the decision lands, and a sweep must see every run that is in
+    flight. One lock for all of it: each section is short and none of them is
+    frequent. It serializes within this process, and one process serves a
+    household, held to that by the claim on its files taken at startup; the
+    table's own refusal of a second, different decision stands as a backstop
+    all the same."""
 
     def close(self) -> None:
         """Release resources held for the lifetime of the application."""
@@ -167,7 +180,9 @@ async def sweep_aged(state: ApplicationState) -> None:
     more, since both stores already leave aged rows out of every read.
     """
     async with state.decision_lock:
-        await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+        await sweep_saved_state(
+            state.checkpointer, state.drafts, state.clock, in_flight=state.in_flight
+        )
     state.traces.sweep()
     state.workload_signals.sweep()
 
@@ -195,27 +210,35 @@ def create_lifespan(settings: Settings) -> Lifespan:
         # changed: hosted tracing is forced off here, before any store or
         # model client exists that could read the old value.
         enforce_local_only_tracing()
-        async with open_checkpointer(settings.checkpoint_path) as checkpointer:
-            state = build_application_state(settings, checkpointer)
-            sweeper: asyncio.Task[None] | None = None
-            try:
-                # Whatever the last process left behind: finished threads never
-                # cleared, runs that never finished, drafts that waited too long.
-                # Inside the block, so a sweep that fails still closes the stores.
-                await sweep_saved_state(checkpointer, state.drafts, state.clock)
-                setattr(app.state, STATE_ATTRIBUTE, state)
-                # The same rules on a schedule, so a process that outlives a
-                # signal's week or a draft's fortnight keeps them without a restart.
-                sweeper = asyncio.create_task(
-                    repeat(SWEEP_INTERVAL_SECONDS, lambda: sweep_aged(state))
-                )
-                yield
-            finally:
-                if sweeper is not None:
-                    # Wait for the task to end; what ended it is not raised here.
-                    sweeper.cancel()
-                    await asyncio.wait([sweeper])
-                state.close()
+        # One process serves a household. The claim covers both files that
+        # make up its state, is taken before either is opened, so a second
+        # process is refused with a sentence rather than left to share state
+        # it would then corrupt, and is released when this process stops.
+        claim = claim_household(settings.database_path, settings.checkpoint_path)
+        try:
+            async with open_checkpointer(settings.checkpoint_path) as checkpointer:
+                state = build_application_state(settings, checkpointer)
+                sweeper: asyncio.Task[None] | None = None
+                try:
+                    # Whatever the last process left behind: finished threads never
+                    # cleared, runs that never finished, drafts that waited too long.
+                    # Inside the block, so a sweep that fails still closes the stores.
+                    await sweep_saved_state(checkpointer, state.drafts, state.clock)
+                    setattr(app.state, STATE_ATTRIBUTE, state)
+                    # The same rules on a schedule, so a process that outlives a
+                    # signal's week or a draft's fortnight keeps them without a restart.
+                    sweeper = asyncio.create_task(
+                        repeat(SWEEP_INTERVAL_SECONDS, lambda: sweep_aged(state))
+                    )
+                    yield
+                finally:
+                    if sweeper is not None:
+                        # Wait for the task to end; what ended it is not raised here.
+                        sweeper.cancel()
+                        await asyncio.wait([sweeper])
+                    state.close()
+        finally:
+            claim.release()
 
     return lifespan
 

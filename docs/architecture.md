@@ -67,20 +67,25 @@ trusted to convention:
   that file. Nothing attaches this middleware to an agent yet.
 
 Anything that would leave the family takes two human steps, review and
-dispatch. `blossom/agent/gates.py` is the first: a graph node that pauses with
-the draft and resumes with the decision, recording it in the graph's saved
-state. Approval marks the draft for manual send and nothing more; the second
-step is a person copying it out. The node does nothing before it pauses,
-because a resumed graph re-runs the interrupted node from its start.
+dispatch. `blossom/agent/gates.py` is the node for the first: it pauses with a
+draft and resumes with a decision, recording it in the graph's saved state.
+For a draft meant to leave, a note to a teacher say, approval marks it for
+manual send and nothing more, and the second step is a person copying it out;
+no such draft exists yet. The node does nothing before it pauses, because a
+resumed graph re-runs the interrupted node from its start.
 
-The gate is reached from `POST /parent/plans`, which runs the plan graph for
-one evening, and resumed from `POST /parent/approvals/{draft_id}`, which
-carries the decision back into the paused thread. Between the two, the draft
-sits in the drafts table, `blossom/stores/drafts.py`, which is the record
-across threads: what waits, what was approved, what was refused and why. The
-graph writes it twice, once when the draft is composed and once after the
-gate, each as an upsert keyed by a draft id derived from the thread, so a node
-that runs twice leaves one row. The table lives in its own file, under the
+The evening plan uses the same node for something else: a pause for a review
+she does not wait for. The plan never leaves the household, and it is on her
+page and hers to use from the moment her run pauses; what the parent records
+through the gate is a review, shown under the plan, not permission for it.
+The plan graph runs from `POST /student/plans` and `POST /parent/plans`, her
+page's door and the parent's, both through `blossom/routes/runs.py`, and the
+pause is resumed from `POST /parent/approvals/{draft_id}`, which carries the
+review back into the thread. Between the two, the draft sits in the drafts
+table, `blossom/stores/drafts.py`, which is the record across threads: what
+waits, what a parent said and why. The graph writes it twice, once when the
+draft is composed and once after the gate, each as an upsert keyed by a draft
+id derived from the thread, so a node that runs twice leaves one row. The table lives in its own file, under the
 same guard as saved state, with deleted rows overwritten. `GET
 /parent/approvals` reads the table and needs no model, so a parent can always
 see what is waiting. Starting a run needs the model seam and says so with a
@@ -91,20 +96,28 @@ draft that does not exist or is already decided is answered as such with or
 without a key. Two decisions about one draft cannot
 both land: the route holds one lock from the table check through the resume,
 and the table refuses a second, different decision, keeping the first and its
-time, which also covers a request from another process.
+time. One process serves a household: at startup the process takes an
+exclusive lock on a file beside the drafts file and another beside the
+saved-state file, after each path has passed the guard the stores apply, each named for the file as it really is so two spellings of
+one file claim one lock, and holds them while it runs, so a second process
+over either file is refused with a sentence naming the lock, and the decision
+lock, the set of runs in flight, and the sweep cover everything that happens
+to those files.
 
-The page at `/parent` is the same three things as forms: a date to plan, the
-drafts waiting with their text and two buttons, and what has been decided. Its
-two form actions call the functions the JSON routes call and redirect back to
-the page, so there is one way to start a run and one way to decide whichever
-door it comes through, and a failure renders the page with the same status and
+The page at `/parent` is the same three things as forms: a date to plan for
+her, the drafts waiting for review with their text and two buttons, and the
+earlier plans, each reviewed, expired, or superseded by a later one. Its two
+form actions call the functions the JSON routes call and redirect back to the
+page, so there is one way to start a run and one way to review whichever door
+it comes through, and a failure renders the page with the same status and
 reason the API would have answered. The decision field admits exactly the two
 button values, and the reason is capped at `REASON_MAX_LENGTH`, five hundred
 characters, on the form and on the JSON request alike, so a longer one is
-refused at the boundary rather than stored. Each Approve and Refuse button
-carries an accessible name with the draft's evening, and its position when
-several wait, so the controls can be told apart without reading around them.
-Without a key the page still reads and says why a plan cannot start.
+refused at the boundary rather than stored. The two buttons read "Looks good"
+and "Ask for a change", and each carries an accessible name with the draft's
+evening, and its position when several wait, so the controls can be told apart
+without reading around them. Without a key the page still reads and says why
+a plan cannot start.
 
 Under each draft the page shows how the plan was made: the run's step records,
 one per node, each saying what the node expected and what it found. A run that
@@ -120,7 +133,9 @@ replacement that fails part way rolls back whole, a repeat keeps the first
 time stamp, and every read of a draft or a run joins its steps in one query so
 no record pairs one save's outcome with another's steps.
 
-**Not built:** nothing yet lets her see that a draft was approved.
+**Not built:** her page shows only today's plan. A plan made for another
+evening reaches her page on that day, and nothing shows her a plan ahead of
+time.
 
 ## Sources disagree, and that is the interesting case
 
@@ -318,11 +333,17 @@ back to `plan` with the findings before any critic sees it, because a
 judgment about a plan that is already wrong is a wasted call. `critique` asks
 the critic; fault sends the plan back with the critique, doubt sends it
 forward. `compose` renders the plan, the doubtful due dates, and the
-reviewer's notes as the text a parent reads, and saves it to the drafts table
-as waiting, under an id derived from the thread. `require_human_approval` is
-the gate from `blossom/agent/gates.py`, unchanged. `record_decision`, after
-the gate, saves what the person decided; it is the only node past the gate,
-and a node there may be added without a version bump. `record_run` is where a
+reviewer's notes as the text she reads, and saves it to the drafts table
+under an id derived from the thread, as the record; the route publishes it
+once the run has paused, and from that moment the plan is on her page. `require_human_approval` is the gate from `blossom/agent/gates.py`,
+unchanged in mechanism and narrowed in meaning: it pauses the thread for a
+parent's review, which she does not wait for. Ordinary planning is hers, so
+the review is shown under the plan on her page, looks good or a change asked
+for, and is never a condition on her using it. The pause is the same one that
+will hold a note to a teacher or a request for help until a person decides,
+where a decision is the point. `record_decision`, after the gate, saves what
+the parent said; it is the only node past the gate, and a node there may be
+added without a version bump. `record_run` is where a
 run goes instead of `compose` when it ends before the gate, with a plan that
 never passed the checks or a model that did not answer: it saves the run's
 record, which `compose` saves with the draft. It is off the path to the gate,
@@ -454,18 +475,24 @@ and what it changes, with a button to take it back. The evening's budget is
 cut to half (`reduced_budget`), and the cut is made in the graph's `retrieve`
 node before the planner is asked, so the tier-one budget check enforces it and
 the planner is told, in a block written by this system, that her word on the
-evening is final. The draft the parent reads says the plan was kept to the
-reduced budget because she said so. This is the third tier of verification
+evening is final. The draft, written to her and read by both, says the plan
+was kept to the reduced budget because she said so. This is the third tier of verification
 acting the only way it can: her judgment overrides the plan directly rather
 than becoming one more input to a score.
 
 A draft already waiting for the evening carries the signal state it was made
-for. When her signal changes after that, a press after a full-evening plan or
-a signal ending after a reduced one, the parent's page says to plan again, the
-approve button is gone, and the approval route refuses with the same sentence;
+for. When her signal as it stands is not that one, a signal with a plan made
+for the full evening or none with a plan kept short, the parent's page says to
+plan again, the approve button is gone, and the approval route refuses with
+the same sentence; neither page says which came first, since a signal can
+change while a run is still on its way to the draft;
 refusing still works, since refusing sends nothing. A plan made after the
-change fits again, and a decided draft is not measured against the evening
-again. A signal is recorded or taken back under the lock a decision holds, so
+change fits again, and on the parent's page a decided draft is not measured
+against the evening again, nor is a draft for an evening that has passed,
+which cannot be planned again and reaches no page of hers. Her page measures today's latest plan against the
+signal as it stands whatever a parent has said about it, since the plan is
+hers to use either way, and says in her words why to plan again. A signal is
+recorded or taken back under the lock a decision holds, so
 the evening a decision was checked against cannot change before the decision
 lands. A signal that is gone was taken back or aged out, and the store does
 not say which, so the message names both rather than putting an action on her
@@ -585,14 +612,60 @@ stops before the gate has its thread cleared by the route as soon as it
 returns, since its record is already in the drafts file; a run paused at the
 gate keeps its thread until a decision is recorded, and the route clears it
 then. A draft nobody decides within `PAUSED_RETENTION_DAYS` of its evening is
-closed as expired, the third decision value and the only one the system
-records itself, and its thread is cleared with it. At startup a sweep applies
-both rules to whatever the last process left behind: it expires the drafts
-that waited too long, then clears every thread that no waiting draft refers
-to, which covers finished runs whose thread was never removed and runs that
-never finished. The same sweep runs every hour the process is up, under the
-decision lock, so a draft's fortnight ends when it ends rather than at the
-next restart. The saver's only pruning primitive deletes a thread whole, and
+closed as expired, and a draft a later plan for the same evening is published
+over is closed as superseded, so at most one draft waits per evening and the
+plan on her page is the one a review can land on; those are the two decision
+values the system records itself, and a thread is cleared with each.
+
+A draft is saved when it is composed and published when its run pauses, and
+the two are different acts. The save is the record: it survives whatever
+happens next, and a node replayed after a crash saves its text again and
+changes nothing else. Publication, done by the route under the decision lock
+once the run has paused, is what puts the draft on the pages: it takes the
+next place in the published order, closes any published draft still waiting
+for the evening as superseded by it, and clears their threads, since no review
+can reach them. So nothing either page shows is a draft whose run might still
+fail, a review in progress lands or is refused before its thread goes, and
+which plan is current follows the order runs paused in, whatever order their
+drafts were composed or saved in. A run that fails between saving and pausing
+takes its draft back: the row goes and the run is kept with its steps as
+interrupted. It displaced nothing, so the pages are what they were before the
+run, and the run itself is listed among those that ended without a plan. A
+publication that fails is treated the same way, before the failure reaches
+the page, and each half of taking back is attempted whatever became of the
+other. Before a plan is published, any review a waiting draft's thread holds
+that the table never got is recorded, so a review that reached the thread is
+never superseded away with it. A run joins the set of runs in flight under the decision lock, so
+it starts either before a sweep or after one and a sweep never counts threads
+while a run is joining. The
+draft is taken back first and the thread cleared second, because the
+saved-state store is the likelier of the two to be what failed; a thread that
+cannot be cleared is left to the sweep. Opening a drafts file restores two
+invariants whatever version wrote it: every published draft has its place in
+the published order, and one draft waits per evening, the rest closed as
+superseded by the evening's latest, so a file from before these rules, or one
+a dying process left half opened, is brought into line and the startup sweep
+clears the threads of what was closed. At startup a sweep applies the rules to
+whatever the last process left behind: a draft saved but never published is
+published if its thread paused at the gate, which the interrupt left on the
+saved state shows, several in the order their checkpoints say they paused,
+and taken back if the thread is missing, never reached the draft, or holds it
+without having paused; a published draft no thread can review is taken back
+too,
+the drafts that waited too long are expired, and every thread that no waiting
+draft refers to is cleared, which covers finished runs whose thread was never
+removed and runs that never finished. The same sweep runs every hour the
+process is up, under the decision lock, so a draft's fortnight ends when it
+ends rather than at the next restart; it is told which threads the process is
+running at that moment and leaves those runs and their drafts alone. A review
+that reaches a thread and then fails to land in the table leaves the thread
+past the gate with the decision it holds; the next review of that draft, or
+the next sweep, finishes the record with that decision rather than taking a
+new one, whatever the request or the evening's signal says by then, and a
+request that disagrees is told what stood. Such a draft is never expired away.
+Tidying a thread after a run or a review has its outcome is never what a
+caller hears about: a thread that cannot be cleared is left to the sweep.
+The saver's only pruning primitive deletes a thread whole, and
 that is the only granularity the rule needs.
 
 **Not built:** the student's ability to see and delete what a thread holds.
@@ -601,13 +674,17 @@ that is the only granularity the rule needs.
 
 The design notes specify LangChain for generation and judging, LangGraph for
 control flow and saved state, and MCP for external tools. LangChain and
-LangGraph are present, and so far they do six things: build the framework's
-tool objects, run the tool backstop, pause a graph at the approval gate,
-construct the model client in one seam, `blossom/anthropic_client.py`, with the
-endpoint fixed in code so that no environment variable decides where a prompt
-is sent, keep a graph's saved state in a SQLite file of its own, and run the
-plan graph, whose two model calls each return one typed value. Nothing here is
-wired to the FastAPI routes yet, whose control flow is still hand-rolled. MCP is absent. When it arrives, tools it
+LangGraph are present, and so far they build the framework's tool objects,
+run the tool backstop, pause a graph at the approval gate, construct the model
+client in one seam, `blossom/anthropic_client.py`, with the endpoint fixed in
+code so that no environment variable decides where a prompt is sent, keep a
+graph's saved state in a SQLite file of its own, run the plan graph, whose two
+model calls each return one typed value, and give the local tracer its base
+class. The routes in
+`blossom/routes/runs.py` drive the graph from her page and the parent's, and
+`blossom/routes/parent.py` resumes it with the review; her week page and the
+placeholder checkpoint and verifier routes are plain handlers with no graph
+behind them. MCP is absent. When it arrives, tools it
 loads will be foreign to the backstop until each has a registry entry of its
 own in `blossom/tools.py`, which is the intended path; how a tool that reads
 rather than drafts fits a registry whose callables return only drafts is an

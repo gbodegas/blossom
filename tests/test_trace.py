@@ -5,6 +5,7 @@ the real one the framework builds, with no model and no network.
 """
 
 import asyncio
+import logging
 import pathlib
 import sqlite3
 from collections.abc import Sequence
@@ -27,7 +28,7 @@ from blossom.agent.trace import LocalRunTracer, Redactor, as_json, traced, unred
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, build_application_state
-from blossom.routes.parent import plan_graphs
+from blossom.routes.runs import plan_graphs
 from blossom.settings import TRACE_PATH_VARIABLE
 from blossom.stores.checkpoints import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment
@@ -317,7 +318,10 @@ def test_a_model_call_inside_a_node_is_a_run_beneath_that_node() -> None:
     assert all(row.inputs for row in model_runs)
 
 
-def test_a_persisted_tree_is_forgotten_by_the_tracer() -> None:
+def test_a_persisted_tree_is_forgotten_by_the_tracer_without_a_word_of_complaint(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Both maps end empty, and the framework logs no failed callback on the way."""
     store = TraceStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
     tracer = LocalRunTracer(store)
     graph = graph_with(
@@ -332,11 +336,15 @@ def test_a_persisted_tree_is_forgotten_by_the_tracer() -> None:
                 durability=DURABILITY,
             )
 
-    asyncio.run(go())
+    with caplog.at_level(logging.WARNING, logger="langchain_core.callbacks.manager"):
+        asyncio.run(go())
 
     assert store.count() > 0
     assert tracer.order_map == {}
     assert tracer.run_map == {}
+    assert [
+        record.getMessage() for record in caplog.records if "LocalRunTracer" in record.getMessage()
+    ] == []
 
 
 def test_the_redactor_sees_names_as_written_not_as_escapes() -> None:
@@ -380,3 +388,37 @@ def test_traces_are_stamped_by_the_real_clock_even_when_the_household_clock_is_p
     assert rows
     assert all(row.recorded_at is not None for row in rows)
     assert all(row.recorded_at.date() > PLAN_DATE for row in rows if row.recorded_at is not None)
+
+
+class RefusingStore(TraceStore):
+    """A trace store whose file is full or locked: every record fails."""
+
+    def record(self, run: TracedRun) -> None:
+        msg = "database or disk is full"
+        raise sqlite3.OperationalError(msg)
+
+
+def test_a_store_that_cannot_take_the_tree_leaves_the_tracer_empty_all_the_same(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = RefusingStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    tracer = LocalRunTracer(store)
+    graph = graph_with(
+        Scripted(ok(good_plan()), ok(good_plan())), Scripted(ok(accepting()), ok(accepting()))
+    )
+
+    async def go() -> None:
+        for thread in ("plan:one", "plan:two"):
+            await graph.ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0),
+                config=run_config(thread, callbacks=[tracer]),
+                durability=DURABILITY,
+            )
+
+    with caplog.at_level(logging.ERROR, logger="blossom.agent.trace"):
+        asyncio.run(go())
+
+    assert tracer.order_map == {}
+    assert tracer.run_map == {}
+    assert [record.getMessage() for record in caplog.records].count("") == 0
+    assert sum("could not be kept" in record.getMessage() for record in caplog.records) == 2

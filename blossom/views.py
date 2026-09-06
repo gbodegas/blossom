@@ -61,13 +61,38 @@ class WorkloadSignalView(BaseModel):
     """Words she chose to add, exactly as kept; ``None`` when she pressed and said nothing."""
 
 
+class StudentPlanView(BaseModel):
+    """Today's plan as she sees it: the text, when it was made, and what a parent said.
+
+    The plan is hers from the moment it is made. ``decision`` is a parent's
+    review of it, ``None`` until one is given, and never a condition on her
+    using the plan. ``stale`` says, in her words, why the plan has stopped fitting
+    the evening and should be made again.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    plan_date: date
+    body: str
+    made_at: AwareDatetime
+    made_local: AwareDatetime
+    outcome: str
+    too_much: bool
+    """Whether the plan was made for a reduced evening, after she said today was too much."""
+    decision: Decision | None = None
+    reason: str | None = None
+    stale: str | None = None
+
+
 class StudentDueThisWeekView(BaseModel):
     """Her week. Every assignment in the window appears, nothing is filtered out.
 
-    ``too_much`` is tonight's signal when she has given one, and
-    ``budget_minutes`` is what the evening's plan is held to as a result.
-    ``signals`` is everything the store still keeps, so she can see it and take
-    any of it back.
+    ``plan`` is today's latest plan when one has been made. ``can_plan`` is
+    whether a new one can be asked for, which needs a model. ``too_much`` is
+    tonight's signal when she has given one, and ``budget_minutes`` is what
+    the next plan is held to as a result. ``signals`` is everything the store
+    still keeps, so she can see it and take any of it back.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -76,6 +101,8 @@ class StudentDueThisWeekView(BaseModel):
     assignments: list[StudentAssignmentView]
     full_budget_minutes: int
     budget_minutes: int
+    plan: StudentPlanView | None = None
+    can_plan: bool = False
     too_much: WorkloadSignalView | None = None
     signals: list[WorkloadSignalView] = []
 

@@ -4,22 +4,78 @@
 {% block content %}
   <h1>Due this week</h1>
 
-  <section class="panel too-much">
+  {% if problem %}
+    <p class="problem" role="alert">{{ problem }}</p>
+  {% endif %}
+
+  <section class="panel today">
+    <h2>Plan today</h2>
+    {% if view.plan %}
+      <p class="when">
+        Made at {{ view.plan.made_local.strftime("%H:%M") }}{% if view.plan.too_much %}, kept to a
+        shorter evening because you said today was too much{% endif %}.
+      </p>
+      <pre class="body">{{ view.plan.body }}</pre>
+      {% if view.plan.stale %}
+        <p class="confidence disagree" role="status"><strong>Plan again.</strong> {{ view.plan.stale }}</p>
+      {% endif %}
+      {#
+        A parent's review is shown, never waited for. The plan is hers from
+        the moment it is made; what a parent says about it is one more thing
+        she can see.
+      #}
+      <p class="review">
+        {% if view.plan.decision == "approved" %}
+          A parent looked at this plan and said it looks good.
+        {% elif view.plan.decision == "rejected" %}
+          <strong>A parent asked for a change.</strong> Plan again when you are ready.
+        {% elif view.plan.decision == "expired" %}
+          Nobody reviewed this plan.
+        {% else %}
+          A parent has not looked at this yet. You can start anyway.
+        {% endif %}
+        {% if view.plan.reason and view.plan.decision != "expired" %}They said: <q>{{ view.plan.reason }}</q>{% endif %}
+      </p>
+    {% else %}
+      <p class="empty">No plan for today yet.</p>
+    {% endif %}
+
     {% if view.too_much %}
       <p class="confidence disagree">
         <strong>You said it was too much</strong> at {{ view.too_much.given_local.strftime("%H:%M") }}.
-        Tonight's plan is kept to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
+        Your next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
         {% if view.too_much.detail %}You added <q>{{ view.too_much.detail }}</q>.{% endif %}
       </p>
-      <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="actions">
-        <button type="submit" class="secondary">Take it back</button>
-      </form>
-    {% else %}
-      <form method="post" action="/student/actions/too-much" class="actions">
-        <button type="submit" class="primary">Too much right now</button>
-      </form>
+    {% endif %}
+
+    <div class="actions">
+      {% if view.can_plan %}
+        <form method="post" action="/student/actions/plan" class="inline">
+          <button type="submit" class="primary">{% if view.plan %}Plan again{% else %}Plan today{% endif %}</button>
+        </form>
+      {% endif %}
+      {% if view.too_much %}
+        <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="inline">
+          <button type="submit" class="secondary">Take it back</button>
+        </form>
+      {% else %}
+        <form method="post" action="/student/actions/too-much" class="inline">
+          <button type="submit" class="secondary">Too much right now</button>
+        </form>
+      {% endif %}
+    </div>
+    {% if view.can_plan %}
       <p class="note">
-        One press, no rating, no reason. Tonight's plan gets lighter, and you can take it back.
+        Planning takes a minute or two. It sends your week, the household's rules, the
+        planner's notes about its past plans, and, when you have said today is too much, that
+        you said so, to the model provider; when the first plan needs another try, the plan it
+        made and what was wrong with it go too. Nothing else leaves.
+        "Too much right now" takes one press, no rating, no reason, and you can take it back.
+      </p>
+    {% else %}
+      <p class="note">
+        Blossom cannot make a plan right now: no API key is configured. Everything else here
+        still works, and "Too much right now" is still yours to press.
       </p>
     {% endif %}
   </section>
