@@ -43,15 +43,16 @@ class LocalRunTracer(BaseTracer):
         """Called by the framework once per root run, with the whole tree beneath it.
 
         The base class remembers every run's place in its tree for as long as
-        the tracer lives and forgets nothing on its own, so a tracer kept for
-        the life of the process would grow with every run. Once a tree is
-        written, its ids are dropped.
+        the tracer lives and forgets nothing of that on its own, so a tracer
+        kept for the life of the process would grow with every run. Once a
+        tree is written, its ids are dropped from that map. The map of live
+        runs is the base class's own: it removes each run as it ends, the root
+        included, right after this returns, so nothing is popped from it here.
         """
         self._store.record(traced(run, self._redact))
         self._store.sweep()
         for finished in tree(run):
             self.order_map.pop(finished.id, None)
-            self.run_map.pop(str(finished.id), None)
 
 
 def traced(run: Run, redact: Redactor) -> TracedRun:

@@ -5,6 +5,7 @@ the real one the framework builds, with no model and no network.
 """
 
 import asyncio
+import logging
 import pathlib
 import sqlite3
 from collections.abc import Sequence
@@ -317,7 +318,10 @@ def test_a_model_call_inside_a_node_is_a_run_beneath_that_node() -> None:
     assert all(row.inputs for row in model_runs)
 
 
-def test_a_persisted_tree_is_forgotten_by_the_tracer() -> None:
+def test_a_persisted_tree_is_forgotten_by_the_tracer_without_a_word_of_complaint(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Both maps end empty, and the framework logs no failed callback on the way."""
     store = TraceStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
     tracer = LocalRunTracer(store)
     graph = graph_with(
@@ -332,11 +336,15 @@ def test_a_persisted_tree_is_forgotten_by_the_tracer() -> None:
                 durability=DURABILITY,
             )
 
-    asyncio.run(go())
+    with caplog.at_level(logging.WARNING, logger="langchain_core.callbacks.manager"):
+        asyncio.run(go())
 
     assert store.count() > 0
     assert tracer.order_map == {}
     assert tracer.run_map == {}
+    assert [
+        record.getMessage() for record in caplog.records if "LocalRunTracer" in record.getMessage()
+    ] == []
 
 
 def test_the_redactor_sees_names_as_written_not_as_escapes() -> None:

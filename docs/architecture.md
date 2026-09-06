@@ -600,7 +600,9 @@ replayed after a crash for a draft already superseded displaces nothing. A run
 that fails after saving its draft and before pausing with it takes the draft
 back: the row goes, the draft it displaced waits again, and the run is kept
 with its steps as interrupted, so a page shows after the failure exactly what
-it showed before. At startup a sweep applies
+it showed before. A drafts file from before this rule may hold several drafts
+waiting for one evening; opening it keeps the latest of each and closes the
+rest as superseded, and the startup sweep clears their threads. At startup a sweep applies
 both rules to whatever the last process left behind: it expires the drafts
 that waited too long, then clears every thread that no waiting draft refers
 to, which covers finished runs whose thread was never removed and runs that

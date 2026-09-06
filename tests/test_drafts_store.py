@@ -523,6 +523,62 @@ def test_a_draft_is_read_with_its_steps_from_one_query() -> None:
     assert store.decided()[0].steps == steps
 
 
+def test_an_older_file_with_two_drafts_waiting_for_one_evening_keeps_the_latest() -> None:
+    """Opening the file brings every evening to one waiting draft, the one her page would show."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        """
+        CREATE TABLE drafts (
+            draft_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, plan_date TEXT NOT NULL,
+            status TEXT NOT NULL, outcome TEXT NOT NULL, body TEXT NOT NULL,
+            created_at TEXT NOT NULL, decided_at TEXT, decision TEXT, reason TEXT
+        )
+        """
+    )
+    connection.executemany(
+        """
+        INSERT INTO drafts
+        VALUES (?, ?, '2026-08-19', 'DRAFT', 'accepted', ?, ?, NULL, NULL, NULL)
+        """,
+        [
+            ("draft:early", "plan:early", "early", "2026-08-19T20:00:00+00:00"),
+            ("draft:late", "plan:late", "late", "2026-08-19T22:00:00+00:00"),
+            ("draft:middle", "plan:middle", "middle", "2026-08-19T21:00:00+00:00"),
+        ],
+    )
+    connection.execute(
+        """
+        INSERT INTO drafts VALUES (
+            'draft:other', 'plan:other', '2026-08-20', 'DRAFT', 'accepted', 'other',
+            '2026-08-20T20:00:00+00:00', NULL, NULL, NULL
+        )
+        """
+    )
+    connection.commit()
+
+    store = DraftsStore(connection, fixture_clock())
+    waiting = [record.draft_id for record in store.waiting()]
+    early = store.get("draft:early")
+    middle = store.get("draft:middle")
+    latest = store.latest_for(PLAN_DATE)
+
+    assert waiting == ["draft:late", "draft:other"]
+    assert early is not None
+    assert early.decision == "superseded"
+    assert early.reason == SUPERSEDED_REASON
+    assert early.decided_at == fixture_clock().now()
+    assert middle is not None
+    assert middle.decision == "superseded"
+    assert latest is not None
+    assert latest.draft_id == "draft:late"
+    assert store.withdraw("draft:late") is True
+    assert [record.draft_id for record in store.waiting()] == [
+        "draft:early",
+        "draft:middle",
+        "draft:other",
+    ]
+
+
 def test_a_file_written_before_drafts_carried_the_signal_gains_the_column() -> None:
     """Every draft in such a file was made for a full evening."""
     connection = sqlite3.connect(":memory:", check_same_thread=False)

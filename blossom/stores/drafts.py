@@ -143,9 +143,14 @@ class DraftsStore:
                 "ALTER TABLE drafts ADD COLUMN too_much INTEGER NOT NULL DEFAULT 0"
             )
         if "superseded_by" not in columns:
-            # A file written before one draft could take another's place: nothing
-            # in it was superseded, so nothing needs the pointer.
+            # A file written before one draft could take another's place. It may
+            # hold several drafts waiting for one evening, which was allowed
+            # then; every evening is brought to one waiting draft here, the
+            # latest by the order her page reads, and the rest are closed as
+            # superseded by it. Their threads go at the startup sweep, which
+            # clears every thread no waiting draft refers to.
             self._connection.execute("ALTER TABLE drafts ADD COLUMN superseded_by TEXT")
+            self._keep_one_waiting_per_evening()
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS runs (
@@ -171,6 +176,32 @@ class DraftsStore:
             """
         )
         self._connection.commit()
+
+    def _keep_one_waiting_per_evening(self) -> None:
+        """Close every waiting draft but the latest per evening, in the caller's transaction."""
+        stamp = self._clock.now().isoformat()
+        waiting = self._connection.execute(
+            """
+            SELECT draft_id, plan_date FROM drafts
+            WHERE decision IS NULL
+            ORDER BY plan_date, created_at DESC, draft_id DESC
+            """
+        ).fetchall()
+        latest: dict[str, str] = {}
+        for row in waiting:
+            latest.setdefault(str(row["plan_date"]), str(row["draft_id"]))
+        self._connection.executemany(
+            """
+            UPDATE drafts
+            SET decision='superseded', reason=?, decided_at=?, superseded_by=?
+            WHERE draft_id=?
+            """,
+            [
+                (SUPERSEDED_REASON, stamp, latest[str(row["plan_date"])], str(row["draft_id"]))
+                for row in waiting
+                if str(row["draft_id"]) != latest[str(row["plan_date"])]
+            ],
+        )
 
     @classmethod
     def open(cls, path: Path, clock: Clock) -> "DraftsStore":
