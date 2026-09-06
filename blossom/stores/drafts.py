@@ -92,7 +92,9 @@ class DraftsStore:
         "Keep a draft, its decision, and the record of the run that made it for the "
         "school year; a refused draft is kept so the refusal is visible, not so the "
         "text is reused, and the record of a run that produced no draft is kept for "
-        "the same span so a parent can see why nothing came of it."
+        "the same span so a parent can see why nothing came of it. A draft nobody "
+        "decided within two weeks of its evening is closed as expired and kept the "
+        "same way."
     )
 
     def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:

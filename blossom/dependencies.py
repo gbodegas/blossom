@@ -27,6 +27,7 @@ from typing import cast
 from fastapi import FastAPI, Request
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from blossom.agent.retention import sweep_saved_state
 from blossom.agent.trace import LocalRunTracer
 from blossom.clock import Clock, SystemClock, clock_from
 from blossom.settings import Settings, enforce_local_only_tracing
@@ -145,6 +146,9 @@ def create_lifespan(settings: Settings) -> Lifespan:
         enforce_local_only_tracing()
         async with open_checkpointer(settings.checkpoint_path) as checkpointer:
             state = build_application_state(settings, checkpointer)
+            # Whatever the last process left behind: finished threads never
+            # cleared, runs that never finished, drafts that waited too long.
+            await sweep_saved_state(checkpointer, state.drafts, state.clock)
             setattr(app.state, STATE_ATTRIBUTE, state)
             try:
                 yield

@@ -533,9 +533,21 @@ omitted, so a scan refuses a run that builds a configuration from
 configuration are saved as metadata, in plaintext; nothing about the student
 goes there.
 
-**Not built:** retention. Nothing clears an old thread, and the saver's only
-pruning primitive deletes a thread whole. A retention rule, and the student's
-ability to delete what a thread holds, are design decisions still open.
+Saved state is the loop's short-term memory, and the design keeps it only
+while the loop runs. `blossom/agent/retention.py` holds the rule. A run that
+stops before the gate has its thread cleared by the route as soon as it
+returns, since its record is already in the drafts file; a run paused at the
+gate keeps its thread until a decision is recorded, and the route clears it
+then. A draft nobody decides within `PAUSED_RETENTION_DAYS` of its evening is
+closed as expired, the third decision value and the only one the system
+records itself, and its thread is cleared with it. At startup a sweep applies
+both rules to whatever the last process left behind: it expires the drafts
+that waited too long, then clears every thread that no waiting draft refers
+to, which covers finished runs whose thread was never removed and runs that
+never finished. The saver's only pruning primitive deletes a thread whole, and
+that is the only granularity the rule needs.
+
+**Not built:** the student's ability to see and delete what a thread holds.
 
 ## Stack
 
