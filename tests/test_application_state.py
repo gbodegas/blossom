@@ -142,6 +142,7 @@ def test_dependency_can_be_overridden_to_substitute_stores() -> None:
         traces=substitute.traces,
         tracer=substitute.tracer,
         workload_signals=substitute.workload_signals,
+        help_requests=substitute.help_requests,
     )
     app.dependency_overrides[get_application_state] = lambda: substitute_with_empty_store
 

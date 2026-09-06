@@ -18,13 +18,19 @@ matters. One press records that today is too much, the page shows it at once
 with what it changes, tonight's plan is held to a reduced budget, and she can
 take it back. The page also lists every signal still kept, each with a way to
 remove it, because the record is hers.
+
+Asking for help is the other press on her page. It is addressed to a person,
+so it has a state a parent moves, requested to accepted to resolved, and each
+step shows here in plain words: nothing says a parent is on it before that
+parent has said so. A sentence may go with it and is never asked for. She can
+take a request back while nobody has taken it up.
 """
 
 import logging
 from datetime import UTC, datetime
 from typing import Annotated, Final
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,8 +45,10 @@ from blossom.reconciliation import Disagreement, Reconciler, classify_confidence
 from blossom.routes.runs import Graphs, require_model, run_plan
 from blossom.settings import TEMPLATE_PATH
 from blossom.stores.drafts import DraftRecord
+from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.views import (
+    HelpRequestView,
     StudentAssignmentView,
     StudentDueThisWeekView,
     StudentPlanView,
@@ -140,6 +148,77 @@ async def withdraw_workload_signal(signal_id: str, state: State) -> Response:
     """Take a signal back. It is gone, not marked; the record is hers to remove."""
     if not await withdraw_signal(state, signal_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no signal {signal_id!r}")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+class HelpRequestBody(BaseModel):
+    """Optional words with a request for help. The request itself needs no body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
+
+
+class HelpRequestResponse(BaseModel):
+    """What asking did: the request exactly as kept."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    principal: Principal
+    request: HelpRequestView
+
+
+def help_view(state: ApplicationState, request: HelpRequest) -> HelpRequestView:
+    """The request as both pages see it, with the time she asked in the household's zone."""
+    return HelpRequestView(
+        request_id=request.request_id,
+        evening=request.evening,
+        asked_at=request.asked_at,
+        asked_local=request.asked_at.astimezone(state.clock.zone),
+        note=request.note,
+        state=request.state,
+        accepted_at=request.accepted_at,
+        resolved_at=request.resolved_at,
+        response=request.response,
+    )
+
+
+def help_requests_shown(state: ApplicationState) -> list[HelpRequestView]:
+    """What she sees: open requests oldest first, then those resolved within two weeks."""
+    return [
+        help_view(state, request)
+        for request in [
+            *state.help_requests.open_requests(),
+            *state.help_requests.recently_resolved(),
+        ]
+    ]
+
+
+@router.post("/help-requests", status_code=status.HTTP_201_CREATED)
+def ask_for_help(
+    state: State, payload: Annotated[HelpRequestBody | None, Body()] = None
+) -> HelpRequestResponse:
+    """Ask for help today. ``payload`` is optional so an empty POST works."""
+    note = None if payload is None else payload.note
+    request = state.help_requests.ask(state.clock.today(), note)
+    return HelpRequestResponse(principal=Principal.STUDENT, request=help_view(state, request))
+
+
+@router.get("/help-requests")
+def her_help_requests(state: State) -> list[HelpRequestView]:
+    """Her requests as she sees them: open ones, then those resolved within two weeks."""
+    return help_requests_shown(state)
+
+
+@router.delete("/help-requests/{request_id}", status_code=status.HTTP_204_NO_CONTENT)
+def take_back_help(request_id: str, state: State) -> Response:
+    """Take a request back while nobody has taken it up; 409 once a parent has."""
+    try:
+        removed = state.help_requests.take_back(request_id)
+    except RequestClosed as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+    if not removed:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no help request {request_id!r}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -247,6 +326,7 @@ def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisW
         can_plan=model_configured(state.settings),
         too_much=signal_view(state, tonight[-1]) if tonight else None,
         signals=[signal_view(state, signal) for signal in state.workload_signals.held()],
+        help_requests=help_requests_shown(state),
     )
 
 
@@ -262,7 +342,7 @@ def student_page(
     return templates.TemplateResponse(
         request,
         "student_due_this_week.html",
-        {"view": view, "problem": problem},
+        {"view": view, "problem": problem, "note_max_length": NOTE_MAX_LENGTH},
         status_code=status_code,
     )
 
@@ -315,6 +395,37 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             state,
             problem=f"No plan was made this time: the run ended with {run.outcome}.",
             status_code=status.HTTP_409_CONFLICT,
+        )
+    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/actions/ask-for-help", response_class=HTMLResponse, include_in_schema=False)
+def ask_for_help_from_the_page(
+    request: Request, state: State, note: Annotated[str, Form()] = ""
+) -> Response:
+    """The other press on her page. A blank note is no note; a long one is said, not cut."""
+    words = note.strip()
+    if len(words) > NOTE_MAX_LENGTH:
+        return student_page(
+            request,
+            state,
+            problem=f"A note is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}.",
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    state.help_requests.ask(state.clock.today(), words or None)
+    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post(
+    "/actions/take-back-help/{request_id}", response_class=HTMLResponse, include_in_schema=False
+)
+def take_back_help_from_the_page(request: Request, request_id: str, state: State) -> Response:
+    """Remove a request from her page while nobody has taken it up; otherwise the page says why."""
+    try:
+        state.help_requests.take_back(request_id)
+    except RequestClosed as error:
+        return student_page(
+            request, state, problem=str(error), status_code=status.HTTP_409_CONFLICT
         )
     return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
 

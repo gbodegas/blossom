@@ -49,6 +49,49 @@
   </section>
 
   <section>
+    <h2>Help she asked for</h2>
+    {% if not help_open %}
+      <p class="empty">Nothing asked.</p>
+    {% endif %}
+    {% for ask in help_open %}
+      <article class="draft help-{{ ask.state }}">
+        <p class="course">Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local.strftime("%H:%M") }}</p>
+        {% if ask.note %}<p class="body">She said: <q>{{ ask.note }}</q></p>{% else %}<p class="note">No words with it.</p>{% endif %}
+        <p class="decision-line">
+          {% if ask.state == "requested" %}Not taken up yet. Her page says a parent has not seen it.{% else %}<strong>Taken up.</strong> Her page says a parent is on it.{% if ask.response %} Word back so far: <q>{{ ask.response }}</q>{% endif %}{% endif %}
+        </p>
+        <form method="post" action="/parent/actions/help/{{ ask.request_id }}" class="decision">
+          <label>A word back (optional)
+            <input type="text" name="response" maxlength="{{ note_max_length }}" placeholder="What she will read under her request">
+          </label>
+          <div class="actions">
+            {% if ask.state == "requested" %}
+              <button type="submit" name="step" value="accept" class="primary"
+                      aria-label="Take up the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it up</button>
+            {% endif %}
+            <button type="submit" name="step" value="resolve" class="secondary"
+                    aria-label="Resolve the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Resolve</button>
+          </div>
+          <p class="note">Each step shows on her page as soon as it is taken. Nothing leaves here.</p>
+        </form>
+      </article>
+    {% endfor %}
+    {% if help_resolved %}
+      <details class="steps">
+        <summary>Resolved in the last two weeks</summary>
+        <ul>
+          {% for ask in help_resolved %}
+            <li>
+              Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local.strftime("%H:%M") }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
+              Resolved{% if ask.response %} with <q>{{ ask.response }}</q>{% endif %}.
+            </li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+  </section>
+
+  <section>
     <h2>Waiting for your review</h2>
     {% if not waiting %}
       <p class="empty">Nothing is waiting.</p>

@@ -49,7 +49,7 @@ import logging
 from datetime import date
 from typing import Annotated, Any, Final
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from langgraph.types import Command
@@ -62,10 +62,12 @@ from blossom.evening import Staleness, staleness
 from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
 from blossom.settings import TEMPLATE_PATH
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
+from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
 from blossom.views import (
     ApprovalQueueView,
     ApprovalView,
     DecisionView,
+    HelpRequestView,
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
@@ -298,6 +300,83 @@ def checkpoint(state: State) -> ParentCheckpointView:
     )
 
 
+# ------------------------------------------------------------ requests for help
+
+
+class HelpStep(BaseModel):
+    """A parent's move on a request: taking it up or resolving it, with a word back if any."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    response: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
+
+
+def help_view(state: ApplicationState, request: HelpRequest) -> HelpRequestView:
+    """The request as the parent sees it, which is exactly as she sees it."""
+    return HelpRequestView(
+        request_id=request.request_id,
+        evening=request.evening,
+        asked_at=request.asked_at,
+        asked_local=request.asked_at.astimezone(state.clock.zone),
+        note=request.note,
+        state=request.state,
+        accepted_at=request.accepted_at,
+        resolved_at=request.resolved_at,
+        response=request.response,
+    )
+
+
+def move_request(
+    state: ApplicationState, request_id: str, step: str, response: str | None
+) -> HelpRequest:
+    """Take a request up or resolve it; unknown is 404, closed is 409, any other step is 422."""
+    try:
+        if step == "accept":
+            return state.help_requests.accept(request_id, response)
+        if step == "resolve":
+            return state.help_requests.resolve(request_id, response)
+    except KeyError as error:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail=f"no help request {request_id!r}"
+        ) from error
+    except RequestClosed as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+    raise HTTPException(
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=f"{step!r} is not one of the two moves, accept or resolve.",
+    )
+
+
+@router.get("/help-requests")
+def help_requests(state: State) -> list[HelpRequestView]:
+    """Every request she has open, oldest first, then those resolved within two weeks."""
+    return [
+        help_view(state, request)
+        for request in [
+            *state.help_requests.open_requests(),
+            *state.help_requests.recently_resolved(),
+        ]
+    ]
+
+
+@router.post("/help-requests/{request_id}/accept")
+def accept_help_request(
+    request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
+) -> HelpRequestView:
+    """Take a request up, so her page says a parent is on it."""
+    response = None if payload is None else payload.response
+    return help_view(state, move_request(state, request_id, "accept", response))
+
+
+@router.post("/help-requests/{request_id}/resolve")
+def resolve_help_request(
+    request_id: str, state: State, payload: Annotated[HelpStep | None, Body()] = None
+) -> HelpRequestView:
+    """Answer a request, with a word back if given; her page shows it for two weeks."""
+    response = None if payload is None else payload.response
+    return help_view(state, move_request(state, request_id, "resolve", response))
+
+
 # --------------------------------------------------------------------- the page
 
 DECISIONS: Final = ("approve", "refuse")
@@ -328,6 +407,9 @@ def review_page(
             "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
             "problem": problem,
             "reason_max_length": REASON_MAX_LENGTH,
+            "help_open": [help_view(state, r) for r in state.help_requests.open_requests()],
+            "help_resolved": [help_view(state, r) for r in state.help_requests.recently_resolved()],
+            "note_max_length": NOTE_MAX_LENGTH,
         },
         status_code=status_code,
     )
@@ -390,6 +472,32 @@ async def plan_from_the_page(
             ),
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+    return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/actions/help/{request_id}", response_class=HTMLResponse, include_in_schema=False)
+def help_from_the_page(
+    request: Request,
+    request_id: str,
+    state: State,
+    step: Annotated[str, Form()] = "",
+    response: Annotated[str, Form()] = "",
+) -> Response:
+    """The two buttons under a request, through the same path the JSON routes take."""
+    words = response.strip()
+    if len(words) > NOTE_MAX_LENGTH:
+        return review_page(
+            request,
+            state,
+            problem=(
+                f"A word back is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}."
+            ),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    try:
+        move_request(state, request_id, step, words or None)
+    except HTTPException as error:
+        return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
 
