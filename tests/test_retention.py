@@ -860,7 +860,7 @@ def test_a_draft_is_on_no_page_until_its_run_has_paused() -> None:
 
 
 def test_publication_waits_for_a_review_in_progress() -> None:
-    """The lock a review holds is the lock a pausing run needs before it clears anything."""
+    """The lock a review holds is the lock a run needs to start and to publish."""
     state = application()
     try:
 
@@ -889,7 +889,7 @@ def test_publication_waits_for_a_review_in_progress() -> None:
         state.close()
 
     assert done_while_held is False
-    assert while_held == {first, second}
+    assert while_held == {first}
     assert after == {second}
     assert waiting == [second]
 
@@ -921,3 +921,66 @@ def test_the_sweep_publishes_a_draft_whose_run_paused_and_died_before_publishing
     assert latest is not None
     assert latest.thread_id == second
     assert threads == {second}
+
+
+def test_a_run_starts_only_when_no_sweep_or_review_holds_the_lock() -> None:
+    """A run joins the runs in flight under the lock, so a sweep never counts threads mid-join."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[bool, set[str], str]:
+            await state.decision_lock.acquire()
+            starting = asyncio.create_task(
+                run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            )
+            await asyncio.sleep(0.3)
+            done_while_held = starting.done()
+            in_flight_while_held = set(state.in_flight)
+            state.decision_lock.release()
+            view = await starting
+            return done_while_held, in_flight_while_held, view.thread_id
+
+        done_while_held, in_flight_while_held, thread = asyncio.run(scenario())
+        waiting = [record.thread_id for record in state.drafts.waiting()]
+    finally:
+        state.close()
+
+    assert done_while_held is False
+    assert in_flight_while_held == set()
+    assert waiting == [thread]
+    assert state.in_flight == set()
+
+
+def test_a_publication_that_fails_is_a_failed_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The page then says nothing changed, and nothing did: not now, and not at the next sweep."""
+    state = application()
+    try:
+
+        def refusing(draft_id: str) -> list[DraftRecord]:
+            msg = "database or disk is full"
+            raise RuntimeError(msg)
+
+        async def scenario() -> tuple[str, set[str], Swept]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            monkeypatch.setattr(state.drafts, "publish", refusing)
+            with pytest.raises(RuntimeError, match="disk is full"):
+                await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            monkeypatch.undo()
+            threads = await thread_ids(state)
+            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return first.thread_id, threads, swept
+
+        first, threads, swept = asyncio.run(scenario())
+        waiting = [record.thread_id for record in state.drafts.waiting()]
+        unpublished = state.drafts.unpublished()
+        interrupted = [run.outcome for run in state.drafts.runs_without_a_draft()]
+    finally:
+        state.close()
+
+    assert threads == {first}
+    assert waiting == [first]
+    assert unpublished == []
+    assert interrupted == ["interrupted"]
+    assert swept.published == ()
+    assert swept.withdrawn == ()
+    assert state.in_flight == set()

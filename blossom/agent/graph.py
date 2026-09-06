@@ -28,10 +28,12 @@ rather than carried in state, so nothing that runs the process is written to
 disk and nothing in the state needs a class the serializer does not list.
 
 Three nodes write to the drafts file, and each performs that one side effect
-in a form that running twice leaves unchanged. ``compose`` saves the draft as
-waiting, keyed by an id derived from the thread, with the run's record in the
-same transaction, before the gate can pause on it, so the parent's queue shows
-it. ``record_decision``, after the gate, saves what the person decided.
+in a form that running twice leaves unchanged. ``compose`` saves the draft,
+unpublished, keyed by an id derived from the thread, with the run's record in
+the same transaction, before the gate can pause on it, so the record survives
+whatever happens next; the route publishes the draft, and so puts it on the
+pages, once the run has paused. ``record_decision``, after the gate, saves
+what the person decided.
 ``record_run`` saves the record of a run that ended before the gate and has no
 draft to carry it. The file is the record across threads; saved state is the
 record within one.

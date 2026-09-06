@@ -109,9 +109,11 @@ async def run_plan(
 ) -> PlanRunView:
     """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped.
 
-    The thread is in ``state.in_flight`` from start to pause or end, so the
-    scheduled sweep, which takes back drafts whose run died between saving
-    them and pausing, does not mistake a run still between the two for one.
+    The thread is in ``state.in_flight`` from start to pause or end, joined
+    under the decision lock, so the scheduled sweep, which takes back drafts
+    whose run died between saving them and pausing, does not mistake a run
+    still between the two for one and never counts threads while a run is
+    joining.
 
     A run that stops before the gate has nothing left to resume, and its
     record is already in the drafts file, so its saved state is cleared here;
@@ -124,7 +126,9 @@ async def run_plan(
     waiting for the evening, and the threads of those are cleared, since no
     review can reach them. The lock means a review in progress lands or is
     refused before its thread goes, and nothing the pages show is ever a draft
-    whose run might still fail.
+    whose run might still fail. A publication that fails is a failed run: the
+    draft is taken back and the thread cleared before the failure reaches the
+    page, so what the page then says, that nothing changed, stays true.
 
     A run can fail between saving its draft and pausing with it, since the
     save is a transaction of its own and the checkpoint after it is another.
@@ -134,7 +138,8 @@ async def run_plan(
     appears among the runs that ended without a plan.
     """
     thread_id = thread_for(plan_date)
-    state.in_flight.add(thread_id)
+    async with state.decision_lock:
+        state.in_flight.add(thread_id)
     try:
         try:
             result = await graph.ainvoke(
@@ -152,9 +157,17 @@ async def run_plan(
         if not view.waiting:
             await tidy_thread(thread_id, state)
             return view
-        async with state.decision_lock:
-            for displaced in state.drafts.publish(draft_id_for(thread_id)):
-                await tidy_thread(displaced.thread_id, state)
+        try:
+            async with state.decision_lock:
+                for displaced in state.drafts.publish(draft_id_for(thread_id)):
+                    await tidy_thread(displaced.thread_id, state)
+        except Exception:
+            # The run paused but its draft could not be published. Left as it
+            # is, the sweep would publish it later, after the page had said
+            # the request changed nothing; so the run is treated as failed
+            # here and now, its draft taken back and its thread cleared.
+            await abandon(thread_id, state)
+            raise
         return view
     finally:
         state.in_flight.discard(thread_id)

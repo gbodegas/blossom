@@ -93,7 +93,11 @@ draft that does not exist or is already decided is answered as such with or
 without a key. Two decisions about one draft cannot
 both land: the route holds one lock from the table check through the resume,
 and the table refuses a second, different decision, keeping the first and its
-time, which also covers a request from another process.
+time. One process serves a household: at startup the process takes an
+exclusive lock on a file beside the drafts file and holds it while it runs, so
+a second process over the same files is refused with a sentence naming the
+file, and the lock, the set of runs in flight, and the sweep cover everything
+that happens to those files.
 
 The page at `/parent` is the same three things as forms: a date to plan for
 her, the drafts waiting for review with their text and two buttons, and the
@@ -619,7 +623,11 @@ which plan is current follows the order runs paused in, whatever order their
 drafts were composed or saved in. A run that fails between saving and pausing
 takes its draft back: the row goes and the run is kept with its steps as
 interrupted. It displaced nothing, so the pages are what they were before the
-run, and the run itself is listed among those that ended without a plan. The
+run, and the run itself is listed among those that ended without a plan. A
+publication that fails is treated the same way, before the failure reaches
+the page. A run joins the set of runs in flight under the decision lock, so
+it starts either before a sweep or after one and a sweep never counts threads
+while a run is joining. The
 draft is taken back first and the thread cleared second, because the
 saved-state store is the likelier of the two to be what failed; a thread that
 cannot be cleared is left to the sweep. Opening a drafts file restores two

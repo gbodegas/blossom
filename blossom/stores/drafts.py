@@ -37,7 +37,7 @@ Outcome = Literal["accepted", "unsettled"]
 
 SUPERSEDED_REASON: Final = "a later plan for the evening took its place"
 """The reason recorded on a waiting draft when a newer one for the same evening
-is saved, from whichever page. System-recorded, like an expiry: no person said it."""
+is published, from whichever page. System-recorded, like an expiry: no person said it."""
 
 INTERRUPTED: Final = "interrupted"
 """The outcome recorded on a run that saved its draft and then failed before the

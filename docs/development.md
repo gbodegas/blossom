@@ -90,7 +90,7 @@ files under `.local/` outlive it:
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
   evening is closed as expired, and one a later plan for the same evening is
-  saved over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
+  published over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
   any words she added, kept for a week and removable from her page.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
@@ -191,6 +191,13 @@ at an ordinary local folder instead, in `.env` or in the shell, for example
 `C:\blossom-state\blossom.sqlite3` on Windows or
 `~/blossom-state/blossom.sqlite3` elsewhere, and the same folder for the
 other two.
+
+**The app refuses to start and says another Blossom process has this
+household's files open.** One process serves a household; the file it names,
+`blossom.lock` beside the drafts file, is held by the process already running,
+and released when that process stops. Stop the other server, or point this one
+at other files with the three path variables above. A process that was killed
+releases the lock on its own, so nothing needs deleting.
 
 **The parent's page says no API key is configured.** That is the state the
 first run is meant to be in: the queue and the decisions work, and only
