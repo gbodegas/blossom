@@ -35,6 +35,7 @@ from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
+from blossom.stores.help_requests import HelpRequestsStore
 from blossom.stores.household_claim import claim_household
 from blossom.stores.project_state import ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
@@ -80,6 +81,9 @@ class ApplicationState:
     run the routes start or resume; never saved with the run."""
     workload_signals: WorkloadSignalsStore
     """Her signals that a day is too much, in the drafts file, kept for a week."""
+    help_requests: HelpRequestsStore
+    """Her requests for help and what a parent did with each, in the drafts file,
+    kept until resolved and for two weeks after."""
     in_flight: set[str] = field(default_factory=set)
     """The threads of runs this process is running right now, from the moment a
     run starts to the moment it pauses or ends. The scheduled sweep leaves them
@@ -108,6 +112,7 @@ class ApplicationState:
         self.drafts.close()
         self.traces.close()
         self.workload_signals.close()
+        self.help_requests.close()
 
 
 def build_application_state(
@@ -124,9 +129,9 @@ def build_application_state(
     clock = clock_from(settings.today, settings.timezone_key)
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     project_state = ProjectStateStore(connection, clock=clock)
-    opened: list[ProjectStateStore | DraftsStore | TraceStore | WorkloadSignalsStore] = [
-        project_state
-    ]
+    opened: list[
+        ProjectStateStore | DraftsStore | TraceStore | WorkloadSignalsStore | HelpRequestsStore
+    ] = [project_state]
     # A later step can refuse its path or fail to open its file. Whatever was
     # opened before it is closed on the way out, so a startup that fails and is
     # retried leaves no connection behind.
@@ -153,6 +158,10 @@ def build_application_state(
         signals = WorkloadSignalsStore.open(settings.database_path, SystemClock(clock.zone))
         opened.append(signals)
         signals.sweep()
+        # Her requests for help are stamped and swept the same way.
+        help_requests = HelpRequestsStore.open(settings.database_path, SystemClock(clock.zone))
+        opened.append(help_requests)
+        help_requests.sweep()
     except Exception:
         for store in reversed(opened):
             store.close()
@@ -169,6 +178,7 @@ def build_application_state(
         traces=traces,
         tracer=LocalRunTracer(traces),
         workload_signals=signals,
+        help_requests=help_requests,
     )
 
 
@@ -185,6 +195,7 @@ async def sweep_aged(state: ApplicationState) -> None:
         )
     state.traces.sweep()
     state.workload_signals.sweep()
+    state.help_requests.sweep()
 
 
 async def repeat(interval: float, tick: Callable[[], Awaitable[None]]) -> None:

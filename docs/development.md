@@ -37,6 +37,12 @@ With the app running as the README describes:
   assignment labeled with how well its due date is corroborated.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
   to `/student/plans` makes one.
+- <http://127.0.0.1:8000/student/help-requests> lists her requests for help
+  as JSON, the open ones and those resolved within two weeks; a POST there
+  asks, with an optional note, and a DELETE takes one back while nobody has
+  taken it up.
+  The parent's side is `/parent/help-requests`, with `/accept` and
+  `/resolve` under each request.
 - <http://127.0.0.1:8000/parent> is the parent's page: read the plan she has,
   see how it was made step by step, and say it looks good or ask for a
   change. A parent can also start an evening's plan for her there. A run that
@@ -91,7 +97,9 @@ files under `.local/` outlive it:
   Kept for the school year. A draft nobody decides within two weeks of its
   evening is closed as expired, and one a later plan for the same evening is
   published over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
-  any words she added, kept for a week and removable from her page.
+  any words she added, kept for a week and removable from her page, and so
+  do her requests for help with what a parent did with each, kept until
+  resolved and for two weeks after.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
   and an expired draft's state goes with it, so it holds only what is

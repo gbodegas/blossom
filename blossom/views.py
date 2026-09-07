@@ -19,6 +19,7 @@ from blossom.agent.steps import StepRecord, describe_outcome
 from blossom.drafts import Decision, DraftStatus
 from blossom.reconciliation import SourceConfidence
 from blossom.stores.drafts import DraftRecord, RunRecord
+from blossom.stores.help_requests import HelpState
 from blossom.stores.project_state import AssignmentKind
 
 
@@ -59,6 +60,27 @@ class WorkloadSignalView(BaseModel):
     given_local: AwareDatetime
     detail: str | None = None
     """Words she chose to add, exactly as kept; ``None`` when she pressed and said nothing."""
+
+
+class HelpRequestView(BaseModel):
+    """One request for help as both pages see it: her words, where it stands, the word back.
+
+    The same view serves her page and the parent's: what a parent does with a
+    request is shown to her in full, and nothing is kept about a request that
+    either of them cannot see.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    evening: date
+    asked_at: AwareDatetime
+    asked_local: AwareDatetime
+    note: str | None = None
+    state: HelpState
+    accepted_at: AwareDatetime | None = None
+    resolved_at: AwareDatetime | None = None
+    response: str | None = None
 
 
 class StudentPlanView(BaseModel):
@@ -105,6 +127,9 @@ class StudentDueThisWeekView(BaseModel):
     can_plan: bool = False
     too_much: WorkloadSignalView | None = None
     signals: list[WorkloadSignalView] = []
+    help_requests: list[HelpRequestView] = []
+    """Her requests for help still open, oldest first, then those resolved within
+    two weeks, most recent first, so she sees each step a parent takes."""
 
 
 class ParentCheckpointAssignmentView(BaseModel):

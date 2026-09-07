@@ -219,7 +219,7 @@ confident match from the only candidate; the design calls for three to five.
 **Not wired:** no route or node constructs the router. `ProjectStateStore.lookup`
 still answers the structured side for one that would.
 
-## Six stores, six risk profiles
+## Seven stores, seven risk profiles
 
 | Store | Contents | State |
 |---|---|---|
@@ -229,6 +229,7 @@ still answers the structured side for one that would.
 | `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
 | `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her |
+| `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, and the parent's word back | Wired and tested; in the drafts file, kept until resolved and swept two weeks after |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -517,6 +518,34 @@ a button on a page, a hardware button, a lock screen control, or a single-tap
 shortcut, and whether asking for a coping strategy is the same gesture or a
 second one is a question for her. The page's button is the form the control
 takes until those are decided with her.
+
+## Asking for help
+
+The design has her ask for help through the system as she asks for a lighter
+evening: one press, and words only if she wants them. Unlike the signal, a
+request is addressed to a person, so it has a state that a person moves.
+`HelpRequestsStore`, `blossom/stores/help_requests.py`, keeps each request as
+requested until a parent takes it up, accepted while the parent is on it, and
+resolved when they answer, with a word back at either step if they leave one.
+Her page shows the request and each step in plain words, and says a parent has
+not seen it until a parent has taken it up, so nobody is said to be looking
+into something before they have said so. She can take a request back while
+it is only requested; once a parent has taken it up, it is theirs to resolve.
+The parent's page lists what is open with the two moves under each and what
+was resolved in the last two weeks. Both pages read the same view: what a
+parent does with a request is shown to her in full, and nothing is kept about
+a request that either of them cannot see.
+
+A request is stamped by the real clock, like a signal, so retention runs even
+when the household clock is pinned. A resolved request is kept for
+`HELP_RETENTION_DAYS`, fourteen, long enough for the word back to be read, and
+the cutoff is applied on every read as well as in the hourly sweep; an open
+request is kept until someone resolves it, since a question nobody has
+answered is not old news. Nothing counts requests or groups them by anything.
+
+**Not built:** a request reaches the parent's page and nowhere else. The
+design's notification to a parent, and her seeing that it went, are not
+built.
 
 ## Configuration, time, and lifecycle
 

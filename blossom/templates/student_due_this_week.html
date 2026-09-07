@@ -64,6 +64,36 @@
         </form>
       {% endif %}
     </div>
+    <form method="post" action="/student/actions/ask-for-help" class="decision">
+      <label>What you are stuck on (optional)
+        <input type="text" name="note" maxlength="{{ note_max_length }}" placeholder="A sentence, or nothing at all">
+      </label>
+      <div class="actions">
+        <button type="submit" class="secondary">Ask for help</button>
+      </div>
+    </form>
+    {% if view.help_requests %}
+      <ul class="help">
+        {% for ask in view.help_requests %}
+          <li>
+            <strong>You asked for help</strong> at {{ ask.asked_local.strftime("%H:%M") }}
+            on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
+            {% if ask.state == "requested" %}
+              A parent has not seen it yet.
+              <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
+                <button type="submit" class="secondary"
+                        aria-label="Take back the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it back</button>
+              </form>
+            {% elif ask.state == "accepted" %}
+              <strong>A parent is on it.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
+            {% else %}
+              <strong>Resolved.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="note">A resolved request stays here for two weeks, then goes.</p>
+    {% endif %}
     {% if view.can_plan %}
       <p class="note">
         Planning takes a minute or two. It sends your week, the household's rules, the

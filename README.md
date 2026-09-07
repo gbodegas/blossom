@@ -44,7 +44,7 @@ what that means with her rather than on her behalf.
 
 ## What works today
 
-Blossom is early, and it is built for one household. Three things work end to
+Blossom is early, and it is built for one household. Four things work end to
 end.
 
 **Her week.** A page lists everything due in the coming days, each item
@@ -82,6 +82,13 @@ her, and nothing yet reads the text to tell.
 asked. Pressing it shows at once what changed: tonight's plan is held to half
 the usual time, and the planner is told her word on the evening is final. The
 press is kept for a week where she can see it, and she can take it back.
+
+**Ask for help.** The other button on her page, with a sentence if she wants
+one. The request appears on the parent's page; a parent takes it up and later
+resolves it, with a word back if they leave one, and each step shows under her
+request in plain words: nobody is said to be on it before they have said so.
+She can take a request back while nobody has taken it up. A resolved request
+stays where she can read the word back for two weeks, then goes.
 
 One thing the design calls for is not built. There is no login: the student,
 parent, and verifier views are separate pages, not separate people, and anyone
