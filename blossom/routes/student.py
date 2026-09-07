@@ -75,7 +75,7 @@ from blossom.reconciliation import (
     classify_confidence,
 )
 from blossom.routes.runs import Graphs, require_model, run_plan
-from blossom.settings import TEMPLATE_PATH
+from blossom.settings import CALENDAR_MARGIN, TEMPLATE_PATH
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment
@@ -404,10 +404,11 @@ def showable(day: date) -> bool:
 
     The page links to the weeks before and after, so the first and last weeks
     the date type can hold are refused rather than shown with a link that
-    cannot be computed.
+    cannot be computed. A pinned clock is held to the same margin by the
+    settings, so today's week is always showable.
     """
     start = monday_of(day)
-    return date.min + A_WEEK <= start <= date.max - A_WEEK
+    return date.min + CALENDAR_MARGIN <= start <= date.max - CALENDAR_MARGIN
 
 
 def assigned_for_later(item: Assignment, frame: WeekView) -> bool:

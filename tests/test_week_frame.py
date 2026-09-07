@@ -36,7 +36,8 @@ FIXTURE_ROW: dict[str, object] = {
 
 
 def page(week: str | None = None, **environment: str) -> tuple[int, str]:
-    settings = fixture_settings(BLOSSOM_TODAY=PINNED_TODAY, **environment)
+    """Her page with the clock pinned to the fixture week unless ``environment`` says otherwise."""
+    settings = fixture_settings(**{"BLOSSOM_TODAY": PINNED_TODAY, **environment})
     params = {} if week is None else {"week": week}
     with TestClient(create_app(settings)) as client:
         response = client.get("/student/due-this-week", params=params)
@@ -118,6 +119,17 @@ def test_the_edges_of_the_calendar_are_said_not_crashed_into(given: str) -> None
     assert status == 422
     assert "That week is past the edge of the calendar" in shown
     assert "<h1>Due this week</h1>" in shown
+
+
+def test_todays_week_at_the_edge_of_what_can_be_pinned_still_renders() -> None:
+    """The first and last days a clock may be pinned to have a week either side."""
+    _, first = page(BLOSSOM_TODAY="0001-01-08")
+    _, last = page(BLOSSOM_TODAY="9999-12-24")
+
+    assert "<h1>Due this week</h1>" in first
+    assert 'href="/student/due-this-week?week=0001-01-01">Previous week</a>' in first
+    assert "<h1>Due this week</h1>" in last
+    assert 'href="/student/due-this-week?week=9999-12-27">Next week</a>' in last
 
 
 @pytest.mark.parametrize(

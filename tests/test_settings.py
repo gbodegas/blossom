@@ -19,6 +19,7 @@ from blossom.settings import (
     EVENING_MINUTES_VARIABLE,
     FIXTURE_PATH_VARIABLE,
     REPOSITORY_ROOT,
+    TODAY_VARIABLE,
     TOO_MUCH_MINUTES_VARIABLE,
     Settings,
     resolve_configured_path,
@@ -96,6 +97,22 @@ def test_a_budget_that_is_not_minutes_or_not_a_cut_is_refused_by_name(
     """A shorter evening that is not shorter would make her signal change nothing."""
     with pytest.raises(ValueError, match=named):
         Settings.from_environment(environment)
+
+
+@pytest.mark.parametrize("pinned", ["0001-01-01", "0001-01-07", "9999-12-25", "9999-12-31"])
+def test_a_clock_pinned_within_a_week_of_the_calendars_edge_is_refused_by_name(
+    pinned: str,
+) -> None:
+    """Her page links to the weeks either side and a plan looks six days ahead;
+    neither can be computed there, so the app refuses to start rather than fail
+    on the first page."""
+    with pytest.raises(ValueError, match=TODAY_VARIABLE):
+        Settings.from_environment({TODAY_VARIABLE: pinned})
+
+
+@pytest.mark.parametrize("pinned", ["0001-01-08", "9999-12-24", "2026-08-19"])
+def test_a_clock_pinned_a_week_or_more_from_the_edges_is_accepted(pinned: str) -> None:
+    assert Settings.from_environment({TODAY_VARIABLE: pinned}).today is not None
 
 
 def test_relative_values_resolve_against_the_repository_not_the_working_directory() -> None:

@@ -20,7 +20,7 @@ dependency, and ``.env`` files can be loaded with ``uv run --env-file .env``.
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
 
@@ -51,6 +51,11 @@ ANTHROPIC_API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
 # has said today is too much, when the household has not said otherwise.
 DEFAULT_EVENING_MINUTES = 150
 DEFAULT_TOO_MUCH_MINUTES = 75
+
+# Her page links to the weeks either side of the one shown, and a plan looks
+# six days ahead, so a clock within a week of the calendar's first or last day
+# cannot be served. The real clock is never there; a pinned one is refused.
+CALENDAR_MARGIN = timedelta(days=7)
 
 # LangChain and langsmith decide whether to ship traces to a hosted service by
 # reading TRACING and TRACING_V2 under both the LANGSMITH and LANGCHAIN
@@ -149,6 +154,14 @@ class Settings:
     change nothing."""
 
     def __post_init__(self) -> None:
+        if self.today is not None and not (
+            date.min + CALENDAR_MARGIN <= self.today <= date.max - CALENDAR_MARGIN
+        ):
+            msg = (
+                f"{TODAY_VARIABLE} must be at least a week from either edge of the calendar, "
+                f"got {self.today.isoformat()}"
+            )
+            raise ValueError(msg)
         if self.evening_minutes <= 0:
             msg = f"{EVENING_MINUTES_VARIABLE} must be a positive number of minutes"
             raise ValueError(msg)
