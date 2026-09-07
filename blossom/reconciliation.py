@@ -106,12 +106,17 @@ class SourceConfidence(StrEnum):
 
 
 def classify_confidence(result: ReconciliationResult) -> SourceConfidence:
-    """Map a reconciliation outcome onto how much the family should trust it."""
+    """Map a reconciliation outcome onto how much the family should trust it.
+
+    Corroboration counts channels, not records. A portal that lists a date in
+    two places has said it once; a second channel saying the same is what
+    makes it confirmed.
+    """
     if isinstance(result, NoSourceRecords):
         return SourceConfidence.UNVERIFIED
     if isinstance(result, Disagreement):
         return SourceConfidence.SOURCES_DISAGREE
-    if len(result.records) == 1:
+    if len({record.channel for record in result.records}) == 1:
         return SourceConfidence.SINGLE_SOURCE
     return SourceConfidence.CORROBORATED
 

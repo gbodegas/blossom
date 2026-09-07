@@ -40,9 +40,13 @@ class StudentAssignmentView(BaseModel):
     submission_status: str
     deadline_confidence: SourceConfidence
     source_channels: list[str]
+    """Each channel that spoke about the date, once, in the order first heard."""
+    sources: str = ""
+    """The same channels in the words her page uses for them, joined for a sentence."""
     disagreement: list[str]
     contradiction: list[str] = []
     """What the sources say when none of them supports the record's date; empty otherwise."""
+    assigned_on: date | None = None
 
 
 class WorkloadSignalView(BaseModel):
@@ -107,20 +111,41 @@ class StudentPlanView(BaseModel):
     stale: str | None = None
 
 
+class WeekView(BaseModel):
+    """The school week her page frames, Monday to Sunday, and the ones either side."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: date
+    end: date
+    current: bool
+    """Whether this is the week that holds today."""
+    previous: date
+    following: date
+
+
 class StudentDueThisWeekView(BaseModel):
     """Her week. Every assignment in the window appears, nothing is filtered out.
 
-    ``plan`` is today's latest plan when one has been made. ``can_plan`` is
-    whether a new one can be asked for, which needs a model. ``too_much`` is
-    tonight's signal when she has given one, and ``budget_minutes`` is what
-    the next plan is held to as a result. ``signals`` is everything the store
-    still keeps, so she can see it and take any of it back.
+    ``week`` is the school week shown, the one that holds today unless she has
+    moved to another. ``assigned_this_week`` is work given out in that week
+    and due after it, listed so the week reads the way the school's does.
+    ``plan_horizon_end`` is the last day a plan made today looks at, stated on
+    the page because it is not the week's end. ``plan`` is today's latest plan
+    when one has been made. ``can_plan`` is whether a new one can be asked
+    for, which needs a model. ``too_much`` is tonight's signal when she has
+    given one, and ``budget_minutes`` is what the next plan is held to as a
+    result. ``signals`` is everything the store still keeps, so she can see it
+    and take any of it back.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     generated_at: AwareDatetime
+    week: WeekView
     assignments: list[StudentAssignmentView]
+    assigned_this_week: list[StudentAssignmentView] = []
+    plan_horizon_end: date
     full_budget_minutes: int
     budget_minutes: int
     plan: StudentPlanView | None = None

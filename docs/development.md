@@ -33,8 +33,10 @@ With the app running as the README describes:
 
 - <http://127.0.0.1:8000/student/due-this-week> is her page: today's plan,
   which she asks for there and which appears the moment it is made, with a
-  parent's review under it once there is one; then her week, every
-  assignment labeled with how well its due date is corroborated.
+  parent's review under it once there is one; then the school week, Monday
+  to Sunday, every assignment saying where its due date came from, and the
+  work assigned that week and due after it. `?week=` with any date shows the
+  week that holds it.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
   to `/student/plans` makes one.
 - <http://127.0.0.1:8000/student/help-requests> lists her requests for help
@@ -81,11 +83,20 @@ unset, the real clock is used. `.env.example` sets both, which is why the
 first run needs nothing else. Either can also be set as an ordinary
 environment variable in the shell.
 
-The fixtures carry due dates in the week of August 19, 2026. "Due this week"
-is a rolling window, the chosen day and the six after it, plus anything with
-no due date on record, which is in every week. On the real clock most of the
-fixtures fall outside the window and the page shows only the syllabus form;
-pinned to August 19, it shows all seven items.
+Two variables are numbers: `BLOSSOM_EVENING_MINUTES`, how many minutes of
+schoolwork an evening's plan may hold, and `BLOSSOM_TOO_MUCH_MINUTES`, what a
+plan is held to on an evening she has said is too much. They are 150 and 75
+unless set, and the second must be less than the first; the app refuses to
+start otherwise, naming the variable.
+
+The fixtures carry due dates in the school week of August 17, 2026, and two
+in the week after. Her page frames the school week, Monday to Sunday, with
+links to the weeks either side; a plan looks at the chosen day and the six
+after it, and the page says so. Anything with no due date on record is in
+every week. On the real clock most of the fixtures fall outside the week and
+the page shows only the syllabus form; pinned to August 19, it shows five
+items, with the algebra set and the reading log listed as assigned this week
+and due the next.
 
 ## What survives a restart
 

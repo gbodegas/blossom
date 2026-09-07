@@ -2,9 +2,17 @@
 
 Nothing is filtered out of her week: an assignment the system cannot corroborate
 is the one she most needs to see, so every assignment in the window reaches the
-page with its date confidence attached. The week is read the way the plan
-graph reads it, so the two never differ about what is in it, and an assignment
-whose record date the school's sources contradict says so on her page.
+page with a line saying where its date came from. Only a disagreement between
+sources, or a school date the record does not match, is made prominent; the
+rest is said quietly, so a warning on this page means something.
+
+The week is the school week, Monday to Sunday, the way the school's own page
+frames it, and she can move to the weeks either side. The planner looks at
+the seven days from the evening it plans instead, and her page says through
+which day. Work assigned in the week and due after it is listed under the
+week's cards. The window is read the way the plan graph reads it, so the two
+never differ about whether an item is in a week, and an assignment whose
+record date the school's sources contradict says so on her page.
 
 Today's plan is hers. She asks for it from this page, it appears here the
 moment it is made, and a parent's review of it shows under it afterwards
@@ -27,10 +35,21 @@ take a request back while nobody has taken it up.
 """
 
 import logging
-from datetime import UTC, datetime
+from collections.abc import Sequence
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Final
 
-from fastapi import APIRouter, Body, Depends, Form, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,26 +57,44 @@ from pydantic import BaseModel, ConfigDict, Field
 from blossom.anthropic_client import model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
-from blossom.noticing import read_week
-from blossom.plan_checks import DEFAULT_DAILY_MINUTES, reduced_budget
+from blossom.noticing import Noticing, expect_due_date, monday_of, notice_due_date, read_week
 from blossom.principals import Principal
-from blossom.reconciliation import Disagreement, Reconciler, classify_confidence
+from blossom.reconciliation import (
+    Disagreement,
+    Reconciler,
+    SourceChannel,
+    SourceRecord,
+    classify_confidence,
+)
 from blossom.routes.runs import Graphs, require_model, run_plan
 from blossom.settings import TEMPLATE_PATH
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
+from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.views import (
     HelpRequestView,
     StudentAssignmentView,
     StudentDueThisWeekView,
     StudentPlanView,
+    WeekView,
     WorkloadSignalView,
 )
 
 logger = logging.getLogger(__name__)
 
 PAGE: Final = "/student/due-this-week"
+A_WEEK: Final = timedelta(days=7)
+
+# The words her page uses for each channel a date can come from. The page
+# speaks to her, so her own report is "what you reported".
+CHANNEL_WORDS: Final[dict[str, str]] = {
+    SourceChannel.LMS: "the school portal",
+    SourceChannel.EMAIL: "an email from the school",
+    SourceChannel.PARENT_ENTRY: "what a parent entered",
+    SourceChannel.STUDENT_REPORT: "what you reported",
+}
+NOT_A_WEEK: Final = "That is not a date, so this is the week that holds today."
 
 SIGNALED_SINCE: Final = (
     "You have said today is too much, and this plan was made for the full evening. "
@@ -286,42 +323,88 @@ async def make_todays_plan(state: State, graphs: Graphs) -> StudentPlanView:
     return plan_view(state, record)
 
 
-def build_student_due_this_week_view(state: ApplicationState) -> StudentDueThisWeekView:
+def channels_in_words(channels: Sequence[str]) -> str:
+    """The channels, in the page's words for them, joined for a sentence."""
+    names = [CHANNEL_WORDS.get(channel, channel) for channel in channels]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def assignment_view(
+    assignment: Assignment, records: Sequence[SourceRecord], noticed: Noticing
+) -> StudentAssignmentView:
+    """One assignment as she sees it, with where its date came from said once per channel."""
+    reconciliation = Reconciler().reconcile(list(records))
+    disagreement = []
+    if isinstance(reconciliation, Disagreement):
+        disagreement = [claim.describe() for claim in reconciliation.conflicting_claims]
+    channels = list(dict.fromkeys(str(record.channel) for record in records))
+    return StudentAssignmentView(
+        assignment_id=assignment.assignment_id,
+        course=assignment.course,
+        title=assignment.title,
+        due_date=assignment.due_date,
+        kind=assignment.kind,
+        submission_status=assignment.reported_submission_status,
+        deadline_confidence=classify_confidence(reconciliation),
+        source_channels=channels,
+        sources=channels_in_words(channels),
+        disagreement=disagreement,
+        contradiction=list(noticed.observed) if noticed.contradicted else [],
+        assigned_on=assignment.assigned_on,
+    )
+
+
+def week_shown(today: date, chosen: date | None) -> WeekView:
+    """The school week holding ``chosen``, or today's when nothing is chosen."""
+    start = monday_of(today if chosen is None else chosen)
+    return WeekView(
+        start=start,
+        end=start + DUE_THIS_WEEK_SPAN,
+        current=start == monday_of(today),
+        previous=start - A_WEEK,
+        following=start + A_WEEK,
+    )
+
+
+def build_student_due_this_week_view(
+    state: ApplicationState, week: date | None = None
+) -> StudentDueThisWeekView:
     """Assemble the student's weekly view from the stores ``ApplicationState``
-    opened at startup; nothing is opened or seeded per request.
+    opened at startup; nothing is opened or seeded per request. ``week`` is any
+    day in the school week to show; today's week when ``None``.
     """
     today = state.clock.today()
-    week = read_week(state.project_state, state.source, today)
-    reconciler = Reconciler()
-    views: list[StudentAssignmentView] = []
-    for assignment in week.assignments:
-        records = week.records[assignment.assignment_id]
-        noticed = week.noticings[assignment.assignment_id]
-        reconciliation = reconciler.reconcile(records)
-        disagreement = []
-        if isinstance(reconciliation, Disagreement):
-            disagreement = [claim.describe() for claim in reconciliation.conflicting_claims]
-        # Never filter here; see the module docstring.
-        views.append(
-            StudentAssignmentView(
-                assignment_id=assignment.assignment_id,
-                course=assignment.course,
-                title=assignment.title,
-                due_date=assignment.due_date,
-                kind=assignment.kind,
-                submission_status=assignment.reported_submission_status,
-                deadline_confidence=classify_confidence(reconciliation),
-                source_channels=[record.channel for record in records],
-                disagreement=disagreement,
-                contradiction=list(noticed.observed) if noticed.contradicted else [],
-            )
+    frame = week_shown(today, week)
+    shown = read_week(state.project_state, state.source, frame.start)
+    # Never filter here; see the module docstring.
+    views = [
+        assignment_view(
+            item, shown.records[item.assignment_id], shown.noticings[item.assignment_id]
+        )
+        for item in shown.assignments
+    ]
+    in_frame = {item.assignment_id for item in shown.assignments}
+    assigned: list[StudentAssignmentView] = []
+    for item in state.project_state.all_assignments():
+        given = item.assigned_on
+        if item.assignment_id in in_frame or given is None or not frame.start <= given <= frame.end:
+            continue
+        records = state.source.deadline_records(item.assignment_id)
+        assigned.append(
+            assignment_view(item, records, notice_due_date(expect_due_date(item), records))
         )
     tonight = state.workload_signals.for_evening(today)
+    household = state.settings
     return StudentDueThisWeekView(
         generated_at=datetime.now(UTC),
+        week=frame,
         assignments=views,
-        full_budget_minutes=DEFAULT_DAILY_MINUTES,
-        budget_minutes=reduced_budget(DEFAULT_DAILY_MINUTES) if tonight else DEFAULT_DAILY_MINUTES,
+        assigned_this_week=assigned,
+        plan_horizon_end=today + DUE_THIS_WEEK_SPAN,
+        full_budget_minutes=household.evening_minutes,
+        budget_minutes=household.too_much_minutes if tonight else household.evening_minutes,
         plan=todays_plan(state),
         can_plan=model_configured(state.settings),
         too_much=signal_view(state, tonight[-1]) if tonight else None,
@@ -334,11 +417,12 @@ def student_page(
     request: Request,
     state: ApplicationState,
     *,
+    week: date | None = None,
     problem: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top."""
-    view = build_student_due_this_week_view(state)
+    view = build_student_due_this_week_view(state, week)
     return templates.TemplateResponse(
         request,
         "student_due_this_week.html",
@@ -348,9 +432,26 @@ def student_page(
 
 
 @router.get("/due-this-week", response_class=HTMLResponse)
-def due_this_week(request: Request, state: State) -> HTMLResponse:
-    """Render her week, every assignment labeled with its source confidence, and today's plan."""
-    return student_page(request, state)
+def due_this_week(
+    request: Request,
+    state: State,
+    week: Annotated[str | None, Query(description="Any day in the school week to show")] = None,
+) -> HTMLResponse:
+    """Render her week and today's plan.
+
+    The week is the school week that holds today, or the one holding the day
+    ``week`` names. A value that is not a date is said at the top of today's
+    week rather than answered with an error page.
+    """
+    if week is None or not week.strip():
+        return student_page(request, state)
+    try:
+        chosen = date.fromisoformat(week.strip())
+    except ValueError:
+        return student_page(
+            request, state, problem=NOT_A_WEEK, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    return student_page(request, state, week=chosen)
 
 
 @router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)

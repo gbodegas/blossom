@@ -1,8 +1,23 @@
 {% extends "base.html" %}
 {% set page = "student" %}
-{% block title %}Blossom - Due this week{% endblock %}
+{% block title %}Blossom - {% if view.week.current %}Due this week{% else %}Week of {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}{% endif %}{% endblock %}
 {% block content %}
-  <h1>Due this week</h1>
+  {% if view.week.current %}
+    <h1>Due this week</h1>
+  {% else %}
+    <h1>Week of {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}</h1>
+  {% endif %}
+  <div class="week-frame">
+    <p class="range">
+      {{ view.week.start.strftime("%A, %B") }} {{ view.week.start.day }} to
+      {{ view.week.end.strftime("%A, %B") }} {{ view.week.end.day }}, {{ view.week.end.year }}
+    </p>
+    <nav class="weeks" aria-label="Weeks">
+      <a href="/student/due-this-week?week={{ view.week.previous.isoformat() }}">Previous week</a>
+      {% if not view.week.current %}<a href="/student/due-this-week">This week</a>{% endif %}
+      <a href="/student/due-this-week?week={{ view.week.following.isoformat() }}">Next week</a>
+    </nav>
+  </div>
 
   {% if problem %}
     <p class="problem" role="alert">{{ problem }}</p>
@@ -10,6 +25,11 @@
 
   <section class="panel today">
     <h2>Plan today</h2>
+    <p class="note">
+      A plan made today looks at everything due through
+      {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}, whichever
+      week that falls in.
+    </p>
     {% if view.plan %}
       <p class="when">
         Made at {{ view.plan.made_local.strftime("%H:%M") }}{% if view.plan.too_much %}, kept to a
@@ -111,7 +131,7 @@
   </section>
 
   {% if not view.assignments %}
-    <p class="empty">Nothing is due this week.</p>
+    <p class="empty">Nothing is due {% if view.week.current %}this{% else %}that{% endif %} week.</p>
   {% endif %}
 
   {% for assignment in view.assignments %}
@@ -127,18 +147,14 @@
       </p>
 
       {#
-        The confidence banner is never omitted, including when the date is
-        well corroborated. A marker that only appears when something is
-        wrong teaches the reader to skim past its absence; a marker that is
-        always present makes "unverified" readable at a glance. Color is
-        reinforcement; the words carry the state.
+        Every card says where its date came from, so a quiet line is the
+        normal state and its absence never carries a meaning. Only two things
+        are made prominent: sources that disagree, and a school date the
+        record does not match. A page that shouts about every date teaches
+        her to skim past the shouting. Color is reinforcement; the words
+        carry the state.
       #}
-      {% if assignment.deadline_confidence == "UNVERIFIED" %}
-        <p class="confidence unverified">
-          <strong>Unverified due date.</strong>
-          Nothing on record confirms this date. Please check it before relying on it.
-        </p>
-      {% elif assignment.deadline_confidence == "SOURCES_DISAGREE" %}
+      {% if assignment.deadline_confidence == "SOURCES_DISAGREE" %}
         <p class="confidence disagree">
           <strong>Sources disagree</strong> about this due date. Nothing has been chosen for you.
         </p>
@@ -150,16 +166,12 @@
             {% endfor %}
           </ul>
         </div>
+      {% elif assignment.deadline_confidence == "UNVERIFIED" %}
+        <p class="source">From the family's record only; nothing from the school confirms it yet.</p>
       {% elif assignment.deadline_confidence == "SINGLE_SOURCE" %}
-        <p class="confidence single-source">
-          <strong>One source only</strong> ({{ assignment.source_channels|join(", ") }}).
-          Not corroborated by anything else.
-        </p>
+        <p class="source">Date from {{ assignment.sources }}.</p>
       {% else %}
-        <p class="confidence corroborated">
-          <strong>Confirmed by {{ assignment.source_channels|length }} sources</strong>
-          ({{ assignment.source_channels|join(", ") }}).
-        </p>
+        <p class="source">Date confirmed by {{ assignment.sources }}.</p>
       {% endif %}
 
       {% if assignment.contradiction %}
@@ -182,6 +194,17 @@
       </p>
     </article>
   {% endfor %}
+
+  {% if view.assigned_this_week %}
+    <section class="panel assigned">
+      <h2>Assigned this week, due later</h2>
+      <ul>
+        {% for assignment in view.assigned_this_week %}
+          <li>{{ assignment.title }} ({{ assignment.course }}), due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}.</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
 
   {% if view.signals %}
     <details class="steps kept">

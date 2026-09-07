@@ -22,7 +22,7 @@ No model takes part. The rules fit in one function, and
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
@@ -162,11 +162,19 @@ class Week:
     """The record set against those claims, by id."""
 
 
+def monday_of(day: date) -> date:
+    """The Monday that starts the school week ``day`` falls in."""
+    return day - timedelta(days=day.weekday())
+
+
 def read_week(project_state: ProjectStateStore, source: StateSource, start: date) -> Week:
     """Read the week from ``start``: state each record's date, read the sources, then select.
 
-    The student's page and the plan graph both read this, so an item one of
-    them shows is in the other's week too. Every assignment on record is
+    The student's page and the plan graph both read this, the same way, so
+    they never differ about whether an item is in a week. They start it on
+    different days: her page starts on the Monday of the school week she is
+    looking at, the planner on the evening being planned, so a plan looks at
+    the seven days ahead and her page says so. Every assignment on record is
     considered, because the sources decide the window along with the record.
     """
     everything = project_state.all_assignments()

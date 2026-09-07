@@ -9,8 +9,12 @@ The template and static directories come from ``__file__`` and are not
 configurable: they ship with the package, and a deployment that needs to
 relocate them has a packaging problem, not a configuration problem.
 
-There is no settings library. Four paths do not justify a dependency, and
-``.env`` files can be loaded with ``uv run --env-file .env``.
+The two minute budgets are the household's numbers, not rules of the system:
+no evening length is right for every family, so both are read here with
+defaults rather than fixed in the planner.
+
+There is no settings library. A few paths and two numbers do not justify a
+dependency, and ``.env`` files can be loaded with ``uv run --env-file .env``.
 """
 
 import os
@@ -39,7 +43,14 @@ CHECKPOINT_PATH_VARIABLE = "BLOSSOM_CHECKPOINT_PATH"
 TRACE_PATH_VARIABLE = "BLOSSOM_TRACE_PATH"
 TODAY_VARIABLE = "BLOSSOM_TODAY"
 TIMEZONE_VARIABLE = "BLOSSOM_TIMEZONE"
+EVENING_MINUTES_VARIABLE = "BLOSSOM_EVENING_MINUTES"
+TOO_MUCH_MINUTES_VARIABLE = "BLOSSOM_TOO_MUCH_MINUTES"
 ANTHROPIC_API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
+
+# What an evening of schoolwork is held to, and what it is held to once she
+# has said today is too much, when the household has not said otherwise.
+DEFAULT_EVENING_MINUTES = 150
+DEFAULT_TOO_MUCH_MINUTES = 75
 
 # LangChain and langsmith decide whether to ship traces to a hosted service by
 # reading TRACING and TRACING_V2 under both the LANGSMITH and LANGCHAIN
@@ -130,6 +141,24 @@ class Settings:
     """From ``ANTHROPIC_API_KEY``. Excluded from ``repr`` so it never reaches a log line.
     ``None`` is valid: nothing calls a model until a graph is built, and the app
     serves every fixture-backed page without a key."""
+    evening_minutes: int = DEFAULT_EVENING_MINUTES
+    """From ``BLOSSOM_EVENING_MINUTES``: the minutes an evening's plan may hold."""
+    too_much_minutes: int = DEFAULT_TOO_MUCH_MINUTES
+    """From ``BLOSSOM_TOO_MUCH_MINUTES``: what a plan is held to on an evening she
+    has said is too much. Less than ``evening_minutes``, or the signal would
+    change nothing."""
+
+    def __post_init__(self) -> None:
+        if self.evening_minutes <= 0:
+            msg = f"{EVENING_MINUTES_VARIABLE} must be a positive number of minutes"
+            raise ValueError(msg)
+        if not 0 < self.too_much_minutes < self.evening_minutes:
+            msg = (
+                f"{TOO_MUCH_MINUTES_VARIABLE} must be a positive number of minutes less than "
+                f"{EVENING_MINUTES_VARIABLE}, got {self.too_much_minutes} against "
+                f"{self.evening_minutes}"
+            )
+            raise ValueError(msg)
 
     @property
     def static_path(self) -> Path:
@@ -169,6 +198,16 @@ class Settings:
         zone = source.get(TIMEZONE_VARIABLE)
         timezone_key = zone.strip() if zone is not None and zone.strip() else None
 
+        def minutes(variable: str, default: int) -> int:
+            value = source.get(variable)
+            if value is None or not value.strip():
+                return default
+            try:
+                return int(value.strip())
+            except ValueError as error:
+                msg = f"{variable} must be a whole number of minutes, got {value!r}"
+                raise ValueError(msg) from error
+
         local = LOCAL_STATE_PATH
         return cls(
             fixture_path=read(FIXTURE_PATH_VARIABLE, REPOSITORY_ROOT / "data" / "synthetic"),
@@ -178,6 +217,8 @@ class Settings:
             today=today,
             timezone_key=timezone_key,
             anthropic_api_key=anthropic_api_key,
+            evening_minutes=minutes(EVENING_MINUTES_VARIABLE, DEFAULT_EVENING_MINUTES),
+            too_much_minutes=minutes(TOO_MUCH_MINUTES_VARIABLE, DEFAULT_TOO_MUCH_MINUTES),
         )
 
 

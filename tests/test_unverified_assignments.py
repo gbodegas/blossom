@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from blossom.app import create_app
+from blossom.noticing import monday_of
 from blossom.reconciliation import (
     Agreement,
     Disagreement,
@@ -32,13 +33,14 @@ from tests.support import fixture_settings, record
 PINNED_TODAY = "2026-08-19"
 
 
-def student_page(fixture_root: pathlib.Path | None = None) -> str:
+def student_page(fixture_root: pathlib.Path | None = None, week: str | None = None) -> str:
     environment = {"BLOSSOM_TODAY": PINNED_TODAY}
     if fixture_root is not None:
         environment["BLOSSOM_FIXTURE_PATH"] = str(fixture_root)
     settings = fixture_settings(**environment)
+    params = {} if week is None else {"week": week}
     with TestClient(create_app(settings)) as client:
-        response = client.get("/student/due-this-week")
+        response = client.get("/student/due-this-week", params=params)
     assert response.status_code == 200
     return response.text
 
@@ -76,11 +78,11 @@ def test_a_source_less_assignment_does_not_break_the_page() -> None:
     assert "Canal Era comparison essay" in page
 
 
-def test_an_uncorroborated_assignment_is_shown_and_labelled_unverified() -> None:
+def test_an_uncorroborated_assignment_is_shown_and_says_so_quietly() -> None:
     page = student_page()
 
     assert "Science fair topic proposal" in page
-    assert "Unverified due date" in page
+    assert "From the family's record only; nothing from the school confirms it yet." in page
 
 
 def test_disagreeing_sources_are_still_listed_individually() -> None:
@@ -93,33 +95,45 @@ def test_disagreeing_sources_are_still_listed_individually() -> None:
 
 
 def test_a_corroborated_assignment_names_the_channels_that_agree() -> None:
-    page = student_page()
+    """The algebra set is due the Monday after the fixture week."""
+    page = student_page(week="2026-08-24")
 
-    assert "Confirmed by 2 sources" in page
-    assert "LMS, STUDENT_REPORT" in page
+    assert "Date confirmed by the school portal and what you reported." in page
+
+
+def test_one_channel_saying_a_date_twice_is_still_one_source() -> None:
+    twice = Reconciler().reconcile(
+        [record(SourceChannel.LMS, "2026-08-21"), record(SourceChannel.LMS, "2026-08-21")]
+    )
+    two = Reconciler().reconcile(
+        [record(SourceChannel.LMS, "2026-08-21"), record(SourceChannel.EMAIL, "2026-08-21")]
+    )
+
+    assert classify_confidence(twice) is SourceConfidence.SINGLE_SOURCE
+    assert classify_confidence(two) is SourceConfidence.CORROBORATED
 
 
 def test_every_assignment_in_the_window_reaches_the_page(tmp_path: pathlib.Path) -> None:
     """Nothing filters. With no sources, the week is the record's alone, and every
-    item the record puts in it is on the page, each marked unverified."""
+    item the record puts in the school week is on the page, each saying so."""
     fixtures = pathlib.Path("data/synthetic")
     assignments = json.loads((fixtures / "assignments.json").read_text(encoding="utf-8"))
     (tmp_path / "assignments.json").write_text(json.dumps(assignments), encoding="utf-8")
     (tmp_path / "deadline_sources.json").write_text("[]", encoding="utf-8")
-    start = date.fromisoformat(PINNED_TODAY)
+    monday = monday_of(date.fromisoformat(PINNED_TODAY))
     in_window = [
         item
         for item in assignments
         if item["due_date"] is None
-        or start <= date.fromisoformat(item["due_date"]) <= start + DUE_THIS_WEEK_SPAN
+        or monday <= date.fromisoformat(item["due_date"]) <= monday + DUE_THIS_WEEK_SPAN
     ]
-    assert len(in_window) == len(assignments) - 1
+    assert len(in_window) == len(assignments) - 3
 
     page = student_page(tmp_path)
 
     for assignment in in_window:
         assert assignment["title"] in page, f"{assignment['title']} was dropped"
-    assert page.count("Unverified due date") == len(in_window)
+    assert page.count("From the family's record only") == len(in_window)
 
 
 def test_the_view_no_longer_carries_a_fabricated_workload_count() -> None:
@@ -129,7 +143,19 @@ def test_the_view_no_longer_carries_a_fabricated_workload_count() -> None:
     assert "workload_signal_count" not in StudentAssignmentView.model_fields
 
 
-@pytest.mark.parametrize("banner", ["Unverified due date", "Sources disagree", "Confirmed by"])
-def test_confidence_is_always_stated_never_left_to_absence(banner: str) -> None:
-    """Every card carries a banner, so 'unverified' is not signaled by silence."""
-    assert banner in student_page()
+@pytest.mark.parametrize(
+    "said", ["From the family's record only", "Sources disagree", "Date from the school portal"]
+)
+def test_where_a_date_came_from_is_always_stated_never_left_to_absence(said: str) -> None:
+    """Every card says where its date came from, so silence never carries a meaning."""
+    assert said in student_page()
+
+
+def test_only_disagreement_and_contradiction_are_made_prominent() -> None:
+    """A warning on the page means something because the rest is said quietly."""
+    page = student_page()
+
+    banners = page.count('class="confidence disagree"')
+    assert banners == 3, "the essay's sources, the cover's two dates, and the quiz's record"
+    assert 'class="confidence unverified"' not in page
+    assert 'class="confidence corroborated"' not in page

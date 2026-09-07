@@ -135,40 +135,51 @@ def test_a_fixture_set_without_the_corpora_has_none(tmp_path: pathlib.Path) -> N
     assert source.reflections() == []
 
 
-def test_the_page_shows_the_whole_week_with_every_state_named() -> None:
+def test_the_fixtures_span_two_school_weeks_with_every_state_named() -> None:
+    """The fixture week runs Monday, August 17 to Sunday, August 23; the algebra set
+    and the reading log are due the Monday and Tuesday after."""
     settings = fixture_settings(BLOSSOM_TODAY="2026-08-19")
 
     with TestClient(create_app(settings)) as client:
-        page = client.get("/student/due-this-week").text
+        this_week = client.get("/student/due-this-week").text
+        next_week = client.get("/student/due-this-week", params={"week": "2026-08-24"}).text
 
+    both = this_week + next_week
     for title in json.loads((FIXTURES / "assignments.json").read_text(encoding="utf-8")):
-        assert title["title"] in page
-    assert "Confirmed by 2 sources" in page
-    assert "One source only" in page
-    assert "Sources disagree" in page
-    assert "Unverified due date" in page
-    assert "LMS (day header): 2026-08-21" in page
-    assert "LMS (title): 2026-08-22" in page
-    assert "No due date on record" in page
-    assert "a task, not a sitting" in page
-    assert "Due Wednesday, August 26, 2026" in page
-    assert "The school says otherwise." in page
+        assert title["title"] in both
+    assert "Date confirmed by the school portal and what you reported." in next_week
+    assert "Date from the school portal." in this_week
+    assert "Sources disagree" in this_week
+    assert "From the family's record only" in this_week
+    assert "LMS (day header): 2026-08-21" in this_week
+    assert "LMS (title): 2026-08-22" in this_week
+    assert "No due date on record" in this_week
+    assert "a task, not a sitting" in this_week
+    assert "Due Wednesday, August 26, 2026" in this_week
+    assert "The school says otherwise." in this_week
+    assert "Assigned this week, due later" in this_week
+    assert "Quadratic modeling problem set (Algebra II), due Monday, August 24." in this_week
 
 
-def test_the_page_and_the_planner_read_the_same_week() -> None:
-    """The quiz is outside the window by the record and inside it by the portal;
-    both readers include it, and the page says why it is there."""
+def test_the_page_says_what_the_planner_looks_at() -> None:
+    """The planner reads the seven days from the evening it plans; her page frames
+    the school week and says through which day a plan looks. The quiz is outside
+    both by the record and inside both by the portal, and the page says why."""
     settings = fixture_settings(BLOSSOM_TODAY="2026-08-19")
     state = build_application_state(settings, InMemorySaver())
     try:
-        week = read_week(state.project_state, state.source, state.clock.today())
+        horizon = read_week(state.project_state, state.source, state.clock.today())
     finally:
         state.close()
+    planned = {item.assignment_id for item in horizon.assignments}
 
-    assert "assignment-vocabulary-quiz" in {item.assignment_id for item in week.assignments}
-    assert week.noticings["assignment-vocabulary-quiz"].contradicted
+    assert "assignment-vocabulary-quiz" in planned
+    assert horizon.noticings["assignment-vocabulary-quiz"].contradicted
+    assert "assignment-algebra-set" in planned
 
     with TestClient(create_app(settings)) as client:
         page = client.get("/student/due-this-week").text
+    assert "looks at everything due through" in page
+    assert "Tuesday, August 25, whichever" in page
     assert "Vocabulary quiz, unit one" in page
     assert "LMS (day header): 2026-08-21" in page

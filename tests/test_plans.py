@@ -19,7 +19,6 @@ from pydantic import ValidationError
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.noticing import Noticing, Verdict
 from blossom.plan_checks import (
-    DEFAULT_DAILY_MINUTES,
     ORDERED_PLAN_CHECKS,
     PlanCheck,
     PlanVerification,
@@ -27,6 +26,7 @@ from blossom.plan_checks import (
 )
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceConfidence
+from blossom.settings import DEFAULT_EVENING_MINUTES
 from blossom.stores.project_state import Assignment
 from blossom.verification import CheckOutcome
 from tests.support import FIXTURE_TIMEZONE
@@ -258,7 +258,7 @@ def test_an_evening_longer_than_the_budget_fails_and_names_both_numbers() -> Non
 
 
 def test_the_budget_has_a_default_a_plan_can_exceed() -> None:
-    assert workable_plan().total_minutes(ZONE) < DEFAULT_DAILY_MINUTES
+    assert workable_plan().total_minutes(ZONE) < DEFAULT_EVENING_MINUTES
 
 
 def test_an_uncertain_due_date_is_flagged_and_does_not_fail_the_plan() -> None:

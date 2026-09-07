@@ -82,14 +82,12 @@ from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.noticing import Noticing, read_week
 from blossom.plan_checks import (
-    DEFAULT_DAILY_MINUTES,
     PlanVerification,
     check_plan,
-    reduced_budget,
 )
 from blossom.plans import DailyPlan
 from blossom.reconciliation import Reconciler, SourceConfidence, classify_confidence
-from blossom.settings import Settings
+from blossom.settings import DEFAULT_EVENING_MINUTES, DEFAULT_TOO_MUCH_MINUTES, Settings
 from blossom.sources import StateSource
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import Assignment, ProjectStateStore
@@ -227,12 +225,15 @@ def build_plan_graph(
     planner: Ask[DailyPlan],
     critic: Ask[CriticVerdict],
     checkpointer: BaseCheckpointSaver[Any],
-    daily_minutes: int = DEFAULT_DAILY_MINUTES,
+    evening_minutes: int = DEFAULT_EVENING_MINUTES,
+    too_much_minutes: int = DEFAULT_TOO_MUCH_MINUTES,
 ) -> CompiledPlanGraph:
     """Wire the graph around one household's stores and two model callables.
 
     Everything a node needs beyond the state is bound here, so the state stays
     data. A checkpointer is required because the gate cannot pause without one.
+    The two budgets are the household's settings: what an evening may hold,
+    and what it is held to once she has said today is too much.
     """
     reconciler = Reconciler()
     zone = clock.zone
@@ -248,7 +249,7 @@ def build_plan_graph(
         return {
             "plan_date": state["plan_date"],
             "zone": zone.key,
-            "budget_minutes": state.get("budget_minutes", daily_minutes),
+            "budget_minutes": state.get("budget_minutes", evening_minutes),
             "too_much": state.get("too_much", False),
             "assignments": state.get("assignments", []),
             "confidence": state.get("confidence", {}),
@@ -277,7 +278,7 @@ def build_plan_graph(
         rules = [rule.instruction for rule in support_rules.list_all()]
         notes = [note.observation for note in reflections.list_all()]
         too_much = bool(signals.for_evening(state["plan_date"]))
-        budget = reduced_budget(daily_minutes) if too_much else daily_minutes
+        budget = too_much_minutes if too_much else evening_minutes
         found = describe_week(
             week.assignments,
             noticings,
@@ -304,7 +305,7 @@ def build_plan_graph(
         feedback = state.get("feedback", [])
         messages = planner_brief(**evening(state), feedback=feedback, round_number=round_number)
         expected = expect_plan(
-            round_number, len(feedback), state.get("budget_minutes", daily_minutes)
+            round_number, len(feedback), state.get("budget_minutes", evening_minutes)
         )
         answer = await planner(messages)
         tokens = tokens_note(answer.input_tokens, answer.output_tokens)
@@ -332,7 +333,7 @@ def build_plan_graph(
             zone=zone,
             confidence=state.get("confidence", {}),
             noticings=state.get("noticings", []),
-            daily_minutes=state.get("budget_minutes", daily_minutes),
+            daily_minutes=state.get("budget_minutes", evening_minutes),
         )
         record = step(
             "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
@@ -392,7 +393,7 @@ def build_plan_graph(
             settled=outcome == "accepted",
             noticings=state.get("noticings", []),
             too_much=state.get("too_much", False),
-            budget_minutes=state.get("budget_minutes", daily_minutes),
+            budget_minutes=state.get("budget_minutes", evening_minutes),
         )
         if outcome not in REACHED_THE_GATE:
             msg = f"compose reached with outcome {outcome!r}, which produces no draft"
@@ -555,4 +556,6 @@ def plan_graph_for(
         planner=planner,
         critic=critic,
         checkpointer=state.checkpointer,
+        evening_minutes=state.settings.evening_minutes,
+        too_much_minutes=state.settings.too_much_minutes,
     )

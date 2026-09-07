@@ -29,20 +29,9 @@ from pydantic import BaseModel, ConfigDict
 from blossom.noticing import Noticing
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence
+from blossom.settings import DEFAULT_EVENING_MINUTES
 from blossom.stores.project_state import Assignment
 from blossom.verification import CheckOutcome
-
-DEFAULT_DAILY_MINUTES = 150
-
-
-def reduced_budget(minutes: int) -> int:
-    """The evening's budget once she has said today is too much: half.
-
-    Her signal overrides the plan rather than joining a score, so the cut is a
-    fixed rule the checks enforce, not a judgment the planner is asked to make.
-    """
-    return minutes // 2
-
 
 """How much work a plan may ask for in one evening before a check fails.
 
@@ -142,7 +131,7 @@ def check_plan(
     zone: ZoneInfo,
     confidence: dict[str, SourceConfidence] | None = None,
     noticings: Sequence[Noticing] = (),
-    daily_minutes: int = DEFAULT_DAILY_MINUTES,
+    daily_minutes: int = DEFAULT_EVENING_MINUTES,
 ) -> PlanVerification:
     """Run every tier-one check over ``plan`` and report what failed and why.
 

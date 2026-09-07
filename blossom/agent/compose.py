@@ -80,7 +80,8 @@ def compose_draft(
 
     for block in sorted(plan.blocks, key=lambda item: item.starts_at):
         lines.append(
-            f"{block.starts_at:%H:%M} to {block.ends_at:%H:%M}  {named(block.assignment_id)}"
+            f"{block.starts_at:%H:%M} to {block.ends_at:%H:%M}, set aside for "
+            f"{named(block.assignment_id)}"
         )
         lines.append(f"    {block.rationale}")
     if not plan.blocks:

@@ -314,8 +314,15 @@ the reason `SINGLE_SOURCE` is a state of its own rather than a kind of yes, and
 the flag is read by exclusion so a state added later reads as uncertain until
 somebody decides otherwise.
 
-**Not built:** the daily minute budget is a constant, not a household setting,
-and the window is still a fixed six-day span rather than a school week.
+The two minute budgets are the household's settings, `BLOSSOM_EVENING_MINUTES`
+and `BLOSSOM_TOO_MUCH_MINUTES`, read once at startup and handed to the graph:
+what an evening may hold, and what it is held to once she has said today is too
+much. Neither is a rule of the system, because no evening length is right for
+every family. The defaults are 150 and 75, and the second must be less than
+the first or her signal would change nothing.
+
+**Not built:** a way to change the budgets from a page rather than the
+environment, and a budget that varies by day of the week.
 
 ## The plan graph
 
@@ -473,8 +480,9 @@ A press records that today, by the household's clock, is too much, in
 `WorkloadSignalsStore`, `blossom/stores/workload_signals.py`. Three things
 follow, each visible at once. Her page shows the signal, the time she gave it,
 and what it changes, with a button to take it back. The evening's budget is
-cut to half (`reduced_budget`), and the cut is made in the graph's `retrieve`
-node before the planner is asked, so the tier-one budget check enforces it and
+cut to the household's shorter one, `BLOSSOM_TOO_MUCH_MINUTES`, and the cut is
+made in the graph's `retrieve` node before the planner is asked, so the
+tier-one budget check enforces it and
 the planner is told, in a block written by this system, that her word on the
 evening is final. The draft, written to her and read by both, says the plan
 was kept to the reduced budget because she said so. This is the third tier of verification
@@ -579,8 +587,14 @@ every key fails.
 `ProjectStateStore` takes its clock as a required argument for the same
 reason: a store cannot invent a household's zone.
 
-**Not built:** a calendar policy. The weekly window is a fixed six-day span
-from today, not a school week, and nothing yet knows about no-school days,
+Her page frames the school week, Monday to Sunday, the way the school's own
+page does, and moves to the weeks either side. The planner reads a different
+window, the evening it plans and the six days after, because a plan made on a
+Sunday has to see the week ahead; her page says through which day a plan
+looks. Both go through `read_week`, so they never differ about whether an
+item is in a window, only about where the window starts.
+
+**Not built:** a calendar policy. Nothing yet knows about no-school days,
 bedtimes, or a term calendar. Durations that cross a daylight-saving night
 need to be computed in UTC when that arrives; both transitions fall inside the
 school year and are covered by tests today only at the level of the date.
