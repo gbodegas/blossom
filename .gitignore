@@ -253,9 +253,11 @@ secrets/
 credentials.json
 token.json
 
-# Real data. Only data/synthetic/ is ever tracked.
+# Real data. Only the two synthetic sets, data/synthetic/ and data/sample/,
+# are ever tracked.
 data/*
 !data/synthetic/
+!data/sample/
 !data/README.md
 *.db
 *.sqlite
@@ -301,7 +303,7 @@ Thumbs.db
 .local/
 
 # Blossom real data
-# Only data/synthetic/ is ever committed. These paths exist so that a real
-# family export cannot be added to the index by accident.
+# Only data/synthetic/ and data/sample/ are ever committed. These paths exist
+# so that a real family export cannot be added to the index by accident.
 data/real/
 data/private/

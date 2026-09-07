@@ -79,6 +79,9 @@ class Noticing(BaseModel):
     """The record's due date, as stated before the sources were read."""
     observed: tuple[str, ...]
     """Each source's claim as ``SourceRecord.describe`` renders it, in the order observed."""
+    spoken: tuple[str, ...] = ()
+    """The same claims as ``SourceRecord.spoken`` renders them, with channels named
+    as she reads them, for the draft."""
     observed_dates: tuple[date, ...]
     """The distinct dates the sources gave that could be read as dates, earliest first."""
     verdict: Verdict
@@ -147,6 +150,7 @@ def notice_due_date(expectation: DueDateExpectation, records: list[SourceRecord]
         assignment_id=expectation.assignment_id,
         expected=expectation.due_date,
         observed=tuple(record.describe() for record in records),
+        spoken=tuple(record.spoken() for record in records),
         observed_dates=tuple(readable),
         verdict=verdict,
     )

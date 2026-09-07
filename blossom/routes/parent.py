@@ -421,6 +421,7 @@ def review_page(
             "help_open": [help_view(state, r) for r in state.help_requests.open_requests()],
             "help_resolved": [help_view(state, r) for r in state.help_requests.recently_resolved()],
             "note_max_length": NOTE_MAX_LENGTH,
+            "sample": state.settings.sample,
         },
         status_code=status_code,
     )

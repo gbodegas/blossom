@@ -14,7 +14,7 @@ leaves the agent, called directly rather than through a tool loop. A model
 never chooses to call it; the graph calls it once, after the checks.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 
 from blossom.drafts import Draft
@@ -22,8 +22,11 @@ from blossom.heuristic_relevance import CriticVerdict
 from blossom.noticing import Noticing
 from blossom.plan_checks import PlanVerification
 from blossom.plans import DailyPlan
+from blossom.reconciliation import SourceConfidence
 from blossom.stores.project_state import Assignment
 from blossom.tools import create_draft
+
+CLARIFY = "Dates needing clarification:"
 
 
 def spoken_date(value: date) -> str:
@@ -45,20 +48,32 @@ def compose_draft(
     verdict: CriticVerdict | None,
     settled: bool,
     noticings: Sequence[Noticing] = (),
+    confidence: Mapping[str, SourceConfidence] | None = None,
     too_much: bool = False,
     budget_minutes: int | None = None,
 ) -> Draft:
-    """The draft she reads: the evening, then what is uncertain, then the review.
+    """The draft she reads: the evening, then the dates to clarify, then the review.
 
     ``settled`` is whether the reviewer accepted the plan. When it did not, the
     heading says so, and the notes below show why, so the plan is presented as
     a proposal with a dissent attached rather than as a recommendation.
+
+    A date is listed for clarification only when something is missing or
+    contested: no date on record, sources that give different dates, or
+    sources that give a date the record does not match. A date one channel
+    gives and nothing disputes is not a task for anyone, and neither is a date
+    only the family's record has, or one the sources spoke about in words the
+    comparator could not read: lack of corroboration alone does not call for a
+    word with the school. How far a date can be trusted stays on her page
+    beside the item.
 
     ``draft_id`` is given rather than generated because the graph derives it
     from its thread: a node that runs twice must produce the same draft, and
     the drafts table keys on it.
     """
     by_id = {item.assignment_id: item for item in assignments}
+    noticed_by_id = {item.assignment_id: item for item in noticings}
+    trust = confidence or {}
 
     def named(assignment_id: str) -> str:
         item = by_id.get(assignment_id)
@@ -91,23 +106,26 @@ def compose_draft(
         lines.extend(["", "Waiting for another day:"])
         lines.extend(f"- {named(item.assignment_id)}: {item.reason}" for item in plan.deferred)
 
-    if verification.uncertain_due_dates:
-        lines.extend(["", "Due dates worth checking with the school:"])
-        lines.extend(
-            f"- {named(assignment_id)}" for assignment_id in verification.uncertain_due_dates
-        )
+    def clarification(item: Assignment) -> str | None:
+        """Why this item's date needs a word with someone, or ``None`` when it does not."""
+        noticed = noticed_by_id.get(item.assignment_id)
+        claims = "; ".join(noticed.spoken) if noticed is not None else ""
+        if item.due_date is None:
+            if noticed is not None and noticed.contradicted:
+                return f"the date needs asking about; the sources say {claims}"
+            return "the date needs asking about"
+        if noticed is not None and noticed.contradicted:
+            return f"recorded as due {short_date(item.due_date)}, but the sources say {claims}"
+        if trust.get(item.assignment_id) == SourceConfidence.SOURCES_DISAGREE:
+            return f"the sources give different dates: {claims}"
+        return None
 
-    if verification.undated:
-        lines.extend(["", "No due date on record; worth asking:"])
-        lines.extend(f"- {named(assignment_id)}" for assignment_id in verification.undated)
-
-    contradicted = [item for item in noticings if item.contradicted]
-    if contradicted:
-        lines.extend(["", "The record and the school disagree; the record may need correcting:"])
-        lines.extend(
-            f"- {named(item.assignment_id)}, but the sources say {item.sources_say()}"
-            for item in contradicted
-        )
+    to_clarify = [
+        (item, reason) for item in assignments if (reason := clarification(item)) is not None
+    ]
+    if to_clarify:
+        lines.extend(["", CLARIFY])
+        lines.extend(f"- {named(item.assignment_id)}: {reason}" for item, reason in to_clarify)
 
     if verdict is not None:
         lines.extend(["", "The reviewer's notes:"])

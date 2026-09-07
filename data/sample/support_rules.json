@@ -1,0 +1,17 @@
+[
+  {
+    "rule_id": "sample-stop-time",
+    "instruction": "Schoolwork stops by 20:30 on a school night. Nothing is scheduled after that.",
+    "asserted_at": "2026-09-01T18:00:00+00:00"
+  },
+  {
+    "rule_id": "sample-materials-out",
+    "instruction": "Before a block starts, have out what she already knows she needs for it: the book, the binder, the form to sign.",
+    "asserted_at": "2026-09-01T18:00:00+00:00"
+  },
+  {
+    "rule_id": "sample-forms-are-minutes",
+    "instruction": "A form to sign or a materials check gets a short reserved period, never a long one. It is minutes, not a sitting.",
+    "asserted_at": "2026-09-01T18:00:00+00:00"
+  }
+]
