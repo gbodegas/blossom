@@ -60,7 +60,7 @@ from blossom.anthropic_client import model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
 from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
-from blossom.settings import TEMPLATE_PATH
+from blossom.settings import CALENDAR_MARGIN, TEMPLATE_PATH
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
 from blossom.views import (
@@ -164,15 +164,26 @@ def passed(evening: date) -> str:
     )
 
 
+def beyond(evening: date) -> str:
+    """Why a plan for an evening past the calendar's edge is refused: its week cannot be read."""
+    return (
+        f"The evening of {evening.isoformat()} is past the edge of the calendar. "
+        f"Plans reach no later than {(date.max - CALENDAR_MARGIN).isoformat()}."
+    )
+
+
 @router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
 async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> PlanRunView:
     """Run the plan graph for one evening, up to the gate or to the reason it stopped.
 
-    An evening that has passed is refused with 422 before anything runs.
+    An evening that has passed, or one past the edge of the calendar, is
+    refused with 422 before anything runs.
     """
     evening = request.plan_date or state.clock.today()
     if evening < state.clock.today():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=passed(evening))
+    if evening > date.max - CALENDAR_MARGIN:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=beyond(evening))
     require_model(graphs)
     return await run_plan(
         graphs.build(),
