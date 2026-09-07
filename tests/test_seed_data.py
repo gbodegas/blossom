@@ -159,7 +159,7 @@ def test_the_fixtures_span_two_school_weeks_with_every_state_named() -> None:
     assert "Due Wednesday, August 26, 2026" in this_week
     assert "The school says otherwise." in this_week
     assert "Assigned this week, due later" in this_week
-    assert "Quadratic modeling problem set (Algebra II), due Monday, August 24." in this_week
+    assert "Quadratic modeling problem set (Algebra II), due Monday, August 24, 2026." in this_week
 
 
 def test_the_page_says_what_the_planner_looks_at() -> None:

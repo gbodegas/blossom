@@ -63,8 +63,8 @@ def test_work_due_after_the_week_is_listed_as_assigned_not_shown_as_due() -> Non
     assert "Science fair topic proposal" in cards
     assert "Quadratic modeling problem set" not in cards
     assert "Reading log, week one" not in cards
-    assert "Quadratic modeling problem set (Algebra II), due Monday, August 24." in after
-    assert "Reading log, week one (English), due Tuesday, August 25." in after
+    assert "Quadratic modeling problem set (Algebra II), due Monday, August 24, 2026." in after
+    assert "Reading log, week one (English), due Tuesday, August 25, 2026." in after
 
 
 def test_the_next_week_is_a_page_of_its_own() -> None:
@@ -138,9 +138,20 @@ def test_work_assigned_this_week_is_due_later_only_when_it_is(tmp_path: pathlib.
     _, shown = page(BLOSSOM_FIXTURE_PATH=str(tmp_path))
     _, week_before = page(week="2026-08-10", BLOSSOM_FIXTURE_PATH=str(tmp_path))
 
-    assert "Due after the week (Science), due Thursday, August 27." in shown
+    assert "Due after the week (Science), due Thursday, August 27, 2026." in shown
     assert "Due before the week" not in shown
     assert "Due before the week" in week_before
+
+
+def test_work_due_in_another_year_says_which(tmp_path: pathlib.Path) -> None:
+    """The list can hold work due in any later year, so the year is part of the date."""
+    row = dict(FIXTURE_ROW, assignment_id="next-year", title="Long project", due_date="2027-08-27")
+    (tmp_path / "assignments.json").write_text(json.dumps([row]), encoding="utf-8")
+    (tmp_path / "deadline_sources.json").write_text("[]", encoding="utf-8")
+
+    _, shown = page(BLOSSOM_FIXTURE_PATH=str(tmp_path))
+
+    assert "Long project (Science), due Friday, August 27, 2027." in shown
 
 
 def test_the_parents_accepted_review_keeps_its_sage_state() -> None:
