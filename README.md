@@ -117,6 +117,9 @@ Then open <http://127.0.0.1:8000/student/due-this-week>. It should show five
 assignments due that week, one with a banner saying the school disagrees with
 the record, and two more assigned that week and due the next.
 
+A second synthetic set, a plain week without the awkward cases, is described
+in the development guide under the sample week.
+
 `.env.example` sets the household's time zone, which has no default because
 "due this week" means the days you live in, and pins the clock to August 19,
 2026, the week the fixtures are written for. The week is the school week,

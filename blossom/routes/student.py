@@ -494,7 +494,12 @@ def student_page(
     return templates.TemplateResponse(
         request,
         "student_due_this_week.html",
-        {"view": view, "problem": problem, "note_max_length": NOTE_MAX_LENGTH},
+        {
+            "view": view,
+            "problem": problem,
+            "note_max_length": NOTE_MAX_LENGTH,
+            "sample": state.settings.sample,
+        },
         status_code=status_code,
     )
 

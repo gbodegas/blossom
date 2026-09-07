@@ -30,6 +30,14 @@ class SourceChannel(StrEnum):
 
 
 SCHOOL_CHANNELS: frozenset[SourceChannel] = frozenset({SourceChannel.LMS, SourceChannel.EMAIL})
+
+CHANNEL_NAMES: dict[SourceChannel, str] = {
+    SourceChannel.LMS: "school portal",
+    SourceChannel.EMAIL: "school email",
+    SourceChannel.PARENT_ENTRY: "parent's entry",
+    SourceChannel.STUDENT_REPORT: "your report",
+}
+"""Each channel as a person reads it, for text written to her."""
 """The channels that speak for the school. A date from one of them that the
 record does not match is the contradiction her page makes prominent; a
 parent's entry or her own report that differs is said quietly."""
@@ -57,9 +65,14 @@ class SourceRecord(BaseModel):
     seen_in: str | None = None
 
     def describe(self) -> str:
-        """The claim as a person reads it: the channel, where in it, and the value."""
+        """The claim with its channel named as the data names it, where in it, and the value."""
         where = f" ({self.seen_in})" if self.seen_in else ""
         return f"{self.channel}{where}: {self.asserted_value}"
+
+    def spoken(self) -> str:
+        """The claim as she reads it: ``school portal (day header): 2026-08-21``."""
+        where = f" ({self.seen_in})" if self.seen_in else ""
+        return f"{CHANNEL_NAMES[self.channel]}{where}: {self.asserted_value}"
 
 
 class Agreement(BaseModel):

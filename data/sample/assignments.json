@@ -1,0 +1,42 @@
+[
+  {
+    "assignment_id": "sample-geometry-exercises",
+    "course": "Geometry",
+    "title": "HW U1.1 Pg 11 #16, 17, 22, 23",
+    "due_date": "2026-09-08",
+    "dependencies": [],
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-09-04",
+    "kind": "HOMEWORK"
+  },
+  {
+    "assignment_id": "sample-syllabus-signed",
+    "course": "Religion",
+    "title": "Syllabus, signed",
+    "due_date": "2026-09-09",
+    "dependencies": [],
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-09-03",
+    "kind": "TASK"
+  },
+  {
+    "assignment_id": "sample-binder-check",
+    "course": "Spanish",
+    "title": "Binder and dividers check",
+    "due_date": "2026-09-11",
+    "dependencies": [],
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-09-04",
+    "kind": "TASK"
+  },
+  {
+    "assignment_id": "sample-reading-log",
+    "course": "Humanities",
+    "title": "Reading log",
+    "due_date": "2026-09-14",
+    "dependencies": [],
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-09-07",
+    "kind": "HOMEWORK"
+  }
+]

@@ -45,7 +45,11 @@ TODAY_VARIABLE = "BLOSSOM_TODAY"
 TIMEZONE_VARIABLE = "BLOSSOM_TIMEZONE"
 EVENING_MINUTES_VARIABLE = "BLOSSOM_EVENING_MINUTES"
 TOO_MUCH_MINUTES_VARIABLE = "BLOSSOM_TOO_MUCH_MINUTES"
+SAMPLE_VARIABLE = "BLOSSOM_SAMPLE"
 ANTHROPIC_API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
+
+YES_VALUES = frozenset({"1", "true", "yes", "on"})
+NO_VALUES = frozenset({"0", "false", "no", "off"})
 
 # What an evening of schoolwork is held to, and what it is held to once she
 # has said today is too much, when the household has not said otherwise.
@@ -152,6 +156,10 @@ class Settings:
     """From ``BLOSSOM_TOO_MUCH_MINUTES``: what a plan is held to on an evening she
     has said is too much. Less than ``evening_minutes``, or the signal would
     change nothing."""
+    sample: bool = False
+    """From ``BLOSSOM_SAMPLE``. True marks every page "Sample week": what is shown
+    is a synthetic scenario, not the family's own. Set by the sample launch and
+    nothing else; a pinned clock on its own says nothing about whose data this is."""
 
     def __post_init__(self) -> None:
         if self.today is not None and not (
@@ -221,6 +229,20 @@ class Settings:
                 msg = f"{variable} must be a whole number of minutes, got {value!r}"
                 raise ValueError(msg) from error
 
+        def flag(variable: str) -> bool:
+            value = source.get(variable)
+            if value is None or not value.strip():
+                return False
+            given = value.strip().lower()
+            if given in YES_VALUES:
+                return True
+            if given in NO_VALUES:
+                return False
+            msg = (
+                f"{variable} must be yes or no (1, true, yes, on; 0, false, no, off), got {value!r}"
+            )
+            raise ValueError(msg)
+
         local = LOCAL_STATE_PATH
         return cls(
             fixture_path=read(FIXTURE_PATH_VARIABLE, REPOSITORY_ROOT / "data" / "synthetic"),
@@ -232,6 +254,7 @@ class Settings:
             anthropic_api_key=anthropic_api_key,
             evening_minutes=minutes(EVENING_MINUTES_VARIABLE, DEFAULT_EVENING_MINUTES),
             too_much_minutes=minutes(TOO_MUCH_MINUTES_VARIABLE, DEFAULT_TOO_MUCH_MINUTES),
+            sample=flag(SAMPLE_VARIABLE),
         )
 
 

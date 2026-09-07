@@ -149,6 +149,48 @@ it costs depends on the week and the revisions; the API's usage page says
 after a run. All of this happens before the plan reaches her page and the
 parent's for review, and a review sends nothing anywhere.
 
+## The sample week
+
+`data/sample/` is a second synthetic set for showing Blossom: four ordinary
+assignments in the school week of September 7, 2026, each with one date from
+the school portal and nothing disputing it, so the opening view is a plain
+week rather than the awkward cases the main fixtures exist to exercise. Its
+launch file, `data/sample/sample.env`, points the fixture path at it, pins
+the clock to Monday the seventh, puts the three state files under
+`.local/sample/`, and sets `BLOSSOM_SAMPLE=1`, which marks both pages
+"Sample week". Load it after `.env`, so the household's time zone and the
+model key come from there and nothing in it touches the family's own state:
+
+```bash
+uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
+```
+
+Without `uv`, set the same variables in the shell:
+
+```powershell
+$env:BLOSSOM_FIXTURE_PATH = "data/sample"
+$env:BLOSSOM_TODAY = "2026-09-07"
+$env:BLOSSOM_DATABASE_PATH = ".local/sample/blossom.sqlite3"
+$env:BLOSSOM_CHECKPOINT_PATH = ".local/sample/checkpoints.sqlite3"
+$env:BLOSSOM_TRACE_PATH = ".local/sample/traces.sqlite3"
+$env:BLOSSOM_SAMPLE = "1"
+.\.venv\Scripts\python -m uvicorn blossom.app:app --reload
+```
+
+Her page shows three items due that week, each saying its date is from the
+school portal, and the reading log, assigned that Monday and due the next,
+under "Assigned this week, due later"; the following week shows the same
+reading log as due. A plan made for that evening lists no dates to clarify,
+because nothing is missing or contested. "Previous week" shows an empty week,
+and the main fixtures under `data/synthetic/` keep the disagreement, the
+contradiction, and the undated form for when those are the point.
+
+`data/sample/prepared_plan.md` is a written plan for the same evening, for
+the case where live planning is not available while the sample is shown. It
+was not made by the planner and no review of it has run, and it says so at
+the top. Show it as prepared, never as a plan the system made or one that
+passed its checks; the app has no way to serve it as a plan, by design.
+
 ## When uv cannot download
 
 On a network that routes Python packages through an internal proxy or index,

@@ -21,6 +21,7 @@ from blossom.agent.compose import compose_draft
 from blossom.agent.prompts import assignments_block, critic_brief
 from blossom.app import create_app
 from blossom.heuristic_relevance import CriticVerdict
+from blossom.noticing import expect_due_date, notice_due_date
 from blossom.plan_checks import PlanCheck, check_plan
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import Reconciler, SourceChannel, SourceConfidence, SourceRecord
@@ -235,7 +236,14 @@ def test_the_draft_says_when_there_is_no_due_date() -> None:
     )
 
     assert "Syllabus, signed (Geometry, no due date on record): ask for the date" in draft.body
-    assert "No due date on record; worth asking:" in draft.body
+    assert "Dates needing clarification:" in draft.body
+    assert (
+        "- Syllabus, signed (Geometry, no due date on record): the date needs asking about"
+        in draft.body
+    )
+    assert draft.body.count("Syllabus, signed (Geometry, no due date on record)") == 2, (
+        "once in the deferrals, once among the dates to clarify"
+    )
 
 
 # -------------------------------------------------------------------- the claims
@@ -245,6 +253,67 @@ def record(channel: SourceChannel, value: str, seen_in: str | None = None) -> So
     return SourceRecord(
         channel=channel, asserted_value=value, observed_at=OBSERVED, confidence=0.8, seen_in=seen_in
     )
+
+
+def test_a_date_one_channel_gives_and_nothing_disputes_is_no_task_for_anyone() -> None:
+    """The draft lists a date for clarification only when it is missing or contested."""
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+        deferred=[],
+    )
+    verification = check_plan(
+        plan,
+        due_in_window=[ESSAY],
+        zone=ZONE,
+        confidence={"assignment-canal-essay": SourceConfidence.SINGLE_SOURCE},
+    )
+    assert verification.uncertain_due_dates == ("assignment-canal-essay",)
+
+    draft = compose_draft(
+        draft_id="draft:test",
+        plan=plan,
+        assignments=[ESSAY],
+        verification=verification,
+        verdict=CriticVerdict(findings=[]),
+        settled=True,
+        noticings=[
+            notice_due_date(expect_due_date(ESSAY), [record(SourceChannel.LMS, "2026-08-21")])
+        ],
+        confidence={"assignment-canal-essay": SourceConfidence.SINGLE_SOURCE},
+    )
+
+    assert "Dates needing clarification:" not in draft.body
+    assert "worth checking" not in draft.body
+
+
+def test_sources_that_disagree_put_the_item_once_among_the_dates_to_clarify() -> None:
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+        deferred=[],
+    )
+    claims = [
+        record(SourceChannel.LMS, "2026-08-21"),
+        record(SourceChannel.PARENT_ENTRY, "2026-08-22"),
+    ]
+    draft = compose_draft(
+        draft_id="draft:test",
+        plan=plan,
+        assignments=[ESSAY],
+        verification=check_plan(plan, due_in_window=[ESSAY], zone=ZONE),
+        verdict=CriticVerdict(findings=[]),
+        settled=True,
+        noticings=[notice_due_date(expect_due_date(ESSAY), claims)],
+        confidence={"assignment-canal-essay": SourceConfidence.SOURCES_DISAGREE},
+    )
+
+    assert draft.body.count("Dates needing clarification:") == 1
+    assert (
+        "- Canal Era comparison essay (World History, due Aug 21): the sources give different "
+        "dates: school portal: 2026-08-21; parent's entry: 2026-08-22"
+    ) in draft.body
+    assert "PARENT_ENTRY" not in draft.body
 
 
 def test_two_claims_from_one_channel_are_told_apart_by_where_they_were_seen() -> None:

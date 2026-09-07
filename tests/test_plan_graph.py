@@ -587,7 +587,10 @@ def test_an_undated_task_reaches_the_planner_the_checks_and_the_draft() -> None:
     assert result["outcome"] == "accepted"
     body = result["__interrupt__"][0].value["body"]
     assert "Syllabus, signed (Geometry, no due date on record): ask for the date" in body
-    assert "No due date on record; worth asking:" in body
+    assert "Dates needing clarification:" in body
+    assert (
+        "- Syllabus, signed (Geometry, no due date on record): the date needs asking about" in body
+    )
 
 
 def test_a_plan_that_forgets_an_undated_task_fails_the_omission_check() -> None:
@@ -640,11 +643,12 @@ def test_a_contradicted_record_reaches_the_planner_the_critic_and_the_draft() ->
     assert result["verification"].contradicted == ("assignment-canal-essay",)
     assert result["outcome"] == "accepted"
     body = result["__interrupt__"][0].value["body"]
-    assert "The record and the school disagree; the record may need correcting:" in body
+    assert "Dates needing clarification:" in body
     assert (
-        "- Canal Era comparison essay (World History, due Aug 21), but the sources say "
-        "LMS: 2026-08-20"
+        "- Canal Era comparison essay (World History, due Aug 21): recorded as due Aug 21, "
+        "but the sources say school portal: 2026-08-20"
     ) in body
+    assert "worth checking with the school" not in body
 
 
 def test_a_block_after_the_school_date_fails_the_checks_though_the_record_allows_it() -> None:
@@ -693,7 +697,10 @@ def test_an_item_the_record_puts_next_month_is_in_the_week_when_a_source_puts_it
         in human_text(planner.briefs[0])
     )
     body = result["__interrupt__"][0].value["body"]
-    assert "- Lab report (Science, due Sep 15), but the sources say LMS: 2026-08-20" in body
+    assert (
+        "- Lab report (Science, due Sep 15): recorded as due Sep 15, "
+        "but the sources say school portal: 2026-08-20"
+    ) in body
 
 
 def test_an_item_nothing_puts_in_the_week_stays_out_of_it() -> None:

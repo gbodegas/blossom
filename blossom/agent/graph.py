@@ -391,6 +391,7 @@ def build_plan_graph(
             verdict=state.get("verdict"),
             settled=outcome == "accepted",
             noticings=state.get("noticings", []),
+            confidence=state.get("confidence", {}),
             too_much=state.get("too_much", False),
             budget_minutes=state.get("budget_minutes", evening_minutes),
         )

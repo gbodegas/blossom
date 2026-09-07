@@ -292,6 +292,17 @@ article h2 {
   color: var(--sage-ink);
 }
 
+/* Every page of a sample launch says so, above its heading. */
+.sample-label {
+  margin: 0 0 0.35rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--rose-ink);
+}
+
 /* ------------------------------------------------------------- the week frame */
 
 .week-frame {
