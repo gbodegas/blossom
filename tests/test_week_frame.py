@@ -7,18 +7,32 @@ page frames a week. The evening's minute budgets are the household's settings
 and the page shows the numbers it was given.
 """
 
+import json
 import pathlib
 from datetime import date
 
+import pytest
 from fastapi.testclient import TestClient
 
 from blossom.agent.prompts import PLANNER_SYSTEM
 from blossom.app import create_app
 from blossom.noticing import monday_of
+from blossom.settings import STATIC_PATH as STATIC
+from blossom.settings import TEMPLATE_PATH as TEMPLATES
 from tests.support import fixture_settings
 
 PINNED_TODAY = "2026-08-19"
 MONDAY = "2026-08-17"
+FIXTURE_ROW: dict[str, object] = {
+    "assignment_id": "row",
+    "course": "Science",
+    "title": "A row",
+    "due_date": None,
+    "dependencies": [],
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-08-18",
+    "kind": "HOMEWORK",
+}
 
 
 def page(week: str | None = None, **environment: str) -> tuple[int, str]:
@@ -78,12 +92,65 @@ def test_any_day_names_its_whole_week() -> None:
         assert "Monday, August 17 to" in shown
 
 
-def test_a_week_that_is_not_a_date_is_said_on_todays_week() -> None:
-    status, shown = page(week="soon")
+@pytest.mark.parametrize("given", ["soon", "", "   ", "2026-08"])
+def test_a_week_that_is_not_a_date_is_said_on_todays_week(given: str) -> None:
+    """Only an absent ``week`` means today's week without a word; a blank one is not a date."""
+    status, shown = page(week=given)
 
     assert status == 422
     assert "That is not a date, so this is the week that holds today." in shown
     assert "<h1>Due this week</h1>" in shown
+
+
+@pytest.mark.parametrize("given", ["0001-01-01", "0001-01-05", "9999-12-31", "9999-12-27"])
+def test_the_edges_of_the_calendar_are_said_not_crashed_into(given: str) -> None:
+    """The first and last weeks the date type holds have no week on one side to link to."""
+    status, shown = page(week=given)
+
+    assert status == 422
+    assert "That week is past the edge of the calendar" in shown
+    assert "<h1>Due this week</h1>" in shown
+
+
+@pytest.mark.parametrize(
+    ("given", "heading"),
+    [("0001-01-08", "Week of January 8"), ("9999-12-20", "Week of December 20")],
+)
+def test_the_weeks_just_inside_the_edges_are_shown(given: str, heading: str) -> None:
+    status, shown = page(week=given)
+
+    assert status == 200
+    assert f"<h1>{heading}</h1>" in shown
+
+
+def test_work_assigned_this_week_is_due_later_only_when_it_is(tmp_path: pathlib.Path) -> None:
+    """Work given out this week and due before it is not "due later"; it belongs to the
+    week it was due in."""
+    later = dict(
+        FIXTURE_ROW, assignment_id="later", title="Due after the week", due_date="2026-08-27"
+    )
+    before = dict(
+        FIXTURE_ROW, assignment_id="before", title="Due before the week", due_date="2026-08-14"
+    )
+    (tmp_path / "assignments.json").write_text(json.dumps([later, before]), encoding="utf-8")
+    (tmp_path / "deadline_sources.json").write_text("[]", encoding="utf-8")
+
+    _, shown = page(BLOSSOM_FIXTURE_PATH=str(tmp_path))
+    _, week_before = page(week="2026-08-10", BLOSSOM_FIXTURE_PATH=str(tmp_path))
+
+    assert "Due after the week (Science), due Thursday, August 27." in shown
+    assert "Due before the week" not in shown
+    assert "Due before the week" in week_before
+
+
+def test_the_parents_accepted_review_keeps_its_sage_state() -> None:
+    """Her page stopped emitting the class; the parent's page still says a reviewer
+    accepted a plan with it, so the style stays."""
+    parent = (TEMPLATES / "parent_review.html").read_text(encoding="utf-8")
+    styles = (STATIC / "blossom.css").read_text(encoding="utf-8")
+
+    assert 'class="confidence corroborated"' in parent
+    assert ".confidence.corroborated {" in styles
 
 
 def test_an_empty_week_says_so_in_its_own_tense(tmp_path: pathlib.Path) -> None:

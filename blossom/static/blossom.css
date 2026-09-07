@@ -285,6 +285,13 @@ article h2 {
   color: var(--amber-ink);
 }
 
+/* The parent's page says a reviewer accepted a plan in this state. */
+.confidence.corroborated {
+  border-left-color: var(--sage-ink);
+  background: var(--sage-bg);
+  color: var(--sage-ink);
+}
+
 /* ------------------------------------------------------------- the week frame */
 
 .week-frame {

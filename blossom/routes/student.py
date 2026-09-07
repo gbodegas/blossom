@@ -95,6 +95,9 @@ CHANNEL_WORDS: Final[dict[str, str]] = {
     SourceChannel.STUDENT_REPORT: "what you reported",
 }
 NOT_A_WEEK: Final = "That is not a date, so this is the week that holds today."
+BEYOND_THE_CALENDAR: Final = (
+    "That week is past the edge of the calendar, so this is the week that holds today."
+)
 
 SIGNALED_SINCE: Final = (
     "You have said today is too much, and this plan was made for the full evening. "
@@ -356,6 +359,31 @@ def assignment_view(
     )
 
 
+def showable(day: date) -> bool:
+    """Whether the week holding ``day`` has a week either side of it on the calendar.
+
+    The page links to the weeks before and after, so the first and last weeks
+    the date type can hold are refused rather than shown with a link that
+    cannot be computed.
+    """
+    start = monday_of(day)
+    return date.min + A_WEEK <= start <= date.max - A_WEEK
+
+
+def assigned_for_later(item: Assignment, frame: WeekView) -> bool:
+    """Given out in the week shown and due after it, by the record's own dates.
+
+    Work due before the week is outside the window too, and is not "due
+    later"; it belongs to the week it was due in.
+    """
+    return (
+        item.assigned_on is not None
+        and frame.start <= item.assigned_on <= frame.end
+        and item.due_date is not None
+        and item.due_date > frame.end
+    )
+
+
 def week_shown(today: date, chosen: date | None) -> WeekView:
     """The school week holding ``chosen``, or today's when nothing is chosen."""
     start = monday_of(today if chosen is None else chosen)
@@ -388,8 +416,7 @@ def build_student_due_this_week_view(
     in_frame = {item.assignment_id for item in shown.assignments}
     assigned: list[StudentAssignmentView] = []
     for item in state.project_state.all_assignments():
-        given = item.assigned_on
-        if item.assignment_id in in_frame or given is None or not frame.start <= given <= frame.end:
+        if item.assignment_id in in_frame or not assigned_for_later(item, frame):
             continue
         records = state.source.deadline_records(item.assignment_id)
         assigned.append(
@@ -440,16 +467,25 @@ def due_this_week(
     """Render her week and today's plan.
 
     The week is the school week that holds today, or the one holding the day
-    ``week`` names. A value that is not a date is said at the top of today's
-    week rather than answered with an error page.
+    ``week`` names. A value that is not a date, a blank one included, or a
+    week at the edge of the calendar, is said at the top of today's week
+    rather than answered with an error page. Only an absent ``week`` means
+    today's week without a word.
     """
-    if week is None or not week.strip():
+    if week is None:
         return student_page(request, state)
     try:
         chosen = date.fromisoformat(week.strip())
     except ValueError:
         return student_page(
             request, state, problem=NOT_A_WEEK, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    if not showable(chosen):
+        return student_page(
+            request,
+            state,
+            problem=BEYOND_THE_CALENDAR,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     return student_page(request, state, week=chosen)
 
