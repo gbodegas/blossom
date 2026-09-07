@@ -57,7 +57,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from blossom.anthropic_client import model_configured
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
-from blossom.noticing import Noticing, expect_due_date, monday_of, notice_due_date, read_week
+from blossom.noticing import (
+    Noticing,
+    expect_due_date,
+    monday_of,
+    notice_due_date,
+    read_date,
+    read_week,
+)
 from blossom.principals import Principal
 from blossom.reconciliation import (
     Disagreement,
@@ -337,12 +344,28 @@ def channels_in_words(channels: Sequence[str]) -> str:
 def assignment_view(
     assignment: Assignment, records: Sequence[SourceRecord], noticed: Noticing
 ) -> StudentAssignmentView:
-    """One assignment as she sees it, with where its date came from said once per channel."""
+    """One assignment as she sees it, with where its date came from said once per channel.
+
+    The card shows the record's date, so a channel confirms it only by giving
+    a value that reads as that date. A value the comparator cannot read, such
+    as a weekday name, is carried apart; it is not the origin of anything.
+    """
     reconciliation = Reconciler().reconcile(list(records))
     disagreement = []
     if isinstance(reconciliation, Disagreement):
         disagreement = [claim.describe() for claim in reconciliation.conflicting_claims]
     channels = list(dict.fromkeys(str(record.channel) for record in records))
+    confirming = list(
+        dict.fromkeys(
+            str(record.channel)
+            for record in records
+            if assignment.due_date is not None
+            and read_date(record.asserted_value) == assignment.due_date
+        )
+    )
+    unreadable = [
+        record.describe() for record in records if read_date(record.asserted_value) is None
+    ]
     return StudentAssignmentView(
         assignment_id=assignment.assignment_id,
         course=assignment.course,
@@ -353,6 +376,9 @@ def assignment_view(
         deadline_confidence=classify_confidence(reconciliation),
         source_channels=channels,
         sources=channels_in_words(channels),
+        confirming_channels=confirming,
+        confirming=channels_in_words(confirming),
+        unreadable=unreadable,
         disagreement=disagreement,
         contradiction=list(noticed.observed) if noticed.contradicted else [],
         assigned_on=assignment.assigned_on,

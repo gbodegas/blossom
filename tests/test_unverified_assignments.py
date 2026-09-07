@@ -45,6 +45,39 @@ def student_page(fixture_root: pathlib.Path | None = None, week: str | None = No
     return response.text
 
 
+LAB = {
+    "assignment_id": "lab",
+    "course": "Science",
+    "title": "Lab write-up",
+    "due_date": "2026-08-21",
+    "dependencies": [],
+    "reported_submission_status": "not_started",
+    "assigned_on": "2026-08-17",
+    "kind": "HOMEWORK",
+}
+
+
+def claim(value: str, channel: str = "LMS", seen_in: str | None = None) -> dict[str, object]:
+    row: dict[str, object] = {
+        "assignment_id": "lab",
+        "channel": channel,
+        "asserted_value": value,
+        "observed_at": "2026-08-19T09:00:00-04:00",
+        "confidence": 0.8,
+    }
+    if seen_in is not None:
+        row["seen_in"] = seen_in
+    return row
+
+
+def lab_page(tmp_path: pathlib.Path, sources: list[dict[str, object]], **row: object) -> str:
+    """Her page for one fixture assignment, the lab write-up, with the claims given."""
+    (tmp_path / "assignments.json").write_text(json.dumps([{**LAB, **row}]), encoding="utf-8")
+    (tmp_path / "deadline_sources.json").write_text(json.dumps(sources), encoding="utf-8")
+    page = student_page(tmp_path)
+    return page.split("Lab write-up", 1)[1].split("</article>", 1)[0]
+
+
 def test_reconciler_reports_absence_instead_of_raising() -> None:
     """An empty record list is a reportable outcome, not an error."""
     assert isinstance(Reconciler().reconcile([]), NoSourceRecords)
@@ -163,6 +196,66 @@ def test_a_contradicted_card_names_the_record_as_the_date_shown() -> None:
     assert "Date from the school portal." not in card
     assert "The school says otherwise." in card
     assert "LMS (day header): 2026-08-21" in card
+
+
+def test_disagreeing_sources_still_say_whose_date_is_on_the_card(tmp_path: pathlib.Path) -> None:
+    dated = " ".join(
+        lab_page(tmp_path, [claim("2026-08-21"), claim("2026-08-22", "PARENT_ENTRY")]).split()
+    )
+    undated = " ".join(
+        lab_page(
+            tmp_path, [claim("2026-08-21"), claim("2026-08-22", "PARENT_ENTRY")], due_date=None
+        ).split()
+    )
+
+    assert "Date from the family's record; the sources below give different ones." in dated
+    assert "No date on the family's record; the sources below give different ones." in undated
+    assert "Sources disagree" in dated
+    assert "Sources disagree" in undated
+
+
+def test_a_value_that_is_not_a_date_does_not_confirm_the_record(tmp_path: pathlib.Path) -> None:
+    """Two portal entries saying "Friday" agree with each other and read as nothing. The
+    record's date is not from them, and the page does not say it is."""
+    card = lab_page(tmp_path, [claim("Friday"), claim("Friday", seen_in="title")])
+    line = " ".join(card.split())
+
+    assert "Due Friday, August 21, 2026" in card
+    assert (
+        "Date from the family's record; what the school portal said could not be read as a date."
+        in line
+    )
+    assert "Not read as a date: LMS: Friday; LMS (title): Friday." in card
+    assert "Date from the school portal." not in card
+    assert 'class="confidence disagree"' not in card
+
+
+def test_a_date_the_record_lacks_is_said_to_be_the_sources(tmp_path: pathlib.Path) -> None:
+    card = lab_page(tmp_path, [claim("2026-08-21")], due_date=None)
+    line = " ".join(card.split())
+
+    assert "No due date on record" in card
+    assert "No date on the family's record; the school portal has one." in line
+    assert "The school says otherwise." in card
+    assert "LMS: 2026-08-21" in card
+
+
+def test_a_readable_date_that_matches_is_the_sources(tmp_path: pathlib.Path) -> None:
+    one = lab_page(tmp_path, [claim("2026-08-21")])
+    two = lab_page(tmp_path, [claim("2026-08-21"), claim("2026-08-21", "STUDENT_REPORT")])
+    mixed = " ".join(
+        lab_page(tmp_path, [claim("2026-08-21"), claim("2026-08-21", seen_in="title")]).split()
+    )
+
+    assert "Date from the school portal." in one
+    assert "Date confirmed by the school portal and what you reported." in two
+    assert "Date from the school portal." in mixed, "one channel twice is one source"
+
+
+def test_every_card_carries_exactly_one_quiet_line_on_the_fixtures() -> None:
+    for week in (None, "2026-08-24"):
+        page = student_page(week=week)
+        assert page.count('<article class="assignment') == page.count('<p class="source">')
 
 
 def test_only_disagreement_and_contradiction_are_made_prominent() -> None:

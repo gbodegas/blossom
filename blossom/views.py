@@ -43,6 +43,15 @@ class StudentAssignmentView(BaseModel):
     """Each channel that spoke about the date, once, in the order first heard."""
     sources: str = ""
     """The same channels in the words her page uses for them, joined for a sentence."""
+    confirming_channels: list[str] = []
+    """Channels whose value reads as the record's date, once each. Empty when the
+    record has no date or nothing readable matches it, so a source is named as
+    the origin of the date shown only when it gave that date."""
+    confirming: str = ""
+    """The confirming channels in the page's words."""
+    unreadable: list[str] = []
+    """Claims whose value could not be read as a date, as ``describe`` renders them.
+    Kept apart: they neither confirm nor contradict anything, and the page says so."""
     disagreement: list[str]
     contradiction: list[str] = []
     """What the sources say when none of them supports the record's date; empty otherwise."""

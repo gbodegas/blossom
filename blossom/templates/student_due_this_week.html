@@ -154,6 +154,39 @@
         her to skim past the shouting. Color is reinforcement; the words
         carry the state.
       #}
+      {#
+        The quiet line says whose date is on the card. The card shows the
+        record's, so a source is named as its origin only when it gave a date
+        that reads as the record's. A claim that cannot be read as a date is
+        listed apart and neither confirms nor contradicts anything.
+      #}
+      {% if assignment.deadline_confidence == "UNVERIFIED" %}
+        <p class="source">From the family's record only; nothing from the school confirms it yet.</p>
+      {% elif assignment.deadline_confidence == "SOURCES_DISAGREE" %}
+        <p class="source">
+          {% if assignment.due_date %}Date from the family's record;{% else %}No date on the family's record;{% endif %}
+          the sources below give different ones.
+        </p>
+      {% elif assignment.contradiction %}
+        <p class="source">
+          {% if assignment.due_date %}Date from the family's record; {{ assignment.sources }}
+          {% if assignment.source_channels|length == 1 %}has{% else %}have{% endif %} a different one.
+          {% else %}No date on the family's record; {{ assignment.sources }}
+          {% if assignment.source_channels|length == 1 %}has{% else %}have{% endif %} one.{% endif %}
+        </p>
+      {% elif assignment.confirming_channels|length == 1 %}
+        <p class="source">Date from {{ assignment.confirming }}.</p>
+      {% elif assignment.confirming_channels %}
+        <p class="source">Date confirmed by {{ assignment.confirming }}.</p>
+      {% else %}
+        <p class="source">
+          Date from the family's record; what {{ assignment.sources }} said could not be read as a date.
+        </p>
+      {% endif %}
+      {% if assignment.unreadable and not assignment.disagreement and not assignment.contradiction %}
+        <p class="source">Not read as a date: {{ assignment.unreadable|join("; ") }}.</p>
+      {% endif %}
+
       {% if assignment.deadline_confidence == "SOURCES_DISAGREE" %}
         <p class="confidence disagree">
           <strong>Sources disagree</strong> about this due date. Nothing has been chosen for you.
@@ -166,22 +199,6 @@
             {% endfor %}
           </ul>
         </div>
-      {% elif assignment.contradiction %}
-        {#
-          The date shown above is the record's. The sources gave another, so
-          the quiet line says whose date is on the card and that the sources
-          differ; the banner below carries what they said.
-        #}
-        <p class="source">
-          Date from the family's record; {{ assignment.sources }}
-          {% if assignment.source_channels|length == 1 %}has{% else %}have{% endif %} a different one.
-        </p>
-      {% elif assignment.deadline_confidence == "UNVERIFIED" %}
-        <p class="source">From the family's record only; nothing from the school confirms it yet.</p>
-      {% elif assignment.deadline_confidence == "SINGLE_SOURCE" %}
-        <p class="source">Date from {{ assignment.sources }}.</p>
-      {% else %}
-        <p class="source">Date confirmed by {{ assignment.sources }}.</p>
       {% endif %}
 
       {% if assignment.contradiction %}
