@@ -30,6 +30,9 @@ class SourceChannel(StrEnum):
 
 
 SCHOOL_CHANNELS: frozenset[SourceChannel] = frozenset({SourceChannel.LMS, SourceChannel.EMAIL})
+"""The channels that speak for the school. A date from one of them that the
+record does not match is the contradiction her page makes prominent; a
+parent's entry or her own report that differs is said quietly."""
 
 CHANNEL_NAMES: dict[SourceChannel, str] = {
     SourceChannel.LMS: "school portal",
@@ -38,9 +41,6 @@ CHANNEL_NAMES: dict[SourceChannel, str] = {
     SourceChannel.STUDENT_REPORT: "your report",
 }
 """Each channel as a person reads it, for text written to her."""
-"""The channels that speak for the school. A date from one of them that the
-record does not match is the contradiction her page makes prominent; a
-parent's entry or her own report that differs is said quietly."""
 
 
 class SourceRecord(BaseModel):

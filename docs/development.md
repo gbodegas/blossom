@@ -165,9 +165,12 @@ model key come from there and nothing in it touches the family's own state:
 uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
 
-Without `uv`, set the same variables in the shell:
+Without `uv`, nothing reads `.env`, so the shell has to supply what that
+file would have: the household's time zone, and the model key if planning is
+to run live. Set those and the sample's own variables together:
 
 ```powershell
+$env:BLOSSOM_TIMEZONE = "America/New_York"
 $env:BLOSSOM_FIXTURE_PATH = "data/sample"
 $env:BLOSSOM_TODAY = "2026-09-07"
 $env:BLOSSOM_DATABASE_PATH = ".local/sample/blossom.sqlite3"
@@ -176,6 +179,9 @@ $env:BLOSSOM_TRACE_PATH = ".local/sample/traces.sqlite3"
 $env:BLOSSOM_SAMPLE = "1"
 .\.venv\Scripts\python -m uvicorn blossom.app:app --reload
 ```
+
+Set `ANTHROPIC_API_KEY` in the same shell for live planning; without it the
+pages work and the plan button is not offered.
 
 Her page shows three items due that week, each saying its date is from the
 school portal, and the reading log, assigned that Monday and due the next,
