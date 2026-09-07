@@ -28,6 +28,12 @@ class SourceChannel(StrEnum):
     STUDENT_REPORT = "STUDENT_REPORT"
 
 
+SCHOOL_CHANNELS: frozenset[SourceChannel] = frozenset({SourceChannel.LMS, SourceChannel.EMAIL})
+"""The channels that speak for the school. A date from one of them that the
+record does not match is the contradiction her page makes prominent; a
+parent's entry or her own report that differs is said quietly."""
+
+
 class SourceRecord(BaseModel):
     """One channel's claim about one fact, at one moment.
 

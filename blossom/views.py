@@ -62,6 +62,8 @@ class StudentAssignmentView(BaseModel):
     disagreement: list[str]
     contradiction: list[str] = []
     """What the sources say when none of them supports the record's date; empty otherwise."""
+    school_contradicts: bool = False
+    """Whether a school channel is among those; only then is the contradiction a banner."""
     assigned_on: date | None = None
 
 

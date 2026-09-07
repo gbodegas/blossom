@@ -68,6 +68,7 @@ from blossom.noticing import (
 )
 from blossom.principals import Principal
 from blossom.reconciliation import (
+    SCHOOL_CHANNELS,
     Disagreement,
     SourceChannel,
     SourceRecord,
@@ -392,6 +393,8 @@ def assignment_view(
         unreadable_sources=channels_in_words(unreadable_channels),
         disagreement=disagreement,
         contradiction=[record.describe() for record in readable] if noticed.contradicted else [],
+        school_contradicts=noticed.contradicted
+        and any(record.channel in SCHOOL_CHANNELS for record in readable),
         assigned_on=assignment.assigned_on,
     )
 

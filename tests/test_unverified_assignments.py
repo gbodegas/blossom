@@ -295,6 +295,35 @@ def test_a_contradiction_names_only_the_channels_that_gave_a_date(tmp_path: path
     assert "Friday" not in listed
 
 
+def test_only_the_schools_date_is_a_banner(tmp_path: pathlib.Path) -> None:
+    """A parent's entry or her own report that differs from the record is said
+    quietly, with what they gave; a school channel's is the banner."""
+    parent = lab_page(tmp_path, [claim("2026-08-22", "PARENT_ENTRY")])
+    hers = lab_page(tmp_path, [claim("2026-08-22", "STUDENT_REPORT")])
+    school = lab_page(tmp_path, [claim("2026-08-22", "EMAIL")])
+
+    assert "what a parent entered has a different one." in " ".join(parent.split())
+    assert "What they gave: PARENT_ENTRY: 2026-08-22." in parent
+    assert "The school says otherwise." not in parent
+    assert 'class="confidence disagree"' not in parent
+    assert "what you reported has a different one." in " ".join(hers.split())
+    assert 'class="confidence disagree"' not in hers
+    assert "The school says otherwise." in school
+    assert "EMAIL: 2026-08-22" in school.split("What the sources say", 1)[1]
+
+
+def test_an_undated_record_with_unreadable_claims_is_not_said_to_have_a_date(
+    tmp_path: pathlib.Path,
+) -> None:
+    card = lab_page(tmp_path, [claim("Friday")], due_date=None)
+    line = " ".join(card.split())
+
+    assert "No due date on record" in card
+    assert "No date on the family's record; what the school portal said could not be read" in line
+    assert "Date from the family's record" not in line
+    assert "Not read as a date: LMS: Friday." in card
+
+
 def test_every_card_carries_exactly_one_quiet_line_on_the_fixtures() -> None:
     for week in (None, "2026-08-24"):
         page = student_page(week=week)

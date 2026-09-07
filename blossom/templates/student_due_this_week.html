@@ -164,8 +164,8 @@
         <p class="source">From the family's record only; nothing from the school confirms it yet.</p>
       {% elif assignment.deadline_confidence == "UNVERIFIED" %}
         <p class="source">
-          Date from the family's record; what {{ assignment.unreadable_sources }} said could not be
-          read as a date.
+          {% if assignment.due_date %}Date from the family's record;{% else %}No date on the family's record;{% endif %}
+          what {{ assignment.unreadable_sources }} said could not be read as a date.
         </p>
       {% elif assignment.deadline_confidence == "SOURCES_DISAGREE" %}
         <p class="source">
@@ -202,7 +202,12 @@
         </div>
       {% endif %}
 
-      {% if assignment.contradiction %}
+      {#
+        The banner is for the school's date. A parent's entry or her own
+        report that differs from the record is said in the quiet line above,
+        and what they gave is listed just as quietly.
+      #}
+      {% if assignment.school_contradicts %}
         <p class="confidence disagree">
           <strong>The school says otherwise.</strong> The date on record may be wrong.
         </p>
@@ -214,6 +219,8 @@
             {% endfor %}
           </ul>
         </div>
+      {% elif assignment.contradiction %}
+        <p class="source">What they gave: {{ assignment.contradiction|join("; ") }}.</p>
       {% endif %}
 
       <p class="status">
