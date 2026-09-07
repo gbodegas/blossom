@@ -165,7 +165,7 @@
       {% elif assignment.deadline_confidence == "UNVERIFIED" %}
         <p class="source">
           {% if assignment.due_date %}Date from the family's record;{% else %}No date on the family's record;{% endif %}
-          what {{ assignment.unreadable_sources }} said could not be read as a date.
+          a value from {{ assignment.unreadable_sources }} could not be read as a date.
         </p>
       {% elif assignment.deadline_confidence == "SOURCES_DISAGREE" %}
         <p class="source">

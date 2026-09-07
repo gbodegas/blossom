@@ -222,7 +222,7 @@ def test_a_value_that_is_not_a_date_does_not_confirm_the_record(tmp_path: pathli
 
     assert "Due Friday, August 21, 2026" in card
     assert (
-        "Date from the family's record; what the school portal said could not be read as a date."
+        "Date from the family's record; a value from the school portal could not be read as a date."
         in line
     )
     assert "Not read as a date: LMS: Friday; LMS (title): Friday." in card
@@ -335,6 +335,29 @@ def test_only_the_schools_date_is_a_banner(tmp_path: pathlib.Path) -> None:
     assert "EMAIL: 2026-08-22" in school.split("What the sources say", 1)[1]
 
 
+@pytest.mark.parametrize(
+    ("sources", "named"),
+    [
+        ([("Friday", "STUDENT_REPORT")], "what you reported"),
+        ([("Friday", "PARENT_ENTRY")], "what a parent entered"),
+        (
+            [("Friday", "LMS"), ("Friday", "STUDENT_REPORT")],
+            "the school portal and what you reported",
+        ),
+    ],
+)
+def test_an_unreadable_value_is_said_in_words_that_fit_every_channel(
+    tmp_path: pathlib.Path, sources: list[tuple[str, str]], named: str
+) -> None:
+    """The words for her own report and a parent's entry begin with "what", so the
+    sentence is built around a value from them rather than what they said."""
+    card = lab_page(tmp_path, [claim(value, channel) for value, channel in sources])
+    line = " ".join(card.split())
+
+    assert f"a value from {named} could not be read as a date." in line
+    assert "what what" not in line
+
+
 def test_an_undated_record_with_unreadable_claims_is_not_said_to_have_a_date(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -342,7 +365,9 @@ def test_an_undated_record_with_unreadable_claims_is_not_said_to_have_a_date(
     line = " ".join(card.split())
 
     assert "No due date on record" in card
-    assert "No date on the family's record; what the school portal said could not be read" in line
+    assert (
+        "No date on the family's record; a value from the school portal could not be read" in line
+    )
     assert "Date from the family's record" not in line
     assert "Not read as a date: LMS: Friday." in card
 
