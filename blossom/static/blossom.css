@@ -258,11 +258,18 @@ article h2 {
 }
 
 /*
-  Confidence is never signaled by color alone. Each banner carries its own
-  wording, so the state survives grayscale printing, low contrast screens, and
-  color vision differences. The tint and the edge are reinforcement, not the
-  message.
+  Where a date came from is said on every card in a quiet line. A banner is
+  kept for the two states that need her attention, and it is never color
+  alone: each carries its own wording, so the state survives grayscale
+  printing, low contrast screens, and color vision differences. The tint and
+  the edge are reinforcement, not the message.
 */
+.source {
+  margin: 0.35rem 0 0;
+  color: var(--text-soft);
+  font-size: 0.92rem;
+}
+
 .confidence {
   border-left: 3px solid var(--slate-ink);
   border-radius: var(--radius-small);
@@ -272,33 +279,61 @@ article h2 {
   color: var(--slate-ink);
 }
 
-.confidence.unverified {
-  border-left-color: var(--rose-ink);
-  background: var(--rose-bg);
-  color: var(--rose-ink);
-}
-
 .confidence.disagree {
   border-left-color: var(--amber-ink);
   background: var(--amber-bg);
   color: var(--amber-ink);
 }
 
-.confidence.single-source {
-  border-left-color: var(--slate-ink);
-  background: var(--slate-bg);
-  color: var(--slate-ink);
-}
-
+/* The parent's page says a reviewer accepted a plan in this state. */
 .confidence.corroborated {
   border-left-color: var(--sage-ink);
   background: var(--sage-bg);
   color: var(--sage-ink);
 }
 
-/* The unverified case is the one most costly to miss, so its card is edged too. */
-article.confidence-unverified {
-  border-color: rgba(229, 168, 180, 0.7);
+/* ------------------------------------------------------------- the week frame */
+
+.week-frame {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin: -0.75rem 0 1.5rem;
+}
+
+.week-frame .range {
+  margin: 0;
+  color: var(--text-soft);
+}
+
+.weeks {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.weeks a {
+  color: var(--slate-ink);
+  background: var(--slate-bg);
+  text-decoration: none;
+  padding: 0.3rem 0.85rem;
+  border-radius: var(--pill);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.92rem;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.weeks a:hover,
+.weeks a:focus-visible {
+  background: rgba(229, 168, 180, 0.3);
+  color: var(--text-strong);
+}
+
+.assigned ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
 }
 
 .claims h3 {

@@ -21,13 +21,14 @@ No model takes part. The rules fit in one function, and
 ``tests/noticing_cases.py`` holds them to a labeled table.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
-from blossom.reconciliation import SourceRecord
+from blossom.reconciliation import Reconciler, ReconciliationResult, SourceRecord
 from blossom.sources import StateSource
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, ProjectStateStore
 
@@ -108,6 +109,20 @@ def read_date(value: str) -> date | None:
         return None
 
 
+def reconcile_dates(records: Sequence[SourceRecord]) -> ReconciliationResult:
+    """Reconcile the claims that read as dates, compared by the date each names.
+
+    Two spellings of one date agree, so a stray space around a date is not a
+    disagreement, and every claim is kept as the source spelled it. A value
+    that cannot be read as a date takes no part: it is neither a second
+    source nor a conflicting one, and a caller that shows claims lists it
+    apart. With no readable claim at all the outcome is ``NoSourceRecords``,
+    whatever else was said.
+    """
+    readable = [record for record in records if read_date(record.asserted_value) is not None]
+    return Reconciler().reconcile(readable, key=read_date)
+
+
 def notice_due_date(expectation: DueDateExpectation, records: list[SourceRecord]) -> Noticing:
     """Compare what the record said with what the sources say, and name the verdict.
 
@@ -162,11 +177,19 @@ class Week:
     """The record set against those claims, by id."""
 
 
+def monday_of(day: date) -> date:
+    """The Monday that starts the school week ``day`` falls in."""
+    return day - timedelta(days=day.weekday())
+
+
 def read_week(project_state: ProjectStateStore, source: StateSource, start: date) -> Week:
     """Read the week from ``start``: state each record's date, read the sources, then select.
 
-    The student's page and the plan graph both read this, so an item one of
-    them shows is in the other's week too. Every assignment on record is
+    The student's page and the plan graph both read this, the same way, so
+    they never differ about whether an item is in a week. They start it on
+    different days: her page starts on the Monday of the school week she is
+    looking at, the planner on the evening being planned, so a plan looks at
+    the seven days ahead and her page says so. Every assignment on record is
     considered, because the sources decide the window along with the record.
     """
     everything = project_state.all_assignments()

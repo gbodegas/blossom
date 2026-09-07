@@ -22,16 +22,17 @@ from blossom.agent.runs import DURABILITY, run_config
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
-from blossom.plan_checks import DEFAULT_DAILY_MINUTES, PlanCheck, reduced_budget
+from blossom.plan_checks import PlanCheck
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import templates
+from blossom.settings import DEFAULT_EVENING_MINUTES
 from blossom.stores.workload_signals import (
     DETAIL_MAX_LENGTH,
     SIGNAL_RETENTION_DAYS,
     WorkloadSignalsStore,
 )
-from blossom.views import StudentDueThisWeekView, WorkloadSignalView
+from blossom.views import StudentDueThisWeekView, WeekView, WorkloadSignalView
 from tests.support import (
     FIXTURE_TIMEZONE,
     OBSERVED_AT,
@@ -90,9 +91,30 @@ def long_plan() -> DailyPlan:
 # ------------------------------------------------------------------ the store
 
 
-def test_the_budget_is_halved_and_nothing_else() -> None:
-    assert reduced_budget(DEFAULT_DAILY_MINUTES) == 75
-    assert reduced_budget(90) == 45
+def test_both_budgets_are_the_households_numbers() -> None:
+    """What an evening holds, and what it holds once she has said too much, are
+    settings handed to the graph, not rules of the system."""
+    signals = signals_in_memory()
+    signals.record(PLAN_DATE)
+    critic = Scripted(ok(accepting()), ok(accepting()))
+
+    signaled = run(
+        graph_with(
+            Scripted(ok(good_plan())),
+            critic,
+            signals=signals,
+            evening_minutes=200,
+            too_much_minutes=100,
+        )
+    )
+    usual = run(
+        graph_with(Scripted(ok(good_plan())), critic, evening_minutes=200, too_much_minutes=100),
+        thread="plan:usual",
+    )
+
+    assert signaled["budget_minutes"] == 100
+    assert signaled["steps"][0].found.endswith("so the budget is 100 minutes")
+    assert usual["budget_minutes"] == 200
 
 
 def test_a_press_is_kept_for_its_evening_and_can_be_taken_back() -> None:
@@ -190,7 +212,7 @@ def test_without_a_signal_the_evening_is_the_usual_length() -> None:
     result = run(graph_with(planner, Scripted(ok(accepting()))))
 
     assert result["too_much"] is False
-    assert result["budget_minutes"] == DEFAULT_DAILY_MINUTES
+    assert result["budget_minutes"] == DEFAULT_EVENING_MINUTES
     assert "<too_much>" not in human_text(planner.briefs[0])
 
 
@@ -231,7 +253,7 @@ def test_a_signal_about_another_evening_changes_nothing_tonight() -> None:
     result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())), signals=signals))
 
     assert result["too_much"] is False
-    assert result["budget_minutes"] == DEFAULT_DAILY_MINUTES
+    assert result["budget_minutes"] == DEFAULT_EVENING_MINUTES
 
 
 # ------------------------------------------------------- the routes and the page
@@ -479,11 +501,20 @@ def test_each_remove_button_says_which_signal_it_removes() -> None:
             given_local=moment,
         )
 
+    monday = date(2026, 8, 17)
     view = StudentDueThisWeekView(
         generated_at=OBSERVED_AT,
+        week=WeekView(
+            start=monday,
+            end=monday + timedelta(days=6),
+            current=True,
+            previous=monday - timedelta(days=7),
+            following=monday + timedelta(days=7),
+        ),
         assignments=[],
-        full_budget_minutes=DEFAULT_DAILY_MINUTES,
-        budget_minutes=DEFAULT_DAILY_MINUTES,
+        plan_horizon_end=date(2026, 8, 25),
+        full_budget_minutes=DEFAULT_EVENING_MINUTES,
+        budget_minutes=DEFAULT_EVENING_MINUTES,
         signals=[kept(0), kept(1)],
     )
 

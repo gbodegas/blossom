@@ -110,6 +110,20 @@ def test_the_queue_shows_the_waiting_draft_with_its_text() -> None:
     assert "thread_id" not in detail
 
 
+def test_an_evening_past_the_edge_of_the_calendar_is_refused_before_anything_runs() -> None:
+    """The week after such an evening cannot be read, so nothing is started for it."""
+    with app_with() as client:
+        response = client.post("/parent/plans", json={"plan_date": "9999-12-25"})
+        queue = client.get("/parent/approvals").json()["waiting"]
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "The evening of 9999-12-25 is past the edge of the calendar. "
+        "Plans reach no later than 9999-12-24."
+    )
+    assert queue == []
+
+
 def test_an_evening_that_has_passed_is_refused_before_anything_runs() -> None:
     with app_with() as client:
         response = client.post("/parent/plans", json={"plan_date": "2026-08-18"})

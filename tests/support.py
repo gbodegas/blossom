@@ -38,7 +38,12 @@ from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdi
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.routes.runs import PlanGraphs
-from blossom.settings import TIMEZONE_VARIABLE, Settings
+from blossom.settings import (
+    DEFAULT_EVENING_MINUTES,
+    DEFAULT_TOO_MUCH_MINUTES,
+    TIMEZONE_VARIABLE,
+    Settings,
+)
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
@@ -259,6 +264,8 @@ def graph_with(
     notes: Sequence[str] = (),
     source: TwoChannelSource | None = None,
     signals: WorkloadSignalsStore | None = None,
+    evening_minutes: int = DEFAULT_EVENING_MINUTES,
+    too_much_minutes: int = DEFAULT_TOO_MUCH_MINUTES,
 ) -> CompiledPlanGraph:
     project_state, support_rules, reflections = stores(assignments)
     for index, rule in enumerate(rules):
@@ -285,6 +292,8 @@ def graph_with(
         critic=critic,
         checkpointer=checkpointer or InMemorySaver(),
         source=source or TwoChannelSource(),
+        evening_minutes=evening_minutes,
+        too_much_minutes=too_much_minutes,
     )
 
 

@@ -14,8 +14,13 @@ from blossom.app import create_app
 from blossom.settings import (
     CHECKPOINT_PATH_VARIABLE,
     DATABASE_PATH_VARIABLE,
+    DEFAULT_EVENING_MINUTES,
+    DEFAULT_TOO_MUCH_MINUTES,
+    EVENING_MINUTES_VARIABLE,
     FIXTURE_PATH_VARIABLE,
     REPOSITORY_ROOT,
+    TODAY_VARIABLE,
+    TOO_MUCH_MINUTES_VARIABLE,
     Settings,
     resolve_configured_path,
 )
@@ -57,6 +62,57 @@ def test_blank_environment_values_fall_back_to_defaults() -> None:
     settings = Settings.from_environment({FIXTURE_PATH_VARIABLE: "   "})
 
     assert settings.fixture_path == Settings.from_environment({}).fixture_path
+
+
+def test_the_two_budgets_are_read_as_minutes_with_defaults() -> None:
+    """The evening's length is the household's number, not the system's."""
+    unset = Settings.from_environment({})
+    given = Settings.from_environment(
+        {EVENING_MINUTES_VARIABLE: " 120 ", TOO_MUCH_MINUTES_VARIABLE: "40"}
+    )
+
+    assert (unset.evening_minutes, unset.too_much_minutes) == (
+        DEFAULT_EVENING_MINUTES,
+        DEFAULT_TOO_MUCH_MINUTES,
+    )
+    assert (given.evening_minutes, given.too_much_minutes) == (120, 40)
+
+
+@pytest.mark.parametrize(
+    ("environment", "named"),
+    [
+        ({EVENING_MINUTES_VARIABLE: "two hours"}, EVENING_MINUTES_VARIABLE),
+        ({EVENING_MINUTES_VARIABLE: "0"}, EVENING_MINUTES_VARIABLE),
+        ({TOO_MUCH_MINUTES_VARIABLE: "150"}, TOO_MUCH_MINUTES_VARIABLE),
+        ({TOO_MUCH_MINUTES_VARIABLE: "0"}, TOO_MUCH_MINUTES_VARIABLE),
+        (
+            {EVENING_MINUTES_VARIABLE: "60", TOO_MUCH_MINUTES_VARIABLE: "90"},
+            TOO_MUCH_MINUTES_VARIABLE,
+        ),
+    ],
+)
+def test_a_budget_that_is_not_minutes_or_not_a_cut_is_refused_by_name(
+    environment: dict[str, str], named: str
+) -> None:
+    """A shorter evening that is not shorter would make her signal change nothing."""
+    with pytest.raises(ValueError, match=named):
+        Settings.from_environment(environment)
+
+
+@pytest.mark.parametrize("pinned", ["0001-01-01", "0001-01-07", "9999-12-25", "9999-12-31"])
+def test_a_clock_pinned_within_a_week_of_the_calendars_edge_is_refused_by_name(
+    pinned: str,
+) -> None:
+    """Her page links to the weeks either side and a plan looks six days ahead;
+    neither can be computed there, so the app refuses to start rather than fail
+    on the first page."""
+    with pytest.raises(ValueError, match=TODAY_VARIABLE):
+        Settings.from_environment({TODAY_VARIABLE: pinned})
+
+
+@pytest.mark.parametrize("pinned", ["0001-01-08", "9999-12-24", "2026-08-19"])
+def test_a_clock_pinned_a_week_or_more_from_the_edges_is_accepted(pinned: str) -> None:
+    assert Settings.from_environment({TODAY_VARIABLE: pinned}).today is not None
 
 
 def test_relative_values_resolve_against_the_repository_not_the_working_directory() -> None:

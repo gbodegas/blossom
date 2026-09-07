@@ -47,9 +47,12 @@ what that means with her rather than on her behalf.
 Blossom is early, and it is built for one household. Four things work end to
 end.
 
-**Her week.** A page lists everything due in the coming days, each item
-labeled with how well its due date is corroborated: by several sources, by
-one, by sources that disagree, or by nothing. Nothing is left off for being
+**Her week.** A page frames the school week, Monday to Sunday, the way the
+school's own page does, and moves to the weeks either side. Each item says
+where its due date came from, quietly: the school portal, what she reported,
+what a parent entered, or the family's record alone. Only two things are made
+prominent, sources that disagree and a school date the record does not match,
+so a warning on the page means something. Nothing is left off for being
 doubtful. The bundled data is a fictional student's week with the awkward
 cases included on purpose: a form to sign with no due date, a book to cover
 whose date the portal gives two ways, and a quiz the family's record puts
@@ -79,8 +82,9 @@ the label, not the words: a note filed under the system could still be about
 her, and nothing yet reads the text to tell.
 
 **Too much right now.** One button on her page, no rating and no reason
-asked. Pressing it shows at once what changed: tonight's plan is held to half
-the usual time, and the planner is told her word on the evening is final. The
+asked. Pressing it shows at once what changed: tonight's plan is held to the
+household's shorter evening, and the planner is told her word on the evening
+is final. The
 press is kept for a week where she can see it, and she can take it back.
 
 **Ask for help.** The other button on her page, with a sentence if she wants
@@ -109,14 +113,17 @@ uv sync --dev
 uv run --env-file .env.example uvicorn blossom.app:app --reload
 ```
 
-Then open <http://127.0.0.1:8000/student/due-this-week>. It should show seven
-assignments, one with a banner saying the school disagrees with the record.
+Then open <http://127.0.0.1:8000/student/due-this-week>. It should show five
+assignments due that week, one with a banner saying the school disagrees with
+the record, and two more assigned that week and due the next.
 
 `.env.example` sets the household's time zone, which has no default because
 "due this week" means the days you live in, and pins the clock to August 19,
-2026, the week the fixtures are written for. The week is a rolling window,
-that day and the six after it, plus anything with no due date; on the real
-clock the page would show only the undated form.
+2026, the week the fixtures are written for. The week is the school week,
+Monday to Sunday, plus anything with no due date; on the real clock the page
+would show only the undated form. It also sets the two minute budgets, the
+evening's and the shorter one her signal brings, which are the household's
+numbers rather than rules of the system.
 
 The parent's page is at <http://127.0.0.1:8000/parent>, and
 <http://127.0.0.1:8000/docs> lets you drive every route directly. Without an

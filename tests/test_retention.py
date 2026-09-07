@@ -8,7 +8,7 @@ both rules to whatever a crash left behind.
 import asyncio
 import pathlib
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -37,10 +37,15 @@ from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import ApplicationState, build_application_state
 from blossom.drafts import Decision, Draft, DraftStatus
-from blossom.plans import DailyPlan
+from blossom.plans import DailyPlan, PlanBlock
 from blossom.routes.parent import DecisionRequest, decide_draft
 from blossom.routes.runs import plan_graphs, run_plan
-from blossom.settings import CHECKPOINT_PATH_VARIABLE, DATABASE_PATH_VARIABLE, TRACE_PATH_VARIABLE
+from blossom.settings import (
+    CALENDAR_MARGIN,
+    CHECKPOINT_PATH_VARIABLE,
+    DATABASE_PATH_VARIABLE,
+    TRACE_PATH_VARIABLE,
+)
 from blossom.stores.drafts import Displaced, DraftRecord, DraftsStore
 from tests.support import (
     FIXTURE_TIMEZONE,
@@ -251,6 +256,49 @@ def test_a_draft_still_within_the_window_is_left_waiting() -> None:
 
     assert swept == Swept(expired=(), cleared=())
     assert [record.draft_id for record in waiting] == ["draft:plan:fresh"]
+
+
+def test_a_waiting_draft_for_the_last_plannable_evening_is_swept_without_overflow() -> None:
+    """Retention subtracts dates rather than adding a span to the plan date, so a
+    draft for the last evening a plan may be made for is kept, and the sweep runs,
+    through the calendar's last day. The far week holds only the undated form."""
+    far = date.max - CALENDAR_MARGIN
+    plan = DailyPlan(
+        plan_date=far,
+        blocks=[
+            PlanBlock(
+                assignment_id="assignment-signed-syllabus",
+                starts_at=time(16, 30),
+                ends_at=time(16, 40),
+                rationale="ask what the date is and get it signed",
+            )
+        ],
+    )
+    state = application()
+    try:
+
+        async def scenario() -> tuple[Swept, Swept]:
+            await graph_for(state, plan).ainvoke(
+                PlanState(plan_date=far, rounds=0),
+                config=run_config("plan:far"),
+                durability=DURABILITY,
+            )
+            state.drafts.publish("draft:plan:far")
+            on_the_evening = FrozenClock(datetime(9999, 12, 24, 9, 0, tzinfo=UTC), ZONE)
+            last_day = FrozenClock(datetime(9999, 12, 31, 9, 0, tzinfo=UTC), ZONE)
+            return (
+                await sweep_saved_state(state.checkpointer, state.drafts, on_the_evening),
+                await sweep_saved_state(state.checkpointer, state.drafts, last_day),
+            )
+
+        first, second = asyncio.run(scenario())
+        waiting = [record.draft_id for record in state.drafts.waiting()]
+    finally:
+        state.close()
+
+    assert first == Swept(expired=(), cleared=())
+    assert second == Swept(expired=(), cleared=())
+    assert waiting == ["draft:plan:far"]
 
 
 def test_a_restart_expires_a_stale_draft_and_the_page_says_so(tmp_path: pathlib.Path) -> None:

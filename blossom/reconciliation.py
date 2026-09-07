@@ -14,6 +14,7 @@ staleness (accurate when observed, since changed) nor validity (accurate but
 not supporting the conclusion drawn from it) is modeled here.
 """
 
+from collections.abc import Callable, Hashable
 from enum import StrEnum
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
@@ -26,6 +27,12 @@ class SourceChannel(StrEnum):
     EMAIL = "EMAIL"
     PARENT_ENTRY = "PARENT_ENTRY"
     STUDENT_REPORT = "STUDENT_REPORT"
+
+
+SCHOOL_CHANNELS: frozenset[SourceChannel] = frozenset({SourceChannel.LMS, SourceChannel.EMAIL})
+"""The channels that speak for the school. A date from one of them that the
+record does not match is the contradiction her page makes prominent; a
+parent's entry or her own report that differs is said quietly."""
 
 
 class SourceRecord(BaseModel):
@@ -106,12 +113,17 @@ class SourceConfidence(StrEnum):
 
 
 def classify_confidence(result: ReconciliationResult) -> SourceConfidence:
-    """Map a reconciliation outcome onto how much the family should trust it."""
+    """Map a reconciliation outcome onto how much the family should trust it.
+
+    Corroboration counts channels, not records. A portal that lists a date in
+    two places has said it once; a second channel saying the same is what
+    makes it confirmed.
+    """
     if isinstance(result, NoSourceRecords):
         return SourceConfidence.UNVERIFIED
     if isinstance(result, Disagreement):
         return SourceConfidence.SOURCES_DISAGREE
-    if len(result.records) == 1:
+    if len({record.channel for record in result.records}) == 1:
         return SourceConfidence.SINGLE_SOURCE
     return SourceConfidence.CORROBORATED
 
@@ -119,11 +131,21 @@ def classify_confidence(result: ReconciliationResult) -> SourceConfidence:
 class Reconciler:
     """Combines source records for one fact. Total: it never raises."""
 
-    def reconcile(self, records: list[SourceRecord]) -> ReconciliationResult:
-        """Combine source records for one fact without ever choosing a winner."""
+    def reconcile(
+        self, records: list[SourceRecord], *, key: Callable[[str], Hashable] | None = None
+    ) -> ReconciliationResult:
+        """Combine source records for one fact without ever choosing a winner.
+
+        ``key`` compares values by what they mean rather than how they are
+        spelled, a date by the date it names. The records themselves are kept
+        exactly as asserted, so what a source said is what a reader sees.
+        """
         if not records:
             return NoSourceRecords()
-        values = {record.asserted_value for record in records}
-        if len(values) == 1:
+        meanings = {
+            record.asserted_value if key is None else key(record.asserted_value)
+            for record in records
+        }
+        if len(meanings) == 1:
             return Agreement(value=records[0].asserted_value, records=records)
         return Disagreement(conflicting_claims=records)

@@ -211,8 +211,10 @@ async def sweep_saved_state(
 
     today = clock.today()
     expired: list[str] = []
+    # Subtracting one date from another gives a span and cannot overflow;
+    # adding the span to a plan date near the calendar's last day would.
     for record in drafts.waiting():
-        if record.plan_date + timedelta(days=PAUSED_RETENTION_DAYS) < today:
+        if today - record.plan_date > timedelta(days=PAUSED_RETENTION_DAYS):
             drafts.record_decision(
                 record.draft_id, status=DraftStatus.DRAFT, decision="expired", reason=EXPIRED_REASON
             )

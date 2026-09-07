@@ -40,9 +40,31 @@ class StudentAssignmentView(BaseModel):
     submission_status: str
     deadline_confidence: SourceConfidence
     source_channels: list[str]
+    """Each channel that spoke about the date, once, in the order first heard."""
+    sources: str = ""
+    """The same channels in the words her page uses for them, joined for a sentence."""
+    confirming_channels: list[str] = []
+    """Channels whose value reads as the record's date, once each. Empty when the
+    record has no date or nothing readable matches it, so a source is named as
+    the origin of the date shown only when it gave that date."""
+    confirming: str = ""
+    """The confirming channels in the page's words."""
+    readable_channels: list[str] = []
+    """Channels that gave a value which reads as a date, once each; the only
+    ones that can agree, disagree, or contradict."""
+    readable_sources: str = ""
+    """The readable channels in the page's words."""
+    unreadable: list[str] = []
+    """Claims whose value could not be read as a date, as ``describe`` renders them.
+    Kept apart: they neither confirm nor contradict anything, and the page says so."""
+    unreadable_sources: str = ""
+    """The channels behind ``unreadable``, in the page's words."""
     disagreement: list[str]
     contradiction: list[str] = []
     """What the sources say when none of them supports the record's date; empty otherwise."""
+    school_contradicts: bool = False
+    """Whether a school channel is among those; only then is the contradiction a banner."""
+    assigned_on: date | None = None
 
 
 class WorkloadSignalView(BaseModel):
@@ -107,20 +129,41 @@ class StudentPlanView(BaseModel):
     stale: str | None = None
 
 
+class WeekView(BaseModel):
+    """The school week her page frames, Monday to Sunday, and the ones either side."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: date
+    end: date
+    current: bool
+    """Whether this is the week that holds today."""
+    previous: date
+    following: date
+
+
 class StudentDueThisWeekView(BaseModel):
     """Her week. Every assignment in the window appears, nothing is filtered out.
 
-    ``plan`` is today's latest plan when one has been made. ``can_plan`` is
-    whether a new one can be asked for, which needs a model. ``too_much`` is
-    tonight's signal when she has given one, and ``budget_minutes`` is what
-    the next plan is held to as a result. ``signals`` is everything the store
-    still keeps, so she can see it and take any of it back.
+    ``week`` is the school week shown, the one that holds today unless she has
+    moved to another. ``assigned_this_week`` is work given out in that week
+    and due after it, listed so the week reads the way the school's does.
+    ``plan_horizon_end`` is the last day a plan made today looks at, stated on
+    the page because it is not the week's end. ``plan`` is today's latest plan
+    when one has been made. ``can_plan`` is whether a new one can be asked
+    for, which needs a model. ``too_much`` is tonight's signal when she has
+    given one, and ``budget_minutes`` is what the next plan is held to as a
+    result. ``signals`` is everything the store still keeps, so she can see it
+    and take any of it back.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     generated_at: AwareDatetime
+    week: WeekView
     assignments: list[StudentAssignmentView]
+    assigned_this_week: list[StudentAssignmentView] = []
+    plan_horizon_end: date
     full_budget_minutes: int
     budget_minutes: int
     plan: StudentPlanView | None = None
