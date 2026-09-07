@@ -14,6 +14,7 @@ staleness (accurate when observed, since changed) nor validity (accurate but
 not supporting the conclusion drawn from it) is modeled here.
 """
 
+from collections.abc import Callable, Hashable
 from enum import StrEnum
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
@@ -130,11 +131,21 @@ def classify_confidence(result: ReconciliationResult) -> SourceConfidence:
 class Reconciler:
     """Combines source records for one fact. Total: it never raises."""
 
-    def reconcile(self, records: list[SourceRecord]) -> ReconciliationResult:
-        """Combine source records for one fact without ever choosing a winner."""
+    def reconcile(
+        self, records: list[SourceRecord], *, key: Callable[[str], Hashable] | None = None
+    ) -> ReconciliationResult:
+        """Combine source records for one fact without ever choosing a winner.
+
+        ``key`` compares values by what they mean rather than how they are
+        spelled, a date by the date it names. The records themselves are kept
+        exactly as asserted, so what a source said is what a reader sees.
+        """
         if not records:
             return NoSourceRecords()
-        values = {record.asserted_value for record in records}
-        if len(values) == 1:
+        meanings = {
+            record.asserted_value if key is None else key(record.asserted_value)
+            for record in records
+        }
+        if len(meanings) == 1:
             return Agreement(value=records[0].asserted_value, records=records)
         return Disagreement(conflicting_claims=records)

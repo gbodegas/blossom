@@ -110,21 +110,17 @@ def read_date(value: str) -> date | None:
 
 
 def reconcile_dates(records: Sequence[SourceRecord]) -> ReconciliationResult:
-    """Reconcile the claims that read as dates, compared as dates.
+    """Reconcile the claims that read as dates, compared by the date each names.
 
-    Each readable value is put in its ISO form before the comparison, so a
-    stray space around a date is not a disagreement. A value that cannot be
-    read as a date takes no part: it is neither a second source nor a
-    conflicting one, and a caller that shows claims lists it apart. With no
-    readable claim at all the outcome is ``NoSourceRecords``, whatever else
-    was said.
+    Two spellings of one date agree, so a stray space around a date is not a
+    disagreement, and every claim is kept as the source spelled it. A value
+    that cannot be read as a date takes no part: it is neither a second
+    source nor a conflicting one, and a caller that shows claims lists it
+    apart. With no readable claim at all the outcome is ``NoSourceRecords``,
+    whatever else was said.
     """
-    readable = [
-        record.model_copy(update={"asserted_value": parsed.isoformat()})
-        for record in records
-        if (parsed := read_date(record.asserted_value)) is not None
-    ]
-    return Reconciler().reconcile(readable)
+    readable = [record for record in records if read_date(record.asserted_value) is not None]
+    return Reconciler().reconcile(readable, key=read_date)
 
 
 def notice_due_date(expectation: DueDateExpectation, records: list[SourceRecord]) -> Noticing:

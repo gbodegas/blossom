@@ -82,6 +82,14 @@ def test_the_next_week_is_a_page_of_its_own() -> None:
     assert "Assigned this week, due later" not in shown
 
 
+def test_a_week_across_the_new_year_gives_both_years() -> None:
+    _, shown = page(week="2026-12-30")
+    line = " ".join(shown.split())
+
+    assert "<h1>Week of December 28</h1>" in shown
+    assert "Monday, December 28, 2026 to Sunday, January 3, 2027" in line
+
+
 def test_any_day_names_its_whole_week() -> None:
     _, from_monday = page(week=MONDAY)
     _, from_thursday = page(week="2026-08-20")

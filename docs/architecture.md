@@ -149,8 +149,9 @@ of three outcomes and never picks a winner:
 | `Disagreement` | Channels conflict. Every claim is preserved with the channel that made it. |
 | `NoSourceRecords` | Nothing corroborates this fact at all. |
 
-For a due date, only claims that read as dates take part, compared as dates
-after each is put in its ISO form, so a stray space is not a disagreement. A
+For a due date, only claims that read as dates take part, compared by the
+date each names and kept as the source spelled them, so a stray space is not a
+disagreement and a reader still sees what was said. A
 value the reader cannot make a date of, a weekday name for one, takes no part
 in the outcome; her page lists it apart, and it neither confirms nor
 contradicts anything. That is `reconcile_dates` in `blossom/noticing.py`, and

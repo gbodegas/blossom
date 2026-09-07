@@ -269,6 +269,29 @@ def test_claims_are_reconciled_as_dates_and_only_when_they_read_as_dates() -> No
     assert isinstance(nothing, NoSourceRecords)
 
 
+def test_claims_compared_as_dates_are_kept_as_the_source_spelled_them(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The comparison reads the date; the record shown is the claim as asserted."""
+    differing = reconcile_dates(
+        [record(SourceChannel.LMS, "20260821"), record(SourceChannel.PARENT_ENTRY, "2026-08-22")]
+    )
+    agreeing = reconcile_dates(
+        [
+            record(SourceChannel.LMS, " 2026-08-21 "),
+            record(SourceChannel.STUDENT_REPORT, "20260821"),
+        ]
+    )
+    card = lab_page(tmp_path, [claim("20260821"), claim("2026-08-22", "PARENT_ENTRY")])
+
+    assert isinstance(differing, Disagreement)
+    assert [c.asserted_value for c in differing.conflicting_claims] == ["20260821", "2026-08-22"]
+    assert isinstance(agreeing, Agreement)
+    assert [c.asserted_value for c in agreeing.records] == [" 2026-08-21 ", "20260821"]
+    assert "Sources disagree" in card
+    assert "LMS: 20260821" in card
+
+
 def test_a_space_around_a_date_is_not_a_disagreement(tmp_path: pathlib.Path) -> None:
     card = lab_page(tmp_path, [claim(" 2026-08-21 "), claim("2026-08-21", "STUDENT_REPORT")])
 

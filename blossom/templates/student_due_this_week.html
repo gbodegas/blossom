@@ -9,7 +9,7 @@
   {% endif %}
   <div class="week-frame">
     <p class="range">
-      {{ view.week.start.strftime("%A, %B") }} {{ view.week.start.day }} to
+      {{ view.week.start.strftime("%A, %B") }} {{ view.week.start.day }}{% if view.week.start.year != view.week.end.year %}, {{ view.week.start.year }}{% endif %} to
       {{ view.week.end.strftime("%A, %B") }} {{ view.week.end.day }}, {{ view.week.end.year }}
     </p>
     <nav class="weeks" aria-label="Weeks">
