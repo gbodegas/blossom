@@ -64,11 +64,11 @@ from blossom.noticing import (
     notice_due_date,
     read_date,
     read_week,
+    reconcile_dates,
 )
 from blossom.principals import Principal
 from blossom.reconciliation import (
     Disagreement,
-    Reconciler,
     SourceChannel,
     SourceRecord,
     classify_confidence,
@@ -346,26 +346,34 @@ def assignment_view(
 ) -> StudentAssignmentView:
     """One assignment as she sees it, with where its date came from said once per channel.
 
-    The card shows the record's date, so a channel confirms it only by giving
-    a value that reads as that date. A value the comparator cannot read, such
-    as a weekday name, is carried apart; it is not the origin of anything.
+    Claims are reconciled as dates, readable ones only, so two channels giving
+    the same date in different spellings agree and a weekday name is neither a
+    second source nor a conflict. The card shows the record's date, so a
+    channel confirms it only by giving a value that reads as that date. A value
+    the comparator cannot read is carried apart; it is not the origin of
+    anything.
     """
-    reconciliation = Reconciler().reconcile(list(records))
+    readable = [record for record in records if read_date(record.asserted_value) is not None]
+    unreadable = [record for record in records if read_date(record.asserted_value) is None]
+    reconciliation = reconcile_dates(records)
     disagreement = []
     if isinstance(reconciliation, Disagreement):
         disagreement = [claim.describe() for claim in reconciliation.conflicting_claims]
-    channels = list(dict.fromkeys(str(record.channel) for record in records))
-    confirming = list(
-        dict.fromkeys(
-            str(record.channel)
-            for record in records
+
+    def channels_of(claims: Sequence[SourceRecord]) -> list[str]:
+        return list(dict.fromkeys(str(claim.channel) for claim in claims))
+
+    channels = channels_of(records)
+    readable_channels = channels_of(readable)
+    unreadable_channels = channels_of(unreadable)
+    confirming = channels_of(
+        [
+            record
+            for record in readable
             if assignment.due_date is not None
             and read_date(record.asserted_value) == assignment.due_date
-        )
+        ]
     )
-    unreadable = [
-        record.describe() for record in records if read_date(record.asserted_value) is None
-    ]
     return StudentAssignmentView(
         assignment_id=assignment.assignment_id,
         course=assignment.course,
@@ -378,9 +386,12 @@ def assignment_view(
         sources=channels_in_words(channels),
         confirming_channels=confirming,
         confirming=channels_in_words(confirming),
-        unreadable=unreadable,
+        readable_channels=readable_channels,
+        readable_sources=channels_in_words(readable_channels),
+        unreadable=[record.describe() for record in unreadable],
+        unreadable_sources=channels_in_words(unreadable_channels),
         disagreement=disagreement,
-        contradiction=list(noticed.observed) if noticed.contradicted else [],
+        contradiction=[record.describe() for record in readable] if noticed.contradicted else [],
         assigned_on=assignment.assigned_on,
     )
 

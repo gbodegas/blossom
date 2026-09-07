@@ -80,13 +80,13 @@ from blossom.clock import Clock
 from blossom.dependencies import ApplicationState
 from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
-from blossom.noticing import Noticing, read_week
+from blossom.noticing import Noticing, read_week, reconcile_dates
 from blossom.plan_checks import (
     PlanVerification,
     check_plan,
 )
 from blossom.plans import DailyPlan
-from blossom.reconciliation import Reconciler, SourceConfidence, classify_confidence
+from blossom.reconciliation import SourceConfidence, classify_confidence
 from blossom.settings import DEFAULT_EVENING_MINUTES, DEFAULT_TOO_MUCH_MINUTES, Settings
 from blossom.sources import StateSource
 from blossom.stores.drafts import DraftsStore
@@ -235,7 +235,6 @@ def build_plan_graph(
     The two budgets are the household's settings: what an evening may hold,
     and what it is held to once she has said today is too much.
     """
-    reconciler = Reconciler()
     zone = clock.zone
 
     def step(node: str, round_number: int, expected: str, found: str) -> StepRecord:
@@ -271,7 +270,7 @@ def build_plan_graph(
         """
         week = read_week(project_state, source, state["plan_date"])
         confidence = {
-            name: classify_confidence(reconciler.reconcile(found))
+            name: classify_confidence(reconcile_dates(found))
             for name, found in week.records.items()
         }
         noticings = [week.noticings[item.assignment_id] for item in week.assignments]

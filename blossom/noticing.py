@@ -21,13 +21,14 @@ No model takes part. The rules fit in one function, and
 ``tests/noticing_cases.py`` holds them to a labeled table.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
-from blossom.reconciliation import SourceRecord
+from blossom.reconciliation import Reconciler, ReconciliationResult, SourceRecord
 from blossom.sources import StateSource
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, ProjectStateStore
 
@@ -106,6 +107,24 @@ def read_date(value: str) -> date | None:
         return date.fromisoformat(value.strip())
     except ValueError:
         return None
+
+
+def reconcile_dates(records: Sequence[SourceRecord]) -> ReconciliationResult:
+    """Reconcile the claims that read as dates, compared as dates.
+
+    Each readable value is put in its ISO form before the comparison, so a
+    stray space around a date is not a disagreement. A value that cannot be
+    read as a date takes no part: it is neither a second source nor a
+    conflicting one, and a caller that shows claims lists it apart. With no
+    readable claim at all the outcome is ``NoSourceRecords``, whatever else
+    was said.
+    """
+    readable = [
+        record.model_copy(update={"asserted_value": parsed.isoformat()})
+        for record in records
+        if (parsed := read_date(record.asserted_value)) is not None
+    ]
+    return Reconciler().reconcile(readable)
 
 
 def notice_due_date(expectation: DueDateExpectation, records: list[SourceRecord]) -> Noticing:

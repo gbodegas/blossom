@@ -49,9 +49,16 @@ class StudentAssignmentView(BaseModel):
     the origin of the date shown only when it gave that date."""
     confirming: str = ""
     """The confirming channels in the page's words."""
+    readable_channels: list[str] = []
+    """Channels that gave a value which reads as a date, once each; the only
+    ones that can agree, disagree, or contradict."""
+    readable_sources: str = ""
+    """The readable channels in the page's words."""
     unreadable: list[str] = []
     """Claims whose value could not be read as a date, as ``describe`` renders them.
     Kept apart: they neither confirm nor contradict anything, and the page says so."""
+    unreadable_sources: str = ""
+    """The channels behind ``unreadable``, in the page's words."""
     disagreement: list[str]
     contradiction: list[str] = []
     """What the sources say when none of them supports the record's date; empty otherwise."""

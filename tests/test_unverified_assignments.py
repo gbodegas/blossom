@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from blossom.app import create_app
-from blossom.noticing import monday_of
+from blossom.noticing import monday_of, reconcile_dates
 from blossom.reconciliation import (
     Agreement,
     Disagreement,
@@ -250,6 +250,49 @@ def test_a_readable_date_that_matches_is_the_sources(tmp_path: pathlib.Path) -> 
     assert "Date from the school portal." in one
     assert "Date confirmed by the school portal and what you reported." in two
     assert "Date from the school portal." in mixed, "one channel twice is one source"
+
+
+def test_claims_are_reconciled_as_dates_and_only_when_they_read_as_dates() -> None:
+    spaced = reconcile_dates(
+        [
+            record(SourceChannel.LMS, " 2026-08-21 "),
+            record(SourceChannel.STUDENT_REPORT, "2026-08-21"),
+        ]
+    )
+    beside = reconcile_dates(
+        [record(SourceChannel.LMS, "2026-08-21"), record(SourceChannel.STUDENT_REPORT, "Friday")]
+    )
+    nothing = reconcile_dates([record(SourceChannel.LMS, "Friday")])
+
+    assert classify_confidence(spaced) is SourceConfidence.CORROBORATED
+    assert classify_confidence(beside) is SourceConfidence.SINGLE_SOURCE
+    assert isinstance(nothing, NoSourceRecords)
+
+
+def test_a_space_around_a_date_is_not_a_disagreement(tmp_path: pathlib.Path) -> None:
+    card = lab_page(tmp_path, [claim(" 2026-08-21 "), claim("2026-08-21", "STUDENT_REPORT")])
+
+    assert "Date confirmed by the school portal and what you reported." in card
+    assert 'class="confidence disagree"' not in card
+
+
+def test_a_weekday_beside_a_date_is_listed_apart_not_set_against_it(tmp_path: pathlib.Path) -> None:
+    card = lab_page(tmp_path, [claim("2026-08-21"), claim("Friday", "STUDENT_REPORT")])
+
+    assert "Date from the school portal." in card
+    assert "Not read as a date: STUDENT_REPORT: Friday." in card
+    assert 'class="confidence disagree"' not in card
+
+
+def test_a_contradiction_names_only_the_channels_that_gave_a_date(tmp_path: pathlib.Path) -> None:
+    card = lab_page(tmp_path, [claim("2026-08-22"), claim("Friday", "STUDENT_REPORT")])
+    line = " ".join(card.split())
+    listed = card.split("What the sources say", 1)[1]
+
+    assert "Date from the family's record; the school portal has a different one." in line
+    assert "Not read as a date: STUDENT_REPORT: Friday." in card
+    assert "LMS: 2026-08-22" in listed
+    assert "Friday" not in listed
 
 
 def test_every_card_carries_exactly_one_quiet_line_on_the_fixtures() -> None:

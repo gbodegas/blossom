@@ -149,6 +149,13 @@ of three outcomes and never picks a winner:
 | `Disagreement` | Channels conflict. Every claim is preserved with the channel that made it. |
 | `NoSourceRecords` | Nothing corroborates this fact at all. |
 
+For a due date, only claims that read as dates take part, compared as dates
+after each is put in its ISO form, so a stray space is not a disagreement. A
+value the reader cannot make a date of, a weekday name for one, takes no part
+in the outcome; her page lists it apart, and it neither confirms nor
+contradicts anything. That is `reconcile_dates` in `blossom/noticing.py`, and
+both her page and the graph's `retrieve` node go through it.
+
 `SourceConfidence` maps those onto what the student sees: `CORROBORATED`,
 `SINGLE_SOURCE`, `SOURCES_DISAGREE`, `UNVERIFIED`. Four states rather than a
 boolean, because a date two channels agree on is not the same claim as the
