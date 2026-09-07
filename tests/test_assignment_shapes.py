@@ -287,6 +287,43 @@ def test_a_date_one_channel_gives_and_nothing_disputes_is_no_task_for_anyone() -
     assert "worth checking" not in draft.body
 
 
+@pytest.mark.parametrize(
+    "claims",
+    [[], [("LMS", "Friday")]],
+    ids=["no source at all", "a claim that does not read as a date"],
+)
+def test_a_date_only_the_record_has_is_not_a_task_either(claims: list[tuple[str, str]]) -> None:
+    """Lack of corroboration alone does not call for a word with the school. The
+    flag on the verification stays; the draft just does not turn it into a list."""
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+        deferred=[],
+    )
+    records = [record(SourceChannel(channel), value) for channel, value in claims]
+    verification = check_plan(
+        plan,
+        due_in_window=[ESSAY],
+        zone=ZONE,
+        confidence={"assignment-canal-essay": SourceConfidence.UNVERIFIED},
+    )
+    assert verification.uncertain_due_dates == ("assignment-canal-essay",)
+
+    draft = compose_draft(
+        draft_id="draft:test",
+        plan=plan,
+        assignments=[ESSAY],
+        verification=verification,
+        verdict=CriticVerdict(findings=[]),
+        settled=True,
+        noticings=[notice_due_date(expect_due_date(ESSAY), records)],
+        confidence={"assignment-canal-essay": SourceConfidence.UNVERIFIED},
+    )
+
+    assert "Dates needing clarification:" not in draft.body
+    assert "Friday" not in draft.body
+
+
 def test_sources_that_disagree_put_the_item_once_among_the_dates_to_clarify() -> None:
     plan = DailyPlan(
         plan_date=PLAN_DATE,

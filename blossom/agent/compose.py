@@ -59,10 +59,13 @@ def compose_draft(
     a proposal with a dissent attached rather than as a recommendation.
 
     A date is listed for clarification only when something is missing or
-    contested: no date on record, sources that give different dates, or a
-    record no source supports. A date one channel gives and nothing disputes is
-    not a task for anyone, so it is not listed; how far a date can be trusted
-    stays on her page beside the item.
+    contested: no date on record, sources that give different dates, or
+    sources that give a date the record does not match. A date one channel
+    gives and nothing disputes is not a task for anyone, and neither is a date
+    only the family's record has, or one the sources spoke about in words the
+    comparator could not read: lack of corroboration alone does not call for a
+    word with the school. How far a date can be trusted stays on her page
+    beside the item.
 
     ``draft_id`` is given rather than generated because the graph derives it
     from its thread: a node that runs twice must produce the same draft, and
