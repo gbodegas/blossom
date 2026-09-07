@@ -166,6 +166,16 @@
             {% endfor %}
           </ul>
         </div>
+      {% elif assignment.contradiction %}
+        {#
+          The date shown above is the record's. The sources gave another, so
+          the quiet line says whose date is on the card and that the sources
+          differ; the banner below carries what they said.
+        #}
+        <p class="source">
+          Date from the family's record; {{ assignment.sources }}
+          {% if assignment.source_channels|length == 1 %}has{% else %}have{% endif %} a different one.
+        </p>
       {% elif assignment.deadline_confidence == "UNVERIFIED" %}
         <p class="source">From the family's record only; nothing from the school confirms it yet.</p>
       {% elif assignment.deadline_confidence == "SINGLE_SOURCE" %}

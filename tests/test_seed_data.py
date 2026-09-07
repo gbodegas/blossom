@@ -148,7 +148,8 @@ def test_the_fixtures_span_two_school_weeks_with_every_state_named() -> None:
     for title in json.loads((FIXTURES / "assignments.json").read_text(encoding="utf-8")):
         assert title["title"] in both
     assert "Date confirmed by the school portal and what you reported." in next_week
-    assert "Date from the school portal." in this_week
+    assert "Date from the school portal." in next_week, "the reading log"
+    assert "the school portal\n          has a different one." in this_week, "the quiz"
     assert "Sources disagree" in this_week
     assert "From the family's record only" in this_week
     assert "LMS (day header): 2026-08-21" in this_week
