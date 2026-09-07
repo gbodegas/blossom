@@ -84,7 +84,7 @@ the usual time, and the planner is told her word on the evening is final. The
 press is kept for a week where she can see it, and she can take it back.
 
 **Ask for help.** The other button on her page, with a sentence if she wants
-one. The request appears on the parent's page, who takes it up and later
+one. The request appears on the parent's page; a parent takes it up and later
 resolves it, with a word back if they leave one, and each step shows under her
 request in plain words: nobody is said to be on it before they have said so.
 She can take a request back while nobody has taken it up. A resolved request

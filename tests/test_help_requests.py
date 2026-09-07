@@ -234,6 +234,26 @@ def test_her_note_is_capped_at_the_boundary() -> None:
     assert word_back.status_code == 422
 
 
+def test_a_parents_word_back_is_capped_on_the_form_too() -> None:
+    with browser() as client:
+        request_id = client.post("/student/help-requests").json()["request"]["request_id"]
+        over = client.post(
+            f"/parent/actions/help/{request_id}",
+            data={"step": "accept", "response": "w" * (NOTE_MAX_LENGTH + 1)},
+        )
+        still_requested = client.get("/parent/help-requests").json()[0]["state"]
+        at_cap = client.post(
+            f"/parent/actions/help/{request_id}",
+            data={"step": "accept", "response": "w" * NOTE_MAX_LENGTH},
+        )
+
+    assert over.status_code == 422
+    assert f"A word back is at most {NOTE_MAX_LENGTH} characters" in over.text
+    assert "<h1>Review</h1>" in over.text
+    assert still_requested == "requested"
+    assert at_cap.status_code == 303
+
+
 # --------------------------------------------------------------- the pages
 
 

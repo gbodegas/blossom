@@ -37,9 +37,10 @@ With the app running as the README describes:
   assignment labeled with how well its due date is corroborated.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
   to `/student/plans` makes one.
-- <http://127.0.0.1:8000/student/help-requests> is her requests for help as
-  JSON, open ones and those resolved within two weeks; a POST asks, with an
-  optional note, and a DELETE takes one back while nobody has taken it up.
+- <http://127.0.0.1:8000/student/help-requests> lists her requests for help
+  as JSON, the open ones and those resolved within two weeks; a POST there
+  asks, with an optional note, and a DELETE takes one back while nobody has
+  taken it up.
   The parent's side is `/parent/help-requests`, with `/accept` and
   `/resolve` under each request.
 - <http://127.0.0.1:8000/parent> is the parent's page: read the plan she has,
