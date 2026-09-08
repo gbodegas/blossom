@@ -181,6 +181,10 @@ The variables last for that PowerShell window; a fresh window is back to the
 family's own state. Without a key in `.env` the pages work and the plan
 button is not offered.
 
+To start the sample again from nothing, stop the app and delete the
+`.local/sample/` folder; the family's own state under `.local/` is untouched,
+and the next launch creates the folder again.
+
 Her page shows three items due that week, each saying its date is from the
 school portal, and the reading log, assigned that Monday and due the next,
 under "Assigned this week, due later"; the following week shows the same
