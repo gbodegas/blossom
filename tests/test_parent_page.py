@@ -9,6 +9,7 @@ import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -22,7 +23,7 @@ from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.parent import REASON_MAX_LENGTH
 from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
-from tests.support import Scripted, fixture_settings, ok
+from tests.support import FIXTURE_TIMEZONE, Scripted, fixture_settings, ok
 
 PLAN_DATE = date(2026, 8, 19)
 CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
@@ -132,7 +133,7 @@ def test_the_page_renders_with_nothing_waiting() -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "<h1>Review</h1>" in response.text
+    assert "<h1>Family review</h1>" in response.text
     assert "Nothing is waiting." in response.text
     assert "No earlier plans yet." in response.text
     assert 'value="2026-08-19"' in response.text
@@ -159,7 +160,7 @@ def test_the_plan_form_runs_the_graph_and_the_page_shows_the_draft() -> None:
     assert posted.headers["location"] == "/parent"
     assert "Evening of 2026-08-19" in page
     assert "Wednesday, August 19, 2026" in page
-    assert "The reviewer accepted this plan." in page
+    assert "Blossom's review:</strong> accepted." in page
     assert "Plan for Wednesday, August 19" in page
     assert "Canal Era comparison essay" in page
     assert 'name="decision" value="approve"' in page
@@ -181,7 +182,7 @@ def test_a_date_that_is_not_one_is_said_rather_than_guessed_at() -> None:
 
     assert response.status_code == 422
     assert "is not a date" in response.text
-    assert "<h1>Review</h1>" in response.text
+    assert "<h1>Family review</h1>" in response.text
 
 
 def test_an_unsettled_plan_says_so_above_its_text() -> None:
@@ -189,8 +190,61 @@ def test_an_unsettled_plan_says_so_above_its_text() -> None:
         client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         page = client.get("/parent").text
 
-    assert "The reviewer did not settle on this plan." in page
-    assert "support rules (CANNOT_TELL)" in page
+    assert "could not be completed. Its notes are at the end of the text." in page
+    assert "support rules (could not assess)" in page
+
+
+def test_the_parents_work_with_her_comes_before_planning_for_her() -> None:
+    """With a request and a waiting plan, the help action comes first, the review
+    second, and the form that starts a plan folds away after both."""
+    with browser() as client:
+        client.post("/student/help-requests", json={"note": "the outline"})
+        waiting_draft_id(client)
+        page = client.get("/parent").text
+
+    help_at = page.index("<h2>Help she asked for</h2>")
+    review_at = page.index("<h2>Waiting for your review</h2>")
+    plan_form_at = page.index('action="/parent/actions/plan"')
+    earlier_at = page.index("<summary>Earlier plans</summary>")
+    assert help_at < review_at < plan_form_at < earlier_at
+    assert page.index('value="accept"') < plan_form_at
+    assert "<summary>Help with a plan</summary>" in page
+    assert ">I can help<" in page
+    assert ">Mark resolved<" in page
+    assert "Reply (optional)" in page
+    assert "<strong>Blossom's review:</strong> accepted." in page
+    assert '<p class="review-heading">Parent review</p>' in page
+
+
+def test_the_labels_submit_the_same_values_as_before() -> None:
+    with browser() as client:
+        request_id = client.post("/student/help-requests").json()["request"]["request_id"]
+        page = client.get("/parent").text
+        helped = client.post(
+            f"/parent/actions/help/{request_id}", data={"step": "accept", "response": "on it"}
+        )
+        hers = client.get("/student/due-this-week").text
+
+    assert 'name="step" value="accept" class="primary"' in page
+    assert 'name="step" value="resolve" class="secondary"' in page
+    assert helped.status_code == 303
+    assert "<strong>A parent is on it.</strong> They said: <q>on it</q>" in hers
+
+
+def test_review_times_read_in_the_households_zone() -> None:
+    """The stored stamp stays what it is; the page shows it in the family's own hours,
+    including a day whose local date is not the UTC one."""
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+        page = client.get("/parent").text
+
+    stamped = datetime.fromisoformat(record["decided_at"])
+    local = stamped.astimezone(ZoneInfo(FIXTURE_TIMEZONE))
+    shown = f"Reviewed {local:%B} {local.day}, {local.year}, {local:%H:%M %Z}."
+    assert shown in page
+    assert "UTC." not in page
 
 
 # --------------------------------------------------------------- deciding
@@ -254,7 +308,7 @@ def test_only_the_two_buttons_are_decisions_and_a_bad_one_is_a_page() -> None:
 
     assert response.status_code == 422
     assert response.headers["content-type"].startswith("text/html")
-    assert "<h1>Review</h1>" in response.text
+    assert "<h1>Family review</h1>" in response.text
     assert "is not one of the two buttons" in response.text
     assert record["decision"] is None
 
@@ -382,7 +436,7 @@ def test_a_failure_on_the_way_is_said_on_the_page_and_the_queue_stays() -> None:
         "The plan could not be made: something went wrong on the way. "
         "What is waiting below is unchanged."
     ) in response.text
-    assert "<h1>Review</h1>" in response.text
+    assert "<h1>Family review</h1>" in response.text
     assert [item["draft_id"] for item in queue] == [draft_id]
 
 
@@ -410,7 +464,7 @@ def test_an_unknown_draft_is_a_page_that_says_so() -> None:
 
     assert response.status_code == 404
     assert "no draft" in response.text
-    assert "<h1>Review</h1>" in response.text
+    assert "<h1>Family review</h1>" in response.text
 
 
 def test_deciding_twice_from_the_page_is_refused_with_the_first_standing() -> None:

@@ -435,6 +435,54 @@ details.plan .body {
   margin: 0.5rem 0 1.5rem;
 }
 
+/* A form that is making a plan says so, and its button waits with it. */
+.pending {
+  margin: 0.5rem 0 0;
+  color: var(--text-soft);
+  font-style: italic;
+}
+
+button[disabled] {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.refresh {
+  margin: 0.75rem 0 0;
+  font-size: 0.92rem;
+}
+
+.refresh a {
+  color: var(--blue-action);
+  font-weight: 700;
+}
+
+.review-heading {
+  margin: 1rem 0 0.35rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.review-heading + form label {
+  margin-top: 0;
+}
+
+/* The folds on the parent's page hold whole sections; their summaries read
+   as headings and the sections inside lose the outer spacing. */
+.panel-fold {
+  margin-block: 1.5rem;
+}
+
+.panel-fold > summary {
+  font-size: 1.3rem;
+  font-weight: 600;
+}
+
+.panel-fold > section {
+  margin-block: 0.75rem 0;
+}
+
 .return a {
   color: var(--blue-action);
   font-weight: 700;

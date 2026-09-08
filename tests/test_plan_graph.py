@@ -225,7 +225,7 @@ def test_a_critic_that_keeps_finding_fault_does_not_close_the_gate() -> None:
     assert len(result["__interrupt__"]) == 1
     body = result["__interrupt__"][0].value["body"]
     assert "The reviewer did not settle on this plan." in body
-    assert "- sizing (FAILS): an hour is short for a comparison essay" in body
+    assert "- sizing (does not pass): an hour is short for a comparison essay" in body
 
 
 def test_a_critic_that_cannot_tell_sends_the_plan_forward_at_once() -> None:
@@ -238,7 +238,7 @@ def test_a_critic_that_cannot_tell_sends_the_plan_forward_at_once() -> None:
     assert result["outcome"] == "unsettled"
     assert result["rounds"] == 1
     assert (
-        "- support rules (CANNOT_TELL): no rules were given"
+        "- support rules (could not assess): no rules were given"
         in result["__interrupt__"][0].value["body"]
     )
 

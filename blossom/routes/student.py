@@ -111,10 +111,11 @@ BEYOND_THE_CALENDAR: Final = (
 
 SIGNALED_SINCE: Final = (
     "You have said today is too much, and this plan was made for the full evening. "
-    "Plan again to make it smaller."
+    "Your current plan has not changed yet. Make a smaller plan when you are ready."
 )
 SIGNAL_ENDED: Final = (
-    "This plan was kept short for a signal that is not there now. Plan again for the full evening."
+    "This plan was kept to the smaller evening for a signal that is not there now. "
+    "It stays until a new one is made; plan again for the full evening."
 )
 
 router = APIRouter(prefix="/student", tags=["student"])

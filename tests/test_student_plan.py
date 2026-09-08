@@ -107,7 +107,7 @@ def test_her_page_offers_to_plan_today_and_says_why_it_cannot_without_a_key() ->
     assert "Plan today" in with_key
     assert 'action="/student/actions/plan"' in with_key
     assert "No plan for today yet." in with_key
-    assert "no API key is configured" in without
+    assert "Planning is unavailable right now" in without
     assert 'action="/student/actions/plan"' not in without
     assert "Too much right now" in without
 
@@ -340,7 +340,8 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
     assert "<summary>Resolved requests</summary>" in panel
     assert "the essay outline" in panel.split("<summary>Resolved requests</summary>", 1)[1]
     assert (
-        "A parent has not seen it yet." in panel.split("<summary>Resolved requests</summary>", 1)[0]
+        "Waiting for a parent to respond."
+        in panel.split("<summary>Resolved requests</summary>", 1)[0]
     )
     assert "Planning uses the model provider." in panel
     assert 'href="#what-is-shared"' in panel
@@ -364,6 +365,93 @@ def test_another_week_shows_its_work_and_a_way_back_instead_of_today() -> None:
     assert "Quadratic modeling problem set" in other
 
 
+# ------------------------------------------------- what the plan button offers
+
+
+def test_the_plan_button_follows_the_evening_as_it_stands() -> None:
+    """The label and the words beside it come from the plan and the signal; nothing here plans."""
+    with browser(plan=light_fixture_plan) as client:
+        nothing_yet = client.get(PAGE).text
+        client.post("/student/actions/too-much")
+        signaled_no_plan = client.get(PAGE).text
+        client.post("/student/actions/plan")
+        small_plan_signaled = client.get(PAGE).text
+        signal_id = client.get("/student/workload-signals").json()[0]["signal_id"]
+        client.delete(f"/student/workload-signals/{signal_id}")
+        small_plan_no_signal = client.get(PAGE).text
+
+    assert ">Plan today<" in nothing_yet
+    assert "Make a smaller plan" not in nothing_yet
+
+    assert ">Make a smaller plan<" in signaled_no_plan
+    assert "Your next plan for today is held to 75 minutes instead of 150." in signaled_no_plan
+
+    assert ">Plan again<" in small_plan_signaled
+    assert "This plan already uses the smaller budget, 75 minutes." in small_plan_signaled
+    assert "Make a smaller plan" not in small_plan_signaled
+
+    assert ">Plan again<" in small_plan_no_signal
+    assert (
+        "It stays until a new one is made; plan again for the full evening." in small_plan_no_signal
+    )
+
+
+def test_a_full_plan_under_a_signal_offers_a_smaller_one_and_keeps_the_plan() -> None:
+    with browser() as client:
+        client.post("/student/actions/plan")
+        body = client.get("/student/plans/today").json()["body"]
+        client.post("/student/actions/too-much")
+        page = client.get(PAGE).text
+        after = client.get("/student/plans/today").json()["body"]
+
+    assert ">Make a smaller plan<" in page
+    assert "Your current plan has not changed yet. Make a smaller plan when you are ready." in page
+    assert str(escape(body)) in page
+    assert after == body, "pressing the signal does not plan"
+
+
+def test_the_planning_forms_carry_the_pending_words_and_the_others_do_not() -> None:
+    """The enhancement is scoped by a data attribute; decision and help buttons keep their names."""
+    with browser() as client:
+        client.post("/student/actions/plan")
+        client.post("/student/help-requests")
+        hers = client.get(PAGE).text
+        theirs = client.get("/parent").text
+        script = client.get("/static/blossom.js")
+
+    assert '<script src="/static/blossom.js" defer></script>' in hers
+    assert (
+        'action="/student/actions/plan" class="action" data-pending="Making your plan..."' in hers
+    )
+    assert (
+        'action="/parent/actions/plan" class="plan-form" data-pending="Making the plan..."'
+        in theirs
+    )
+    assert hers.count("data-pending") == 1
+    assert theirs.count("data-pending") == 1
+    assert 'name="decision" value="approve"' in theirs
+    assert 'name="step" value="accept"' in theirs
+    assert script.status_code == 200
+    assert "form[data-pending]" in script.text
+    assert "pageshow" in script.text
+
+
+def test_refresh_is_a_link_on_both_pages_and_a_visit_marks_nothing() -> None:
+    with browser() as client:
+        client.post("/student/help-requests")
+        hers = client.get(PAGE).text
+        client.get("/parent")
+        theirs = client.get("/parent").text
+        state = client.get("/student/help-requests").json()[0]["state"]
+        hers_after = client.get(PAGE).text
+
+    assert '<a href="/student/due-this-week">Refresh replies</a>' in hers
+    assert "Refresh to see updates. Save or send your note first." in hers
+    assert '<a href="/parent">Refresh requests</a>' in theirs
+    assert state == "requested"
+    assert "Waiting for a parent to respond." in hers_after
+
+
 # --------------------------------------------------- the evening changing
 
 
@@ -376,9 +464,10 @@ def test_a_press_after_the_plan_tells_her_to_plan_again_in_her_words() -> None:
 
     assert today["stale"] == (
         "You have said today is too much, and this plan was made for the full evening. "
-        "Plan again to make it smaller."
+        "Your current plan has not changed yet. Make a smaller plan when you are ready."
     )
-    assert "<strong>Plan again.</strong> You have said today is too much, and this plan" in page
+    assert "<strong>Make a smaller plan.</strong> You have said today is too much" in page
+    assert ">Make a smaller plan<" in page
     assert "Your next plan for today is held to 75 minutes instead of 150." in page
 
 
@@ -395,7 +484,7 @@ def test_her_page_measures_the_plan_against_the_evening_whatever_a_parent_said()
     assert today["decision"] == "approved"
     assert today["stale"] == (
         "You have said today is too much, and this plan was made for the full evening. "
-        "Plan again to make it smaller."
+        "Your current plan has not changed yet. Make a smaller plan when you are ready."
     )
     assert reviewed["stale"] is None
 
@@ -412,7 +501,7 @@ def test_taking_the_signal_back_after_a_reduced_plan_says_so_in_her_words() -> N
     assert reduced["too_much"] is True
     assert reduced["stale"] is None
     assert today["stale"] == (
-        "This plan was kept short for a signal that is not there now. "
-        "Plan again for the full evening."
+        "This plan was kept to the smaller evening for a signal that is not there now. "
+        "It stays until a new one is made; plan again for the full evening."
     )
     assert "because you said today was too much" in page

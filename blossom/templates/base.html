@@ -6,6 +6,7 @@
     <title>{% block title %}Blossom{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/mark.svg">
     <link rel="stylesheet" href="/static/blossom.css">
+    <script src="/static/blossom.js" defer></script>
   </head>
   <body>
     <header class="masthead">
@@ -14,8 +15,8 @@
         <span class="wordmark">blossom</span>
       </a>
       <nav class="places" aria-label="Pages">
-        <a href="/student/due-this-week"{% if page == "student" %} aria-current="page"{% endif %}>Her week</a>
-        <a href="/parent"{% if page == "parent" %} aria-current="page"{% endif %}>Review</a>
+        <a href="/student/due-this-week"{% if page == "student" %} aria-current="page"{% endif %}>{% if page == "parent" %}Student week{% else %}My week{% endif %}</a>
+        <a href="/parent"{% if page == "parent" %} aria-current="page"{% endif %}>Family review</a>
       </nav>
     </header>
     <main>
@@ -23,7 +24,7 @@
       {% block content %}{% endblock %}
     </main>
     <footer class="colophon">
-      <p>Nothing here sends anything. A person reads, decides, and sends by hand.</p>
+      <p>Blossom does not contact the school or submit work for you.</p>
     </footer>
   </body>
 </html>

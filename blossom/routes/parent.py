@@ -422,6 +422,7 @@ def review_page(
             "help_resolved": [help_view(state, r) for r in state.help_requests.recently_resolved()],
             "note_max_length": NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
+            "zone": state.clock.zone,
         },
         status_code=status_code,
     )
@@ -501,9 +502,7 @@ def help_from_the_page(
         return review_page(
             request,
             state,
-            problem=(
-                f"A word back is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}."
-            ),
+            problem=(f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}."),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     try:

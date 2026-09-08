@@ -18,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 
 from blossom.drafts import Draft
-from blossom.heuristic_relevance import CriticVerdict
+from blossom.heuristic_relevance import CriticVerdict, Judgment
 from blossom.noticing import Noticing
 from blossom.plan_checks import PlanVerification
 from blossom.plans import DailyPlan
@@ -27,6 +27,13 @@ from blossom.stores.project_state import Assignment
 from blossom.tools import create_draft
 
 CLARIFY = "Dates needing clarification:"
+
+JUDGMENT_WORDS = {
+    Judgment.PASSES: "passes",
+    Judgment.FAILS: "does not pass",
+    Judgment.CANNOT_TELL: "could not assess",
+}
+"""The reviewer's verdict on one criterion, in words she reads rather than a token."""
 
 
 def spoken_date(value: date) -> str:
@@ -133,7 +140,7 @@ def compose_draft(
             skipped = ", ".join(verdict.missing)
             lines.append(f"- The reviewer did not consider: {skipped}.")
         lines.extend(
-            f"- {finding.criterion} ({finding.judgment.value}): {finding.critique}"
+            f"- {finding.criterion} ({JUDGMENT_WORDS[finding.judgment]}): {finding.critique}"
             for finding in verdict.findings
         )
 
