@@ -348,7 +348,7 @@ def test_sources_that_disagree_put_the_item_once_among_the_dates_to_clarify() ->
     assert draft.body.count("Dates needing clarification:") == 1
     assert (
         "- Canal Era comparison essay (World History, due Aug 21): the sources give different "
-        "dates: school portal: 2026-08-21; parent's entry: 2026-08-22"
+        "dates: school portal: 2026-08-21; family entry: 2026-08-22"
     ) in draft.body
     assert "PARENT_ENTRY" not in draft.body
 
@@ -411,8 +411,8 @@ def test_the_page_shows_an_undated_task_and_a_self_disagreeing_source(
     assert "Syllabus, signed" in page
     assert "Due date not recorded" in page
     assert "a task, not a sitting" not in page
-    assert "LMS (day header): 2026-08-21" in page
-    assert "LMS (title): 2026-08-22" in page
+    assert "school portal (day header): 2026-08-21" in page
+    assert "school portal (title): 2026-08-22" in page
 
 
 def test_the_store_lists_everything_dated_work_first_then_undated() -> None:

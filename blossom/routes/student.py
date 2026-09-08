@@ -380,7 +380,7 @@ def assignment_view(
     reconciliation = reconcile_dates(records)
     disagreement = []
     if isinstance(reconciliation, Disagreement):
-        disagreement = [claim.describe() for claim in reconciliation.conflicting_claims]
+        disagreement = [claim.spoken() for claim in reconciliation.conflicting_claims]
 
     def channels_of(claims: Sequence[SourceRecord]) -> list[str]:
         return list(dict.fromkeys(str(claim.channel) for claim in claims))
@@ -414,10 +414,10 @@ def assignment_view(
         confirming=channels_in_words(confirming),
         readable_channels=readable_channels,
         readable_sources=channels_in_words(readable_channels),
-        unreadable=[record.describe() for record in unreadable],
+        unreadable=[record.spoken() for record in unreadable],
         unreadable_sources=channels_in_words(unreadable_channels),
         disagreement=disagreement,
-        contradiction=[record.describe() for record in readable] if noticed.contradicted else [],
+        contradiction=[record.spoken() for record in readable] if noticed.contradicted else [],
         school_contradicts=noticed.contradicted
         and any(record.channel in SCHOOL_CHANNELS for record in readable),
         assigned_on=assignment.assigned_on,

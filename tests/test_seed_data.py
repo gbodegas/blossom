@@ -91,6 +91,10 @@ def test_one_source_gives_the_textbook_cover_two_dates_in_two_places() -> None:
         "LMS (day header): 2026-08-21",
         "LMS (title): 2026-08-22",
     ]
+    assert [record.spoken() for record in records] == [
+        "school portal (day header): 2026-08-21",
+        "school portal (title): 2026-08-22",
+    ]
 
 
 def test_the_rules_are_single_instructions_and_the_note_is_about_the_system() -> None:
@@ -152,11 +156,11 @@ def test_the_fixtures_span_two_school_weeks_with_every_state_named() -> None:
     assert "the school portal\n          has a different one." in this_week, "the quiz"
     assert "Sources disagree" in this_week
     assert "Entered by the family" in this_week
-    assert "LMS (day header): 2026-08-21" in this_week
-    assert "LMS (title): 2026-08-22" in this_week
+    assert "school portal (day header): 2026-08-21" in this_week
+    assert "school portal (title): 2026-08-22" in this_week
     assert "Due date not recorded" in this_week
     assert "Reported status: not started" in this_week
-    assert "Due Wednesday, August 26" in this_week
+    assert "Recorded date Wednesday, August 26" in this_week
     assert "The school says otherwise." in this_week
     assert "Assigned this week, due later" in this_week
     assert "<strong>Quadratic modeling problem set</strong> &middot; Algebra II" in this_week
@@ -182,4 +186,4 @@ def test_the_page_says_what_the_planner_looks_at() -> None:
         page = client.get("/student/due-this-week").text
     assert "whichever week that falls in" not in page
     assert "Vocabulary quiz, unit one" in page
-    assert "LMS (day header): 2026-08-21" in page
+    assert "school portal (day header): 2026-08-21" in page
