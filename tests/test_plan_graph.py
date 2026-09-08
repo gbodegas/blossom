@@ -140,7 +140,7 @@ def test_a_good_plan_reaches_the_gate_in_one_round() -> None:
     body = result["__interrupt__"][0].value["body"]
     assert body.startswith("Plan for Wednesday, August 19")
     assert (
-        "16:30 to 17:30, set aside for Canal Era comparison essay (World History, due Aug 21)"
+        "4:30 PM to 5:30 PM, set aside for Canal Era comparison essay (World History, due Aug 21)"
         in body
     )
     assert "Waiting for another day:" in body

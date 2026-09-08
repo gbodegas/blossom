@@ -17,7 +17,7 @@ refusing to start. Windows ships no time zone database, so ``tzdata`` is a
 dependency; without it ``ZoneInfo`` raises for every key.
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -46,6 +46,23 @@ def household_zone(key: str | None) -> ZoneInfo:
             f"time zone database every key fails until tzdata is installed."
         )
         raise TimeZoneUnavailable(msg) from error
+
+
+def local_now(zone: ZoneInfo) -> datetime:
+    """This moment by the system clock, in ``zone``.
+
+    For a stamp about the request itself, such as when a page was refreshed.
+    The household's date and everything planned against it come from the
+    application's clock, which may be pinned; this never is.
+    """
+    return datetime.now(zone)
+
+
+def spoken_time(value: datetime | time) -> str:
+    """A clock time the way she reads a clock: ``5:00 PM``, never ``17:00``."""
+    hour = value.hour % 12 or 12
+    half = "AM" if value.hour < 12 else "PM"
+    return f"{hour}:{value.minute:02d} {half}"
 
 
 def is_aware(value: datetime) -> bool:

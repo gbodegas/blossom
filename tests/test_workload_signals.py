@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from blossom.agent.graph import CompiledPlanGraph, PlanState
 from blossom.agent.runs import DURABILITY, run_config
 from blossom.app import create_app
-from blossom.clock import FrozenClock
+from blossom.clock import FrozenClock, spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.plan_checks import PlanCheck
 from blossom.plans import DailyPlan, Deferral, PlanBlock
@@ -527,4 +527,4 @@ def test_each_remove_button_says_which_signal_it_removes() -> None:
     for label, signal in zip(labels, view.signals, strict=True):
         assert signal.evening.strftime("%B") in label
         assert str(signal.evening.day) in label
-        assert signal.given_local.strftime("%H:%M") in label
+        assert spoken_time(signal.given_local) in label

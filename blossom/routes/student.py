@@ -51,10 +51,10 @@ from fastapi import (
     status,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 
 from blossom.anthropic_client import model_configured
+from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
 from blossom.noticing import (
@@ -77,11 +77,12 @@ from blossom.reconciliation import (
     classify_confidence,
 )
 from blossom.routes.runs import Graphs, require_model, run_plan
-from blossom.settings import CALENDAR_MARGIN, TEMPLATE_PATH
+from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
+from blossom.templating import page_templates
 from blossom.views import (
     HelpRequestView,
     StudentAssignmentView,
@@ -119,7 +120,7 @@ SIGNAL_ENDED: Final = (
 )
 
 router = APIRouter(prefix="/student", tags=["student"])
-templates = Jinja2Templates(directory=TEMPLATE_PATH)
+templates = page_templates()
 
 State = Annotated[ApplicationState, Depends(get_application_state)]
 
@@ -514,12 +515,14 @@ def student_page(
     week: date | None = None,
     problem: str | None = None,
     plan_open: bool = False,
+    refreshed: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
-    ``plan_open`` shows today's plan unfolded; it changes how the page is
-    presented and nothing else.
+    ``plan_open`` shows today's plan unfolded and ``refreshed`` says when the
+    page was last asked for; both change how the page is presented and
+    nothing else.
     """
     view = build_student_due_this_week_view(state, week)
     return templates.TemplateResponse(
@@ -529,6 +532,7 @@ def student_page(
             "view": view,
             "problem": problem,
             "plan_open": plan_open,
+            "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
         },
@@ -544,6 +548,9 @@ def due_this_week(
     show_plan: Annotated[
         str | None, Query(description="1 to show today's plan unfolded; changes nothing else")
     ] = None,
+    refreshed: Annotated[
+        str | None, Query(description="1 after a refresh, to say when; changes nothing else")
+    ] = None,
 ) -> HTMLResponse:
     """Render her week and today's plan.
 
@@ -555,8 +562,9 @@ def due_this_week(
     does right after one is made; a GET never makes one.
     """
     plan_open = show_plan == "1"
+    was_refreshed = refreshed == "1"
     if week is None:
-        return student_page(request, state, plan_open=plan_open)
+        return student_page(request, state, plan_open=plan_open, refreshed=was_refreshed)
     try:
         chosen = date.fromisoformat(week.strip())
     except ValueError:

@@ -26,25 +26,29 @@
   {% if view.week.current %}
   <section class="panel today">
     <h2>Today, {{ view.today.strftime("%A, %B") }} {{ view.today.day }}</h2>
+    {% if refreshed_at %}
+      <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
+    {% endif %}
     {#
-      One line says where today stands. A parent's review is shown, never
-      waited for: the plan is hers from the moment it is made, and what a
-      parent says about it is one more thing she can see.
+      One line says where today stands, and a parent's words get a place of
+      their own. A parent's review is shown, never waited for: the plan is
+      hers from the moment it is made, and what a parent says about it is
+      one more thing she can see.
     #}
-    <p class="standing">
-      {% if not view.plan %}
-        No plan for today yet.
-      {% elif view.plan.decision == "approved" %}
-        A plan is ready. Parent review: looks good.
-      {% elif view.plan.decision == "rejected" %}
-        A plan is ready. A parent asked for a change; plan again when you are ready.
-      {% elif view.plan.decision == "expired" %}
-        A plan is ready. Nobody reviewed it.
-      {% else %}
-        A plan is ready. Parent review: no decision yet.
-      {% endif %}
-      {% if view.plan and view.plan.reason and view.plan.decision != "expired" %}They said: <q>{{ view.plan.reason }}</q>{% endif %}
-    </p>
+    <p class="standing">{% if view.plan %}A plan is ready.{% else %}No plan for today yet.{% endif %}</p>
+    {% if view.plan and view.plan.decision in ("approved", "rejected") %}
+      <div class="from-parents {{ view.plan.decision }}">
+        <p class="from-heading">From your parents</p>
+        <p class="from-text">
+          {% if view.plan.decision == "approved" %}Looks good.{% else %}A change is asked for; plan again when you are ready.{% endif %}
+          {% if view.plan.reason %}<q>{{ view.plan.reason }}</q>{% endif %}
+        </p>
+      </div>
+    {% elif view.plan and view.plan.decision == "expired" %}
+      <p class="note">Nobody reviewed this plan.</p>
+    {% elif view.plan %}
+      <p class="note">A parent has not reviewed it yet. You can start anyway.</p>
+    {% endif %}
     {#
       What the plan button offers follows the evening as it stands: a plan
       for the smaller evening while her signal is up and no plan yet uses it,
@@ -65,20 +69,24 @@
     #}
     {% if view.plan and view.plan.outcome == "unsettled" %}
       <p class="confidence disagree" role="status">
-        Blossom could not complete its review of this plan. Open the plan to read the notes.
+        Blossom's review could not settle every point. Open the plan to read its notes.
       </p>
     {% endif %}
     {% if view.too_much %}
       <p class="confidence disagree">
-        <strong>You said it was too much</strong> at {{ view.too_much.given_local.strftime("%H:%M") }}.
+        <strong>You said it was too much</strong> at {{ view.too_much.given_local|clock }}.
         Your next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
+        {% if not view.plan %}Nothing has been planned yet; the plan you make will be the shorter one.{% endif %}
         {% if view.too_much.detail %}You added <q>{{ view.too_much.detail }}</q>.{% endif %}
       </p>
     {% endif %}
 
     <div class="actions">
       {% if view.can_plan %}
-        <form method="post" action="/student/actions/plan" class="action" data-pending="Making your plan...">
+        <form method="post" action="/student/actions/plan" class="action"
+              data-pending="Making your plan..."
+              data-pending-later="Still working. The planner reads your week and writes the plan, which takes a minute or two."
+              data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass.">
           <button type="submit" class="primary">{{ plan_label }}</button>
         </form>
       {% endif %}
@@ -112,13 +120,13 @@
       <ul class="help">
         {% for ask in open_requests %}
           <li>
-            <strong>You asked for help</strong> at {{ ask.asked_local.strftime("%H:%M") }}
+            <strong>You asked for help</strong> at {{ ask.asked_local|clock }}
             on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
             {% if ask.state == "requested" %}
               Waiting for a parent to respond.
               <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
                 <button type="submit" class="secondary"
-                        aria-label="Take back the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it back</button>
+                        aria-label="Take back the request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it back</button>
               </form>
             {% else %}
               <strong>A parent is on it.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
@@ -128,7 +136,7 @@
       </ul>
     {% endif %}
     <p class="note refresh">
-      <a href="/student/due-this-week">Refresh replies</a>. Refresh to see updates. Save or send your note first.
+      <a href="/student/due-this-week?refreshed=1">Refresh replies</a>. Refresh to see updates. Save or send your note first.
     </p>
     {% if resolved_requests %}
       <details class="steps resolved">
@@ -136,7 +144,7 @@
         <ul class="help">
           {% for ask in resolved_requests %}
             <li>
-              <strong>You asked for help</strong> at {{ ask.asked_local.strftime("%H:%M") }}
+              <strong>You asked for help</strong> at {{ ask.asked_local|clock }}
               on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
               <strong>Resolved.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
             </li>
@@ -153,13 +161,12 @@
     #}
     {% if view.plan %}
       <details class="plan"{% if plan_open %} open{% endif %}>
-        <summary>View today's plan</summary>
+        <summary>View today's plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
         <p class="note">
-          Made at {{ view.plan.made_local.strftime("%H:%M") }}{% if view.plan.too_much %}, kept to a
-          shorter evening because you said today was too much{% endif %}.
+          {% if view.plan.too_much %}Kept to a shorter evening because you said today was too much.{% endif %}
           Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
         </p>
-        <pre class="body">{{ view.plan.body }}</pre>
+        {% with body = view.plan.body, review_open = false %}{% include "plan_body.html" %}{% endwith %}
       </details>
     {% endif %}
   </section>
@@ -294,9 +301,14 @@
   {% endif %}
 
   {% if view.week.current %}
-    <details class="steps" id="what-is-shared">
+    <details class="steps">
       <summary>How Blossom uses your information</summary>
-      <p>
+      {#
+        The link in the plan panel points at this paragraph rather than the
+        disclosure around it, so a browser that reveals the target's fold on
+        a fragment jump opens it; the script does the same on the click.
+      #}
+      <p id="what-is-shared">
         Planning takes a minute or two. It sends your week, the household's rules, the
         planner's notes about its past plans, and, when you have said today is too much, that
         you said so, to the model provider; when the first plan needs another try, the plan it
@@ -313,11 +325,11 @@
         {% for signal in view.signals %}
           <li>
             Too much on {{ signal.evening.strftime("%A, %B") }} {{ signal.evening.day }}, {{ signal.evening.year }},
-            said at {{ signal.given_local.strftime("%H:%M") }}.
+            said at {{ signal.given_local|clock }}.
             {% if signal.detail %}You added <q>{{ signal.detail }}</q>.{% endif %}
             <form method="post" action="/student/actions/take-back/{{ signal.signal_id }}" class="inline">
               <button type="submit" class="secondary"
-                      aria-label="Remove the signal from {{ signal.evening.strftime("%A, %B") }} {{ signal.evening.day }} at {{ signal.given_local.strftime("%H:%M") }}">Remove</button>
+                      aria-label="Remove the signal from {{ signal.evening.strftime("%A, %B") }} {{ signal.evening.day }} at {{ signal.given_local|clock }}">Remove</button>
             </form>
           </li>
         {% endfor %}

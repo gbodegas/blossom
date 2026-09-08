@@ -49,20 +49,21 @@ import logging
 from datetime import date
 from typing import Annotated, Any, Final
 
-from fastapi import APIRouter, Body, Depends, Form, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.anthropic_client import model_configured
+from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
 from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
-from blossom.settings import CALENDAR_MARGIN, TEMPLATE_PATH
+from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
+from blossom.templating import page_templates
 from blossom.views import (
     ApprovalQueueView,
     ApprovalView,
@@ -77,7 +78,7 @@ from blossom.views import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/parent", tags=["parent"])
-templates = Jinja2Templates(directory=TEMPLATE_PATH)
+templates = page_templates()
 
 State = Annotated[ApplicationState, Depends(get_application_state)]
 
@@ -399,6 +400,7 @@ def review_page(
     state: ApplicationState,
     *,
     problem: str | None = None,
+    refreshed: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render the queue, the decisions, and the form to plan an evening.
@@ -423,15 +425,22 @@ def review_page(
             "note_max_length": NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
             "zone": state.clock.zone,
+            "refreshed_at": local_now(state.clock.zone) if refreshed else None,
         },
         status_code=status_code,
     )
 
 
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
-def review(request: Request, state: State) -> HTMLResponse:
-    """The parent's page: what is waiting, what was decided, and a date to plan."""
-    return review_page(request, state)
+def review(
+    request: Request,
+    state: State,
+    refreshed: Annotated[
+        str | None, Query(description="1 after a refresh, to say when; changes nothing else")
+    ] = None,
+) -> HTMLResponse:
+    """The parent's page: what she asked for, what is waiting, and the folds below."""
+    return review_page(request, state, refreshed=refreshed == "1")
 
 
 @router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)

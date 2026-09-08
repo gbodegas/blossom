@@ -17,6 +17,7 @@ never chooses to call it; the graph calls it once, after the checks.
 from collections.abc import Mapping, Sequence
 from datetime import date
 
+from blossom.clock import spoken_time
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import CriticVerdict, Judgment
 from blossom.noticing import Noticing
@@ -44,6 +45,11 @@ def spoken_date(value: date) -> str:
 def short_date(value: date) -> str:
     """A date short enough for a parenthesis: ``Aug 21``."""
     return f"{value:%b} {value.day}"
+
+
+def one_line(text: str) -> str:
+    """A value on one line, so a line of the draft is one thing and stays with its shape."""
+    return " ".join(text.split())
 
 
 def compose_draft(
@@ -102,16 +108,18 @@ def compose_draft(
 
     for block in sorted(plan.blocks, key=lambda item: item.starts_at):
         lines.append(
-            f"{block.starts_at:%H:%M} to {block.ends_at:%H:%M}, set aside for "
+            f"{spoken_time(block.starts_at)} to {spoken_time(block.ends_at)}, set aside for "
             f"{named(block.assignment_id)}"
         )
-        lines.append(f"    {block.rationale}")
+        lines.append(f"    {one_line(block.rationale)}")
     if not plan.blocks:
         lines.append("Nothing is scheduled tonight.")
 
     if plan.deferred:
         lines.extend(["", "Waiting for another day:"])
-        lines.extend(f"- {named(item.assignment_id)}: {item.reason}" for item in plan.deferred)
+        lines.extend(
+            f"- {named(item.assignment_id)}: {one_line(item.reason)}" for item in plan.deferred
+        )
 
     def clarification(item: Assignment) -> str | None:
         """Why this item's date needs a word with someone, or ``None`` when it does not."""
@@ -140,7 +148,8 @@ def compose_draft(
             skipped = ", ".join(verdict.missing)
             lines.append(f"- The reviewer did not consider: {skipped}.")
         lines.extend(
-            f"- {finding.criterion} ({JUDGMENT_WORDS[finding.judgment]}): {finding.critique}"
+            f"- {finding.criterion} ({JUDGMENT_WORDS[finding.judgment]}): "
+            f"{one_line(finding.critique)}"
             for finding in verdict.findings
         )
 
