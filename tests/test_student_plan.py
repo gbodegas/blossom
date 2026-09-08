@@ -288,7 +288,7 @@ def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
 
     text = present_plan(body)
     assert text.blocks[0].span == "4:30 PM to 5:30 PM"
-    assert "<strong>4:30 PM to 5:30 PM</strong>" in page
+    assert '<strong>4:30 PM to 5:30 PM</strong>, set aside for <span class="plan-item">' in page
     assert '<p class="plan-why">' in page
     assert '<h3 class="plan-heading">Waiting for another day</h3>' in page
     assert "<summary>Blossom's review notes</summary>" in page

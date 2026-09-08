@@ -217,6 +217,18 @@ def test_the_parents_work_with_her_comes_before_planning_for_her() -> None:
     assert '<p class="review-heading">Parent review</p>' in page
 
 
+def test_the_help_buttons_accessible_names_begin_with_their_visible_words() -> None:
+    """A button spoken by its visible words is found by them: the name starts with the label."""
+    with browser() as client:
+        client.post("/student/help-requests")
+        page = client.get("/parent").text
+
+    assert 'aria-label="I can help with the request from ' in page
+    assert 'aria-label="Mark resolved: request from ' in page
+    assert "What you say here appears on her page when she refreshes it." in page
+    assert "as soon as it is taken" not in page
+
+
 def test_the_labels_submit_the_same_values_as_before() -> None:
     with browser() as client:
         request_id = client.post("/student/help-requests").json()["request"]["request_id"]

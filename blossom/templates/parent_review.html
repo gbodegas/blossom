@@ -53,12 +53,12 @@
           <div class="actions">
             {% if ask.state == "requested" %}
               <button type="submit" name="step" value="accept" class="primary"
-                      aria-label="Say a parent can help with the request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">I can help</button>
+                      aria-label="I can help with the request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">I can help</button>
             {% endif %}
             <button type="submit" name="step" value="resolve" class="secondary"
-                    aria-label="Mark the request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} resolved">Mark resolved</button>
+                    aria-label="Mark resolved: request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Mark resolved</button>
           </div>
-          <p class="note">Each step shows on her page as soon as it is taken. Nothing leaves here.</p>
+          <p class="note">What you say here appears on her page when she refreshes it. Nothing leaves here.</p>
         </form>
       </article>
     {% endfor %}
