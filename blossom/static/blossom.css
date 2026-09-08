@@ -48,12 +48,12 @@
   --pink: #e5a8b4;
   --pink-deep: #c98495;
 
-  /* Text: muted slate, never black or navy. The body tone is a step darker
-     than the reference so it reads at paragraph size; the reference tone is
-     for secondary lines; the strong tone is for the few places that need it. */
-  --text: #56687a;
-  --text-soft: #6a7b8c;
-  --text-strong: #435466;
+  /* Text: muted slate, never black or navy. Each tone holds at least 4.5:1
+     against the paper and the cards, secondary lines included: the soft tone
+     is the old body tone, and the other two step darker from it. */
+  --text: #4a5c6f;
+  --text-soft: #56687a;
+  --text-strong: #38495b;
 
   /* Surfaces: translucent, so the paper shows through rather than being
      blocked by white. */
@@ -68,9 +68,9 @@
   --amber-bg: rgba(233, 201, 150, 0.35);
   --amber-ink: #85652c;
   --slate-bg: rgba(155, 184, 211, 0.24);
-  --slate-ink: #5b6f82;
+  --slate-ink: #4b5f72;
   --sage-bg: rgba(168, 204, 180, 0.35);
-  --sage-ink: #4b7658;
+  --sage-ink: #3e6349;
 
   --radius: 16px;
   --radius-small: 12px;
@@ -139,7 +139,7 @@ summary {
   font-size: 1.75rem;
   font-weight: 600;
   letter-spacing: 0.03em;
-  color: var(--blue);
+  color: var(--blue-deeper);
 }
 
 .places {
@@ -148,6 +148,9 @@ summary {
 }
 
 .places a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
   color: var(--text-soft);
   text-decoration: none;
   padding: 0.4rem 1rem;
@@ -190,7 +193,7 @@ h1 {
 h2 {
   font-size: 1.3rem;
   font-weight: 600;
-  color: var(--blue-deep);
+  color: var(--blue-action);
   margin: 0 0 0.6rem;
 }
 
@@ -245,7 +248,7 @@ article h2 {
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--pink-deep);
+  color: var(--rose-ink);
 }
 
 .due {
@@ -343,6 +346,9 @@ article h2 {
 }
 
 .weeks a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
   color: var(--blue-action);
   background: var(--surface-strong);
   border: 1.5px solid var(--edge);
@@ -558,14 +564,17 @@ input[type="text"] {
 }
 
 input::placeholder {
-  color: rgba(106, 123, 140, 0.6);
+  color: var(--text-soft);
+  opacity: 1;
 }
 
+/* Focus is the action blue at full strength, so it reads on the paper and on
+   a card, and never only by a change of color inside the control. */
 input:focus-visible,
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible {
-  outline: 3px solid rgba(155, 184, 211, 0.7);
+  outline: 3px solid var(--blue-action);
   outline-offset: 2px;
 }
 
@@ -579,6 +588,7 @@ button {
   font: inherit;
   font-family: var(--font-display);
   font-weight: 700;
+  min-height: 2.75rem;
   padding: 0.6rem 1.35rem;
   border-radius: var(--pill);
   border: 1.5px solid transparent;
@@ -605,13 +615,13 @@ button.primary:hover {
 button.secondary {
   background: transparent;
   border-color: var(--pink);
-  color: var(--pink-deep);
+  color: var(--rose-ink);
 }
 
 button.secondary:hover {
-  background: var(--pink);
-  border-color: var(--pink);
-  color: var(--text-strong);
+  background: var(--rose-bg);
+  border-color: var(--pink-deep);
+  color: var(--rose-ink);
 }
 
 .decision .note {
@@ -625,7 +635,7 @@ button.secondary:hover {
 
 details summary {
   cursor: pointer;
-  color: var(--blue-deep);
+  color: var(--blue-action);
   font-weight: 600;
 }
 
@@ -640,7 +650,7 @@ details summary {
 
 .step-node {
   font-weight: 600;
-  color: var(--blue-deep);
+  color: var(--blue-action);
 }
 
 .step-round {
@@ -673,8 +683,7 @@ form.inline {
 }
 
 form.inline button {
-  padding: 0.25rem 0.85rem;
-  font-size: 0.9rem;
+  padding: 0.35rem 1rem;
 }
 
 /* ------------------------------------------------------------- colophon */

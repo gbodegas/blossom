@@ -37,7 +37,7 @@ parent's entry or her own report that differs is said quietly."""
 CHANNEL_NAMES: dict[SourceChannel, str] = {
     SourceChannel.LMS: "school portal",
     SourceChannel.EMAIL: "school email",
-    SourceChannel.PARENT_ENTRY: "parent's entry",
+    SourceChannel.PARENT_ENTRY: "family entry",
     SourceChannel.STUDENT_REPORT: "your report",
 }
 """Each channel as a person reads it, for text written to her."""

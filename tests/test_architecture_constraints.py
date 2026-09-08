@@ -428,6 +428,6 @@ def test_student_due_this_week_renders_disagreement() -> None:
         response = client.get("/student/due-this-week")
 
     assert response.status_code == 200
-    assert "Source disagreement" in response.text
-    assert "LMS: 2026-08-21" in response.text
-    assert "PARENT_ENTRY: 2026-08-22" in response.text
+    assert "What the sources say" in response.text
+    assert "school portal: 2026-08-21" in response.text
+    assert "family entry: 2026-08-22" in response.text

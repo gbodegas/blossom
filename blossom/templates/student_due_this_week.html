@@ -192,7 +192,7 @@
       #}
       <p class="due">
         {% if assignment.due_date %}
-          Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year not in (view.week.start.year, view.week.end.year) %}, {{ assignment.due_date.year }}{% endif %}
+          {% if assignment.contradiction %}Recorded date{% else %}Due{% endif %} {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year not in (view.week.start.year, view.week.end.year) %}, {{ assignment.due_date.year }}{% endif %}
         {% else %}
           Due date not recorded
         {% endif %}
@@ -227,12 +227,17 @@
         <p class="source">Not read as a date: {{ assignment.unreadable|join("; ") }}.</p>
       {% endif %}
 
+      {#
+        The two banners say the same thing first, "Check this date", and then
+        which kind of doubt this is. The recorded date stays on the card and
+        the sources' dates are listed under the banner; nothing is chosen.
+      #}
       {% if assignment.deadline_confidence == "SOURCES_DISAGREE" %}
         <p class="confidence disagree">
-          <strong>Sources disagree</strong> about this due date. Nothing has been chosen for you.
+          <strong>Check this date.</strong> Sources disagree about it, and nothing has been chosen for you.
         </p>
         <div class="claims">
-          <h3>Source disagreement</h3>
+          <h3>What the sources say</h3>
           <ul>
             {% for claim in assignment.disagreement %}
               <li>{{ claim }}</li>
@@ -248,7 +253,8 @@
       #}
       {% if assignment.school_contradicts %}
         <p class="confidence disagree">
-          <strong>The school says otherwise.</strong> The date on record may be wrong.
+          <strong>Check this date.</strong> The school says otherwise. It gives a different date
+          from the one recorded.
         </p>
         <div class="claims">
           <h3>What the sources say</h3>

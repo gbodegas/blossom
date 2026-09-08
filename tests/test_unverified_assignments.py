@@ -123,8 +123,8 @@ def test_disagreeing_sources_are_still_listed_individually() -> None:
     page = student_page()
 
     assert "Sources disagree" in page
-    assert "LMS: 2026-08-21" in page
-    assert "PARENT_ENTRY: 2026-08-22" in page
+    assert "school portal: 2026-08-21" in page
+    assert "family entry: 2026-08-22" in page
 
 
 def test_a_corroborated_assignment_names_the_channels_that_agree() -> None:
@@ -191,11 +191,12 @@ def test_a_contradicted_card_names_the_record_as_the_date_shown() -> None:
     card = page.split("Vocabulary quiz, unit one", 1)[1].split("</article>", 1)[0]
     line = " ".join(card.split())
 
-    assert "Due Wednesday, August 26" in card
+    assert "Recorded date Wednesday, August 26" in card
+    assert "Due Wednesday, August 26" not in card
     assert "Date from the family's record; the school portal has a different one." in line
     assert "School portal</span>" not in card
     assert "The school says otherwise." in card
-    assert "LMS (day header): 2026-08-21" in card
+    assert "school portal (day header): 2026-08-21" in card
 
 
 def test_disagreeing_sources_still_say_whose_date_is_on_the_card(tmp_path: pathlib.Path) -> None:
@@ -225,7 +226,7 @@ def test_a_value_that_is_not_a_date_does_not_confirm_the_record(tmp_path: pathli
         "Date from the family's record; a value from the school portal could not be read as a date."
         in line
     )
-    assert "Not read as a date: LMS: Friday; LMS (title): Friday." in card
+    assert "Not read as a date: school portal: Friday; school portal (title): Friday." in card
     assert "School portal</span>" not in card
     assert 'class="confidence disagree"' not in card
 
@@ -237,7 +238,7 @@ def test_a_date_the_record_lacks_is_said_to_be_the_sources(tmp_path: pathlib.Pat
     assert "Due date not recorded" in card
     assert "No date on the family's record; the school portal has one." in line
     assert "The school says otherwise." in card
-    assert "LMS: 2026-08-21" in card
+    assert "school portal: 2026-08-21" in card
 
 
 def test_a_readable_date_that_matches_is_the_sources(tmp_path: pathlib.Path) -> None:
@@ -289,7 +290,7 @@ def test_claims_compared_as_dates_are_kept_as_the_source_spelled_them(
     assert isinstance(agreeing, Agreement)
     assert [c.asserted_value for c in agreeing.records] == [" 2026-08-21 ", "20260821"]
     assert "Sources disagree" in card
-    assert "LMS: 20260821" in card
+    assert "school portal: 20260821" in card
 
 
 def test_a_space_around_a_date_is_not_a_disagreement(tmp_path: pathlib.Path) -> None:
@@ -303,7 +304,7 @@ def test_a_weekday_beside_a_date_is_listed_apart_not_set_against_it(tmp_path: pa
     card = lab_page(tmp_path, [claim("2026-08-21"), claim("Friday", "STUDENT_REPORT")])
 
     assert '<span class="source">School portal</span>' in card
-    assert "Not read as a date: STUDENT_REPORT: Friday." in card
+    assert "Not read as a date: your report: Friday." in card
     assert 'class="confidence disagree"' not in card
 
 
@@ -313,8 +314,8 @@ def test_a_contradiction_names_only_the_channels_that_gave_a_date(tmp_path: path
     listed = card.split("What the sources say", 1)[1]
 
     assert "Date from the family's record; the school portal has a different one." in line
-    assert "Not read as a date: STUDENT_REPORT: Friday." in card
-    assert "LMS: 2026-08-22" in listed
+    assert "Not read as a date: your report: Friday." in card
+    assert "school portal: 2026-08-22" in listed
     assert "Friday" not in listed
 
 
@@ -326,13 +327,13 @@ def test_only_the_schools_date_is_a_banner(tmp_path: pathlib.Path) -> None:
     school = lab_page(tmp_path, [claim("2026-08-22", "EMAIL")])
 
     assert "what a parent entered has a different one." in " ".join(parent.split())
-    assert "What they gave: PARENT_ENTRY: 2026-08-22." in parent
+    assert "What they gave: family entry: 2026-08-22." in parent
     assert "The school says otherwise." not in parent
     assert 'class="confidence disagree"' not in parent
     assert "what you reported has a different one." in " ".join(hers.split())
     assert 'class="confidence disagree"' not in hers
     assert "The school says otherwise." in school
-    assert "EMAIL: 2026-08-22" in school.split("What the sources say", 1)[1]
+    assert "school email: 2026-08-22" in school.split("What the sources say", 1)[1]
 
 
 @pytest.mark.parametrize(
@@ -369,7 +370,7 @@ def test_an_undated_record_with_unreadable_claims_is_not_said_to_have_a_date(
         "No date on the family's record; a value from the school portal could not be read" in line
     )
     assert "Date from the family's record" not in line
-    assert "Not read as a date: LMS: Friday." in card
+    assert "Not read as a date: school portal: Friday." in card
 
 
 def test_a_record_in_another_year_shows_its_year_when_a_source_puts_it_in_this_week(
@@ -378,8 +379,29 @@ def test_a_record_in_another_year_shows_its_year_when_a_source_puts_it_in_this_w
     """The range carries the week's year; a card repeats a year the range does not cover."""
     card = lab_page(tmp_path, [claim("2026-08-21")], due_date="2027-08-21")
 
-    assert "Due Saturday, August 21, 2027" in card
+    assert "Recorded date Saturday, August 21, 2027" in card
     assert "The school says otherwise." in card
+
+
+def test_a_contested_date_is_named_as_recorded_and_the_card_says_to_check_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The record's date stays on the card as the recorded date; the sources' dates
+    sit under the warning in readable channel names; nothing is chosen."""
+    contradicted = lab_page(tmp_path, [claim("2026-08-22")])
+    disagreeing = lab_page(tmp_path, [claim("2026-08-21"), claim("2026-08-22", "PARENT_ENTRY")])
+
+    assert "Recorded date Friday, August 21" in contradicted
+    assert "<strong>Check this date.</strong> The school says otherwise" in contradicted
+    assert "school portal: 2026-08-22" in contradicted.split("What the sources say", 1)[1]
+    assert "Due Friday, August 21" in disagreeing
+    assert "<strong>Check this date.</strong> Sources disagree about it" in disagreeing
+    listed = disagreeing.split("What the sources say", 1)[1]
+    assert "school portal: 2026-08-21" in listed
+    assert "family entry: 2026-08-22" in listed
+    assert "LMS" not in contradicted
+    assert "LMS" not in disagreeing
+    assert "PARENT_ENTRY" not in disagreeing
 
 
 def test_every_card_carries_exactly_one_quiet_line_on_the_fixtures() -> None:
