@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set page = "parent" %}
-{% block title %}Blossom - Review{% endblock %}
+{% block title %}Blossom - Family review{% endblock %}
 {% macro steps_list(steps, title) %}
   {% if steps %}
     <details class="steps">
@@ -18,36 +18,19 @@
     </details>
   {% endif %}
 {% endmacro %}
+{% macro local(moment) %}{% set when = moment.astimezone(zone) %}{{ when.strftime("%B") }} {{ when.day }}, {{ when.year }}, {{ when.strftime("%H:%M %Z") }}{% endmacro %}
 {% block content %}
-  <h1>Review</h1>
+  <h1>Family review</h1>
 
   {% if problem %}
     <p class="problem" role="alert">{{ problem }}</p>
   {% endif %}
 
-  <section class="panel">
-    <h2>Plan an evening for her</h2>
-    {% if model_available %}
-      <form method="post" action="/parent/actions/plan" class="plan-form">
-        <label>Evening of
-          <input type="date" name="plan_date" value="{{ today }}">
-        </label>
-        <button type="submit" class="primary">Plan it</button>
-      </form>
-      <p class="note">
-        She usually plans from her own page. A plan made here for today is on her page
-        the moment it is made; one for another evening reaches her page on that day.
-        Either waits below for your review, and takes the place of any plan still
-        waiting for the same evening.
-      </p>
-    {% else %}
-      <p class="note">
-        No API key is configured, so a plan cannot be started. What is already
-        waiting still shows below and can still be reviewed.
-      </p>
-    {% endif %}
-  </section>
-
+  {#
+    The work a parent does with her comes first: what she asked for, then
+    what waits for a review. Starting a plan on her behalf and the record of
+    earlier plans fold away below.
+  #}
   <section>
     <h2>Help she asked for</h2>
     {% if not help_open %}
@@ -58,24 +41,27 @@
         <p class="course">Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local.strftime("%H:%M") }}</p>
         {% if ask.note %}<p class="body">She said: <q>{{ ask.note }}</q></p>{% else %}<p class="note">No words with it.</p>{% endif %}
         <p class="decision-line">
-          {% if ask.state == "requested" %}Not taken up yet. Her page says a parent has not seen it.{% else %}<strong>Taken up.</strong> Her page says a parent is on it.{% if ask.response %} Word back so far: <q>{{ ask.response }}</q>{% endif %}{% endif %}
+          {% if ask.state == "requested" %}Not taken up yet. Her page says it is waiting for a parent to respond.{% else %}<strong>Taken up.</strong> Her page says a parent is on it.{% if ask.response %} Reply so far: <q>{{ ask.response }}</q>{% endif %}{% endif %}
         </p>
         <form method="post" action="/parent/actions/help/{{ ask.request_id }}" class="decision">
-          <label>A word back (optional)
+          <label>Reply (optional)
             <input type="text" name="response" maxlength="{{ note_max_length }}" placeholder="What she will read under her request">
           </label>
           <div class="actions">
             {% if ask.state == "requested" %}
               <button type="submit" name="step" value="accept" class="primary"
-                      aria-label="Take up the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it up</button>
+                      aria-label="Say a parent can help with the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">I can help</button>
             {% endif %}
             <button type="submit" name="step" value="resolve" class="secondary"
-                    aria-label="Resolve the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Resolve</button>
+                    aria-label="Mark the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} resolved">Mark resolved</button>
           </div>
           <p class="note">Each step shows on her page as soon as it is taken. Nothing leaves here.</p>
         </form>
       </article>
     {% endfor %}
+    <p class="note refresh">
+      <a href="/parent">Refresh requests</a>. Refresh to see updates. Save or send your note first.
+    </p>
     {% if help_resolved %}
       <details class="steps">
         <summary>Resolved in the last two weeks</summary>
@@ -101,16 +87,15 @@
         <p class="course">Evening of {{ draft.plan_date }}</p>
         <h3>{{ draft.plan_date.strftime("%A, %B") }} {{ draft.plan_date.day }}, {{ draft.plan_date.year }}</h3>
         {#
-          The reviewer's opinion travels with the plan and never decides for
-          it, so the heading says which way it went and the text below
-          carries its notes.
+          Blossom's own review travels with the plan and never decides for
+          it: the line says which way it went, the text carries its notes,
+          and the parent's review is the form below.
         #}
         {% if draft.outcome == "accepted" %}
-          <p class="confidence corroborated">The reviewer accepted this plan.</p>
+          <p class="confidence corroborated"><strong>Blossom's review:</strong> accepted.</p>
         {% else %}
           <p class="confidence disagree">
-            <strong>The reviewer did not settle on this plan.</strong>
-            Its notes are at the end of the text.
+            <strong>Blossom's review:</strong> could not be completed. Its notes are at the end of the text.
           </p>
         {% endif %}
         <pre class="body">{{ draft.body }}</pre>
@@ -125,6 +110,7 @@
         #}
         {% set evening = draft.plan_date.strftime("%A, %B") ~ " " ~ draft.plan_date.day %}
         {% set which = (", " ~ loop.index ~ " of " ~ loop.length) if loop.length > 1 else "" %}
+        <p class="review-heading">Parent review</p>
         <form method="post" action="/parent/actions/decide/{{ draft.draft_id }}" class="decision">
           <label>Reason (optional)
             <input type="text" name="reason" maxlength="{{ reason_max_length }}" placeholder="A sentence she would recognize">
@@ -154,49 +140,80 @@
     {% endfor %}
   </section>
 
-  {% if ended %}
+  <details class="steps panel-fold">
+    <summary>Help with a plan</summary>
+    <section class="panel">
+      <h2>Plan an evening for her</h2>
+      {% if model_available %}
+        <form method="post" action="/parent/actions/plan" class="plan-form" data-pending="Making the plan...">
+          <label>Evening of
+            <input type="date" name="plan_date" value="{{ today }}">
+          </label>
+          <button type="submit" class="primary">Plan it</button>
+        </form>
+        <p class="note">
+          She usually plans from her own page. A plan made here for today is on her page
+          the moment it is made; one for another evening reaches her page on that day.
+          Either waits above for your review, and takes the place of any plan still
+          waiting for the same evening.
+        </p>
+      {% else %}
+        <p class="note">
+          No API key is configured, so a plan cannot be started. Set ANTHROPIC_API_KEY where the
+          app is started to turn planning on. What is already waiting still shows above and can
+          still be reviewed.
+        </p>
+      {% endif %}
+    </section>
+  </details>
+
+  <details class="steps panel-fold">
+    <summary>Earlier plans</summary>
     <section>
-      <h2>Ended without a plan</h2>
-      {% for run in ended %}
-        <article class="draft outcome-{{ run.outcome }}">
-          <p class="course">Evening of {{ run.plan_date }}</p>
-          <p class="confidence disagree">
-            <strong>{{ run.summary }}</strong>
-            <span class="when">Ended {{ run.recorded_at.strftime("%B") }} {{ run.recorded_at.day }}, {{ run.recorded_at.year }}, {{ run.recorded_at.strftime("%H:%M UTC") }}.</span>
+      {% if not decided %}
+        <p class="empty">No earlier plans yet.</p>
+      {% endif %}
+      {% for draft in decided %}
+        <article class="draft decided-{{ draft.decision }}">
+          <p class="course">Evening of {{ draft.plan_date }}</p>
+          <p class="decision-line">
+            {% if draft.decision == "approved" %}
+              <strong>Looks good.</strong>
+            {% elif draft.decision == "rejected" %}
+              <strong>Change asked.</strong> The plan stays as it was until she plans again.
+            {% elif draft.decision == "superseded" %}
+              <strong>Superseded.</strong> A later plan for this evening took its place, and this one was never reviewed.
+            {% else %}
+              <strong>Expired.</strong> The evening passed without a review.
+            {% endif %}
+            {% if draft.reason and draft.decision in ("approved", "rejected") %}Reason: {{ draft.reason }}.{% endif %}
+            <span class="when">{% if draft.decision in ("approved", "rejected") %}Reviewed{% else %}Closed{% endif %} {{ local(draft.decided_at) }}.</span>
           </p>
-          {{ steps_list(run.steps, "How this run went") }}
+          <details>
+            <summary>{% if draft.decision in ("approved", "rejected") %}The plan as it was reviewed{% else %}The plan as it was{% endif %}</summary>
+            <pre class="body">{{ draft.body }}</pre>
+          </details>
+          {{ steps_list(draft.steps, "How this plan was made") }}
         </article>
       {% endfor %}
     </section>
-  {% endif %}
+  </details>
 
-  <section>
-    <h2>Earlier plans</h2>
-    {% if not decided %}
-      <p class="empty">No earlier plans yet.</p>
-    {% endif %}
-    {% for draft in decided %}
-      <article class="draft decided-{{ draft.decision }}">
-        <p class="course">Evening of {{ draft.plan_date }}</p>
-        <p class="decision-line">
-          {% if draft.decision == "approved" %}
-            <strong>Looks good.</strong>
-          {% elif draft.decision == "rejected" %}
-            <strong>Change asked.</strong> The plan stays as it was until she plans again.
-          {% elif draft.decision == "superseded" %}
-            <strong>Superseded.</strong> A later plan for this evening took its place, and this one was never reviewed.
-          {% else %}
-            <strong>Expired.</strong> The evening passed without a review.
-          {% endif %}
-          {% if draft.reason and draft.decision in ("approved", "rejected") %}Reason: {{ draft.reason }}.{% endif %}
-          <span class="when">{% if draft.decision in ("approved", "rejected") %}Reviewed{% else %}Closed{% endif %} {{ draft.decided_at.strftime("%B") }} {{ draft.decided_at.day }}, {{ draft.decided_at.year }}, {{ draft.decided_at.strftime("%H:%M UTC") }}.</span>
-        </p>
-        <details>
-          <summary>{% if draft.decision in ("approved", "rejected") %}The plan as it was reviewed{% else %}The plan as it was{% endif %}</summary>
-          <pre class="body">{{ draft.body }}</pre>
-        </details>
-        {{ steps_list(draft.steps, "How this plan was made") }}
-      </article>
-    {% endfor %}
-  </section>
+  {% if ended %}
+    <details class="steps panel-fold">
+      <summary>Ended without a plan</summary>
+      <section>
+        {% for run in ended %}
+          <article class="draft outcome-{{ run.outcome }}">
+            <p class="course">Evening of {{ run.plan_date }}</p>
+            <p class="confidence disagree">
+              <strong>{{ run.summary }}</strong>
+              <span class="when">Ended {{ local(run.recorded_at) }}.</span>
+            </p>
+            {{ steps_list(run.steps, "How this run went") }}
+          </article>
+        {% endfor %}
+      </section>
+    </details>
+  {% endif %}
 {% endblock %}

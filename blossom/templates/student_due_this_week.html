@@ -45,8 +45,18 @@
       {% endif %}
       {% if view.plan and view.plan.reason and view.plan.decision != "expired" %}They said: <q>{{ view.plan.reason }}</q>{% endif %}
     </p>
+    {#
+      What the plan button offers follows the evening as it stands: a plan
+      for the smaller evening while her signal is up and no plan yet uses it,
+      a plan again otherwise. The words beside it say what has and has not
+      changed; nothing here plans on its own.
+    #}
+    {% set smaller_wanted = view.too_much and not (view.plan and view.plan.too_much) %}
+    {% set plan_label = "Make a smaller plan" if smaller_wanted else ("Plan again" if view.plan else "Plan today") %}
     {% if view.plan and view.plan.stale %}
-      <p class="confidence disagree" role="status"><strong>Plan again.</strong> {{ view.plan.stale }}</p>
+      <p class="confidence disagree" role="status"><strong>{{ plan_label }}.</strong> {{ view.plan.stale }}</p>
+    {% elif view.plan and view.plan.too_much and view.too_much %}
+      <p class="note">This plan already uses the smaller budget, {{ view.budget_minutes }} minutes.</p>
     {% endif %}
     {#
       The reviewer's verdict is not a check that failed. When it could not
@@ -68,8 +78,8 @@
 
     <div class="actions">
       {% if view.can_plan %}
-        <form method="post" action="/student/actions/plan" class="action">
-          <button type="submit" class="primary">{% if view.plan %}Plan again{% else %}Plan today{% endif %}</button>
+        <form method="post" action="/student/actions/plan" class="action" data-pending="Making your plan...">
+          <button type="submit" class="primary">{{ plan_label }}</button>
         </form>
       {% endif %}
       {% if view.too_much %}
@@ -86,8 +96,8 @@
       <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
     {% else %}
       <p class="notice">
-        Blossom cannot make a plan right now: no API key is configured. Everything else here
-        still works, and "Too much right now" is still yours to press.
+        Planning is unavailable right now. Everything else here still works, and "Too much
+        right now" is still yours to press.
       </p>
     {% endif %}
 
@@ -105,7 +115,7 @@
             <strong>You asked for help</strong> at {{ ask.asked_local.strftime("%H:%M") }}
             on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
             {% if ask.state == "requested" %}
-              A parent has not seen it yet.
+              Waiting for a parent to respond.
               <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
                 <button type="submit" class="secondary"
                         aria-label="Take back the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it back</button>
@@ -117,6 +127,9 @@
         {% endfor %}
       </ul>
     {% endif %}
+    <p class="note refresh">
+      <a href="/student/due-this-week">Refresh replies</a>. Refresh to see updates. Save or send your note first.
+    </p>
     {% if resolved_requests %}
       <details class="steps resolved">
         <summary>Resolved requests</summary>

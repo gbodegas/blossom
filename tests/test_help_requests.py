@@ -177,7 +177,7 @@ def test_a_parent_takes_it_up_and_resolves_it_and_she_sees_each_step() -> None:
         after = client.get(PAGE).text
         again = client.post(f"/parent/help-requests/{request_id}/resolve")
 
-    assert "A parent has not seen it yet." in not_seen
+    assert "Waiting for a parent to respond." in not_seen
     assert taken_up.status_code == 200
     assert taken_up.json()["state"] == "accepted"
     assert "<strong>A parent is on it.</strong> They said: <q>coming</q>" in on_it
@@ -248,8 +248,8 @@ def test_a_parents_word_back_is_capped_on_the_form_too() -> None:
         )
 
     assert over.status_code == 422
-    assert f"A word back is at most {NOTE_MAX_LENGTH} characters" in over.text
-    assert "<h1>Review</h1>" in over.text
+    assert f"A reply is at most {NOTE_MAX_LENGTH} characters" in over.text
+    assert "<h1>Family review</h1>" in over.text
     assert still_requested == "requested"
     assert at_cap.status_code == 303
 
@@ -272,7 +272,7 @@ def test_her_page_offers_the_press_and_then_lists_the_request_with_a_way_back() 
     assert asked.headers["location"] == PAGE
     assert "<strong>You asked for help</strong>" in after
     assert "<q>the outline</q>" in after
-    assert "A parent has not seen it yet." in after
+    assert "Waiting for a parent to respond." in after
     assert f'action="/student/actions/take-back-help/{request_id}"' in after
     assert taken_back.status_code == 303
     assert "You asked for help" not in again
@@ -295,12 +295,12 @@ def test_the_parents_page_lists_what_is_open_and_moves_it_with_two_buttons() -> 
 
     assert "<h2>Help she asked for</h2>" in listed
     assert "She said: <q>the outline</q>" in listed
-    assert "Not taken up yet. Her page says a parent has not seen it." in listed
+    assert "Not taken up yet. Her page says it is waiting for a parent to respond." in listed
     assert 'value="accept"' in listed
     assert taken_up.status_code == 303
     assert (
         "<strong>Taken up.</strong> Her page says a parent is on it. "
-        "Word back so far: <q>coming</q>" in on_it
+        "Reply so far: <q>coming</q>" in on_it
     )
     assert 'value="accept"' not in on_it
     assert resolved.status_code == 303
