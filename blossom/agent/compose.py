@@ -22,6 +22,7 @@ from blossom.drafts import Draft
 from blossom.heuristic_relevance import CriticVerdict, Judgment
 from blossom.noticing import Noticing
 from blossom.plan_checks import PlanVerification
+from blossom.plan_text import plain
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence
 from blossom.stores.project_state import Assignment
@@ -48,8 +49,9 @@ def short_date(value: date) -> str:
 
 
 def one_line(text: str) -> str:
-    """A value on one line, so a line of the draft is one thing and stays with its shape."""
-    return " ".join(text.split())
+    """A value on one line and in plain characters, so a line of the draft is one thing,
+    stays with its shape, and reads as written rather than as an escape sequence."""
+    return " ".join(plain(text).split())
 
 
 def compose_draft(

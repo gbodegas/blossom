@@ -2,7 +2,7 @@
 
 from datetime import time
 
-from blossom.agent.compose import compose_draft
+from blossom.agent.compose import compose_draft, one_line
 from blossom.clock import spoken_time
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plan_checks import check_plan
@@ -167,6 +167,78 @@ def test_the_composer_keeps_each_value_on_one_line() -> None:
     assert ": not due until Monday\n" in body
     assert "(could not assess): an hour may be right or generous" in body
     assert present_plan(body).other == []
+
+
+def test_an_escape_sequence_in_the_text_reads_as_its_character() -> None:
+    """A model sometimes writes an em dash as its escape; the page shows the dash, and
+    the composer writes the dash into a new draft to begin with."""
+    dash = chr(0x2014)
+    saved = "\n".join(
+        [
+            "Plan for Wednesday, August 19, 2026",
+            "",
+            "The reviewer's notes:",
+            "- order (passes): the two errands \\u2014 the signature "
+            "and the binder \\u2014 come after",
+        ]
+    )
+    shown = present_plan(saved)
+    assert shown.review is not None
+    assert (
+        shown.review.items[0].text
+        == f"the two errands {dash} the signature and the binder {dash} come after"
+    )
+
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            PlanBlock(
+                assignment_id="assignment-canal-essay",
+                starts_at=time(16, 30),
+                ends_at=time(17, 30),
+                rationale="the essay first \\u2014 while the afternoon is quiet",
+            )
+        ],
+    )
+    body = compose_draft(
+        draft_id="draft:test",
+        plan=plan,
+        assignments=[ESSAY],
+        verification=check_plan(plan, due_in_window=[ESSAY], zone=ZONE),
+        verdict=CriticVerdict(findings=[]),
+        settled=True,
+    ).body
+    assert f"the essay first {dash} while the afternoon is quiet" in body
+    assert "\\u2014" not in body
+
+
+def test_only_printable_characters_are_decoded_and_only_inside_a_part() -> None:
+    """A control code or a lone surrogate written as an escape stays as written, so a
+    sequence can neither move a line boundary nor break the page's encoding; a pair
+    becomes the one character it encodes."""
+    saved = "\n".join(
+        [
+            "Plan for Wednesday, August 19, 2026\\u000ANot a second line",
+            "",
+            "The reviewer's notes:",
+            "- order (passes): one note\\u000Astill one note",
+            "- sizing (passes): a smile \\uD83D\\uDE00 and a stray \\uDE00 half",
+            "- deferrals (passes): a separator \\u2028 a direction mark \\u202E "
+            "a tag \\uDB40\\uDC01",
+        ]
+    )
+    text = present_plan(saved)
+
+    assert text.title == "Plan for Wednesday, August 19, 2026\\u000ANot a second line"
+    assert text.review is not None
+    assert [item.text for item in text.review.items] == [
+        "one note\\u000Astill one note",
+        f"a smile {chr(0x1F600)} and a stray \\uDE00 half",
+        "a separator \\u2028 a direction mark \\u202E a tag \\uDB40\\uDC01",
+    ]
+    for item in text.review.items:
+        item.text.encode("utf-8")
+    assert one_line("a separator \\u2028 stays") == "a separator \\u2028 stays"
 
 
 def test_the_clock_reads_as_she_does() -> None:

@@ -4,9 +4,16 @@ A draft is text, and the text is the record: the planner's blocks, their
 reasons, what waits, what needs a word with someone, and the reviewer's notes,
 in the shapes ``compose_draft`` writes. Reading those shapes back lets a page
 set the time range in bold, the reason under it, and the reviewer's notes
-behind a fold, without changing a character of what was saved. A line the
-reader does not recognize is kept as it is, so a draft in a shape this module
-has never seen is shown whole rather than dropped.
+behind a fold, without changing what was saved. A line the reader does not
+recognize is kept as it is, so a draft in a shape this module has never seen
+is shown whole rather than dropped.
+
+One thing is shown differently from how it was saved: a printable character
+that a model wrote as its escape sequence, an em dash as the six characters
+of ``\\u2014``, is shown as the character. That is done to each part after the
+shapes are read, never to the text as a whole, so a sequence cannot move a
+line boundary; and only for printable characters, so a control code or a lone
+surrogate written that way is left as written.
 
 Nothing here decides anything. It is presentation of the record, not a second
 reading of the plan.
@@ -16,6 +23,42 @@ import re
 from dataclasses import dataclass, field
 
 REVIEW_HEADING = "The reviewer's notes:"
+
+ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+"""A character written as its escape sequence, as a model sometimes writes an em dash."""
+
+SURROGATE_PAIR = re.compile(r"\\u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})")
+"""A character outside the basic plane written as two escapes, the way JSON writes an emoji."""
+
+
+def printable(code: int) -> str | None:
+    """The character for ``code`` when a page can show it, by Unicode's own account:
+    ``None`` for a control code, a format character, a line or paragraph separator, a
+    lone surrogate, or anything else ``str.isprintable`` refuses, which then stays as
+    the sequence that was written."""
+    character = chr(code)
+    return character if character.isprintable() else None
+
+
+def plain(text: str) -> str:
+    """The text with each escape sequence for a printable character turned into it.
+
+    A surrogate pair becomes the one character it encodes. Anything else that
+    reads as an escape but names no printable character is left as written.
+    """
+
+    def pair(found: re.Match[str]) -> str:
+        high, low = int(found[1], 16), int(found[2], 16)
+        character = printable(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+        return found[0] if character is None else character
+
+    def single(found: re.Match[str]) -> str:
+        character = printable(int(found[1], 16))
+        return found[0] if character is None else character
+
+    return ESCAPE.sub(single, SURROGATE_PAIR.sub(pair, text))
+
+
 NOTHING_SCHEDULED = "Nothing is scheduled tonight."
 
 BLOCK = re.compile(
@@ -78,7 +121,12 @@ class PlanText:
 
 
 def present_plan(body: str) -> PlanText:
-    """Take the saved text apart along the composer's shapes. Nothing is lost or reworded."""
+    """Take the saved text apart along the composer's shapes.
+
+    Nothing is lost or reworded, with one exception: a printable character
+    written as its escape sequence is shown as the character, part by part,
+    once the shapes have been read (see ``plain``).
+    """
     lines = body.split("\n")
     text = PlanText(title=lines[0] if lines else "")
     index = 1
@@ -121,4 +169,27 @@ def present_plan(body: str) -> PlanText:
             text.blocks[-1] = Block(span=last_block.span, item=last_block.item, rationale=rationale)
         else:
             text.other.append(line.strip())
-    return text
+    return readable(text)
+
+
+def readable(text: PlanText) -> PlanText:
+    """The same parts, each with its escape sequences for printable characters decoded."""
+
+    def section(found: Section) -> Section:
+        return Section(
+            heading=plain(found.heading),
+            items=[Item(text=plain(item.text), label=item.label) for item in found.items],
+        )
+
+    return PlanText(
+        title=plain(text.title),
+        notes=[plain(note) for note in text.notes],
+        blocks=[
+            Block(span=block.span, item=plain(block.item), rationale=plain(block.rationale))
+            for block in text.blocks
+        ],
+        empty=text.empty,
+        sections=[section(found) for found in text.sections],
+        review=section(text.review) if text.review is not None else None,
+        other=[plain(line) for line in text.other],
+    )
