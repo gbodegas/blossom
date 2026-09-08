@@ -55,16 +55,20 @@ class StudentAssignmentView(BaseModel):
     readable_sources: str = ""
     """The readable channels in the page's words."""
     unreadable: list[str] = []
-    """Claims whose value could not be read as a date, as ``describe`` renders them.
-    Kept apart: they neither confirm nor contradict anything, and the page says so."""
+    """Claims whose value could not be read as a date, as ``SourceRecord.spoken``
+    renders them, with channels named as she reads them. Kept apart: they neither
+    confirm nor contradict anything, and the page says so."""
     unreadable_sources: str = ""
     """The channels behind ``unreadable``, in the page's words."""
     source_label: str = ""
     """Where the date shown came from, when one short label can say it: the channels
     that gave it, or the family. Empty in the states that need a sentence."""
     disagreement: list[str]
+    """Each claim when the sources give different dates, as ``SourceRecord.spoken``
+    renders it; empty otherwise."""
     contradiction: list[str] = []
-    """What the sources say when none of them supports the record's date; empty otherwise."""
+    """What the sources say when none of them supports the record's date, in the same
+    spoken form; empty otherwise."""
     school_contradicts: bool = False
     """Whether a school channel is among those; only then is the contradiction a banner."""
     assigned_on: date | None = None

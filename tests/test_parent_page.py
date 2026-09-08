@@ -505,7 +505,7 @@ def test_dates_on_both_pages_carry_their_year() -> None:
 
     assert "August 17 to" in student
     assert "August 23, 2026" in student
-    assert "Due Friday, August 21" in student
+    assert "Recorded date Friday, August 21" in student, "the essay's sources disagree"
 
 
 # ------------------------------------------------------------- the run's record

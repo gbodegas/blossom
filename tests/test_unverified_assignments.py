@@ -394,7 +394,8 @@ def test_a_contested_date_is_named_as_recorded_and_the_card_says_to_check_it(
     assert "Recorded date Friday, August 21" in contradicted
     assert "<strong>Check this date.</strong> The school says otherwise" in contradicted
     assert "school portal: 2026-08-22" in contradicted.split("What the sources say", 1)[1]
-    assert "Due Friday, August 21" in disagreeing
+    assert "Recorded date Friday, August 21" in disagreeing
+    assert "Due Friday, August 21" not in disagreeing
     assert "<strong>Check this date.</strong> Sources disagree about it" in disagreeing
     listed = disagreeing.split("What the sources say", 1)[1]
     assert "school portal: 2026-08-21" in listed

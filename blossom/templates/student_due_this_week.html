@@ -192,7 +192,7 @@
       #}
       <p class="due">
         {% if assignment.due_date %}
-          {% if assignment.contradiction %}Recorded date{% else %}Due{% endif %} {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year not in (view.week.start.year, view.week.end.year) %}, {{ assignment.due_date.year }}{% endif %}
+          {% if assignment.contradiction or assignment.deadline_confidence == "SOURCES_DISAGREE" %}Recorded date{% else %}Due{% endif %} {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year not in (view.week.start.year, view.week.end.year) %}, {{ assignment.due_date.year }}{% endif %}
         {% else %}
           Due date not recorded
         {% endif %}
