@@ -16,6 +16,16 @@ import re
 from dataclasses import dataclass, field
 
 REVIEW_HEADING = "The reviewer's notes:"
+
+ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+"""A character written as its escape sequence, as a model sometimes writes an em dash."""
+
+
+def plain(text: str) -> str:
+    """The text with any such sequence turned into the character it names."""
+    return ESCAPE.sub(lambda found: chr(int(found[1], 16)), text)
+
+
 NOTHING_SCHEDULED = "Nothing is scheduled tonight."
 
 BLOCK = re.compile(
@@ -79,7 +89,7 @@ class PlanText:
 
 def present_plan(body: str) -> PlanText:
     """Take the saved text apart along the composer's shapes. Nothing is lost or reworded."""
-    lines = body.split("\n")
+    lines = plain(body).split("\n")
     text = PlanText(title=lines[0] if lines else "")
     index = 1
     while index < len(lines) and lines[index].strip():

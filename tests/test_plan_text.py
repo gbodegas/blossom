@@ -169,6 +169,49 @@ def test_the_composer_keeps_each_value_on_one_line() -> None:
     assert present_plan(body).other == []
 
 
+def test_an_escape_sequence_in_the_text_reads_as_its_character() -> None:
+    """A model sometimes writes an em dash as its escape; the page shows the dash, and
+    the composer writes the dash into a new draft to begin with."""
+    dash = chr(0x2014)
+    saved = "\n".join(
+        [
+            "Plan for Wednesday, August 19, 2026",
+            "",
+            "The reviewer's notes:",
+            "- order (passes): the two errands \\u2014 the signature "
+            "and the binder \\u2014 come after",
+        ]
+    )
+    shown = present_plan(saved)
+    assert shown.review is not None
+    assert (
+        shown.review.items[0].text
+        == f"the two errands {dash} the signature and the binder {dash} come after"
+    )
+
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            PlanBlock(
+                assignment_id="assignment-canal-essay",
+                starts_at=time(16, 30),
+                ends_at=time(17, 30),
+                rationale="the essay first \\u2014 while the afternoon is quiet",
+            )
+        ],
+    )
+    body = compose_draft(
+        draft_id="draft:test",
+        plan=plan,
+        assignments=[ESSAY],
+        verification=check_plan(plan, due_in_window=[ESSAY], zone=ZONE),
+        verdict=CriticVerdict(findings=[]),
+        settled=True,
+    ).body
+    assert f"the essay first {dash} while the afternoon is quiet" in body
+    assert "\\u2014" not in body
+
+
 def test_the_clock_reads_as_she_does() -> None:
     assert spoken_time(time(0, 5)) == "12:05 AM"
     assert spoken_time(time(9, 0)) == "9:00 AM"
