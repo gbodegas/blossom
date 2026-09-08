@@ -2,7 +2,7 @@
 
 from datetime import time
 
-from blossom.agent.compose import compose_draft
+from blossom.agent.compose import compose_draft, one_line
 from blossom.clock import spoken_time
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plan_checks import check_plan
@@ -223,6 +223,8 @@ def test_only_printable_characters_are_decoded_and_only_inside_a_part() -> None:
             "The reviewer's notes:",
             "- order (passes): one note\\u000Astill one note",
             "- sizing (passes): a smile \\uD83D\\uDE00 and a stray \\uDE00 half",
+            "- deferrals (passes): a separator \\u2028 a direction mark \\u202E "
+            "a tag \\uDB40\\uDC01",
         ]
     )
     text = present_plan(saved)
@@ -232,9 +234,11 @@ def test_only_printable_characters_are_decoded_and_only_inside_a_part() -> None:
     assert [item.text for item in text.review.items] == [
         "one note\\u000Astill one note",
         f"a smile {chr(0x1F600)} and a stray \\uDE00 half",
+        "a separator \\u2028 a direction mark \\u202E a tag \\uDB40\\uDC01",
     ]
     for item in text.review.items:
         item.text.encode("utf-8")
+    assert one_line("a separator \\u2028 stays") == "a separator \\u2028 stays"
 
 
 def test_the_clock_reads_as_she_does() -> None:

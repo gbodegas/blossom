@@ -32,11 +32,12 @@ SURROGATE_PAIR = re.compile(r"\\u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-
 
 
 def printable(code: int) -> str | None:
-    """The character for ``code`` when it is one a page can show; ``None`` for a control
-    code or a lone surrogate, which stay as the sequence that was written."""
-    if code < 0x20 or 0x7F <= code <= 0x9F or 0xD800 <= code <= 0xDFFF:
-        return None
-    return chr(code)
+    """The character for ``code`` when a page can show it, by Unicode's own account:
+    ``None`` for a control code, a format character, a line or paragraph separator, a
+    lone surrogate, or anything else ``str.isprintable`` refuses, which then stays as
+    the sequence that was written."""
+    character = chr(code)
+    return character if character.isprintable() else None
 
 
 def plain(text: str) -> str:
@@ -48,7 +49,8 @@ def plain(text: str) -> str:
 
     def pair(found: re.Match[str]) -> str:
         high, low = int(found[1], 16), int(found[2], 16)
-        return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+        character = printable(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+        return found[0] if character is None else character
 
     def single(found: re.Match[str]) -> str:
         character = printable(int(found[1], 16))
