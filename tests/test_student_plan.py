@@ -272,6 +272,17 @@ def test_the_plan_is_folded_on_a_visit_and_unfolded_right_after_it_is_made() -> 
     assert "Looks ahead through Tuesday, August 25." in revisit
 
 
+def test_the_plan_unfolds_on_todays_week_however_the_week_was_named() -> None:
+    """``show_plan`` is a presentation parameter and works beside ``week`` too."""
+    with browser() as client:
+        client.post("/student/actions/plan")
+        named = client.get(PAGE, params={"week": PLAN_DATE.isoformat(), "show_plan": "1"}).text
+        other = client.get(PAGE, params={"week": "2026-08-24", "show_plan": "1"}).text
+
+    assert '<details class="plan" open>' in named
+    assert '<details class="plan"' not in other, "another week has no today panel"
+
+
 def test_asking_for_the_plan_unfolded_makes_no_plan() -> None:
     with browser() as client:
         page = client.get(PAGE, params={"show_plan": "1"}).text

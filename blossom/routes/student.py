@@ -569,7 +569,7 @@ def due_this_week(
             problem=BEYOND_THE_CALENDAR,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    return student_page(request, state, week=chosen)
+    return student_page(request, state, week=chosen, plan_open=plan_open)
 
 
 @router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)

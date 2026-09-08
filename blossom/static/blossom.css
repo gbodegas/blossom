@@ -338,7 +338,8 @@ article h2 {
 
 .weeks {
   display: flex;
-  gap: 0.35rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .weeks a {
@@ -390,19 +391,24 @@ article h2 {
   font-weight: 700;
 }
 
-.ask label {
-  margin-bottom: 0.35rem;
-}
-
-.ask-row {
+/* One row that wraps: the label, the field, and the button. */
+.ask {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: stretch;
+  gap: 0.75rem 1rem;
+  align-items: center;
 }
 
-.ask-row input {
-  flex: 1 1 16rem;
+.ask label {
+  display: block;
+  margin: 0;
+}
+
+/* A text field's own minimum width would keep the row from closing; the
+   flex basis is the minimum here. */
+.ask input {
+  flex: 1 1 11rem;
+  min-width: 0;
   max-width: none;
 }
 
