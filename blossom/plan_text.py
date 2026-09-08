@@ -74,7 +74,7 @@ class PlanText:
     sections: list[Section] = field(default_factory=list)
     review: Section | None = None
     other: list[str] = field(default_factory=list)
-    """Lines in no shape this reader knows, kept whole."""
+    """Lines in no shape this reader knows and with nothing before them to continue, kept whole."""
 
 
 def present_plan(body: str) -> PlanText:
@@ -110,6 +110,15 @@ def present_plan(body: str) -> PlanText:
                 current.items.append(Item(text=finding["text"], label=finding["label"]))
             else:
                 current.items.append(Item(text=line[2:]))
+        elif current is not None and current.items:
+            # A value written with a line break inside it continues the item
+            # it belongs to, in place, rather than drifting to the end.
+            last_item = current.items[-1]
+            current.items[-1] = Item(text=f"{last_item.text} {line.strip()}", label=last_item.label)
+        elif current is None and text.blocks:
+            last_block = text.blocks[-1]
+            rationale = f"{last_block.rationale} {line.strip()}".strip()
+            text.blocks[-1] = Block(span=last_block.span, item=last_block.item, rationale=rationale)
         else:
             text.other.append(line.strip())
     return text

@@ -47,6 +47,11 @@ def short_date(value: date) -> str:
     return f"{value:%b} {value.day}"
 
 
+def one_line(text: str) -> str:
+    """A value on one line, so a line of the draft is one thing and stays with its shape."""
+    return " ".join(text.split())
+
+
 def compose_draft(
     *,
     draft_id: str,
@@ -106,13 +111,15 @@ def compose_draft(
             f"{spoken_time(block.starts_at)} to {spoken_time(block.ends_at)}, set aside for "
             f"{named(block.assignment_id)}"
         )
-        lines.append(f"    {block.rationale}")
+        lines.append(f"    {one_line(block.rationale)}")
     if not plan.blocks:
         lines.append("Nothing is scheduled tonight.")
 
     if plan.deferred:
         lines.extend(["", "Waiting for another day:"])
-        lines.extend(f"- {named(item.assignment_id)}: {item.reason}" for item in plan.deferred)
+        lines.extend(
+            f"- {named(item.assignment_id)}: {one_line(item.reason)}" for item in plan.deferred
+        )
 
     def clarification(item: Assignment) -> str | None:
         """Why this item's date needs a word with someone, or ``None`` when it does not."""
@@ -141,7 +148,8 @@ def compose_draft(
             skipped = ", ".join(verdict.missing)
             lines.append(f"- The reviewer did not consider: {skipped}.")
         lines.extend(
-            f"- {finding.criterion} ({JUDGMENT_WORDS[finding.judgment]}): {finding.critique}"
+            f"- {finding.criterion} ({JUDGMENT_WORDS[finding.judgment]}): "
+            f"{one_line(finding.critique)}"
             for finding in verdict.findings
         )
 

@@ -7,12 +7,14 @@ that, with scripted models so nothing is ever sent.
 
 import re
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
+from blossom.clock import spoken_time
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plan_text import present_plan
@@ -21,6 +23,7 @@ from blossom.routes.runs import plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.stores.drafts import DraftsStore
 from tests.support import (
+    FIXTURE_TIMEZONE,
     PLAN_DATE,
     accepting,
     drafts_in_memory,
@@ -314,8 +317,11 @@ def test_a_refresh_says_when() -> None:
         theirs = client.get("/parent", params={"refreshed": "1"}).text
         plain = client.get(PAGE).text
 
-    assert re.search(r"Refreshed at \d{1,2}:\d{2} [AP]M\.", hers)
-    assert re.search(r"Refreshed at \d{1,2}:\d{2} [AP]M\.", theirs)
+    now = datetime.now(ZoneInfo(FIXTURE_TIMEZONE))
+    minute_ago = now - timedelta(minutes=1)
+    accepted = {f"Refreshed at {spoken_time(moment)}." for moment in (now, minute_ago)}
+    assert any(stamp in hers for stamp in accepted), "the real clock, not the pinned one"
+    assert any(stamp in theirs for stamp in accepted)
     assert "Refreshed at" not in plain
     assert 'href="/student/due-this-week?refreshed=1">Refresh replies</a>' in plain
 

@@ -56,6 +56,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.anthropic_client import model_configured
+from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
 from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
@@ -424,7 +425,7 @@ def review_page(
             "note_max_length": NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
             "zone": state.clock.zone,
-            "refreshed_at": state.clock.now().astimezone(state.clock.zone) if refreshed else None,
+            "refreshed_at": local_now(state.clock.zone) if refreshed else None,
         },
         status_code=status_code,
     )

@@ -48,6 +48,16 @@ def household_zone(key: str | None) -> ZoneInfo:
         raise TimeZoneUnavailable(msg) from error
 
 
+def local_now(zone: ZoneInfo) -> datetime:
+    """This moment by the system clock, in ``zone``.
+
+    For a stamp about the request itself, such as when a page was refreshed.
+    The household's date and everything planned against it come from the
+    application's clock, which may be pinned; this never is.
+    """
+    return datetime.now(zone)
+
+
 def spoken_time(value: datetime | time) -> str:
     """A clock time the way she reads a clock: ``5:00 PM``, never ``17:00``."""
     hour = value.hour % 12 or 12

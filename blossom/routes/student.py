@@ -54,6 +54,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from blossom.anthropic_client import model_configured
+from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
 from blossom.noticing import (
@@ -531,7 +532,7 @@ def student_page(
             "view": view,
             "problem": problem,
             "plan_open": plan_open,
-            "refreshed_at": state.clock.now().astimezone(state.clock.zone) if refreshed else None,
+            "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
         },

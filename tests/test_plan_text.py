@@ -85,9 +85,10 @@ def test_the_two_space_block_shape_and_an_unknown_line_are_kept_whole() -> None:
         [
             "Plan for Wednesday, August 19, 2026",
             "",
+            "A line in a shape nobody has seen.",
+            "",
             "16:30 to 17:30  Canal Era comparison essay (World History, due Aug 21)",
             "    the essay first",
-            "A line in a shape nobody has seen.",
             "",
             "Due dates worth checking with the school:",
             "- Canal Era comparison essay (World History, due Aug 21)",
@@ -100,6 +101,72 @@ def test_the_two_space_block_shape_and_an_unknown_line_are_kept_whole() -> None:
     assert text.other == ["A line in a shape nobody has seen."]
     assert text.sections[0].title == "Due dates worth checking with the school"
     assert text.sections[0].items[0].label is None
+
+
+def test_a_value_with_a_line_break_inside_stays_with_its_shape() -> None:
+    """A rationale, a reason, or a critique written across lines continues in place."""
+    saved = "\n".join(
+        [
+            "Plan for Wednesday, August 19, 2026",
+            "",
+            "4:30 PM to 5:30 PM, set aside for Canal Era comparison essay "
+            "(World History, due Aug 21)",
+            "    the essay first,",
+            "while the afternoon is quiet",
+            "",
+            "Waiting for another day:",
+            "- Quadratic modeling problem set (Algebra II, due Aug 24): not due",
+            "until Monday",
+            "",
+            "The reviewer's notes:",
+            "- sizing (could not assess): an hour may be right",
+            "or generous; nothing here says which",
+        ]
+    )
+    text = present_plan(saved)
+
+    assert text.blocks[0].rationale == "the essay first, while the afternoon is quiet"
+    assert text.sections[0].items[0].text.endswith("not due until Monday")
+    assert text.review is not None
+    assert text.review.items[0].text == "an hour may be right or generous; nothing here says which"
+    assert text.other == []
+
+
+def test_the_composer_keeps_each_value_on_one_line() -> None:
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            PlanBlock(
+                assignment_id="assignment-canal-essay",
+                starts_at=time(16, 30),
+                ends_at=time(17, 30),
+                rationale="the essay first,\nwhile the afternoon\n  is quiet",
+            )
+        ],
+        deferred=[Deferral(assignment_id="assignment-algebra-set", reason="not due\nuntil Monday")],
+    )
+    verdict = CriticVerdict(
+        findings=[
+            CriterionFinding(
+                criterion=Criterion.SIZING,
+                critique="an hour may be right\nor generous",
+                judgment=Judgment.CANNOT_TELL,
+            )
+        ]
+    )
+    body = compose_draft(
+        draft_id="draft:test",
+        plan=plan,
+        assignments=[ESSAY, PROBLEM_SET],
+        verification=check_plan(plan, due_in_window=[ESSAY, PROBLEM_SET], zone=ZONE),
+        verdict=verdict,
+        settled=False,
+    ).body
+
+    assert "    the essay first, while the afternoon is quiet\n" in body
+    assert ": not due until Monday\n" in body
+    assert "(could not assess): an hour may be right or generous" in body
+    assert present_plan(body).other == []
 
 
 def test_the_clock_reads_as_she_does() -> None:
