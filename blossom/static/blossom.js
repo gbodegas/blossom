@@ -3,7 +3,8 @@
 
   The first is for the forms that make a plan: say that a plan is being made,
   keep saying so as the minutes pass, and let one press be one request from
-  that form. Only forms marked data-pending take part, and their submit
+  that form. The messages carry no closing punctuation; the pulsing dots after
+  them are it. Only forms marked data-pending take part, and their submit
   buttons carry no name, so disabling one changes nothing about what is sent.
   Forms whose buttons carry a decision or a step are left alone. The later
   messages come from timers in this page, not from the server, so they say
