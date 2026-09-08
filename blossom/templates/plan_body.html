@@ -12,7 +12,7 @@
   {% endfor %}
   {% for block in text.blocks %}
     <div class="plan-block">
-      <p class="plan-when"><strong>{{ block.span }}</strong> <span class="plan-item">{{ block.item }}</span></p>
+      <p class="plan-when"><strong>{{ block.span }}</strong>, set aside for <span class="plan-item">{{ block.item }}</span></p>
       {% if block.rationale %}<p class="plan-why">{{ block.rationale }}</p>{% endif %}
     </div>
   {% endfor %}

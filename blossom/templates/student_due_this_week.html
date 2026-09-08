@@ -111,7 +111,7 @@
 
     <form method="post" action="/student/actions/ask-for-help" class="ask">
       <label for="help-note">A note for your parents (optional)</label>
-      <input id="help-note" type="text" name="note" maxlength="{{ note_max_length }}" placeholder="A sentence, or leave it blank">
+      <input id="help-note" type="text" name="note" maxlength="{{ note_max_length }}" placeholder="A short note">
       <button type="submit" class="secondary">Ask for help</button>
     </form>
     {% set open_requests = view.help_requests|rejectattr("state", "equalto", "resolved")|list %}
