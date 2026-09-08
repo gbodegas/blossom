@@ -149,9 +149,9 @@
       <h2>Plan an evening for her</h2>
       {% if model_available %}
         <form method="post" action="/parent/actions/plan" class="plan-form"
-              data-pending="Making the plan..."
-              data-pending-later="Still working. The planner reads her week and writes the plan, which takes a minute or two."
-              data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass.">
+              data-pending="Making the plan"
+              data-pending-later="Still working. The planner reads her week and writes the plan, which takes a minute or two"
+              data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
           <label>Evening of
             <input type="date" name="plan_date" value="{{ today }}">
           </label>
