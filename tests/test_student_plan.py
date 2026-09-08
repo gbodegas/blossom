@@ -283,6 +283,19 @@ def test_the_plan_unfolds_on_todays_week_however_the_week_was_named() -> None:
     assert '<details class="plan"' not in other, "another week has no today panel"
 
 
+def test_the_plan_stays_unfolded_when_the_week_asked_for_cannot_be_shown() -> None:
+    """The fallback renders today's week; the presentation flag rides along."""
+    with browser() as client:
+        client.post("/student/actions/plan")
+        bad = client.get(PAGE, params={"week": "bad", "show_plan": "1"})
+        edge = client.get(PAGE, params={"week": "0001-01-01", "show_plan": "1"})
+
+    assert bad.status_code == 422
+    assert '<details class="plan" open>' in bad.text
+    assert edge.status_code == 422
+    assert '<details class="plan" open>' in edge.text
+
+
 def test_asking_for_the_plan_unfolded_makes_no_plan() -> None:
     with browser() as client:
         page = client.get(PAGE, params={"show_plan": "1"}).text

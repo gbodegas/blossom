@@ -560,13 +560,18 @@ def due_this_week(
         chosen = date.fromisoformat(week.strip())
     except ValueError:
         return student_page(
-            request, state, problem=NOT_A_WEEK, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT
+            request,
+            state,
+            problem=NOT_A_WEEK,
+            plan_open=plan_open,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     if not showable(chosen):
         return student_page(
             request,
             state,
             problem=BEYOND_THE_CALENDAR,
+            plan_open=plan_open,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     return student_page(request, state, week=chosen, plan_open=plan_open)

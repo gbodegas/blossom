@@ -172,9 +172,14 @@
         date the record does not match. A page that shouts about every date
         teaches her to skim past the shouting.
       #}
+      {#
+        The range carries the year, so a card repeats it only when its date is
+        in a year the range does not cover: an item a source puts in this
+        week while the record puts it in another year.
+      #}
       <p class="due">
         {% if assignment.due_date %}
-          Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}
+          Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year not in (view.week.start.year, view.week.end.year) %}, {{ assignment.due_date.year }}{% endif %}
         {% else %}
           Due date not recorded
         {% endif %}

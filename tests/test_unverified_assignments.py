@@ -372,6 +372,16 @@ def test_an_undated_record_with_unreadable_claims_is_not_said_to_have_a_date(
     assert "Not read as a date: LMS: Friday." in card
 
 
+def test_a_record_in_another_year_shows_its_year_when_a_source_puts_it_in_this_week(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The range carries the week's year; a card repeats a year the range does not cover."""
+    card = lab_page(tmp_path, [claim("2026-08-21")], due_date="2027-08-21")
+
+    assert "Due Saturday, August 21, 2027" in card
+    assert "The school says otherwise." in card
+
+
 def test_every_card_carries_exactly_one_quiet_line_on_the_fixtures() -> None:
     for week in (None, "2026-08-24"):
         page = student_page(week=week)
