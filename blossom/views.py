@@ -59,6 +59,9 @@ class StudentAssignmentView(BaseModel):
     Kept apart: they neither confirm nor contradict anything, and the page says so."""
     unreadable_sources: str = ""
     """The channels behind ``unreadable``, in the page's words."""
+    source_label: str = ""
+    """Where the date shown came from, when one short label can say it: the channels
+    that gave it, or the family. Empty in the states that need a sentence."""
     disagreement: list[str]
     contradiction: list[str] = []
     """What the sources say when none of them supports the record's date; empty otherwise."""
@@ -160,6 +163,8 @@ class StudentDueThisWeekView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     generated_at: AwareDatetime
+    today: date
+    """The household's date, which the page's today panel is about."""
     week: WeekView
     assignments: list[StudentAssignmentView]
     assigned_this_week: list[StudentAssignmentView] = []

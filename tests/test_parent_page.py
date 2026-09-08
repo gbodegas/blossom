@@ -444,11 +444,14 @@ def test_without_a_key_the_page_reads_and_the_plan_form_says_why_not() -> None:
 
 
 def test_dates_on_both_pages_carry_their_year() -> None:
-    """Two evenings a year apart must never read the same."""
+    """Two evenings a year apart must never read the same. Her page frames a week,
+    and the week's range carries the year for every card in it."""
     with browser() as client:
         student = client.get("/student/due-this-week").text
 
-    assert "Due Friday, August 21, 2026" in student
+    assert "August 17 to" in student
+    assert "August 23, 2026" in student
+    assert "Due Friday, August 21" in student
 
 
 # ------------------------------------------------------------- the run's record

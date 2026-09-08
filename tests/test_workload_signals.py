@@ -504,6 +504,7 @@ def test_each_remove_button_says_which_signal_it_removes() -> None:
     monday = date(2026, 8, 17)
     view = StudentDueThisWeekView(
         generated_at=OBSERVED_AT,
+        today=date(2026, 8, 19),
         week=WeekView(
             start=monday,
             end=monday + timedelta(days=6),

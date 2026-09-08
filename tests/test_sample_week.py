@@ -72,13 +72,14 @@ def test_the_sample_page_is_a_plain_week_with_the_reading_log_assigned_for_later
         next_week = client.get("/student/due-this-week", params={"week": "2026-09-14"}).text
 
     cards, _, later = this_week.partition("Assigned this week, due later")
-    assert "<h1>Due this week</h1>" in this_week
-    assert "Monday, September 7 to" in this_week
+    assert "<h1>My week</h1>" in this_week
+    assert "September 7 to" in this_week
     for title in ("HW U1.1 Pg 11 #16, 17, 22, 23", "Syllabus, signed", "Binder and dividers check"):
         assert title in cards
     assert "Reading log" not in cards
-    assert "Reading log (Humanities), due Monday, September 14, 2026." in later
-    assert this_week.count("Date from the school portal.") == 3
+    assert "<strong>Reading log</strong> &middot; Humanities" in later
+    assert "Due Monday, September 14" in later
+    assert this_week.count('<span class="source">School portal</span>') == 3
     assert 'class="confidence disagree"' not in this_week
     assert "Reading log" in next_week
     assert "Assigned this week, due later" not in next_week
@@ -102,7 +103,7 @@ def test_the_week_before_the_sample_is_empty_and_says_so() -> None:
     with TestClient(create_app(sample_settings())) as client:
         before = client.get("/student/due-this-week", params={"week": "2026-08-31"}).text
 
-    assert "Nothing is due that week." in before
+    assert "No assignments are recorded as due that week." in before
 
 
 def test_the_sample_label_shows_on_both_pages_only_when_the_flag_is_set() -> None:

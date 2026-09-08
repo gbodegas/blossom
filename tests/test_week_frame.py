@@ -48,9 +48,9 @@ def test_the_week_is_the_school_week_that_holds_today() -> None:
     status, shown = page()
 
     assert status == 200
-    assert "<h1>Due this week</h1>" in shown
-    assert "Monday, August 17 to" in shown
-    assert "Sunday, August 23, 2026" in shown
+    assert "<h1>My week</h1>" in shown
+    assert "August 17 to" in shown
+    assert "August 23, 2026" in shown
     assert 'href="/student/due-this-week?week=2026-08-10">Previous week</a>' in shown
     assert 'href="/student/due-this-week?week=2026-08-24">Next week</a>' in shown
     assert ">This week</a>" not in shown
@@ -64,8 +64,10 @@ def test_work_due_after_the_week_is_listed_as_assigned_not_shown_as_due() -> Non
     assert "Science fair topic proposal" in cards
     assert "Quadratic modeling problem set" not in cards
     assert "Reading log, week one" not in cards
-    assert "Quadratic modeling problem set (Algebra II), due Monday, August 24, 2026." in after
-    assert "Reading log, week one (English), due Tuesday, August 25, 2026." in after
+    assert "<strong>Quadratic modeling problem set</strong> &middot; Algebra II" in after
+    assert "Due Monday, August 24" in after
+    assert "<strong>Reading log, week one</strong> &middot; English" in after
+    assert "Due Tuesday, August 25" in after
 
 
 def test_the_next_week_is_a_page_of_its_own() -> None:
@@ -73,8 +75,8 @@ def test_the_next_week_is_a_page_of_its_own() -> None:
 
     assert status == 200
     assert "<h1>Week of August 24</h1>" in shown
-    assert "Monday, August 24 to" in shown
-    assert "Sunday, August 30, 2026" in shown
+    assert "August 24 to" in shown
+    assert "August 30, 2026" in shown
     assert 'href="/student/due-this-week">This week</a>' in shown
     assert "Quadratic modeling problem set" in shown
     assert "Reading log, week one" in shown
@@ -88,7 +90,7 @@ def test_a_week_across_the_new_year_gives_both_years() -> None:
     line = " ".join(shown.split())
 
     assert "<h1>Week of December 28</h1>" in shown
-    assert "Monday, December 28, 2026 to Sunday, January 3, 2027" in line
+    assert "December 28, 2026 to January 3, 2027" in line
 
 
 def test_any_day_names_its_whole_week() -> None:
@@ -97,8 +99,8 @@ def test_any_day_names_its_whole_week() -> None:
     _, from_sunday = page(week="2026-08-23")
 
     for shown in (from_monday, from_thursday, from_sunday):
-        assert "<h1>Due this week</h1>" in shown
-        assert "Monday, August 17 to" in shown
+        assert "<h1>My week</h1>" in shown
+        assert "August 17 to" in shown
 
 
 @pytest.mark.parametrize("given", ["soon", "", "   ", "2026-08"])
@@ -108,7 +110,7 @@ def test_a_week_that_is_not_a_date_is_said_on_todays_week(given: str) -> None:
 
     assert status == 422
     assert "That is not a date, so this is the week that holds today." in shown
-    assert "<h1>Due this week</h1>" in shown
+    assert "<h1>My week</h1>" in shown
 
 
 @pytest.mark.parametrize("given", ["0001-01-01", "0001-01-05", "9999-12-31", "9999-12-27"])
@@ -118,7 +120,7 @@ def test_the_edges_of_the_calendar_are_said_not_crashed_into(given: str) -> None
 
     assert status == 422
     assert "That week is past the edge of the calendar" in shown
-    assert "<h1>Due this week</h1>" in shown
+    assert "<h1>My week</h1>" in shown
 
 
 def test_todays_week_at_the_edge_of_what_can_be_pinned_still_renders() -> None:
@@ -126,9 +128,9 @@ def test_todays_week_at_the_edge_of_what_can_be_pinned_still_renders() -> None:
     _, first = page(BLOSSOM_TODAY="0001-01-08")
     _, last = page(BLOSSOM_TODAY="9999-12-24")
 
-    assert "<h1>Due this week</h1>" in first
+    assert "<h1>My week</h1>" in first
     assert 'href="/student/due-this-week?week=0001-01-01">Previous week</a>' in first
-    assert "<h1>Due this week</h1>" in last
+    assert "<h1>My week</h1>" in last
     assert 'href="/student/due-this-week?week=9999-12-27">Next week</a>' in last
 
 
@@ -158,7 +160,8 @@ def test_work_assigned_this_week_is_due_later_only_when_it_is(tmp_path: pathlib.
     _, shown = page(BLOSSOM_FIXTURE_PATH=str(tmp_path))
     _, week_before = page(week="2026-08-10", BLOSSOM_FIXTURE_PATH=str(tmp_path))
 
-    assert "Due after the week (Science), due Thursday, August 27, 2026." in shown
+    assert "<strong>Due after the week</strong> &middot; Science" in shown
+    assert "Due Thursday, August 27" in shown
     assert "Due before the week" not in shown
     assert "Due before the week" in week_before
 
@@ -171,7 +174,8 @@ def test_work_due_in_another_year_says_which(tmp_path: pathlib.Path) -> None:
 
     _, shown = page(BLOSSOM_FIXTURE_PATH=str(tmp_path))
 
-    assert "Long project (Science), due Friday, August 27, 2027." in shown
+    assert "<strong>Long project</strong> &middot; Science" in shown
+    assert "Due Friday, August 27, 2027" in shown
 
 
 def test_the_parents_accepted_review_keeps_its_sage_state() -> None:
@@ -192,15 +196,17 @@ def test_an_empty_week_says_so_in_its_own_tense(tmp_path: pathlib.Path) -> None:
     _, this_week = page(**fixtures)
     _, that_week = page(week="2026-08-24", **fixtures)
 
-    assert "Nothing is due this week." in this_week
-    assert "Nothing is due that week." in that_week
+    assert "No assignments are recorded as due this week." in this_week
+    assert "No assignments are recorded as due that week." in that_week
 
 
-def test_the_page_says_how_far_a_plan_looks() -> None:
+def test_the_page_keeps_the_horizon_explanation_out_of_the_way() -> None:
+    """The short statement of how far a plan looks lives inside the plan disclosure,
+    checked where a plan exists; nothing about it sits above the assignments."""
     _, shown = page()
 
-    assert "looks at everything due through" in shown
-    assert "Tuesday, August 25" in shown
+    assert "looks at everything due through" not in shown
+    assert "whichever week that falls in" not in shown
 
 
 def test_the_page_shows_the_households_budgets() -> None:

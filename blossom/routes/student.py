@@ -68,9 +68,11 @@ from blossom.noticing import (
 )
 from blossom.principals import Principal
 from blossom.reconciliation import (
+    CHANNEL_NAMES,
     SCHOOL_CHANNELS,
     Disagreement,
     SourceChannel,
+    SourceConfidence,
     SourceRecord,
     classify_confidence,
 )
@@ -334,6 +336,24 @@ async def make_todays_plan(state: State, graphs: Graphs) -> StudentPlanView:
     return plan_view(state, record)
 
 
+def source_label(
+    confidence: SourceConfidence, confirming: Sequence[str], *, unreadable: bool
+) -> str:
+    """One short label for where the date shown came from, or empty when it takes a sentence.
+
+    The channels that gave the record's date are named, "School portal" or
+    "School portal and your report"; a date only the family has is "Entered by
+    the family". Disagreement, contradiction, and claims that could not be
+    read are said in a line of their own instead.
+    """
+    if confidence is SourceConfidence.UNVERIFIED:
+        return "" if unreadable else "Entered by the family"
+    if confidence is SourceConfidence.SOURCES_DISAGREE or not confirming:
+        return ""
+    names = " and ".join(CHANNEL_NAMES.get(SourceChannel(c), c) for c in confirming)
+    return names[0].upper() + names[1:]
+
+
 def channels_in_words(channels: Sequence[str]) -> str:
     """The channels, in the page's words for them, joined for a sentence."""
     names = [CHANNEL_WORDS.get(channel, channel) for channel in channels]
@@ -375,6 +395,7 @@ def assignment_view(
             and read_date(record.asserted_value) == assignment.due_date
         ]
     )
+    confidence = classify_confidence(reconciliation)
     return StudentAssignmentView(
         assignment_id=assignment.assignment_id,
         course=assignment.course,
@@ -382,7 +403,10 @@ def assignment_view(
         due_date=assignment.due_date,
         kind=assignment.kind,
         submission_status=assignment.reported_submission_status,
-        deadline_confidence=classify_confidence(reconciliation),
+        deadline_confidence=confidence,
+        source_label=""
+        if noticed.contradicted
+        else source_label(confidence, confirming, unreadable=bool(unreadable)),
         source_channels=channels,
         sources=channels_in_words(channels),
         confirming_channels=confirming,
@@ -467,6 +491,7 @@ def build_student_due_this_week_view(
     household = state.settings
     return StudentDueThisWeekView(
         generated_at=datetime.now(UTC),
+        today=today,
         week=frame,
         assignments=views,
         assigned_this_week=assigned,
@@ -487,9 +512,14 @@ def student_page(
     *,
     week: date | None = None,
     problem: str | None = None,
+    plan_open: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
-    """Render her page. ``problem`` is what an action could not do, said once at the top."""
+    """Render her page. ``problem`` is what an action could not do, said once at the top.
+
+    ``plan_open`` shows today's plan unfolded; it changes how the page is
+    presented and nothing else.
+    """
     view = build_student_due_this_week_view(state, week)
     return templates.TemplateResponse(
         request,
@@ -497,6 +527,7 @@ def student_page(
         {
             "view": view,
             "problem": problem,
+            "plan_open": plan_open,
             "note_max_length": NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
         },
@@ -509,6 +540,9 @@ def due_this_week(
     request: Request,
     state: State,
     week: Annotated[str | None, Query(description="Any day in the school week to show")] = None,
+    show_plan: Annotated[
+        str | None, Query(description="1 to show today's plan unfolded; changes nothing else")
+    ] = None,
 ) -> HTMLResponse:
     """Render her week and today's plan.
 
@@ -516,10 +550,12 @@ def due_this_week(
     ``week`` names. A value that is not a date, a blank one included, or a
     week at the edge of the calendar, is said at the top of today's week
     rather than answered with an error page. Only an absent ``week`` means
-    today's week without a word.
+    today's week without a word. ``show_plan`` unfolds the plan, as the page
+    does right after one is made; a GET never makes one.
     """
+    plan_open = show_plan == "1"
     if week is None:
-        return student_page(request, state)
+        return student_page(request, state, plan_open=plan_open)
     try:
         chosen = date.fromisoformat(week.strip())
     except ValueError:
@@ -579,7 +615,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             problem=f"No plan was made this time: the run ended with {run.outcome}.",
             status_code=status.HTTP_409_CONFLICT,
         )
-    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(f"{PAGE}?show_plan=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/actions/ask-for-help", response_class=HTMLResponse, include_in_schema=False)

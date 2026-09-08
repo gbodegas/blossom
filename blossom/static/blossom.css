@@ -38,6 +38,12 @@
   --blue-deep: #6f95b8;
   --blue-deeper: #5a81a6;
 
+  /* Action: the same hue, dark enough for white text on a button and for
+     small text of its own. Headings use it too, so the page's one strong
+     color is the one that also marks what can be pressed. */
+  --blue-action: #4c7193;
+  --blue-action-hover: #3f5f7d;
+
   /* Secondary: the petals. Outline buttons, hover states, small highlights. */
   --pink: #e5a8b4;
   --pink-deep: #c98495;
@@ -151,7 +157,7 @@ summary {
 }
 
 .places a[aria-current="page"] {
-  background: var(--blue-deep);
+  background: var(--blue-action);
   color: #fff;
 }
 
@@ -172,9 +178,13 @@ main {
 h1 {
   font-size: 2.1rem;
   font-weight: 700;
-  color: var(--blue-deep);
+  color: var(--blue-action);
   margin: 0.75rem 0 0.25rem;
   letter-spacing: 0.01em;
+}
+
+.list-heading {
+  margin: 1.5rem 0 0.75rem;
 }
 
 h2 {
@@ -240,6 +250,13 @@ article h2 {
 
 .due {
   margin: 0.15rem 0 0.75rem;
+}
+
+/* The due line carries where the date came from as a second phrase. */
+.due .source {
+  display: inline;
+  margin: 0 0 0 1rem;
+  font-size: inherit;
 }
 
 .status {
@@ -325,14 +342,14 @@ article h2 {
 }
 
 .weeks a {
-  color: var(--slate-ink);
-  background: var(--slate-bg);
+  color: var(--blue-action);
+  background: var(--surface-strong);
+  border: 1.5px solid var(--edge);
   text-decoration: none;
-  padding: 0.3rem 0.85rem;
+  padding: 0.6rem 1.35rem;
   border-radius: var(--pill);
   font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 0.92rem;
+  font-weight: 700;
   transition: background-color 120ms ease, color 120ms ease;
 }
 
@@ -344,7 +361,77 @@ article h2 {
 
 .assigned ul {
   margin: 0.25rem 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.assigned li {
+  margin: 0.6rem 0;
+}
+
+/* ------------------------------------------------------------- today */
+
+.standing {
+  margin: 0 0 1rem;
+}
+
+.today .actions form {
+  margin: 0;
+}
+
+.notice {
+  margin: 0.75rem 0 1.25rem;
+  font-size: 0.95rem;
+  color: var(--text-soft);
+}
+
+.notice a {
+  color: var(--blue-action);
+  font-weight: 700;
+}
+
+.ask label {
+  margin-bottom: 0.35rem;
+}
+
+.ask-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
+.ask-row input {
+  flex: 1 1 16rem;
+  max-width: none;
+}
+
+.help {
+  margin: 1rem 0 0;
   padding-left: 1.25rem;
+}
+
+details.plan {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--edge);
+}
+
+details.plan summary {
+  font-size: 1.05rem;
+}
+
+details.plan .body {
+  margin-top: 0.75rem;
+}
+
+.return {
+  margin: 0.5rem 0 1.5rem;
+}
+
+.return a {
+  color: var(--blue-action);
+  font-weight: 700;
 }
 
 .claims h3 {
@@ -448,14 +535,14 @@ button {
 /* Solid: the primary color with white text. Hover goes darker, never lighter,
    so the white label stays readable. */
 button.primary {
-  background: var(--blue-deep);
-  border-color: var(--blue-deep);
+  background: var(--blue-action);
+  border-color: var(--blue-action);
   color: #fff;
 }
 
 button.primary:hover {
-  background: var(--blue-deeper);
-  border-color: var(--blue-deeper);
+  background: var(--blue-action-hover);
+  border-color: var(--blue-action-hover);
 }
 
 /* Outline: the secondary color for both border and text, no fill until hover.

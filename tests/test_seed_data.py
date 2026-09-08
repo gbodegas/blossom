@@ -147,19 +147,19 @@ def test_the_fixtures_span_two_school_weeks_with_every_state_named() -> None:
     both = this_week + next_week
     for title in json.loads((FIXTURES / "assignments.json").read_text(encoding="utf-8")):
         assert title["title"] in both
-    assert "Date confirmed by the school portal and what you reported." in next_week
-    assert "Date from the school portal." in next_week, "the reading log"
+    assert '<span class="source">School portal and your report</span>' in next_week
+    assert '<span class="source">School portal</span>' in next_week, "the reading log"
     assert "the school portal\n          has a different one." in this_week, "the quiz"
     assert "Sources disagree" in this_week
-    assert "From the family's record only" in this_week
+    assert "Entered by the family" in this_week
     assert "LMS (day header): 2026-08-21" in this_week
     assert "LMS (title): 2026-08-22" in this_week
-    assert "No due date on record" in this_week
-    assert "a task, not a sitting" in this_week
-    assert "Due Wednesday, August 26, 2026" in this_week
+    assert "Due date not recorded" in this_week
+    assert "Reported status: not started" in this_week
+    assert "Due Wednesday, August 26" in this_week
     assert "The school says otherwise." in this_week
     assert "Assigned this week, due later" in this_week
-    assert "Quadratic modeling problem set (Algebra II), due Monday, August 24, 2026." in this_week
+    assert "<strong>Quadratic modeling problem set</strong> &middot; Algebra II" in this_week
 
 
 def test_the_page_says_what_the_planner_looks_at() -> None:
@@ -180,7 +180,6 @@ def test_the_page_says_what_the_planner_looks_at() -> None:
 
     with TestClient(create_app(settings)) as client:
         page = client.get("/student/due-this-week").text
-    assert "looks at everything due through" in page
-    assert "Tuesday, August 25, whichever" in page
+    assert "whichever week that falls in" not in page
     assert "Vocabulary quiz, unit one" in page
     assert "LMS (day header): 2026-08-21" in page

@@ -115,7 +115,7 @@ def test_an_uncorroborated_assignment_is_shown_and_says_so_quietly() -> None:
     page = student_page()
 
     assert "Science fair topic proposal" in page
-    assert "From the family's record only; nothing from the school confirms it yet." in page
+    assert '<span class="source">Entered by the family</span>' in page
 
 
 def test_disagreeing_sources_are_still_listed_individually() -> None:
@@ -131,7 +131,7 @@ def test_a_corroborated_assignment_names_the_channels_that_agree() -> None:
     """The algebra set is due the Monday after the fixture week."""
     page = student_page(week="2026-08-24")
 
-    assert "Date confirmed by the school portal and what you reported." in page
+    assert '<span class="source">School portal and your report</span>' in page
 
 
 def test_one_channel_saying_a_date_twice_is_still_one_source() -> None:
@@ -166,7 +166,7 @@ def test_every_assignment_in_the_window_reaches_the_page(tmp_path: pathlib.Path)
 
     for assignment in in_window:
         assert assignment["title"] in page, f"{assignment['title']} was dropped"
-    assert page.count("From the family's record only") == len(in_window)
+    assert page.count("Entered by the family") == len(in_window)
 
 
 def test_the_view_no_longer_carries_a_fabricated_workload_count() -> None:
@@ -177,7 +177,7 @@ def test_the_view_no_longer_carries_a_fabricated_workload_count() -> None:
 
 
 @pytest.mark.parametrize(
-    "said", ["From the family's record only", "Sources disagree", "Date from the family's record;"]
+    "said", ["Entered by the family", "Sources disagree", "Date from the family's record;"]
 )
 def test_where_a_date_came_from_is_always_stated_never_left_to_absence(said: str) -> None:
     """Every card says where its date came from, so silence never carries a meaning."""
@@ -191,9 +191,9 @@ def test_a_contradicted_card_names_the_record_as_the_date_shown() -> None:
     card = page.split("Vocabulary quiz, unit one", 1)[1].split("</article>", 1)[0]
     line = " ".join(card.split())
 
-    assert "Due Wednesday, August 26, 2026" in card
+    assert "Due Wednesday, August 26" in card
     assert "Date from the family's record; the school portal has a different one." in line
-    assert "Date from the school portal." not in card
+    assert "School portal</span>" not in card
     assert "The school says otherwise." in card
     assert "LMS (day header): 2026-08-21" in card
 
@@ -220,13 +220,13 @@ def test_a_value_that_is_not_a_date_does_not_confirm_the_record(tmp_path: pathli
     card = lab_page(tmp_path, [claim("Friday"), claim("Friday", seen_in="title")])
     line = " ".join(card.split())
 
-    assert "Due Friday, August 21, 2026" in card
+    assert "Due Friday, August 21" in card
     assert (
         "Date from the family's record; a value from the school portal could not be read as a date."
         in line
     )
     assert "Not read as a date: LMS: Friday; LMS (title): Friday." in card
-    assert "Date from the school portal." not in card
+    assert "School portal</span>" not in card
     assert 'class="confidence disagree"' not in card
 
 
@@ -234,7 +234,7 @@ def test_a_date_the_record_lacks_is_said_to_be_the_sources(tmp_path: pathlib.Pat
     card = lab_page(tmp_path, [claim("2026-08-21")], due_date=None)
     line = " ".join(card.split())
 
-    assert "No due date on record" in card
+    assert "Due date not recorded" in card
     assert "No date on the family's record; the school portal has one." in line
     assert "The school says otherwise." in card
     assert "LMS: 2026-08-21" in card
@@ -247,9 +247,9 @@ def test_a_readable_date_that_matches_is_the_sources(tmp_path: pathlib.Path) -> 
         lab_page(tmp_path, [claim("2026-08-21"), claim("2026-08-21", seen_in="title")]).split()
     )
 
-    assert "Date from the school portal." in one
-    assert "Date confirmed by the school portal and what you reported." in two
-    assert "Date from the school portal." in mixed, "one channel twice is one source"
+    assert '<span class="source">School portal</span>' in one
+    assert '<span class="source">School portal and your report</span>' in two
+    assert '<span class="source">School portal</span>' in mixed, "one channel twice is one source"
 
 
 def test_claims_are_reconciled_as_dates_and_only_when_they_read_as_dates() -> None:
@@ -295,14 +295,14 @@ def test_claims_compared_as_dates_are_kept_as_the_source_spelled_them(
 def test_a_space_around_a_date_is_not_a_disagreement(tmp_path: pathlib.Path) -> None:
     card = lab_page(tmp_path, [claim(" 2026-08-21 "), claim("2026-08-21", "STUDENT_REPORT")])
 
-    assert "Date confirmed by the school portal and what you reported." in card
+    assert '<span class="source">School portal and your report</span>' in card
     assert 'class="confidence disagree"' not in card
 
 
 def test_a_weekday_beside_a_date_is_listed_apart_not_set_against_it(tmp_path: pathlib.Path) -> None:
     card = lab_page(tmp_path, [claim("2026-08-21"), claim("Friday", "STUDENT_REPORT")])
 
-    assert "Date from the school portal." in card
+    assert '<span class="source">School portal</span>' in card
     assert "Not read as a date: STUDENT_REPORT: Friday." in card
     assert 'class="confidence disagree"' not in card
 
@@ -364,7 +364,7 @@ def test_an_undated_record_with_unreadable_claims_is_not_said_to_have_a_date(
     card = lab_page(tmp_path, [claim("Friday")], due_date=None)
     line = " ".join(card.split())
 
-    assert "No due date on record" in card
+    assert "Due date not recorded" in card
     assert (
         "No date on the family's record; a value from the school portal could not be read" in line
     )
@@ -375,7 +375,7 @@ def test_an_undated_record_with_unreadable_claims_is_not_said_to_have_a_date(
 def test_every_card_carries_exactly_one_quiet_line_on_the_fixtures() -> None:
     for week in (None, "2026-08-24"):
         page = student_page(week=week)
-        assert page.count('<article class="assignment') == page.count('<p class="source">')
+        assert page.count('<article class="assignment') == page.count('class="source"')
 
 
 def test_only_disagreement_and_contradiction_are_made_prominent() -> None:
