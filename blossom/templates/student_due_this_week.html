@@ -84,9 +84,9 @@
     <div class="actions">
       {% if view.can_plan %}
         <form method="post" action="/student/actions/plan" class="action"
-              data-pending="Making your plan..."
-              data-pending-later="Still working. The planner reads your week and writes the plan, which takes a minute or two."
-              data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass.">
+              data-pending="Making your plan"
+              data-pending-later="Still working. The planner reads your week and writes the plan, which takes a minute or two"
+              data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
           <button type="submit" class="primary">{{ plan_label }}</button>
         </form>
       {% endif %}
