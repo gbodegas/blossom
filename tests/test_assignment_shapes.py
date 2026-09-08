@@ -409,8 +409,8 @@ def test_the_page_shows_an_undated_task_and_a_self_disagreeing_source(
         page = client.get("/student/due-this-week").text
 
     assert "Syllabus, signed" in page
-    assert "No due date on record" in page
-    assert "a task, not a sitting" in page
+    assert "Due date not recorded" in page
+    assert "a task, not a sitting" not in page
     assert "LMS (day header): 2026-08-21" in page
     assert "LMS (title): 2026-08-22" in page
 

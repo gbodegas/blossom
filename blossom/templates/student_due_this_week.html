@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% set page = "student" %}
-{% block title %}Blossom - {% if view.week.current %}Due this week{% else %}Week of {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}{% endif %}{% endblock %}
+{% block title %}Blossom - {% if view.week.current %}My week{% else %}Week of {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}{% endif %}{% endblock %}
 {% block content %}
   {% if view.week.current %}
-    <h1>Due this week</h1>
+    <h1>My week</h1>
   {% else %}
     <h1>Week of {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}</h1>
   {% endif %}
   <div class="week-frame">
     <p class="range">
-      {{ view.week.start.strftime("%A, %B") }} {{ view.week.start.day }}{% if view.week.start.year != view.week.end.year %}, {{ view.week.start.year }}{% endif %} to
-      {{ view.week.end.strftime("%A, %B") }} {{ view.week.end.day }}, {{ view.week.end.year }}
+      {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}{% if view.week.start.year != view.week.end.year %}, {{ view.week.start.year }}{% endif %} to
+      {{ view.week.end.strftime("%B") }} {{ view.week.end.day }}, {{ view.week.end.year }}
     </p>
     <nav class="weeks" aria-label="Weeks">
       <a href="/student/due-this-week?week={{ view.week.previous.isoformat() }}">Previous week</a>
@@ -23,43 +23,41 @@
     <p class="problem" role="alert">{{ problem }}</p>
   {% endif %}
 
+  {% if view.week.current %}
   <section class="panel today">
-    <h2>Plan today</h2>
-    <p class="note">
-      A plan made today looks at everything due through
-      {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}, whichever
-      week that falls in.
-    </p>
-    {% if view.plan %}
-      <p class="when">
-        Made at {{ view.plan.made_local.strftime("%H:%M") }}{% if view.plan.too_much %}, kept to a
-        shorter evening because you said today was too much{% endif %}.
-      </p>
-      <pre class="body">{{ view.plan.body }}</pre>
-      {% if view.plan.stale %}
-        <p class="confidence disagree" role="status"><strong>Plan again.</strong> {{ view.plan.stale }}</p>
+    <h2>Today, {{ view.today.strftime("%A, %B") }} {{ view.today.day }}</h2>
+    {#
+      One line says where today stands. A parent's review is shown, never
+      waited for: the plan is hers from the moment it is made, and what a
+      parent says about it is one more thing she can see.
+    #}
+    <p class="standing">
+      {% if not view.plan %}
+        No plan for today yet.
+      {% elif view.plan.decision == "approved" %}
+        A plan is ready. Parent review: looks good.
+      {% elif view.plan.decision == "rejected" %}
+        A plan is ready. A parent asked for a change; plan again when you are ready.
+      {% elif view.plan.decision == "expired" %}
+        A plan is ready. Nobody reviewed it.
+      {% else %}
+        A plan is ready. Parent review: no decision yet.
       {% endif %}
-      {#
-        A parent's review is shown, never waited for. The plan is hers from
-        the moment it is made; what a parent says about it is one more thing
-        she can see.
-      #}
-      <p class="review">
-        {% if view.plan.decision == "approved" %}
-          A parent looked at this plan and said it looks good.
-        {% elif view.plan.decision == "rejected" %}
-          <strong>A parent asked for a change.</strong> Plan again when you are ready.
-        {% elif view.plan.decision == "expired" %}
-          Nobody reviewed this plan.
-        {% else %}
-          A parent has not looked at this yet. You can start anyway.
-        {% endif %}
-        {% if view.plan.reason and view.plan.decision != "expired" %}They said: <q>{{ view.plan.reason }}</q>{% endif %}
-      </p>
-    {% else %}
-      <p class="empty">No plan for today yet.</p>
+      {% if view.plan and view.plan.reason and view.plan.decision != "expired" %}They said: <q>{{ view.plan.reason }}</q>{% endif %}
+    </p>
+    {% if view.plan and view.plan.stale %}
+      <p class="confidence disagree" role="status"><strong>Plan again.</strong> {{ view.plan.stale }}</p>
     {% endif %}
-
+    {#
+      The reviewer's verdict is not a check that failed. When it could not
+      settle, that is said here, whatever a parent later decides, and the
+      notes are in the plan.
+    #}
+    {% if view.plan and view.plan.outcome == "unsettled" %}
+      <p class="confidence disagree" role="status">
+        Blossom could not complete its review of this plan. Open the plan to read the notes.
+      </p>
+    {% endif %}
     {% if view.too_much %}
       <p class="confidence disagree">
         <strong>You said it was too much</strong> at {{ view.too_much.given_local.strftime("%H:%M") }}.
@@ -70,31 +68,39 @@
 
     <div class="actions">
       {% if view.can_plan %}
-        <form method="post" action="/student/actions/plan" class="inline">
+        <form method="post" action="/student/actions/plan" class="action">
           <button type="submit" class="primary">{% if view.plan %}Plan again{% else %}Plan today{% endif %}</button>
         </form>
       {% endif %}
       {% if view.too_much %}
-        <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="inline">
+        <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="action">
           <button type="submit" class="secondary">Take it back</button>
         </form>
       {% else %}
-        <form method="post" action="/student/actions/too-much" class="inline">
+        <form method="post" action="/student/actions/too-much" class="action">
           <button type="submit" class="secondary">Too much right now</button>
         </form>
       {% endif %}
     </div>
-    <form method="post" action="/student/actions/ask-for-help" class="decision">
-      <label>What you are stuck on (optional)
-        <input type="text" name="note" maxlength="{{ note_max_length }}" placeholder="A sentence, or nothing at all">
-      </label>
-      <div class="actions">
-        <button type="submit" class="secondary">Ask for help</button>
-      </div>
+    {% if view.can_plan %}
+      <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
+    {% else %}
+      <p class="notice">
+        Blossom cannot make a plan right now: no API key is configured. Everything else here
+        still works, and "Too much right now" is still yours to press.
+      </p>
+    {% endif %}
+
+    <form method="post" action="/student/actions/ask-for-help" class="ask">
+      <label for="help-note">A note for your parents (optional)</label>
+      <input id="help-note" type="text" name="note" maxlength="{{ note_max_length }}" placeholder="A sentence, or leave it blank">
+      <button type="submit" class="secondary">Ask for help</button>
     </form>
-    {% if view.help_requests %}
+    {% set open_requests = view.help_requests|rejectattr("state", "equalto", "resolved")|list %}
+    {% set resolved_requests = view.help_requests|selectattr("state", "equalto", "resolved")|list %}
+    {% if open_requests %}
       <ul class="help">
-        {% for ask in view.help_requests %}
+        {% for ask in open_requests %}
           <li>
             <strong>You asked for help</strong> at {{ ask.asked_local.strftime("%H:%M") }}
             on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
@@ -104,64 +110,88 @@
                 <button type="submit" class="secondary"
                         aria-label="Take back the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it back</button>
               </form>
-            {% elif ask.state == "accepted" %}
-              <strong>A parent is on it.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
             {% else %}
-              <strong>Resolved.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
+              <strong>A parent is on it.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
             {% endif %}
           </li>
         {% endfor %}
       </ul>
-      <p class="note">A resolved request stays here for two weeks, then goes.</p>
     {% endif %}
-    {% if view.can_plan %}
-      <p class="note">
-        Planning takes a minute or two. It sends your week, the household's rules, the
-        planner's notes about its past plans, and, when you have said today is too much, that
-        you said so, to the model provider; when the first plan needs another try, the plan it
-        made and what was wrong with it go too. Nothing else leaves.
-        "Too much right now" takes one press, no rating, no reason, and you can take it back.
-      </p>
-    {% else %}
-      <p class="note">
-        Blossom cannot make a plan right now: no API key is configured. Everything else here
-        still works, and "Too much right now" is still yours to press.
-      </p>
+    {% if resolved_requests %}
+      <details class="steps resolved">
+        <summary>Resolved requests</summary>
+        <ul class="help">
+          {% for ask in resolved_requests %}
+            <li>
+              <strong>You asked for help</strong> at {{ ask.asked_local.strftime("%H:%M") }}
+              on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
+              <strong>Resolved.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+        <p class="note">A resolved request stays here for two weeks, then goes.</p>
+      </details>
+    {% endif %}
+
+    {#
+      The whole saved plan, behind a disclosure that starts closed on an
+      ordinary visit and open right after a plan is made. The text is the
+      record as saved; nothing is cut or rewritten here.
+    #}
+    {% if view.plan %}
+      <details class="plan"{% if plan_open %} open{% endif %}>
+        <summary>View today's plan</summary>
+        <p class="note">
+          Made at {{ view.plan.made_local.strftime("%H:%M") }}{% if view.plan.too_much %}, kept to a
+          shorter evening because you said today was too much{% endif %}.
+          Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
+        </p>
+        <pre class="body">{{ view.plan.body }}</pre>
+      </details>
     {% endif %}
   </section>
+  {% else %}
+    <p class="return"><a href="/student/due-this-week">Return to this week and today's plan</a></p>
+  {% endif %}
+
+  <h2 class="list-heading">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
 
   {% if not view.assignments %}
-    <p class="empty">Nothing is due {% if view.week.current %}this{% else %}that{% endif %} week.</p>
+    <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.</p>
   {% endif %}
 
   {% for assignment in view.assignments %}
     <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}">
       <p class="course">{{ assignment.course }}</p>
       <h2>{{ assignment.title }}</h2>
+      {#
+        The due line carries the record's date and, when one label can say
+        it, where that date came from: the channel that gave it, or the
+        family. The other states are said in a line of their own below, and
+        only two are made prominent: sources that disagree, and a school
+        date the record does not match. A page that shouts about every date
+        teaches her to skim past the shouting.
+      #}
+      {#
+        The range carries the year, so a card repeats it only when its date is
+        in a year the range does not cover: an item a source puts in this
+        week while the record puts it in another year.
+      #}
       <p class="due">
         {% if assignment.due_date %}
-          Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}, {{ assignment.due_date.year }}
+          Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year not in (view.week.start.year, view.week.end.year) %}, {{ assignment.due_date.year }}{% endif %}
         {% else %}
-          No due date on record
+          Due date not recorded
         {% endif %}
+        {% if assignment.source_label %}<span class="source">{{ assignment.source_label }}</span>{% endif %}
       </p>
 
       {#
-        Every card says where its date came from, so a quiet line is the
-        normal state and its absence never carries a meaning. Only two things
-        are made prominent: sources that disagree, and a school date the
-        record does not match. A page that shouts about every date teaches
-        her to skim past the shouting. Color is reinforcement; the words
-        carry the state.
+        A source is named as the origin of the date shown only when it gave
+        a date that reads as the record's. A claim that cannot be read as a
+        date is listed apart and neither confirms nor contradicts anything.
       #}
-      {#
-        The quiet line says whose date is on the card. The card shows the
-        record's, so a source is named as its origin only when it gave a date
-        that reads as the record's. A claim that cannot be read as a date is
-        listed apart and neither confirms nor contradicts anything.
-      #}
-      {% if assignment.deadline_confidence == "UNVERIFIED" and not assignment.unreadable %}
-        <p class="source">From the family's record only; nothing from the school confirms it yet.</p>
+      {% if assignment.source_label %}
       {% elif assignment.deadline_confidence == "UNVERIFIED" %}
         <p class="source">
           {% if assignment.due_date %}Date from the family's record;{% else %}No date on the family's record;{% endif %}
@@ -179,10 +209,6 @@
           {% else %}No date on the family's record; {{ assignment.readable_sources }}
           {% if assignment.readable_channels|length == 1 %}has{% else %}have{% endif %} one.{% endif %}
         </p>
-      {% elif assignment.confirming_channels|length == 1 %}
-        <p class="source">Date from {{ assignment.confirming }}.</p>
-      {% else %}
-        <p class="source">Date confirmed by {{ assignment.confirming }}.</p>
       {% endif %}
       {% if assignment.unreadable %}
         <p class="source">Not read as a date: {{ assignment.unreadable|join("; ") }}.</p>
@@ -224,8 +250,7 @@
       {% endif %}
 
       <p class="status">
-        Status: <span class="pill">{{ assignment.submission_status|replace("_", " ") }}</span>
-        {% if assignment.kind == "TASK" %}<span class="pill">a task, not a sitting</span>{% endif %}
+        <span class="pill">Reported status: {{ assignment.submission_status|replace("_", " ") }}</span>
       </p>
     </article>
   {% endfor %}
@@ -235,10 +260,26 @@
       <h2>Assigned this week, due later</h2>
       <ul>
         {% for assignment in view.assigned_this_week %}
-          <li>{{ assignment.title }} ({{ assignment.course }}), due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}, {{ assignment.due_date.year }}.</li>
+          <li>
+            <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
+            Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
+          </li>
         {% endfor %}
       </ul>
     </section>
+  {% endif %}
+
+  {% if view.week.current %}
+    <details class="steps" id="what-is-shared">
+      <summary>How Blossom uses your information</summary>
+      <p>
+        Planning takes a minute or two. It sends your week, the household's rules, the
+        planner's notes about its past plans, and, when you have said today is too much, that
+        you said so, to the model provider; when the first plan needs another try, the plan it
+        made and what was wrong with it go too. Nothing else leaves.
+      </p>
+      <p>"Too much right now" takes one press, no rating, no reason, and you can take it back.</p>
+    </details>
   {% endif %}
 
   {% if view.signals %}

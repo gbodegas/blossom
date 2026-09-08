@@ -316,7 +316,7 @@ def test_taking_back_a_request_that_is_not_there_is_said_on_her_page() -> None:
 
     assert response.status_code == 404
     assert "That request is not here any more; nothing was changed." in response.text
-    assert "<h1>Due this week</h1>" in response.text
+    assert "<h1>My week</h1>" in response.text
 
 
 def test_taking_back_a_request_a_parent_has_taken_up_is_said_on_her_page() -> None:
@@ -327,7 +327,7 @@ def test_taking_back_a_request_a_parent_has_taken_up_is_said_on_her_page() -> No
 
     assert response.status_code == 409
     assert "cannot be taken back" in response.text
-    assert "<h1>Due this week</h1>" in response.text
+    assert "<h1>My week</h1>" in response.text
 
 
 def test_requests_live_in_the_drafts_file_stamped_by_the_real_clock() -> None:

@@ -9,9 +9,11 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 
 from fastapi.testclient import TestClient
+from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.drafts import Draft
+from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plans import DailyPlan
 from blossom.routes.runs import plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
@@ -35,15 +37,36 @@ def draft(draft_id: str, body: str, *, hour: int = 22) -> Draft:
     return Draft(draft_id=draft_id, body=body, created_at=CREATED.replace(hour=hour))
 
 
-def browser(*, key: bool = True, plan: Callable[[], DailyPlan] = fixture_week_plan) -> TestClient:
+def undecided() -> CriticVerdict:
+    """A reviewer that could not settle: one criterion it could not tell about."""
+    return CriticVerdict(
+        findings=[
+            CriterionFinding(
+                criterion=Criterion.SUPPORT_RULES,
+                critique="no rules were given",
+                judgment=Judgment.CANNOT_TELL,
+            )
+        ]
+    )
+
+
+def browser(
+    *,
+    key: bool = True,
+    plan: Callable[[], DailyPlan] = fixture_week_plan,
+    critic: Callable[[], CriticVerdict] = accepting,
+) -> TestClient:
     """Her page with scripted models. ``key`` false is a household without an API key."""
     environ = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"} if key else {}
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **environ))
     if key:
         app.dependency_overrides[plan_graphs] = scripted_graphs(
-            lambda: [plan()], lambda: [accepting()]
+            lambda: [plan()], lambda: [critic()]
         )
     return TestClient(app, follow_redirects=False)
+
+
+SHOWN = f"{PAGE}?show_plan=1"
 
 
 # --------------------------------------------------------------- the store
@@ -97,9 +120,9 @@ def test_the_plan_is_on_her_page_the_moment_it_is_made() -> None:
         queue = client.get("/parent/approvals").json()["waiting"]
 
     assert planned.status_code == 303
-    assert planned.headers["location"] == PAGE
+    assert planned.headers["location"] == SHOWN
     assert "Plan for Wednesday, August 19, 2026" in page
-    assert "A parent has not looked at this yet. You can start anyway." in page
+    assert "A plan is ready. Parent review: no decision yet." in page
     assert ">Plan again<" in page
     assert today["decision"] is None
     assert today["stale"] is None
@@ -131,7 +154,7 @@ def test_without_a_key_the_page_says_so_and_keeps_working() -> None:
 
     assert response.status_code == 503
     assert "Blossom could not make a plan:" in response.text
-    assert "<h1>Due this week</h1>" in response.text
+    assert "<h1>My week</h1>" in response.text
     assert over_json.status_code == 503
 
 
@@ -207,8 +230,8 @@ def test_a_parents_review_shows_under_her_plan_and_never_blocks_it() -> None:
         after = client.get(PAGE).text
         today = client.get("/student/plans/today").json()
 
-    assert "A parent has not looked at this yet." in before
-    assert "A parent looked at this plan and said it looks good." in after
+    assert "Parent review: no decision yet." in before
+    assert "A plan is ready. Parent review: looks good." in after
     assert "They said: <q>good pacing</q>" in after
     assert today["decision"] == "approved"
 
@@ -223,9 +246,122 @@ def test_a_change_asked_for_is_said_in_her_words() -> None:
         )
         page = client.get(PAGE).text
 
-    assert "<strong>A parent asked for a change.</strong> Plan again when you are ready." in page
+    assert "A plan is ready. A parent asked for a change; plan again when you are ready." in page
     assert "They said: <q>the essay needs two sittings</q>" in page
     assert "Plan for Wednesday, August 19, 2026" in page
+
+
+# --------------------------------------------------------- the disclosure
+
+
+def test_the_plan_is_folded_on_a_visit_and_unfolded_right_after_it_is_made() -> None:
+    """The whole saved text is on the page either way; only the disclosure's state differs."""
+    with browser() as client:
+        before = client.get(PAGE).text
+        planned = client.post("/student/actions/plan")
+        shown = client.get(planned.headers["location"]).text
+        revisit = client.get(PAGE).text
+        body = client.get("/student/plans/today").json()["body"]
+
+    assert '<details class="plan"' not in before
+    assert "No plan for today yet." in before
+    assert '<details class="plan" open>' in shown
+    assert "<summary>View today's plan</summary>" in shown
+    assert str(escape(body)) in revisit, "the saved text, as the template renders it"
+    assert '<details class="plan">' in revisit
+    assert "Looks ahead through Tuesday, August 25." in revisit
+
+
+def test_the_plan_unfolds_on_todays_week_however_the_week_was_named() -> None:
+    """``show_plan`` is a presentation parameter and works beside ``week`` too."""
+    with browser() as client:
+        client.post("/student/actions/plan")
+        named = client.get(PAGE, params={"week": PLAN_DATE.isoformat(), "show_plan": "1"}).text
+        other = client.get(PAGE, params={"week": "2026-08-24", "show_plan": "1"}).text
+
+    assert '<details class="plan" open>' in named
+    assert '<details class="plan"' not in other, "another week has no today panel"
+
+
+def test_the_plan_stays_unfolded_when_the_week_asked_for_cannot_be_shown() -> None:
+    """The fallback renders today's week; the presentation flag rides along."""
+    with browser() as client:
+        client.post("/student/actions/plan")
+        bad = client.get(PAGE, params={"week": "bad", "show_plan": "1"})
+        edge = client.get(PAGE, params={"week": "0001-01-01", "show_plan": "1"})
+
+    assert bad.status_code == 422
+    assert '<details class="plan" open>' in bad.text
+    assert edge.status_code == 422
+    assert '<details class="plan" open>' in edge.text
+
+
+def test_asking_for_the_plan_unfolded_makes_no_plan() -> None:
+    with browser() as client:
+        page = client.get(PAGE, params={"show_plan": "1"}).text
+        today = client.get("/student/plans/today")
+
+    assert "No plan for today yet." in page
+    assert '<details class="plan"' not in page
+    assert today.status_code == 404
+
+
+def test_a_review_the_reviewer_could_not_finish_is_said_outside_the_plan() -> None:
+    """Not a check that failed: the reviewer could not tell. A parent's approval
+    does not make that go away; the notes are in the plan."""
+    warning = "Blossom could not complete its review of this plan. Open the plan to read the notes."
+    with browser(critic=undecided) as client:
+        client.post("/student/actions/plan")
+        draft_id = client.get("/student/plans/today").json()["draft_id"]
+        before = client.get(PAGE).text
+        client.post(f"/parent/approvals/{draft_id}", json={"approved": True, "reason": "fine"})
+        after = client.get(PAGE).text
+
+    assert warning in before
+    assert "did not settle" in before, "the notes are in the saved text"
+    assert warning in after
+    assert "A plan is ready. Parent review: looks good." in after
+    assert "check" not in warning
+
+
+def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> None:
+    with browser() as client:
+        client.post("/student/actions/plan")
+        client.post("/student/help-requests", json={"note": "the essay outline"})
+        request_id = client.get("/student/help-requests").json()[0]["request_id"]
+        client.post(f"/parent/help-requests/{request_id}/resolve", json={"response": "done"})
+        client.post("/student/help-requests")
+        page = client.get(PAGE).text
+
+    panel, _, rest = page.partition('<h2 class="list-heading">')
+    assert "Today, Wednesday, August 19" in panel
+    assert 'action="/student/actions/ask-for-help"' in panel
+    assert "A note for your parents (optional)" in panel
+    assert "<summary>Resolved requests</summary>" in panel
+    assert "the essay outline" in panel.split("<summary>Resolved requests</summary>", 1)[1]
+    assert (
+        "A parent has not seen it yet." in panel.split("<summary>Resolved requests</summary>", 1)[0]
+    )
+    assert "Planning uses the model provider." in panel
+    assert 'href="#what-is-shared"' in panel
+    assert 'id="what-is-shared"' in rest
+    assert "Planning takes a minute or two." in rest
+    assert "Planning takes a minute or two." not in panel
+    assert "Canal Era comparison essay" in rest
+
+
+def test_another_week_shows_its_work_and_a_way_back_instead_of_today() -> None:
+    with browser() as client:
+        client.post("/student/actions/plan")
+        other = client.get(PAGE, params={"week": "2026-08-24"}).text
+
+    assert "<h1>Week of August 24</h1>" in other
+    assert "Return to this week and today's plan" in other
+    assert 'class="panel today"' not in other
+    assert 'action="/student/actions/plan"' not in other
+    assert 'action="/student/actions/ask-for-help"' not in other
+    assert "Plan for Wednesday, August 19, 2026" not in other
+    assert "Quadratic modeling problem set" in other
 
 
 # --------------------------------------------------- the evening changing
