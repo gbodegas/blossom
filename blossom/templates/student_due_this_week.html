@@ -251,10 +251,15 @@
         report that differs from the record is said in the quiet line above,
         and what they gave is listed just as quietly.
       #}
-      {% if assignment.school_contradicts %}
+      {#
+        When the sources disagree among themselves, the banner above already
+        lists every claim, the school's included, so a second banner would
+        say the same thing twice.
+      #}
+      {% if assignment.school_contradicts and assignment.deadline_confidence != "SOURCES_DISAGREE" %}
         <p class="confidence disagree">
-          <strong>Check this date.</strong> The school says otherwise. It gives a different date
-          from the one recorded.
+          <strong>Check this date.</strong> The school says otherwise.
+          {% if assignment.due_date %}It gives a different date from the one recorded.{% else %}It gives a date where none is recorded.{% endif %}
         </p>
         <div class="claims">
           <h3>What the sources say</h3>
@@ -264,7 +269,7 @@
             {% endfor %}
           </ul>
         </div>
-      {% elif assignment.contradiction %}
+      {% elif assignment.contradiction and assignment.deadline_confidence != "SOURCES_DISAGREE" %}
         <p class="source">What they gave: {{ assignment.contradiction|join("; ") }}.</p>
       {% endif %}
 

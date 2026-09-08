@@ -237,8 +237,28 @@ def test_a_date_the_record_lacks_is_said_to_be_the_sources(tmp_path: pathlib.Pat
 
     assert "Due date not recorded" in card
     assert "No date on the family's record; the school portal has one." in line
-    assert "The school says otherwise." in card
+    assert "The school says otherwise. It gives a date where none is recorded." in line
+    assert "from the one recorded" not in line
     assert "school portal: 2026-08-21" in card
+
+
+def test_a_school_date_among_disagreeing_sources_is_one_banner_not_two(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Recorded the 21st, school the 22nd, family the 23rd: the sources disagree and
+    none supports the record. The disagreement banner lists every claim once, so
+    the school's contradiction adds no second banner and no second list."""
+    card = lab_page(tmp_path, [claim("2026-08-22"), claim("2026-08-23", "PARENT_ENTRY")])
+
+    assert "Recorded date Friday, August 21" in card
+    assert card.count('class="confidence disagree"') == 1
+    assert card.count("What the sources say") == 1
+    assert "Sources disagree about it" in card
+    assert "It gives a different date from the one recorded" not in card
+    assert "What they gave" not in card
+    listed = card.split("What the sources say", 1)[1]
+    assert "school portal: 2026-08-22" in listed
+    assert "family entry: 2026-08-23" in listed
 
 
 def test_a_readable_date_that_matches_is_the_sources(tmp_path: pathlib.Path) -> None:
