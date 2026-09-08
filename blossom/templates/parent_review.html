@@ -18,12 +18,15 @@
     </details>
   {% endif %}
 {% endmacro %}
-{% macro local(moment) %}{% set when = moment.astimezone(zone) %}{{ when.strftime("%B") }} {{ when.day }}, {{ when.year }}, {{ when.strftime("%H:%M %Z") }}{% endmacro %}
+{% macro local(moment) %}{% set when = moment.astimezone(zone) %}{{ when.strftime("%B") }} {{ when.day }}, {{ when.year }}, {{ when|clock }} {{ when.strftime("%Z") }}{% endmacro %}
 {% block content %}
   <h1>Family review</h1>
 
   {% if problem %}
     <p class="problem" role="alert">{{ problem }}</p>
+  {% endif %}
+  {% if refreshed_at %}
+    <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
   {% endif %}
 
   {#
@@ -38,7 +41,7 @@
     {% endif %}
     {% for ask in help_open %}
       <article class="draft help-{{ ask.state }}">
-        <p class="course">Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local.strftime("%H:%M") }}</p>
+        <p class="course">Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local|clock }}</p>
         {% if ask.note %}<p class="body">She said: <q>{{ ask.note }}</q></p>{% else %}<p class="note">No words with it.</p>{% endif %}
         <p class="decision-line">
           {% if ask.state == "requested" %}Not taken up yet. Her page says it is waiting for a parent to respond.{% else %}<strong>Taken up.</strong> Her page says a parent is on it.{% if ask.response %} Reply so far: <q>{{ ask.response }}</q>{% endif %}{% endif %}
@@ -50,17 +53,17 @@
           <div class="actions">
             {% if ask.state == "requested" %}
               <button type="submit" name="step" value="accept" class="primary"
-                      aria-label="Say a parent can help with the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">I can help</button>
+                      aria-label="Say a parent can help with the request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">I can help</button>
             {% endif %}
             <button type="submit" name="step" value="resolve" class="secondary"
-                    aria-label="Mark the request from {{ ask.asked_local.strftime("%H:%M") }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} resolved">Mark resolved</button>
+                    aria-label="Mark the request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} resolved">Mark resolved</button>
           </div>
           <p class="note">Each step shows on her page as soon as it is taken. Nothing leaves here.</p>
         </form>
       </article>
     {% endfor %}
     <p class="note refresh">
-      <a href="/parent">Refresh requests</a>. Refresh to see updates. Save or send your note first.
+      <a href="/parent?refreshed=1">Refresh requests</a>. Refresh to see updates. Save or send your note first.
     </p>
     {% if help_resolved %}
       <details class="steps">
@@ -68,7 +71,7 @@
         <ul>
           {% for ask in help_resolved %}
             <li>
-              Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local.strftime("%H:%M") }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
+              Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local|clock }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
               Resolved{% if ask.response %} with <q>{{ ask.response }}</q>{% endif %}.
             </li>
           {% endfor %}
@@ -95,10 +98,10 @@
           <p class="confidence corroborated"><strong>Blossom's review:</strong> accepted.</p>
         {% else %}
           <p class="confidence disagree">
-            <strong>Blossom's review:</strong> could not be completed. Its notes are at the end of the text.
+            <strong>Blossom's review:</strong> could not settle every point. Its notes are at the end of the text.
           </p>
         {% endif %}
-        <pre class="body">{{ draft.body }}</pre>
+        {% with body = draft.body, review_open = true %}{% include "plan_body.html" %}{% endwith %}
         {{ steps_list(draft.steps, "How this plan was made") }}
         {% if draft.stale %}
           <p class="confidence disagree" role="alert"><strong>Plan again.</strong> {{ draft.stale }}</p>
@@ -145,7 +148,10 @@
     <section class="panel">
       <h2>Plan an evening for her</h2>
       {% if model_available %}
-        <form method="post" action="/parent/actions/plan" class="plan-form" data-pending="Making the plan...">
+        <form method="post" action="/parent/actions/plan" class="plan-form"
+              data-pending="Making the plan..."
+              data-pending-later="Still working. The planner reads her week and writes the plan, which takes a minute or two."
+              data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass.">
           <label>Evening of
             <input type="date" name="plan_date" value="{{ today }}">
           </label>
@@ -191,7 +197,7 @@
           </p>
           <details>
             <summary>{% if draft.decision in ("approved", "rejected") %}The plan as it was reviewed{% else %}The plan as it was{% endif %}</summary>
-            <pre class="body">{{ draft.body }}</pre>
+            {% with body = draft.body, review_open = true %}{% include "plan_body.html" %}{% endwith %}
           </details>
           {{ steps_list(draft.steps, "How this plan was made") }}
         </article>

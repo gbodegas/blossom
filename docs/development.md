@@ -165,23 +165,21 @@ model key come from there and nothing in it touches the family's own state:
 uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
 
-Without `uv`, nothing reads `.env`, so the shell has to supply what that
-file would have: the household's time zone, and the model key if planning is
-to run live. Set those and the sample's own variables together:
+Without `uv`, nothing reads `.env`, so the shell has to load both files
+itself, `.env` first for the household's time zone and the model key, then
+the sample's for its paths and clock. These two lines read each file into
+the session without printing a value, and the third starts the app through
+the venv's own Python, from the repository folder:
 
 ```powershell
-$env:BLOSSOM_TIMEZONE = "America/New_York"
-$env:BLOSSOM_FIXTURE_PATH = "data/sample"
-$env:BLOSSOM_TODAY = "2026-09-07"
-$env:BLOSSOM_DATABASE_PATH = ".local/sample/blossom.sqlite3"
-$env:BLOSSOM_CHECKPOINT_PATH = ".local/sample/checkpoints.sqlite3"
-$env:BLOSSOM_TRACE_PATH = ".local/sample/traces.sqlite3"
-$env:BLOSSOM_SAMPLE = "1"
+Get-Content .env | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object { $k, $v = $_ -split '=', 2; Set-Item -Path "Env:$($k.Trim())" -Value $v.Trim() }
+Get-Content data\sample\sample.env | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object { $k, $v = $_ -split '=', 2; Set-Item -Path "Env:$($k.Trim())" -Value $v.Trim() }
 .\.venv\Scripts\python -m uvicorn blossom.app:app --reload
 ```
 
-Set `ANTHROPIC_API_KEY` in the same shell for live planning; without it the
-pages work and the plan button is not offered.
+The variables last for that PowerShell window; a fresh window is back to the
+family's own state. Without a key in `.env` the pages work and the plan
+button is not offered.
 
 Her page shows three items due that week, each saying its date is from the
 school portal, and the reading log, assigned that Monday and due the next,

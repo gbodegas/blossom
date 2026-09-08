@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from blossom.agent.graph import plan_graph_for
 from blossom.app import create_app
+from blossom.clock import spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
@@ -190,7 +191,7 @@ def test_an_unsettled_plan_says_so_above_its_text() -> None:
         client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         page = client.get("/parent").text
 
-    assert "could not be completed. Its notes are at the end of the text." in page
+    assert "could not settle every point. Its notes are at the end of the text." in page
     assert "support rules (could not assess)" in page
 
 
@@ -242,7 +243,7 @@ def test_review_times_read_in_the_households_zone() -> None:
 
     stamped = datetime.fromisoformat(record["decided_at"])
     local = stamped.astimezone(ZoneInfo(FIXTURE_TIMEZONE))
-    shown = f"Reviewed {local:%B} {local.day}, {local.year}, {local:%H:%M %Z}."
+    shown = f"Reviewed {local:%B} {local.day}, {local.year}, {spoken_time(local)} {local:%Z}."
     assert shown in page
     assert "UTC." not in page
 

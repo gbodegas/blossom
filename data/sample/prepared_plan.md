@@ -8,9 +8,9 @@ as a plan the system made, and never as one that passed its checks.
 ```
 Plan for Monday, September 7, 2026
 
-16:30 to 17:15, set aside for HW U1.1 Pg 11 #16, 17, 22, 23 (Geometry, due Sep 8)
+4:30 PM to 5:15 PM, set aside for HW U1.1 Pg 11 #16, 17, 22, 23 (Geometry, due Sep 8)
     due tomorrow, so it goes first; have the book and the notebook out
-17:30 to 17:40, set aside for Syllabus, signed (Religion, due Sep 9)
+5:30 PM to 5:40 PM, set aside for Syllabus, signed (Religion, due Sep 9)
     a signature, not a sitting; ask a parent tonight
 
 Waiting for another day:

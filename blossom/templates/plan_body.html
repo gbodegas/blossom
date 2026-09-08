@@ -1,0 +1,41 @@
+{#
+  The saved plan, set out for reading. ``body`` is the record as saved and
+  ``present`` takes it apart along the composer's own shapes; a line in no
+  known shape is shown whole at the end. ``review_open`` unfolds the
+  reviewer's notes, which the parent's page wants open and hers folded.
+#}
+{% set text = body|present %}
+<div class="plan-text">
+  <p class="plan-title">{{ text.title }}</p>
+  {% for note in text.notes %}
+    <p class="plan-note">{{ note }}</p>
+  {% endfor %}
+  {% for block in text.blocks %}
+    <div class="plan-block">
+      <p class="plan-when"><strong>{{ block.span }}</strong> <span class="plan-item">{{ block.item }}</span></p>
+      {% if block.rationale %}<p class="plan-why">{{ block.rationale }}</p>{% endif %}
+    </div>
+  {% endfor %}
+  {% if text.empty %}<p class="plan-note">{{ text.empty }}</p>{% endif %}
+  {% for section in text.sections %}
+    <h3 class="plan-heading">{{ section.title }}</h3>
+    <ul class="plan-list">
+      {% for item in section.items %}
+        <li>{% if item.label %}<strong>{{ item.label }}:</strong> {% endif %}{{ item.text }}</li>
+      {% endfor %}
+    </ul>
+  {% endfor %}
+  {% if text.review %}
+    <details class="steps plan-review"{% if review_open %} open{% endif %}>
+      <summary>Blossom's review notes</summary>
+      <ul class="plan-list">
+        {% for item in text.review.items %}
+          <li>{% if item.label %}<strong>{{ item.label }}:</strong> {% endif %}{{ item.text }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+  {% for line in text.other %}
+    <p class="plan-other">{{ line }}</p>
+  {% endfor %}
+</div>

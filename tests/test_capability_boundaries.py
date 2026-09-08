@@ -64,6 +64,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "msvcrt": "standard library; the Windows lock behind one process per household",
     "operator": "standard library; the reducer on a graph state key",
     "os": "standard library; reads environment variables only",
+    "re": "standard library; reads the composer's own line shapes back for the page",
     "pathlib": "standard library",
     "pydantic": "validation and view models; no I/O",
     "sqlite3": "standard library; local file and in-memory databases only",

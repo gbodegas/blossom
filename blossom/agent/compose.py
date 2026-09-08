@@ -17,6 +17,7 @@ never chooses to call it; the graph calls it once, after the checks.
 from collections.abc import Mapping, Sequence
 from datetime import date
 
+from blossom.clock import spoken_time
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import CriticVerdict, Judgment
 from blossom.noticing import Noticing
@@ -102,7 +103,7 @@ def compose_draft(
 
     for block in sorted(plan.blocks, key=lambda item: item.starts_at):
         lines.append(
-            f"{block.starts_at:%H:%M} to {block.ends_at:%H:%M}, set aside for "
+            f"{spoken_time(block.starts_at)} to {spoken_time(block.ends_at)}, set aside for "
             f"{named(block.assignment_id)}"
         )
         lines.append(f"    {block.rationale}")
