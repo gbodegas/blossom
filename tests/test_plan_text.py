@@ -212,6 +212,31 @@ def test_an_escape_sequence_in_the_text_reads_as_its_character() -> None:
     assert "\\u2014" not in body
 
 
+def test_only_printable_characters_are_decoded_and_only_inside_a_part() -> None:
+    """A control code or a lone surrogate written as an escape stays as written, so a
+    sequence can neither move a line boundary nor break the page's encoding; a pair
+    becomes the one character it encodes."""
+    saved = "\n".join(
+        [
+            "Plan for Wednesday, August 19, 2026\\u000ANot a second line",
+            "",
+            "The reviewer's notes:",
+            "- order (passes): one note\\u000Astill one note",
+            "- sizing (passes): a smile \\uD83D\\uDE00 and a stray \\uDE00 half",
+        ]
+    )
+    text = present_plan(saved)
+
+    assert text.title == "Plan for Wednesday, August 19, 2026\\u000ANot a second line"
+    assert text.review is not None
+    assert [item.text for item in text.review.items] == [
+        "one note\\u000Astill one note",
+        f"a smile {chr(0x1F600)} and a stray \\uDE00 half",
+    ]
+    for item in text.review.items:
+        item.text.encode("utf-8")
+
+
 def test_the_clock_reads_as_she_does() -> None:
     assert spoken_time(time(0, 5)) == "12:05 AM"
     assert spoken_time(time(9, 0)) == "9:00 AM"
