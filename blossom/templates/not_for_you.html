@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% set page = "not-for-you" %}
+{% block title %}Blossom - Not this page{% endblock %}
+{% block content %}
+  <h1>This page is for a parent</h1>
+  <section class="panel">
+    <p>The family review is a parent's page. Yours is your week.</p>
+    <p class="return"><a href="{{ home }}">Back to your week</a></p>
+  </section>
+{% endblock %}

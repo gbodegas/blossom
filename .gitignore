@@ -302,6 +302,10 @@ Thumbs.db
 # this directory holds the sqlite databases.
 .local/
 
+# Local scratch folders beside the repository; never tracked.
+output/
+tmp/
+
 # Blossom real data
 # Only data/synthetic/ and data/sample/ are ever committed. These paths exist
 # so that a real family export cannot be added to the index by accident.
