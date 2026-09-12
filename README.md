@@ -69,11 +69,13 @@ updates; opening the parent's page does not count as a response.
 
 *A synthetic help request and reply. Family review puts help she asked for first.*
 
-Blossom does not contact the school or submit work. There is also **no login**:
-the student and parent pages are different views, not access restrictions.
-Anyone who can reach the server can open them, so run it on your own machine.
-The [architecture notes](docs/architecture.md) describe the design and what
-is still unimplemented.
+Blossom does not contact the school or submit work. A **household sign-in**
+guards the pages when two passphrases are set, hers and a parent's: hers opens
+her week, a parent's opens both pages, and a device stays signed in for a
+month. With neither set the pages are open, which is right for trying it on
+your own machine and nowhere else. The
+[architecture notes](docs/architecture.md) describe the design and what is
+still unimplemented.
 
 ## Try it locally
 

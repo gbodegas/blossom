@@ -31,6 +31,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from blossom.agent.retention import sweep_saved_state
 from blossom.agent.trace import LocalRunTracer
 from blossom.clock import Clock, SystemClock, clock_from
+from blossom.household import secret_beside
 from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource
 from blossom.stores.checkpoints import open_checkpointer
@@ -236,6 +237,10 @@ def create_lifespan(settings: Settings) -> Lifespan:
                     # Inside the block, so a sweep that fails still closes the stores.
                     await sweep_saved_state(checkpointer, state.drafts, state.clock)
                     setattr(app.state, STATE_ATTRIBUTE, state)
+                    if settings.household_sign_in:
+                        # The secret that signs a sign-in, kept beside the database
+                        # so a restart keeps everyone signed in.
+                        app.state.household_secret = secret_beside(settings.database_path)
                     # The same rules on a schedule, so a process that outlives a
                     # signal's week or a draft's fortnight keeps them without a restart.
                     sweeper = asyncio.create_task(

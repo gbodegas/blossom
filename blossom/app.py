@@ -13,7 +13,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from blossom.dependencies import create_lifespan
-from blossom.routes import parent, student, verifier
+from blossom.household import HouseholdGate
+from blossom.routes import household, parent, student, verifier
 from blossom.settings import Settings, get_settings
 
 
@@ -30,9 +31,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = get_settings() if settings is None else settings
     app = FastAPI(title="Blossom", lifespan=create_lifespan(resolved))
     app.mount("/static", StaticFiles(directory=resolved.static_path), name="static")
+    app.include_router(household.router)
     app.include_router(student.router)
     app.include_router(parent.router)
     app.include_router(verifier.router)
+    # The gate wraps everything above: with two passphrases set, a page or a
+    # route answers only someone who has signed in and may open it.
+    app.add_middleware(HouseholdGate, settings=resolved)
     return app
 
 

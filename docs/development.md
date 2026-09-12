@@ -64,9 +64,10 @@ With the app running as the README describes:
   posting to `/student/workload-signals` with no body; the same path lists
   the signals still kept, and a delete on one removes it.
 
-Nothing here has a login. The three views are separate pages, not separate
-people, and anyone who can reach the server can open all of them. The
-visibility policy the design calls for is not built.
+With neither passphrase set, nothing here has a login: the views are separate
+pages, and anyone who can reach the server can open all of them. That is the
+shape for a machine only the family touches. For the household's own use, see
+"Running for the household" below.
 
 ## Configuration
 
@@ -148,6 +149,43 @@ more times. A run the model cuts short ends with the call that failed. What
 it costs depends on the week and the revisions; the API's usage page says
 after a run. All of this happens before the plan reaches her page and the
 parent's for review, and a review sends nothing anywhere.
+
+## Running for the household
+
+Her computer, her tablet, and a parent's computer all open Blossom over the
+home network, so the pages ask who is there. Set two passphrases in `.env`,
+one hers and one a parent's, and they must differ:
+
+```
+BLOSSOM_STUDENT_PASSPHRASE=a phrase only she knows
+BLOSSOM_PARENT_PASSPHRASE=a phrase only the parents know
+```
+
+Setting one without the other refuses to start, by name. With both set, every
+page and route asks for a sign-in first: her passphrase opens her week, a
+parent's opens her week and the family review, and a signed-in student who
+opens the family review is told it is a parent's page. A sign-in is a cookie
+signed with a secret Blossom makes once and keeps beside the database, in
+`household.secret` under the same guard as the database, so a restart keeps
+everyone signed in; a device stays signed in for a month or until "Sign out".
+
+Start the app so the other devices can reach it, on the computer that stays
+on:
+
+```bash
+uv run --env-file .env uvicorn blossom.app:app --host 0.0.0.0 --port 8000
+```
+
+Windows asks once whether to allow Python through the firewall for private
+networks; say yes for private only. On her tablet or computer, open
+`http://<the computer's name>:8000/student/due-this-week`, where the name is
+what Windows shows under Settings, System, About, or the computer's address on
+the home network. Bookmark it.
+
+The connection is plain HTTP, which is fine on the home network and nowhere
+else: never forward the port through the router or put the server on the
+internet. The sign-in tells the two people apart on the family's own network;
+it is not a defense against the internet.
 
 ## The sample week
 

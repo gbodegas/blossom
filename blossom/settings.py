@@ -46,6 +46,9 @@ TIMEZONE_VARIABLE = "BLOSSOM_TIMEZONE"
 EVENING_MINUTES_VARIABLE = "BLOSSOM_EVENING_MINUTES"
 TOO_MUCH_MINUTES_VARIABLE = "BLOSSOM_TOO_MUCH_MINUTES"
 SAMPLE_VARIABLE = "BLOSSOM_SAMPLE"
+# The names of the variables, not their values, so the lint rule does not apply.
+STUDENT_PASSPHRASE_VARIABLE = "BLOSSOM_STUDENT_PASSPHRASE"  # noqa: S105
+PARENT_PASSPHRASE_VARIABLE = "BLOSSOM_PARENT_PASSPHRASE"  # noqa: S105
 ANTHROPIC_API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
 
 YES_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -160,8 +163,37 @@ class Settings:
     """From ``BLOSSOM_SAMPLE``. True marks every page "Sample week": what is shown
     is a synthetic scenario, not the family's own. Set by the sample launch and
     nothing else; a pinned clock on its own says nothing about whose data this is."""
+    student_passphrase: str | None = field(default=None, repr=False)
+    """From ``BLOSSOM_STUDENT_PASSPHRASE``. With ``parent_passphrase`` it turns the
+    household sign-in on: every page asks who is there before showing anything.
+    Excluded from ``repr`` so it never reaches a log line."""
+    parent_passphrase: str | None = field(default=None, repr=False)
+    """From ``BLOSSOM_PARENT_PASSPHRASE``. Set both or neither: one alone would
+    leave one of the two people unable to sign in, so the app refuses to start."""
+
+    @property
+    def household_sign_in(self) -> bool:
+        """Whether the pages ask who is there. True when both passphrases are set."""
+        return self.student_passphrase is not None and self.parent_passphrase is not None
 
     def __post_init__(self) -> None:
+        if (self.student_passphrase is None) != (self.parent_passphrase is None):
+            missing = (
+                PARENT_PASSPHRASE_VARIABLE
+                if self.parent_passphrase is None
+                else STUDENT_PASSPHRASE_VARIABLE
+            )
+            msg = f"{missing} must be set too: the household sign-in needs a passphrase for each"
+            raise ValueError(msg)
+        if (
+            self.student_passphrase is not None
+            and self.student_passphrase == self.parent_passphrase
+        ):
+            msg = (
+                f"{STUDENT_PASSPHRASE_VARIABLE} and {PARENT_PASSPHRASE_VARIABLE} must differ, "
+                "or the sign-in cannot tell who is there"
+            )
+            raise ValueError(msg)
         if self.today is not None and not (
             date.min + CALENDAR_MARGIN <= self.today <= date.max - CALENDAR_MARGIN
         ):
@@ -216,6 +248,10 @@ class Settings:
         key = source.get(ANTHROPIC_API_KEY_VARIABLE)
         anthropic_api_key = key.strip() if key is not None and key.strip() else None
 
+        def secret(variable: str) -> str | None:
+            value = source.get(variable)
+            return value.strip() if value is not None and value.strip() else None
+
         zone = source.get(TIMEZONE_VARIABLE)
         timezone_key = zone.strip() if zone is not None and zone.strip() else None
 
@@ -255,6 +291,8 @@ class Settings:
             evening_minutes=minutes(EVENING_MINUTES_VARIABLE, DEFAULT_EVENING_MINUTES),
             too_much_minutes=minutes(TOO_MUCH_MINUTES_VARIABLE, DEFAULT_TOO_MUCH_MINUTES),
             sample=flag(SAMPLE_VARIABLE),
+            student_passphrase=secret(STUDENT_PASSPHRASE_VARIABLE),
+            parent_passphrase=secret(PARENT_PASSPHRASE_VARIABLE),
         )
 
 

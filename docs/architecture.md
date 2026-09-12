@@ -14,12 +14,23 @@ separate Pydantic view models in `blossom/views.py`, rather than one view with
 a role flag on it. Every view model sets `extra="forbid"`, so a field that does
 not belong in a projection fails validation instead of leaking into it.
 
+At the edge, `blossom/household.py` is a gate on the route trees: with two
+passphrases set, hers and a parent's, a request answers only someone who has
+signed in and may open that tree. Her passphrase opens the student tree; a
+parent's opens all three. A sign-in is a cookie signed with a keyed hash from
+the standard library and a secret kept beside the database, so nothing here
+needs a library or a service, and a cookie made elsewhere is refused. With
+neither passphrase set the gate stands open, which the tests and the sample
+rely on.
+
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and
-each receives only what the policy permits. What exists is a convention
-enforced at serialization time. It makes an accidental leak hard; it would not
-stop a future route that reads a store and renders whatever it likes. This is
-the largest gap between the design and the code.
+each receives only what the policy permits. What exists is the gate at the
+edge and a convention enforced at serialization time. Together they make an
+accidental leak hard; they would not stop a future route that reads a store
+and renders whatever it likes. Also not built: encryption on the wire, since
+the home network carries plain HTTP, and any account beyond the two
+passphrases.
 
 **Not built:** if the system notifies a parent, she is meant to be able to see
 that the notification happened. Nothing implements that.
