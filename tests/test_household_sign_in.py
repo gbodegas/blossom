@@ -168,8 +168,11 @@ def test_a_cookie_made_elsewhere_aged_out_or_dated_ahead_is_refused(
         keys: dict[Principal, bytes] = app.state.household_keys
         theirs = keys[Principal.PARENT]
         forged = issue(Principal.PARENT, b"someone else's secret", now)
-        old = issue(Principal.PARENT, theirs, now - timedelta(seconds=SESSION_SECONDS + 1))
-        ahead = issue(Principal.PARENT, theirs, now + timedelta(seconds=SKEW_SECONDS + 1))
+        # The app reads its own clock after ``now`` was taken, so the tokens sent
+        # through it sit a minute past each edge; the edges themselves are read
+        # below with one clock on both sides.
+        old = issue(Principal.PARENT, theirs, now - timedelta(seconds=SESSION_SECONDS + 60))
+        ahead = issue(Principal.PARENT, theirs, now + timedelta(seconds=SKEW_SECONDS + 60))
         client.cookies.set(COOKIE, forged)
         with_forged = client.get("/parent", headers=PAGE)
         client.cookies.set(COOKIE, old)
