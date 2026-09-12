@@ -68,6 +68,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "re": "standard library; reads the composer's own line shapes back for the page",
     "secrets": "standard library; makes the sign-in secret, compares passphrases in constant time",
     "starlette": "the toolkit under FastAPI; the middleware base the household gate extends",
+    "urllib": "standard library; urllib.parse only, to read and encode a return address",
     "pathlib": "standard library",
     "pydantic": "validation and view models; no I/O",
     "sqlite3": "standard library; local file and in-memory databases only",

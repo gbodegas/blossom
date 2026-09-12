@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
+from urllib.parse import quote
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -143,7 +144,10 @@ class HouseholdGate(BaseHTTPMiddleware):
             return await call_next(request)
         if role is None:
             if wants_a_page(request):
-                return RedirectResponse(f"/sign-in?next={path}", status_code=303)
+                # The whole address asked for, query included, so the sign-in
+                # brings the browser back to the page it wanted.
+                wanted = path if not request.url.query else f"{path}?{request.url.query}"
+                return RedirectResponse(f"/sign-in?next={quote(wanted, safe='')}", status_code=303)
             return JSONResponse({"detail": "Sign in first."}, status_code=401)
         if not may_open(role, path):
             if wants_a_page(request):

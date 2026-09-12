@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.household import COOKIE, SECRET_NAME, SESSION_SECONDS, issue, read_token
@@ -57,7 +58,7 @@ def test_without_a_sign_in_a_browser_is_sent_to_sign_in_and_a_call_is_told_401(
         sign_in = client.get("/sign-in", headers=PAGE)
 
     assert page.status_code == 303
-    assert page.headers["location"] == "/sign-in?next=/student/due-this-week"
+    assert page.headers["location"] == "/sign-in?next=%2Fstudent%2Fdue-this-week"
     assert call.status_code == 401
     assert theirs.status_code == 303
     assert stylesheet.status_code == 200
@@ -156,15 +157,42 @@ def test_a_restart_keeps_everyone_signed_in(tmp_path: pathlib.Path) -> None:
     assert (tmp_path / SECRET_NAME).is_file()
 
 
-def test_the_next_path_must_be_on_this_site(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize(
+    "elsewhere",
+    [
+        "https://example.org/",
+        "//example.org/",
+        "/\\example.org/",
+        "/student/due-this-week\r\nSet-Cookie: x=y",
+        "javascript:alert(1)",
+        "student/due-this-week",
+    ],
+)
+def test_the_next_path_must_be_on_this_site(tmp_path: pathlib.Path, elsewhere: str) -> None:
+    """A return address is read the way a browser reads it: anything that could leave
+    the site, or break the response, is dropped for her own page."""
     with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
-        elsewhere = client.post(
-            "/sign-in", data={"passphrase": HERS, "next": "https://example.org/"}
-        )
-        doubled = client.post("/sign-in", data={"passphrase": HERS, "next": "//example.org/"})
+        came_in = client.post("/sign-in", data={"passphrase": HERS, "next": elsewhere})
 
-    assert elsewhere.headers["location"] == "/student/due-this-week"
-    assert doubled.headers["location"] == "/student/due-this-week"
+    assert came_in.headers["location"] == "/student/due-this-week"
+
+
+def test_the_sign_in_brings_the_browser_back_to_the_whole_address(
+    tmp_path: pathlib.Path,
+) -> None:
+    wanted = "/student/due-this-week?week=2026-08-24&show_plan=1"
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+        sent = client.get(wanted, headers=PAGE)
+        asked = client.get(sent.headers["location"], headers=PAGE)
+        came_in = client.post("/sign-in", data={"passphrase": HERS, "next": wanted})
+
+    assert sent.status_code == 303
+    assert sent.headers["location"] == (
+        "/sign-in?next=%2Fstudent%2Fdue-this-week%3Fweek%3D2026-08-24%26show_plan%3D1"
+    )
+    assert asked.status_code == 200
+    assert f'name="next" value="{escape(wanted)}"' in asked.text
+    assert came_in.headers["location"] == wanted
 
 
 def test_with_no_passphrases_nothing_asks(tmp_path: pathlib.Path) -> None:

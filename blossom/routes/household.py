@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -19,10 +20,21 @@ WRONG = "That passphrase is not one of ours. Try again."
 
 
 def safe_next(value: str | None) -> str | None:
-    """A place on this site to return to, or ``None`` for anything else."""
-    if value and value.startswith("/") and not value.startswith("//"):
-        return value
-    return None
+    """A place on this site to return to, or ``None`` for anything else.
+
+    A browser follows a redirect by its own reading of the address, so the
+    check is a parser's, not a prefix's: no scheme, no host, a path that
+    starts with one slash, and none of the characters a browser might turn
+    into a slash or a line break on the way.
+    """
+    if not value or "\\" in value:
+        return None
+    if any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value):
+        return None
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc or not parts.path.startswith("/"):
+        return None
+    return value
 
 
 def sign_in_page(
