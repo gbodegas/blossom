@@ -90,6 +90,8 @@ def test_without_a_sign_in_a_browser_is_sent_to_sign_in_and_a_call_is_told_401(
     assert "cache-control" not in stylesheet.headers
     assert sign_in.status_code == 200
     assert "<h1>Who is this?</h1>" in sign_in.text
+    for answer in (page, call, form, posted_call, theirs, sign_in):
+        assert answer.headers["cache-control"] == "no-store"
 
 
 def test_her_passphrase_opens_her_week_and_not_the_family_review(tmp_path: pathlib.Path) -> None:
@@ -105,6 +107,7 @@ def test_her_passphrase_opens_her_week_and_not_the_family_review(tmp_path: pathl
 
     assert came_in.status_code == 303
     assert came_in.headers["location"] == "/student/due-this-week"
+    assert came_in.headers["cache-control"] == "no-store"
     assert COOKIE in came_in.cookies
     assert hers.status_code == 200
     assert "<h1>My week</h1>" in hers.text
@@ -112,6 +115,7 @@ def test_her_passphrase_opens_her_week_and_not_the_family_review(tmp_path: pathl
     assert "Family review" not in hers.text.split("</nav>", 1)[0]
     assert theirs.status_code == 403
     assert "<h1>This page is for a parent</h1>" in theirs.text
+    assert theirs.headers["cache-control"] == "no-store"
     assert call.status_code == 403
     assert claims.status_code == 403
     assert own_call.status_code == 200
@@ -144,6 +148,7 @@ def test_the_wrong_passphrase_is_said_and_nothing_is_remembered(tmp_path: pathli
 
     assert wrong.status_code == 422
     assert "That passphrase is not one of ours." in wrong.text
+    assert wrong.headers["cache-control"] == "no-store"
     assert COOKIE not in wrong.cookies
     assert still_out.status_code == 303
 
@@ -156,6 +161,7 @@ def test_signing_out_forgets_this_device(tmp_path: pathlib.Path) -> None:
 
     assert out.status_code == 303
     assert out.headers["location"] == "/sign-in"
+    assert out.headers["cache-control"] == "no-store"
     assert after.status_code == 303
 
 
@@ -305,8 +311,19 @@ def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.P
     assert not list(tmp_path.glob("*.part"))
     if os.name == "posix":
         assert (tmp_path / SECRET_NAME).stat().st_mode & 0o777 == 0o600
-    for spoiled in ("", written[:40], written.upper(), written + "\n", " " + written):
-        (tmp_path / SECRET_NAME).write_text(spoiled, encoding="utf-8")
+    spoiled_files: list[str | bytes] = [
+        "",
+        written[:40],
+        written.upper(),
+        written + "\n",
+        " " + written,
+        b"\xff" * 64,
+    ]
+    for spoiled in spoiled_files:
+        if isinstance(spoiled, bytes):
+            (tmp_path / SECRET_NAME).write_bytes(spoiled)
+        else:
+            (tmp_path / SECRET_NAME).write_text(spoiled, encoding="utf-8")
         with (
             pytest.raises(UnreadableHouseholdSecret, match=SECRET_NAME),
             TestClient(create_app(settings)),

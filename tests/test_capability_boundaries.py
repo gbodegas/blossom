@@ -68,7 +68,10 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "re": "standard library; reads the composer's own line shapes back for the page",
     "secrets": "standard library; makes the sign-in secret, compares passphrases in constant time",
     "starlette": "the toolkit under FastAPI; the middleware base the household gate extends",
-    "urllib": "standard library; urllib.parse only, to read and encode a return address",
+    "urllib": (
+        "standard library; closed but for urllib.parse, opened for the gate and the "
+        "sign-in to read and encode a return address, see CLOSED_PREFIXES and OPENED_PATHS"
+    ),
     "pathlib": "standard library",
     "pydantic": "validation and view models; no I/O",
     "sqlite3": "standard library; local file and in-memory databases only",
@@ -117,6 +120,10 @@ CLOSED_PREFIXES: dict[str, str] = {
         "builds a provider client from the environment; the seam is anthropic_client.py"
     ),
     "langchain.embeddings": "builds a provider client from the environment",
+    "urllib": (
+        "the standard library's own network clients, urllib.request and the rest; "
+        "urllib.parse is opened for the gate and the sign-in, see OPENED_PATHS"
+    ),
 }
 
 # Paths under a closed prefix that one file may import after all, because the
@@ -127,6 +134,7 @@ CLOSED_PREFIXES: dict[str, str] = {
 OPENED_PATHS: dict[str, frozenset[str]] = {
     "langchain_core.tracers.base": frozenset({"agent/trace.py"}),
     "langchain_core.tracers.schemas": frozenset({"agent/trace.py"}),
+    "urllib.parse": frozenset({"household.py", "routes/household.py"}),
 }
 
 # The framework's ways of bringing a tool into existence, wiring tools into a
@@ -296,11 +304,27 @@ def test_the_tracer_base_is_open_to_one_file_and_closed_to_every_other() -> None
         "from langgraph_sdk import get_client",
         "from langchain.chat_models import init_chat_model",
         "def f():\n    from langgraph_sdk import get_client\n    return get_client",
+        "from urllib.request import urlopen",
+        "import urllib.request",
+        "from urllib import request",
     ],
 )
 def test_the_closed_prefix_scan_flags_each_spelling(snippet: str) -> None:
     """Positive control: every way of reaching a closed path is seen by the scan."""
     assert closed_hits(dotted_imports(snippet))
+
+
+def test_the_url_parser_is_open_to_the_gate_and_closed_to_every_other_file() -> None:
+    """The parser reads a return address; the clients beside it stay closed everywhere."""
+    parser = dotted_imports("from urllib.parse import quote, urlsplit")
+    client = dotted_imports("from urllib.request import urlopen")
+    by_the_package = dotted_imports("from urllib import parse")
+    assert not closed_hits(parser, "household.py")
+    assert not closed_hits(parser, "routes/household.py")
+    assert closed_hits(parser, "app.py")
+    assert closed_hits(client, "household.py")
+    assert closed_hits(by_the_package, "household.py")
+    assert "urllib.parse" in dotted_imports_by_file()["household.py"]
 
 
 def test_the_closed_prefix_scan_leaves_the_permitted_paths_alone() -> None:
