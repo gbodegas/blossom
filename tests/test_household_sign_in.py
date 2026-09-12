@@ -69,6 +69,7 @@ def test_without_a_sign_in_a_browser_is_sent_to_sign_in_and_a_call_is_told_401(
     assert call.status_code == 401
     assert theirs.status_code == 303
     assert stylesheet.status_code == 200
+    assert "cache-control" not in stylesheet.headers
     assert sign_in.status_code == 200
     assert "<h1>Who is this?</h1>" in sign_in.text
 
@@ -81,6 +82,7 @@ def test_her_passphrase_opens_her_week_and_not_the_family_review(tmp_path: pathl
         hers = client.get("/student/due-this-week", headers=PAGE)
         theirs = client.get("/parent", headers=PAGE)
         call = client.get("/parent/approvals")
+        claims = client.get("/verifier/claims")
         own_call = client.get("/student/help-requests")
 
     assert came_in.status_code == 303
@@ -93,7 +95,10 @@ def test_her_passphrase_opens_her_week_and_not_the_family_review(tmp_path: pathl
     assert theirs.status_code == 403
     assert "<h1>This page is for a parent</h1>" in theirs.text
     assert call.status_code == 403
+    assert claims.status_code == 403
     assert own_call.status_code == 200
+    assert hers.headers["cache-control"] == "no-store"
+    assert own_call.headers["cache-control"] == "no-store"
 
 
 def test_a_parents_passphrase_opens_both_pages(tmp_path: pathlib.Path) -> None:
@@ -102,12 +107,16 @@ def test_a_parents_passphrase_opens_both_pages(tmp_path: pathlib.Path) -> None:
         theirs = client.get("/parent", headers=PAGE)
         hers = client.get("/student/due-this-week", headers=PAGE)
         call = client.get("/parent/approvals")
+        claims = client.get("/verifier/claims")
 
     assert came_in.headers["location"] == "/parent"
     assert theirs.status_code == 200
     assert "<h1>Family review</h1>" in theirs.text
+    assert theirs.headers["cache-control"] == "no-store"
     assert hers.status_code == 200
     assert call.status_code == 200
+    assert claims.status_code == 200
+    assert claims.headers["cache-control"] == "no-store"
 
 
 def test_the_wrong_passphrase_is_said_and_nothing_is_remembered(tmp_path: pathlib.Path) -> None:
@@ -169,7 +178,8 @@ def test_a_restart_keeps_everyone_signed_in(tmp_path: pathlib.Path) -> None:
 
 
 def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.Path) -> None:
-    """A secret short of the one written is one a stranger could guess, so it is refused."""
+    """A secret short of the one written is one a stranger could guess, and one with anything
+    added is a changed file, so both are refused; the file is read as written."""
     settings = household(tmp_path)
     with TestClient(create_app(settings)):
         pass
@@ -178,7 +188,7 @@ def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.P
     assert len(written) == 64
     assert set(written) <= set("0123456789abcdef")
     assert not list(tmp_path.glob("*.part"))
-    for spoiled in ("", written[:40], written.upper()):
+    for spoiled in ("", written[:40], written.upper(), written + "\n", " " + written):
         (tmp_path / SECRET_NAME).write_text(spoiled, encoding="utf-8")
         with (
             pytest.raises(UnreadableHouseholdSecret, match=SECRET_NAME),

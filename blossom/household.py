@@ -61,13 +61,14 @@ def secret_beside(state_path: Path) -> bytes:
     in a synced folder. A new secret would sign everyone out, so it is made
     only when none exists, and it is put in place in one move, so a start cut
     short leaves no file rather than a short one. What is read back must be
-    the whole secret; a short or empty key is one a stranger could guess, so
+    the whole secret and nothing more, read as written; a short or empty key
+    is one a stranger could guess, and a changed file is a changed file, so
     anything else stops the start and names the file.
     """
     path = refuse_unsafe_path(state_path).with_name(SECRET_NAME)
     if not path.exists():
         make_secret(path)
-    written = path.read_text(encoding="utf-8").strip()
+    written = path.read_text(encoding="utf-8")
     if len(written) != SECRET_LENGTH or not HEX_DIGITS.issuperset(written):
         msg = (
             f"{path} does not hold a whole household secret; delete the file and start "
@@ -155,6 +156,8 @@ class HouseholdGate(BaseHTTPMiddleware):
     A browser without a sign-in is sent to the sign-in page and back again
     afterward; a JSON call is answered 401. A signed-in student asking for a
     parent's page is told the page is not hers, 403, and offered her own.
+    What a signed-in person is shown is marked not to be stored, so a shared
+    browser or anything on the way keeps no copy to show after a sign-out.
     """
 
     def __init__(self, app: ASGIApp, settings: Settings) -> None:
@@ -185,4 +188,6 @@ class HouseholdGate(BaseHTTPMiddleware):
                     request, "not_for_you.html", {"home": home_of(role)}, status_code=403
                 )
             return JSONResponse({"detail": "This page is for a parent."}, status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
