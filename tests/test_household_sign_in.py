@@ -7,6 +7,7 @@ cookie made elsewhere is refused. With neither set, nothing asks, which every
 other test relies on.
 """
 
+import os
 import pathlib
 from datetime import UTC, datetime, timedelta
 
@@ -29,6 +30,7 @@ from tests.support import fixture_settings
 
 HERS = "quiet mornings and loud music"
 THEIRS = "the kitchen table at seven"
+SHORT = "short one"
 PAGE = {"Accept": "text/html"}
 
 
@@ -44,13 +46,15 @@ def household(tmp_path: pathlib.Path, **environ: str) -> Settings:
     )
 
 
-def test_one_passphrase_without_the_other_is_refused_by_name() -> None:
+def test_a_passphrase_missing_alike_or_short_is_refused_by_name() -> None:
     with pytest.raises(ValueError, match=PARENT_PASSPHRASE_VARIABLE):
         fixture_settings(BLOSSOM_STUDENT_PASSPHRASE=HERS)
     with pytest.raises(ValueError, match=STUDENT_PASSPHRASE_VARIABLE):
         fixture_settings(BLOSSOM_PARENT_PASSPHRASE=THEIRS)
     with pytest.raises(ValueError, match="must differ"):
         fixture_settings(BLOSSOM_STUDENT_PASSPHRASE=HERS, BLOSSOM_PARENT_PASSPHRASE=HERS)
+    with pytest.raises(ValueError, match=f"{PARENT_PASSPHRASE_VARIABLE} must be at least 12"):
+        fixture_settings(BLOSSOM_STUDENT_PASSPHRASE=HERS, BLOSSOM_PARENT_PASSPHRASE=SHORT)
     assert fixture_settings().household_sign_in is False
 
 
@@ -60,6 +64,8 @@ def test_without_a_sign_in_a_browser_is_sent_to_sign_in_and_a_call_is_told_401(
     with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
         page = client.get("/student/due-this-week", headers=PAGE)
         call = client.get("/student/plans/today")
+        form = client.post("/student/help-requests", data={"note": "hi"}, headers=PAGE)
+        posted_call = client.post("/student/help-requests", data={"note": "hi"})
         theirs = client.get("/parent", headers=PAGE)
         stylesheet = client.get("/static/blossom.css")
         sign_in = client.get("/sign-in", headers=PAGE)
@@ -67,6 +73,9 @@ def test_without_a_sign_in_a_browser_is_sent_to_sign_in_and_a_call_is_told_401(
     assert page.status_code == 303
     assert page.headers["location"] == "/sign-in?next=%2Fstudent%2Fdue-this-week"
     assert call.status_code == 401
+    assert form.status_code == 303
+    assert form.headers["location"] == "/sign-in"
+    assert posted_call.status_code == 401
     assert theirs.status_code == 303
     assert stylesheet.status_code == 200
     assert "cache-control" not in stylesheet.headers
@@ -179,8 +188,11 @@ def test_a_restart_keeps_everyone_signed_in(tmp_path: pathlib.Path) -> None:
 
 def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.Path) -> None:
     """A secret short of the one written is one a stranger could guess, and one with anything
-    added is a changed file, so both are refused; the file is read as written."""
+    added is a changed file, so both are refused; the file is read as written. It is the
+    owner's alone, and a part left by a start cut short is replaced, not reused."""
     settings = household(tmp_path)
+    leftover = tmp_path / f"{SECRET_NAME}.part"
+    leftover.write_text("left by a start cut short", encoding="utf-8")
     with TestClient(create_app(settings)):
         pass
     written = (tmp_path / SECRET_NAME).read_text(encoding="utf-8")
@@ -188,6 +200,8 @@ def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.P
     assert len(written) == 64
     assert set(written) <= set("0123456789abcdef")
     assert not list(tmp_path.glob("*.part"))
+    if os.name == "posix":
+        assert (tmp_path / SECRET_NAME).stat().st_mode & 0o777 == 0o600
     for spoiled in ("", written[:40], written.upper(), written + "\n", " " + written):
         (tmp_path / SECRET_NAME).write_text(spoiled, encoding="utf-8")
         with (

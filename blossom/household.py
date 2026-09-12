@@ -44,6 +44,8 @@ SECRET_NAME: Final = "household.secret"  # noqa: S105  (a file name, not a secre
 SECRET_LENGTH: Final = 64
 """The secret on disk is 32 random bytes written as lowercase hex, and nothing else counts."""
 HEX_DIGITS: Final = frozenset("0123456789abcdef")
+OWNER_ONLY: Final = 0o600
+"""The secret file's permission: its owner reads and writes it, no other account can."""
 OPEN_PREFIXES: Final = ("/sign-in", "/sign-out", "/static/")
 """What anyone may reach: the way in, the way out, and the stylesheet the way in needs."""
 
@@ -79,10 +81,18 @@ def secret_beside(state_path: Path) -> bytes:
 
 
 def make_secret(path: Path) -> None:
-    """Write a fresh secret beside ``path``, flush it to disk, and move it into place."""
+    """Write a fresh secret beside ``path``, for its owner alone, and move it into place.
+
+    The file is opened owner-only from its first byte, so no other account on
+    the computer can read the key that signs a sign-in. A part left by a
+    start cut short is removed first, so the permission is set afresh rather
+    than kept from whatever left it; the move into place keeps it.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(f"{SECRET_NAME}.part")
-    with partial.open("w", encoding="utf-8") as handle:
+    partial.unlink(missing_ok=True)
+    descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, OWNER_ONLY)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(secrets.token_hex(SECRET_LENGTH // 2))
         handle.flush()
         os.fsync(handle.fileno())
@@ -146,15 +156,20 @@ def may_open(role: Principal, path: str) -> bool:
 
 
 def wants_a_page(request: Request) -> bool:
-    """Whether the request comes from a browser looking for a page rather than JSON."""
-    return request.method == "GET" and "text/html" in request.headers.get("accept", "")
+    """Whether the request comes from a browser, which is answered with a page, not JSON.
+
+    A form sent from a page is a browser's request too, whatever its method.
+    """
+    return "text/html" in request.headers.get("accept", "")
 
 
 class HouseholdGate(BaseHTTPMiddleware):
     """Ask who is there before any page or route answers, when the sign-in is on.
 
     A browser without a sign-in is sent to the sign-in page and back again
-    afterward; a JSON call is answered 401. A signed-in student asking for a
+    afterward; a form sent after a sign-in ended goes to the sign-in page too,
+    and from there to the person's home, since a sign-in cannot send the form
+    again; a JSON call is answered 401. A signed-in student asking for a
     parent's page is told the page is not hers, 403, and offered her own.
     What a signed-in person is shown is marked not to be stored, so a shared
     browser or anything on the way keeps no copy to show after a sign-out.
@@ -177,8 +192,11 @@ class HouseholdGate(BaseHTTPMiddleware):
             return await call_next(request)
         if role is None:
             if wants_a_page(request):
-                # The whole address asked for, query included, so the sign-in
-                # brings the browser back to the page it wanted.
+                # A page asked for is brought back afterward, the whole address,
+                # query included. A form cannot be sent again by a sign-in, so
+                # it leads to the sign-in page alone.
+                if request.method != "GET":
+                    return RedirectResponse("/sign-in", status_code=303)
                 wanted = path if not request.url.query else f"{path}?{request.url.query}"
                 return RedirectResponse(f"/sign-in?next={quote(wanted, safe='')}", status_code=303)
             return JSONResponse({"detail": "Sign in first."}, status_code=401)
