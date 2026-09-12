@@ -43,10 +43,12 @@ SESSION_SECONDS: Final = 30 * 24 * 60 * 60
 SECRET_NAME: Final = "household.secret"  # noqa: S105  (a file name, not a secret)
 SECRET_LENGTH: Final = 64
 """The secret on disk is 32 random bytes written as lowercase hex, and nothing else counts."""
-HEX_DIGITS: Final = frozenset("0123456789abcdef")
+HEX_BYTES: Final = frozenset(b"0123456789abcdef")
 OWNER_ONLY: Final = 0o600
 """The secret file's permission: its owner reads and writes it, no other account can."""
-OPEN_PREFIXES: Final = ("/sign-in", "/sign-out", "/static/")
+STATIC_PREFIX: Final = "/static/"
+"""The stylesheet and the mark: the one thing a browser may keep a copy of."""
+OPEN_PREFIXES: Final = ("/sign-in", "/sign-out", STATIC_PREFIX)
 """What anyone may reach: the way in, the way out, and the stylesheet the way in needs."""
 
 templates = page_templates()
@@ -63,21 +65,22 @@ def secret_beside(state_path: Path) -> bytes:
     in a synced folder. A new secret would sign everyone out, so it is made
     only when none exists, and it is put in place in one move, so a start cut
     short leaves no file rather than a short one. What is read back must be
-    the whole secret and nothing more, read as written; a short or empty key
-    is one a stranger could guess, and a changed file is a changed file, so
-    anything else stops the start and names the file.
+    the whole secret and nothing more, read byte for byte as written; a short
+    or empty key is one a stranger could guess, and a changed file is a
+    changed file, whatever it holds, so anything else stops the start and
+    names the file.
     """
     path = refuse_unsafe_path(state_path).with_name(SECRET_NAME)
     if not path.exists():
         make_secret(path)
-    written = path.read_text(encoding="utf-8")
-    if len(written) != SECRET_LENGTH or not HEX_DIGITS.issuperset(written):
+    written = path.read_bytes()
+    if len(written) != SECRET_LENGTH or not HEX_BYTES.issuperset(written):
         msg = (
             f"{path} does not hold a whole household secret; delete the file and start "
             "again, and everyone signs in once more"
         )
         raise UnreadableHouseholdSecret(msg)
-    return written.encode("ascii")
+    return written
 
 
 def make_secret(path: Path) -> None:
@@ -92,8 +95,8 @@ def make_secret(path: Path) -> None:
     partial = path.with_name(f"{SECRET_NAME}.part")
     partial.unlink(missing_ok=True)
     descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, OWNER_ONLY)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(secrets.token_hex(SECRET_LENGTH // 2))
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(secrets.token_hex(SECRET_LENGTH // 2).encode("ascii"))
         handle.flush()
         os.fsync(handle.fileno())
     partial.replace(path)
@@ -171,7 +174,8 @@ class HouseholdGate(BaseHTTPMiddleware):
     and from there to the person's home, since a sign-in cannot send the form
     again; a JSON call is answered 401. A signed-in student asking for a
     parent's page is told the page is not hers, 403, and offered her own.
-    What a signed-in person is shown is marked not to be stored, so a shared
+    Every answer but a static file is marked not to be stored: pages, calls,
+    the sign-in and its redirects, and the gate's own refusals, so a shared
     browser or anything on the way keeps no copy to show after a sign-out.
     """
 
@@ -184,6 +188,16 @@ class HouseholdGate(BaseHTTPMiddleware):
     ) -> Response:
         if not self.settings.household_sign_in:
             return await call_next(request)
+        if request.url.path.startswith(STATIC_PREFIX):
+            return await call_next(request)
+        response = await self.answer(request, call_next)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    async def answer(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """The answer before it is marked: the page or call asked for, or the gate's own."""
         path = request.url.path
         secret: bytes = request.app.state.household_secret
         role = read_token(request.cookies.get(COOKIE), secret, datetime.now(UTC))
@@ -206,6 +220,4 @@ class HouseholdGate(BaseHTTPMiddleware):
                     request, "not_for_you.html", {"home": home_of(role)}, status_code=403
                 )
             return JSONResponse({"detail": "This page is for a parent."}, status_code=403)
-        response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
-        return response
+        return await call_next(request)
