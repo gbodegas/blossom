@@ -19,6 +19,7 @@ for the tests, the sample, and a machine only the family touches.
 """
 
 import hmac
+import os
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -40,10 +41,17 @@ COOKIE: Final = "blossom_household"
 SESSION_SECONDS: Final = 30 * 24 * 60 * 60
 """A sign-in lasts a month, then asks again."""
 SECRET_NAME: Final = "household.secret"  # noqa: S105  (a file name, not a secret)
+SECRET_LENGTH: Final = 64
+"""The secret on disk is 32 random bytes written as lowercase hex, and nothing else counts."""
+HEX_DIGITS: Final = frozenset("0123456789abcdef")
 OPEN_PREFIXES: Final = ("/sign-in", "/sign-out", "/static/")
 """What anyone may reach: the way in, the way out, and the stylesheet the way in needs."""
 
 templates = page_templates()
+
+
+class UnreadableHouseholdSecret(ValueError):
+    """The secret file is there but does not hold the whole secret written to it."""
 
 
 def secret_beside(state_path: Path) -> bytes:
@@ -51,13 +59,33 @@ def secret_beside(state_path: Path) -> bytes:
 
     The file goes under the same guard as the database: not on a share, not
     in a synced folder. A new secret would sign everyone out, so it is made
-    only when none exists.
+    only when none exists, and it is put in place in one move, so a start cut
+    short leaves no file rather than a short one. What is read back must be
+    the whole secret; a short or empty key is one a stranger could guess, so
+    anything else stops the start and names the file.
     """
     path = refuse_unsafe_path(state_path).with_name(SECRET_NAME)
     if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(secrets.token_hex(32), encoding="utf-8")
-    return path.read_text(encoding="utf-8").strip().encode("ascii")
+        make_secret(path)
+    written = path.read_text(encoding="utf-8").strip()
+    if len(written) != SECRET_LENGTH or not HEX_DIGITS.issuperset(written):
+        msg = (
+            f"{path} does not hold a whole household secret; delete the file and start "
+            "again, and everyone signs in once more"
+        )
+        raise UnreadableHouseholdSecret(msg)
+    return written.encode("ascii")
+
+
+def make_secret(path: Path) -> None:
+    """Write a fresh secret beside ``path``, flush it to disk, and move it into place."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f"{SECRET_NAME}.part")
+    with partial.open("w", encoding="utf-8") as handle:
+        handle.write(secrets.token_hex(SECRET_LENGTH // 2))
+        handle.flush()
+        os.fsync(handle.fileno())
+    partial.replace(path)
 
 
 def role_for(passphrase: str, settings: Settings) -> Principal | None:
@@ -85,7 +113,9 @@ def issue(role: Principal, secret: bytes, now: datetime) -> str:
 
 def read_token(token: str | None, secret: bytes, now: datetime) -> Principal | None:
     """Who a token names, or ``None`` for one that is missing, altered, aged out, or odd."""
-    if not token:
+    # A cookie can carry any characters; the hash and the comparison take
+    # ASCII only, so anything else is refused here rather than raised there.
+    if not token or not token.isascii():
         return None
     parts = token.split(":")
     if len(parts) != 3:

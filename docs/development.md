@@ -168,6 +168,8 @@ opens the family review is told it is a parent's page. A sign-in is a cookie
 signed with a secret Blossom makes once and keeps beside the database, in
 `household.secret` under the same guard as the database, so a restart keeps
 everyone signed in; a device stays signed in for a month or until "Sign out".
+If that file is ever short or altered, the start stops and names it: delete
+it, start again, and everyone signs in once more.
 
 Start the app so the other devices can reach it, on the computer that stays
 on:

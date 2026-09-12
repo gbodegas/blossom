@@ -15,7 +15,14 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.household import COOKIE, SECRET_NAME, SESSION_SECONDS, issue, read_token
+from blossom.household import (
+    COOKIE,
+    SECRET_NAME,
+    SESSION_SECONDS,
+    UnreadableHouseholdSecret,
+    issue,
+    read_token,
+)
 from blossom.principals import Principal
 from blossom.settings import PARENT_PASSPHRASE_VARIABLE, STUDENT_PASSPHRASE_VARIABLE, Settings
 from tests.support import fixture_settings
@@ -142,6 +149,10 @@ def test_a_cookie_made_elsewhere_or_aged_out_is_refused(tmp_path: pathlib.Path) 
     assert read_token(issue(Principal.STUDENT, secret, now), secret, now) is Principal.STUDENT
     assert read_token("STUDENT:notanumber:abc", secret, now) is None
     assert read_token("VERIFIER:1:abc", secret, now) is None
+    whole = issue(Principal.PARENT, secret, now)
+    assert read_token("PARENT:\u0661\u0662\u0663:abc", secret, now) is None
+    assert read_token("P\u00c4RENT:1:abc", secret, now) is None
+    assert read_token(whole[:-1] + "\u00e9", secret, now) is None
 
 
 def test_a_restart_keeps_everyone_signed_in(tmp_path: pathlib.Path) -> None:
@@ -155,6 +166,25 @@ def test_a_restart_keeps_everyone_signed_in(tmp_path: pathlib.Path) -> None:
 
     assert after.status_code == 200
     assert (tmp_path / SECRET_NAME).is_file()
+
+
+def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.Path) -> None:
+    """A secret short of the one written is one a stranger could guess, so it is refused."""
+    settings = household(tmp_path)
+    with TestClient(create_app(settings)):
+        pass
+    written = (tmp_path / SECRET_NAME).read_text(encoding="utf-8")
+
+    assert len(written) == 64
+    assert set(written) <= set("0123456789abcdef")
+    assert not list(tmp_path.glob("*.part"))
+    for spoiled in ("", written[:40], written.upper()):
+        (tmp_path / SECRET_NAME).write_text(spoiled, encoding="utf-8")
+        with (
+            pytest.raises(UnreadableHouseholdSecret, match=SECRET_NAME),
+            TestClient(create_app(settings)),
+        ):
+            pass
 
 
 @pytest.mark.parametrize(
