@@ -22,16 +22,21 @@ WRONG = "That passphrase is not one of ours. Try again."
 def safe_next(value: str | None) -> str | None:
     """A place on this site to return to, or ``None`` for anything else.
 
-    A browser follows a redirect by its own reading of the address, so the
-    check is a parser's, not a prefix's: no scheme, no host, a path that
-    starts with one slash, and none of the characters a browser might turn
-    into a slash or a line break on the way.
+    A browser follows a redirect by its own reading of the address, so no
+    one rule is enough. The raw value must start with exactly one slash,
+    since a browser reads two or more as a host. A parser must then find no
+    scheme and no host, and a value it cannot read at all is refused rather
+    than raised. And none of the characters a browser might turn into a
+    slash or a line break on the way may appear.
     """
-    if not value or "\\" in value:
+    if not value or not value.startswith("/") or value.startswith("//") or "\\" in value:
         return None
     if any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value):
         return None
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
     if parts.scheme or parts.netloc or not parts.path.startswith("/"):
         return None
     return value

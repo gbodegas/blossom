@@ -192,6 +192,10 @@ def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.P
     [
         "https://example.org/",
         "//example.org/",
+        "///example.org/",
+        "////example.org/path",
+        "//[",
+        "//\uff0fexample.org/",
         "/\\example.org/",
         "/student/due-this-week\r\nSet-Cookie: x=y",
         "javascript:alert(1)",
@@ -200,11 +204,31 @@ def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.P
 )
 def test_the_next_path_must_be_on_this_site(tmp_path: pathlib.Path, elsewhere: str) -> None:
     """A return address is read the way a browser reads it: anything that could leave
-    the site, or break the response, is dropped for her own page."""
+    the site, break the response, or trip the parser is dropped for her own page."""
     with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
         came_in = client.post("/sign-in", data={"passphrase": HERS, "next": elsewhere})
 
     assert came_in.headers["location"] == "/student/due-this-week"
+
+
+@pytest.mark.parametrize("unreadable", ["//[", "//\uff0fexample.org/"])
+def test_a_return_address_the_parser_cannot_read_leaves_the_sign_in_whole(
+    tmp_path: pathlib.Path, unreadable: str
+) -> None:
+    """The sign-in page, the wrong-passphrase answer, and the way in all stand: a return
+    address that trips the parser is dropped, not raised, and never echoed into the form."""
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+        asked = client.get("/sign-in", params={"next": unreadable}, headers=PAGE)
+        wrong = client.post("/sign-in", data={"passphrase": "open sesame", "next": unreadable})
+        came_in = client.post("/sign-in", data={"passphrase": THEIRS, "next": unreadable})
+
+    assert asked.status_code == 200
+    assert 'name="next"' not in asked.text
+    assert wrong.status_code == 422
+    assert "That passphrase is not one of ours." in wrong.text
+    assert 'name="next"' not in wrong.text
+    assert came_in.status_code == 303
+    assert came_in.headers["location"] == "/parent"
 
 
 def test_the_sign_in_brings_the_browser_back_to_the_whole_address(
