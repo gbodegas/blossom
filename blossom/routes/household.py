@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from blossom.dependencies import ApplicationState, get_application_state
-from blossom.household import COOKIE, SESSION_SECONDS, home_of, issue, role_for
+from blossom.household import COOKIE, SESSION_SECONDS, device_of, home_of, issue, role_for
 from blossom.principals import Principal
 from blossom.templating import page_templates
 
@@ -17,6 +17,7 @@ templates = page_templates()
 State = Annotated[ApplicationState, Depends(get_application_state)]
 
 WRONG = "That passphrase is not one of ours. Try again."
+WAIT = "Too many tries from this device. Wait a minute, then try again."
 
 
 def safe_next(value: str | None) -> str | None:
@@ -43,7 +44,12 @@ def safe_next(value: str | None) -> str | None:
 
 
 def sign_in_page(
-    request: Request, *, next_path: str | None, problem: str | None = None, status_code: int = 200
+    request: Request,
+    *,
+    next_path: str | None,
+    problem: str | None = None,
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
 ) -> HTMLResponse:
     """The page that asks who is there, with where to go afterward and what went wrong."""
     return templates.TemplateResponse(
@@ -51,6 +57,7 @@ def sign_in_page(
         "sign_in.html",
         {"next": next_path, "problem": problem, "sign_in": True},
         status_code=status_code,
+        headers=headers,
     )
 
 
@@ -69,16 +76,34 @@ def take_passphrase(
     passphrase: Annotated[str, Form()] = "",
     next: Annotated[str | None, Form()] = None,
 ) -> Response:
-    """Match the passphrase to a person and remember them for a month."""
+    """Match the passphrase to a person and remember them for a month.
+
+    Wrong passphrases from one device are counted; past the limit the device
+    is told to wait, with the seconds in the answer, and a right passphrase
+    is not read until the wait is over.
+    """
+    now = datetime.now(UTC)
+    device = device_of(request)
+    wait = state.attempts.wait_for(device, now)
+    if wait:
+        return sign_in_page(
+            request,
+            next_path=safe_next(next),
+            problem=WAIT,
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": str(wait)},
+        )
     role = role_for(passphrase, state.settings)
     if role is None:
+        state.attempts.failed(device, now)
         return sign_in_page(
             request,
             next_path=safe_next(next),
             problem=WRONG,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    token = issue(role, request.app.state.household_secret, datetime.now(UTC))
+    state.attempts.cleared(device)
+    token = issue(role, request.app.state.household_keys[role], now)
     destination = safe_next(next) or home_of(role)
     response = RedirectResponse(destination, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(

@@ -3,8 +3,10 @@
 With both passphrases set, every page and route asks who is there. Hers opens
 her week; a parent's opens both pages. The sign-in is a signed cookie with a
 secret kept beside the database, so a restart keeps everyone signed in and a
-cookie made elsewhere is refused. With neither set, nothing asks, which every
-other test relies on.
+cookie made elsewhere is refused. Each person's cookies are signed with a key
+drawn from the secret and their passphrase, so a changed passphrase signs that
+person out; wrong passphrases are counted per device. With neither set,
+nothing asks, which every other test relies on.
 """
 
 import pathlib
@@ -16,9 +18,13 @@ from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.household import (
+    ATTEMPT_LIMIT,
     COOKIE,
+    COOLDOWN_SECONDS,
     SECRET_NAME,
     SESSION_SECONDS,
+    SKEW_SECONDS,
+    SignInAttempts,
     UnreadableHouseholdSecret,
     issue,
     read_token,
@@ -33,14 +39,17 @@ PAGE = {"Accept": "text/html"}
 
 
 def household(tmp_path: pathlib.Path, **environ: str) -> Settings:
+    """Settings with both passphrases set and state under ``tmp_path``; ``environ`` wins."""
     return fixture_settings(
-        BLOSSOM_TODAY="2026-08-19",
-        BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
-        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
-        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
-        BLOSSOM_STUDENT_PASSPHRASE=HERS,
-        BLOSSOM_PARENT_PASSPHRASE=THEIRS,
-        **environ,
+        **{
+            "BLOSSOM_TODAY": "2026-08-19",
+            "BLOSSOM_DATABASE_PATH": str(tmp_path / "blossom.sqlite3"),
+            "BLOSSOM_CHECKPOINT_PATH": str(tmp_path / "checkpoints.sqlite3"),
+            "BLOSSOM_TRACE_PATH": str(tmp_path / "traces.sqlite3"),
+            "BLOSSOM_STUDENT_PASSPHRASE": HERS,
+            "BLOSSOM_PARENT_PASSPHRASE": THEIRS,
+            **environ,
+        }
     )
 
 
@@ -132,27 +141,118 @@ def test_signing_out_forgets_this_device(tmp_path: pathlib.Path) -> None:
     assert after.status_code == 303
 
 
-def test_a_cookie_made_elsewhere_or_aged_out_is_refused(tmp_path: pathlib.Path) -> None:
+def test_a_cookie_made_elsewhere_aged_out_or_dated_ahead_is_refused(
+    tmp_path: pathlib.Path,
+) -> None:
     now = datetime.now(UTC)
     app = create_app(household(tmp_path))
     with TestClient(app, follow_redirects=False) as client:
-        secret: bytes = app.state.household_secret
+        keys: dict[Principal, bytes] = app.state.household_keys
+        theirs = keys[Principal.PARENT]
         forged = issue(Principal.PARENT, b"someone else's secret", now)
-        old = issue(Principal.PARENT, secret, now - timedelta(seconds=SESSION_SECONDS + 1))
+        old = issue(Principal.PARENT, theirs, now - timedelta(seconds=SESSION_SECONDS + 1))
+        ahead = issue(Principal.PARENT, theirs, now + timedelta(seconds=SKEW_SECONDS + 1))
         client.cookies.set(COOKIE, forged)
         with_forged = client.get("/parent", headers=PAGE)
         client.cookies.set(COOKIE, old)
         with_old = client.get("/parent", headers=PAGE)
+        client.cookies.set(COOKIE, ahead)
+        with_ahead = client.get("/parent", headers=PAGE)
 
     assert with_forged.status_code == 303
     assert with_old.status_code == 303
-    assert read_token(issue(Principal.STUDENT, secret, now), secret, now) is Principal.STUDENT
-    assert read_token("STUDENT:notanumber:abc", secret, now) is None
-    assert read_token("VERIFIER:1:abc", secret, now) is None
-    whole = issue(Principal.PARENT, secret, now)
-    assert read_token("PARENT:\u0661\u0662\u0663:abc", secret, now) is None
-    assert read_token("P\u00c4RENT:1:abc", secret, now) is None
-    assert read_token(whole[:-1] + "\u00e9", secret, now) is None
+    assert with_ahead.status_code == 303
+    hers = keys[Principal.STUDENT]
+    assert read_token(issue(Principal.STUDENT, hers, now), keys, now) is Principal.STUDENT
+    at_the_edge = issue(Principal.STUDENT, hers, now - timedelta(seconds=SESSION_SECONDS))
+    assert read_token(at_the_edge, keys, now) is Principal.STUDENT
+    a_little_ahead = issue(Principal.STUDENT, hers, now + timedelta(seconds=SKEW_SECONDS))
+    assert read_token(a_little_ahead, keys, now) is Principal.STUDENT
+    assert read_token(issue(Principal.STUDENT, theirs, now), keys, now) is None
+    assert read_token("STUDENT:notanumber:abc", keys, now) is None
+    assert read_token("VERIFIER:1:abc", keys, now) is None
+    whole = issue(Principal.PARENT, theirs, now)
+    assert read_token("PARENT:\u0661\u0662\u0663:abc", keys, now) is None
+    assert read_token("P\u00c4RENT:1:abc", keys, now) is None
+    assert read_token(whole[:-1] + "\u00e9", keys, now) is None
+
+
+def test_changing_a_passphrase_signs_that_person_out_and_not_the_other(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A passphrase that may have been seen is changed in .env and the app restarted: that
+    person's devices are signed out, the other person's stay signed in, the old
+    passphrase is refused, and the new one works."""
+    renewed = "the porch light at nine"
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+        hers = client.post("/sign-in", data={"passphrase": HERS}).cookies[COOKIE]
+        theirs = client.post("/sign-in", data={"passphrase": THEIRS}).cookies[COOKIE]
+    after = household(tmp_path, BLOSSOM_PARENT_PASSPHRASE=renewed)
+    with TestClient(create_app(after), follow_redirects=False) as client:
+        client.cookies.set(COOKIE, theirs)
+        old_parent = client.get("/parent", headers=PAGE)
+        with_old_phrase = client.post("/sign-in", data={"passphrase": THEIRS})
+        client.cookies.set(COOKIE, hers)
+        still_hers = client.get("/student/due-this-week", headers=PAGE)
+        renewed_parent = client.post("/sign-in", data={"passphrase": renewed})
+
+    assert old_parent.status_code == 303
+    assert with_old_phrase.status_code == 422
+    assert still_hers.status_code == 200
+    assert renewed_parent.status_code == 303
+    assert renewed_parent.headers["location"] == "/parent"
+
+
+def test_ten_wrong_passphrases_from_a_device_are_answered_with_a_wait(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Past the limit the device is told to wait, in the page and in the answer's headers,
+    and a right passphrase is not read until then. The sign-in page itself still shows."""
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+        answers = [
+            client.post("/sign-in", data={"passphrase": "open sesame"}).status_code
+            for _ in range(ATTEMPT_LIMIT)
+        ]
+        refused = client.post("/sign-in", data={"passphrase": THEIRS})
+        page = client.get("/sign-in", headers=PAGE)
+
+    assert answers == [422] * ATTEMPT_LIMIT
+    assert refused.status_code == 429
+    assert refused.headers["retry-after"] == str(COOLDOWN_SECONDS)
+    assert "Too many tries from this device." in refused.text
+    assert COOKIE not in refused.cookies
+    assert page.status_code == 200
+
+
+def test_the_count_is_per_device_bounded_and_over_once_the_wait_is() -> None:
+    """The count is kept with a clock handed in, so the wait, its end, a slow trickle of
+    wrong tries, a right one, and the bound on devices remembered are all checked."""
+    attempts = SignInAttempts(limit=3, cooldown=60, capacity=2)
+    start = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
+
+    def at(seconds: float) -> datetime:
+        return start + timedelta(seconds=seconds)
+
+    for _ in range(3):
+        assert attempts.wait_for("tablet", at(0)) == 0
+        attempts.failed("tablet", at(0))
+    assert attempts.wait_for("tablet", at(0)) == 60
+    assert attempts.wait_for("tablet", at(59.5)) == 1
+    assert attempts.wait_for("laptop", at(1)) == 0
+    assert attempts.wait_for("tablet", at(60)) == 0
+    assert len(attempts) == 0
+    attempts.failed("tablet", at(61))
+    assert attempts.wait_for("tablet", at(61)) == 0
+    attempts.cleared("tablet")
+    assert len(attempts) == 0
+    for seconds in (100, 101, 200):
+        attempts.failed("phone", at(seconds))
+    assert attempts.wait_for("phone", at(200)) == 0
+    for device in ("a", "b", "c"):
+        attempts.failed(device, at(300))
+    assert len(attempts) == 2
+    assert attempts.wait_for("phone", at(300)) == 0
+    assert len(attempts) == 2
 
 
 def test_a_restart_keeps_everyone_signed_in(tmp_path: pathlib.Path) -> None:

@@ -73,7 +73,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "pydantic": "validation and view models; no I/O",
     "sqlite3": "standard library; local file and in-memory databases only",
     "sys": "standard library; which platform's lock to use",
-    "threading": "standard library; serializes access to the shared connection",
+    "threading": "standard library; serializes the shared connection and the sign-in count",
     "typing": "standard library",
     "uuid": "standard library",
     "zoneinfo": "standard library; resolves the household zone, backed by tzdata",

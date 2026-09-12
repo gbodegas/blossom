@@ -18,10 +18,12 @@ At the edge, `blossom/household.py` is a gate on the route trees: with two
 passphrases set, hers and a parent's, a request answers only someone who has
 signed in and may open that tree. Her passphrase opens the student tree; a
 parent's opens all three. A sign-in is a cookie signed with a keyed hash from
-the standard library and a secret kept beside the database, so nothing here
-needs a library or a service, and a cookie made elsewhere is refused. With
-neither passphrase set the gate stands open, which the tests and the sample
-rely on.
+the standard library under a key per person, drawn from a secret kept beside
+the database and that person's passphrase, so nothing here needs a library
+or a service, a cookie made elsewhere is refused, and a changed passphrase
+signs that person out. Wrong passphrases are counted per device and answered
+with a wait past ten. With neither passphrase set the gate stands open, which
+the tests and the sample rely on.
 
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and
