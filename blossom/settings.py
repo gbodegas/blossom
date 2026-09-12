@@ -49,6 +49,8 @@ SAMPLE_VARIABLE = "BLOSSOM_SAMPLE"
 # The names of the variables, not their values, so the lint rule does not apply.
 STUDENT_PASSPHRASE_VARIABLE = "BLOSSOM_STUDENT_PASSPHRASE"  # noqa: S105
 PARENT_PASSPHRASE_VARIABLE = "BLOSSOM_PARENT_PASSPHRASE"  # noqa: S105
+PASSPHRASE_MINIMUM = 12
+"""The fewest characters a passphrase may have: every device on the home network can try one."""
 ANTHROPIC_API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
 
 YES_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -169,7 +171,8 @@ class Settings:
     Excluded from ``repr`` so it never reaches a log line."""
     parent_passphrase: str | None = field(default=None, repr=False)
     """From ``BLOSSOM_PARENT_PASSPHRASE``. Set both or neither: one alone would
-    leave one of the two people unable to sign in, so the app refuses to start."""
+    leave one of the two people unable to sign in, so the app refuses to start.
+    Each must have at least ``PASSPHRASE_MINIMUM`` characters, refused by name."""
 
     @property
     def household_sign_in(self) -> bool:
@@ -194,6 +197,16 @@ class Settings:
                 "or the sign-in cannot tell who is there"
             )
             raise ValueError(msg)
+        for name, passphrase in (
+            (STUDENT_PASSPHRASE_VARIABLE, self.student_passphrase),
+            (PARENT_PASSPHRASE_VARIABLE, self.parent_passphrase),
+        ):
+            if passphrase is not None and len(passphrase) < PASSPHRASE_MINIMUM:
+                msg = (
+                    f"{name} must be at least {PASSPHRASE_MINIMUM} characters: "
+                    "a few plain words is the shape"
+                )
+                raise ValueError(msg)
         if self.today is not None and not (
             date.min + CALENDAR_MARGIN <= self.today <= date.max - CALENDAR_MARGIN
         ):

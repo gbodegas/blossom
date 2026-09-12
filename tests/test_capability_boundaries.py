@@ -64,7 +64,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "logging": "standard library; reports failures to the process log only, never to a page",
     "msvcrt": "standard library; the Windows lock behind one process per household",
     "operator": "standard library; the reducer on a graph state key",
-    "os": "standard library; reads environment variables; flushes the sign-in secret to disk",
+    "os": "standard library; the environment, and the sign-in secret written owner-only",
     "re": "standard library; reads the composer's own line shapes back for the page",
     "secrets": "standard library; makes the sign-in secret, compares passphrases in constant time",
     "starlette": "the toolkit under FastAPI; the middleware base the household gate extends",

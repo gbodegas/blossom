@@ -154,7 +154,8 @@ parent's for review, and a review sends nothing anywhere.
 
 Her computer, her tablet, and a parent's computer all open Blossom over the
 home network, so the pages ask who is there. Set two passphrases in `.env`,
-one hers and one a parent's, and they must differ:
+one hers and one a parent's; they must differ and be at least twelve
+characters each, a few plain words:
 
 ```
 BLOSSOM_STUDENT_PASSPHRASE=a phrase only she knows
