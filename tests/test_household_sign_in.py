@@ -338,6 +338,30 @@ def test_room_is_made_from_run_out_counts_first_and_from_waits_last() -> None:
     assert len(attempts) == 1
 
 
+def test_the_oldest_count_is_the_one_that_began_first_not_the_one_touched_last() -> None:
+    """A device that began counting first but tried again last is still the oldest count,
+    so it is the one to go when room is needed; the one that began second stays."""
+    clock = Ticking()
+    attempts = SignInAttempts(limit=3, cooldown=60, capacity=2, clock=clock.read)
+
+    def wrong() -> Principal | None:
+        return None
+
+    attempts.try_once("first", wrong)
+    clock.reading += 1
+    attempts.try_once("second", wrong)
+    clock.reading += 1
+    attempts.try_once("first", wrong)
+    clock.reading += 1
+    attempts.try_once("newcomer", wrong)
+    assert len(attempts) == 2
+    for _ in range(2):
+        attempts.try_once("second", wrong)
+    assert attempts.wait_for("second") == 60
+    attempts.try_once("first", wrong)
+    assert attempts.wait_for("first") == 0
+
+
 @pytest.mark.parametrize(("known", "home"), [(HERS, "/student/due-this-week"), (THEIRS, "/parent")])
 def test_a_right_passphrase_between_wrong_ones_leaves_the_count_standing(
     tmp_path: pathlib.Path, known: str, home: str

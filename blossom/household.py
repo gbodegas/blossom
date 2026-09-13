@@ -291,16 +291,19 @@ class SignInAttempts:
         self._counts[device] = (count, since)
 
     def _make_room(self, now: float) -> None:
-        """Counts that have run out go first, then the oldest below the limit, then a wait."""
+        """Counts that have run out go first, then the oldest below the limit, then a wait.
+
+        Oldest is by the stored start, since a wrong try moves its device to
+        the end of the table's order: a count that began first but tried
+        again last is still the oldest count.
+        """
         for device in [d for d, (_, since) in self._counts.items() if since + self.cooldown <= now]:
             del self._counts[device]
         if len(self._counts) < self.capacity:
             return
-        for device, (count, _) in self._counts.items():
-            if count < self.limit:
-                del self._counts[device]
-                return
-        del self._counts[next(iter(self._counts))]
+        below = [device for device, (count, _) in self._counts.items() if count < self.limit]
+        oldest = min(below or self._counts, key=lambda device: self._counts[device][1])
+        del self._counts[oldest]
 
 
 def device_of(request: Request) -> str:
