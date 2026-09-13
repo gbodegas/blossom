@@ -143,6 +143,38 @@ def test_a_set_that_cannot_be_read_leaves_no_file_behind(tmp_path: pathlib.Path)
     assert seeded
 
 
+def test_a_set_claiming_a_date_for_an_assignment_it_does_not_list_is_refused_by_name(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Every claim in a set is read and checked; one about an assignment the set does not
+    list is a mistyped id, refused by name, and the start leaves no file behind."""
+    mistyped = tmp_path / "mistyped"
+    mistyped.mkdir()
+    shutil.copy(FIXTURES / "assignments.json", mistyped / "assignments.json")
+    claims = [
+        {
+            "assignment_id": "assignment-canal-essay",
+            "channel": "LMS",
+            "asserted_value": "2026-08-21",
+            "observed_at": "2026-08-19T09:00:00-04:00",
+            "confidence": 0.82,
+        },
+        {
+            "assignment_id": "assignment-canal-esay",
+            "channel": "PARENT_ENTRY",
+            "asserted_value": "2026-08-22",
+            "observed_at": "2026-08-19T10:00:00-04:00",
+            "confidence": 0.7,
+        },
+    ]
+    (mistyped / "deadline_sources.json").write_text(json.dumps(claims), encoding="utf-8")
+    settings = settings_in(tmp_path, BLOSSOM_FIXTURE_PATH=str(mistyped))
+
+    with pytest.raises(ValueError, match="assignment-canal-esay"):
+        build_application_state(settings, InMemorySaver())
+    assert not (tmp_path / "blossom.sqlite3").exists()
+
+
 def test_a_household_with_no_fixture_starts_with_nothing_on_record(
     tmp_path: pathlib.Path,
 ) -> None:

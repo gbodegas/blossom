@@ -314,8 +314,9 @@ time zone has no default. Start with `--env-file .env.example`, or set
 `BLOSSOM_TIMEZONE` to an IANA key such as `America/New_York` in `.env` or in
 the shell.
 
-**The weekly page is empty.** With no fixture named, the record starts empty,
-which is the household's shape; assignments come in through the family page.
+**The weekly page is empty.** With no fixture named, the record starts empty
+and stays so until something puts an assignment on it, and nothing in the app
+does that yet, so an empty page with no fixture is the expected shape.
 To see the synthetic set, load the sample week's launch file, or name the set
 and pin the clock to its week, `BLOSSOM_FIXTURE_PATH=data/synthetic` and
 `BLOSSOM_TODAY=2026-08-19`, into a state folder of its own, since a fixture is
