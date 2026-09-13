@@ -198,13 +198,16 @@ class ProjectStateStore:
     def _upgrade(self) -> None:
         """Bring a file from before up to this schema, by adding, and keep what it holds.
 
-        Columns a file lacks are added; nothing is dropped, folded, or
+        Columns a file lacks are added; no row is dropped, folded, or
         rewritten. Every claim a file holds is kept, two observations of the
         same value at different times included: they are the history of what
         each channel said and when. Pasting the same page twice adds nothing
         twice, but that is the import's doing, which compares before it
-        writes, and not this table's.
+        writes, and not this table's. The one thing taken away is an index a
+        version between made, which held a claim once and so refused that
+        history; a file that carries it loses the index and keeps its rows.
         """
+        self._connection.execute("DROP INDEX IF EXISTS date_claims_once")
         columns = {
             str(row[1]) for row in self._connection.execute("PRAGMA table_info(assignments)")
         }

@@ -42,17 +42,20 @@ two claims from the same channel, told apart by where each was read. The
 record is matched the same way, by the pair, so an assignment already on
 record under any id takes the claims rather than a twin. Work that comes
 round again under the same name, a weekly practice, is the one case the
-pair cannot settle: when the pasted due date is a week or more past the
-recorded one, the parent is asked whether it is the same assignment moved
-or new work, and the answer is kept. A new row's id is the title made
-readable plus a hash of the pair, so two titles that read alike never
-become one. Titles are kept as the portal writes them, punctuation and all;
+pair cannot settle: when a text names an assignment again a week or more
+from its first date, in the text itself or against the record, the parent
+is asked whether it is the same assignment with its due date changed or
+new work, and the answer is kept: an update moves the saved date, and new
+work gets a row of its own that the next paste finds by its date. A new
+row's id is the title made readable plus a hash of the pair, so two titles
+that read alike never become one. Titles are kept as the portal writes them, punctuation and all;
 a course is kept as written too, grade prefix included, since that is how
 the portal names it everywhere. Forms to sign, books to cover, and supplies
 to bring are tasks, not homework, and a parent can say otherwise. The
 heading's first name is read as nothing and never kept.
 """
 
+import dataclasses
 import re
 import uuid
 from collections.abc import Mapping
@@ -200,6 +203,9 @@ class Reading:
     """What the school reports about the assignment's status, with the day."""
     at_line: int | None = None
     """The first line of the pasted text this reading was read from, counted from one."""
+    occurrence: str | None = None
+    """The due date this round of a repeated name was read with, when the same text names
+    the assignment again a week or more from its first date; ``None`` for the first."""
 
     @property
     def pair(self) -> tuple[str, str]:
@@ -209,7 +215,7 @@ class Reading:
     @property
     def assignment_id(self) -> str:
         """The id a new row would have; a row already on record keeps its own."""
-        return identity(self.course, self.title)
+        return identity(self.course, self.title, self.occurrence)
 
     @property
     def reported_status(self) -> str | None:
@@ -339,6 +345,17 @@ class _Draft:
     reports: list[StatusReport] = field(default_factory=list)
     notes: list[list[str]] = field(default_factory=list)
     """The instruction under each card the item was seen on, one block per card."""
+    occurrence: str | None = None
+
+    def add(self, record: SourceRecord) -> None:
+        """Keep a claim once per text: the same channel, value, and place is one claim."""
+        if all(_same_claim(record, kept) is False for kept in self.claims):
+            self.claims.append(record)
+
+    def report(self, report: StatusReport) -> None:
+        """Keep a report once per text: the same channel, status, and day is one report."""
+        if all(_same_report(report, kept) is False for kept in self.reports):
+            self.reports.append(report)
 
     def reading(self) -> Reading:
         blocks: list[str] = []
@@ -357,7 +374,24 @@ class _Draft:
             note="\n".join(blocks) or None,
             reports=tuple(self.reports),
             at_line=self.at_line,
+            occurrence=self.occurrence,
         )
+
+
+def _same_claim(one: SourceRecord, other: SourceRecord) -> bool:
+    return (one.channel, one.asserted_value, one.seen_in) == (
+        other.channel,
+        other.asserted_value,
+        other.seen_in,
+    )
+
+
+def _same_report(one: StatusReport, other: StatusReport) -> bool:
+    return (one.channel, one.status, one.reported_on) == (
+        other.channel,
+        other.status,
+        other.reported_on,
+    )
 
 
 def read_text(text: str, *, now: datetime, today: date) -> Read:
@@ -370,14 +404,18 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     both of an item's days is kept once. A line shaped like a day or a card
     that does not read as one is text that needs review, and it ends the
     card before it, so nothing after it is taken for that card's words. Any
-    other plain line outside a card needs review too.
+    other plain line outside a card needs review too. A card that names an
+    assignment again a week or more from the date it was first read with is
+    another round of the same name and is read apart, so the parent can say
+    what it is; a card repeated within a week is the same assignment, and a
+    card repeated word for word is read once.
     """
     lines = [_unbroken(line) for line in text.splitlines()]
     following = _next_lines(lines)
     reported_on, dated_by = email_date(text), EMAIL_DATE_LINE
     if reported_on is None:
         reported_on, dated_by = today, PASTE_DAY
-    drafts: dict[tuple[str, str], _Draft] = {}
+    drafts: dict[tuple[str, str], list[_Draft]] = {}
     unread: list[Unread] = []
     day: date | None = None
     course: str | None = None
@@ -412,8 +450,9 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 email.group("title").strip(),
                 SourceChannel.EMAIL,
                 number,
+                None,
             )
-            draft.reports.append(
+            draft.report(
                 StatusReport(
                     status=MISSING,
                     channel=SourceChannel.EMAIL,
@@ -434,9 +473,14 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 last = None
                 continue
             draft = _draft_for(
-                drafts, card_course, assigned.group("title").strip(), SourceChannel.LMS, number
+                drafts,
+                card_course,
+                assigned.group("title").strip(),
+                SourceChannel.LMS,
+                number,
+                when,
             )
-            draft.claims.append(claim(SourceChannel.LMS, when, OWN_LINE, now, PORTAL_CONFIDENCE))
+            draft.add(claim(SourceChannel.LMS, when, OWN_LINE, now, PORTAL_CONFIDENCE))
             if draft.due_date is None:
                 draft.due_date = when
             if draft.assigned_on is None:
@@ -450,8 +494,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 unread.append(Unread(number, line))
                 last = None
                 continue
-            draft = _draft_for(drafts, card_course, title, SourceChannel.LMS, number)
-            draft.claims.append(claim(SourceChannel.LMS, day, DAY_HEADER, now, PORTAL_CONFIDENCE))
+            draft = _draft_for(drafts, card_course, title, SourceChannel.LMS, number, day)
+            draft.add(claim(SourceChannel.LMS, day, DAY_HEADER, now, PORTAL_CONFIDENCE))
             if draft.due_date is None:
                 draft.due_date = day
             draft.notes.append([])
@@ -471,7 +515,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             last.notes[-1].append(line)
             continue
         unread.append(Unread(number, line))
-    return Read(items=tuple(draft.reading() for draft in drafts.values()), unread=tuple(unread))
+    items = tuple(draft.reading() for rounds in drafts.values() for draft in rounds)
+    return Read(items=items, unread=tuple(unread))
 
 
 def _unbroken(line: str) -> str:
@@ -494,16 +539,33 @@ def _next_lines(lines: list[str]) -> list[str | None]:
 
 
 def _draft_for(
-    drafts: dict[tuple[str, str], _Draft],
+    drafts: dict[tuple[str, str], list[_Draft]],
     course: str,
     title: str,
     origin: SourceChannel,
     number: int,
+    when: date | None,
 ) -> _Draft:
+    """The draft a card adds to: the round of its name whose date is within a week of the
+    card's, else a new round; a card with no date of its own joins the first round."""
     key = pair(course, title)
-    if key not in drafts:
-        drafts[key] = _Draft(course=key[0], title=key[1], origin=origin, at_line=number)
-    return drafts[key]
+    rounds = drafts.setdefault(key, [])
+    for draft in rounds:
+        if (
+            when is None
+            or draft.due_date is None
+            or abs(draft.due_date - when) < ANOTHER_OCCURRENCE
+        ):
+            return draft
+    draft = _Draft(
+        course=key[0],
+        title=key[1],
+        origin=origin,
+        at_line=number,
+        occurrence=None if not rounds or when is None else when.isoformat(),
+    )
+    rounds.append(draft)
+    return draft
 
 
 def _is_course_line(line: str, following: str | None) -> bool:
@@ -574,6 +636,9 @@ class Change:
     new_reports: tuple[StatusReport, ...]
     fills_due_date: bool
     """Whether the record has no due date and the reading gives one, which becomes it."""
+    moves_due_date: bool
+    """Whether the parent said the saved assignment moved, so the pasted date becomes its
+    due date."""
     fills_assigned_on: bool
     note_change: str | None
     """``fill`` when the record has no note and the reading has one; ``update`` when the
@@ -583,9 +648,12 @@ class Change:
     """The kind the row will have: the reader's suggestion, or the parent's choice."""
     kind_by_parent: bool
     ambiguous: bool
-    """Whether the pasted work may be a new round under a saved name, unanswered."""
+    """Whether the pasted work may be another round under a name, unanswered."""
     occurrence: str | None
     """The parent's answer, ``update`` or ``new``, when one was given."""
+    beside: date | None = None
+    """The other date the question is about: the saved row's, or another card's in the
+    same text."""
 
     @property
     def assignment_id(self) -> str:
@@ -609,7 +677,7 @@ class Change:
     def additions(self) -> tuple[str, ...]:
         """What a reading adds to a row already on record, in the review page's words."""
         parts = []
-        if self.fills_due_date:
+        if self.fills_due_date or self.moves_due_date:
             parts.append("the due date")
         elif self.new_claims:
             parts.append("a date to review")
@@ -667,9 +735,15 @@ class Change:
     def effect(self) -> str:
         """Exactly what saving does for this reading, in one or two sentences."""
         if self.state == REVIEW:
+            where = (
+                "The saved assignment is due"
+                if self.on_record is not None
+                else "This text also has it due"
+            )
+            when = "" if self.beside is None else f" {spoken_day(self.beside)}"
             return (
-                "The saved assignment has an earlier due date. Say whether this is the same "
-                "assignment with a later date, or new work under the same name."
+                f"{where}{when}. Say whether this is the same assignment with its due date "
+                "changed, or new work under the same name."
             )
         if self.state == NEW:
             return "Saved as a new assignment."
@@ -680,6 +754,11 @@ class Change:
         parts = []
         if self.fills_due_date:
             parts.append("The record has no due date of its own, so the pasted date becomes it.")
+        elif self.moves_due_date and self.reading.due_date is not None:
+            parts.append(
+                f"The due date becomes {spoken_day(self.reading.due_date)}, as you said; the "
+                "saved date stays in the history as a claim."
+            )
         elif self.new_claims and self.dates_differ:
             parts.append(
                 "The pasted date is added as evidence beside the saved date, which stays; "
@@ -704,6 +783,48 @@ class Change:
         return " ".join(parts)
 
 
+class _Seen:
+    """What is already accounted for while one text is compared: the claims and reports on
+    record for each row, and those earlier readings of the same text add to it."""
+
+    def __init__(self, store: ProjectStateStore) -> None:
+        self._store = store
+        self._claims: dict[str, list[SourceRecord]] = {}
+        self._reports: dict[str, list[StatusReport]] = {}
+
+    def novel_claims(
+        self, assignment_id: str, saved: bool, claims: tuple[SourceRecord, ...]
+    ) -> tuple[SourceRecord, ...]:
+        """The claims not yet accounted for under a row, now accounted for."""
+        if assignment_id not in self._claims:
+            self._claims[assignment_id] = (
+                list(self._store.deadline_records(assignment_id)) if saved else []
+            )
+        kept = self._claims[assignment_id]
+        fresh = []
+        for record in claims:
+            if all(_same_claim(record, other) is False for other in kept):
+                kept.append(record)
+                fresh.append(record)
+        return tuple(fresh)
+
+    def novel_reports(
+        self, assignment_id: str, saved: bool, reports: tuple[StatusReport, ...]
+    ) -> tuple[StatusReport, ...]:
+        """The reports not yet accounted for under a row, now accounted for."""
+        if assignment_id not in self._reports:
+            self._reports[assignment_id] = (
+                list(self._store.status_reports(assignment_id)) if saved else []
+            )
+        kept = self._reports[assignment_id]
+        fresh = []
+        for report in reports:
+            if all(_same_report(report, other) is False for other in kept):
+                kept.append(report)
+                fresh.append(report)
+        return tuple(fresh)
+
+
 def changes_for(
     items: tuple[Reading, ...],
     store: ProjectStateStore,
@@ -716,92 +837,171 @@ def changes_for(
     A reading matches a row by its course and title, whatever the row's id,
     so an assignment on record from a fixture or an earlier paste takes the
     claims rather than a twin; with several rows under one name, the one
-    due on the pasted date, else the latest. A pasted due date a week or
-    more past the saved one is a question, answered by ``occurrences``: the
-    same assignment moved, or new work. A claim already on record, the same
-    channel saying the same value from the same place, is not made twice,
-    nor is a report of the same status on the same day. The recorded due
-    date is never replaced by a paste; a different date is a claim beside
+    due nearest the pasted date. A date a week or more from the matched
+    row's, or from another card's in the same text, is a question when the
+    text adds anything, answered by ``occurrences``: ``update`` moves the
+    saved date to the pasted one, or folds the later card into the first,
+    and ``new`` makes a row of its own whose id carries the date, so the
+    same answer given twice finds that row and changes nothing. A claim
+    already on record, the same channel saying the same value from the same
+    place, is not made twice, nor is a report of the same status on the same
+    day, nor is either made twice by one text. The recorded due date is
+    otherwise never replaced by a paste; a different date is a claim beside
     it, which the page shows as a disagreement, and a record with no due
     date takes the pasted one as its own. The assigned date is filled in
     when the record has none. The note is filled in when the record has
     none; a parent's note replaces any saved note, the school's note
     replaces the school's earlier note, and the school's never replaces a
-    parent's. ``kinds`` are the parent's choices of type.
+    parent's. ``kinds`` are the parent's choices of type on the page; a
+    type typed with an entry is the parent's choice as well.
     """
     occurrences = occurrences or {}
     kinds = kinds or {}
     on_record: dict[tuple[str, str], list[Assignment]] = {}
+    by_id: dict[str, Assignment] = {}
     for item in store.all_assignments():
         on_record.setdefault(pair(item.course, item.title), []).append(item)
+        by_id[item.assignment_id] = item
+    seen = _Seen(store)
+    anchors: dict[tuple[str, str], int] = {}
+    """The place in ``changes`` of the first new reading under each name in this text."""
     changes: list[Change] = []
     for key, reading in enumerate(items):
         answer = occurrences.get(key)
         existing = _match(on_record.get(reading.pair, []), reading)
-        suggested = reading.kind if existing is None else existing.kind
-        chosen_kind = kinds.get(key, suggested)
-        by_parent = key in kinds and kinds[key] != suggested
-        if existing is None or answer == NEW_WORK:
-            changes.append(
-                Change(
-                    key,
-                    reading,
-                    existing,
-                    reading.claims,
-                    reading.reports,
-                    False,
-                    False,
-                    None,
-                    chosen_kind,
-                    by_parent,
-                    False,
-                    answer,
-                )
-            )
+        twin = None if existing is not None else anchors.get(reading.pair)
+        other = existing.due_date if existing is not None else None
+        if twin is not None:
+            other = changes[twin].reading.due_date
+        asked = (
+            reading.due_date is not None
+            and other is not None
+            and abs(reading.due_date - other) >= ANOTHER_OCCURRENCE
+        )
+        if not asked:
+            answer = None
+        if twin is not None and asked and answer == UPDATE:
+            folded = _folded(changes[twin], reading, seen)
+            changes[twin] = folded
             continue
-        ambiguous = (
-            answer is None
-            and existing.due_date is not None
-            and reading.due_date is not None
-            and reading.due_date - existing.due_date >= ANOTHER_OCCURRENCE
-        )
-        had = {
-            (record.channel, record.asserted_value, record.seen_in)
-            for record in store.deadline_records(existing.assignment_id)
-        }
-        fresh = tuple(
-            record
-            for record in reading.claims
-            if (record.channel, record.asserted_value, record.seen_in) not in had
-        )
-        said = {
-            (report.channel, report.status, report.reported_on)
-            for report in store.status_reports(existing.assignment_id)
-        }
-        news = tuple(
-            report
-            for report in reading.reports
-            if (report.channel, report.status, report.reported_on) not in said
-        )
-        fills_due = existing.due_date is None and reading.due_date is not None
-        fills = existing.assigned_on is None and reading.assigned_on is not None
-        changes.append(
-            Change(
-                key,
-                reading,
-                existing,
-                fresh,
-                news,
-                fills_due,
-                fills,
-                _note_change(existing, reading),
-                chosen_kind,
-                by_parent,
-                ambiguous,
-                answer,
-            )
-        )
+        if existing is None or answer == NEW_WORK:
+            change = _new_change(key, reading, existing, answer, asked, kinds, seen, other)
+            if change.state == NEW and change.assignment_id in by_id:
+                # The row this answer would make exists, from the same answer
+                # given before: it is that row, and nothing is made twice.
+                existing, answer, asked = by_id[change.assignment_id], None, False
+            else:
+                if existing is None and reading.pair not in anchors:
+                    anchors[reading.pair] = len(changes)
+                changes.append(change)
+                continue
+        changes.append(_change_to(key, reading, existing, answer, asked, kinds, seen))
     return changes
+
+
+def _kind_for(
+    key: int, reading: Reading, existing: Assignment | None, kinds: Mapping[int, AssignmentKind]
+) -> tuple[AssignmentKind, bool]:
+    """The kind a reading's row will have, and whether a parent chose it: on the page, or
+    with the entry they typed; for a saved row the suggestion is what is saved."""
+    if reading.origin == SourceChannel.PARENT_ENTRY:
+        return kinds.get(key, reading.kind), True
+    suggested = reading.kind if existing is None else existing.kind
+    chosen = kinds.get(key, suggested)
+    return chosen, chosen != suggested
+
+
+def _new_change(
+    key: int,
+    reading: Reading,
+    existing: Assignment | None,
+    answer: str | None,
+    asked: bool,
+    kinds: Mapping[int, AssignmentKind],
+    seen: _Seen,
+    beside: date | None,
+) -> Change:
+    """A reading with no row to land on, or one the parent said is new work, or one that
+    waits on the parent's answer about ``beside``, the other date under its name."""
+    kind, by_parent = _kind_for(key, reading, None, kinds)
+    change = Change(
+        key,
+        reading,
+        existing,
+        (),
+        (),
+        False,
+        False,
+        False,
+        None,
+        kind,
+        by_parent,
+        asked and answer is None,
+        answer,
+        beside=beside,
+    )
+    if change.state == REVIEW:
+        return change
+    return dataclasses.replace(
+        change,
+        new_claims=seen.novel_claims(change.assignment_id, False, reading.claims),
+        new_reports=seen.novel_reports(change.assignment_id, False, reading.reports),
+    )
+
+
+def _change_to(
+    key: int,
+    reading: Reading,
+    existing: Assignment,
+    answer: str | None,
+    asked: bool,
+    kinds: Mapping[int, AssignmentKind],
+    seen: _Seen,
+) -> Change:
+    """What a reading adds to the row it lands on."""
+    fresh = seen.novel_claims(existing.assignment_id, True, reading.claims)
+    news = seen.novel_reports(existing.assignment_id, True, reading.reports)
+    kind, by_parent = _kind_for(key, reading, existing, kinds)
+    moves = asked and answer == UPDATE and reading.due_date != existing.due_date
+    return Change(
+        key,
+        reading,
+        existing,
+        fresh,
+        news,
+        existing.due_date is None and reading.due_date is not None,
+        moves,
+        existing.assigned_on is None and reading.assigned_on is not None,
+        _note_change(existing, reading),
+        kind,
+        by_parent,
+        asked and answer is None and bool(fresh),
+        answer,
+        beside=existing.due_date,
+    )
+
+
+def _folded(anchor: Change, reading: Reading, seen: _Seen) -> Change:
+    """The first reading of a name in this text with a later card folded in, as the parent
+    said: the due date is the later card's, and its claims, note, and reports come along."""
+    first = anchor.reading
+    notes = [note for note in (first.note, reading.note) if note]
+    merged = dataclasses.replace(
+        first,
+        due_date=reading.due_date,
+        assigned_on=first.assigned_on or reading.assigned_on,
+        claims=first.claims + reading.claims,
+        note="\n".join(dict.fromkeys(notes)) or None,
+        reports=first.reports + reading.reports,
+    )
+    return dataclasses.replace(
+        anchor,
+        reading=merged,
+        new_claims=anchor.new_claims
+        + seen.novel_claims(anchor.assignment_id, False, reading.claims),
+        new_reports=anchor.new_reports
+        + seen.novel_reports(anchor.assignment_id, False, reading.reports),
+    )
 
 
 def _match(rows: list[Assignment], reading: Reading) -> Assignment | None:
@@ -853,9 +1053,10 @@ def keep(
     The comparison and the write happen while the store is held for this
     caller alone, so two savings of the same text, a double press or two
     tabs, cannot both find a reading new: the second finds what the first
-    wrote and adds nothing. When the record has changed since the preview in
-    a way that leaves a question open, nothing is written and the changes
-    are handed back for the parent to look at again.
+    wrote and adds nothing, an answer of new work included, since the row
+    that answer makes is found by its id. When the record has changed since
+    the preview in a way that leaves a question open, nothing is written and
+    the changes are handed back for the parent to look at again.
     """
     with store.exclusively():
         changes = changes_for(items, store, occurrences=occurrences, kinds=kinds)
@@ -898,7 +1099,7 @@ def _updated_row(change: Change) -> Assignment | None:
         return None
     filled: dict[str, object] = {}
     origins = dict(existing.origins)
-    if change.fills_due_date:
+    if change.fills_due_date or change.moves_due_date:
         filled["due_date"] = change.reading.due_date
         origins["due_date"] = change.reading.origin
     if change.fills_assigned_on:

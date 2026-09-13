@@ -488,50 +488,260 @@ def test_what_the_record_lacks_is_filled_and_a_note_follows_a_stated_policy(
     assert "The saved note stands" in remembered[0].effect
 
 
-def test_repeated_work_under_one_name_is_a_question_and_the_answer_is_kept(
+WEEK_ONE = "Homework for Wren\n- 09/07/2026 - Monday\nMath - Due: Weekly practice:\n"
+WEEK_TWO = "Homework for Wren\n- 09/14/2026 - Monday\nMath - Due: Weekly practice:\n"
+WEEK_THREE = "Homework for Wren\n- 09/21/2026 - Monday\nMath - Due: Weekly practice:\n"
+
+
+def readings(text: str) -> tuple[Reading, ...]:
+    return read_text(text, now=NOW, today=TODAY).items
+
+
+def test_repeated_work_under_one_name_is_a_question_and_either_answer_is_kept(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A weekly practice due a week after the saved one is not merged in silence: the parent
-    says whether it is the same assignment moved or new work, and the next paste of the new
-    week finds the new row."""
-    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    """A weekly practice due a week after the saved one is not merged in silence. Saying it
+    is the same assignment moves the saved date, so the next paste, before or after a
+    restart, finds it and asks nothing; saying it is new work makes a row of its own, and
+    the same answer given again finds that row and changes nothing."""
+    path = tmp_path / "blossom.sqlite3"
+    store = ProjectStateStore.open(path, fixture_clock())
     try:
-        first = read_text(
-            "Homework for Wren\n- 09/07/2026 - Monday\nMath - Due: Weekly practice:\n",
-            now=NOW,
-            today=TODAY,
-        )
-        keep(first.items, store)
-        next_week = read_text(
-            "Homework for Wren\n- 09/14/2026 - Monday\nMath - Due: Weekly practice:\n",
-            now=NOW,
-            today=TODAY,
-        )
-        asked = changes_for(next_week.items, store)
-        unanswered = keep(next_week.items, store)
-        as_update = changes_for(next_week.items, store, occurrences={0: UPDATE})
-        kept_new = keep(next_week.items, store, occurrences={0: NEW_WORK})
+        keep(readings(WEEK_ONE), store)
+        asked = changes_for(readings(WEEK_TWO), store)
+        unanswered = keep(readings(WEEK_TWO), store)
+        as_update = changes_for(readings(WEEK_TWO), store, occurrences={0: UPDATE})
+        kept_update = keep(readings(WEEK_TWO), store, occurrences={0: UPDATE})
+        moved = store.all_assignments()
+        moved_claims = store.deadline_records(moved[0].assignment_id)
+        again = changes_for(readings(WEEK_TWO), store)
+        old_week = changes_for(readings(WEEK_ONE), store)
+    finally:
+        store.close()
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        after_restart = changes_for(readings(WEEK_TWO), store)
+        asked_again = changes_for(readings(WEEK_THREE), store)
+        kept_new = keep(readings(WEEK_THREE), store, occurrences={0: NEW_WORK})
         rows = store.all_assignments()
-        again = changes_for(next_week.items, store)
-        moved_a_day = read_text(
-            "Homework for Wren\n- 09/08/2026 - Tuesday\nMath - Due: Weekly practice:\n",
-            now=NOW,
-            today=TODAY,
+        replayed = keep(readings(WEEK_THREE), store, occurrences={0: NEW_WORK})
+        rows_after_replay = store.all_assignments()
+        nudged = changes_for(
+            readings("Homework for Wren\n- 09/22/2026 - Tuesday\nMath - Due: Weekly practice:\n"),
+            store,
         )
-        nudged = changes_for(moved_a_day.items, store)
     finally:
         store.close()
 
     assert [change.state for change in asked] == [REVIEW]
     assert asked[0].label == "Needs your answer"
+    assert asked[0].beside == date(2026, 9, 7)
+    assert asked[0].effect.startswith("The saved assignment is due Monday, September 7, 2026.")
     assert isinstance(unanswered, list)
     assert [change.state for change in as_update] == [CLAIMED]
-    assert kept_new == Kept(added=1, updated=0, unchanged=0)
-    assert len(rows) == 2
-    assert len({row.assignment_id for row in rows}) == 2
+    assert as_update[0].label == "Saved; adds the due date"
+    assert "The due date becomes Monday, September 14, 2026, as you said" in as_update[0].effect
+    assert kept_update == Kept(added=0, updated=1, unchanged=0)
+    assert [(row.due_date, row.origins["due_date"]) for row in moved] == [
+        (date(2026, 9, 14), SourceChannel.LMS)
+    ]
+    assert [said.asserted_value for said in moved_claims] == ["2026-09-07", "2026-09-14"]
     assert [change.state for change in again] == [KNOWN]
+    assert [change.state for change in old_week] == [KNOWN]
+    assert [change.state for change in after_restart] == [KNOWN]
+    assert [change.state for change in asked_again] == [REVIEW]
+    assert asked_again[0].beside == date(2026, 9, 14)
+    assert kept_new == Kept(added=1, updated=0, unchanged=0)
+    assert sorted(row.due_date for row in rows if row.due_date) == [
+        date(2026, 9, 14),
+        date(2026, 9, 21),
+    ]
+    assert len({row.assignment_id for row in rows}) == 2
+    assert replayed == Kept(added=0, updated=0, unchanged=1)
+    assert len(rows_after_replay) == 2
     assert [change.state for change in nudged] == [CLAIMED]
-    assert nudged[0].saved_due == date(2026, 9, 7)
+    assert nudged[0].saved_due == date(2026, 9, 21)
+
+
+def test_a_confirmed_new_round_keeps_what_the_family_added_when_the_answer_is_replayed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A retry, or an older review page still open, sends the same new-work answer again
+    after a parent has added a note and the school has reported on the new row: the answer
+    finds that row and changes nothing, so nothing the family added is lost."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        keep(readings(WEEK_ONE), store)
+        keep(readings(WEEK_TWO), store, occurrences={0: NEW_WORK})
+        note = by_hand(
+            "Math",
+            "Weekly practice",
+            date(2026, 9, 14),
+            None,
+            AssignmentKind.HOMEWORK,
+            "Parent clarification",
+            now=NOW,
+        )
+        keep((note,), store)
+        told = readings("Assignments:\n09/14 Math - A: Homework: Weekly practice Grade: Missing\n")
+        keep(told, store)
+        replayed = keep(readings(WEEK_TWO), store, occurrences={0: NEW_WORK})
+        rows = {row.due_date: row for row in store.all_assignments()}
+        second = rows[date(2026, 9, 14)]
+        claims = store.deadline_records(second.assignment_id)
+    finally:
+        store.close()
+
+    assert replayed == Kept(added=0, updated=0, unchanged=1)
+    assert len(rows) == 2
+    assert second.note == "Parent clarification"
+    assert second.origins["note"] is SourceChannel.PARENT_ENTRY
+    assert second.reported_submission_status == "missing"
+    assert len(claims) == 2
+    assert [said.channel for said in claims] == [SourceChannel.LMS, SourceChannel.PARENT_ENTRY]
+
+
+def test_two_rounds_of_a_name_in_one_text_are_read_apart_and_asked_about(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A text that names an assignment due a week apart twice, weeks in either order, is
+    two readings and one question: new work makes two rows that the next paste finds by
+    their dates; the same assignment folds the later card into the first."""
+    both = WEEK_ONE + WEEK_TWO.replace("Homework for Wren\n", "")
+    reverse = WEEK_TWO + WEEK_ONE.replace("Homework for Wren\n", "")
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        read = readings(both)
+        asked = changes_for(read, store)
+        unanswered = keep(read, store)
+        kept_new = keep(read, store, occurrences={1: NEW_WORK})
+        rows = store.all_assignments()
+        again = changes_for(read, store)
+        reversed_again = changes_for(readings(reverse), store)
+    finally:
+        store.close()
+    folded_store = ProjectStateStore.open(tmp_path / "folded.sqlite3", fixture_clock())
+    try:
+        folded_changes = changes_for(readings(both), folded_store, occurrences={1: UPDATE})
+        kept_folded = keep(readings(both), folded_store, occurrences={1: UPDATE})
+        folded_rows = folded_store.all_assignments()
+        folded_claims = folded_store.deadline_records(folded_rows[0].assignment_id)
+    finally:
+        folded_store.close()
+    reverse_store = ProjectStateStore.open(tmp_path / "reverse.sqlite3", fixture_clock())
+    try:
+        backwards = readings(reverse)
+        kept_backwards = keep(backwards, reverse_store, occurrences={1: NEW_WORK})
+        backwards_rows = reverse_store.all_assignments()
+        forwards_again = changes_for(readings(both), reverse_store)
+    finally:
+        reverse_store.close()
+
+    assert [(item.due_date, item.occurrence) for item in read] == [
+        (date(2026, 9, 7), None),
+        (date(2026, 9, 14), "2026-09-14"),
+    ]
+    assert len({item.assignment_id for item in read}) == 2
+    assert [change.state for change in asked] == [NEW, REVIEW]
+    assert asked[1].beside == date(2026, 9, 7)
+    assert asked[1].effect.startswith("This text also has it due Monday, September 7, 2026.")
+    assert isinstance(unanswered, list)
+    assert kept_new == Kept(added=2, updated=0, unchanged=0)
+    assert sorted(row.due_date for row in rows if row.due_date) == [
+        date(2026, 9, 7),
+        date(2026, 9, 14),
+    ]
+    assert len({row.assignment_id for row in rows}) == 2
+    assert [change.state for change in again] == [KNOWN, KNOWN]
+    assert [change.state for change in reversed_again] == [KNOWN, KNOWN]
+    assert [change.state for change in folded_changes] == [NEW]
+    assert folded_changes[0].reading.due_date == date(2026, 9, 14)
+    assert kept_folded == Kept(added=1, updated=0, unchanged=0)
+    assert [row.due_date for row in folded_rows] == [date(2026, 9, 14)]
+    assert [said.asserted_value for said in folded_claims] == ["2026-09-07", "2026-09-14"]
+    assert [item.occurrence for item in backwards] == [None, "2026-09-07"]
+    assert kept_backwards == Kept(added=2, updated=0, unchanged=0)
+    assert sorted(row.due_date for row in backwards_rows if row.due_date) == [
+        date(2026, 9, 7),
+        date(2026, 9, 14),
+    ]
+    assert [change.state for change in forwards_again] == [KNOWN, KNOWN]
+
+
+def test_a_card_repeated_in_one_text_is_one_claim_and_a_report_repeated_is_one_report(
+    tmp_path: pathlib.Path,
+) -> None:
+    doubled = "Tuesday 9/8/2026\nMath\nDue: Practice:\nMath\nDue: Practice:\n"
+    told_twice = (
+        "Assignments:\n09/08 Math - A: Homework: Practice Grade: Missing\n"
+        "09/08 Math - A: Homework: Practice Grade: Missing\n"
+    )
+    enriched = doubled + "Monday 9/7/2026\nMath\nAssigned: Practice: (Due:09/08/2026)\n"
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        read = readings(doubled)
+        told = readings(told_twice)
+        kept = keep(read, store)
+        row = store.all_assignments()[0]
+        claims_once = store.deadline_records(row.assignment_id)
+        more = changes_for(readings(enriched), store)
+        keep(readings(enriched), store)
+        claims_twice = store.deadline_records(row.assignment_id)
+        keep(told, store)
+        reports = store.status_reports(row.assignment_id)
+    finally:
+        store.close()
+
+    assert len(read) == 1
+    assert len(read[0].claims) == 1
+    assert len(told) == 1
+    assert len(told[0].reports) == 1
+    assert kept == Kept(added=1, updated=0, unchanged=0)
+    assert len(claims_once) == 1
+    assert [len(change.new_claims) for change in more] == [1]
+    assert [said.seen_in for said in claims_twice] == [DAY_HEADER, OWN_LINE]
+    assert len(reports) == 1
+
+
+def test_a_type_typed_with_an_entry_corrects_a_saved_row_and_the_correction_is_kept(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The type on the entry form is the parent's word: it corrects a saved row, outlives a
+    restart, and stands when the school's text is pasted again."""
+    path = tmp_path / "blossom.sqlite3"
+    school = "Tuesday 9/8/2026\nReligion\nDue: Syllabus:\n"
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        keep(readings(school), store)
+        as_read = store.all_assignments()[0]
+        typed = by_hand("Religion", "Syllabus", None, None, AssignmentKind.HOMEWORK, now=NOW)
+        correction = changes_for((typed,), store)
+        same = changes_for(
+            (by_hand("Religion", "Syllabus", None, None, AssignmentKind.TASK, now=NOW),), store
+        )
+        kept = keep((typed,), store)
+    finally:
+        store.close()
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        corrected = store.all_assignments()[0]
+        pasted_again = changes_for(readings(school), store)
+        keep(readings(school), store)
+        still = store.all_assignments()[0]
+    finally:
+        store.close()
+
+    assert as_read.kind is AssignmentKind.TASK
+    assert [change.state for change in correction] == [CLAIMED]
+    assert correction[0].label == "Saved; adds the type"
+    assert correction[0].effect == "The type becomes homework, as chosen."
+    assert [change.state for change in same] == [KNOWN]
+    assert kept == Kept(added=0, updated=1, unchanged=0)
+    assert corrected.kind is AssignmentKind.HOMEWORK
+    assert corrected.origins["kind"] is SourceChannel.PARENT_ENTRY
+    assert [change.state for change in pasted_again] == [KNOWN]
+    assert pasted_again[0].kind is AssignmentKind.HOMEWORK
+    assert still.kind is AssignmentKind.HOMEWORK
 
 
 def test_a_paste_matches_a_row_on_record_by_its_course_and_title(tmp_path: pathlib.Path) -> None:
@@ -560,6 +770,8 @@ def test_a_paste_matches_a_row_on_record_by_its_course_and_title(tmp_path: pathl
 
 
 def test_two_savings_of_one_text_at_once_add_nothing_twice(tmp_path: pathlib.Path) -> None:
+    """Two savings released together, of a whole paste and of a new-work answer: the second
+    finds what the first wrote."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     read = read_text(THREE_WEEKS, now=NOW, today=TODAY)
     released = threading.Barrier(2)
@@ -568,18 +780,29 @@ def test_two_savings_of_one_text_at_once_add_nothing_twice(tmp_path: pathlib.Pat
         released.wait()
         return keep(read.items, store)
 
+    def one_answer(_: int) -> Kept | list[Change]:
+        released.wait()
+        return keep(readings(WEEK_TWO), store, occurrences={0: NEW_WORK})
+
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             counts = list(pool.map(one_saving, range(2)))
         rows = store.all_assignments()
         covers = {(item.course, item.title): item for item in rows}["08 Geometry", "Book Covers"]
         claims = store.deadline_records(covers.assignment_id)
+        keep(readings(WEEK_ONE), store)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            answers = list(pool.map(one_answer, range(2)))
+        practice = [row for row in store.all_assignments() if row.title == "Weekly practice"]
     finally:
         store.close()
 
     assert sorted(count.added for count in counts if isinstance(count, Kept)) == [0, 12]
     assert len(rows) == 12
     assert len(claims) == 2
+    assert sorted(count.added for count in answers if isinstance(count, Kept)) == [0, 1]
+    assert len(practice) == 2
+    assert len({row.assignment_id for row in practice}) == 2
 
 
 def test_the_review_is_grouped_by_school_week_with_the_undated_last(

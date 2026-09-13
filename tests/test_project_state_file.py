@@ -361,8 +361,8 @@ def test_a_batch_that_fails_leaves_nothing_of_itself_and_frees_the_file(
 def test_a_file_from_before_is_brought_up_to_the_schema_and_keeps_its_rows(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A file written before the note column and before claims were kept once: the column
-    is added, the duplicate claims are folded to the earliest, and every row stays."""
+    """A file written before the note column: the columns are added, no index is made on the
+    claims, and every row stays, two observations of one value included."""
     path = tmp_path / "blossom.sqlite3"
     old = sqlite3.connect(path)
     old.executescript(
@@ -410,6 +410,76 @@ def test_a_file_from_before_is_brought_up_to_the_schema_and_keeps_its_rows(
     ]
     assert claims[0].observed_at.isoformat() == "2026-08-19T09:00:00+00:00"
     assert unique == set()
+
+
+def test_a_file_from_the_version_between_loses_its_index_and_keeps_every_observation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A file from a version that held each claim once carries that index; opening it drops
+    the index and nothing else, so two observations of one value are both kept."""
+    path = tmp_path / "blossom.sqlite3"
+    between = sqlite3.connect(path)
+    between.executescript(
+        """
+        CREATE TABLE assignments (
+            assignment_id TEXT PRIMARY KEY, course TEXT NOT NULL, title TEXT NOT NULL,
+            due_date TEXT, dependencies TEXT NOT NULL, reported_submission_status TEXT NOT NULL,
+            assigned_on TEXT, kind TEXT NOT NULL, note TEXT
+        );
+        CREATE TABLE date_claims (
+            assignment_id TEXT NOT NULL, channel TEXT NOT NULL, asserted_value TEXT NOT NULL,
+            observed_at TEXT NOT NULL, confidence REAL NOT NULL, seen_in TEXT
+        );
+        CREATE UNIQUE INDEX date_claims_once
+            ON date_claims (assignment_id, channel, asserted_value, COALESCE(seen_in, ''));
+        CREATE INDEX date_claims_by_assignment ON date_claims (assignment_id);
+        INSERT INTO assignments VALUES
+            ('assignment-essay', 'World History', 'Canal Era comparison essay', '2026-08-21',
+             '', 'in_progress', NULL, 'HOMEWORK', NULL);
+        INSERT INTO date_claims VALUES
+            ('assignment-essay', 'LMS', '2026-08-21', '2026-08-19T09:00:00+00:00', 0.9, NULL);
+        """
+    )
+    between.commit()
+    between.close()
+
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        indexes = {
+            str(row[1]) for row in store._connection.execute("PRAGMA index_list(date_claims)")
+        }
+        store.put_on_record(
+            [],
+            {
+                "assignment-essay": [
+                    SourceRecord(
+                        channel=SourceChannel.LMS,
+                        asserted_value="2026-08-21",
+                        observed_at=datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
+                        confidence=0.9,
+                    ),
+                    SourceRecord(
+                        channel=SourceChannel.LMS,
+                        asserted_value="2026-08-21",
+                        observed_at=datetime(2026, 8, 21, 9, 0, tzinfo=UTC),
+                        confidence=0.9,
+                    ),
+                ]
+            },
+        )
+        claims = store.deadline_records("assignment-essay")
+        rows = store.all_assignments()
+    finally:
+        store.close()
+
+    assert "date_claims_once" not in indexes
+    assert "date_claims_by_assignment" in indexes
+    assert [said.observed_at.isoformat() for said in claims] == [
+        "2026-08-19T09:00:00+00:00",
+        "2026-08-20T09:00:00+00:00",
+        "2026-08-21T09:00:00+00:00",
+    ]
+    assert [row.assignment_id for row in rows] == ["assignment-essay"]
 
 
 def test_a_record_write_that_fails_at_the_claims_keeps_no_assignment_either(

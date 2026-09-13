@@ -39,10 +39,13 @@ compares what was read with the record as it is, row by row, matched by
 course and title whatever the row's id, and shows the result week by week
 with what saving would do; the saving compares again and writes under the
 store's lock, in one transaction, so the same text saved twice, from two
-tabs, adds nothing twice. That is the import's doing, not a constraint on
-the claims table: every observation a channel makes is kept, and a household
-file from before this schema is brought up to it by adding columns only. A
-recorded due date is never replaced by a paste; each fact on a row carries
+tabs, adds nothing twice, an answer of new work included, since the row
+that answer makes is found by its id. That is the import's doing, not a
+constraint on the claims table: every observation a channel makes is kept,
+a card repeated in one text is one observation, and a household file from
+before this schema is brought up to it by adding columns, and by dropping
+the one index a version between made. A recorded due date is replaced by a
+paste only when a parent says the assignment moved; each fact on a row carries
 its origin, the portal, the email, or a parent, so the pages can say whose
 it is. A plan carries a fingerprint of the week it was made from, and a
 waiting plan whose week reads differently is stale on both pages and refused

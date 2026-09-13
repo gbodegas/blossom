@@ -60,6 +60,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
         "see CLOSED_PREFIXES"
     ),
     "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
+    "hashlib": "standard library; tags the packaged stylesheet and script by their contents",
     "hmac": "standard library; signs and checks the household sign-in cookie, nothing more",
     "logging": "standard library; reports failures to the process log only, never to a page",
     "msvcrt": "standard library; the Windows lock behind one process per household",

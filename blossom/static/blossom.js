@@ -12,6 +12,10 @@
 
   The second opens a folded disclosure when a link on the page points inside
   it, so "What is shared" shows what it names.
+
+  The third is for the review page: when everything read is saved already,
+  its Save button is disabled, and a type changed on a card or a question
+  answered hands the button back, as "Save changes".
 */
 (function () {
   "use strict";
@@ -97,6 +101,23 @@
       Array.prototype.forEach.call(forms, reset);
     }
   });
+
+  var review = document.querySelector("form.review-form");
+  if (review) {
+    review.addEventListener("change", function (event) {
+      var name = event.target.name || "";
+      if (name.indexOf("kind-") !== 0 && name.indexOf("occurrence-") !== 0) {
+        return;
+      }
+      var button = review.querySelector("button.primary[disabled]");
+      if (button) {
+        button.disabled = false;
+        button.removeAttribute("aria-disabled");
+        button.classList.remove("done");
+        button.textContent = button.dataset.changedLabel || button.textContent;
+      }
+    });
+  }
 
   document.addEventListener("click", function (event) {
     var link = event.target.closest ? event.target.closest("a[href^='#']") : null;

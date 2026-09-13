@@ -151,7 +151,10 @@ def test_a_paste_is_reviewed_week_by_week_and_saved_only_when_asked(
     assert again.count('<span class="pill">Already saved</span>') == 3
     assert "0 new, 0 updates, 3 already saved." in again
     assert "Everything here is saved already; there is nothing to save." in again
-    assert 'class="primary done" disabled aria-disabled="true">Save 0 assignments' in again
+    assert (
+        'class="primary done" disabled aria-disabled="true" data-changed-label="Save changes">'
+        "Save 0 assignments" in again
+    )
 
 
 def test_an_entry_by_hand_is_reviewed_then_saved_as_the_familys_own(
@@ -306,7 +309,7 @@ def test_a_later_date_for_a_saved_assignment_is_shown_beside_it_and_saved_as_evi
     assert [said.asserted_value for said in claims] == ["2026-09-08", "2026-09-10"]
 
 
-def test_repeated_work_is_a_question_on_the_page_and_the_type_can_be_corrected(
+def test_repeated_work_is_a_question_on_the_page_and_the_answer_replayed_changes_nothing(
     tmp_path: pathlib.Path,
 ) -> None:
     with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
@@ -316,29 +319,65 @@ def test_repeated_work_is_a_question_on_the_page_and_the_type_can_be_corrected(
         answered = client.post(
             "/parent/inbox/keep", data={"text": WEEKLY_AGAIN, "occurrence-0": "new"}
         )
-        corrected = client.post(
-            "/parent/inbox/keep", data={"text": SUMMARY, "kind-0": "HOMEWORK", "kind-1": "TASK"}
+        rows = state_of(client).project_state.all_assignments()
+        replayed = client.post(
+            "/parent/inbox/keep", data={"text": WEEKLY_AGAIN, "occurrence-0": "new"}
         )
-        rows = {row.title: row for row in state_of(client).project_state.all_assignments()}
+        rows_after = state_of(client).project_state.all_assignments()
 
     assert '<span class="pill">Needs your answer</span>' in asked
     assert "1 needs your answer." in asked
     assert "<legend>Which is it?</legend>" in asked
     assert '<input type="radio" name="occurrence-0" value="update">' in asked
     assert '<input type="radio" name="occurrence-0" value="new">' in asked
+    assert "<dt>Saved due date</dt>" in asked
     assert "Answer the question above, then save." in asked
     assert unanswered.status_code == 200
     assert LOOK_AGAIN in unanswered.text
     assert answered.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
-    assert len([title for title in rows if title == "Weekly practice"]) == 1
+    assert [row.title for row in rows] == ["Weekly practice", "Weekly practice"]
+    assert len({row.assignment_id for row in rows}) == 2
+    assert replayed.headers["location"] == "/parent?added=0&updated=0&unchanged=1"
+    assert len(rows_after) == 2
+
+
+def test_the_type_is_the_parents_to_correct_on_the_page_and_on_the_entry_form(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A type chosen on a card is kept as the parent's; a saved row's card still offers the
+    choice; and the type typed with an entry corrects a saved row."""
+    retyped = {**ENTRY, "kind": "TASK"}
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        corrected = client.post(
+            "/parent/inbox/keep", data={"text": SUMMARY, "kind-0": "HOMEWORK", "kind-1": "TASK"}
+        )
+        again = client.post("/parent/inbox/read", data={"text": SUMMARY}).text
+        changed_on_the_page = client.post(
+            "/parent/inbox/keep", data={"text": SUMMARY, "kind-1": "HOMEWORK"}
+        )
+        client.post("/parent/inbox/keep", data=ENTRY)
+        shown = client.post("/parent/inbox/enter", data=retyped).text
+        kept = client.post("/parent/inbox/keep", data=retyped)
+        rows = {row.title: row for row in state_of(client).project_state.all_assignments()}
+
     assert corrected.headers["location"] == "/parent?added=3&updated=0&unchanged=0"
+    assert '<select name="kind-0">' in again
+    assert 'data-changed-label="Save changes"' in again
+    assert "As saved; change it if it is wrong." in again
+    assert changed_on_the_page.headers["location"] == "/parent?added=0&updated=1&unchanged=2"
+    assert '<span class="pill">Saved; adds the type</span>' in shown
+    assert "The type becomes task, as chosen." in shown
+    assert ">Save 1 assignment</button>" in shown
+    assert kept.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
     assert rows["Book Covers"].kind is AssignmentKind.HOMEWORK
     assert rows["Book Covers"].origins["kind"] is SourceChannel.PARENT_ENTRY
-    assert rows["Summer Reading - Log"].kind is AssignmentKind.TASK
+    assert rows["Summer Reading - Log"].kind is AssignmentKind.HOMEWORK
     assert rows["Binder, labeled dividers and lined paper check"].kind is AssignmentKind.TASK
     assert rows["Binder, labeled dividers and lined paper check"].origins["kind"] is (
         SourceChannel.LMS
     )
+    assert rows["Vocabulary list, unit two"].kind is AssignmentKind.TASK
+    assert rows["Vocabulary list, unit two"].origins["kind"] is SourceChannel.PARENT_ENTRY
 
 
 def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(

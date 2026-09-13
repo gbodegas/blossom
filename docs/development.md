@@ -239,12 +239,18 @@ saved one is shown beside it, "Saved due date" and "Pasted due date", and is
 saved as evidence beside the saved date, which stays, so her page can say
 the sources disagree. A record with no due date takes the pasted one; an
 assigned date or a note the record lacks is filled in. Work that comes round
-again under the same name, a weekly practice due a week or more past the
-saved one, is not merged in silence: the card asks whether it is the same
-assignment moved or new work, and the answer is kept, so the next paste
-finds the right row. The type, homework or task, is suggested from the
-title, paperwork and materials being tasks, and can be changed on the card;
-a parent's choice is kept as theirs. "Save N assignments" writes all of it
+again under the same name, a weekly practice named again a week or more
+from the saved date, or twice in one text a week or more apart, is not
+merged in silence: the card asks whether it is the same assignment with its
+due date changed or new work. Saying it is the same moves the saved date to
+the pasted one, or folds the later card into the first; saying it is new
+work makes a row of its own. Either answer is kept, so the next paste of
+that text finds the right row and asks nothing, and the same answer sent
+twice, from a retry or a page left open, changes nothing. The type, homework
+or task, is suggested from the title, paperwork and materials being tasks,
+and can be changed on any card, a saved one included; a parent's choice is
+kept as theirs, and the type typed with an entry corrects a saved row the
+same way. "Save N assignments" writes all of it
 in one step and returns to the family page with what was added, updated, and
 unchanged; "Edit" goes back with the text or the fields as they were;
 "Cancel import" writes nothing. Pasting the same page or week again is safe:

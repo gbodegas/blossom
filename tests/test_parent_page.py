@@ -620,6 +620,20 @@ def test_work_added_in_the_plans_window_makes_the_waiting_plan_stale() -> None:
     assert 'value="approve"' in fresh
 
 
+def test_a_type_corrected_on_a_saved_row_makes_the_waiting_plan_stale() -> None:
+    """The type is part of what a plan is made from, so correcting it changes the week."""
+    retyped = {"course": "World History", "title": "Canal Era comparison essay", "kind": "TASK"}
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        saved = client.post("/parent/inbox/keep", data=retyped)
+        page = client.get("/parent").text
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+
+    assert saved.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
+    assert ASSIGNMENTS_CHANGED in page
+    assert record["stale"] is not None
+
+
 def test_a_saving_that_changes_nothing_or_distant_work_leaves_the_plan_fresh() -> None:
     """Saving what is already on record, or work due well past the plan's week, changes
     nothing the plan was made from, so the plan stands."""

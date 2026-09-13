@@ -500,7 +500,8 @@ def test_the_planning_forms_carry_the_pending_words_and_the_others_do_not() -> N
         theirs = client.get("/parent").text
         script = client.get("/static/blossom.js")
 
-    assert '<script src="/static/blossom.js" defer></script>' in hers
+    assert '<script src="/static/blossom.js?v=' in hers
+    assert '" defer></script>' in hers
     assert 'data-pending="Making your plan"' in hers
     assert 'data-pending="Making the plan"' in theirs
     assert hers.count('data-pending="') == 1
