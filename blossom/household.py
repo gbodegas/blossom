@@ -14,6 +14,14 @@ library; nothing here needs a library, a token service, or the internet. The
 cookie is not marked secure, because the home network carries plain HTTP; the
 guide says never to expose the server beyond it.
 
+Each person's cookies are signed with a key drawn from that secret and their
+own passphrase, so changing a passphrase in ``.env`` and restarting signs
+that person's devices out and leaves the other's alone, and deleting the
+secret file signs everyone out. "Sign out" forgets this device only; a copy
+of its cookie taken before then works until the passphrase changes or the
+month ends. Wrong passphrases from one device are counted, and after ten
+the sign-in answers with a wait rather than keep guessing open.
+
 With neither passphrase set the gate stands open, which is the right shape
 for the tests, the sample, and a machine only the family touches.
 """
@@ -21,7 +29,9 @@ for the tests, the sample, and a machine only the family touches.
 import hmac
 import os
 import secrets
-from collections.abc import Awaitable, Callable
+import threading
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -50,6 +60,15 @@ STATIC_PREFIX: Final = "/static/"
 """The stylesheet and the mark: the one thing a browser may keep a copy of."""
 OPEN_PREFIXES: Final = ("/sign-in", "/sign-out", STATIC_PREFIX)
 """What anyone may reach: the way in, the way out, and the stylesheet the way in needs."""
+SKEW_SECONDS: Final = 5 * 60
+"""How far ahead a token may be dated and still count: a clock a little fast when the
+token was issued, not a clock a year ahead and corrected since."""
+ATTEMPT_LIMIT: Final = 10
+"""Wrong passphrases from one device before the sign-in asks it to wait."""
+COOLDOWN_SECONDS: Final = 60
+"""How long that device waits; its count starts over afterward."""
+ATTEMPT_ADDRESSES: Final = 64
+"""How many devices are counted at once; past that the oldest count is forgotten."""
 
 templates = page_templates()
 
@@ -118,15 +137,42 @@ def role_for(passphrase: str, settings: Settings) -> Principal | None:
     return None
 
 
-def issue(role: Principal, secret: bytes, now: datetime) -> str:
-    """A signed token naming who signed in and when."""
+def keys_for(secret: bytes, settings: Settings) -> dict[Principal, bytes]:
+    """One signing key per person, drawn from the secret and that person's passphrase.
+
+    The key is a keyed hash of the passphrase under the secret, so it says
+    nothing about the passphrase and changes whenever the passphrase does: a
+    changed passphrase signs that person's devices out at the next start and
+    leaves the other person's alone, while unchanged settings give the same
+    keys after a restart. With the sign-in off there are no keys.
+    """
+    keys: dict[Principal, bytes] = {}
+    for role, passphrase in (
+        (Principal.STUDENT, settings.student_passphrase),
+        (Principal.PARENT, settings.parent_passphrase),
+    ):
+        if passphrase is not None:
+            keys[role] = hmac.new(secret, passphrase.encode("utf-8"), "sha256").digest()
+    return keys
+
+
+def issue(role: Principal, key: bytes, now: datetime) -> str:
+    """A token naming who signed in and when, signed with that person's key."""
     payload = f"{role.value}:{int(now.timestamp())}"
-    signature = hmac.new(secret, payload.encode("ascii"), "sha256").hexdigest()
+    signature = hmac.new(key, payload.encode("ascii"), "sha256").hexdigest()
     return f"{payload}:{signature}"
 
 
-def read_token(token: str | None, secret: bytes, now: datetime) -> Principal | None:
-    """Who a token names, or ``None`` for one that is missing, altered, aged out, or odd."""
+def read_token(
+    token: str | None, keys: Mapping[Principal, bytes], now: datetime
+) -> Principal | None:
+    """Who a token names, or ``None`` for one missing, altered, aged out, dated ahead, or odd.
+
+    The role named in the token picks the key that must have signed it, so a
+    token signed with one person's key never names the other. A token dated
+    further ahead than a slightly fast clock explains is refused too, so a
+    clock set far ahead and put right cannot stretch the month.
+    """
     # A cookie can carry any characters; the hash and the comparison take
     # ASCII only, so anything else is refused here rather than raised there.
     if not token or not token.isascii():
@@ -135,15 +181,134 @@ def read_token(token: str | None, secret: bytes, now: datetime) -> Principal | N
     if len(parts) != 3:
         return None
     role, issued, signature = parts
-    payload = f"{role}:{issued}"
-    expected = hmac.new(secret, payload.encode("ascii"), "sha256").hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        return None
-    if not issued.isdigit() or int(now.timestamp()) - int(issued) > SESSION_SECONDS:
-        return None
     if role not in (Principal.STUDENT.value, Principal.PARENT.value):
         return None
+    key = keys.get(Principal(role))
+    if key is None:
+        return None
+    payload = f"{role}:{issued}"
+    expected = hmac.new(key, payload.encode("ascii"), "sha256").hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    if not issued.isdigit():
+        return None
+    age = int(now.timestamp()) - int(issued)
+    if age > SESSION_SECONDS or age < -SKEW_SECONDS:
+        return None
     return Principal(role)
+
+
+class SignInAttempts:
+    """Wrong passphrases counted per device, so guessing is slowed without locking the house.
+
+    A device is its network address. After ``limit`` wrong passphrases inside
+    one ``cooldown`` it is asked to wait that long, then its count starts
+    over. A right passphrase neither adds to the count nor clears it: both
+    passphrases are checked on every try, so a run of wrong ones followed by
+    a right one may be someone who knows one passphrase guessing at the
+    other, and the count stands until it runs out. The count is per device,
+    so one device cannot lock the others out, and it is bounded: past
+    ``capacity`` devices, room is made in a stated order, counts that have
+    run out first, then the oldest count below the limit, and an active wait
+    only when nothing else is left, so a new device is never turned away for
+    want of room. Nothing typed is kept, only counts and times.
+
+    Time is read from a clock handed in that only moves forward, the
+    process's own by default, so a correction to the computer's clock
+    neither shortens nor stretches a wait. The count lives in this process
+    and is empty at every start.
+
+    One try is one operation under the lock: the wait is read, the passphrase
+    checked, and the outcome counted before any other try is looked at, so
+    tries arriving together from one device are bounded exactly as tries
+    arriving one at a time.
+    """
+
+    def __init__(
+        self,
+        limit: int = ATTEMPT_LIMIT,
+        cooldown: int = COOLDOWN_SECONDS,
+        capacity: int = ATTEMPT_ADDRESSES,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.limit = limit
+        self.cooldown = float(cooldown)
+        self.capacity = capacity
+        self._clock = clock
+        self._counts: dict[str, tuple[int, float]] = {}
+        """Per device: wrong tries so far, and the clock's reading when the count began
+        or the wait began."""
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._counts)
+
+    def try_once(
+        self, device: str, check: Callable[[], Principal | None]
+    ) -> tuple[int, Principal | None]:
+        """One try from a device, whole: the seconds it must still wait, with nothing checked,
+        or zero and who the passphrase names, a wrong one counted before any other try
+        is looked at."""
+        with self._lock:
+            now = self._clock()
+            wait = self._wait(device, now)
+            if wait:
+                return wait, None
+            role = check()
+            if role is None:
+                self._failed(device, now)
+            return 0, role
+
+    def wait_for(self, device: str) -> int:
+        """Seconds this device must still wait, or zero when it may try: a look, not a try."""
+        with self._lock:
+            return self._wait(device, self._clock())
+
+    def _wait(self, device: str, now: float) -> int:
+        entry = self._counts.get(device)
+        if entry is None:
+            return 0
+        count, since = entry
+        left = since + self.cooldown - now
+        if left <= 0:
+            del self._counts[device]
+            return 0
+        if count < self.limit:
+            return 0
+        whole = int(left)
+        return max(1, whole + 1 if left > whole else whole)
+
+    def _failed(self, device: str, now: float) -> None:
+        entry = self._counts.pop(device, None)
+        if entry is not None and entry[0] < self.limit and now - entry[1] < self.cooldown:
+            count = entry[0] + 1
+            # Reaching the limit starts the wait from now.
+            since = now if count >= self.limit else entry[1]
+        else:
+            count, since = 1, now
+            if len(self._counts) >= self.capacity:
+                self._make_room(now)
+        self._counts[device] = (count, since)
+
+    def _make_room(self, now: float) -> None:
+        """Counts that have run out go first, then the oldest below the limit, then a wait.
+
+        Oldest is by the stored start, since a wrong try moves its device to
+        the end of the table's order: a count that began first but tried
+        again last is still the oldest count.
+        """
+        for device in [d for d, (_, since) in self._counts.items() if since + self.cooldown <= now]:
+            del self._counts[device]
+        if len(self._counts) < self.capacity:
+            return
+        below = [device for device, (count, _) in self._counts.items() if count < self.limit]
+        oldest = min(below or self._counts, key=lambda device: self._counts[device][1])
+        del self._counts[oldest]
+
+
+def device_of(request: Request) -> str:
+    """The device asking, by its network address, the one thing that tells devices apart."""
+    return request.client.host if request.client else "unknown"
 
 
 def home_of(role: Principal) -> str:
@@ -199,8 +364,8 @@ class HouseholdGate(BaseHTTPMiddleware):
     ) -> Response:
         """The answer before it is marked: the page or call asked for, or the gate's own."""
         path = request.url.path
-        secret: bytes = request.app.state.household_secret
-        role = read_token(request.cookies.get(COOKIE), secret, datetime.now(UTC))
+        keys: Mapping[Principal, bytes] = request.app.state.household_keys
+        role = read_token(request.cookies.get(COOKIE), keys, datetime.now(UTC))
         request.state.household = role
         if path.startswith(OPEN_PREFIXES):
             return await call_next(request)

@@ -172,6 +172,21 @@ everyone signed in; a device stays signed in for a month or until "Sign out".
 If that file is ever short or altered, the start stops and names it: delete
 it, start again, and everyone signs in once more.
 
+Choose passphrases that are long and unalike, a few plain words each: they
+are typed on a tablet, and they are the whole of who is who. Wrong
+passphrases from one device are counted, and after ten that device is told
+to wait a minute before trying again; a right passphrase in between does
+not start the count over, other devices are not affected, and nothing typed
+is kept.
+
+If a passphrase may have been seen, change it in `.env` and restart: every
+device signed in with it is signed out, the other person's devices stay
+signed in, and the new passphrase works at once. Each person's cookies are
+signed with a key drawn from the secret and their own passphrase, which is
+what makes the change take. "Sign out" forgets the device it is pressed on
+and nothing else; to sign every device out at once, stop the app, delete
+`household.secret`, and start it again.
+
 Start the app so the other devices can reach it, on the computer that stays
 on:
 

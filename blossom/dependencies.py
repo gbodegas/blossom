@@ -31,7 +31,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from blossom.agent.retention import sweep_saved_state
 from blossom.agent.trace import LocalRunTracer
 from blossom.clock import Clock, SystemClock, clock_from
-from blossom.household import secret_beside
+from blossom.household import SignInAttempts, keys_for, secret_beside
 from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource
 from blossom.stores.checkpoints import open_checkpointer
@@ -106,6 +106,8 @@ class ApplicationState:
     household, held to that by the claim on its files taken at startup; the
     table's own refusal of a second, different decision stands as a backstop
     all the same."""
+    attempts: SignInAttempts = field(default_factory=SignInAttempts)
+    """Wrong passphrases counted per device, so guessing is slowed; empty at every start."""
 
     def close(self) -> None:
         """Release resources held for the lifetime of the application."""
@@ -238,9 +240,12 @@ def create_lifespan(settings: Settings) -> Lifespan:
                     await sweep_saved_state(checkpointer, state.drafts, state.clock)
                     setattr(app.state, STATE_ATTRIBUTE, state)
                     if settings.household_sign_in:
-                        # The secret that signs a sign-in, kept beside the database
-                        # so a restart keeps everyone signed in.
-                        app.state.household_secret = secret_beside(settings.database_path)
+                        # A key per person, drawn from the secret kept beside the
+                        # database and that person's passphrase: a restart keeps
+                        # everyone signed in, a changed passphrase signs one person out.
+                        app.state.household_keys = keys_for(
+                            secret_beside(settings.database_path), settings
+                        )
                     # The same rules on a schedule, so a process that outlives a
                     # signal's week or a draft's fortnight keeps them without a restart.
                     sweeper = asyncio.create_task(

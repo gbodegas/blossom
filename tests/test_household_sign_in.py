@@ -3,12 +3,16 @@
 With both passphrases set, every page and route asks who is there. Hers opens
 her week; a parent's opens both pages. The sign-in is a signed cookie with a
 secret kept beside the database, so a restart keeps everyone signed in and a
-cookie made elsewhere is refused. With neither set, nothing asks, which every
-other test relies on.
+cookie made elsewhere is refused. Each person's cookies are signed with a key
+drawn from the secret and their passphrase, so a changed passphrase signs that
+person out; wrong passphrases are counted per device. With neither set,
+nothing asks, which every other test relies on.
 """
 
 import os
 import pathlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -17,9 +21,13 @@ from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.household import (
+    ATTEMPT_LIMIT,
     COOKIE,
+    COOLDOWN_SECONDS,
     SECRET_NAME,
     SESSION_SECONDS,
+    SKEW_SECONDS,
+    SignInAttempts,
     UnreadableHouseholdSecret,
     issue,
     read_token,
@@ -34,15 +42,28 @@ SHORT = "short one"
 PAGE = {"Accept": "text/html"}
 
 
+class Ticking:
+    """A clock for the count: it reads what the test sets, and the test only moves it on."""
+
+    def __init__(self) -> None:
+        self.reading = 1000.0
+
+    def read(self) -> float:
+        return self.reading
+
+
 def household(tmp_path: pathlib.Path, **environ: str) -> Settings:
+    """Settings with both passphrases set and state under ``tmp_path``; ``environ`` wins."""
     return fixture_settings(
-        BLOSSOM_TODAY="2026-08-19",
-        BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
-        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
-        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
-        BLOSSOM_STUDENT_PASSPHRASE=HERS,
-        BLOSSOM_PARENT_PASSPHRASE=THEIRS,
-        **environ,
+        **{
+            "BLOSSOM_TODAY": "2026-08-19",
+            "BLOSSOM_DATABASE_PATH": str(tmp_path / "blossom.sqlite3"),
+            "BLOSSOM_CHECKPOINT_PATH": str(tmp_path / "checkpoints.sqlite3"),
+            "BLOSSOM_TRACE_PATH": str(tmp_path / "traces.sqlite3"),
+            "BLOSSOM_STUDENT_PASSPHRASE": HERS,
+            "BLOSSOM_PARENT_PASSPHRASE": THEIRS,
+            **environ,
+        }
     )
 
 
@@ -156,27 +177,254 @@ def test_signing_out_forgets_this_device(tmp_path: pathlib.Path) -> None:
     assert after.status_code == 303
 
 
-def test_a_cookie_made_elsewhere_or_aged_out_is_refused(tmp_path: pathlib.Path) -> None:
+def test_a_cookie_made_elsewhere_aged_out_or_dated_ahead_is_refused(
+    tmp_path: pathlib.Path,
+) -> None:
     now = datetime.now(UTC)
     app = create_app(household(tmp_path))
     with TestClient(app, follow_redirects=False) as client:
-        secret: bytes = app.state.household_secret
+        keys: dict[Principal, bytes] = app.state.household_keys
+        theirs = keys[Principal.PARENT]
         forged = issue(Principal.PARENT, b"someone else's secret", now)
-        old = issue(Principal.PARENT, secret, now - timedelta(seconds=SESSION_SECONDS + 1))
+        # The app reads its own clock after ``now`` was taken, so the tokens sent
+        # through it sit a minute past each edge; the edges themselves are read
+        # below with one clock on both sides.
+        old = issue(Principal.PARENT, theirs, now - timedelta(seconds=SESSION_SECONDS + 60))
+        ahead = issue(Principal.PARENT, theirs, now + timedelta(seconds=SKEW_SECONDS + 60))
         client.cookies.set(COOKIE, forged)
         with_forged = client.get("/parent", headers=PAGE)
         client.cookies.set(COOKIE, old)
         with_old = client.get("/parent", headers=PAGE)
+        client.cookies.set(COOKIE, ahead)
+        with_ahead = client.get("/parent", headers=PAGE)
 
     assert with_forged.status_code == 303
     assert with_old.status_code == 303
-    assert read_token(issue(Principal.STUDENT, secret, now), secret, now) is Principal.STUDENT
-    assert read_token("STUDENT:notanumber:abc", secret, now) is None
-    assert read_token("VERIFIER:1:abc", secret, now) is None
-    whole = issue(Principal.PARENT, secret, now)
-    assert read_token("PARENT:\u0661\u0662\u0663:abc", secret, now) is None
-    assert read_token("P\u00c4RENT:1:abc", secret, now) is None
-    assert read_token(whole[:-1] + "\u00e9", secret, now) is None
+    assert with_ahead.status_code == 303
+    hers = keys[Principal.STUDENT]
+    assert read_token(issue(Principal.STUDENT, hers, now), keys, now) is Principal.STUDENT
+    at_the_edge = issue(Principal.STUDENT, hers, now - timedelta(seconds=SESSION_SECONDS))
+    assert read_token(at_the_edge, keys, now) is Principal.STUDENT
+    a_little_ahead = issue(Principal.STUDENT, hers, now + timedelta(seconds=SKEW_SECONDS))
+    assert read_token(a_little_ahead, keys, now) is Principal.STUDENT
+    assert read_token(issue(Principal.STUDENT, theirs, now), keys, now) is None
+    assert read_token("STUDENT:notanumber:abc", keys, now) is None
+    assert read_token("VERIFIER:1:abc", keys, now) is None
+    whole = issue(Principal.PARENT, theirs, now)
+    assert read_token("PARENT:\u0661\u0662\u0663:abc", keys, now) is None
+    assert read_token("P\u00c4RENT:1:abc", keys, now) is None
+    assert read_token(whole[:-1] + "\u00e9", keys, now) is None
+
+
+def test_changing_a_passphrase_signs_that_person_out_and_not_the_other(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A passphrase that may have been seen is changed in .env and the app restarted: that
+    person's devices are signed out, the other person's stay signed in, the old
+    passphrase is refused, and the new one works."""
+    renewed = "the porch light at nine"
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+        hers = client.post("/sign-in", data={"passphrase": HERS}).cookies[COOKIE]
+        theirs = client.post("/sign-in", data={"passphrase": THEIRS}).cookies[COOKIE]
+    after = household(tmp_path, BLOSSOM_PARENT_PASSPHRASE=renewed)
+    with TestClient(create_app(after), follow_redirects=False) as client:
+        client.cookies.set(COOKIE, theirs)
+        old_parent = client.get("/parent", headers=PAGE)
+        with_old_phrase = client.post("/sign-in", data={"passphrase": THEIRS})
+        client.cookies.set(COOKIE, hers)
+        still_hers = client.get("/student/due-this-week", headers=PAGE)
+        renewed_parent = client.post("/sign-in", data={"passphrase": renewed})
+
+    assert old_parent.status_code == 303
+    assert with_old_phrase.status_code == 422
+    assert still_hers.status_code == 200
+    assert renewed_parent.status_code == 303
+    assert renewed_parent.headers["location"] == "/parent"
+
+
+def test_ten_wrong_passphrases_from_a_device_are_answered_with_a_wait(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Past the limit the device is told to wait, in the page and in the answer's headers,
+    and a right passphrase is not read until then. The sign-in page itself still shows."""
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+        answers = [
+            client.post("/sign-in", data={"passphrase": "open sesame"}).status_code
+            for _ in range(ATTEMPT_LIMIT)
+        ]
+        refused = client.post("/sign-in", data={"passphrase": THEIRS})
+        page = client.get("/sign-in", headers=PAGE)
+
+    assert answers == [422] * ATTEMPT_LIMIT
+    assert refused.status_code == 429
+    assert refused.headers["retry-after"] == str(COOLDOWN_SECONDS)
+    assert "Too many tries from this device." in refused.text
+    assert COOKIE not in refused.cookies
+    assert page.status_code == 200
+
+
+def test_the_count_is_per_device_bounded_and_over_once_the_wait_is() -> None:
+    """The count is kept against a clock handed in, so the wait, its end, a slow trickle
+    of wrong tries, a right one that leaves the count standing, and the bound on devices
+    are all checked without a real second passing."""
+    clock = Ticking()
+    attempts = SignInAttempts(limit=3, cooldown=60, capacity=2, clock=clock.read)
+
+    def at(seconds: float) -> None:
+        clock.reading = 1000.0 + seconds
+
+    def wrong() -> Principal | None:
+        return None
+
+    def right() -> Principal | None:
+        return Principal.PARENT
+
+    at(0)
+    for _ in range(3):
+        assert attempts.try_once("tablet", wrong) == (0, None)
+    assert attempts.try_once("tablet", right) == (60, None)
+    at(1)
+    assert attempts.try_once("laptop", wrong) == (0, None)
+    at(59.5)
+    assert attempts.wait_for("tablet") == 1
+    at(60)
+    assert attempts.wait_for("tablet") == 0
+    assert len(attempts) == 1
+    at(61)
+    assert attempts.try_once("tablet", wrong) == (0, None)
+    assert attempts.try_once("tablet", right) == (0, Principal.PARENT)
+    assert len(attempts) == 2
+    for _ in range(2):
+        assert attempts.try_once("tablet", wrong) == (0, None)
+    assert attempts.try_once("tablet", right) == (60, None)
+    for seconds in (100, 101, 200):
+        at(seconds)
+        assert attempts.try_once("phone", wrong) == (0, None)
+    assert attempts.wait_for("phone") == 0
+    at(300)
+    for device in ("a", "b", "c"):
+        attempts.try_once(device, wrong)
+    assert len(attempts) == 2
+    assert attempts.wait_for("phone") == 0
+
+
+def test_room_is_made_from_run_out_counts_first_and_from_waits_last() -> None:
+    """Past the capacity, counts that have run out go first, then the oldest count below
+    the limit, and an active wait only when nothing else is left."""
+    clock = Ticking()
+    attempts = SignInAttempts(limit=3, cooldown=60, capacity=2, clock=clock.read)
+
+    def wrong() -> Principal | None:
+        return None
+
+    for _ in range(3):
+        attempts.try_once("waiting", wrong)
+    attempts.try_once("counting", wrong)
+    assert len(attempts) == 2
+    clock.reading += 1
+    attempts.try_once("newcomer", wrong)
+    assert len(attempts) == 2
+    assert attempts.wait_for("waiting") == 59
+    for _ in range(2):
+        attempts.try_once("newcomer", wrong)
+    assert attempts.wait_for("newcomer") == 60
+    clock.reading += 1
+    attempts.try_once("another", wrong)
+    assert len(attempts) == 2
+    assert attempts.wait_for("waiting") == 0
+    assert attempts.wait_for("newcomer") == 59
+    clock.reading += 60
+    attempts.try_once("late", wrong)
+    assert len(attempts) == 1
+
+
+def test_the_oldest_count_is_the_one_that_began_first_not_the_one_touched_last() -> None:
+    """A device that began counting first but tried again last is still the oldest count,
+    so it is the one to go when room is needed; the one that began second stays."""
+    clock = Ticking()
+    attempts = SignInAttempts(limit=3, cooldown=60, capacity=2, clock=clock.read)
+
+    def wrong() -> Principal | None:
+        return None
+
+    attempts.try_once("first", wrong)
+    clock.reading += 1
+    attempts.try_once("second", wrong)
+    clock.reading += 1
+    attempts.try_once("first", wrong)
+    clock.reading += 1
+    attempts.try_once("newcomer", wrong)
+    assert len(attempts) == 2
+    for _ in range(2):
+        attempts.try_once("second", wrong)
+    assert attempts.wait_for("second") == 60
+    attempts.try_once("first", wrong)
+    assert attempts.wait_for("first") == 0
+
+
+@pytest.mark.parametrize(("known", "home"), [(HERS, "/student/due-this-week"), (THEIRS, "/parent")])
+def test_a_right_passphrase_between_wrong_ones_leaves_the_count_standing(
+    tmp_path: pathlib.Path, known: str, home: str
+) -> None:
+    """Nine wrong, a right sign-in, a tenth wrong: the count reaches the limit all the same,
+    the next try is told to wait with no cookie, and the device signed in still opens
+    its page."""
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+        nine = [
+            client.post("/sign-in", data={"passphrase": "open sesame"}).status_code
+            for _ in range(ATTEMPT_LIMIT - 1)
+        ]
+        came_in = client.post("/sign-in", data={"passphrase": known})
+        tenth = client.post("/sign-in", data={"passphrase": "open sesame"})
+        refused = client.post("/sign-in", data={"passphrase": known})
+        still_in = client.get(home, headers=PAGE)
+
+    assert nine == [422] * (ATTEMPT_LIMIT - 1)
+    assert came_in.status_code == 303
+    assert COOKIE in came_in.cookies
+    assert tenth.status_code == 422
+    assert refused.status_code == 429
+    assert refused.headers["retry-after"] == str(COOLDOWN_SECONDS)
+    assert COOKIE not in refused.cookies
+    assert still_in.status_code == 200
+
+
+def test_tries_arriving_together_are_bounded_as_tries_one_at_a_time() -> None:
+    """Thirty wrong tries from one device released at once: exactly the limit are checked,
+    the rest are told to wait, and no try slips through between a look and a count."""
+    attempts = SignInAttempts(limit=10, cooldown=60)
+    checked: list[None] = []
+    released = threading.Barrier(30)
+
+    def wrong() -> Principal | None:
+        checked.append(None)
+        return None
+
+    def one_try(_: int) -> int:
+        released.wait()
+        return attempts.try_once("tablet", wrong)[0]
+
+    with ThreadPoolExecutor(max_workers=30) as pool:
+        waits = list(pool.map(one_try, range(30)))
+
+    assert len(checked) == 10
+    assert waits.count(0) == 10
+    assert waits.count(60) == 20
+
+
+def test_wrong_passphrases_sent_together_are_bounded_through_the_sign_in(
+    tmp_path: pathlib.Path,
+) -> None:
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+
+        def guess(_: int) -> int:
+            return client.post("/sign-in", data={"passphrase": "open sesame"}).status_code
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            answers = list(pool.map(guess, range(ATTEMPT_LIMIT * 2)))
+
+    assert answers.count(422) == ATTEMPT_LIMIT
+    assert answers.count(429) == ATTEMPT_LIMIT
 
 
 def test_a_restart_keeps_everyone_signed_in(tmp_path: pathlib.Path) -> None:
