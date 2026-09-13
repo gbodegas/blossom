@@ -449,7 +449,11 @@ def review(
     ] = None,
 ) -> HTMLResponse:
     """The parent's page: what she asked for, what is waiting, and the folds below."""
-    counted = int(kept) if kept is not None and kept.isdigit() else None
+    try:
+        counted = None if kept is None else int(kept)
+    except ValueError:
+        # A note, not an instruction: anything that is not a count is no note.
+        counted = None
     return review_page(request, state, refreshed=refreshed == "1", kept=counted)
 
 

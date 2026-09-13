@@ -67,7 +67,7 @@ def test_a_paste_is_shown_first_and_kept_only_when_asked(tmp_path: pathlib.Path)
 
     assert shown.status_code == 200
     assert "<h1>What was read</h1>" in shown.text
-    assert "3 of these would change the record." in shown.text
+    assert "These 3 would go on record when put there below, and not before." in shown.text
     assert shown.text.count('<span class="pill">New</span>') == 3
     assert '<span class="pill">Read as a task</span>' in shown.text
     assert "school portal (the assignment&#39;s own line): 2026-09-08" in shown.text
@@ -102,7 +102,7 @@ def test_an_entry_by_hand_is_shown_then_kept_as_the_familys_claim(tmp_path: path
         twice = client.post("/parent/inbox/keep", data=entry)
 
     assert shown.status_code == 200
-    assert "One of these would change the record." in shown.text
+    assert "This would go on record when put there below, and not before." in shown.text
     assert "family entry: 2026-09-11" in shown.text
     assert '<input type="hidden" name="title" value="Vocabulary list, unit two">' in shown.text
     assert kept.headers["location"] == "/parent?kept=1"
@@ -129,6 +129,8 @@ def test_what_cannot_be_read_or_entered_is_said_on_the_family_page(tmp_path: pat
             data={"course": "Spanish", "title": "Vocabulary list", "kind": "CHORE"},
         )
         nothing = client.get("/parent?kept=0", headers=PAGE).text
+        odd = client.get("/parent?kept=%C2%B2", headers=PAGE)
+        huge = client.get("/parent?kept=" + "9" * 5000, headers=PAGE)
 
     assert empty.status_code == 422
     assert NOTHING_PASTED in empty.text
@@ -142,6 +144,9 @@ def test_what_cannot_be_read_or_entered_is_said_on_the_family_page(tmp_path: pat
     assert NOT_A_DATE in bad_date.text
     assert NOT_A_KIND in bad_kind.text
     assert "Nothing new to put on record" in nothing
+    assert odd.status_code == 200
+    assert huge.status_code == 200
+    assert "put on record" not in odd.text.split("<h1>", 1)[1].split("</h1>", 1)[1][:400]
 
 
 def test_the_way_in_is_a_parents(tmp_path: pathlib.Path) -> None:

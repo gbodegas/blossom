@@ -16,8 +16,7 @@
     <p class="empty">Nothing in the text was read as an assignment.</p>
   {% else %}
     <p class="note" role="status">
-      {% if to_keep == 0 %}Everything here is already on record; there is nothing to put on it.{% elif to_keep == 1 %}One of these would change the record.{% else %}{{ to_keep }} of these would change the record.{% endif %}
-      Nothing is on record until it is put there below.
+      {% if to_keep == 0 %}Everything here is on record already; there is nothing to put on it.{% elif known == 0 %}{% if to_keep == 1 %}This would go on record{% else %}These {{ to_keep }} would go on record{% endif %} when put there below, and not before.{% else %}{{ to_keep }} of these would change the record when put on it below, and not before; the other {{ known }} {% if known == 1 %}is{% else %}are{% endif %} there already.{% endif %}
     </p>
   {% endif %}
 

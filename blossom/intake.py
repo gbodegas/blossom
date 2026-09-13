@@ -21,21 +21,27 @@ The shapes, as the portal writes them:
   or ``<Course> - Due: <Title>:``. A teacher's instruction may follow either
   kind of card, on lines of its own.
 - The email: ``MM/DD <Course> - <Section>: <Category>: <Title> Grade:
-  Missing``, one line per assignment, under ``Assignments:``.
+  Missing``, one line per assignment, under ``Assignments:``. A line in that
+  shape with any other grade is not the "Missing" email and is left unread.
 
 One item appears under an assigned day and under a due day, often in two
-weeks, and is one assignment matched by course and title: the date in its
-own line and the date in the header are two claims from the same channel,
-told apart by where each was read. Titles are kept as the portal writes
-them, punctuation and all; a course is kept as written too, grade prefix
-included, since that is how the portal names it everywhere. Forms to sign
-and books to cover are tasks, not homework. The heading's first name is read
-as nothing and never kept.
+weeks, and is one assignment matched by its course and title, exactly as the
+portal writes them: the date in its own line and the date in the header are
+two claims from the same channel, told apart by where each was read. The
+record is matched the same way, by the pair, so an assignment already on
+record under any id takes the claims rather than a twin. A new row's id is
+the title made readable plus a hash of the pair, so two titles that read
+alike never become one. Titles are kept as the portal writes them,
+punctuation and all; a course is kept as written too, grade prefix included,
+since that is how the portal names it everywhere. Forms to sign and books to
+cover are tasks, not homework. The heading's first name is read as nothing
+and never kept.
 """
 
 import re
+import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Final
 
 from blossom.reconciliation import SourceChannel, SourceRecord
@@ -52,17 +58,11 @@ OWN_LINE: Final = "the assignment's own line"
 DAY_HEADER: Final = "the day's header"
 SCHOOL_EMAIL: Final = "the school's email"
 
-TASK_WORDS: Final = (
-    "signed",
-    "sign ",
-    "syllabus",
-    "cover",
-    "binder",
-    "supplies",
-    "permission",
-    "bring ",
+TASK_WORD: Final = re.compile(
+    r"\b(?:sign|signed|signature|syllabus|cover|covers|covered|binder|supplies|permission|bring)\b",
+    re.IGNORECASE,
 )
-"""Words in a title that make it a task rather than a sitting of homework."""
+"""Whole words in a title that make it a task rather than a sitting of homework."""
 
 NOISE: Final = frozenset(
     {
@@ -98,10 +98,36 @@ EMAIL_LINE: Final = re.compile(
     r"^(?P<month>\d{1,2})/(?P<day>\d{1,2})\s+(?P<course>.+?)(?:\s+-\s+\S+)?:\s+"
     r"(?P<category>[^:]+?):\s+(?P<title>.+?)\s+Grade:\s+(?P<grade>.+?)\s*$"
 )
+MISSING: Final = "missing"
+"""The one grade the school's email is read for."""
 COURSE_LENGTH: Final = 60
 """A course line is short; a longer plain line is a teacher's instruction or a stray."""
 TEXT_MAX_LENGTH: Final = 40_000
 """How much one paste may hold: a page or a week is a few thousand characters."""
+IDENTITY: Final = uuid.UUID("5b0f9b2e-2a3c-4d0e-9b7a-0b2f8a1c6d33")
+"""The namespace an assignment's id is drawn from, so the same pair always gives the same id."""
+
+
+def pair(course: str, title: str) -> tuple[str, str]:
+    """The course and title as the record matches them: their words, single-spaced."""
+    return " ".join(course.split()), " ".join(title.split())
+
+
+def slug(text: str) -> str:
+    """Lowercase letters and digits joined by hyphens, and nothing else."""
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def identity(course: str, title: str) -> str:
+    """A stable id for a new row: the title made readable, and a hash of the exact pair.
+
+    The hash keeps two titles that read alike apart, ``Quiz A/B`` and
+    ``Quiz A-B`` among them, and keeps the id the same length however long
+    the title runs.
+    """
+    course, title = pair(course, title)
+    tag = uuid.uuid5(IDENTITY, f"{course}\n{title}").hex[:8]
+    return f"assignment-{slug(title)[:40].rstrip('-') or 'untitled'}-{tag}"
 
 
 @dataclass(frozen=True)
@@ -118,9 +144,14 @@ class Reading:
     """A teacher's instruction under the card, shown to the parent and not kept."""
 
     @property
+    def pair(self) -> tuple[str, str]:
+        """What the reading is matched by, in the paste and against the record."""
+        return pair(self.course, self.title)
+
+    @property
     def assignment_id(self) -> str:
-        """The same course and title always name the same assignment."""
-        return f"assignment-{slug(self.course)}-{slug(self.title)}"
+        """The id a new row would have; a row already on record keeps its own."""
+        return identity(self.course, self.title)
 
     def assignment(self) -> Assignment:
         """The record's row for a reading that is new to it."""
@@ -144,15 +175,9 @@ class Read:
     unread: tuple[str, ...]
 
 
-def slug(text: str) -> str:
-    """Lowercase letters and digits joined by hyphens, and nothing else."""
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60]
-
-
 def kind_of(title: str) -> AssignmentKind:
     """A task for the things to sign, cover, bring, or check; homework otherwise."""
-    lowered = f"{title.lower()} "
-    if any(word in lowered for word in TASK_WORDS):
+    if TASK_WORD.search(title):
         return AssignmentKind.TASK
     return AssignmentKind.HOMEWORK
 
@@ -222,7 +247,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     are one reading with both claims.
     """
     lines = [line.strip() for line in text.splitlines()]
-    drafts: dict[str, _Draft] = {}
+    drafts: dict[tuple[str, str], _Draft] = {}
     unread: list[str] = []
     day: date | None = None
     course: str | None = None
@@ -243,7 +268,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             continue
         if email := EMAIL_LINE.match(line):
             when = nearest_year(int(email.group("month")), int(email.group("day")), today)
-            if when is None:
+            if when is None or email.group("grade").strip().lower() != MISSING:
                 unread.append(line)
                 continue
             draft = _draft_for(drafts, email.group("course").strip(), email.group("title").strip())
@@ -293,10 +318,10 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     return Read(items=tuple(draft.reading() for draft in drafts.values()), unread=tuple(unread))
 
 
-def _draft_for(drafts: dict[str, _Draft], course: str, title: str) -> _Draft:
-    key = f"{slug(course)}-{slug(title)}"
+def _draft_for(drafts: dict[tuple[str, str], _Draft], course: str, title: str) -> _Draft:
+    key = pair(course, title)
     if key not in drafts:
-        drafts[key] = _Draft(course=course, title=title)
+        drafts[key] = _Draft(course=key[0], title=key[1])
     return drafts[key]
 
 
@@ -326,9 +351,10 @@ def by_hand(
         if due_date is None
         else (claim(SourceChannel.PARENT_ENTRY, due_date, None, now, FAMILY_CONFIDENCE),)
     )
+    course, title = pair(course, title)
     return Reading(
-        course=course.strip(),
-        title=title.strip(),
+        course=course,
+        title=title,
         due_date=due_date,
         assigned_on=assigned_on,
         kind=kind,
@@ -336,9 +362,17 @@ def by_hand(
     )
 
 
+def a_year_from(today: date, years: int) -> date:
+    """The same day of the month ``years`` away; a leap day lands on the last of February."""
+    try:
+        return today.replace(year=today.year + years)
+    except ValueError:
+        return today.replace(year=today.year + years, day=28)
+
+
 def within_a_school_year(when: date, today: date) -> bool:
-    """A date a paste can mean: within a year either side of today."""
-    return abs(when - today) <= timedelta(days=366)
+    """A date a paste can mean: from a year ago today to a year from today, by the calendar."""
+    return a_year_from(today, -1) <= when <= a_year_from(today, 1)
 
 
 NEW: Final = "new"
@@ -354,6 +388,13 @@ class Change:
     on_record: Assignment | None
     new_claims: tuple[SourceRecord, ...]
     fills_assigned_on: bool
+
+    @property
+    def assignment_id(self) -> str:
+        """The row the reading lands in: the record's own when it has one, else a new one."""
+        if self.on_record is not None:
+            return self.on_record.assignment_id
+        return self.reading.assignment_id
 
     @property
     def state(self) -> str:
@@ -381,23 +422,25 @@ class Change:
 def changes_for(items: tuple[Reading, ...], store: ProjectStateStore) -> list[Change]:
     """Compare each reading with the record: what is new, what is known, what a paste adds.
 
-    A claim already on record, the same channel saying the same value from
-    the same place, is not made twice. The recorded due date is never
-    replaced by a paste; a different date is a claim beside it, which the
-    page shows as a disagreement. The assigned date is filled in when the
-    record has none, since that is a fact the record lacked, not one it
-    holds.
+    A reading matches a row by its course and title, whatever the row's id,
+    so an assignment on record from a fixture or an earlier paste takes the
+    claims rather than a twin. A claim already on record, the same channel
+    saying the same value from the same place, is not made twice. The
+    recorded due date is never replaced by a paste; a different date is a
+    claim beside it, which the page shows as a disagreement. The assigned
+    date is filled in when the record has none, since that is a fact the
+    record lacked, not one it holds.
     """
-    on_record = {item.assignment_id: item for item in store.all_assignments()}
+    on_record = {pair(item.course, item.title): item for item in store.all_assignments()}
     changes: list[Change] = []
     for reading in items:
-        existing = on_record.get(reading.assignment_id)
+        existing = on_record.get(reading.pair)
         if existing is None:
             changes.append(Change(reading, None, reading.claims, False))
             continue
         had = {
             (record.channel, record.asserted_value, record.seen_in)
-            for record in store.deadline_records(reading.assignment_id)
+            for record in store.deadline_records(existing.assignment_id)
         }
         fresh = tuple(
             record
@@ -409,22 +452,30 @@ def changes_for(items: tuple[Reading, ...], store: ProjectStateStore) -> list[Ch
     return changes
 
 
-def keep(changes: list[Change], store: ProjectStateStore) -> int:
-    """Put the changes on record in one write, and say how many readings changed it."""
-    rows: list[Assignment] = []
-    claims: dict[str, list[SourceRecord]] = {}
-    kept = 0
-    for change in changes:
-        if change.state == KNOWN:
-            continue
-        kept += 1
-        if change.on_record is None:
-            rows.append(change.reading.assignment())
-        elif change.fills_assigned_on:
-            rows.append(
-                change.on_record.model_copy(update={"assigned_on": change.reading.assigned_on})
-            )
-        if change.new_claims:
-            claims[change.reading.assignment_id] = list(change.new_claims)
-    store.put_on_record(rows, claims)
+def keep(items: tuple[Reading, ...], store: ProjectStateStore) -> int:
+    """Compare and write as one: put on record what the record lacks, and say how many.
+
+    The comparison and the write happen while the store is held for this
+    caller alone, so two keepings of the same text, a double press or two
+    tabs, cannot both find a reading new: the second finds what the first
+    wrote and adds nothing.
+    """
+    with store.exclusively():
+        changes = changes_for(items, store)
+        rows: list[Assignment] = []
+        claims: dict[str, list[SourceRecord]] = {}
+        kept = 0
+        for change in changes:
+            if change.state == KNOWN:
+                continue
+            kept += 1
+            if change.on_record is None:
+                rows.append(change.reading.assignment())
+            elif change.fills_assigned_on:
+                rows.append(
+                    change.on_record.model_copy(update={"assigned_on": change.reading.assigned_on})
+                )
+            if change.new_claims:
+                claims[change.assignment_id] = list(change.new_claims)
+        store.put_on_record(rows, claims)
     return kept

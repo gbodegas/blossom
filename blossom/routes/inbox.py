@@ -90,6 +90,7 @@ def preview_page(
         {
             "changes": changes,
             "to_keep": sum(1 for change in changes if change.state != KNOWN),
+            "known": sum(1 for change in changes if change.state == KNOWN),
             "unread": read.unread,
             "fields": fields,
             "sample": state.settings.sample,
@@ -165,5 +166,5 @@ def keep_readings(
         return review_page(
             request, state, problem=read, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT
         )
-    kept = keep(changes_for(read.items, state.project_state), state.project_state)
+    kept = keep(read.items, state.project_state)
     return RedirectResponse(f"/parent?kept={kept}", status_code=status.HTTP_303_SEE_OTHER)

@@ -222,7 +222,7 @@ page, the weekly summary, or the school's "Missing" email, select the text,
 copy it, and paste it whole. The reader knows the portal's line shapes, the
 day headers, the course lines, the ``Assigned: <Title>: (Due:MM/DD/YYYY)``
 and ``Due: <Title>:`` cards, the summary's one-line cards, and the email's
-one line per assignment, and reads them into assignments and into the
+one line per assignment with the grade "Missing", and reads them into assignments and into the
 portal's claims about their dates, with where each claim was read: the
 assignment's own line or the day's header. One item seen under an assigned
 day and again under a due day, often in two weeks, is one assignment.
@@ -245,7 +245,8 @@ is the family's own claim, which her page names as such. A date more than a
 year from today is refused, since it is almost always a mistyped year.
 
 What is never kept: the heading's first name, teachers' names in
-instructions, grades, and anything the reader did not understand. The
+instructions, grades, and anything the reader did not understand; a line in
+the email's shape with a grade other than "Missing" is left unread. The
 school-reported "Missing" status in the email is not yet shown on the pages;
 the email's assignments and dates are read like the portal's.
 

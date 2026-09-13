@@ -26,6 +26,7 @@ not treat it as completion.
 import sqlite3
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -99,7 +100,9 @@ class ProjectStateStore:
         # store has no business choosing one.
         self._clock = clock
         # Shared across FastAPI's handler threads; see blossom/dependencies.py.
-        self._lock = threading.Lock()
+        # Re-entrant, so a caller holding the store through ``exclusively``
+        # can read and write through the same methods everyone else uses.
+        self._lock = threading.RLock()
         self.path: Path | None = None
         """The file, when the store was opened on one; a connection handed in has none."""
         self.created = False
@@ -136,6 +139,14 @@ class ProjectStateStore:
         )
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS date_claims_by_assignment ON date_claims (assignment_id)"
+        )
+        # One claim is on record once: the same channel saying the same value
+        # from the same place is one fact however many times it is pasted.
+        self._connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS date_claims_once
+            ON date_claims (assignment_id, channel, asserted_value, COALESCE(seen_in, ''))
+            """
         )
 
     @classmethod
@@ -205,6 +216,15 @@ class ProjectStateStore:
         tables = connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
         return connection, safe, int(tables) == 0
 
+    def exclusively(self) -> AbstractContextManager[object]:
+        """Hold the store for one caller, so reads and a write between them see one record.
+
+        The lock is re-entrant: inside the block the caller reads and writes
+        through the same methods as anyone else, and no one else gets between
+        its comparison and its write.
+        """
+        return self._lock
+
     def discard_if_new(self) -> None:
         """Close, and remove the file if it was blank when this start opened it, so a
         start that fails partway leaves the file as it was: absent."""
@@ -272,13 +292,21 @@ class ProjectStateStore:
         return int(row[0]) == 0
 
     def record_claims(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
-        """Keep each channel's claim about one assignment's due date, as made, all or none."""
+        """Keep each channel's claim about one assignment's due date, as made, all or none.
+
+        A claim already on record, the same channel saying the same value
+        from the same place, is left as it is rather than made twice.
+        """
         with self._lock, self._connection:
             self._record_claims_locked(assignment_id, records)
 
     def _record_claims_locked(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
         self._connection.executemany(
-            "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (assignment_id, channel, asserted_value, COALESCE(seen_in, ''))
+            DO NOTHING
+            """,
             [
                 (
                     assignment_id,
