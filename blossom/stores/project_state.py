@@ -364,7 +364,8 @@ class ProjectStateStore:
                 self._record_status_reports_locked(assignment_id, said)
 
     def record_status_reports(self, assignment_id: str, reports: Iterable[StatusReport]) -> None:
-        """Keep what a school channel reported about one assignment, once per day and status."""
+        """Keep what a school channel reported about one assignment, once per day and status,
+        and set the row's reported status from the latest report, in one transaction."""
         with self._lock, self._connection:
             self._record_status_reports_locked(assignment_id, reports)
 
@@ -372,7 +373,9 @@ class ProjectStateStore:
         self, assignment_id: str, reports: Iterable[StatusReport]
     ) -> None:
         """Keep each report once per channel, status, and day, whoever writes it: the index
-        the file keeps refuses a second, and only that conflict is passed over."""
+        the file keeps refuses a second, and only that conflict is passed over. The row's
+        reported status then follows the latest report, by the day reported and the order
+        kept, so what the pages and the planner read of the row never lags the reports."""
         self._connection.executemany(
             """
             INSERT INTO status_reports VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -390,6 +393,19 @@ class ProjectStateStore:
                 )
                 for report in reports
             ],
+        )
+        self._connection.execute(
+            """
+            UPDATE assignments SET reported_submission_status = (
+                SELECT status FROM status_reports
+                WHERE status_reports.assignment_id = assignments.assignment_id
+                ORDER BY reported_on DESC, rowid DESC LIMIT 1
+            )
+            WHERE assignment_id = ? AND EXISTS (
+                SELECT 1 FROM status_reports WHERE status_reports.assignment_id = ?
+            )
+            """,
+            (assignment_id, assignment_id),
         )
 
     def status_reports(self, assignment_id: str) -> list[StatusReport]:

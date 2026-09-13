@@ -86,6 +86,10 @@ def article_for(page: str, title: str) -> str:
     return page.split(title, 1)[1].split("</article>", 1)[0]
 
 
+def by_due(rows: list[Assignment]) -> list[Assignment]:
+    return sorted(rows, key=lambda row: row.due_date or date.min)
+
+
 def review_form(page: str) -> dict[str, str]:
     """The review form as a browser would send it back untouched: the hidden fields, each
     select's chosen option, and the text, read from the page itself."""
@@ -549,9 +553,7 @@ def test_a_folded_cards_answers_travel_with_a_returned_page(tmp_path: pathlib.Pa
         carried = review_form(returned.text)
         saved = client.post("/parent/inbox/keep", data={**carried, "occurrence-2": "new"})
         state = state_of(client)
-        rows = sorted(
-            state.project_state.all_assignments(), key=lambda row: row.due_date or date.min
-        )
+        rows = by_due(state.project_state.all_assignments())
         claims = state.project_state.deadline_records(rows[0].assignment_id)
 
     assert {"asked-1", "asked-2"} <= set(review_form(preview))
@@ -612,24 +614,155 @@ def test_a_question_the_record_raised_since_the_page_is_said_apart(
 
 
 def test_a_select_left_as_the_page_showed_it_is_no_answer(tmp_path: pathlib.Path) -> None:
-    """A form whose select matches what the page showed for it, even when the row has since
-    been changed from elsewhere, changes nothing; the notice for cards choosing different
-    types is the page's own words."""
+    """A page is made; the row is corrected from elsewhere; the page's form, sent back with
+    its select untouched, changes nothing, and the correction stands. The notice for cards
+    choosing different types is the page's own words."""
     with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
         client.post("/parent/inbox/keep", data={"text": SAVED_WEEK})
+        stale_page = client.post("/parent/inbox/read", data={"text": SAVED_WEEK}).text
         client.post(
             "/parent/inbox/keep",
             data={"text": SAVED_WEEK, "kind-0": "TASK", "suggested-0": "HOMEWORK"},
         )
-        stale = client.post(
-            "/parent/inbox/keep",
-            data={"text": SAVED_WEEK, "kind-0": "HOMEWORK", "suggested-0": "HOMEWORK"},
-        )
+        stale = client.post("/parent/inbox/keep", data=review_form(stale_page))
         rows = state_of(client).project_state.all_assignments()
 
+    assert review_form(stale_page)["kind-0"] == "HOMEWORK"
+    assert review_form(stale_page)["shown-0"] == "HOMEWORK"
     assert stale.headers["location"] == "/parent?added=0&updated=0&unchanged=1"
     assert rows[0].kind is AssignmentKind.TASK
     assert "Pick one type for it" in CHOOSE_ONE_TYPE
+
+
+FOUR_WEEKS_OF_PRACTICE = (
+    THREE_WEEKS_OF_PRACTICE + "\nTuesday 9/29/2026\nMath\nDue: Weekly practice:\n"
+)
+
+
+def test_an_edit_to_the_card_shown_stands_over_a_folded_cards_choice(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Task is chosen on the second card, folded into the first; the page comes back for
+    the third card's question, twice, showing the merged card as a task. The parent sets
+    that card back to Homework and answers. The row is homework, as the parent's own
+    choice; the next preview shows Homework; the same form sent again changes nothing; and
+    a restart finds the same rows and claims."""
+    settings = settings_in(tmp_path)
+    with TestClient(create_app(settings), follow_redirects=False) as client:
+        preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
+        first = {**review_form(preview), "occurrence-1": "update", "kind-1": "TASK"}
+        returned = client.post("/parent/inbox/keep", data=first)
+        again = client.post("/parent/inbox/keep", data=review_form(returned.text))
+        revised = {**review_form(again.text), "kind-0": "HOMEWORK", "occurrence-2": "new"}
+        saved = client.post("/parent/inbox/keep", data=revised)
+        state = state_of(client)
+        rows = by_due(state.project_state.all_assignments())
+        claims = [state.project_state.deadline_records(row.assignment_id) for row in rows]
+        later = client.post(
+            "/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE.split("\n\n")[1]}
+        ).text
+        replayed = client.post("/parent/inbox/keep", data=revised)
+    with TestClient(create_app(settings)) as restarted:
+        after_restart = by_due(state_of(restarted).project_state.all_assignments())
+
+    for page in (returned, again):
+        fields = review_form(page.text)
+        assert (fields["kind-0"], fields["shown-0"], fields["suggested-0"]) == (
+            "TASK",
+            "TASK",
+            "HOMEWORK",
+        )
+        assert (fields["suggested-1"], fields["folded-1"]) == ("HOMEWORK", "0")
+        assert "asked-2" in fields
+        assert "1 card folded into the card for the same assignment, as you said." in page.text
+    assert saved.headers["location"] == "/parent?added=2&updated=0&unchanged=0"
+    assert [(row.due_date, row.kind) for row in rows] == [
+        (date(2026, 9, 15), AssignmentKind.HOMEWORK),
+        (date(2026, 9, 22), AssignmentKind.HOMEWORK),
+    ]
+    assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY
+    assert rows[1].origins["kind"] is SourceChannel.LMS
+    assert [[said.asserted_value for said in each] for each in claims] == [
+        ["2026-09-08", "2026-09-15"],
+        ["2026-09-22"],
+    ]
+    assert (review_form(later)["kind-0"], review_form(later)["suggested-0"]) == (
+        "HOMEWORK",
+        "HOMEWORK",
+    )
+    assert replayed.headers["location"] == "/parent?added=0&updated=0&unchanged=2"
+    assert after_restart == rows
+
+
+def test_the_card_shown_can_be_set_after_a_fold_left_it_as_suggested(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The second card is folded with its type left as suggested; the page comes back for
+    the third card's question; the parent sets the merged card to Task. The row is a task."""
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
+        returned = client.post(
+            "/parent/inbox/keep", data={**review_form(preview), "occurrence-1": "update"}
+        )
+        chosen = {**review_form(returned.text), "kind-0": "TASK", "occurrence-2": "new"}
+        saved = client.post("/parent/inbox/keep", data=chosen)
+        rows = by_due(state_of(client).project_state.all_assignments())
+
+    assert review_form(returned.text)["kind-0"] == "HOMEWORK"
+    assert saved.headers["location"] == "/parent?added=2&updated=0&unchanged=0"
+    assert [(row.due_date, row.kind) for row in rows] == [
+        (date(2026, 9, 15), AssignmentKind.TASK),
+        (date(2026, 9, 22), AssignmentKind.HOMEWORK),
+    ]
+    assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY
+
+
+def test_two_folded_cards_cannot_override_the_card_shown(tmp_path: pathlib.Path) -> None:
+    """Four cards a week apart: the second, with Task chosen, and the third are folded into
+    the first, and the fourth's question is left open. The page comes back with the merged
+    card as a task and both folded cards' answers hidden; the parent sets the merged card
+    back to Homework and answers. Homework it is, with every date."""
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        preview = client.post("/parent/inbox/read", data={"text": FOUR_WEEKS_OF_PRACTICE}).text
+        first = {
+            **review_form(preview),
+            "occurrence-1": "update",
+            "kind-1": "TASK",
+            "occurrence-2": "update",
+        }
+        returned = client.post("/parent/inbox/keep", data=first)
+        carried = review_form(returned.text)
+        saved = client.post(
+            "/parent/inbox/keep", data={**carried, "kind-0": "HOMEWORK", "occurrence-3": "new"}
+        )
+        state = state_of(client)
+        rows = by_due(state.project_state.all_assignments())
+        claims = state.project_state.deadline_records(rows[0].assignment_id)
+
+    assert {"asked-1", "asked-2", "asked-3"} <= set(review_form(preview))
+    assert "2 cards folded into the card for the same assignment, as you said." in returned.text
+    assert (carried["kind-0"], carried["shown-0"]) == ("TASK", "TASK")
+    assert (carried["kind-1"], carried["kind-2"]) == ("TASK", "HOMEWORK")
+    assert carried["occurrence-2"] == "update"
+    assert saved.headers["location"] == "/parent?added=2&updated=0&unchanged=0"
+    assert [(row.due_date, row.kind) for row in rows] == [
+        (date(2026, 9, 22), AssignmentKind.HOMEWORK),
+        (date(2026, 9, 29), AssignmentKind.HOMEWORK),
+    ]
+    assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY
+    assert [said.asserted_value for said in claims] == ["2026-09-08", "2026-09-15", "2026-09-22"]
+
+
+def test_an_entered_date_beside_a_saved_one_is_called_entered(tmp_path: pathlib.Path) -> None:
+    entry = {"course": "Math", "title": "Weekly practice", "due_date": "2026-09-03"}
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        client.post("/parent/inbox/keep", data={"text": SAVED_WEEK})
+        shown = client.post("/parent/inbox/enter", data=entry).text
+
+    assert "<dt>Saved due date</dt>" in shown
+    assert "<dt>Entered due date</dt>" in shown
+    assert "Pasted due date" not in shown
+    assert "The entered date is added as evidence beside the saved date" in shown
 
 
 def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(

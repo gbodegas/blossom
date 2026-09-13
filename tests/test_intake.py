@@ -6,7 +6,6 @@ punctuation. Nothing from a real family appears in it. The three-week summary
 has the structure of a real download, hyphen bullets included.
 """
 
-import dataclasses
 import pathlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -318,7 +317,12 @@ def test_the_type_is_a_task_only_for_paperwork_and_materials() -> None:
     assert kind_of("Signing the form") is AssignmentKind.TASK
     assert kind_of("Covering a book") is AssignmentKind.TASK
     assert kind_of("Bringing materials") is AssignmentKind.TASK
+    assert kind_of("Signs permission form") is AssignmentKind.TASK
+    assert kind_of("Brings materials") is AssignmentKind.TASK
+    assert kind_of("Brought a book") is AssignmentKind.TASK
+    assert kind_of("Covers the textbook") is AssignmentKind.TASK
     assert kind_of("Signed numbers practice") is AssignmentKind.HOMEWORK
+    assert kind_of("Signs of life essay") is AssignmentKind.HOMEWORK
     assert kind_of("Discovery of cells worksheet") is AssignmentKind.HOMEWORK
     assert kind_of("Discovering cells") is AssignmentKind.HOMEWORK
     assert kind_of("PR1 U2.3 Pg 40 #1-9") is AssignmentKind.HOMEWORK
@@ -705,9 +709,8 @@ def test_a_type_chosen_on_any_card_about_one_assignment_is_the_assignments(
 ) -> None:
     """A type chosen on the later of two cards, folded into the first as the same
     assignment, is the new row's; a type chosen on one of two cards about a saved row is
-    the row's, whichever card, and the other card left as the page showed it undoes
-    nothing. Each outlives a restart, is what the next paste suggests, and the same form
-    sent again changes nothing."""
+    the row's, whichever card. Each outlives a restart, is what the next paste suggests,
+    and the same choices sent again change nothing."""
     cards = readings(TWO_WEEKS_OF_PRACTICE)
     folded_path = tmp_path / "folded.sqlite3"
     store = ProjectStateStore.open(folded_path, fixture_clock())
@@ -729,8 +732,8 @@ def test_a_type_chosen_on_any_card_about_one_assignment_is_the_assignments(
         store.close()
     outcomes: dict[str, tuple[Kept | list[Change], list[Assignment]]] = {}
     for name, kinds in {
-        "chosen on the first": {0: AssignmentKind.TASK, 1: AssignmentKind.HOMEWORK},
-        "chosen on the second": {0: AssignmentKind.HOMEWORK, 1: AssignmentKind.TASK},
+        "chosen on the first": {0: AssignmentKind.TASK},
+        "chosen on the second": {1: AssignmentKind.TASK},
     }.items():
         saved = ProjectStateStore.open(tmp_path / f"{slug(name)}.sqlite3", fixture_clock())
         try:
@@ -760,40 +763,102 @@ def test_a_type_chosen_on_any_card_about_one_assignment_is_the_assignments(
         assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY, name
 
 
-def test_cards_that_choose_different_types_for_one_assignment_stop_the_saving(
+THREE_WEEKS_OF_PRACTICE = (
+    TWO_WEEKS_OF_PRACTICE + "\nTuesday 9/22/2026\nMath\nDue: Weekly practice:\n"
+)
+
+
+def test_the_card_shown_for_an_assignment_decides_its_type_over_a_folded_card(
     tmp_path: pathlib.Path,
 ) -> None:
-    """With two types and one suggestion per assignment, two cards cannot choose
-    differently; the guard is there for the day a third type exists, and it holds: the
-    saving hands the changes back rather than picking a type on its own."""
+    """A choice on the card shown for an assignment stands over any a folded card carried,
+    a choice of the reader's own suggestion included; two folded cards choosing differently
+    with no choice on the card shown is a conflict, which the saving hands back rather than
+    settling on its own."""
+    cards = readings(TWO_WEEKS_OF_PRACTICE)
+    three = readings(THREE_WEEKS_OF_PRACTICE)
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:
-        keep(readings(SAVED_WEEK), store)
-        changes = changes_for(
-            cards := readings(TWO_WEEKS_OF_PRACTICE), store, occurrences={0: UPDATE, 1: UPDATE}
+        shown_wins = changes_for(
+            cards,
+            store,
+            occurrences={1: UPDATE},
+            kinds={0: AssignmentKind.HOMEWORK, 1: AssignmentKind.TASK},
         )
-        disagreeing = [
-            dataclasses.replace(changes[0], kind=AssignmentKind.TASK, kind_by_parent=True),
-            dataclasses.replace(changes[1], kind=AssignmentKind.HOMEWORK, kind_by_parent=True),
-        ]
-        folded_conflict = [dataclasses.replace(changes[0], choices_conflict=True)]
-        agreeing = [
-            dataclasses.replace(changes[0], kind=AssignmentKind.TASK, kind_by_parent=True),
-            dataclasses.replace(changes[1], kind=AssignmentKind.TASK, kind_by_parent=True),
-        ]
-        rows_before = store.all_assignments()
         kept = keep(
-            cards, store, occurrences={0: UPDATE, 1: UPDATE}, kinds={0: AssignmentKind.TASK}
+            cards,
+            store,
+            occurrences={1: UPDATE},
+            kinds={0: AssignmentKind.HOMEWORK, 1: AssignmentKind.TASK},
         )
+        rows = store.all_assignments()
+    finally:
+        store.close()
+    other = ProjectStateStore.open(tmp_path / "conflict.sqlite3", fixture_clock())
+    try:
+        both_folds = {1: UPDATE, 2: UPDATE}
+        disagreeing = {1: AssignmentKind.TASK, 2: AssignmentKind.HOMEWORK}
+        conflict = changes_for(three, other, occurrences=both_folds, kinds=disagreeing)
+        refused = keep(three, other, occurrences=both_folds, kinds=disagreeing)
+        nothing = other.all_assignments()
+        settled = keep(
+            three, other, occurrences=both_folds, kinds={**disagreeing, 0: AssignmentKind.HOMEWORK}
+        )
+        settled_rows = other.all_assignments()
+    finally:
+        other.close()
+
+    assert [change.state for change in shown_wins] == [NEW, FOLDED]
+    assert (shown_wins[0].kind, shown_wins[0].kind_by_parent) == (AssignmentKind.HOMEWORK, True)
+    assert kept == Kept(added=1, updated=0, unchanged=0)
+    assert [(row.due_date, row.kind) for row in rows] == [
+        (date(2026, 9, 15), AssignmentKind.HOMEWORK)
+    ]
+    assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY
+    assert [change.state for change in conflict] == [NEW, FOLDED, FOLDED]
+    assert conflict[0].choices_conflict
+    assert conflicting_choices(conflict) == ["Math: Weekly practice"]
+    assert isinstance(refused, list)
+    assert nothing == []
+    assert settled == Kept(added=1, updated=0, unchanged=0)
+    assert [(row.due_date, row.kind) for row in settled_rows] == [
+        (date(2026, 9, 22), AssignmentKind.HOMEWORK)
+    ]
+
+
+def test_an_entered_date_is_called_entered_in_the_effect(tmp_path: pathlib.Path) -> None:
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        keep((by_hand("Art", "Sketchbook", None, None, AssignmentKind.HOMEWORK, now=NOW),), store)
+        fills = changes_for(
+            (
+                by_hand(
+                    "Art", "Sketchbook", date(2026, 9, 18), None, AssignmentKind.HOMEWORK, now=NOW
+                ),
+            ),
+            store,
+        )
+        keep(readings(SAVED_WEEK), store)
+        beside = changes_for(
+            (
+                by_hand(
+                    "Math",
+                    "Weekly practice",
+                    date(2026, 9, 3),
+                    None,
+                    AssignmentKind.HOMEWORK,
+                    now=NOW,
+                ),
+            ),
+            store,
+        )
+        pasted = changes_for(readings("Thursday 9/3/2026\nMath\nDue: Weekly practice:\n"), store)
     finally:
         store.close()
 
-    assert conflicting_choices(disagreeing) == ["Math: Weekly practice"]
-    assert conflicting_choices(folded_conflict) == ["Math: Weekly practice"]
-    assert conflicting_choices(agreeing) == []
-    assert conflicting_choices(changes) == []
-    assert rows_before[0].kind is AssignmentKind.HOMEWORK
-    assert kept == Kept(added=0, updated=1, unchanged=0)
+    assert "so the entered date becomes it." in fills[0].effect
+    assert "The entered date is added as evidence beside the saved date" in beside[0].effect
+    assert "The pasted date is added as evidence beside the saved date" in pasted[0].effect
 
 
 def test_a_card_repeated_in_one_text_is_one_claim_and_a_report_repeated_is_one_report(

@@ -256,7 +256,9 @@ a type chosen on any of them, a folded one included, is the assignment's,
 and two cards choosing different types stop the save until one is picked.
 A page that comes back because a question is still open keeps every choice
 made on it, the folded cards' answers included, and says whether the
-question is one it put or one the record raised since. Several cards about one saved assignment in one text compose: the
+question is one it put or one the record raised since. The card shown for
+an assignment decides its type: a change made on it, a change back to what
+the reader suggested included, stands over any choice a folded card carried. Several cards about one saved assignment in one text compose: the
 date one moves, the note another adds, and the assigned date a third fills
 all reach the one row, every date observation with them, and the count on
 return says how many assignments changed, not how many cards. The Save
@@ -275,7 +277,8 @@ before it.
 
 The teacher's instruction under a card is kept with the assignment, line
 breaks and all, and shown on her card as "From the teacher"; a note typed by
-a parent shows as "A parent wrote". The record keeps where each fact came
+a parent shows as "A parent wrote", and the planner is told whose words a
+note is. The record keeps where each fact came
 from, the row itself, its note, its due and assigned dates, and its type, so
 her page can say "Entered by a parent" and the review page can say whose
 note stands: a parent's note replaces any saved note and is never replaced

@@ -26,7 +26,7 @@ from blossom.heuristic_relevance import CRITERIA
 from blossom.noticing import Noticing
 from blossom.plan_checks import PlanVerification
 from blossom.plans import DailyPlan
-from blossom.reconciliation import SourceConfidence
+from blossom.reconciliation import SourceChannel, SourceConfidence
 from blossom.stores.project_state import Assignment
 
 PLANNER_SYSTEM = """\
@@ -136,7 +136,10 @@ def assignments_block(
         if item.assigned_on is not None:
             attributes["assigned"] = item.assigned_on.isoformat()
         if item.note:
-            attributes["teacher_wrote"] = item.note
+            # Whose words they are matters to the planner: a teacher's are an
+            # instruction, a parent's are the family's guidance.
+            by_a_parent = item.origins.get("note") == SourceChannel.PARENT_ENTRY
+            attributes["parent_wrote" if by_a_parent else "teacher_wrote"] = item.note
         lines.append(block("assignment", item.title, **attributes))
     return "<assignments>\n" + "\n".join(lines) + "\n</assignments>"
 

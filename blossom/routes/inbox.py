@@ -157,36 +157,52 @@ def answers_from(
 ) -> tuple[dict[int, str], dict[int, AssignmentKind]]:
     """The parent's answers on the review page: new work or an update, and the type chosen.
 
-    A type is a choice only when it differs from what the page showed for
-    the card, which the page sends back beside it; a select left as it was
-    is no answer, so it can never undo a choice made on another card about
-    the same assignment, nor a change made from elsewhere meanwhile. A form
-    sent without the page's own note of what it showed is read the careful
-    way: a type in ``unasked`` for the card, what the page would show now or
-    what the reader suggests, is no choice either.
+    The page sends back, beside each select, what it suggested for the card
+    before any choice and what the select showed when the page was made. A
+    type is a choice when the select was changed from what it showed, a
+    change back to the suggestion included, or when it carries a choice
+    from a page before, a type other than the suggestion; a select left as
+    it was showing is no answer, so it can never undo a choice made on
+    another card about the same assignment, nor a change made from
+    elsewhere meanwhile. A card folded into another, which the page sends
+    back unshown, carries its choice only while the card shown for the
+    assignment makes none. A form sent without the page's own notes is read
+    the careful way: a type in ``unasked`` for the card, what the page would
+    show now or what the reader suggests, is no choice either.
     """
     occurrences: dict[int, str] = {}
     kinds: dict[int, AssignmentKind] = {}
+    suggested: dict[int, AssignmentKind] = {}
     shown: dict[int, AssignmentKind] = {}
+    folded: dict[int, int] = {}
     for name, value in form.items():
         head, _, number = name.rpartition("-")
         if not number.isdigit():
             continue
         if head == "occurrence" and value in (UPDATE, NEW_WORK):
             occurrences[int(number)] = value
-        elif head in ("kind", "suggested"):
+        elif head == "folded" and value.isdigit():
+            folded[int(number)] = int(value)
+        elif head in ("kind", "suggested", "shown"):
             try:
                 kind = AssignmentKind(value)
             except ValueError:
                 continue
-            (kinds if head == "kind" else shown)[int(number)] = kind
+            {"kind": kinds, "suggested": suggested, "shown": shown}[head][int(number)] = kind
     chosen = {}
     for key, kind in kinds.items():
-        if key in shown:
-            if kind != shown[key]:
+        if key in suggested:
+            edited = key in shown and kind != shown[key]
+            if edited or kind != suggested[key]:
                 chosen[key] = kind
         elif kind not in unasked.get(key, set()):
             chosen[key] = kind
+    # A card folded into another carries its choice only while the card
+    # shown for the assignment makes none: a choice on the card shown, a
+    # change back included, stands over what a folded card carried.
+    for key, into in folded.items():
+        if into in chosen:
+            chosen.pop(key, None)
     return occurrences, chosen
 
 

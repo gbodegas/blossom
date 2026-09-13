@@ -516,8 +516,9 @@ def test_a_report_is_kept_once_per_channel_status_and_day_whoever_writes_it(
     tmp_path: pathlib.Path,
 ) -> None:
     """The file itself keeps a report once per channel, status, and day, so a caller that
-    writes the same report twice, or two callers, leave one; a file from a version that
-    kept no such index folds its duplicates to the first and gains the index."""
+    writes the same report twice, or two callers, leave one, and the row's reported status
+    follows the latest report by its day, whoever wrote it; a file from a version that kept
+    no such index folds its duplicates to the first and gains the index."""
     path = tmp_path / "blossom.sqlite3"
     store = ProjectStateStore.open(path, fixture_clock())
     try:
@@ -526,6 +527,15 @@ def test_a_report_is_kept_once_per_channel_status_and_day_whoever_writes_it(
         store.record_status_reports("assignment-essay", [a_report(date(2026, 9, 9))])
         store.put_on_record([], {}, {"assignment-essay": [a_report(date(2026, 9, 10))]})
         reports = store.status_reports("assignment-essay")
+        row_status = store.all_assignments()[0].reported_submission_status
+        latest = store.latest_status_reports()["assignment-essay"].status
+        store.record_status_reports(
+            "assignment-essay",
+            [a_report(date(2026, 9, 11)).model_copy(update={"status": "submitted"})],
+        )
+        after_a_later_day = store.all_assignments()[0].reported_submission_status
+        store.record_status_reports("assignment-essay", [a_report(date(2026, 9, 8))])
+        after_an_older_day = store.all_assignments()[0].reported_submission_status
     finally:
         store.close()
 
@@ -572,6 +582,9 @@ def test_a_report_is_kept_once_per_channel_status_and_day_whoever_writes_it(
         (date(2026, 9, 9), "missing"),
         (date(2026, 9, 10), "missing"),
     ]
+    assert (row_status, latest) == ("missing", "missing")
+    assert after_a_later_day == "submitted"
+    assert after_an_older_day == "submitted"
     assert [report.observed_at.isoformat() for report in kept] == [
         "2026-09-12T20:00:00+00:00",
         "2026-09-13T20:00:00+00:00",

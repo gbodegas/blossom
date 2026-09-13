@@ -93,7 +93,8 @@ TASK_THING: Final = re.compile(
 )
 """Things a title names that make it a task: paperwork and materials, not a sitting."""
 TASK_DOING: Final = re.compile(
-    r"\b(?:sign(?:ed|ing|ature)?|cover(?:ed|ing|s)?|bring(?:ing)?)\b", re.IGNORECASE
+    r"\b(?:sign(?:s|ed|ing|ature)?|cover(?:s|ed|ing)?|bring(?:s|ing)?|brought)\b",
+    re.IGNORECASE,
 )
 """Doings that make a title a task only with a thing to do them to."""
 TASK_THING_FOR_DOING: Final = re.compile(
@@ -812,6 +813,12 @@ class Change:
         return ""
 
     @property
+    def given(self) -> str:
+        """How the reading's date reached the page: pasted from the school's text, or entered
+        by a parent."""
+        return "entered" if self.reading.origin == SourceChannel.PARENT_ENTRY else "pasted"
+
+    @property
     def effect_base(self) -> str:
         """What saving does apart from the type, which the page rewrites as the select changes."""
         if self.state == REVIEW:
@@ -835,7 +842,9 @@ class Change:
             return "Nothing changes."
         parts = []
         if self.fills_due_date:
-            parts.append("The record has no due date of its own, so the pasted date becomes it.")
+            parts.append(
+                f"The record has no due date of its own, so the {self.given} date becomes it."
+            )
         elif self.moves_due_date and self.reading.due_date is not None:
             parts.append(
                 f"The due date becomes {spoken_day(self.reading.due_date)}, as you said; the "
@@ -843,11 +852,11 @@ class Change:
             )
         elif self.new_claims and self.dates_differ:
             parts.append(
-                "The pasted date is added as evidence beside the saved date, which stays; "
-                "her page will say the sources disagree."
+                f"The {self.given} date is added as evidence beside the saved date, which "
+                "stays; her page will say the sources disagree."
             )
         elif self.new_claims:
-            parts.append("The pasted date is added as evidence for the saved date.")
+            parts.append(f"The {self.given} date is added as evidence for the saved date.")
         if self.new_reports:
             parts.append("What the school reports is saved with the day.")
         if self.fills_assigned_on:
@@ -1001,18 +1010,19 @@ def _kind_for(
     """The kind a reading's row will have, whether a parent chose it, on the page or with
     the entry they typed, and what the page shows for the card before any choice.
 
-    A choice is a select changed from what the review page showed for the
-    card: the saved row's kind, or the reader's suggestion for a new one.
-    The page's suggestion is the saved row as it was when the page was
-    made, never the row as the cards before this one leave it, so a card
-    left as suggested never undoes what another card about the same
-    assignment chose.
+    ``kinds`` holds the parent's choices and nothing else: the page reads a
+    choice as a select changed from what it showed, or a choice carried from
+    a page before, and a select left as shown is no choice. A choice equal
+    to the page's suggestion is still a choice when the parent made it, a
+    change back from a pending type among them. The page's suggestion is
+    the saved row as it was when the page was made, never the row as the
+    cards before this one leave it, so a card left as suggested never undoes
+    what another card about the same assignment chose.
     """
     if reading.origin == SourceChannel.PARENT_ENTRY:
         return kinds.get(key, reading.kind), True, reading.kind
     suggested = reading.kind if saved is None else saved.kind
-    chosen = kinds.get(key, suggested)
-    return chosen, chosen != suggested, suggested
+    return kinds.get(key, suggested), key in kinds, suggested
 
 
 def _new_change(
@@ -1103,9 +1113,13 @@ def _folded(
 ) -> Change:
     """The first reading of a name in this text with a later card folded in, as the parent
     said: the due date is the later card's, and its claims, note, and reports come along,
-    as does a type chosen on it; a type chosen on both cards must be the same."""
+    as does a type chosen on it. The card the parent sees for the assignment is the one
+    that decides its type: a choice made on it stands over any carried by a folded card,
+    and two folded cards choosing differently, with none on the card shown, is a conflict."""
     kind, chosen, _ = _kind_for(key, reading, None, kinds)
-    if chosen and anchor.kind_by_parent and anchor.kind != kind:
+    if anchor.key in kinds:
+        chosen = False
+    elif chosen and anchor.kind_by_parent and anchor.kind != kind:
         return dataclasses.replace(anchor, choices_conflict=True)
     first = anchor.reading
     notes = [note for note in (first.note, reading.note) if note]

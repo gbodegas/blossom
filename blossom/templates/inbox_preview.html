@@ -79,6 +79,7 @@
         <input type="hidden" name="occurrence-{{ change.key }}" value="update">
         <input type="hidden" name="kind-{{ change.key }}" value="{{ change.kind.value }}">
         <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
+        <input type="hidden" name="folded-{{ change.key }}" value="{{ change.folded_into }}">
       {% endfor %}
       {% if folded %}
         <p class="note">{{ folded|length }} card{% if folded|length != 1 %}s{% endif %} folded into the card for the same assignment, as you said.</p>
@@ -104,7 +105,7 @@
                 <dl class="compare">
                   <dt>{% if change.on_record %}Saved due date{% else %}Also due in this text{% endif %}</dt>
                   <dd>{{ spoken_day(change.beside) }}</dd>
-                  <dt>Pasted due date</dt>
+                  <dt>{% if reading.origin == "PARENT_ENTRY" %}Entered due date{% else %}Pasted due date{% endif %}</dt>
                   <dd>{{ spoken_day(reading.due_date) }}{% if reading.claims %} ({{ reading.claims[-1].spoken() }}){% endif %}</dd>
                 </dl>
               {% else %}
@@ -123,6 +124,7 @@
                 </fieldset>
               {% endif %}
               <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
+              <input type="hidden" name="shown-{{ change.key }}" value="{{ change.kind.value }}">
               <label class="type-choice">Type
                 <select name="kind-{{ change.key }}" data-saved="{{ change.suggested.value }}">
                   {% for value, label in kind_choices %}
