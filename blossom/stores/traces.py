@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Final
 
 from blossom.clock import Clock
-from blossom.stores.checkpoints import refuse_unsafe_path
+from blossom.stores.paths import refuse_unsafe_path
 
 TRACE_RETENTION_DAYS: Final = 14
 """How long a run's trace is kept: long enough to look into a run that went wrong."""

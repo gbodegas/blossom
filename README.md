@@ -34,9 +34,10 @@ I intend to define what success looks like with her rather than on her behalf.
 
 ## What works today
 
-Blossom is an early project for one household. The app currently reads bundled
-synthetic records; it does not import assignments from a live school platform
-or email account.
+Blossom is an early project for one household. Assignments live in the
+household's own database; the bundled synthetic records seed it for the sample
+and the tests. It does not import assignments from a live school platform or
+email account.
 
 **My week.** Browse the school week, see due dates and their sources, and keep
 work assigned this week but due later in sight. Missing dates stay visible;

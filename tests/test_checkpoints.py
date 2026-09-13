@@ -41,15 +41,13 @@ from blossom.plan_checks import PlanCheck, PlanVerification
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceConfidence
 from blossom.settings import CHECKPOINT_PATH_VARIABLE
-from blossom.stores import checkpoints
-from blossom.stores.checkpoints import (
+from blossom.stores import paths
+from blossom.stores.checkpoints import STATE_TYPES, checkpoint_serializer, open_checkpointer
+from blossom.stores.paths import (
     DRIVE_REMOTE,
-    STATE_TYPES,
     UnsafeCheckpointPath,
-    checkpoint_serializer,
     drive_is_network,
     local_form,
-    open_checkpointer,
     refuse_unsafe_path,
 )
 from blossom.stores.project_state import Assignment, AssignmentKind
@@ -137,7 +135,7 @@ def test_a_drive_letter_mapped_to_a_share_is_refused(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     """A mapped drive is a network share wearing a local name."""
-    monkeypatch.setattr(checkpoints, "drive_is_network", lambda text: True)
+    monkeypatch.setattr(paths, "drive_is_network", lambda text: True)
 
     with pytest.raises(UnsafeCheckpointPath, match="network share"):
         refuse_unsafe_path(tmp_path / "checkpoints.sqlite3", environ={})

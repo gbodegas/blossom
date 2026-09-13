@@ -41,6 +41,8 @@ from blossom.routes.runs import PlanGraphs
 from blossom.settings import (
     DEFAULT_EVENING_MINUTES,
     DEFAULT_TOO_MUCH_MINUTES,
+    FIXTURE_PATH_VARIABLE,
+    REPOSITORY_ROOT,
     TIMEZONE_VARIABLE,
     Settings,
 )
@@ -52,6 +54,8 @@ from blossom.stores.workload_signals import WorkloadSignalsStore
 
 FIXTURE_TIMEZONE = "America/New_York"
 """The zone the synthetic fixtures are written in. A fictional household's."""
+FIXTURES = REPOSITORY_ROOT / "data" / "synthetic"
+"""The synthetic set the suite runs against; the household's default is no fixture."""
 
 
 class OffsetlessTimeZone(tzinfo):
@@ -96,9 +100,12 @@ def fixture_settings(**environ: str) -> Settings:
 
     The application has no default zone, so a test that builds settings from an
     explicit mapping has to supply one. This keeps that from being repeated,
-    and keeps the value in one place if the fixtures ever move.
+    and keeps the value in one place if the fixtures ever move. The synthetic
+    set is named the same way, since the household's default is no fixture.
     """
-    return Settings.from_environment({TIMEZONE_VARIABLE: FIXTURE_TIMEZONE, **environ})
+    return Settings.from_environment(
+        {TIMEZONE_VARIABLE: FIXTURE_TIMEZONE, FIXTURE_PATH_VARIABLE: str(FIXTURES), **environ}
+    )
 
 
 def record(channel: SourceChannel, value: str, *, confidence: float = 0.8) -> SourceRecord:

@@ -26,7 +26,7 @@ from uuid import uuid4
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from blossom.clock import Clock
-from blossom.stores.checkpoints import refuse_unsafe_path
+from blossom.stores.paths import refuse_unsafe_path
 
 HELP_RETENTION_DAYS: Final = 14
 """How long a resolved request is kept: long enough for the word back to be read."""

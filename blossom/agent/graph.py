@@ -88,7 +88,7 @@ from blossom.plan_checks import (
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence, classify_confidence
 from blossom.settings import DEFAULT_EVENING_MINUTES, DEFAULT_TOO_MUCH_MINUTES, Settings
-from blossom.sources import StateSource
+from blossom.sources import DateClaims
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.reflections import ReflectionsStore
@@ -216,7 +216,7 @@ type CompiledPlanGraph = CompiledStateGraph[PlanState, Any, PlanState, PlanState
 def build_plan_graph(
     *,
     project_state: ProjectStateStore,
-    source: StateSource,
+    source: DateClaims,
     support_rules: SupportRulesStore,
     reflections: ReflectionsStore,
     drafts: DraftsStore,
@@ -547,7 +547,7 @@ def plan_graph_for(
         )
     return build_plan_graph(
         project_state=state.project_state,
-        source=state.source,
+        source=state.project_state,
         support_rules=state.support_rules,
         reflections=state.reflections,
         drafts=state.drafts,

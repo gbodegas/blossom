@@ -134,7 +134,10 @@ class Settings:
     """Runtime configuration: the filesystem locations the application needs as
     absolute paths, the optional pinned clock, and the optional model API key."""
 
-    fixture_path: Path
+    fixture_path: Path | None
+    """From ``BLOSSOM_FIXTURE_PATH``. A synthetic set that seeds an empty record
+    and gives the planner its rules and notes. The sample and the tests name one;
+    the household leaves it unset, so nothing synthetic reaches the family's file."""
     database_path: Path
     checkpoint_path: Path
     """From ``BLOSSOM_CHECKPOINT_PATH``. A graph's checkpoints live in their own
@@ -249,6 +252,10 @@ class Settings:
             value = source.get(variable)
             return default if value is None or not value.strip() else resolve_configured_path(value)
 
+        def optional_path(variable: str) -> Path | None:
+            value = source.get(variable)
+            return None if value is None or not value.strip() else resolve_configured_path(value)
+
         pinned = source.get(TODAY_VARIABLE)
         today = None
         if pinned is not None and pinned.strip():
@@ -294,7 +301,7 @@ class Settings:
 
         local = LOCAL_STATE_PATH
         return cls(
-            fixture_path=read(FIXTURE_PATH_VARIABLE, REPOSITORY_ROOT / "data" / "synthetic"),
+            fixture_path=optional_path(FIXTURE_PATH_VARIABLE),
             database_path=read(DATABASE_PATH_VARIABLE, local / "blossom.sqlite3"),
             checkpoint_path=read(CHECKPOINT_PATH_VARIABLE, local / "checkpoints.sqlite3"),
             trace_path=read(TRACE_PATH_VARIABLE, local / "traces.sqlite3"),

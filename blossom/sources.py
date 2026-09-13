@@ -6,7 +6,10 @@ platforms are built for administrators, automated access is often unavailable,
 and anything reading their interface breaks when the vendor changes it, so
 manual entry and fixtures are first class sources rather than a fallback.
 
-``FixtureSource`` is the only working implementation. ``LMSSource`` and
+``FixtureSource`` is the only working implementation, and it seeds the
+household's record rather than serving it: ``seed`` copies a source into the
+store once, and from then on assignments and the claims about their dates are
+read from the household's file. ``LMSSource`` and
 ``EmailSource`` raise ``NotImplementedError`` and mark where credentialed
 access would attach if approved. For email, filtering after reading still
 reads the whole mailbox, a parent's mailbox, so selection must happen before
@@ -19,18 +22,17 @@ from pathlib import Path
 from typing import Protocol
 
 from blossom.reconciliation import SourceRecord
-from blossom.stores.project_state import Assignment
+from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.reflections import Reflection, ReflectionSubject
 from blossom.stores.support_rules import SupportRule
 
 
-class StateSource(Protocol):
-    """Anything that can report assignments, the claims about their dates, and the
-    two small corpora the planner reads whole."""
+class DateClaims(Protocol):
+    """Anything that can report every channel's claim about one assignment's due date.
 
-    def assignments(self) -> list[Assignment]:
-        """Return every assignment this source knows about."""
-        ...
+    The household's record answers this for the page and the plan graph; a
+    fixture answers it while seeding; a test double answers it to say what a
+    school would."""
 
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
         """Return every channel's claim about one assignment's due date.
@@ -38,6 +40,15 @@ class StateSource(Protocol):
         An empty list is a valid answer and means nothing corroborates the
         date. Callers must handle it; it is not an error.
         """
+        ...
+
+
+class StateSource(DateClaims, Protocol):
+    """Anything that can report assignments, the claims about their dates, and the
+    two small corpora the planner reads whole."""
+
+    def assignments(self) -> list[Assignment]:
+        """Return every assignment this source knows about."""
         ...
 
     def support_rules(self) -> list[SupportRule]:
@@ -49,8 +60,23 @@ class StateSource(Protocol):
         ...
 
 
+def seed(store: ProjectStateStore, source: StateSource) -> None:
+    """Put a source's assignments, and the claims about their dates, on record.
+
+    Meant for an empty record: the household's file is seeded once from a
+    fixture, when one is named, and what the family enters afterward is not
+    written over by the fixture at the next start.
+    """
+    assignments = source.assignments()
+    store.upsert_assignments(assignments)
+    for assignment in assignments:
+        store.record_claims(
+            assignment.assignment_id, source.deadline_records(assignment.assignment_id)
+        )
+
+
 class FixtureSource:
-    """Reads synthetic fixtures from disk. The default source, and fully offline."""
+    """Reads a synthetic set from disk: the seed for the sample and the tests, offline."""
 
     def __init__(self, root: Path) -> None:
         self._root = root

@@ -11,6 +11,7 @@ page down with it.
 
 import json
 import pathlib
+import tempfile
 from datetime import date
 
 import pytest
@@ -37,6 +38,12 @@ def student_page(fixture_root: pathlib.Path | None = None, week: str | None = No
     environment = {"BLOSSOM_TODAY": PINNED_TODAY}
     if fixture_root is not None:
         environment["BLOSSOM_FIXTURE_PATH"] = str(fixture_root)
+        # A fresh record per page: the file is seeded once, and a test that
+        # writes a second fixture into the same folder wants that one read.
+        state = pathlib.Path(tempfile.mkdtemp(prefix="state-", dir=fixture_root))
+        environment["BLOSSOM_DATABASE_PATH"] = str(state / "blossom.sqlite3")
+        environment["BLOSSOM_CHECKPOINT_PATH"] = str(state / "checkpoints.sqlite3")
+        environment["BLOSSOM_TRACE_PATH"] = str(state / "traces.sqlite3")
     settings = fixture_settings(**environment)
     params = {} if week is None else {"week": week}
     with TestClient(create_app(settings)) as client:

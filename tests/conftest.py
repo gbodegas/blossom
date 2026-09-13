@@ -21,7 +21,7 @@ import pytest
 
 from blossom import settings as settings_module
 from blossom.settings import enforce_local_only_tracing, get_settings
-from tests.support import FIXTURE_TIMEZONE, hosted_tracer_attached
+from tests.support import FIXTURE_TIMEZONE, FIXTURES, hosted_tracer_attached
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -52,10 +52,13 @@ def saved_state_in_a_temporary_file(
 
     The zone has no default in the application, so a test that starts it has to
     supply one. It is set here rather than in each test because almost nothing
-    in the suite is about time zones, and the ones that are name their own.
+    in the suite is about time zones, and the ones that are name their own. The
+    synthetic fixture set is named here for the same reason: the household's
+    default is no fixture, and the suite is written against that set.
     """
     monkeypatch.setattr(settings_module, "LOCAL_STATE_PATH", tmp_path)
     monkeypatch.setenv(settings_module.TIMEZONE_VARIABLE, FIXTURE_TIMEZONE)
+    monkeypatch.setenv(settings_module.FIXTURE_PATH_VARIABLE, str(FIXTURES))
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

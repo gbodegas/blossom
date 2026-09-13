@@ -30,7 +30,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from blossom.agent.steps import StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Decision, Draft, DraftStatus
-from blossom.stores.checkpoints import refuse_unsafe_path
+from blossom.stores.paths import refuse_unsafe_path
 
 Outcome = Literal["accepted", "unsettled"]
 """The two run outcomes that produce a draft. The others end without one."""

@@ -101,10 +101,12 @@ and due the next.
 
 ## What survives a restart
 
-Assignments are read from the fixtures into memory at every start. Three
-files under `.local/` outlive it:
+Three files under `.local/` outlive a restart:
 
-- `blossom.sqlite3` holds the drafts, the decisions about them, and the
+- `blossom.sqlite3` holds the assignments and every channel's claim about
+  their dates, seeded once from a fixture when `BLOSSOM_FIXTURE_PATH` names
+  one and the file is empty, and otherwise only what the family puts there.
+  It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
   evening is closed as expired, and one a later plan for the same evening is
@@ -239,7 +241,9 @@ button is not offered.
 
 To start the sample again from nothing, stop the app and delete the
 `.local/sample/` folder; the family's own state under `.local/` is untouched,
-and the next launch creates the folder again.
+and the next launch creates the folder again. The sample's assignments live in
+that folder's file too, seeded from `data/sample/` at the first start, so a
+change to the set shows once the folder is deleted.
 
 Her page shows three items due that week, each saying its date is from the
 school portal, and the reading log, assigned that Monday and due the next,

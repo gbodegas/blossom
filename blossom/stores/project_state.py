@@ -8,6 +8,12 @@ the most similar assignment rather than the correct one.
 Retention is the academic year, then archive. Noticing that a project entered
 eleven days ago has no progress against it needs that history.
 
+The store is the household's file at ``BLOSSOM_DATABASE_PATH``, shared with the
+drafts, so what the family enters outlives a restart. Beside the assignments it
+keeps every channel's claim about an assignment's due date, as the claim was
+made, which is what the reconciliation reads. A fixture, when one is named,
+seeds an empty file once and leaves a kept record alone.
+
 The field is named ``reported_submission_status`` on purpose: a submission flag
 confirms a file was uploaded, not that the assignment was finished, that the
 right file went up, or that the teacher considers it done. Code reading it must
@@ -17,13 +23,16 @@ not treat it as completion.
 import sqlite3
 import threading
 from collections.abc import Iterable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
 from blossom.clock import Clock
+from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.retrieval import RetrievalResult
+from blossom.stores.paths import refuse_unsafe_path
 
 DUE_THIS_WEEK_KEY = "due_this_week"
 DUE_THIS_WEEK_SPAN = timedelta(days=6)
@@ -97,6 +106,30 @@ class ProjectStateStore:
             )
             """
         )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS date_claims (
+                assignment_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                asserted_value TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                seen_in TEXT
+            )
+            """
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS date_claims_by_assignment ON date_claims (assignment_id)"
+        )
+
+    @classmethod
+    def open(cls, path: Path, clock: Clock) -> "ProjectStateStore":
+        """Open the household's file, refusing the places the saved-state store refuses."""
+        safe = refuse_unsafe_path(path)
+        safe.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(safe, check_same_thread=False)
+        connection.execute("PRAGMA secure_delete=ON")
+        return cls(connection, clock)
 
     def close(self) -> None:
         """Close the underlying connection. Called when the application shuts down."""
@@ -134,6 +167,60 @@ class ProjectStateStore:
                 ),
             )
         self._connection.commit()
+
+    def is_empty(self) -> bool:
+        """Whether nothing is on record yet: no assignment, and no claim about one."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT (SELECT COUNT(*) FROM assignments) + (SELECT COUNT(*) FROM date_claims)"
+            ).fetchone()
+        return int(row[0]) == 0
+
+    def record_claims(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
+        """Keep each channel's claim about one assignment's due date, as it was made."""
+        with self._lock:
+            self._connection.executemany(
+                "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        assignment_id,
+                        record.channel.value,
+                        record.asserted_value,
+                        record.observed_at.isoformat(),
+                        record.confidence,
+                        record.seen_in,
+                    )
+                    for record in records
+                ],
+            )
+            self._connection.commit()
+
+    def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
+        """Every channel's claim about one assignment's due date, in the order made.
+
+        An empty list is a valid answer and means nothing corroborates the
+        date; it is not an error.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT channel, asserted_value, observed_at, confidence, seen_in
+                FROM date_claims
+                WHERE assignment_id = ?
+                ORDER BY rowid
+                """,
+                (assignment_id,),
+            ).fetchall()
+        return [
+            SourceRecord(
+                channel=SourceChannel(str(row[0])),
+                asserted_value=str(row[1]),
+                observed_at=datetime.fromisoformat(str(row[2])),
+                confidence=float(row[3]),
+                seen_in=None if row[4] is None else str(row[4]),
+            )
+            for row in rows
+        ]
 
     def due_between(self, start: date, end: date) -> list[Assignment]:
         """Return assignments due in ``[start, end]``, ordered by date then course.

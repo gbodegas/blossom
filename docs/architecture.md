@@ -244,7 +244,7 @@ still answers the structured side for one that would.
 
 | Store | Contents | State |
 |---|---|---|
-| `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status | Wired and tested; in memory |
+| `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status; every channel's claim about a due date | Wired and tested; a file at `BLOSSOM_DATABASE_PATH`, seeded once from a fixture when one is named |
 | `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Seeded from the fixtures; read whole by the plan graph |
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
@@ -625,9 +625,10 @@ Stores are opened once by the application lifespan in
 connection is shared across FastAPI's worker threads, so it is opened with
 `check_same_thread=False` and every statement is serialized behind a lock.
 
-`BLOSSOM_DATABASE_PATH` holds the drafts table, so the parent's queue survives
-a restart. Project state itself is still in memory, because deciding when it
-becomes durable is a design question rather than a wiring detail.
+`BLOSSOM_DATABASE_PATH` holds the assignments, every channel's claim about
+their dates, and the drafts table, so the record and the parent's queue
+survive a restart. A fixture, when one is named, seeds the record once, while
+it is empty, and leaves a kept record alone.
 
 ## Saved graph state
 
@@ -636,7 +637,9 @@ is saved by the asynchronous SQLite saver, opened by the lifespan from
 `blossom/stores/checkpoints.py` on the file named by `BLOSSOM_CHECKPOINT_PATH`.
 That file is separate from project state so the two writers never contend and
 clearing a thread touches nothing else. Startup refuses a path on a network
-share or inside a synced folder; deleted rows are overwritten.
+share or inside a synced folder, through the one guard in
+`blossom/stores/paths.py` that every state file passes; deleted rows are
+overwritten.
 
 The framework calls each saved snapshot a checkpoint, and its classes and the
 setting above carry that word. This document says saved graph state, because

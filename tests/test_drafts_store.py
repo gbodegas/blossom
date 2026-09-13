@@ -17,7 +17,6 @@ import pytest
 from blossom.agent.steps import StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Draft, DraftStatus
-from blossom.stores.checkpoints import UnsafeCheckpointPath
 from blossom.stores.drafts import (
     INTERRUPTED,
     SUPERSEDED_REASON,
@@ -25,6 +24,7 @@ from blossom.stores.drafts import (
     DraftsStore,
     Outcome,
 )
+from blossom.stores.paths import UnsafeCheckpointPath
 from tests.support import FIXTURE_TIMEZONE, fixture_clock
 
 PLAN_DATE = date(2026, 8, 19)

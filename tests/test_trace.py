@@ -30,7 +30,7 @@ from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, build_application_state
 from blossom.routes.runs import plan_graphs
 from blossom.settings import TRACE_PATH_VARIABLE
-from blossom.stores.checkpoints import UnsafeCheckpointPath
+from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment
 from blossom.stores.traces import TRACE_RETENTION_DAYS, TracedRun, TraceStore
 from tests.support import (
