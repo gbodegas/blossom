@@ -162,6 +162,8 @@ MAIL_DATE_LINE: Final = re.compile(
 """The lines a mail program dates a message on: ``Date:`` or ``Sent:`` in a header, a
 forwarded ``On Tue, Sep 8, 2026 at 9:14 AM ... wrote:``, or the line ``Tue, Sep 8, 2026``
 itself. A date in a title or an instruction is never the email's."""
+MAIL_HEADER: Final = re.compile(r"^(?:From|To|Cc|Subject)\s*:", re.IGNORECASE)
+"""The other lines of a mail header, read as nothing outside a card."""
 COURSE_LENGTH: Final = 60
 """A course line is short; a longer plain line is a teacher's instruction or a stray."""
 TEXT_MAX_LENGTH: Final = 40_000
@@ -308,22 +310,19 @@ def a_date(year: str, month: str, day: str) -> date | None:
         return None
 
 
-def email_date(text: str) -> date | None:
-    """The day the email says it was sent, when the paste carries its date line.
+def mail_date(line: str) -> date | None:
+    """The day a mail program's date line names, or ``None`` for any other line.
 
     Only a line in a mail program's own shape counts, so a date inside a
     title or an instruction, "Read September 8, 2026", dates nothing.
     """
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not MAIL_DATE_LINE.match(line):
-            continue
-        found = EMAIL_DATE.search(line)
-        if found is None:
-            continue
-        month = MONTHS.index(found.group("month").lower()) + 1
-        return a_date(found.group("year"), str(month), found.group("day"))
-    return None
+    if not MAIL_DATE_LINE.match(line):
+        return None
+    found = EMAIL_DATE.search(line)
+    if found is None:
+        return None
+    month = MONTHS.index(found.group("month").lower()) + 1
+    return a_date(found.group("year"), str(month), found.group("day"))
 
 
 def claim(
@@ -437,7 +436,9 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     next card, day, or course line, or a blank; the same instruction under
     both of an item's days is kept once. A line shaped like a day or a card
     that does not read as one is text that needs review, and it ends the
-    card before it, so nothing after it is taken for that card's words. Any
+    card before it, so nothing after it is taken for that card's words. A
+    mail program's date line outside a card dates the school's reports read
+    after it, and the other lines of a mail header are read as nothing. Any
     other plain line outside a card needs review too. A card that names an
     assignment again a week or more from the date it was first read with is
     another round of the same name and is read apart, so the parent can say
@@ -446,9 +447,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     """
     lines = [_unbroken(line) for line in text.splitlines()]
     following = _next_lines(lines)
-    reported_on, dated_by = email_date(text), EMAIL_DATE_LINE
-    if reported_on is None:
-        reported_on, dated_by = today, PASTE_DAY
+    reported_on, dated_by = today, PASTE_DAY
     drafts: dict[tuple[str, str], list[_Draft]] = {}
     unread: list[Unread] = []
     day: date | None = None
@@ -465,6 +464,13 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
         if HEADING_LINE.match(line) and last is None:
             # The summary's heading, outside a card; under a card the same
             # words are a teacher's instruction and are kept as one.
+            continue
+        if last is None and (sent := mail_date(line)) is not None:
+            # The email's date line, outside a card, dates the reports read
+            # after it; under a card the same words are the teacher's.
+            reported_on, dated_by = sent, EMAIL_DATE_LINE
+            continue
+        if last is None and MAIL_HEADER.match(line):
             continue
         if day_match := DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line):
             day = a_date(day_match.group("year"), day_match.group("month"), day_match.group("day"))

@@ -507,11 +507,13 @@ def review(
 
 
 def a_count(given: str | None) -> int | None:
-    """A count from the address, or none: anything that is not a count is no note."""
+    """A count from the address, or none: anything that is not a count, a number below
+    zero included, is no note."""
     try:
-        return None if given is None else int(given)
+        count = None if given is None else int(given)
     except ValueError:
         return None
+    return None if count is not None and count < 0 else count
 
 
 @router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)

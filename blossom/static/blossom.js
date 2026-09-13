@@ -116,7 +116,10 @@
         if (effect) {
           var base = effect.dataset.base === undefined ? effect.textContent : effect.dataset.base;
           var chosen = event.target.value === "TASK" ? "task" : "homework";
-          effect.textContent = event.target.value === event.target.dataset.saved
+          /* A choice carried from a page before, marked beside the select,
+             is the parent's whatever it is set to, the suggestion included. */
+          var carried = card.querySelector("input[name='chosen-" + name.slice(5) + "']");
+          effect.textContent = event.target.value === event.target.dataset.saved && !carried
             ? base
             : (base ? base + " " : "") + "The type becomes " + chosen + ", as chosen.";
         }

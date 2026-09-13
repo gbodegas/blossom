@@ -298,6 +298,8 @@ def test_the_emails_day_comes_only_from_its_date_line() -> None:
     header = "From: The School\nDate: Tue, Sep 8, 2026 09:14\nSubject: Missing work\n" + EMAIL
     forwarded = "On Tue, Sep 8, 2026 at 9:14 AM The School wrote:\n" + EMAIL
     stray = "Read by Sep 8, 2026.\n" + EMAIL
+    under_a_card = "Tuesday 9/1/2026\nMath\nDue: Practice:\nDate: Sep 8, 2026\n" + EMAIL
+    after_the_reports = EMAIL + "Date: Tue, Sep 8, 2026 09:14\n"
 
     def report_day(text: str) -> tuple[date, str]:
         told = next(item for item in read_text(text, now=NOW, today=TODAY).items if item.reports)
@@ -308,6 +310,15 @@ def test_the_emails_day_comes_only_from_its_date_line() -> None:
     assert report_day(stray) == (TODAY, PASTE_DAY)
     assert report_day(header) == (date(2026, 9, 8), EMAIL_DATE_LINE)
     assert report_day(forwarded) == (date(2026, 9, 8), EMAIL_DATE_LINE)
+    assert report_day(under_a_card) == (TODAY, PASTE_DAY)
+    assert read_text(under_a_card, now=NOW, today=TODAY).items[0].note == "Date: Sep 8, 2026"
+    assert report_day(after_the_reports) == (TODAY, PASTE_DAY)
+    assert [item.text for item in read_text(header, now=NOW, today=TODAY).unread] == [
+        "09/09 Spanish - A: Homework: Vocabulary list Grade: Complete"
+    ]
+    assert [item.text for item in read_text(forwarded, now=NOW, today=TODAY).unread] == [
+        "09/09 Spanish - A: Homework: Vocabulary list Grade: Complete"
+    ]
 
 
 def test_the_type_is_a_task_only_for_paperwork_and_materials() -> None:

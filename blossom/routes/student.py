@@ -493,8 +493,20 @@ def build_student_due_this_week_view(
     today = state.clock.today()
     frame = week_shown(today, week)
     on_record = state.project_state
-    shown = read_week(on_record, on_record, frame.start)
-    reported = on_record.latest_status_reports()
+    with on_record.exclusively():
+        # One snapshot: a saving landing between two reads could otherwise
+        # show a card whose status and report disagree.
+        shown = read_week(on_record, on_record, frame.start)
+        reported = on_record.latest_status_reports()
+        in_frame = {item.assignment_id for item in shown.assignments}
+        later = [
+            item
+            for item in on_record.all_assignments()
+            if item.assignment_id not in in_frame and assigned_for_later(item, frame)
+        ]
+        later_records = {
+            item.assignment_id: on_record.deadline_records(item.assignment_id) for item in later
+        }
     # Never filter here; see the module docstring.
     views = [
         assignment_view(
@@ -505,20 +517,15 @@ def build_student_due_this_week_view(
         )
         for item in shown.assignments
     ]
-    in_frame = {item.assignment_id for item in shown.assignments}
-    assigned: list[StudentAssignmentView] = []
-    for item in state.project_state.all_assignments():
-        if item.assignment_id in in_frame or not assigned_for_later(item, frame):
-            continue
-        records = on_record.deadline_records(item.assignment_id)
-        assigned.append(
-            assignment_view(
-                item,
-                records,
-                notice_due_date(expect_due_date(item), records),
-                reported.get(item.assignment_id),
-            )
+    assigned = [
+        assignment_view(
+            item,
+            later_records[item.assignment_id],
+            notice_due_date(expect_due_date(item), later_records[item.assignment_id]),
+            reported.get(item.assignment_id),
         )
+        for item in later
+    ]
     tonight = state.workload_signals.for_evening(today)
     household = state.settings
     return StudentDueThisWeekView(

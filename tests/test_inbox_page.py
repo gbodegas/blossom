@@ -251,6 +251,7 @@ def test_a_form_that_fails_comes_back_filled_with_the_field_named(
         )
         odd = client.get("/parent?added=%C2%B2", headers=PAGE)
         huge = client.get("/parent?added=" + "9" * 5000, headers=PAGE)
+        below_zero = client.get("/parent?added=-1&updated=0&unchanged=0", headers=PAGE)
 
     assert empty.status_code == 422
     assert NOTHING_PASTED in empty.text
@@ -277,6 +278,9 @@ def test_a_form_that_fails_comes_back_filled_with_the_field_named(
     assert huge.status_code == 200
     assert " added, " not in odd.text
     assert " added, " not in huge.text
+    assert below_zero.status_code == 200
+    assert "-1 added" not in below_zero.text
+    assert " added, " not in below_zero.text
 
 
 def test_text_that_cannot_be_read_is_listed_by_line_and_can_be_edited(
@@ -896,6 +900,29 @@ def test_a_saving_waits_while_a_decision_is_being_recorded(tmp_path: pathlib.Pat
     assert saved.status_code == 303
     assert saved.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
     assert [row.title for row in rows_after] == ["Vocabulary list, unit two"]
+
+
+def test_her_page_is_read_as_one_snapshot_of_the_record(tmp_path: pathlib.Path) -> None:
+    """Her page reads the week, the reports, and the assignments while it holds the store,
+    so a saving cannot land between two of its reads: while the store is held elsewhere,
+    her page waits, and comes once it is let go."""
+    with (
+        TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        client.post("/parent/inbox/keep", data={"text": SUMMARY})
+        held = state_of(client).project_state.exclusively()
+        held.__enter__()
+        try:
+            reading = pool.submit(client.get, "/student/due-this-week", headers=PAGE)
+            _, still_waiting = wait([reading], timeout=0.3)
+        finally:
+            held.__exit__(None, None, None)
+        page = reading.result(timeout=10)
+
+    assert reading in still_waiting
+    assert page.status_code == 200
+    assert "Book Covers" in page.text
 
 
 def test_the_way_in_is_a_parents(tmp_path: pathlib.Path) -> None:
