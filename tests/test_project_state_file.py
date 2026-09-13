@@ -356,3 +356,49 @@ def test_a_batch_that_fails_leaves_nothing_of_itself_and_frees_the_file(
 
     assert essay == [good]
     assert on_record == []
+
+
+def test_a_record_write_that_fails_at_the_claims_keeps_no_assignment_either(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The assignments and the claims are one write: a claim the database refuses after
+    the assignment is in rolls the assignment back with it, and the file is free."""
+    path = tmp_path / "blossom.sqlite3"
+    when = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
+    entered = Assignment(
+        assignment_id="assignment-essay",
+        course="World History",
+        title="Canal Era comparison essay",
+        due_date=date(2026, 8, 21),
+        dependencies=[],
+        reported_submission_status="not_started",
+    )
+    said = SourceRecord(
+        channel=SourceChannel.LMS, asserted_value="2026-08-21", observed_at=when, confidence=0.9
+    )
+    refused = SourceRecord(
+        channel=SourceChannel.EMAIL, asserted_value="2026-08-22", observed_at=when, confidence=0.8
+    )
+    store = ProjectStateStore.open(path, fixture_clock())
+    other = sqlite3.connect(path, timeout=0.2)
+    try:
+        other.execute(
+            "CREATE TRIGGER refuse_email BEFORE INSERT ON date_claims "
+            "WHEN NEW.channel = 'EMAIL' BEGIN SELECT RAISE(ABORT, 'refused by the test'); END"
+        )
+        other.commit()
+        with pytest.raises(sqlite3.DatabaseError):
+            store.put_on_record([entered], {"assignment-essay": [said, refused]})
+        on_record = store.all_assignments()
+        claims = store.deadline_records("assignment-essay")
+        other.execute(
+            "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
+            ("assignment-other", "LMS", "2026-08-24", when.isoformat(), 0.5, None),
+        )
+        other.commit()
+    finally:
+        other.close()
+        store.close()
+
+    assert on_record == []
+    assert claims == []
