@@ -1,14 +1,21 @@
 """Assignments and the claims about their dates live in the household's file.
 
-They outlive a restart; a fixture is read only into a file the start creates
-and leaves a kept record alone; a set that cannot be read leaves no file behind;
-a household that names no fixture starts with nothing on record and nothing
-synthetic; and a claim is read back exactly as it was made.
+They outlive a restart; a fixture is read only into a blank file and leaves a
+kept record alone; a set that cannot be read leaves no file behind, and a first
+start the process cut short is begun again; a household that names no fixture
+starts with nothing on record and nothing synthetic; a claim is read back
+exactly as it was made; and a batch that fails leaves nothing of itself.
 """
 
 import json
+import os
 import pathlib
 import shutil
+import sqlite3
+import subprocess
+import sys
+import textwrap
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -18,7 +25,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from blossom.app import create_app
 from blossom.dependencies import build_application_state
 from blossom.reconciliation import SourceChannel, SourceRecord
-from blossom.settings import Settings
+from blossom.settings import REPOSITORY_ROOT, Settings
+from blossom.sources import FixtureSource
 from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from tests.support import FIXTURES, fixture_clock, fixture_settings
@@ -191,3 +199,128 @@ def test_a_claim_is_read_back_as_made_and_the_file_refuses_a_share(
     assert empty is False
     with pytest.raises(UnsafeCheckpointPath):
         ProjectStateStore.open(pathlib.Path(r"\\server\share\blossom.sqlite3"), fixture_clock())
+
+
+def test_a_first_start_the_process_cut_short_is_begun_again(tmp_path: pathlib.Path) -> None:
+    """The tables and the seed are one transaction, so a process that ends between them
+    leaves a file SQLite rolls back to blank, and the next start seeds it in full."""
+    script = tmp_path / "cut_short.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import os
+            import pathlib
+            import sys
+
+            from blossom.clock import clock_from
+            from blossom.sources import FixtureSource, read_whole
+            from blossom.stores.project_state import ProjectStateStore
+
+            whole = ProjectStateStore._record_claims_locked
+
+            def cut_short(self, assignment_id, records):
+                whole(self, assignment_id, records)
+                os._exit(71)
+
+            ProjectStateStore._record_claims_locked = cut_short
+            ProjectStateStore.initialize(
+                pathlib.Path(sys.argv[1]),
+                clock_from(None, "America/New_York"),
+                lambda: read_whole(FixtureSource(pathlib.Path(sys.argv[2]))),
+            )
+            """
+        ),
+        encoding="utf-8",
+    )
+    database = tmp_path / "blossom.sqlite3"
+    ended = subprocess.run(  # noqa: S603
+        [sys.executable, str(script), str(database), str(FIXTURES)],
+        cwd=REPOSITORY_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPOSITORY_ROOT)},
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert ended.returncode == 71, ended.stderr
+
+    state = build_application_state(settings_in(tmp_path), InMemorySaver())
+    try:
+        seeded = {item.assignment_id for item in state.project_state.all_assignments()}
+        claims = state.project_state.deadline_records("assignment-canal-essay")
+    finally:
+        state.close()
+
+    assert seeded == {item.assignment_id for item in FixtureSource(FIXTURES).assignments()}
+    assert claims
+
+
+def test_a_batch_that_fails_leaves_nothing_of_itself_and_frees_the_file(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A claim the database refuses, or a batch cut short by what it is given, is rolled
+    back whole: nothing of it shows, a second writer is not kept waiting, and a later
+    batch keeps nothing of it."""
+    path = tmp_path / "blossom.sqlite3"
+    when = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
+    good = SourceRecord(
+        channel=SourceChannel.LMS, asserted_value="2026-08-21", observed_at=when, confidence=0.9
+    )
+    with pytest.raises(ValueError, match="confidence"):
+        SourceRecord(
+            channel=SourceChannel.LMS,
+            asserted_value="2026-08-22",
+            observed_at=when,
+            confidence=float("nan"),
+        )
+    unchecked = SourceRecord.model_construct(
+        channel=SourceChannel.LMS,
+        asserted_value="2026-08-22",
+        observed_at=when,
+        confidence=float("nan"),
+        seen_in=None,
+    )
+    refused = SourceRecord(
+        channel=SourceChannel.EMAIL, asserted_value="2026-08-23", observed_at=when, confidence=0.8
+    )
+    store = ProjectStateStore.open(path, fixture_clock())
+    other = sqlite3.connect(path, timeout=0.2)
+    try:
+        other.execute(
+            "CREATE TRIGGER refuse_email BEFORE INSERT ON date_claims "
+            "WHEN NEW.channel = 'EMAIL' BEGIN SELECT RAISE(ABORT, 'refused by the test'); END"
+        )
+        other.commit()
+        with pytest.raises(sqlite3.DatabaseError):
+            store.record_claims("assignment-essay", [good, unchecked])
+        with pytest.raises(sqlite3.DatabaseError):
+            store.record_claims("assignment-essay", [good, refused])
+
+        def cut_short() -> Iterator[Assignment]:
+            yield Assignment(
+                assignment_id="assignment-first",
+                course="Spanish",
+                title="Vocabulary list",
+                due_date=date(2026, 8, 27),
+                dependencies=[],
+                reported_submission_status="not_started",
+            )
+            msg = "cut short by what it was given"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError):
+            store.upsert_assignments(cut_short())
+        other.execute(
+            "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
+            ("assignment-other", "LMS", "2026-08-24", when.isoformat(), 0.5, None),
+        )
+        other.commit()
+        store.record_claims("assignment-essay", [good])
+        essay = store.deadline_records("assignment-essay")
+        on_record = store.all_assignments()
+    finally:
+        other.close()
+        store.close()
+
+    assert essay == [good]
+    assert on_record == []

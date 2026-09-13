@@ -627,9 +627,11 @@ connection is shared across FastAPI's worker threads, so it is opened with
 
 `BLOSSOM_DATABASE_PATH` holds the assignments, every channel's claim about
 their dates, and the drafts table, so the record and the parent's queue
-survive a restart. A fixture, when one is named, is read whole and written in
-one transaction, only into a file the start creates; an existing file is the
-household's record, whatever it holds, and is left alone.
+survive a restart. A fixture, when one is named, is read whole and written
+only into a blank file, in one transaction with the file's own tables, so a
+start cut short leaves nothing the next start would take for the record; a
+file with anything in it is the household's record, whatever it holds, and
+is left alone.
 
 ## Saved graph state
 

@@ -32,7 +32,7 @@ from blossom.agent.trace import LocalRunTracer
 from blossom.clock import Clock, SystemClock, clock_from
 from blossom.household import SignInAttempts, keys_for, secret_beside
 from blossom.settings import Settings, enforce_local_only_tracing
-from blossom.sources import FixtureSource, seed
+from blossom.sources import FixtureSource, read_whole
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.help_requests import HelpRequestsStore
@@ -64,7 +64,7 @@ class ApplicationState:
     project_state: ProjectStateStore
     """Assignments and every channel's claim about their dates, in the file at
     ``BLOSSOM_DATABASE_PATH``. Read from a fixture only when one is named and
-    the start creates the file; what the family enters is never written over."""
+    the file is blank; what the family enters is never written over."""
     support_rules: SupportRulesStore
     reflections: ReflectionsStore
     drafts: DraftsStore
@@ -132,7 +132,18 @@ def build_application_state(
     running event loop, which only the lifespan has.
     """
     clock = clock_from(settings.today, settings.timezone_key)
-    project_state = ProjectStateStore.open(settings.database_path, clock)
+    fixture = None if settings.fixture_path is None else FixtureSource(settings.fixture_path)
+    # A fixture is read only into a blank file, in one transaction with the
+    # file's tables. A file with anything in it is the household's record,
+    # whatever it holds, and is left alone: what the family enters outlives a
+    # restart, a sample edited by hand stays edited until its folder is
+    # deleted, and a household file from before the record lived in it is not
+    # seeded by a fixture path left in .env.
+    project_state = ProjectStateStore.initialize(
+        settings.database_path,
+        clock,
+        seed=None if fixture is None else lambda: read_whole(fixture),
+    )
     opened: list[
         ProjectStateStore | DraftsStore | TraceStore | WorkloadSignalsStore | HelpRequestsStore
     ] = [project_state]
@@ -142,16 +153,7 @@ def build_application_state(
     try:
         support_rules = SupportRulesStore()
         reflections = ReflectionsStore()
-        if settings.fixture_path is not None:
-            fixture = FixtureSource(settings.fixture_path)
-            # A fixture is read only into a file this start creates. An existing
-            # file is the household's record, whatever it holds, and is left
-            # alone: what the family enters outlives a restart, a sample edited
-            # by hand stays edited until its folder is deleted, and a household
-            # file from before the record lived in it is not seeded by a fixture
-            # path left in .env.
-            if project_state.created:
-                seed(project_state, fixture)
+        if fixture is not None:
             for rule in fixture.support_rules():
                 support_rules.add_rule(rule)
             for note in fixture.reflections():
@@ -177,8 +179,8 @@ def build_application_state(
     except Exception:
         for store in reversed(opened[1:]):
             store.close()
-        # A file this start made is removed with it, so a start that fails
-        # partway leaves nothing behind and the next start seeds afresh.
+        # A file that was blank at this start is removed with it, so a start
+        # that fails partway leaves nothing behind and the next start begins afresh.
         project_state.discard_if_new()
         raise
     return ApplicationState(

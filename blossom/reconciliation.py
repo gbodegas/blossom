@@ -17,7 +17,7 @@ not supporting the conclusion drawn from it) is modeled here.
 from collections.abc import Callable, Hashable
 from enum import StrEnum
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 
 class SourceChannel(StrEnum):
@@ -61,7 +61,8 @@ class SourceRecord(BaseModel):
     channel: SourceChannel
     asserted_value: str
     observed_at: AwareDatetime
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    """Between nothing and certainty; a value that is not a number is not a confidence."""
     seen_in: str | None = None
 
     def describe(self) -> str:

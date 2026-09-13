@@ -7,9 +7,9 @@ and anything reading their interface breaks when the vendor changes it, so
 manual entry and fixtures are first class sources rather than a fallback.
 
 ``FixtureSource`` is the only working implementation, and it seeds the
-household's record rather than serving it: ``seed`` copies a source into the
-store once, and from then on assignments and the claims about their dates are
-read from the household's file. ``LMSSource`` and
+household's record rather than serving it: ``read_whole`` reads a source for
+the record's first start, and from then on assignments and the claims about
+their dates are read from the household's file. ``LMSSource`` and
 ``EmailSource`` raise ``NotImplementedError`` and mark where credentialed
 access would attach if approved. For email, filtering after reading still
 reads the whole mailbox, a parent's mailbox, so selection must happen before
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Protocol
 
 from blossom.reconciliation import SourceRecord
-from blossom.stores.project_state import Assignment, ProjectStateStore
+from blossom.stores.project_state import Assignment, Seed
 from blossom.stores.reflections import Reflection, ReflectionSubject
 from blossom.stores.support_rules import SupportRule
 
@@ -60,21 +60,18 @@ class StateSource(DateClaims, Protocol):
         ...
 
 
-def seed(store: ProjectStateStore, source: StateSource) -> None:
-    """Put a source's assignments, and the claims about their dates, on record.
+def read_whole(source: StateSource) -> Seed:
+    """A source's assignments, and the claims about their dates, read and checked whole.
 
-    Meant for a file the start creates: a fixture, when one is named, is read
-    into a new file, and what the family enters afterward is not written over
-    at the next start. The whole source is read and checked before anything
-    is written, and written in one transaction, so a set that cannot be read
-    leaves the file as it was.
+    What a blank file is seeded with, read before anything is written, so a
+    set that cannot be read leaves the file as it was.
     """
     assignments = source.assignments()
     claims = {
         assignment.assignment_id: source.deadline_records(assignment.assignment_id)
         for assignment in assignments
     }
-    store.put_on_record(assignments, claims)
+    return assignments, claims
 
 
 class FixtureSource:
