@@ -6,6 +6,7 @@ punctuation. Nothing from a real family appears in it. The three-week summary
 has the structure of a real download, hyphen bullets included.
 """
 
+import dataclasses
 import pathlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +31,7 @@ from blossom.intake import (
     by_hand,
     by_week,
     changes_for,
+    conflicting_choices,
     identity,
     keep,
     kind_of,
@@ -690,6 +692,109 @@ def test_two_rounds_of_a_name_in_one_text_are_read_apart_and_asked_about(
         date(2026, 9, 14),
     ]
     assert [change.state for change in forwards_again] == [KNOWN, KNOWN]
+
+
+TWO_WEEKS_OF_PRACTICE = (
+    "Tuesday 9/8/2026\nMath\nDue: Weekly practice:\n\n"
+    "Tuesday 9/15/2026\nMath\nDue: Weekly practice:\n"
+)
+"""One name a week apart: two cards, and one question."""
+
+
+def test_a_type_chosen_on_any_card_about_one_assignment_is_the_assignments(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A type chosen on the later of two cards, folded into the first as the same
+    assignment, is the new row's; a type chosen on one of two cards about a saved row is
+    the row's, whichever card, and the other card left as the page showed it undoes
+    nothing. Each outlives a restart, is what the next paste suggests, and the same form
+    sent again changes nothing."""
+    cards = readings(TWO_WEEKS_OF_PRACTICE)
+    folded_path = tmp_path / "folded.sqlite3"
+    store = ProjectStateStore.open(folded_path, fixture_clock())
+    try:
+        promised = changes_for(
+            cards, store, occurrences={1: UPDATE}, kinds={1: AssignmentKind.TASK}
+        )
+        kept_folded = keep(cards, store, occurrences={1: UPDATE}, kinds={1: AssignmentKind.TASK})
+        folded_rows = store.all_assignments()
+    finally:
+        store.close()
+    store = ProjectStateStore.open(folded_path, fixture_clock())
+    try:
+        after_restart = store.all_assignments()
+        later = changes_for(readings(TWO_WEEKS_OF_PRACTICE.split("\n\n")[1]), store)
+        replayed = keep(cards, store, occurrences={1: UPDATE}, kinds={1: AssignmentKind.TASK})
+        after_replay = store.all_assignments()
+    finally:
+        store.close()
+    outcomes: dict[str, tuple[Kept | list[Change], list[Assignment]]] = {}
+    for name, kinds in {
+        "chosen on the first": {0: AssignmentKind.TASK, 1: AssignmentKind.HOMEWORK},
+        "chosen on the second": {0: AssignmentKind.HOMEWORK, 1: AssignmentKind.TASK},
+    }.items():
+        saved = ProjectStateStore.open(tmp_path / f"{slug(name)}.sqlite3", fixture_clock())
+        try:
+            keep(readings(SAVED_WEEK), saved)
+            both = {0: UPDATE, 1: UPDATE}
+            kept = keep(cards, saved, occurrences=both, kinds=kinds)
+            outcomes[name] = (kept, saved.all_assignments())
+        finally:
+            saved.close()
+
+    assert [change.state for change in promised] == [NEW]
+    assert (promised[0].kind, promised[0].kind_by_parent) == (AssignmentKind.TASK, True)
+    assert kept_folded == Kept(added=1, updated=0, unchanged=0)
+    assert [(row.due_date, row.kind) for row in folded_rows] == [
+        (date(2026, 9, 15), AssignmentKind.TASK)
+    ]
+    assert folded_rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY
+    assert after_restart == folded_rows
+    assert [(change.state, change.kind) for change in later] == [(KNOWN, AssignmentKind.TASK)]
+    assert replayed == Kept(added=0, updated=0, unchanged=1)
+    assert after_replay == folded_rows
+    for name, (kept, rows) in outcomes.items():
+        assert kept == Kept(added=0, updated=1, unchanged=0), name
+        assert [(row.due_date, row.kind) for row in rows] == [
+            (date(2026, 9, 15), AssignmentKind.TASK)
+        ], name
+        assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY, name
+
+
+def test_cards_that_choose_different_types_for_one_assignment_stop_the_saving(
+    tmp_path: pathlib.Path,
+) -> None:
+    """With two types and one suggestion per assignment, two cards cannot choose
+    differently; the guard is there for the day a third type exists, and it holds: the
+    saving hands the changes back rather than picking a type on its own."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        keep(readings(SAVED_WEEK), store)
+        changes = changes_for(
+            cards := readings(TWO_WEEKS_OF_PRACTICE), store, occurrences={0: UPDATE, 1: UPDATE}
+        )
+        disagreeing = [
+            dataclasses.replace(changes[0], kind=AssignmentKind.TASK, kind_by_parent=True),
+            dataclasses.replace(changes[1], kind=AssignmentKind.HOMEWORK, kind_by_parent=True),
+        ]
+        folded_conflict = [dataclasses.replace(changes[0], choices_conflict=True)]
+        agreeing = [
+            dataclasses.replace(changes[0], kind=AssignmentKind.TASK, kind_by_parent=True),
+            dataclasses.replace(changes[1], kind=AssignmentKind.TASK, kind_by_parent=True),
+        ]
+        rows_before = store.all_assignments()
+        kept = keep(
+            cards, store, occurrences={0: UPDATE, 1: UPDATE}, kinds={0: AssignmentKind.TASK}
+        )
+    finally:
+        store.close()
+
+    assert conflicting_choices(disagreeing) == ["Math: Weekly practice"]
+    assert conflicting_choices(folded_conflict) == ["Math: Weekly practice"]
+    assert conflicting_choices(agreeing) == []
+    assert conflicting_choices(changes) == []
+    assert rows_before[0].kind is AssignmentKind.HOMEWORK
+    assert kept == Kept(added=0, updated=1, unchanged=0)
 
 
 def test_a_card_repeated_in_one_text_is_one_claim_and_a_report_repeated_is_one_report(

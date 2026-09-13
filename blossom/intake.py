@@ -694,6 +694,9 @@ class Change:
     """The saved row as the cards before this one in the same text leave it, when they
     change it; what this card fills or corrects is measured against that, so several
     cards about one assignment compose rather than each starting from the saved row."""
+    choices_conflict: bool = False
+    """Whether two cards folded into this one chose different types, which no saving
+    settles on its own."""
 
     @property
     def standing(self) -> Assignment | None:
@@ -937,8 +940,7 @@ def changes_for(
         if not asked:
             answer = None
         if twin is not None and asked and answer == UPDATE:
-            folded = _folded(changes[twin], reading, seen)
-            changes[twin] = folded
+            changes[twin] = _folded(changes[twin], key, reading, kinds, seen)
             continue
         if existing is None or answer == NEW_WORK:
             change = _new_change(key, reading, existing, answer, asked, kinds, seen, other)
@@ -962,13 +964,21 @@ def changes_for(
 
 
 def _kind_for(
-    key: int, reading: Reading, existing: Assignment | None, kinds: Mapping[int, AssignmentKind]
+    key: int, reading: Reading, saved: Assignment | None, kinds: Mapping[int, AssignmentKind]
 ) -> tuple[AssignmentKind, bool]:
     """The kind a reading's row will have, and whether a parent chose it: on the page, or
-    with the entry they typed; for a saved row the suggestion is what is saved."""
+    with the entry they typed.
+
+    A choice is a select changed from what the review page showed for the
+    card: the saved row's kind, or the reader's suggestion for a new one.
+    The page's suggestion is the saved row as it was when the page was
+    made, never the row as the cards before this one leave it, so a card
+    left as suggested never undoes what another card about the same
+    assignment chose.
+    """
     if reading.origin == SourceChannel.PARENT_ENTRY:
         return kinds.get(key, reading.kind), True
-    suggested = reading.kind if existing is None else existing.kind
+    suggested = reading.kind if saved is None else saved.kind
     chosen = kinds.get(key, suggested)
     return chosen, chosen != suggested
 
@@ -1029,7 +1039,7 @@ def _change_to(
     news = seen.novel_reports(existing.assignment_id, True, reading.reports)
     if not fresh and not news:
         asked, answer = False, None
-    kind, by_parent = _kind_for(key, reading, base, kinds)
+    kind, by_parent = _kind_for(key, reading, existing, kinds)
     moves = asked and answer == UPDATE and reading.due_date != base.due_date
     return Change(
         key,
@@ -1050,9 +1060,19 @@ def _change_to(
     )
 
 
-def _folded(anchor: Change, reading: Reading, seen: _Seen) -> Change:
+def _folded(
+    anchor: Change,
+    key: int,
+    reading: Reading,
+    kinds: Mapping[int, AssignmentKind],
+    seen: _Seen,
+) -> Change:
     """The first reading of a name in this text with a later card folded in, as the parent
-    said: the due date is the later card's, and its claims, note, and reports come along."""
+    said: the due date is the later card's, and its claims, note, and reports come along,
+    as does a type chosen on it; a type chosen on both cards must be the same."""
+    kind, chosen = _kind_for(key, reading, None, kinds)
+    if chosen and anchor.kind_by_parent and anchor.kind != kind:
+        return dataclasses.replace(anchor, choices_conflict=True)
     first = anchor.reading
     notes = [note for note in (first.note, reading.note) if note]
     origins = {**reading.field_origins, **first.field_origins}
@@ -1075,7 +1095,26 @@ def _folded(anchor: Change, reading: Reading, seen: _Seen) -> Change:
         + seen.novel_claims(anchor.assignment_id, False, reading.claims),
         new_reports=anchor.new_reports
         + seen.novel_reports(anchor.assignment_id, False, reading.reports),
+        kind=kind if chosen else anchor.kind,
+        kind_by_parent=anchor.kind_by_parent or chosen,
     )
+
+
+def conflicting_choices(changes: list[Change]) -> list[str]:
+    """The assignments whose cards choose different types, named as the page names them.
+
+    Two cards about one assignment can each carry a choice; when the
+    choices differ, no saving picks one, and the page asks instead.
+    """
+    chosen: dict[str, set[AssignmentKind]] = {}
+    names: dict[str, str] = {}
+    for change in changes:
+        if change.choices_conflict:
+            chosen.setdefault(change.assignment_id, set()).update(AssignmentKind)
+        elif change.kind_by_parent:
+            chosen.setdefault(change.assignment_id, set()).add(change.kind)
+        names.setdefault(change.assignment_id, f"{change.reading.course}: {change.reading.title}")
+    return [names[key] for key, kinds in chosen.items() if len(kinds) > 1]
 
 
 def _match(rows: list[Assignment], reading: Reading) -> Assignment | None:
@@ -1130,12 +1169,13 @@ def keep(
     tabs, cannot both find a reading new: the second finds what the first
     wrote and adds nothing, an answer of new work included, since the row
     that answer makes is found by its id. When the record has changed since
-    the preview in a way that leaves a question open, nothing is written and
-    the changes are handed back for the parent to look at again.
+    the preview in a way that leaves a question open, or when two cards
+    about one assignment choose different types, nothing is written and the
+    changes are handed back for the parent to look at again.
     """
     with store.exclusively():
         changes = changes_for(items, store, occurrences=occurrences, kinds=kinds)
-        if any(change.state == REVIEW for change in changes):
+        if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):
             return changes
         rows: dict[str, Assignment] = {}
         claims: dict[str, list[SourceRecord]] = {}

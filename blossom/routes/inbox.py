@@ -36,6 +36,7 @@ from blossom.intake import (
     by_hand,
     by_week,
     changes_for,
+    conflicting_choices,
     keep,
     read_text,
     spoken_day,
@@ -79,6 +80,9 @@ NOT_A_KIND: Final = "Choose Homework or Task."
 LOOK_AGAIN: Final = (
     "The saved assignments changed since this preview, and one of these needs your answer "
     "now. Look it over again before saving."
+)
+CHOOSE_ONE_TYPE: Final = (
+    "Two cards about the same assignment choose different types. Pick one type for it, then save."
 )
 
 
@@ -143,22 +147,51 @@ def draft_of(form: Mapping[str, str]) -> dict[str, str]:
     return {name: form.get(name, "") for name in ENTRY_FIELDS}
 
 
-def answers_from(form: Mapping[str, str]) -> tuple[dict[int, str], dict[int, AssignmentKind]]:
-    """The parent's answers on the review page: new work or an update, and the type chosen."""
+def answers_from(
+    form: Mapping[str, str], unasked: Mapping[int, set[AssignmentKind]]
+) -> tuple[dict[int, str], dict[int, AssignmentKind]]:
+    """The parent's answers on the review page: new work or an update, and the type chosen.
+
+    A type is a choice only when it differs from what the page showed for
+    the card, which the page sends back beside it; a select left as it was
+    is no answer, so it can never undo a choice made on another card about
+    the same assignment, nor a change made from elsewhere meanwhile. A form
+    sent without the page's own note of what it showed is read the careful
+    way: a type in ``unasked`` for the card, what the page would show now or
+    what the reader suggests, is no choice either.
+    """
     occurrences: dict[int, str] = {}
     kinds: dict[int, AssignmentKind] = {}
+    shown: dict[int, AssignmentKind] = {}
     for name, value in form.items():
         head, _, number = name.rpartition("-")
         if not number.isdigit():
             continue
         if head == "occurrence" and value in (UPDATE, NEW_WORK):
             occurrences[int(number)] = value
-        elif head == "kind":
+        elif head in ("kind", "suggested"):
             try:
-                kinds[int(number)] = AssignmentKind(value)
+                kind = AssignmentKind(value)
             except ValueError:
                 continue
-    return occurrences, kinds
+            (kinds if head == "kind" else shown)[int(number)] = kind
+    chosen = {}
+    for key, kind in kinds.items():
+        if key in shown:
+            if kind != shown[key]:
+                chosen[key] = kind
+        elif kind not in unasked.get(key, set()):
+            chosen[key] = kind
+    return occurrences, chosen
+
+
+def unasked_for(state: ApplicationState, read: Read) -> dict[int, set[AssignmentKind]]:
+    """For each card, the types that are no choice when a form carries no note of what the
+    page showed: what the page would show for it now, and what the reader suggests."""
+    return {
+        change.key: {change.kind, change.reading.kind}
+        for change in changes_for(read.items, state.project_state)
+    }
 
 
 def read_draft(state: ApplicationState, draft: Mapping[str, str]) -> Read | Problem:
@@ -200,6 +233,8 @@ def preview_page(
 ) -> HTMLResponse:
     """What was read, week by week against the record as it is, with the way to save it."""
     changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+    if notice is None and conflicting_choices(changes):
+        notice = CHOOSE_ONE_TYPE
     counts = {
         "new": sum(1 for change in changes if change.state == NEW),
         "updated": sum(1 for change in changes if change.state == CLAIMED),
@@ -286,12 +321,13 @@ async def keep_readings(request: Request, state: State) -> Response:
     read = read_draft(state, draft)
     if isinstance(read, Problem):
         return problem_page(request, state, draft, read)
-    occurrences, kinds = answers_from(form)
+    occurrences, kinds = answers_from(form, unasked_for(state, read))
     async with state.decision_lock:
         kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
     if not isinstance(kept, Kept):
+        notice = CHOOSE_ONE_TYPE if conflicting_choices(kept) else LOOK_AGAIN
         return preview_page(
-            request, state, read, draft, occurrences=occurrences, kinds=kinds, notice=LOOK_AGAIN
+            request, state, read, draft, occurrences=occurrences, kinds=kinds, notice=notice
         )
     return RedirectResponse(
         f"/parent?added={kept.added}&updated={kept.updated}&unchanged={kept.unchanged}",

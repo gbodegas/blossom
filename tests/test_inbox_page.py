@@ -18,6 +18,7 @@ from blossom.household import COOKIE
 from blossom.intake import NOTE_MAX_LENGTH, TEXT_MAX_LENGTH
 from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import (
+    CHOOSE_ONE_TYPE,
     FAR_DUE_DATE,
     LONG_NOTE,
     LOOK_AGAIN,
@@ -29,7 +30,7 @@ from blossom.routes.inbox import (
     TOO_LONG,
 )
 from blossom.settings import Settings
-from blossom.stores.project_state import AssignmentKind
+from blossom.stores.project_state import Assignment, AssignmentKind
 from tests.support import fixture_settings
 
 PAGE = {"Accept": "text/html"}
@@ -355,7 +356,8 @@ def test_the_type_is_the_parents_to_correct_on_the_page_and_on_the_entry_form(
         )
         again = client.post("/parent/inbox/read", data={"text": SUMMARY}).text
         changed_on_the_page = client.post(
-            "/parent/inbox/keep", data={"text": SUMMARY, "kind-1": "HOMEWORK"}
+            "/parent/inbox/keep",
+            data={"text": SUMMARY, "kind-1": "HOMEWORK", "suggested-1": "TASK"},
         )
         client.post("/parent/inbox/keep", data=ENTRY)
         shown = client.post("/parent/inbox/enter", data=retyped).text
@@ -380,6 +382,111 @@ def test_the_type_is_the_parents_to_correct_on_the_page_and_on_the_entry_form(
     )
     assert rows["Vocabulary list, unit two"].kind is AssignmentKind.TASK
     assert rows["Vocabulary list, unit two"].origins["kind"] is SourceChannel.PARENT_ENTRY
+
+
+SAVED_WEEK = "Tuesday 9/1/2026\nMath\nDue: Weekly practice:\n"
+TWO_WEEKS_OF_PRACTICE = (
+    "Tuesday 9/8/2026\nMath\nDue: Weekly practice:\n\n"
+    "Tuesday 9/15/2026\nMath\nDue: Weekly practice:\n"
+)
+
+
+def test_a_type_chosen_on_a_folded_card_is_saved_and_shown_the_next_time(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The later of two cards gets Task and "the same assignment"; the one row saved is a
+    task, a later preview of that card shows Task selected, and sending the same form again
+    changes nothing."""
+    form = {
+        "text": TWO_WEEKS_OF_PRACTICE,
+        "occurrence-1": "update",
+        "kind-0": "HOMEWORK",
+        "suggested-0": "HOMEWORK",
+        "kind-1": "TASK",
+        "suggested-1": "HOMEWORK",
+    }
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        kept = client.post("/parent/inbox/keep", data=form)
+        rows = state_of(client).project_state.all_assignments()
+        later = client.post(
+            "/parent/inbox/read", data={"text": TWO_WEEKS_OF_PRACTICE.split("\n\n")[1]}
+        ).text
+        replayed = client.post("/parent/inbox/keep", data=form)
+        rows_after = state_of(client).project_state.all_assignments()
+
+    assert kept.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
+    assert [(row.due_date, row.kind) for row in rows] == [(date(2026, 9, 15), AssignmentKind.TASK)]
+    assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY
+    card = article_for(later, "<h2>Weekly practice</h2>")
+    assert '<span class="pill">Already saved</span>' in card
+    assert '<option value="TASK" selected>Task</option>' in card
+    assert 'data-saved="TASK"' in card
+    assert replayed.headers["location"] == "/parent?added=0&updated=0&unchanged=1"
+    assert rows_after == rows
+
+
+def test_a_type_chosen_on_one_card_about_a_saved_row_is_not_undone_by_the_other(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Both cards say the same assignment moved; the first is changed to Task and the second
+    is left as the page showed it. The one row updated is a task, with or without the page's
+    own note of what it showed, whichever card carries the change, and the same form sent
+    again changes nothing."""
+    both = {"text": TWO_WEEKS_OF_PRACTICE, "occurrence-0": "update", "occurrence-1": "update"}
+    as_the_probe_sends_it = {**both, "kind-0": "TASK", "kind-1": "HOMEWORK"}
+    as_the_page_sends_it = {
+        **as_the_probe_sends_it,
+        "suggested-0": "HOMEWORK",
+        "suggested-1": "HOMEWORK",
+    }
+    on_the_second = {
+        **both,
+        "kind-0": "HOMEWORK",
+        "kind-1": "TASK",
+        "suggested-0": "HOMEWORK",
+        "suggested-1": "HOMEWORK",
+    }
+    outcomes: dict[str, tuple[str, list[Assignment], str]] = {}
+    for name, form in {
+        "probe": as_the_probe_sends_it,
+        "page": as_the_page_sends_it,
+        "second": on_the_second,
+    }.items():
+        with TestClient(create_app(settings_in(tmp_path / name)), follow_redirects=False) as client:
+            client.post("/parent/inbox/keep", data={"text": SAVED_WEEK})
+            kept = client.post("/parent/inbox/keep", data=form)
+            rows = state_of(client).project_state.all_assignments()
+            replayed = client.post("/parent/inbox/keep", data=form)
+            outcomes[name] = (kept.headers["location"], rows, replayed.headers["location"])
+
+    for name, (saved_to, rows, replayed_to) in outcomes.items():
+        assert saved_to == "/parent?added=0&updated=1&unchanged=0", name
+        assert [(row.due_date, row.kind) for row in rows] == [
+            (date(2026, 9, 15), AssignmentKind.TASK)
+        ], name
+        assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY, name
+        assert replayed_to == "/parent?added=0&updated=0&unchanged=1", name
+
+
+def test_a_select_left_as_the_page_showed_it_is_no_answer(tmp_path: pathlib.Path) -> None:
+    """A form whose select matches what the page showed for it, even when the row has since
+    been changed from elsewhere, changes nothing; the notice for cards choosing different
+    types is the page's own words."""
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        client.post("/parent/inbox/keep", data={"text": SAVED_WEEK})
+        client.post(
+            "/parent/inbox/keep",
+            data={"text": SAVED_WEEK, "kind-0": "TASK", "suggested-0": "HOMEWORK"},
+        )
+        stale = client.post(
+            "/parent/inbox/keep",
+            data={"text": SAVED_WEEK, "kind-0": "HOMEWORK", "suggested-0": "HOMEWORK"},
+        )
+        rows = state_of(client).project_state.all_assignments()
+
+    assert stale.headers["location"] == "/parent?added=0&updated=0&unchanged=1"
+    assert rows[0].kind is AssignmentKind.TASK
+    assert "Pick one type for it" in CHOOSE_ONE_TYPE
 
 
 def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(

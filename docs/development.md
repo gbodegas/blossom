@@ -250,7 +250,10 @@ twice, from a retry or a page left open, changes nothing. The type, homework
 or task, is suggested from the title, paperwork and materials being tasks,
 and can be changed on any card, a saved one included; a parent's choice is
 kept as theirs, and the type typed with an entry corrects a saved row the
-same way. Several cards about one saved assignment in one text compose: the
+same way. A choice is a select changed from what the page showed; a card
+left as shown is no answer, so when several cards are about one assignment
+a type chosen on any of them, a folded one included, is the assignment's,
+and two cards choosing different types stop the save until one is picked. Several cards about one saved assignment in one text compose: the
 date one moves, the note another adds, and the assigned date a third fills
 all reach the one row, every date observation with them, and the count on
 return says how many assignments changed, not how many cards. The Save

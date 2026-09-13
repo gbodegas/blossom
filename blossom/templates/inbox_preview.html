@@ -107,6 +107,7 @@
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
                 </fieldset>
               {% endif %}
+              <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.kind.value }}">
               <label class="type-choice">Type
                 <select name="kind-{{ change.key }}" data-saved="{{ change.kind.value }}">
                   {% for value, label in kind_choices %}
