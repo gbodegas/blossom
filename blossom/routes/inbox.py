@@ -161,10 +161,12 @@ def answers_from(
     before any choice and what the select showed when the page was made. A
     type is a choice when the select was changed from what it showed, a
     change back to the suggestion included, or when it carries a choice
-    from a page before, a type other than the suggestion; a select left as
-    it was showing is no answer, so it can never undo a choice made on
-    another card about the same assignment, nor a change made from
-    elsewhere meanwhile. A card folded into another, which the page sends
+    from a page before, which the page marks beside the select, so a choice
+    once made stays one through every page that comes back until it is
+    saved, whatever the values; a select left as it was showing, and never
+    chosen, is no answer, so it can never undo a choice made on another
+    card about the same assignment, nor a change made from elsewhere
+    meanwhile. A card folded into another, which the page sends
     back unshown, carries its choice only while the card shown for the
     assignment makes none. A form sent without the page's own notes is read
     the careful way: a type in ``unasked`` for the card, what the page would
@@ -175,6 +177,7 @@ def answers_from(
     suggested: dict[int, AssignmentKind] = {}
     shown: dict[int, AssignmentKind] = {}
     folded: dict[int, int] = {}
+    marked: set[int] = set()
     for name, value in form.items():
         head, _, number = name.rpartition("-")
         if not number.isdigit():
@@ -183,6 +186,8 @@ def answers_from(
             occurrences[int(number)] = value
         elif head == "folded" and value.isdigit():
             folded[int(number)] = int(value)
+        elif head == "chosen":
+            marked.add(int(number))
         elif head in ("kind", "suggested", "shown"):
             try:
                 kind = AssignmentKind(value)
@@ -191,7 +196,9 @@ def answers_from(
             {"kind": kinds, "suggested": suggested, "shown": shown}[head][int(number)] = kind
     chosen = {}
     for key, kind in kinds.items():
-        if key in suggested:
+        if key in marked:
+            chosen[key] = kind
+        elif key in suggested:
             edited = key in shown and kind != shown[key]
             if edited or kind != suggested[key]:
                 chosen[key] = kind

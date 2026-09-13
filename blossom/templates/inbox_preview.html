@@ -80,6 +80,7 @@
         <input type="hidden" name="kind-{{ change.key }}" value="{{ change.kind.value }}">
         <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
         <input type="hidden" name="folded-{{ change.key }}" value="{{ change.folded_into }}">
+        {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}
       {% endfor %}
       {% if folded %}
         <p class="note">{{ folded|length }} card{% if folded|length != 1 %}s{% endif %} folded into the card for the same assignment, as you said.</p>
@@ -125,6 +126,7 @@
               {% endif %}
               <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
               <input type="hidden" name="shown-{{ change.key }}" value="{{ change.kind.value }}">
+              {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}
               <label class="type-choice">Type
                 <select name="kind-{{ change.key }}" data-saved="{{ change.suggested.value }}">
                   {% for value, label in kind_choices %}

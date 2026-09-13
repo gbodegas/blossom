@@ -126,8 +126,9 @@ SIGNAL_ENDED: Final = (
 )
 ASSIGNMENTS_CHANGED: Final = (
     "Assignments changed after this plan was made: work was added or taken away in its "
-    "window, or a date, a type, a note, or what a source says about a date changed. "
-    "The plan does not cover the week as it stands. Plan again before approving."
+    "window, or a date, a type, a note, a status the school reports, or what a source "
+    "says about a date changed. The plan does not cover the week as it stands. Plan again "
+    "before approving."
 )
 
 

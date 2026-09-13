@@ -694,6 +694,60 @@ def test_an_edit_to_the_card_shown_stands_over_a_folded_cards_choice(
     assert after_restart == rows
 
 
+def test_a_change_back_to_the_suggestion_stays_the_parents_through_another_return(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Task is chosen on the second card and folded; the page comes back; the merged card
+    is set back to Homework and the page comes back again, unanswered; the question is
+    answered on that page. The row is homework and the type is the parent's, as it would
+    be had the answer come with the change; the second return costs nothing. A card left as
+    suggested through the same returns stays the school's."""
+    settings = settings_in(tmp_path)
+    with TestClient(create_app(settings), follow_redirects=False) as client:
+        preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
+        first = {**review_form(preview), "occurrence-1": "update", "kind-1": "TASK"}
+        returned = client.post("/parent/inbox/keep", data=first)
+        reverted = client.post(
+            "/parent/inbox/keep", data={**review_form(returned.text), "kind-0": "HOMEWORK"}
+        )
+        carried = review_form(reverted.text)
+        saved = client.post("/parent/inbox/keep", data={**carried, "occurrence-2": "new"})
+        rows = by_due(state_of(client).project_state.all_assignments())
+    with TestClient(create_app(settings)) as restarted:
+        after_restart = by_due(state_of(restarted).project_state.all_assignments())
+    untouched = settings_in(tmp_path / "untouched")
+    with TestClient(create_app(untouched), follow_redirects=False) as client:
+        preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
+        once = client.post(
+            "/parent/inbox/keep", data={**review_form(preview), "occurrence-1": "update"}
+        )
+        twice = client.post("/parent/inbox/keep", data=review_form(once.text))
+        left = review_form(twice.text)
+        saved_untouched = client.post("/parent/inbox/keep", data={**left, "occurrence-2": "new"})
+        untouched_rows = by_due(state_of(client).project_state.all_assignments())
+
+    assert reverted.status_code == 200
+    assert (carried["kind-0"], carried["shown-0"], carried["suggested-0"]) == (
+        "HOMEWORK",
+        "HOMEWORK",
+        "HOMEWORK",
+    )
+    assert carried["chosen-0"] == "1"
+    assert saved.headers["location"] == "/parent?added=2&updated=0&unchanged=0"
+    assert [(row.due_date, row.kind) for row in rows] == [
+        (date(2026, 9, 15), AssignmentKind.HOMEWORK),
+        (date(2026, 9, 22), AssignmentKind.HOMEWORK),
+    ]
+    assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY
+    assert after_restart == rows
+    assert "chosen-0" not in left
+    assert saved_untouched.headers["location"] == "/parent?added=2&updated=0&unchanged=0"
+    assert [row.origins["kind"] for row in untouched_rows] == [
+        SourceChannel.LMS,
+        SourceChannel.LMS,
+    ]
+
+
 def test_the_card_shown_can_be_set_after_a_fold_left_it_as_suggested(
     tmp_path: pathlib.Path,
 ) -> None:

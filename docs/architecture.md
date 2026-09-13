@@ -43,8 +43,9 @@ tabs, adds nothing twice, an answer of new work included, since the row
 that answer makes is found by its id. That is the import's doing, not a
 constraint on the claims table: every observation a channel makes is kept,
 a card repeated in one text is one observation, and a household file from
-before this schema is brought up to it by adding columns, and by dropping
-the one index a version between made. A recorded due date is replaced by a
+before this schema is brought up to it by adding columns, by dropping
+the one index a version between made on the claims, and by folding status
+reports held twice for one day to the first. A recorded due date is replaced by a
 paste only when a parent says the assignment moved; each fact on a row carries
 its origin, the portal, the email, or a parent, so the pages can say whose
 it is, each field with the channel that gave it when a text mixes the email

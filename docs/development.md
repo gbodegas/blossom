@@ -322,8 +322,12 @@ the plan was made from, and a plan a parent has decided is history, measured
 against the week no more. A saving and a decision never cross: the saving
 waits the moment a decision takes, and a decision after a saving is refused
 as stale. A household file from before this schema is brought
-up to it on the first start by adding columns; nothing it holds is dropped
-or rewritten.
+up to it on the first start: columns it lacks are added, the index a
+version between made on the claims, which held each claim once, is dropped
+so that every observation is kept, and status reports the file holds twice
+for one channel, status, and day are folded to the first before the index
+that keeps them once is made. No assignment and no claim is dropped or
+rewritten.
 
 ## The sample week
 
