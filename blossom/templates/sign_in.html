@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% set page = "sign-in" %}
+{% block title %}Blossom - Sign in{% endblock %}
+{% block content %}
+  <h1>Who is this?</h1>
+  <section class="panel">
+    {% if problem %}
+      <p class="problem" role="alert">{{ problem }}</p>
+    {% endif %}
+    <form method="post" action="/sign-in" class="ask">
+      <label for="passphrase">Your passphrase</label>
+      <input id="passphrase" type="password" name="passphrase" autocomplete="current-password" autofocus>
+      {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+      <button type="submit" class="primary">Come in</button>
+    </form>
+    <p class="note">
+      Her passphrase opens her week. A parent's opens her week and the family review.
+      This device stays signed in for a month, or until "Sign out".
+    </p>
+  </section>
+{% endblock %}

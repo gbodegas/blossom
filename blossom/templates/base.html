@@ -14,9 +14,19 @@
         <img class="mark" src="/static/mark.svg" alt="" width="44" height="33">
         <span class="wordmark">blossom</span>
       </a>
+      {% set household = request.state.household if request is defined else none %}
       <nav class="places" aria-label="Pages">
-        <a href="/student/due-this-week"{% if page == "student" %} aria-current="page"{% endif %}>{% if page == "parent" %}Student week{% else %}My week{% endif %}</a>
-        <a href="/parent"{% if page == "parent" %} aria-current="page"{% endif %}>Family review</a>
+        {% if not sign_in %}
+          <a href="/student/due-this-week"{% if page == "student" %} aria-current="page"{% endif %}>{% if page == "parent" %}Student week{% else %}My week{% endif %}</a>
+          {% if household != "STUDENT" %}
+            <a href="/parent"{% if page == "parent" %} aria-current="page"{% endif %}>Family review</a>
+          {% endif %}
+          {% if household %}
+            <form method="post" action="/sign-out" class="signout">
+              <button type="submit" class="secondary">Sign out</button>
+            </form>
+          {% endif %}
+        {% endif %}
       </nav>
     </header>
     <main>
