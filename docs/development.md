@@ -175,8 +175,9 @@ it, start again, and everyone signs in once more.
 Choose passphrases that are long and unalike, a few plain words each: they
 are typed on a tablet, and they are the whole of who is who. Wrong
 passphrases from one device are counted, and after ten that device is told
-to wait a minute before trying again; other devices are not affected, and
-nothing typed is kept.
+to wait a minute before trying again; a right passphrase in between does
+not start the count over, other devices are not affected, and nothing typed
+is kept.
 
 If a passphrase may have been seen, change it in `.env` and restart: every
 device signed in with it is signed out, the other person's devices stay

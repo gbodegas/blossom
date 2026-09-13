@@ -30,8 +30,9 @@ import hmac
 import os
 import secrets
 import threading
+import time
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 from urllib.parse import quote
@@ -202,10 +203,20 @@ class SignInAttempts:
 
     A device is its network address. After ``limit`` wrong passphrases inside
     one ``cooldown`` it is asked to wait that long, then its count starts
-    over; a right passphrase clears it. The count is per device, so one
-    device cannot lock the others out, and it is bounded: past ``capacity``
-    devices the oldest count is forgotten. Nothing typed is kept, only
-    counts and times. It lives in this process and is empty at every start.
+    over. A right passphrase neither adds to the count nor clears it: both
+    passphrases are checked on every try, so a run of wrong ones followed by
+    a right one may be someone who knows one passphrase guessing at the
+    other, and the count stands until it runs out. The count is per device,
+    so one device cannot lock the others out, and it is bounded: past
+    ``capacity`` devices, room is made in a stated order, counts that have
+    run out first, then the oldest count below the limit, and an active wait
+    only when nothing else is left, so a new device is never turned away for
+    want of room. Nothing typed is kept, only counts and times.
+
+    Time is read from a clock handed in that only moves forward, the
+    process's own by default, so a correction to the computer's clock
+    neither shortens nor stretches a wait. The count lives in this process
+    and is empty at every start.
 
     One try is one operation under the lock: the wait is read, the passphrase
     checked, and the outcome counted before any other try is looked at, so
@@ -218,53 +229,56 @@ class SignInAttempts:
         limit: int = ATTEMPT_LIMIT,
         cooldown: int = COOLDOWN_SECONDS,
         capacity: int = ATTEMPT_ADDRESSES,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.limit = limit
-        self.cooldown = timedelta(seconds=cooldown)
+        self.cooldown = float(cooldown)
         self.capacity = capacity
-        self._counts: dict[str, tuple[int, datetime]] = {}
-        """Per device: wrong tries so far, and when the count began or the wait began."""
+        self._clock = clock
+        self._counts: dict[str, tuple[int, float]] = {}
+        """Per device: wrong tries so far, and the clock's reading when the count began
+        or the wait began."""
         self._lock = threading.Lock()
 
     def __len__(self) -> int:
         return len(self._counts)
 
     def try_once(
-        self, device: str, now: datetime, check: Callable[[], Principal | None]
+        self, device: str, check: Callable[[], Principal | None]
     ) -> tuple[int, Principal | None]:
         """One try from a device, whole: the seconds it must still wait, with nothing checked,
-        or zero and who the passphrase names, its outcome counted before any other try
+        or zero and who the passphrase names, a wrong one counted before any other try
         is looked at."""
         with self._lock:
+            now = self._clock()
             wait = self._wait(device, now)
             if wait:
                 return wait, None
             role = check()
             if role is None:
                 self._failed(device, now)
-            else:
-                self._counts.pop(device, None)
             return 0, role
 
-    def wait_for(self, device: str, now: datetime) -> int:
+    def wait_for(self, device: str) -> int:
         """Seconds this device must still wait, or zero when it may try: a look, not a try."""
         with self._lock:
-            return self._wait(device, now)
+            return self._wait(device, self._clock())
 
-    def _wait(self, device: str, now: datetime) -> int:
+    def _wait(self, device: str, now: float) -> int:
         entry = self._counts.get(device)
         if entry is None:
             return 0
         count, since = entry
         left = since + self.cooldown - now
-        if left <= timedelta(0):
+        if left <= 0:
             del self._counts[device]
             return 0
         if count < self.limit:
             return 0
-        return max(1, left.days * 86400 + left.seconds + (1 if left.microseconds else 0))
+        whole = int(left)
+        return max(1, whole + 1 if left > whole else whole)
 
-    def _failed(self, device: str, now: datetime) -> None:
+    def _failed(self, device: str, now: float) -> None:
         entry = self._counts.pop(device, None)
         if entry is not None and entry[0] < self.limit and now - entry[1] < self.cooldown:
             count = entry[0] + 1
@@ -273,8 +287,20 @@ class SignInAttempts:
         else:
             count, since = 1, now
             if len(self._counts) >= self.capacity:
-                del self._counts[next(iter(self._counts))]
+                self._make_room(now)
         self._counts[device] = (count, since)
+
+    def _make_room(self, now: float) -> None:
+        """Counts that have run out go first, then the oldest below the limit, then a wait."""
+        for device in [d for d, (_, since) in self._counts.items() if since + self.cooldown <= now]:
+            del self._counts[device]
+        if len(self._counts) < self.capacity:
+            return
+        for device, (count, _) in self._counts.items():
+            if count < self.limit:
+                del self._counts[device]
+                return
+        del self._counts[next(iter(self._counts))]
 
 
 def device_of(request: Request) -> str:

@@ -84,7 +84,7 @@ def take_passphrase(
     """
     now = datetime.now(UTC)
     wait, role = state.attempts.try_once(
-        device_of(request), now, lambda: role_for(passphrase, state.settings)
+        device_of(request), lambda: role_for(passphrase, state.settings)
     )
     if wait:
         return sign_in_page(

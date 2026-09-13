@@ -42,6 +42,16 @@ SHORT = "short one"
 PAGE = {"Accept": "text/html"}
 
 
+class Ticking:
+    """A clock for the count: it reads what the test sets, and the test only moves it on."""
+
+    def __init__(self) -> None:
+        self.reading = 1000.0
+
+    def read(self) -> float:
+        return self.reading
+
+
 def household(tmp_path: pathlib.Path, **environ: str) -> Settings:
     """Settings with both passphrases set and state under ``tmp_path``; ``environ`` wins."""
     return fixture_settings(
@@ -254,13 +264,14 @@ def test_ten_wrong_passphrases_from_a_device_are_answered_with_a_wait(
 
 
 def test_the_count_is_per_device_bounded_and_over_once_the_wait_is() -> None:
-    """The count is kept with a clock handed in, so the wait, its end, a slow trickle of
-    wrong tries, a right one, and the bound on devices remembered are all checked."""
-    attempts = SignInAttempts(limit=3, cooldown=60, capacity=2)
-    start = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
+    """The count is kept against a clock handed in, so the wait, its end, a slow trickle
+    of wrong tries, a right one that leaves the count standing, and the bound on devices
+    are all checked without a real second passing."""
+    clock = Ticking()
+    attempts = SignInAttempts(limit=3, cooldown=60, capacity=2, clock=clock.read)
 
-    def at(seconds: float) -> datetime:
-        return start + timedelta(seconds=seconds)
+    def at(seconds: float) -> None:
+        clock.reading = 1000.0 + seconds
 
     def wrong() -> Principal | None:
         return None
@@ -268,31 +279,96 @@ def test_the_count_is_per_device_bounded_and_over_once_the_wait_is() -> None:
     def right() -> Principal | None:
         return Principal.PARENT
 
+    at(0)
     for _ in range(3):
-        assert attempts.try_once("tablet", at(0), wrong) == (0, None)
-    assert attempts.try_once("tablet", at(0), right) == (60, None)
-    assert attempts.wait_for("tablet", at(59.5)) == 1
-    assert attempts.try_once("laptop", at(1), wrong) == (0, None)
-    assert attempts.wait_for("tablet", at(60)) == 0
+        assert attempts.try_once("tablet", wrong) == (0, None)
+    assert attempts.try_once("tablet", right) == (60, None)
+    at(1)
+    assert attempts.try_once("laptop", wrong) == (0, None)
+    at(59.5)
+    assert attempts.wait_for("tablet") == 1
+    at(60)
+    assert attempts.wait_for("tablet") == 0
     assert len(attempts) == 1
-    assert attempts.try_once("tablet", at(61), wrong) == (0, None)
-    assert attempts.try_once("tablet", at(61), right) == (0, Principal.PARENT)
-    assert len(attempts) == 1
+    at(61)
+    assert attempts.try_once("tablet", wrong) == (0, None)
+    assert attempts.try_once("tablet", right) == (0, Principal.PARENT)
+    assert len(attempts) == 2
+    for _ in range(2):
+        assert attempts.try_once("tablet", wrong) == (0, None)
+    assert attempts.try_once("tablet", right) == (60, None)
     for seconds in (100, 101, 200):
-        assert attempts.try_once("phone", at(seconds), wrong) == (0, None)
-    assert attempts.wait_for("phone", at(200)) == 0
+        at(seconds)
+        assert attempts.try_once("phone", wrong) == (0, None)
+    assert attempts.wait_for("phone") == 0
+    at(300)
     for device in ("a", "b", "c"):
-        attempts.try_once(device, at(300), wrong)
+        attempts.try_once(device, wrong)
     assert len(attempts) == 2
-    assert attempts.wait_for("phone", at(300)) == 0
+    assert attempts.wait_for("phone") == 0
+
+
+def test_room_is_made_from_run_out_counts_first_and_from_waits_last() -> None:
+    """Past the capacity, counts that have run out go first, then the oldest count below
+    the limit, and an active wait only when nothing else is left."""
+    clock = Ticking()
+    attempts = SignInAttempts(limit=3, cooldown=60, capacity=2, clock=clock.read)
+
+    def wrong() -> Principal | None:
+        return None
+
+    for _ in range(3):
+        attempts.try_once("waiting", wrong)
+    attempts.try_once("counting", wrong)
     assert len(attempts) == 2
+    clock.reading += 1
+    attempts.try_once("newcomer", wrong)
+    assert len(attempts) == 2
+    assert attempts.wait_for("waiting") == 59
+    for _ in range(2):
+        attempts.try_once("newcomer", wrong)
+    assert attempts.wait_for("newcomer") == 60
+    clock.reading += 1
+    attempts.try_once("another", wrong)
+    assert len(attempts) == 2
+    assert attempts.wait_for("waiting") == 0
+    assert attempts.wait_for("newcomer") == 59
+    clock.reading += 60
+    attempts.try_once("late", wrong)
+    assert len(attempts) == 1
+
+
+@pytest.mark.parametrize(("known", "home"), [(HERS, "/student/due-this-week"), (THEIRS, "/parent")])
+def test_a_right_passphrase_between_wrong_ones_leaves_the_count_standing(
+    tmp_path: pathlib.Path, known: str, home: str
+) -> None:
+    """Nine wrong, a right sign-in, a tenth wrong: the count reaches the limit all the same,
+    the next try is told to wait with no cookie, and the device signed in still opens
+    its page."""
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+        nine = [
+            client.post("/sign-in", data={"passphrase": "open sesame"}).status_code
+            for _ in range(ATTEMPT_LIMIT - 1)
+        ]
+        came_in = client.post("/sign-in", data={"passphrase": known})
+        tenth = client.post("/sign-in", data={"passphrase": "open sesame"})
+        refused = client.post("/sign-in", data={"passphrase": known})
+        still_in = client.get(home, headers=PAGE)
+
+    assert nine == [422] * (ATTEMPT_LIMIT - 1)
+    assert came_in.status_code == 303
+    assert COOKIE in came_in.cookies
+    assert tenth.status_code == 422
+    assert refused.status_code == 429
+    assert refused.headers["retry-after"] == str(COOLDOWN_SECONDS)
+    assert COOKIE not in refused.cookies
+    assert still_in.status_code == 200
 
 
 def test_tries_arriving_together_are_bounded_as_tries_one_at_a_time() -> None:
     """Thirty wrong tries from one device released at once: exactly the limit are checked,
     the rest are told to wait, and no try slips through between a look and a count."""
     attempts = SignInAttempts(limit=10, cooldown=60)
-    now = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
     checked: list[None] = []
     released = threading.Barrier(30)
 
@@ -302,7 +378,7 @@ def test_tries_arriving_together_are_bounded_as_tries_one_at_a_time() -> None:
 
     def one_try(_: int) -> int:
         released.wait()
-        return attempts.try_once("tablet", now, wrong)[0]
+        return attempts.try_once("tablet", wrong)[0]
 
     with ThreadPoolExecutor(max_workers=30) as pool:
         waits = list(pool.map(one_try, range(30)))
