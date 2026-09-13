@@ -35,9 +35,10 @@ I intend to define what success looks like with her rather than on her behalf.
 ## What works today
 
 Blossom is an early project for one household. Assignments live in the
-household's own database; the bundled synthetic records seed it for the sample
-and the tests. It does not import assignments from a live school platform or
-email account.
+household's own database, put there from the school portal's own text pasted
+by a parent, or typed by hand; the bundled synthetic records seed it for the
+sample and the tests. It does not connect to the school platform or read a
+mailbox.
 
 **My week.** Browse the school week, see due dates and their sources, and keep
 work assigned this week but due later in sight. Missing dates stay visible;
@@ -69,6 +70,14 @@ updates; opening the parent's page does not count as a response.
 </p>
 
 *A synthetic help request and reply. Family review puts help she asked for first.*
+
+**Put assignments on record.** On the family page, paste the school portal's
+homework page, its weekly summary, or its "Missing" email as text, or type
+one assignment by hand. What was read is shown first, card by card, with what
+keeping it would do: put it on record, add the portal's date beside the
+recorded one, or nothing, because it is there already. Nothing is written
+until a parent says so, lines the reader did not understand are listed, and
+pasting the same week twice adds nothing twice.
 
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device

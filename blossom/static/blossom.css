@@ -735,6 +735,8 @@ input::placeholder {
 /* Focus is the action blue at full strength, so it reads on the paper and on
    a card, and never only by a change of color inside the control. */
 input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible {
@@ -874,4 +876,68 @@ form.inline button {
   .panel {
     padding: 1.1rem 1.2rem;
   }
+}
+
+/* ------------------------------------------------------------- the way in */
+
+/* The paste box and the entry form take the same field as the text inputs.
+   The box is as wide as the column and tall enough for a page of the
+   portal's text; the entry's fields sit in columns where there is room and
+   stack where there is not, so the form is one shape on a wide screen, a
+   laptop, and a tablet. */
+textarea,
+select {
+  font: inherit;
+  font-family: var(--font-body);
+  color: var(--text);
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-small);
+  background: var(--surface-strong);
+}
+
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 11rem;
+  resize: vertical;
+}
+
+select {
+  min-height: 2.75rem;
+}
+
+.entry {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.75rem 1rem;
+  align-items: end;
+}
+
+.entry .actions {
+  grid-column: 1 / -1;
+}
+
+.entry-heading {
+  margin-top: 1.5rem;
+}
+
+/* What a paste claims about a date, under its card, in the words her page uses. */
+.claims-read {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--text-soft);
+  font-size: 0.92rem;
+}
+
+/* Lines the reader did not understand, shown as they were pasted. */
+.unread li {
+  margin: 0.35rem 0;
+}
+
+.unread code {
+  font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
 }

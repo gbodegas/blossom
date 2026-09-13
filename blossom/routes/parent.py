@@ -59,6 +59,7 @@ from blossom.anthropic_client import model_configured
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
+from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
@@ -401,9 +402,11 @@ def review_page(
     *,
     problem: str | None = None,
     refreshed: bool = False,
+    kept: int | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
-    """Render the queue, the decisions, and the form to plan an evening.
+    """Render the queue, the decisions, the forms to plan an evening and to put assignments
+    on record, and the folds below.
 
     ``problem`` is what a form action could not do, shown once at the top with
     the status the JSON route would have answered, so the page tells the truth
@@ -426,6 +429,8 @@ def review_page(
             "sample": state.settings.sample,
             "zone": state.clock.zone,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
+            "kept": kept,
+            "text_max_length": TEXT_MAX_LENGTH,
         },
         status_code=status_code,
     )
@@ -438,9 +443,14 @@ def review(
     refreshed: Annotated[
         str | None, Query(description="1 after a refresh, to say when; changes nothing else")
     ] = None,
+    kept: Annotated[
+        str | None,
+        Query(description="how many readings the last keeping put on record; a note, no more"),
+    ] = None,
 ) -> HTMLResponse:
     """The parent's page: what she asked for, what is waiting, and the folds below."""
-    return review_page(request, state, refreshed=refreshed == "1")
+    counted = int(kept) if kept is not None and kept.isdigit() else None
+    return review_page(request, state, refreshed=refreshed == "1", kept=counted)
 
 
 @router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)

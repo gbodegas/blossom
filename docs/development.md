@@ -214,6 +214,41 @@ else: never forward the port through the router or put the server on the
 internet. The sign-in tells the two people apart on the family's own network;
 it is not a defense against the internet.
 
+## Putting assignments on record
+
+The family page has a fold, "Put assignments on record", with the two ways
+in. The first is a box for the school portal's own text: open the homework
+page, the weekly summary, or the school's "Missing" email, select the text,
+copy it, and paste it whole. The reader knows the portal's line shapes, the
+day headers, the course lines, the ``Assigned: <Title>: (Due:MM/DD/YYYY)``
+and ``Due: <Title>:`` cards, the summary's one-line cards, and the email's
+one line per assignment, and reads them into assignments and into the
+portal's claims about their dates, with where each claim was read: the
+assignment's own line or the day's header. One item seen under an assigned
+day and again under a due day, often in two weeks, is one assignment.
+
+Nothing is written when the text is read. A page of its own shows each
+reading as a card with what keeping it would do: new to the record; on record
+with a new claim about its date, kept beside the recorded date rather than in
+its place, so her page can say the sources disagree; or already on record
+with nothing to add. The teacher's instructions under a card are shown and
+not kept. Lines the reader did not understand are listed under "Not read",
+so nothing is dropped in silence; an assignment they name can be typed in.
+"Put on record" writes all of it in one step and returns to the family page
+with a count. Pasting the same page or week again is safe: what is there
+already is said to be, and nothing is added twice.
+
+The second way in is one assignment by hand: a course as the portal names
+it, a title, a due date, an assigned date if known, and whether it is
+homework or a task. It is shown the same way before it is kept, and its date
+is the family's own claim, which her page names as such. A date more than a
+year from today is refused, since it is almost always a mistyped year.
+
+What is never kept: the heading's first name, teachers' names in
+instructions, grades, and anything the reader did not understand. The
+school-reported "Missing" status in the email is not yet shown on the pages;
+the email's assignments and dates are read like the portal's.
+
 ## The sample week
 
 `data/sample/` is a second synthetic set for showing Blossom: four ordinary
@@ -315,8 +350,9 @@ time zone has no default. Start with `--env-file .env.example`, or set
 the shell.
 
 **The weekly page is empty.** With no fixture named, the record starts empty
-and stays so until something puts an assignment on it, and nothing in the app
-does that yet, so an empty page with no fixture is the expected shape.
+and stays so until a parent puts assignments on it from the family page,
+under "Put assignments on record"; an empty page with no fixture and nothing
+pasted yet is the expected shape.
 To see the synthetic set, load the sample week's launch file, or name the set
 and pin the clock to its week, `BLOSSOM_FIXTURE_PATH=data/synthetic` and
 `BLOSSOM_TODAY=2026-08-19`, into a state folder of its own, since a fixture is

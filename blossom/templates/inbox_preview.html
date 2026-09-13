@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% block title %}Blossom - What was read{% endblock %}
+{% macro spoken_date(when) %}{{ when.strftime("%A, %B") }} {{ when.day }}, {{ when.year }}{% endmacro %}
+{% block content %}
+  <h1>What was read</h1>
+
+  {#
+    Nothing is on record yet. Each card says what the text says about one
+    assignment and what keeping it would do: put it on record, add a claim
+    about its date beside the recorded one, or nothing, because the record
+    already has it. Lines the reader did not understand are listed, so that
+    nothing is dropped in silence.
+  #}
+  {% if not changes %}
+    <p class="empty">Nothing in the text was read as an assignment.</p>
+  {% else %}
+    <p class="note" role="status">
+      {% if to_keep == 0 %}Everything here is already on record; there is nothing to put on it.{% elif to_keep == 1 %}One of these would change the record.{% else %}{{ to_keep }} of these would change the record.{% endif %}
+      Nothing is on record until it is put there below.
+    </p>
+  {% endif %}
+
+  {% for change in changes %}
+    {% set reading = change.reading %}
+    <article class="assignment reading-{{ change.state }}">
+      <p class="course">{{ reading.course }}</p>
+      <h2>{{ reading.title }}</h2>
+      <p class="due">
+        {% if reading.due_date %}Due {{ spoken_date(reading.due_date) }}{% else %}No due date in the text{% endif %}
+        {% if reading.assigned_on %}<span class="source">Assigned {{ spoken_date(reading.assigned_on) }}</span>{% endif %}
+      </p>
+      <p class="status">
+        <span class="pill">{{ change.label }}</span>
+        {% if reading.kind == "TASK" %}<span class="pill">Read as a task</span>{% endif %}
+      </p>
+      {% if reading.claims %}
+        <ul class="claims-read">
+          {% for said in reading.claims %}
+            <li>{{ said.spoken() }}{% if change.on_record and said not in change.new_claims %} (already on record){% endif %}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      {% if reading.note %}
+        <p class="note">The teacher wrote: <q>{{ reading.note }}</q> Shown here, not kept.</p>
+      {% endif %}
+    </article>
+  {% endfor %}
+
+  {% if unread %}
+    <section class="panel">
+      <h2>Not read</h2>
+      <p class="note">These lines were not understood, so nothing from them is kept. Assignments they name can be entered by hand.</p>
+      <ul class="unread">
+        {% for line in unread %}
+          <li><code>{{ line }}</code></li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if changes %}
+    <form method="post" action="/parent/inbox/keep" class="decision">
+      {% for name, value in fields.items() %}
+        {% if name == "text" %}
+          <textarea name="text" hidden>{{ value }}</textarea>
+        {% else %}
+          <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endif %}
+      {% endfor %}
+      <div class="actions">
+        <button type="submit" class="primary"{% if to_keep == 0 %} disabled aria-disabled="true"{% endif %}>Put on record</button>
+      </div>
+      <p class="return"><a href="/parent">Back to the family page without keeping anything</a></p>
+    </form>
+  {% else %}
+    <p class="return"><a href="/parent">Back to the family page</a></p>
+  {% endif %}
+{% endblock %}

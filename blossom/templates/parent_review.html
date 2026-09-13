@@ -28,6 +28,9 @@
   {% if refreshed_at %}
     <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
   {% endif %}
+  {% if kept is not none %}
+    <p class="note" role="status">{% if kept == 0 %}Nothing new to put on record; everything read was there already.{% elif kept == 1 %}One assignment put on record.{% else %}{{ kept }} assignments put on record.{% endif %}</p>
+  {% endif %}
 
   {#
     The work a parent does with her comes first: what she asked for, then
@@ -143,6 +146,54 @@
     {% endfor %}
   </section>
 
+  {#
+    The way in for assignments: the school's own text, pasted whole, or one
+    typed by hand. Either is read and shown on a page of its own before
+    anything is written, so a parent sees what the text says and what
+    keeping it would do.
+  #}
+  <details class="steps panel-fold">
+    <summary>Put assignments on record</summary>
+    <section class="panel">
+      <h2>From the school portal</h2>
+      <p class="note">
+        Copy the homework page, the weekly summary, or the school's "Missing" email as
+        text and paste it whole. What was read is shown first, card by card, and nothing
+        is on record until it is put there.
+      </p>
+      <form method="post" action="/parent/inbox/read" class="decision">
+        <label for="paste-text">The portal's text</label>
+        <textarea id="paste-text" name="text" rows="10" maxlength="{{ text_max_length }}" placeholder="Paste here"></textarea>
+        <div class="actions">
+          <button type="submit" class="primary">Read it</button>
+        </div>
+      </form>
+      <h2 class="entry-heading">One assignment by hand</h2>
+      <form method="post" action="/parent/inbox/enter" class="entry">
+        <label>Course
+          <input type="text" name="course" maxlength="60" placeholder="As the portal names it">
+        </label>
+        <label>Title
+          <input type="text" name="title" maxlength="200" placeholder="As the teacher names it">
+        </label>
+        <label>Due
+          <input type="date" name="due_date">
+        </label>
+        <label>Assigned
+          <input type="date" name="assigned_on">
+        </label>
+        <label>Kind
+          <select name="kind">
+            <option value="HOMEWORK">Homework, a sitting of work</option>
+            <option value="TASK">Task, a thing to sign, cover, or bring</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button type="submit" class="primary">Read this</button>
+        </div>
+      </form>
+    </section>
+  </details>
   <details class="steps panel-fold">
     <summary>Help with a plan</summary>
     <section class="panel">
