@@ -173,7 +173,7 @@ def test_the_page_says_what_the_planner_looks_at() -> None:
     settings = fixture_settings(BLOSSOM_TODAY="2026-08-19")
     state = build_application_state(settings, InMemorySaver())
     try:
-        horizon = read_week(state.project_state, state.source, state.clock.today())
+        horizon = read_week(state.project_state, state.project_state, state.clock.today())
     finally:
         state.close()
     planned = {item.assignment_id for item in horizon.assignments}

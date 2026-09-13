@@ -19,7 +19,6 @@ project state need not be.
 
 import asyncio
 import logging
-import sqlite3
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
@@ -33,7 +32,7 @@ from blossom.agent.trace import LocalRunTracer
 from blossom.clock import Clock, SystemClock, clock_from
 from blossom.household import SignInAttempts, keys_for, secret_beside
 from blossom.settings import Settings, enforce_local_only_tracing
-from blossom.sources import FixtureSource
+from blossom.sources import FixtureSource, read_whole
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.help_requests import HelpRequestsStore
@@ -62,8 +61,10 @@ class ApplicationState:
 
     settings: Settings
     clock: Clock
-    source: FixtureSource
     project_state: ProjectStateStore
+    """Assignments and every channel's claim about their dates, in the file at
+    ``BLOSSOM_DATABASE_PATH``. Read from a fixture only when one is named and
+    the file is blank; what the family enters is never written over."""
     support_rules: SupportRulesStore
     reflections: ReflectionsStore
     drafts: DraftsStore
@@ -121,17 +122,28 @@ class ApplicationState:
 def build_application_state(
     settings: Settings, checkpointer: BaseCheckpointSaver[str]
 ) -> ApplicationState:
-    """Open the stores and seed them from the configured fixture set.
+    """Open the stores, and seed the record from a fixture when one is named and it is empty.
 
-    The project state store is in memory; choosing when project state becomes
-    durable is a design decision rather than a wiring detail. The drafts store
-    is a file, at ``BLOSSOM_DATABASE_PATH``, because a queue that forgets its
-    contents at restart is not a record. The checkpointer is passed in because
-    it must be opened inside a running event loop, which only the lifespan has.
+    Project state and the drafts are one file, at ``BLOSSOM_DATABASE_PATH``,
+    because a record that forgets its assignments at restart is not a record,
+    and neither is a queue that forgets its contents. The planner's rules and
+    notes are read from the fixture at every start, and are empty without
+    one. The checkpointer is passed in because it must be opened inside a
+    running event loop, which only the lifespan has.
     """
     clock = clock_from(settings.today, settings.timezone_key)
-    connection = sqlite3.connect(":memory:", check_same_thread=False)
-    project_state = ProjectStateStore(connection, clock=clock)
+    fixture = None if settings.fixture_path is None else FixtureSource(settings.fixture_path)
+    # A fixture is read only into a blank file, in one transaction with the
+    # file's tables. A file with anything in it is the household's record,
+    # whatever it holds, and is left alone: what the family enters outlives a
+    # restart, a sample edited by hand stays edited until its folder is
+    # deleted, and a household file from before the record lived in it is not
+    # seeded by a fixture path left in .env.
+    project_state = ProjectStateStore.initialize(
+        settings.database_path,
+        clock,
+        seed=None if fixture is None else lambda: read_whole(fixture),
+    )
     opened: list[
         ProjectStateStore | DraftsStore | TraceStore | WorkloadSignalsStore | HelpRequestsStore
     ] = [project_state]
@@ -139,14 +151,13 @@ def build_application_state(
     # opened before it is closed on the way out, so a startup that fails and is
     # retried leaves no connection behind.
     try:
-        source = FixtureSource(settings.fixture_path)
-        project_state.upsert_assignments(source.assignments())
         support_rules = SupportRulesStore()
-        for rule in source.support_rules():
-            support_rules.add_rule(rule)
         reflections = ReflectionsStore()
-        for note in source.reflections():
-            reflections.write(note)
+        if fixture is not None:
+            for rule in fixture.support_rules():
+                support_rules.add_rule(rule)
+            for note in fixture.reflections():
+                reflections.write(note)
         drafts = DraftsStore.open(settings.database_path, clock)
         opened.append(drafts)
         # Retention runs on the real clock even when the household clock is
@@ -166,13 +177,15 @@ def build_application_state(
         opened.append(help_requests)
         help_requests.sweep()
     except Exception:
-        for store in reversed(opened):
+        for store in reversed(opened[1:]):
             store.close()
+        # A file that was blank at this start is removed with it, so a start
+        # that fails partway leaves nothing behind and the next start begins afresh.
+        project_state.discard_if_new()
         raise
     return ApplicationState(
         settings=settings,
         clock=clock,
-        source=source,
         project_state=project_state,
         support_rules=support_rules,
         reflections=reflections,

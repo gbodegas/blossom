@@ -101,10 +101,13 @@ and due the next.
 
 ## What survives a restart
 
-Assignments are read from the fixtures into memory at every start. Three
-files under `.local/` outlive it:
+Three files under `.local/` outlive a restart:
 
-- `blossom.sqlite3` holds the drafts, the decisions about them, and the
+- `blossom.sqlite3` holds the assignments and every channel's claim about
+  their dates, read from a fixture only when `BLOSSOM_FIXTURE_PATH` names one
+  and the start creates the file, and otherwise only what the family puts
+  there.
+  It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
   evening is closed as expired, and one a later plan for the same evening is
@@ -187,6 +190,12 @@ what makes the change take. "Sign out" forgets the device it is pressed on
 and nothing else; to sign every device out at once, stop the app, delete
 `household.secret`, and start it again.
 
+A `.env` written from an example that named `data/synthetic` needs
+`BLOSSOM_FIXTURE_PATH` cleared before the first start with the record in the
+file. The family's file is safe either way, since a fixture is read only into
+a file the start creates, but the planner would read that set's rules and
+notes as the household's.
+
 Start the app so the other devices can reach it, on the computer that stays
 on:
 
@@ -239,7 +248,10 @@ button is not offered.
 
 To start the sample again from nothing, stop the app and delete the
 `.local/sample/` folder; the family's own state under `.local/` is untouched,
-and the next launch creates the folder again.
+and the next launch creates the folder again. The sample's assignments live in
+that folder's file too, read from `data/sample/` when the launch creates it,
+so a change to the set shows once the folder is deleted, and a sample folder
+from before the record lived in its file has no assignments until it is.
 
 Her page shows three items due that week, each saying its date is from the
 school portal, and the reading log, assigned that Monday and due the next,
@@ -302,10 +314,15 @@ time zone has no default. Start with `--env-file .env.example`, or set
 `BLOSSOM_TIMEZONE` to an IANA key such as `America/New_York` in `.env` or in
 the shell.
 
-**The weekly page shows only the syllabus.** The clock is not pinned, so
-"this week" is the real week, and the only fixture in every week is the one
-with no due date. Start the app with `--env-file .env.example`, or pin
-`BLOSSOM_TODAY` to a day in the fixture week.
+**The weekly page is empty.** With no fixture named, the record starts empty
+and stays so until something puts an assignment on it, and nothing in the app
+does that yet, so an empty page with no fixture is the expected shape.
+To see the synthetic set, load the sample week's launch file, or name the set
+and pin the clock to its week, `BLOSSOM_FIXTURE_PATH=data/synthetic` and
+`BLOSSOM_TODAY=2026-08-19`, into a state folder of its own, since a fixture is
+read only into a file the start creates. With the clock unpinned, "this week"
+is the real week, and the only item of the set in every week is the one with
+no due date.
 
 **The app refuses to start and says saved state may not live on a network
 share or in a synced folder.** The repository is inside a folder that

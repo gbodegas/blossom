@@ -472,7 +472,8 @@ def build_student_due_this_week_view(
     """
     today = state.clock.today()
     frame = week_shown(today, week)
-    shown = read_week(state.project_state, state.source, frame.start)
+    on_record = state.project_state
+    shown = read_week(on_record, on_record, frame.start)
     # Never filter here; see the module docstring.
     views = [
         assignment_view(
@@ -485,7 +486,7 @@ def build_student_due_this_week_view(
     for item in state.project_state.all_assignments():
         if item.assignment_id in in_frame or not assigned_for_later(item, frame):
             continue
-        records = state.source.deadline_records(item.assignment_id)
+        records = on_record.deadline_records(item.assignment_id)
         assigned.append(
             assignment_view(item, records, notice_due_date(expect_due_date(item), records))
         )

@@ -29,11 +29,10 @@ from blossom.settings import (
 def test_defaults_are_absolute_and_point_at_real_package_assets() -> None:
     settings = Settings.from_environment({})
 
-    assert settings.fixture_path.is_absolute()
+    assert settings.fixture_path is None
     assert settings.database_path.is_absolute()
     assert settings.checkpoint_path.is_absolute()
     assert settings.checkpoint_path != settings.database_path
-    assert (settings.fixture_path / "assignments.json").is_file()
     assert (settings.static_path / "blossom.css").is_file()
     assert (settings.template_path / "student_due_this_week.html").is_file()
 

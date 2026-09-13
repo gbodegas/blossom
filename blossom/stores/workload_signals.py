@@ -21,7 +21,7 @@ from uuid import uuid4
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from blossom.clock import Clock
-from blossom.stores.checkpoints import refuse_unsafe_path
+from blossom.stores.paths import refuse_unsafe_path
 
 SIGNAL_RETENTION_DAYS: Final = 7
 """How long a signal is kept: long enough for her to see it and take it back."""

@@ -44,7 +44,7 @@ from starlette.types import ASGIApp
 
 from blossom.principals import Principal
 from blossom.settings import Settings
-from blossom.stores.checkpoints import refuse_unsafe_path
+from blossom.stores.paths import refuse_unsafe_path
 from blossom.templating import page_templates
 
 COOKIE: Final = "blossom_household"

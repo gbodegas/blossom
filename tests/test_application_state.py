@@ -35,8 +35,9 @@ from blossom.settings import (
     DATABASE_PATH_VARIABLE,
     TRACE_PATH_VARIABLE,
 )
-from blossom.stores.checkpoints import UnsafeCheckpointPath, open_checkpointer
+from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
+from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.workload_signals import SIGNAL_RETENTION_DAYS, WorkloadSignalsStore
 from tests.support import OBSERVED_AT, PLAN_DATE, fixture_clock, fixture_settings
@@ -133,7 +134,6 @@ def test_dependency_can_be_overridden_to_substitute_stores() -> None:
     substitute_with_empty_store = ApplicationState(
         settings=settings,
         clock=substitute.clock,
-        source=substitute.source,
         project_state=empty_store,
         support_rules=substitute.support_rules,
         reflections=substitute.reflections,

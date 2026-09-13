@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import IO
 
-from blossom.stores.checkpoints import refuse_unsafe_path
+from blossom.stores.paths import refuse_unsafe_path
 
 if sys.platform == "win32":
     import msvcrt

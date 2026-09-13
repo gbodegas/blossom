@@ -6,7 +6,10 @@ platforms are built for administrators, automated access is often unavailable,
 and anything reading their interface breaks when the vendor changes it, so
 manual entry and fixtures are first class sources rather than a fallback.
 
-``FixtureSource`` is the only working implementation. ``LMSSource`` and
+``FixtureSource`` is the only working implementation, and it seeds the
+household's record rather than serving it: ``read_whole`` reads a source for
+the record's first start, and from then on assignments and the claims about
+their dates are read from the household's file. ``LMSSource`` and
 ``EmailSource`` raise ``NotImplementedError`` and mark where credentialed
 access would attach if approved. For email, filtering after reading still
 reads the whole mailbox, a parent's mailbox, so selection must happen before
@@ -14,23 +17,23 @@ access (an approved sender list or a dedicated folder), not after it.
 """
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 from blossom.reconciliation import SourceRecord
-from blossom.stores.project_state import Assignment
+from blossom.stores.project_state import Assignment, Seed
 from blossom.stores.reflections import Reflection, ReflectionSubject
 from blossom.stores.support_rules import SupportRule
 
 
-class StateSource(Protocol):
-    """Anything that can report assignments, the claims about their dates, and the
-    two small corpora the planner reads whole."""
+class DateClaims(Protocol):
+    """Anything that can report every channel's claim about one assignment's due date.
 
-    def assignments(self) -> list[Assignment]:
-        """Return every assignment this source knows about."""
-        ...
+    The household's record answers this for the page and the plan graph; a
+    fixture answers it while seeding; a test double answers it to say what a
+    school would."""
 
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
         """Return every channel's claim about one assignment's due date.
@@ -38,6 +41,21 @@ class StateSource(Protocol):
         An empty list is a valid answer and means nothing corroborates the
         date. Callers must handle it; it is not an error.
         """
+        ...
+
+
+class StateSource(DateClaims, Protocol):
+    """Anything that can report assignments, the claims about their dates, and the
+    two small corpora the planner reads whole."""
+
+    def assignments(self) -> list[Assignment]:
+        """Return every assignment this source knows about."""
+        ...
+
+    def claims_by_assignment(self) -> Mapping[str, Sequence[SourceRecord]]:
+        """Return every claim the source holds, checked, grouped by the assignment it
+        is about, none dropped: a claim about an assignment the source does not
+        list is here for the reader to refuse by name."""
         ...
 
     def support_rules(self) -> list[SupportRule]:
@@ -49,8 +67,29 @@ class StateSource(Protocol):
         ...
 
 
+def read_whole(source: StateSource) -> Seed:
+    """A source's assignments, and every claim about their dates, read and checked whole.
+
+    What a blank file is seeded with, read before anything is written, so a
+    set that cannot be read leaves the file as it was. Every claim in the set
+    is checked, and a claim about an assignment the set does not list is
+    refused by name rather than dropped: in a set written by hand that is a
+    mistyped id, and a claim never shown is a claim lost.
+    """
+    assignments = source.assignments()
+    claims = source.claims_by_assignment()
+    unknown = sorted(set(claims) - {assignment.assignment_id for assignment in assignments})
+    if unknown:
+        msg = f"the set claims dates for assignments it does not list: {', '.join(unknown)}"
+        raise ValueError(msg)
+    return assignments, {
+        assignment.assignment_id: list(claims.get(assignment.assignment_id, []))
+        for assignment in assignments
+    }
+
+
 class FixtureSource:
-    """Reads synthetic fixtures from disk. The default source, and fully offline."""
+    """Reads a synthetic set from disk: the seed for the sample and the tests, offline."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -61,15 +100,20 @@ class FixtureSource:
         return [Assignment.model_validate(item) for item in data]
 
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
-        """Load the claims about one assignment's date, dropping the join key."""
-        data = json.loads((self._root / "deadline_sources.json").read_text())
-        return [
-            SourceRecord.model_validate(
+        """The claims about one assignment's date, from the whole file read and checked."""
+        return list(self.claims_by_assignment().get(assignment_id, []))
+
+    def claims_by_assignment(self) -> dict[str, list[SourceRecord]]:
+        """Every claim in ``deadline_sources.json``, checked, grouped by the assignment it
+        is about, and none dropped, the join key taken off each."""
+        data = json.loads((self._root / "deadline_sources.json").read_text(encoding="utf-8"))
+        grouped: dict[str, list[SourceRecord]] = {}
+        for item in data:
+            record = SourceRecord.model_validate(
                 {key: value for key, value in item.items() if key != "assignment_id"}
             )
-            for item in data
-            if item["assignment_id"] == assignment_id
-        ]
+            grouped.setdefault(str(item["assignment_id"]), []).append(record)
+        return grouped
 
     def support_rules(self) -> list[SupportRule]:
         """Load ``support_rules.json``. A fixture set without one has no rules."""
@@ -131,6 +175,10 @@ class LMSSource:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
 
+    def claims_by_assignment(self) -> dict[str, list[SourceRecord]]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
     def support_rules(self) -> list[SupportRule]:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
@@ -148,6 +196,10 @@ class EmailSource:
         raise NotImplementedError
 
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
+    def claims_by_assignment(self) -> dict[str, list[SourceRecord]]:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
 

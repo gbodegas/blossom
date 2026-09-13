@@ -29,7 +29,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
 from blossom.reconciliation import Reconciler, ReconciliationResult, SourceRecord
-from blossom.sources import StateSource
+from blossom.sources import DateClaims
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, ProjectStateStore
 
 
@@ -186,7 +186,7 @@ def monday_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-def read_week(project_state: ProjectStateStore, source: StateSource, start: date) -> Week:
+def read_week(project_state: ProjectStateStore, source: DateClaims, start: date) -> Week:
     """Read the week from ``start``: state each record's date, read the sources, then select.
 
     The student's page and the plan graph both read this, the same way, so
