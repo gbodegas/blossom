@@ -292,7 +292,10 @@
         </p>
       {% endif %}
       {% if assignment.note %}
-        <p class="from-teacher">From the teacher: <q>{{ assignment.note }}</q></p>
+        <p class="from-teacher">{% if assignment.note_by_a_parent %}A parent wrote{% else %}From the teacher{% endif %}: <q>{{ assignment.note }}</q></p>
+      {% endif %}
+      {% if assignment.entered_by_a_parent %}
+        <p class="source">Entered by a parent.</p>
       {% endif %}
       {% if assignment.submission_status != "unknown" %}
         <p class="status">

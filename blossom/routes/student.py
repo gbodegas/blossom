@@ -119,6 +119,10 @@ SIGNAL_ENDED: Final = (
     "This plan was kept to the smaller evening for a signal that is not there now. "
     "It stays until a new one is made; plan again for the full evening."
 )
+ASSIGNMENTS_CHANGED: Final = (
+    "Your assignments changed after this plan was made, so it does not cover your week "
+    "as it stands. It stays until a new one is made; plan again when you are ready."
+)
 
 router = APIRouter(prefix="/student", tags=["student"])
 templates = page_templates()
@@ -278,11 +282,13 @@ def take_back_help(request_id: str, state: State) -> Response:
 def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
     """Her projection of a draft: the plan, a parent's review if any, and whether it still fits."""
     stale = None
-    match staleness(state.workload_signals, record):
+    match staleness(state.workload_signals, record, state.project_state):
         case Staleness.SIGNALED_SINCE:
             stale = SIGNALED_SINCE
         case Staleness.SIGNAL_ENDED:
             stale = SIGNAL_ENDED
+        case Staleness.ASSIGNMENTS_CHANGED:
+            stale = ASSIGNMENTS_CHANGED
         case None:
             stale = None
     return StudentPlanView(
@@ -427,6 +433,8 @@ def assignment_view(
         and any(record.channel in SCHOOL_CHANNELS for record in readable),
         assigned_on=assignment.assigned_on,
         note=assignment.note,
+        note_by_a_parent=assignment.origins.get("note") == SourceChannel.PARENT_ENTRY,
+        entered_by_a_parent=assignment.origins.get("record") == SourceChannel.PARENT_ENTRY,
         school_report="" if report is None else spoken_report(report),
     )
 

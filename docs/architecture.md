@@ -28,16 +28,25 @@ the tests and the sample rely on.
 Beside the gate, `blossom/intake.py` is the way in for assignments: a reader
 for the school portal's own text, its homework page, its weekly summary, and
 its "Missing" email, pasted by a parent, and for one assignment typed by hand.
-It reads line shapes, not a model, and reads them into assignments, into
-each channel's claim about a due date, with where the claim was read, so the
-reconciliation treats a pasted page as it treats a fixture, into the
-teacher's note under a card, and into what the school reports about an
-assignment's status, a fact of its own kept with who reported it and the day,
-and shown on both pages as such. It writes nothing:
-`blossom/routes/inbox.py` shows what was read, card by card and against the
-record as it is, and writes only when a parent says so, in one transaction,
-never a claim twice and never over a recorded date. Lines it does not
-understand are shown as unread rather than guessed at.
+It reads line shapes, not a model, in one pass over the lines: into
+assignments, into each channel's claim about a due date with where the claim
+was read, so the reconciliation treats a pasted page as it treats a fixture,
+into the teacher's note under a card, and into what the school reports about
+an assignment's status, a fact of its own kept with who reported it and the
+day. A line shaped like a card that does not read as one is text for review,
+never a teacher's words. The reader writes nothing. `blossom/routes/inbox.py`
+compares what was read with the record as it is, row by row, matched by
+course and title whatever the row's id, and shows the result week by week
+with what saving would do; the saving compares again and writes under the
+store's lock, in one transaction, so the same text saved twice, from two
+tabs, adds nothing twice. That is the import's doing, not a constraint on
+the claims table: every observation a channel makes is kept, and a household
+file from before this schema is brought up to it by adding columns only. A
+recorded due date is never replaced by a paste; each fact on a row carries
+its origin, the portal, the email, or a parent, so the pages can say whose
+it is. A plan carries a fingerprint of the week it was made from, and a
+waiting plan whose week reads differently is stale on both pages and refused
+at approval.
 
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and

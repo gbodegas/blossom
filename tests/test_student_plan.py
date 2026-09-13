@@ -305,7 +305,7 @@ def test_times_read_as_she_reads_a_clock() -> None:
         page = client.get(PAGE).text
 
     assert re.search(r"You said it was too much</strong> at \d{1,2}:\d{2} [AP]M\.", page)
-    assert not re.search(r"\b[01]\d:\d{2}\b(?! [AP]M)", page.split("<main>", 1)[1]), (
+    assert not re.search(r"\b[01]\d:\d{2}\b(?! [AP]M)", page.split('<main id="main">', 1)[1]), (
         "no 24-hour time anywhere on the page"
     )
     assert "Nothing has been planned yet; the plan you make will be the shorter one." in page

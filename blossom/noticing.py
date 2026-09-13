@@ -21,10 +21,12 @@ No model takes part. The rules fit in one function, and
 ``tests/noticing_cases.py`` holds them to a labeled table.
 """
 
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import StrEnum
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict
 
@@ -184,6 +186,42 @@ class Week:
 def monday_of(day: date) -> date:
     """The Monday that starts the school week ``day`` falls in."""
     return day - timedelta(days=day.weekday())
+
+
+PLANNING_DIGEST: Final = uuid.UUID("c4a2b3d1-6e5f-4a7b-8c9d-0e1f2a3b4c5d")
+"""The namespace a week's fingerprint is drawn from."""
+
+
+def planning_digest(week: Week) -> str:
+    """A fingerprint of what a plan is made from: the week's assignments and what is said
+    about them, in a fixed order, so the same week reads the same and any change reads
+    differently.
+
+    Covered: each assignment's id, due date, assigned date, kind, and note, and
+    each claim about its date, channel, value, and where it was read. Not
+    covered: when a claim was made or how sure it was, which change nothing a
+    plan is built on.
+    """
+    lines = []
+    for item in sorted(week.assignments, key=lambda item: item.assignment_id):
+        lines.append(
+            "\t".join(
+                [
+                    item.assignment_id,
+                    "" if item.due_date is None else item.due_date.isoformat(),
+                    "" if item.assigned_on is None else item.assigned_on.isoformat(),
+                    item.kind.value,
+                    item.note or "",
+                ]
+            )
+        )
+        for record in week.records.get(item.assignment_id, []):
+            lines.append(
+                "\t".join(
+                    ["claim", record.channel.value, record.asserted_value, record.seen_in or ""]
+                )
+            )
+    return uuid.uuid5(PLANNING_DIGEST, "\n".join(lines)).hex
 
 
 def read_week(project_state: ProjectStateStore, source: DateClaims, start: date) -> Week:

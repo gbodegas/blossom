@@ -20,9 +20,11 @@ from blossom.clock import spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
+from blossom.intake import identity
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.routes.parent import REASON_MAX_LENGTH
+from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
 from blossom.routes.runs import PlanGraphs, plan_graphs
+from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from tests.support import FIXTURE_TIMEZONE, Scripted, fixture_settings, ok
 
@@ -135,7 +137,7 @@ def test_the_page_renders_with_nothing_waiting() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "<h1>Family review</h1>" in response.text
-    assert "Nothing is waiting." in response.text
+    assert "No plans need your review." in response.text
     assert "No earlier plans yet." in response.text
     assert 'value="2026-08-19"' in response.text
 
@@ -275,7 +277,7 @@ def test_approving_from_the_page_moves_the_draft_to_decided() -> None:
 
     assert posted.status_code == 303
     assert posted.headers["location"] == "/parent"
-    assert "Nothing is waiting." in page
+    assert "No plans need your review." in page
     assert "<strong>Looks good.</strong>" in page
     assert "Said on her page" not in page
     assert "Reason: looks right." in page
@@ -563,4 +565,88 @@ def test_a_run_that_ended_without_a_plan_is_on_the_page_with_its_steps() -> None
     assert "How this run went" in page
     assert page.count('<span class="step-node">plan</span>') == 3
     assert "Found: 1 of 6 checks failed:" in page
-    assert "Nothing is waiting." in page
+    assert "No plans need your review." in page
+
+
+# ------------------------------------------------------- the plan and the week
+
+
+IN_THE_WINDOW = {
+    "course": "Spanish",
+    "title": "Vocabulary list, unit two",
+    "due_date": (PLAN_DATE + timedelta(days=1)).isoformat(),
+    "kind": "HOMEWORK",
+}
+
+
+def covering_the_new_work() -> DailyPlan:
+    """The same plan with the entry above put off, so it mentions everything in the window."""
+    new_work = Deferral(
+        assignment_id=identity(IN_THE_WINDOW["course"], IN_THE_WINDOW["title"]),
+        reason="a short list, later in the week",
+    )
+    return a_plan().model_copy(update={"deferred": [*a_plan().deferred, new_work]})
+
+
+def test_work_added_in_the_plans_window_makes_the_waiting_plan_stale() -> None:
+    """A plan is made from the week as it stood. Work saved into its window after that
+    is said on both pages, the button to approve is gone, and approving is refused."""
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        before = client.get("/parent").text
+        saved = client.post("/parent/inbox/keep", data=IN_THE_WINDOW)
+        page = client.get("/parent").text
+        hers = client.get("/student/due-this-week").text
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+        refused = client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            plans=lambda: [covering_the_new_work()]
+        )
+        planned_again = client.post(
+            "/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()}
+        )
+        fresh = client.get("/parent").text
+
+    assert 'value="approve"' in before
+    assert saved.status_code == 303
+    assert ASSIGNMENTS_CHANGED in page
+    assert "<strong>Plan again.</strong>" in page
+    assert 'value="approve"' not in page
+    assert HER_ASSIGNMENTS_CHANGED in hers
+    assert record["stale"] is not None
+    assert refused.status_code == 409
+    assert planned_again.status_code == 303
+    assert ASSIGNMENTS_CHANGED not in fresh
+    assert 'value="approve"' in fresh
+
+
+def test_a_saving_that_changes_nothing_or_distant_work_leaves_the_plan_fresh() -> None:
+    """Saving what is already on record, or work due well past the plan's week, changes
+    nothing the plan was made from, so the plan stands."""
+    already = {"course": "World History", "title": "Canal Era comparison essay"}
+    distant = {**IN_THE_WINDOW, "due_date": (PLAN_DATE + timedelta(days=60)).isoformat()}
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        unchanged = client.post("/parent/inbox/keep", data=already)
+        far_off = client.post("/parent/inbox/keep", data=distant)
+        page = client.get("/parent").text
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+
+    assert unchanged.headers["location"] == "/parent?added=0&updated=0&unchanged=1"
+    assert far_off.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
+    assert ASSIGNMENTS_CHANGED not in page
+    assert 'value="approve"' in page
+    assert record["stale"] is None
+
+
+def test_a_decided_plan_is_history_and_is_not_measured_against_the_week_again() -> None:
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
+        client.post("/parent/inbox/keep", data=IN_THE_WINDOW)
+        page = client.get("/parent").text
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+
+    assert "<strong>Looks good.</strong>" in page
+    assert ASSIGNMENTS_CHANGED not in page
+    assert record["decision"] == "approved"

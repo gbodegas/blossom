@@ -304,7 +304,7 @@ def test_the_parents_page_lists_what_is_open_and_moves_it_with_two_buttons() -> 
     )
     assert 'value="accept"' not in on_it
     assert resolved.status_code == 303
-    assert "Nothing asked." in after
+    assert "No open help requests." in after
     assert "Resolved in the last two weeks" in after
     assert "Resolved with <q>sorted</q>" in after
     assert "<strong>Resolved.</strong> They said: <q>sorted</q>" in hers

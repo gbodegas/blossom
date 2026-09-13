@@ -214,46 +214,88 @@ else: never forward the port through the router or put the server on the
 internet. The sign-in tells the two people apart on the family's own network;
 it is not a defense against the internet.
 
-## Putting assignments on record
+## Adding assignments
 
-The family page has a fold, "Put assignments on record", with the two ways
-in. The first is a box for the school portal's own text: open the homework
-page, the weekly summary, or the school's "Missing" email, select the text,
-copy it, and paste it whole. The reader knows the portal's line shapes, the
-day headers, the course lines, the ``Assigned: <Title>: (Due:MM/DD/YYYY)``
-and ``Due: <Title>:`` cards, the summary's one-line cards, and the email's
-one line per assignment with the grade "Missing", and reads them into assignments and into the
-portal's claims about their dates, with where each claim was read: the
-assignment's own line or the day's header. One item seen under an assigned
-day and again under a due day, often in two weeks, is one assignment.
+The family page has a fold, "Add assignments", with the two ways in. The
+first is a box for the school portal's own text: open the homework page, the
+weekly summary, or the school's "Missing" email, select the text, copy it,
+and paste it whole; "See an example" shows the shape. The reader knows the
+portal's line shapes: the day headers, with or without a bullet before them,
+the course lines, the ``Assigned: <Title>: (Due:MM/DD/YYYY)`` and
+``Due: <Title>:`` cards, the summary's one-line cards, the download's
+trailing backslashes, and the email's one line per assignment with the grade
+"Missing". It reads them into assignments and into the portal's claims about
+their dates, with where each claim was read: the assignment's own line or
+the day's header. One item seen under an assigned day and again under a due
+day, often in two weeks, is one assignment, matched by its course and title
+as the portal writes them.
 
-Nothing is written when the text is read. A page of its own shows each
-reading as a card with what keeping it would do: new to the record; on record
-with a new claim about its date, kept beside the recorded date rather than in
-its place, so her page can say the sources disagree; or already on record
-with nothing to add. The teacher's instruction under a card is kept with the
-assignment and shown on her card, and the planner reads it. A "Missing" line
-in the school's email is kept as what the school reported, with the day: the
-email's own date when the paste carries its date line, otherwise the day it
-was pasted, and both pages say which. Lines the reader did not understand are listed under "Not read",
-so nothing is dropped in silence; an assignment they name can be typed in.
-"Put on record" writes all of it in one step and returns to the family page
-with a count. Pasting the same page or week again is safe: what is there
-already is said to be, and nothing is added twice.
+"Preview assignments" writes nothing. The review page groups what was read
+by school week, Monday to Sunday, so work due on a Sunday sits in the week
+before the one the portal's Sunday-first picker shows it under, and heads
+each week with a count: new, updates, already saved. Each card says exactly
+what saving would do. New work is saved as new. A date that differs from the
+saved one is shown beside it, "Saved due date" and "Pasted due date", and is
+saved as evidence beside the saved date, which stays, so her page can say
+the sources disagree. A record with no due date takes the pasted one; an
+assigned date or a note the record lacks is filled in. Work that comes round
+again under the same name, a weekly practice due a week or more past the
+saved one, is not merged in silence: the card asks whether it is the same
+assignment moved or new work, and the answer is kept, so the next paste
+finds the right row. The type, homework or task, is suggested from the
+title, paperwork and materials being tasks, and can be changed on the card;
+a parent's choice is kept as theirs. "Save N assignments" writes all of it
+in one step and returns to the family page with what was added, updated, and
+unchanged; "Edit" goes back with the text or the fields as they were;
+"Cancel import" writes nothing. Pasting the same page or week again is safe:
+what is there already is said to be, and nothing is added twice, even from
+two tabs at once.
+
+Lines the reader did not take are listed first, as text that needs review,
+with their line numbers, so nothing is dropped in silence. A line shaped
+like a day or a card that does not read as one, ``(Due:TBD)`` for instance,
+is listed there and never taken for a teacher's words, and it ends the card
+before it.
+
+The teacher's instruction under a card is kept with the assignment, line
+breaks and all, and shown on her card as "From the teacher"; a note typed by
+a parent shows as "A parent wrote". The record keeps where each fact came
+from, the row itself, its note, its due and assigned dates, and its type, so
+her page can say "Entered by a parent" and the review page can say whose
+note stands: a parent's note replaces any saved note and is never replaced
+by the school's, and the school's note replaces the school's own.
+
+A "Missing" line in the school's email is kept as what the school reported,
+with the day: the email's own date when the paste carries its date line,
+otherwise the day it was pasted, and both pages say which. The date the
+email writes beside an assignment is kept as the text it is, "The email
+writes 09/09 beside it, which it does not explain", and is never a due date.
+Her page shows the report as a banner on the card, "The school reports this
+missing", with the source and the day; the family page lists the same under
+"Reported by the school".
 
 The second way in is one assignment by hand: a course as the portal names
-it, a title, a due date, an assigned date if known, and whether it is
-homework or a task. It is shown the same way before it is kept, and its date
-is the family's own claim, which her page names as such. A date more than a
-year from today is refused, since it is almost always a mistyped year.
+it and a title are required; a due date, an assigned date, the type, and a
+note are optional. A date more than a year from today is refused, since it
+is almost always a mistyped year. A form that fails comes back with every
+field as it was, the failing field named and focused, and the fold open. An
+entry is reviewed the same way before it is saved, and its date is the
+family's own claim, which her page names as such.
 
 What is never kept: the heading's first name, grades other than "Missing",
 and anything the reader did not understand; a line in the email's shape with
-another grade is left unread. A teacher's name inside an instruction is kept
-with it, as the portal shows it, since the instruction is the assignment's.
-Her page shows what the school reported as a banner on the card, "The school
-reports this missing", with the source and the day; the family page lists
-the same under "Reported by the school".
+another grade is left for review. A teacher's name inside an instruction is
+kept with it, as the portal shows it, since the instruction is the
+assignment's.
+
+A plan is made from the week as it stands. When work is saved into a waiting
+plan's window, or a date, a type, a note, or what a source says about a date
+changes there, both pages say so, "Assignments changed after this plan was
+made", and the plan is not approved as it stands; plan again. Saving what is
+on record already, or work due well past the plan's week, changes nothing
+the plan was made from. A household file from before this schema is brought
+up to it on the first start by adding columns; nothing it holds is dropped
+or rewritten.
 
 ## The sample week
 
@@ -356,15 +398,21 @@ time zone has no default. Start with `--env-file .env.example`, or set
 the shell.
 
 **The weekly page is empty.** With no fixture named, the record starts empty
-and stays so until a parent puts assignments on it from the family page,
-under "Put assignments on record"; an empty page with no fixture and nothing
-pasted yet is the expected shape.
+and stays so until a parent adds assignments from the family page, under
+"Add assignments"; an empty page with no fixture and nothing pasted yet is
+the expected shape.
 To see the synthetic set, load the sample week's launch file, or name the set
 and pin the clock to its week, `BLOSSOM_FIXTURE_PATH=data/synthetic` and
 `BLOSSOM_TODAY=2026-08-19`, into a state folder of its own, since a fixture is
 read only into a file the start creates. With the clock unpinned, "this week"
 is the real week, and the only item of the set in every week is the one with
 no due date.
+
+**A waiting plan says assignments changed.** Something in the plan's window
+changed after the plan was made: work saved from the family page, or a date,
+a type, a note, or what a source says about a date. The plan stays as
+history, but it does not cover the week as it stands, so approving it is
+refused. Plan again and review the new plan.
 
 **The app refuses to start and says saved state may not live on a network
 share or in a synced folder.** The repository is inside a folder that

@@ -9,6 +9,7 @@
     <script src="/static/blossom.js" defer></script>
   </head>
   <body>
+    <a class="skip" href="#main">Skip to main content</a>
     <header class="masthead">
       <a class="brand" href="/student/due-this-week">
         <img class="mark" src="/static/mark.svg" alt="" width="44" height="33">
@@ -29,7 +30,7 @@
         {% endif %}
       </nav>
     </header>
-    <main>
+    <main id="main"{% if wide %} class="wide"{% endif %}>
       {% if sample %}<p class="sample-label">Sample week</p>{% endif %}
       {% block content %}{% endblock %}
     </main>

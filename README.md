@@ -71,15 +71,22 @@ updates; opening the parent's page does not count as a response.
 
 *A synthetic help request and reply. Family review puts help she asked for first.*
 
-**Put assignments on record.** On the family page, paste the school portal's
-homework page, its weekly summary, or its "Missing" email as text, or type
-one assignment by hand. What was read is shown first, card by card, with what
-keeping it would do: put it on record, add the portal's date beside the
-recorded one, or nothing, because it is there already. What the teacher wrote
-under a card is kept with the assignment, and the school's "Missing" email is
-kept as what the school reported, shown on both pages with where it came from
-and the day. Nothing is written until a parent says so, lines the reader did
-not understand are listed, and pasting the same week twice adds nothing twice.
+**Add assignments.** On the family page, paste the school portal's homework
+page, its weekly summary, or its "Missing" email as text, or enter one
+assignment by hand; only the course and title are required. A review page
+shows what was read, week by week, Monday to Sunday, with a count of what is
+new, what updates a saved assignment, and what is saved already, and each
+card says exactly what saving would do: save it as new, put the pasted date
+beside the saved one for her page to show, fill in a date or a note the
+record lacks, or nothing. The record keeps where each fact came from, the
+portal, the school's email, or a parent, so her page can say so. Work that
+comes round again under the same name, a weekly practice, is asked about
+rather than merged. The school's "Missing" email is kept as what the school
+reported, with the day; the date the email writes beside an assignment is
+kept as text, never as a due date. Lines the reader did not take are listed
+as text that needs review. Nothing is written until "Save" is pressed,
+pasting the same week twice adds nothing twice, and a plan waiting for
+review says so when the week it was made from changes.
 
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device

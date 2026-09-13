@@ -23,6 +23,7 @@ right file went up, or that the teacher considers it done. Code reading it must
 not treat it as completion.
 """
 
+import json
 import sqlite3
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -79,8 +80,14 @@ class Assignment(BaseModel):
     assigned_on: date | None = None
     kind: AssignmentKind = AssignmentKind.HOMEWORK
     note: str | None = None
-    """What the teacher wrote under the card, as the portal shows it: an instruction
-    about the work, kept with the assignment because it is part of it."""
+    """What the teacher wrote under the card, as the portal shows it, or what a parent
+    typed with the assignment: an instruction about the work, kept with the assignment
+    because it is part of it. ``origins`` says which."""
+    origins: dict[str, SourceChannel] = {}
+    """Where each of the row's facts came from, by field: ``record`` for the row
+    itself, then ``note``, ``kind``, ``due_date``, and ``assigned_on`` when a channel
+    supplied them. A parent's entry keeps its origin through a later paste, and a
+    parent's correction of a type or a note is told from the school's text."""
 
 
 class StatusReport(BaseModel):
@@ -100,6 +107,9 @@ class StatusReport(BaseModel):
     reported_on: date
     dated_by: str
     observed_at: AwareDatetime
+    source_date_text: str | None = None
+    """The date as the source wrote it beside the assignment, ``09/09`` in the school's
+    email, kept as text: what it means is not established, so it is shown, not read."""
 
 
 class ProjectStateStore:
@@ -144,7 +154,8 @@ class ProjectStateStore:
                 reported_submission_status TEXT NOT NULL,
                 assigned_on TEXT,
                 kind TEXT NOT NULL,
-                note TEXT
+                note TEXT,
+                origins TEXT
             )
             """
         )
@@ -156,14 +167,15 @@ class ProjectStateStore:
                 channel TEXT NOT NULL,
                 reported_on TEXT NOT NULL,
                 dated_by TEXT NOT NULL,
-                observed_at TEXT NOT NULL
+                observed_at TEXT NOT NULL,
+                source_date_text TEXT
             )
             """
         )
         self._connection.execute(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS status_reports_once
-            ON status_reports (assignment_id, channel, status, reported_on)
+            CREATE INDEX IF NOT EXISTS status_reports_by_assignment
+            ON status_reports (assignment_id)
             """
         )
         self._connection.execute(
@@ -182,49 +194,29 @@ class ProjectStateStore:
             "CREATE INDEX IF NOT EXISTS date_claims_by_assignment ON date_claims (assignment_id)"
         )
         self._upgrade()
-        # One claim is on record once: the same channel saying the same value
-        # from the same place is one fact however many times it is pasted.
-        self._connection.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS date_claims_once
-            ON date_claims (assignment_id, channel, asserted_value, COALESCE(seen_in, ''))
-            """
-        )
 
     def _upgrade(self) -> None:
-        """Bring a file from before up to this schema, once, and keep what it holds.
+        """Bring a file from before up to this schema, by adding, and keep what it holds.
 
-        The note column is added where it is missing. A file written before
-        claims were kept once may hold the same claim twice; the earliest of
-        each is kept and the rest folded, so the index that keeps claims once
-        can be made without refusing the file.
+        Columns a file lacks are added; nothing is dropped, folded, or
+        rewritten. Every claim a file holds is kept, two observations of the
+        same value at different times included: they are the history of what
+        each channel said and when. Pasting the same page twice adds nothing
+        twice, but that is the import's doing, which compares before it
+        writes, and not this table's.
         """
-        # Inside a first start's transaction the step joins it; on its own it
-        # is kept at once, so the index made next is not left in a transaction
-        # nothing commits.
-        joined = self._connection.in_transaction
         columns = {
             str(row[1]) for row in self._connection.execute("PRAGMA table_info(assignments)")
         }
         if "note" not in columns:
             self._connection.execute("ALTER TABLE assignments ADD COLUMN note TEXT")
-        indexes = {
-            str(row[0])
-            for row in self._connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index'"
-            )
+        if "origins" not in columns:
+            self._connection.execute("ALTER TABLE assignments ADD COLUMN origins TEXT")
+        reports = {
+            str(row[1]) for row in self._connection.execute("PRAGMA table_info(status_reports)")
         }
-        if "date_claims_once" not in indexes:
-            self._connection.execute(
-                """
-                DELETE FROM date_claims WHERE rowid NOT IN (
-                    SELECT MIN(rowid) FROM date_claims
-                    GROUP BY assignment_id, channel, asserted_value, COALESCE(seen_in, '')
-                )
-                """
-            )
-            if not joined:
-                self._connection.commit()
+        if "source_date_text" not in reports:
+            self._connection.execute("ALTER TABLE status_reports ADD COLUMN source_date_text TEXT")
 
     @classmethod
     def open(cls, path: Path, clock: Clock) -> "ProjectStateStore":
@@ -348,10 +340,7 @@ class ProjectStateStore:
         self, assignment_id: str, reports: Iterable[StatusReport]
     ) -> None:
         self._connection.executemany(
-            """
-            INSERT INTO status_reports VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT (assignment_id, channel, status, reported_on) DO NOTHING
-            """,
+            "INSERT INTO status_reports VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     assignment_id,
@@ -360,6 +349,7 @@ class ProjectStateStore:
                     report.reported_on.isoformat(),
                     report.dated_by,
                     report.observed_at.isoformat(),
+                    report.source_date_text,
                 )
                 for report in reports
             ],
@@ -370,7 +360,7 @@ class ProjectStateStore:
         with self._lock:
             rows = self._connection.execute(
                 """
-                SELECT status, channel, reported_on, dated_by, observed_at
+                SELECT status, channel, reported_on, dated_by, observed_at, source_date_text
                 FROM status_reports
                 WHERE assignment_id = ?
                 ORDER BY rowid
@@ -384,7 +374,8 @@ class ProjectStateStore:
         with self._lock:
             rows = self._connection.execute(
                 """
-                SELECT assignment_id, status, channel, reported_on, dated_by, observed_at
+                SELECT assignment_id, status, channel, reported_on, dated_by, observed_at,
+                       source_date_text
                 FROM status_reports
                 ORDER BY reported_on, rowid
                 """
@@ -395,7 +386,7 @@ class ProjectStateStore:
         for assignment in assignments:
             self._connection.execute(
                 """
-                INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(assignment_id) DO UPDATE SET
                     course=excluded.course,
                     title=excluded.title,
@@ -404,7 +395,8 @@ class ProjectStateStore:
                     reported_submission_status=excluded.reported_submission_status,
                     assigned_on=excluded.assigned_on,
                     kind=excluded.kind,
-                    note=excluded.note
+                    note=excluded.note,
+                    origins=excluded.origins
                 """,
                 (
                     assignment.assignment_id,
@@ -416,6 +408,11 @@ class ProjectStateStore:
                     None if assignment.assigned_on is None else assignment.assigned_on.isoformat(),
                     assignment.kind.value,
                     assignment.note,
+                    json.dumps(
+                        {field: channel.value for field, channel in assignment.origins.items()}
+                    )
+                    if assignment.origins
+                    else None,
                 ),
             )
 
@@ -430,19 +427,16 @@ class ProjectStateStore:
     def record_claims(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
         """Keep each channel's claim about one assignment's due date, as made, all or none.
 
-        A claim already on record, the same channel saying the same value
-        from the same place, is left as it is rather than made twice.
+        Every claim is kept, the same value said again at another time
+        included: the table is the history of what each channel said and
+        when. Not making a claim twice is the import's job, before it writes.
         """
         with self._lock, self._connection:
             self._record_claims_locked(assignment_id, records)
 
     def _record_claims_locked(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
         self._connection.executemany(
-            """
-            INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT (assignment_id, channel, asserted_value, COALESCE(seen_in, ''))
-            DO NOTHING
-            """,
+            "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
             [
                 (
                     assignment_id,
@@ -493,7 +487,7 @@ class ProjectStateStore:
             rows = self._connection.execute(
                 """
                 SELECT assignment_id, course, title, due_date, dependencies,
-                       reported_submission_status, assigned_on, kind, note
+                       reported_submission_status, assigned_on, kind, note, origins
                 FROM assignments
                 WHERE due_date BETWEEN ? AND ?
                 ORDER BY due_date, course, title
@@ -518,7 +512,7 @@ class ProjectStateStore:
             rows = self._connection.execute(
                 """
                 SELECT assignment_id, course, title, due_date, dependencies,
-                       reported_submission_status, assigned_on, kind, note
+                       reported_submission_status, assigned_on, kind, note, origins
                 FROM assignments
                 ORDER BY due_date IS NULL, due_date, course, title
                 """
@@ -531,7 +525,7 @@ class ProjectStateStore:
             rows = self._connection.execute(
                 """
                 SELECT assignment_id, course, title, due_date, dependencies,
-                       reported_submission_status, assigned_on, kind, note
+                       reported_submission_status, assigned_on, kind, note, origins
                 FROM assignments
                 WHERE due_date IS NULL
                 ORDER BY course, title
@@ -576,6 +570,12 @@ def assignment_from(row: tuple[object, ...]) -> Assignment:
         assigned_on=None if row[6] is None else date.fromisoformat(str(row[6])),
         kind=AssignmentKind(str(row[7])),
         note=None if row[8] is None else str(row[8]),
+        origins={}
+        if row[9] is None
+        else {
+            str(field): SourceChannel(str(value))
+            for field, value in json.loads(str(row[9])).items()
+        },
     )
 
 
@@ -587,4 +587,5 @@ def report_from(row: tuple[object, ...]) -> StatusReport:
         reported_on=date.fromisoformat(str(row[2])),
         dated_by=str(row[3]),
         observed_at=datetime.fromisoformat(str(row[4])),
+        source_date_text=None if row[5] is None else str(row[5]),
     )

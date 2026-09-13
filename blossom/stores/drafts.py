@@ -83,6 +83,11 @@ class DraftRecord(BaseModel):
     too_much: bool = False
     """Whether she had said the evening was too much when this draft was made. A
     draft made for one kind of evening is not approved for the other."""
+    inputs_digest: str | None = None
+    """A fingerprint of the assignments the run read for this evening's window, taken
+    when it read them: what was due, when, of what kind, with what note, and what the
+    sources said. A plan whose window reads differently now was made for other work.
+    ``None`` for a draft from before plans carried one."""
     published: bool = False
     """Whether the run that made this draft has paused with it. A draft is saved
     the moment it is composed, as the record, and published once its run has
@@ -172,6 +177,10 @@ class DraftsStore:
                 "ALTER TABLE drafts ADD COLUMN published INTEGER NOT NULL DEFAULT 0"
             )
             self._connection.execute("UPDATE drafts SET published=1")
+        if "inputs_digest" not in columns:
+            # A file from before plans carried a fingerprint of their window:
+            # its drafts have none, and are not measured against the week.
+            self._connection.execute("ALTER TABLE drafts ADD COLUMN inputs_digest TEXT")
         if "published_order" not in columns:
             self._connection.execute("ALTER TABLE drafts ADD COLUMN published_order INTEGER")
             if "saved_order" in columns:
@@ -296,6 +305,7 @@ class DraftsStore:
         outcome: Outcome,
         steps: Sequence[StepRecord] = (),
         too_much: bool = False,
+        inputs_digest: str | None = None,
     ) -> None:
         """Save a draft the moment it exists, before the gate pauses on it, as the record.
 
@@ -315,13 +325,15 @@ class DraftsStore:
             self._connection.execute(
                 """
                 INSERT INTO drafts (
-                    draft_id, thread_id, plan_date, status, outcome, body, created_at, too_much
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    draft_id, thread_id, plan_date, status, outcome, body, created_at,
+                    too_much, inputs_digest
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
                     status=excluded.status,
                     outcome=excluded.outcome,
                     body=excluded.body,
-                    too_much=excluded.too_much
+                    too_much=excluded.too_much,
+                    inputs_digest=excluded.inputs_digest
                 """,
                 (
                     draft.draft_id,
@@ -332,6 +344,7 @@ class DraftsStore:
                     draft.body,
                     draft.created_at.isoformat(),
                     int(too_much),
+                    inputs_digest,
                 ),
             )
             self._write_run(thread_id, plan_date, outcome, steps)
@@ -603,7 +616,7 @@ def step_from(row: sqlite3.Row) -> StepRecord:
 DRAFTS_WITH_STEPS = """
     SELECT drafts.draft_id, drafts.thread_id, drafts.plan_date, drafts.status,
            drafts.outcome, drafts.body, drafts.created_at, drafts.decided_at,
-           drafts.decision, drafts.reason, drafts.too_much, drafts.published,
+           drafts.decision, drafts.reason, drafts.too_much, drafts.inputs_digest, drafts.published,
            steps.node, steps.round, steps.expected, steps.found,
            steps.recorded_at AS step_recorded_at
     FROM drafts LEFT JOIN steps ON steps.thread_id = drafts.thread_id
@@ -665,5 +678,6 @@ def record_from(row: sqlite3.Row, steps: list[StepRecord]) -> DraftRecord:
         reason=None if reason is None else str(reason),
         steps=steps,
         too_much=bool(row["too_much"]),
+        inputs_digest=None if row["inputs_digest"] is None else str(row["inputs_digest"]),
         published=bool(row["published"]),
     )

@@ -21,16 +21,17 @@
 {% macro local(moment) %}{% set when = moment.astimezone(zone) %}{{ when.strftime("%B") }} {{ when.day }}, {{ when.year }}, {{ when|clock }} {{ when.strftime("%Z") }}{% endmacro %}
 {% block content %}
   <h1>Family review</h1>
+  <p class="lead-action"><a href="#add-assignments">Add assignments</a></p>
 
   {% if problem %}
-    <p class="problem" role="alert">{{ problem }}</p>
+    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_field %} <a href="#entry-{{ problem_field }}">Go to the field.</a>{% endif %}</p>
   {% endif %}
   {% if refreshed_at %}
     <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
   {% endif %}
-  {% if kept is not none %}
+  {% if added is not none %}
     <p class="note" role="status">
-      {% if kept == 0 and not changed %}Nothing new to put on record; everything read was there already.{% else %}{% if kept == 1 %}One assignment put on record{% elif kept > 1 %}{{ kept }} assignments put on record{% endif %}{% if kept and changed %}, and {% endif %}{% if changed == 1 %}one already on record changed{% elif changed and changed > 1 %}{{ changed }} already on record changed{% endif %}.{% endif %}
+      {% if not added and not updated %}Nothing to save: everything read was saved already{% if unchanged %} ({{ unchanged }} unchanged){% endif %}.{% else %}{{ added or 0 }} added, {{ updated or 0 }} updated, {{ unchanged or 0 }} unchanged.{% endif %}
     </p>
   {% endif %}
 
@@ -42,7 +43,7 @@
   <section>
     <h2>Help she asked for</h2>
     {% if not help_open %}
-      <p class="empty">Nothing asked.</p>
+      <p class="empty quiet">No open help requests.</p>
     {% endif %}
     {% for ask in help_open %}
       <article class="draft help-{{ ask.state }}">
@@ -107,7 +108,7 @@
   <section>
     <h2>Waiting for your review</h2>
     {% if not waiting %}
-      <p class="empty">Nothing is waiting.</p>
+      <p class="empty quiet">No plans need your review.</p>
     {% endif %}
     {% for draft in waiting %}
       <article class="draft outcome-{{ draft.outcome }}">
@@ -173,44 +174,69 @@
     anything is written, so a parent sees what the text says and what
     keeping it would do.
   #}
-  <details class="steps panel-fold">
-    <summary>Put assignments on record</summary>
+  <details class="steps panel-fold" id="add-assignments"{% if entry_open %} open{% endif %}>
+    <summary>Add assignments</summary>
     <section class="panel">
-      <h2>From the school portal</h2>
+      <ol class="steps-line" aria-label="Steps">
+        <li aria-current="step"><strong>1. Paste or enter</strong></li>
+        <li>2. Review</li>
+        <li>3. Saved</li>
+      </ol>
+      <h2>Paste school text</h2>
       <p class="note">
-        Copy the homework page, the weekly summary, or the school's "Missing" email as
-        text and paste it whole. What was read is shown first, card by card, and nothing
-        is on record until it is put there.
+        Paste text from the homework page, a downloaded weekly summary, or a Missing email.
+        You will review it before saving.
       </p>
+      <details class="steps">
+        <summary>See an example</summary>
+        <pre class="body example">Homework for Wren
+
+- 09/08/2026 - Tuesday
+08 Geometry - Assigned: PR2 U2 pg. 41 #10, 12, 15: (Due:09/09/2026)
+08 Geometry - Due: Book Covers:
+Cover both books with paper.</pre>
+      </details>
       <form method="post" action="/parent/inbox/read" class="decision">
-        <label for="paste-text">The portal's text</label>
-        <textarea id="paste-text" name="text" rows="10" maxlength="{{ text_max_length }}" placeholder="Paste here"></textarea>
+        <label for="paste-text">School text</label>
+        <textarea id="paste-text" name="text" rows="10" maxlength="{{ text_max_length }}" placeholder="Paste here"{% if problem_field == "text" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>{{ paste }}</textarea>
         <div class="actions">
-          <button type="submit" class="primary">Read it</button>
+          <button type="submit" class="primary">Preview assignments</button>
         </div>
       </form>
-      <h2 class="entry-heading">One assignment by hand</h2>
+      <h2 class="entry-heading">Enter one assignment</h2>
+      <p class="note">Course and title are required; the rest can wait. You will review it before saving.</p>
       <form method="post" action="/parent/inbox/enter" class="entry">
-        <label>Course
-          <input type="text" name="course" maxlength="60" placeholder="As the portal names it">
-        </label>
-        <label>Title
-          <input type="text" name="title" maxlength="200" placeholder="As the teacher names it">
-        </label>
-        <label>Due
-          <input type="date" name="due_date">
-        </label>
-        <label>Assigned
-          <input type="date" name="assigned_on">
-        </label>
-        <label>Kind
-          <select name="kind">
-            <option value="HOMEWORK">Homework, a sitting of work</option>
-            <option value="TASK">Task, a thing to sign, cover, or bring</option>
+        <label for="entry-course">Course</label>
+        <div class="field">
+          <input id="entry-course" type="text" name="course" maxlength="60" placeholder="As the portal names it" value="{{ entry.course or '' }}"{% if problem_field == "course" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
+        </div>
+        <label for="entry-title" class="span-all">Assignment title</label>
+        <div class="field span-all">
+          <input id="entry-title" type="text" name="title" maxlength="200" placeholder="As the teacher names it" value="{{ entry.title or '' }}"{% if problem_field == "title" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
+        </div>
+        <label for="entry-assigned_on">Assigned date (optional)</label>
+        <div class="field">
+          <input id="entry-assigned_on" type="date" name="assigned_on" value="{{ entry.assigned_on or '' }}"{% if problem_field == "assigned_on" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
+        </div>
+        <label for="entry-due_date">Due date (optional)</label>
+        <div class="field">
+          <input id="entry-due_date" type="date" name="due_date" value="{{ entry.due_date or '' }}"{% if problem_field == "due_date" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
+          <p class="helper">A date more than a year from today is refused, since that is almost always a mistyped year.</p>
+        </div>
+        <label for="entry-kind">Type</label>
+        <div class="field">
+          <select id="entry-kind" name="kind"{% if problem_field == "kind" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
+            <option value="HOMEWORK"{% if entry.kind != "TASK" %} selected{% endif %}>Homework</option>
+            <option value="TASK"{% if entry.kind == "TASK" %} selected{% endif %}>Task</option>
           </select>
-        </label>
-        <div class="actions">
-          <button type="submit" class="primary">Read this</button>
+          <p class="helper">Task: a form to sign, supplies to bring, or similar.</p>
+        </div>
+        <label for="entry-note" class="span-all">Note (optional)</label>
+        <div class="field span-all">
+          <textarea id="entry-note" name="note" rows="3" maxlength="{{ entry_note_max_length }}" placeholder="Anything she should know about it"{% if problem_field == "note" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>{{ entry.note or '' }}</textarea>
+        </div>
+        <div class="actions span-all">
+          <button type="submit" class="primary">Preview assignment</button>
         </div>
       </form>
     </section>

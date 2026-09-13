@@ -393,11 +393,10 @@ def test_a_file_from_before_is_brought_up_to_the_schema_and_keeps_its_rows(
     try:
         rows = store.all_assignments()
         claims = store.deadline_records("assignment-essay")
-        indexes = {
-            str(row[0])
-            for row in store._connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index'"
-            )
+        unique = {
+            str(row[1])
+            for row in store._connection.execute("PRAGMA index_list(date_claims)")
+            if row[2]
         }
     finally:
         store.close()
@@ -406,10 +405,11 @@ def test_a_file_from_before_is_brought_up_to_the_schema_and_keeps_its_rows(
     assert rows[0].note is None
     assert [(said.channel.value, said.asserted_value) for said in claims] == [
         ("LMS", "2026-08-21"),
+        ("LMS", "2026-08-21"),
         ("PARENT_ENTRY", "2026-08-22"),
     ]
     assert claims[0].observed_at.isoformat() == "2026-08-19T09:00:00+00:00"
-    assert "date_claims_once" in indexes
+    assert unique == set()
 
 
 def test_a_record_write_that_fails_at_the_claims_keeps_no_assignment_either(
