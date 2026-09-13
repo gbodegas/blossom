@@ -125,10 +125,13 @@ def entry_from(state: ApplicationState, fields: Mapping[str, str]) -> Read | Pro
         return assigned
     if assigned is not None and not within_a_school_year(assigned, today):
         return Problem("assigned_on", FAR_ASSIGNED_DATE)
-    try:
-        kind = AssignmentKind(fields.get("kind") or AssignmentKind.HOMEWORK.value)
-    except ValueError:
-        return Problem("kind", NOT_A_KIND)
+    given = fields.get("kind") or ""
+    kind: AssignmentKind | None = None
+    if given:
+        try:
+            kind = AssignmentKind(given)
+        except ValueError:
+            return Problem("kind", NOT_A_KIND)
     reading = by_hand(course, title, due, assigned, kind, note or None, now=state.clock.now())
     return Read(items=(reading,), unread=())
 

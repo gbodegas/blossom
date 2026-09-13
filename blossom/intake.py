@@ -227,6 +227,11 @@ class Reading:
         """What the reading is matched by, in the paste and against the record."""
         return pair(self.course, self.title)
 
+    kind_chosen: bool = False
+    """Whether a parent chose the kind on the entry form. A kind left unchosen is the saved
+    row's when the entry lands on one, and the title's suggestion for a new row, and is
+    no choice either way."""
+
     def origin_of(self, name: str) -> SourceChannel:
         """The channel a field came from: its own when it has one, else the reading's."""
         return self.field_origins.get(name, self.origin)
@@ -623,12 +628,13 @@ def by_hand(
     title: str,
     due_date: date | None,
     assigned_on: date | None,
-    kind: AssignmentKind,
+    kind: AssignmentKind | None,
     note: str | None = None,
     *,
     now: datetime,
 ) -> Reading:
-    """One assignment as a parent typed it: the family's own, in every field it fills."""
+    """One assignment as a parent typed it: the family's own, in every field it fills. A
+    kind left unchosen is suggested from the title, and a saved row keeps its own."""
     claims = (
         ()
         if due_date is None
@@ -640,10 +646,11 @@ def by_hand(
         title=title,
         due_date=due_date,
         assigned_on=assigned_on,
-        kind=kind,
+        kind=kind or kind_of(title),
         claims=claims,
         origin=SourceChannel.PARENT_ENTRY,
         note=(note or "").strip() or None,
+        kind_chosen=kind is not None,
     )
 
 
@@ -951,7 +958,8 @@ def changes_for(
     none; a parent's note replaces any saved note, the school's note
     replaces the school's earlier note, and the school's never replaces a
     parent's. ``kinds`` are the parent's choices of type on the page; a
-    type typed with an entry is the parent's choice as well. Several cards
+    type typed with an entry is the parent's choice as well, and one left
+    unchosen there is no choice. Several cards
     about one saved row compose: each is measured against the row as the
     cards before it leave it, so a date one moves, a note another adds, and
     an assigned date a third fills all arrive together.
@@ -1026,7 +1034,11 @@ def _kind_for(
     what another card about the same assignment chose.
     """
     if reading.origin == SourceChannel.PARENT_ENTRY:
-        return kinds.get(key, reading.kind), True, reading.kind
+        # A kind typed with the entry is the parent's; one left unchosen is
+        # the saved row's, or the title's suggestion for a new row.
+        theirs = reading.kind_chosen or saved is None
+        suggested = reading.kind if theirs or saved is None else saved.kind
+        return kinds.get(key, suggested), key in kinds or reading.kind_chosen, suggested
     suggested = reading.kind if saved is None else saved.kind
     return kinds.get(key, suggested), key in kinds, suggested
 

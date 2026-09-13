@@ -837,6 +837,35 @@ def test_the_card_shown_for_an_assignment_decides_its_type_over_a_folded_card(
     ]
 
 
+def test_a_type_left_unchosen_on_an_entry_is_the_saved_rows_or_the_titles(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An entry that only adds a note to a saved task leaves it a task; an entry for a new
+    row with no type chosen takes the title's suggestion; a type chosen is the parent's."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        keep(readings("Tuesday 9/8/2026\nReligion\nDue: Syllabus:\n"), store)
+        noted = by_hand("Religion", "Syllabus", None, None, None, "Bring it Monday.", now=NOW)
+        adds_a_note = changes_for((noted,), store)
+        keep((noted,), store)
+        syllabus = store.all_assignments()[0]
+        covers = by_hand("Art", "Book covers", None, None, None, now=NOW)
+        keep((covers,), store)
+        rows = {row.title: row for row in store.all_assignments()}
+    finally:
+        store.close()
+
+    assert not noted.kind_chosen
+    assert [change.state for change in adds_a_note] == [CLAIMED]
+    assert adds_a_note[0].label == "Saved; adds the note"
+    assert (adds_a_note[0].kind, adds_a_note[0].kind_by_parent) == (AssignmentKind.TASK, False)
+    assert syllabus.kind is AssignmentKind.TASK
+    assert syllabus.origins["kind"] is SourceChannel.LMS
+    assert syllabus.note == "Bring it Monday."
+    assert (covers.kind, covers.kind_chosen) == (AssignmentKind.TASK, False)
+    assert rows["Book covers"].kind is AssignmentKind.TASK
+
+
 def test_an_entered_date_is_called_entered_in_the_effect(tmp_path: pathlib.Path) -> None:
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:

@@ -255,8 +255,9 @@ left as shown is no answer, so when several cards are about one assignment
 a type chosen on any of them, a folded one included, is the assignment's,
 and two cards choosing different types stop the save until one is picked.
 A page that comes back because a question is still open keeps every choice
-made on it, the folded cards' answers included, and says whether the
-question is one it put or one the record raised since. The card shown for
+made on it, the folded cards' answers and the questions answered already
+included, and says whether the question is one it put or one the record
+raised since. The card shown for
 an assignment decides its type: a change made on it, a change back to what
 the reader suggested included, stands over any choice a folded card carried. Several cards about one saved assignment in one text compose: the
 date one moves, the note another adds, and the assigned date a third fills
@@ -302,7 +303,9 @@ missing", with the source and the day; the family page lists the same under
 
 The second way in is one assignment by hand: a course as the portal names
 it and a title are required; a due date, an assigned date, the type, and a
-note are optional. A date more than a year from today is refused, since it
+note are optional, and a type left as it is keeps a saved assignment's type
+and takes the title's suggestion for a new one, so an entry that only adds
+a date or a note to a saved task leaves it a task. A date more than a year from today is refused, since it
 is almost always a mistyped year. A form that fails comes back with every
 field as it was, the failing field named and focused, and the fold open. An
 entry is reviewed the same way before it is saved, and its date is the

@@ -811,6 +811,64 @@ def test_two_folded_cards_cannot_override_the_card_shown(tmp_path: pathlib.Path)
     assert [said.asserted_value for said in claims] == ["2026-09-08", "2026-09-15", "2026-09-22"]
 
 
+def test_an_entry_that_leaves_the_type_as_it_is_keeps_a_saved_task_a_task(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The entry form promises that only the course and title are required: an entry that
+    adds a note to a saved task, its type left as it is, leaves the task a task."""
+    entry = {"course": "Religion", "title": "Syllabus", "note": "Bring it Monday."}
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        family = client.get("/parent", headers=PAGE).text
+        client.post(
+            "/parent/inbox/keep", data={"text": "Tuesday 9/8/2026\nReligion\nDue: Syllabus:\n"}
+        )
+        shown = client.post("/parent/inbox/enter", data=entry).text
+        kept = client.post("/parent/inbox/keep", data=entry)
+        row = state_of(client).project_state.all_assignments()[0]
+
+    assert '<option value="" selected>Leave as it is</option>' in family
+    assert '<label for="entry-kind">Type (optional)</label>' in family
+    assert '<span class="pill">Saved; adds the note</span>' in shown
+    assert 'data-saved="TASK"' in shown
+    assert '<option value="TASK" selected>Task</option>' in shown
+    assert kept.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
+    assert row.kind is AssignmentKind.TASK
+    assert row.origins["kind"] is SourceChannel.LMS
+    assert row.note == "Bring it Monday."
+
+
+def test_a_question_answered_rides_along_on_a_page_returned_for_another(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Two saved assignments come round again in one text, two questions. One is answered
+    and the page comes back for the other; the answer given is on that page as a hidden
+    field, so answering the second saves both as the parent said."""
+    saved = "Tuesday 9/1/2026\nMath\nDue: Weekly practice:\nMath\nDue: Reading log:\n"
+    again = "Tuesday 9/8/2026\nMath\nDue: Weekly practice:\nMath\nDue: Reading log:\n"
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        client.post("/parent/inbox/keep", data={"text": saved})
+        preview = client.post("/parent/inbox/read", data={"text": again}).text
+        one_answered = {**review_form(preview), "occurrence-0": "update"}
+        returned = client.post("/parent/inbox/keep", data=one_answered)
+        carried = review_form(returned.text)
+        both = client.post("/parent/inbox/keep", data={**carried, "occurrence-1": "new"})
+        rows = by_due(state_of(client).project_state.all_assignments())
+
+    assert {"asked-0", "asked-1"} <= set(review_form(preview))
+    assert returned.status_code == 200
+    assert NEEDS_ANSWER in returned.text
+    assert carried["occurrence-0"] == "update"
+    assert "asked-0" not in carried
+    assert "asked-1" in carried
+    assert '<span class="pill">Saved; adds the due date</span>' in returned.text
+    assert both.headers["location"] == "/parent?added=1&updated=1&unchanged=0"
+    assert [(row.title, row.due_date) for row in rows] == [
+        ("Reading log", date(2026, 9, 1)),
+        ("Reading log", date(2026, 9, 8)),
+        ("Weekly practice", date(2026, 9, 8)),
+    ]
+
+
 def test_an_entered_date_beside_a_saved_one_is_called_entered(tmp_path: pathlib.Path) -> None:
     entry = {"course": "Math", "title": "Weekly practice", "due_date": "2026-09-03"}
     with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:

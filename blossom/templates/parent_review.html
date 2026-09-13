@@ -223,13 +223,14 @@ Cover both books with paper.</pre>
           <input id="entry-due_date" type="date" name="due_date" value="{{ entry.due_date or '' }}"{% if problem_field == "due_date" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
           <p class="helper">A date more than a year from today is refused, since that is almost always a mistyped year.</p>
         </div>
-        <label for="entry-kind">Type</label>
+        <label for="entry-kind">Type (optional)</label>
         <div class="field">
           <select id="entry-kind" name="kind"{% if problem_field == "kind" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
-            <option value="HOMEWORK"{% if entry.kind != "TASK" %} selected{% endif %}>Homework</option>
+            <option value=""{% if not entry.kind %} selected{% endif %}>Leave as it is</option>
+            <option value="HOMEWORK"{% if entry.kind == "HOMEWORK" %} selected{% endif %}>Homework</option>
             <option value="TASK"{% if entry.kind == "TASK" %} selected{% endif %}>Task</option>
           </select>
-          <p class="helper">Task: a form to sign, supplies to bring, or similar.</p>
+          <p class="helper">Task: a form to sign, supplies to bring, or similar. Left as it is, a saved assignment keeps its type and a new one is suggested from the title.</p>
         </div>
         <label for="entry-note" class="span-all">Note (optional)</label>
         <div class="field span-all">

@@ -123,6 +123,9 @@
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment, its due date changed</label>
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
                 </fieldset>
+              {% elif change.occurrence %}
+                {# An answer given already rides along, so a page returned for another question keeps it. #}
+                <input type="hidden" name="occurrence-{{ change.key }}" value="{{ change.occurrence }}">
               {% endif %}
               <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
               <input type="hidden" name="shown-{{ change.key }}" value="{{ change.kind.value }}">
