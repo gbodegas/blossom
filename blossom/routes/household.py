@@ -78,13 +78,14 @@ def take_passphrase(
 ) -> Response:
     """Match the passphrase to a person and remember them for a month.
 
-    Wrong passphrases from one device are counted; past the limit the device
-    is told to wait, with the seconds in the answer, and a right passphrase
-    is not read until the wait is over.
+    Wrong passphrases from one device are counted, and one try is one
+    operation: past the limit the device is told to wait, with the seconds in
+    the answer, and a right passphrase is not read until the wait is over.
     """
     now = datetime.now(UTC)
-    device = device_of(request)
-    wait = state.attempts.wait_for(device, now)
+    wait, role = state.attempts.try_once(
+        device_of(request), now, lambda: role_for(passphrase, state.settings)
+    )
     if wait:
         return sign_in_page(
             request,
@@ -93,16 +94,13 @@ def take_passphrase(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             headers={"Retry-After": str(wait)},
         )
-    role = role_for(passphrase, state.settings)
     if role is None:
-        state.attempts.failed(device, now)
         return sign_in_page(
             request,
             next_path=safe_next(next),
             problem=WRONG,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    state.attempts.cleared(device)
     token = issue(role, request.app.state.household_keys[role], now)
     destination = safe_next(next) or home_of(role)
     response = RedirectResponse(destination, status_code=status.HTTP_303_SEE_OTHER)

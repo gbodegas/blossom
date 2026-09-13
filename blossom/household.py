@@ -206,6 +206,11 @@ class SignInAttempts:
     device cannot lock the others out, and it is bounded: past ``capacity``
     devices the oldest count is forgotten. Nothing typed is kept, only
     counts and times. It lives in this process and is empty at every start.
+
+    One try is one operation under the lock: the wait is read, the passphrase
+    checked, and the outcome counted before any other try is looked at, so
+    tries arriving together from one device are bounded exactly as tries
+    arriving one at a time.
     """
 
     def __init__(
@@ -224,39 +229,52 @@ class SignInAttempts:
     def __len__(self) -> int:
         return len(self._counts)
 
-    def wait_for(self, device: str, now: datetime) -> int:
-        """Seconds this device must still wait, or zero when it may try."""
+    def try_once(
+        self, device: str, now: datetime, check: Callable[[], Principal | None]
+    ) -> tuple[int, Principal | None]:
+        """One try from a device, whole: the seconds it must still wait, with nothing checked,
+        or zero and who the passphrase names, its outcome counted before any other try
+        is looked at."""
         with self._lock:
-            entry = self._counts.get(device)
-            if entry is None:
-                return 0
-            count, since = entry
-            left = since + self.cooldown - now
-            if left <= timedelta(0):
-                del self._counts[device]
-                return 0
-            if count < self.limit:
-                return 0
-            return max(1, left.days * 86400 + left.seconds + (1 if left.microseconds else 0))
-
-    def failed(self, device: str, now: datetime) -> None:
-        """One more wrong passphrase from this device."""
-        with self._lock:
-            entry = self._counts.pop(device, None)
-            if entry is not None and entry[0] < self.limit and now - entry[1] < self.cooldown:
-                count = entry[0] + 1
-                # Reaching the limit starts the wait from now.
-                since = now if count >= self.limit else entry[1]
+            wait = self._wait(device, now)
+            if wait:
+                return wait, None
+            role = check()
+            if role is None:
+                self._failed(device, now)
             else:
-                count, since = 1, now
-                if len(self._counts) >= self.capacity:
-                    del self._counts[next(iter(self._counts))]
-            self._counts[device] = (count, since)
+                self._counts.pop(device, None)
+            return 0, role
 
-    def cleared(self, device: str) -> None:
-        """A right passphrase from this device; its count is forgotten."""
+    def wait_for(self, device: str, now: datetime) -> int:
+        """Seconds this device must still wait, or zero when it may try: a look, not a try."""
         with self._lock:
-            self._counts.pop(device, None)
+            return self._wait(device, now)
+
+    def _wait(self, device: str, now: datetime) -> int:
+        entry = self._counts.get(device)
+        if entry is None:
+            return 0
+        count, since = entry
+        left = since + self.cooldown - now
+        if left <= timedelta(0):
+            del self._counts[device]
+            return 0
+        if count < self.limit:
+            return 0
+        return max(1, left.days * 86400 + left.seconds + (1 if left.microseconds else 0))
+
+    def _failed(self, device: str, now: datetime) -> None:
+        entry = self._counts.pop(device, None)
+        if entry is not None and entry[0] < self.limit and now - entry[1] < self.cooldown:
+            count = entry[0] + 1
+            # Reaching the limit starts the wait from now.
+            since = now if count >= self.limit else entry[1]
+        else:
+            count, since = 1, now
+            if len(self._counts) >= self.capacity:
+                del self._counts[next(iter(self._counts))]
+        self._counts[device] = (count, since)
 
 
 def device_of(request: Request) -> str:

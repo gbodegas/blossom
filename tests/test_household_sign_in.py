@@ -11,6 +11,8 @@ nothing asks, which every other test relies on.
 
 import os
 import pathlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -260,26 +262,69 @@ def test_the_count_is_per_device_bounded_and_over_once_the_wait_is() -> None:
     def at(seconds: float) -> datetime:
         return start + timedelta(seconds=seconds)
 
+    def wrong() -> Principal | None:
+        return None
+
+    def right() -> Principal | None:
+        return Principal.PARENT
+
     for _ in range(3):
-        assert attempts.wait_for("tablet", at(0)) == 0
-        attempts.failed("tablet", at(0))
-    assert attempts.wait_for("tablet", at(0)) == 60
+        assert attempts.try_once("tablet", at(0), wrong) == (0, None)
+    assert attempts.try_once("tablet", at(0), right) == (60, None)
     assert attempts.wait_for("tablet", at(59.5)) == 1
-    assert attempts.wait_for("laptop", at(1)) == 0
+    assert attempts.try_once("laptop", at(1), wrong) == (0, None)
     assert attempts.wait_for("tablet", at(60)) == 0
-    assert len(attempts) == 0
-    attempts.failed("tablet", at(61))
-    assert attempts.wait_for("tablet", at(61)) == 0
-    attempts.cleared("tablet")
-    assert len(attempts) == 0
+    assert len(attempts) == 1
+    assert attempts.try_once("tablet", at(61), wrong) == (0, None)
+    assert attempts.try_once("tablet", at(61), right) == (0, Principal.PARENT)
+    assert len(attempts) == 1
     for seconds in (100, 101, 200):
-        attempts.failed("phone", at(seconds))
+        assert attempts.try_once("phone", at(seconds), wrong) == (0, None)
     assert attempts.wait_for("phone", at(200)) == 0
     for device in ("a", "b", "c"):
-        attempts.failed(device, at(300))
+        attempts.try_once(device, at(300), wrong)
     assert len(attempts) == 2
     assert attempts.wait_for("phone", at(300)) == 0
     assert len(attempts) == 2
+
+
+def test_tries_arriving_together_are_bounded_as_tries_one_at_a_time() -> None:
+    """Thirty wrong tries from one device released at once: exactly the limit are checked,
+    the rest are told to wait, and no try slips through between a look and a count."""
+    attempts = SignInAttempts(limit=10, cooldown=60)
+    now = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
+    checked: list[None] = []
+    released = threading.Barrier(30)
+
+    def wrong() -> Principal | None:
+        checked.append(None)
+        return None
+
+    def one_try(_: int) -> int:
+        released.wait()
+        return attempts.try_once("tablet", now, wrong)[0]
+
+    with ThreadPoolExecutor(max_workers=30) as pool:
+        waits = list(pool.map(one_try, range(30)))
+
+    assert len(checked) == 10
+    assert waits.count(0) == 10
+    assert waits.count(60) == 20
+
+
+def test_wrong_passphrases_sent_together_are_bounded_through_the_sign_in(
+    tmp_path: pathlib.Path,
+) -> None:
+    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+
+        def guess(_: int) -> int:
+            return client.post("/sign-in", data={"passphrase": "open sesame"}).status_code
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            answers = list(pool.map(guess, range(ATTEMPT_LIMIT * 2)))
+
+    assert answers.count(422) == ATTEMPT_LIMIT
+    assert answers.count(429) == ATTEMPT_LIMIT
 
 
 def test_a_restart_keeps_everyone_signed_in(tmp_path: pathlib.Path) -> None:
