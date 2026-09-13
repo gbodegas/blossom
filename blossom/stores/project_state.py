@@ -12,7 +12,8 @@ The store is the household's file at ``BLOSSOM_DATABASE_PATH``, shared with the
 drafts, so what the family enters outlives a restart. Beside the assignments it
 keeps every channel's claim about an assignment's due date, as the claim was
 made, which is what the reconciliation reads. A fixture, when one is named,
-seeds an empty file once and leaves a kept record alone.
+is read only into a file the start creates, whole and in one transaction; an
+existing file is the household's record, whatever it holds, and is left alone.
 
 The field is named ``reported_submission_status`` on purpose: a submission flag
 confirms a file was uploaded, not that the assignment was finished, that the
@@ -22,7 +23,7 @@ not treat it as completion.
 
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -92,6 +93,10 @@ class ProjectStateStore:
         self._clock = clock
         # Shared across FastAPI's handler threads; see blossom/dependencies.py.
         self._lock = threading.Lock()
+        self.path: Path | None = None
+        """The file, when the store was opened on one; a connection handed in has none."""
+        self.created = False
+        """Whether this start made the file. A fixture is read only into such a file."""
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS assignments (
@@ -124,12 +129,28 @@ class ProjectStateStore:
 
     @classmethod
     def open(cls, path: Path, clock: Clock) -> "ProjectStateStore":
-        """Open the household's file, refusing the places the saved-state store refuses."""
+        """Open the household's file, refusing the places the saved-state store refuses.
+
+        Whether the file is new is noted before it is touched: a file that was
+        not there, or held nothing, is this start's to seed; one with anything
+        in it is the household's record.
+        """
         safe = refuse_unsafe_path(path)
         safe.parent.mkdir(parents=True, exist_ok=True)
+        new = not safe.exists() or safe.stat().st_size == 0
         connection = sqlite3.connect(safe, check_same_thread=False)
         connection.execute("PRAGMA secure_delete=ON")
-        return cls(connection, clock)
+        store = cls(connection, clock)
+        store.path = safe
+        store.created = new
+        return store
+
+    def discard_if_new(self) -> None:
+        """Close, and remove the file if this start made it, so a start that fails
+        partway leaves the file as it was: absent."""
+        self.close()
+        if self.created and self.path is not None:
+            self.path.unlink(missing_ok=True)
 
     def close(self) -> None:
         """Close the underlying connection. Called when the application shuts down."""
@@ -140,6 +161,25 @@ class ProjectStateStore:
         """Insert or update each assignment, keyed by ``assignment_id``."""
         with self._lock:
             self._upsert_assignments_locked(assignments)
+            self._connection.commit()
+
+    def put_on_record(
+        self, assignments: Iterable[Assignment], claims: Mapping[str, Iterable[SourceRecord]]
+    ) -> None:
+        """Keep assignments and the claims about their dates in one transaction.
+
+        All of it or none of it: a write that fails partway is rolled back, so
+        the file is never left half seeded and thereafter left alone.
+        """
+        with self._lock:
+            try:
+                self._upsert_assignments_locked(assignments)
+                for assignment_id, records in claims.items():
+                    self._record_claims_locked(assignment_id, records)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
 
     def _upsert_assignments_locked(self, assignments: Iterable[Assignment]) -> None:
         for assignment in assignments:
@@ -166,7 +206,6 @@ class ProjectStateStore:
                     assignment.kind.value,
                 ),
             )
-        self._connection.commit()
 
     def is_empty(self) -> bool:
         """Whether nothing is on record yet: no assignment, and no claim about one."""
@@ -179,21 +218,24 @@ class ProjectStateStore:
     def record_claims(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
         """Keep each channel's claim about one assignment's due date, as it was made."""
         with self._lock:
-            self._connection.executemany(
-                "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        assignment_id,
-                        record.channel.value,
-                        record.asserted_value,
-                        record.observed_at.isoformat(),
-                        record.confidence,
-                        record.seen_in,
-                    )
-                    for record in records
-                ],
-            )
+            self._record_claims_locked(assignment_id, records)
             self._connection.commit()
+
+    def _record_claims_locked(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
+        self._connection.executemany(
+            "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    assignment_id,
+                    record.channel.value,
+                    record.asserted_value,
+                    record.observed_at.isoformat(),
+                    record.confidence,
+                    record.seen_in,
+                )
+                for record in records
+            ],
+        )
 
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
         """Every channel's claim about one assignment's due date, in the order made.

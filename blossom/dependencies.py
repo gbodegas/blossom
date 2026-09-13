@@ -63,8 +63,8 @@ class ApplicationState:
     clock: Clock
     project_state: ProjectStateStore
     """Assignments and every channel's claim about their dates, in the file at
-    ``BLOSSOM_DATABASE_PATH``. Seeded once from a fixture when one is named and
-    the file is empty; what the family enters is never written over by it."""
+    ``BLOSSOM_DATABASE_PATH``. Read from a fixture only when one is named and
+    the start creates the file; what the family enters is never written over."""
     support_rules: SupportRulesStore
     reflections: ReflectionsStore
     drafts: DraftsStore
@@ -144,10 +144,13 @@ def build_application_state(
         reflections = ReflectionsStore()
         if settings.fixture_path is not None:
             fixture = FixtureSource(settings.fixture_path)
-            # A fixture seeds an empty record and leaves a kept one alone, so
-            # what the family enters outlives a restart, and a sample edited by
-            # hand stays edited until its folder is deleted.
-            if project_state.is_empty():
+            # A fixture is read only into a file this start creates. An existing
+            # file is the household's record, whatever it holds, and is left
+            # alone: what the family enters outlives a restart, a sample edited
+            # by hand stays edited until its folder is deleted, and a household
+            # file from before the record lived in it is not seeded by a fixture
+            # path left in .env.
+            if project_state.created:
                 seed(project_state, fixture)
             for rule in fixture.support_rules():
                 support_rules.add_rule(rule)
@@ -172,8 +175,11 @@ def build_application_state(
         opened.append(help_requests)
         help_requests.sweep()
     except Exception:
-        for store in reversed(opened):
+        for store in reversed(opened[1:]):
             store.close()
+        # A file this start made is removed with it, so a start that fails
+        # partway leaves nothing behind and the next start seeds afresh.
+        project_state.discard_if_new()
         raise
     return ApplicationState(
         settings=settings,

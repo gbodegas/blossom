@@ -63,16 +63,18 @@ class StateSource(DateClaims, Protocol):
 def seed(store: ProjectStateStore, source: StateSource) -> None:
     """Put a source's assignments, and the claims about their dates, on record.
 
-    Meant for an empty record: the household's file is seeded once from a
-    fixture, when one is named, and what the family enters afterward is not
-    written over by the fixture at the next start.
+    Meant for a file the start creates: a fixture, when one is named, is read
+    into a new file, and what the family enters afterward is not written over
+    at the next start. The whole source is read and checked before anything
+    is written, and written in one transaction, so a set that cannot be read
+    leaves the file as it was.
     """
     assignments = source.assignments()
-    store.upsert_assignments(assignments)
-    for assignment in assignments:
-        store.record_claims(
-            assignment.assignment_id, source.deadline_records(assignment.assignment_id)
-        )
+    claims = {
+        assignment.assignment_id: source.deadline_records(assignment.assignment_id)
+        for assignment in assignments
+    }
+    store.put_on_record(assignments, claims)
 
 
 class FixtureSource:

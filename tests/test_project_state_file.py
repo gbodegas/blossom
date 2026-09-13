@@ -1,11 +1,14 @@
 """Assignments and the claims about their dates live in the household's file.
 
-They outlive a restart; a fixture seeds only an empty file and leaves a kept
-record alone; a household that names no fixture starts with nothing on record
-and nothing synthetic; and a claim is read back exactly as it was made.
+They outlive a restart; a fixture is read only into a file the start creates
+and leaves a kept record alone; a set that cannot be read leaves no file behind;
+a household that names no fixture starts with nothing on record and nothing
+synthetic; and a claim is read back exactly as it was made.
 """
 
+import json
 import pathlib
+import shutil
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -18,7 +21,7 @@ from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.settings import Settings
 from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment, ProjectStateStore
-from tests.support import fixture_clock, fixture_settings
+from tests.support import FIXTURES, fixture_clock, fixture_settings
 
 PAGE = {"Accept": "text/html"}
 
@@ -62,7 +65,7 @@ def test_assignments_and_their_claims_outlive_a_restart(tmp_path: pathlib.Path) 
     assert claims_after == claims_before
 
 
-def test_the_fixture_seeds_an_empty_file_and_leaves_a_kept_record_alone(
+def test_the_fixture_seeds_a_new_file_and_leaves_a_kept_record_alone(
     tmp_path: pathlib.Path,
 ) -> None:
     """An assignment entered by hand is still there after the next start, beside the
@@ -88,6 +91,48 @@ def test_the_fixture_seeds_an_empty_file_and_leaves_a_kept_record_alone(
 
     assert on_record["assignment-entered-by-hand"] == entered
     assert "assignment-canal-essay" in on_record
+
+
+def test_an_existing_file_is_the_record_and_a_named_fixture_leaves_it_alone(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A household file from before the record lived in it, with a fixture path left in
+    .env from an earlier example: the file stays as it is, and only the planner's rules
+    and notes come from the set."""
+    before = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    before.close()
+    state = build_application_state(settings_in(tmp_path), InMemorySaver())
+    try:
+        assert state.project_state.created is False
+        assignments = state.project_state.all_assignments()
+        rules = state.support_rules.list_all()
+    finally:
+        state.close()
+
+    assert assignments == []
+    assert rules
+
+
+def test_a_set_that_cannot_be_read_leaves_no_file_behind(tmp_path: pathlib.Path) -> None:
+    """The whole set is read before anything is written, and a start that fails removes
+    the file it made, so the next start, with a set that reads, seeds afresh."""
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    shutil.copy(FIXTURES / "assignments.json", broken / "assignments.json")
+    (broken / "deadline_sources.json").write_text("[{", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        build_application_state(
+            settings_in(tmp_path, BLOSSOM_FIXTURE_PATH=str(broken)), InMemorySaver()
+        )
+    assert not (tmp_path / "blossom.sqlite3").exists()
+
+    state = build_application_state(settings_in(tmp_path), InMemorySaver())
+    try:
+        seeded = state.project_state.all_assignments()
+    finally:
+        state.close()
+
+    assert seeded
 
 
 def test_a_household_with_no_fixture_starts_with_nothing_on_record(
@@ -116,6 +161,7 @@ def test_a_claim_is_read_back_as_made_and_the_file_refuses_a_share(
 ) -> None:
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:
+        assert store.created
         assert store.is_empty()
         when = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
         claims = [

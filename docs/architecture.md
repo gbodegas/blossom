@@ -244,7 +244,7 @@ still answers the structured side for one that would.
 
 | Store | Contents | State |
 |---|---|---|
-| `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status; every channel's claim about a due date | Wired and tested; a file at `BLOSSOM_DATABASE_PATH`, seeded once from a fixture when one is named |
+| `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status; every channel's claim about a due date | Wired and tested; a file at `BLOSSOM_DATABASE_PATH`, read from a fixture only when the start creates the file |
 | `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Seeded from the fixtures; read whole by the plan graph |
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
@@ -627,8 +627,9 @@ connection is shared across FastAPI's worker threads, so it is opened with
 
 `BLOSSOM_DATABASE_PATH` holds the assignments, every channel's claim about
 their dates, and the drafts table, so the record and the parent's queue
-survive a restart. A fixture, when one is named, seeds the record once, while
-it is empty, and leaves a kept record alone.
+survive a restart. A fixture, when one is named, is read whole and written in
+one transaction, only into a file the start creates; an existing file is the
+household's record, whatever it holds, and is left alone.
 
 ## Saved graph state
 
