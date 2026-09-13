@@ -24,7 +24,7 @@
   <p class="lead-action"><a href="#add-assignments">Add assignments</a></p>
 
   {% if problem %}
-    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_field %} <a href="#entry-{{ problem_field }}">Go to the field.</a>{% endif %}</p>
+    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% endif %}</p>
   {% endif %}
   {% if refreshed_at %}
     <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>

@@ -280,9 +280,15 @@ def take_back_help(request_id: str, state: State) -> Response:
 
 
 def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
-    """Her projection of a draft: the plan, a parent's review if any, and whether it still fits."""
+    """Her projection of a draft: the plan, a parent's review if any, and whether it still fits.
+
+    A decided plan is history: it is measured against her signal, as it
+    always was, but not against the week, which may well change after a
+    parent has said the plan looks good.
+    """
     stale = None
-    match staleness(state.workload_signals, record, state.project_state):
+    week = state.project_state if record.waiting else None
+    match staleness(state.workload_signals, record, week):
         case Staleness.SIGNALED_SINCE:
             stale = SIGNALED_SINCE
         case Staleness.SIGNAL_ENDED:

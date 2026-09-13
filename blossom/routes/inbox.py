@@ -206,7 +206,7 @@ def preview_page(
         "unchanged": sum(1 for change in changes if change.state == KNOWN),
         "review": sum(1 for change in changes if change.state == REVIEW),
     }
-    to_save = counts["new"] + counts["updated"]
+    to_save = counts["new"] + counts["updated"] + counts["review"]
     return templates.TemplateResponse(
         request,
         "inbox_preview.html",
@@ -273,14 +273,22 @@ async def edit_draft(request: Request, state: State) -> Response:
 @router.post("/keep", response_class=HTMLResponse, include_in_schema=False)
 async def keep_readings(request: Request, state: State) -> Response:
     """Read the draft again, save what is new against the record as it is, and say what
-    was added, updated, and unchanged; or show the review again if a question is open."""
+    was added, updated, and unchanged; or show the review again if a question is open.
+
+    The saving runs under the decision lock, as a signal does: a plan's
+    approval checks the week the plan was made from against the week as it
+    stands, and the week must not change between that check and the
+    decision landing. A saving during a decision waits the moment it takes,
+    and a saving before it leaves the decision refused as stale.
+    """
     form = await submitted(request)
     draft = draft_of(form)
     read = read_draft(state, draft)
     if isinstance(read, Problem):
         return problem_page(request, state, draft, read)
     occurrences, kinds = answers_from(form)
-    kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+    async with state.decision_lock:
+        kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
     if not isinstance(kept, Kept):
         return preview_page(
             request, state, read, draft, occurrences=occurrences, kinds=kinds, notice=LOOK_AGAIN

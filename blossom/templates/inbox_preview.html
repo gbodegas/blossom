@@ -23,11 +23,13 @@
     <p class="problem" role="alert">{{ notice }}</p>
   {% endif %}
   {% set total = changes|length %}
+  {% set dated = weeks|selectattr("start")|list|length %}
+  {% set undated = weeks|rejectattr("start")|map(attribute="changes")|map("length")|sum %}
   {% if total == 0 %}
     <p class="empty">Nothing in the text was read as an assignment.</p>
   {% else %}
     <p class="note review-summary" role="status">
-      {{ total }} assignment{% if total != 1 %}s{% endif %} across {{ weeks|length }} week{% if weeks|length != 1 %}s{% endif %}:
+      {{ total }} assignment{% if total != 1 %}s{% endif %}{% if dated %} across {{ dated }} week{% if dated != 1 %}s{% endif %}{% if undated %}, {{ undated }} with no due date yet{% endif %}{% else %} with no due date yet{% endif %}:
       {{ counts.new }} new, {{ counts.updated }} update{% if counts.updated != 1 %}s{% endif %}, {{ counts.unchanged }} already saved{% if counts.review %}, {{ counts.review }} need{% if counts.review == 1 %}s{% endif %} your answer{% endif %}.
       Nothing is saved until Save is pressed.
     </p>
@@ -106,7 +108,7 @@
                 </fieldset>
               {% endif %}
               <label class="type-choice">Type
-                <select name="kind-{{ change.key }}">
+                <select name="kind-{{ change.key }}" data-saved="{{ change.kind.value }}">
                   {% for value, label in kind_choices %}
                     <option value="{{ value }}"{% if value == change.kind.value %} selected{% endif %}>{{ label }}</option>
                   {% endfor %}

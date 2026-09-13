@@ -250,7 +250,11 @@ twice, from a retry or a page left open, changes nothing. The type, homework
 or task, is suggested from the title, paperwork and materials being tasks,
 and can be changed on any card, a saved one included; a parent's choice is
 kept as theirs, and the type typed with an entry corrects a saved row the
-same way. "Save N assignments" writes all of it
+same way. Several cards about one saved assignment in one text compose: the
+date one moves, the note another adds, and the assigned date a third fills
+all reach the one row, every date observation with them, and the count on
+return says how many assignments changed, not how many cards. The Save
+button counts a question waiting for an answer as a save. "Save N assignments" writes all of it
 in one step and returns to the family page with what was added, updated, and
 unchanged; "Edit" goes back with the text or the fields as they were;
 "Cancel import" writes nothing. Pasting the same page or week again is safe:
@@ -272,8 +276,14 @@ note stands: a parent's note replaces any saved note and is never replaced
 by the school's, and the school's note replaces the school's own.
 
 A "Missing" line in the school's email is kept as what the school reported,
-with the day: the email's own date when the paste carries its date line,
-otherwise the day it was pasted, and both pages say which. The date the
+with the day: the email's own date when the paste carries its date line, a
+``Date:`` or ``Sent:`` header, a forwarded "On Tue, Sep 8, 2026 at 9:14 AM
+... wrote:", or the line "Tue, Sep 8, 2026" itself, otherwise the day it
+was pasted, and both pages say which; a date inside a title or an
+instruction never dates the email. When one text holds the email and the
+portal's page, or the two are saved one after the other, each fact keeps the
+channel that gave it: the report is the email's, the dates and the
+instruction are the portal's, whichever named the assignment first. The date the
 email writes beside an assignment is kept as the text it is, "The email
 writes 09/09 beside it, which it does not explain", and is never a due date.
 Her page shows the report as a banner on the card, "The school reports this
@@ -295,11 +305,14 @@ kept with it, as the portal shows it, since the instruction is the
 assignment's.
 
 A plan is made from the week as it stands. When work is saved into a waiting
-plan's window, or a date, a type, a note, or what a source says about a date
-changes there, both pages say so, "Assignments changed after this plan was
+plan's window, or a date, a type, a note, a status the school reports, or
+what a source says about a date changes there, both pages say so, "Assignments changed after this plan was
 made", and the plan is not approved as it stands; plan again. Saving what is
 on record already, or work due well past the plan's week, changes nothing
-the plan was made from. A household file from before this schema is brought
+the plan was made from, and a plan a parent has decided is history, measured
+against the week no more. A saving and a decision never cross: the saving
+waits the moment a decision takes, and a decision after a saving is refused
+as stale. A household file from before this schema is brought
 up to it on the first start by adding columns; nothing it holds is dropped
 or rewritten.
 

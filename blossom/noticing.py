@@ -197,10 +197,10 @@ def planning_digest(week: Week) -> str:
     about them, in a fixed order, so the same week reads the same and any change reads
     differently.
 
-    Covered: each assignment's id, due date, assigned date, kind, and note, and
-    each claim about its date, channel, value, and where it was read. Not
-    covered: when a claim was made or how sure it was, which change nothing a
-    plan is built on.
+    Covered: each assignment's id, due date, assigned date, kind, note, and
+    reported status, and each claim about its date, channel, value, and where
+    it was read. Not covered: when a claim was made or how sure it was, which
+    change nothing a plan is built on.
     """
     lines = []
     for item in sorted(week.assignments, key=lambda item: item.assignment_id):
@@ -212,6 +212,7 @@ def planning_digest(week: Week) -> str:
                     "" if item.assigned_on is None else item.assigned_on.isoformat(),
                     item.kind.value,
                     item.note or "",
+                    item.reported_submission_status,
                 ]
             )
         )

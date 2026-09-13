@@ -7,6 +7,7 @@ were. The text is synthetic, in the portal's shapes.
 """
 
 import pathlib
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date
 
 from fastapi.testclient import TestClient
@@ -230,7 +231,7 @@ def test_a_form_that_fails_comes_back_filled_with_the_field_named(
     assert NOTHING_PASTED in empty.text
     assert 'id="paste-text" name="text"' in empty.text
     assert 'aria-invalid="true" aria-describedby="problem" autofocus' in empty.text
-    assert '<a href="#entry-text">Go to the field.</a>' in empty.text
+    assert '<a href="#paste-text">Go to the field.</a>' in empty.text
     assert 'id="add-assignments" open>' in empty.text
     assert TOO_LONG in long_text.text
     assert no_title.status_code == 422
@@ -332,6 +333,7 @@ def test_repeated_work_is_a_question_on_the_page_and_the_answer_replayed_changes
     assert '<input type="radio" name="occurrence-0" value="new">' in asked
     assert "<dt>Saved due date</dt>" in asked
     assert "Answer the question above, then save." in asked
+    assert ">Save 1 assignment</button>" in asked
     assert unanswered.status_code == 200
     assert LOOK_AGAIN in unanswered.text
     assert answered.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
@@ -361,7 +363,7 @@ def test_the_type_is_the_parents_to_correct_on_the_page_and_on_the_entry_form(
         rows = {row.title: row for row in state_of(client).project_state.all_assignments()}
 
     assert corrected.headers["location"] == "/parent?added=3&updated=0&unchanged=0"
-    assert '<select name="kind-0">' in again
+    assert '<select name="kind-0" data-saved="HOMEWORK">' in again
     assert 'data-changed-label="Save changes"' in again
     assert "As saved; change it if it is wrong." in again
     assert changed_on_the_page.headers["location"] == "/parent?added=0&updated=1&unchanged=2"
@@ -393,6 +395,7 @@ def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
         hers = client.get("/student/due-this-week", headers=PAGE).text
 
     assert '<span class="pill">School reported: missing</span>' in shown
+    assert "1 assignment with no due date yet:" in shown
     assert '<span class="pill">Saved; adds what the school reports</span>' in shown
     assert "<h2>No due date yet</h2>" in shown
     assert (
@@ -408,6 +411,54 @@ def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
     assert "From the school email, pasted Monday, September 7, 2026." in hers
     assert "Reported status: missing" in hers
     assert "Due Tuesday, September 8\n" in article_for(hers, "Book Covers")
+
+
+def test_a_text_with_the_email_and_the_page_keeps_the_teachers_words_as_the_teachers(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The email names the assignment first; the portal's card dates it and carries the
+    instruction. Her page says the note is the teacher's and never that a parent entered
+    the assignment."""
+    mixed = (
+        "Assignments:\n09/09 Math - A: Homework: Practice Grade: Missing\n\n"
+        "Tuesday 9/8/2026\nMath\nAssigned: Practice: (Due:09/10/2026)\nBring the packet.\n"
+    )
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        kept = client.post("/parent/inbox/keep", data={"text": mixed})
+        hers = client.get("/student/due-this-week", headers=PAGE).text
+
+    assert kept.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
+    card = article_for(hers, "<h2>Practice</h2>")
+    assert "From the teacher: <q>Bring the packet.</q>" in card
+    assert "<strong>The school reports this missing.</strong>" in card
+    assert "Due Thursday, September 10" in card
+    assert "A parent wrote" not in card
+    assert "Entered by a parent." not in card
+
+
+def test_a_saving_waits_while_a_decision_is_being_recorded(tmp_path: pathlib.Path) -> None:
+    """A decision is checked against the week the plan was made from, which holds still
+    until the decision lands; a saving during a decision waits the moment it takes."""
+    with (
+        TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        state = state_of(client)
+        portal = client.portal
+        assert portal is not None
+        portal.call(state.decision_lock.acquire)
+        saving = pool.submit(client.post, "/parent/inbox/keep", data=ENTRY)
+        _, still_waiting = wait([saving], timeout=0.3)
+        rows_while_locked = state.project_state.all_assignments()
+        portal.call(state.decision_lock.release)
+        saved = saving.result(timeout=10)
+        rows_after = state.project_state.all_assignments()
+
+    assert saving in still_waiting
+    assert rows_while_locked == []
+    assert saved.status_code == 303
+    assert saved.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
+    assert [row.title for row in rows_after] == ["Vocabulary list, unit two"]
 
 
 def test_the_way_in_is_a_parents(tmp_path: pathlib.Path) -> None:

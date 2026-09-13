@@ -11,6 +11,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 
+import pytest
+
 from blossom.intake import (
     CLAIMED,
     DAY_HEADER,
@@ -38,7 +40,7 @@ from blossom.intake import (
 )
 from blossom.reconciliation import SourceChannel
 from blossom.sources import FixtureSource, read_whole
-from blossom.stores.project_state import AssignmentKind, ProjectStateStore
+from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from tests.support import FIXTURES, fixture_clock
 
 NOW = datetime(2026, 9, 12, 20, 0, tzinfo=UTC)
@@ -285,6 +287,28 @@ def test_the_missing_email_is_a_report_with_its_day_and_never_a_due_date() -> No
     assert spoken_report(dated_report).startswith(
         "From the school email, dated Tuesday, September 8, 2026."
     )
+
+
+def test_the_emails_day_comes_only_from_its_date_line() -> None:
+    """A date in a title or an instruction dates nothing; a mail program's own date line,
+    in a header or a forwarded message, dates the report."""
+    in_a_title = "Assignments:\n09/09 Math - A: Homework: Read September 8, 2026 Grade: Missing\n"
+    in_an_instruction = (
+        "Tuesday 9/1/2026\nMath\nDue: Practice:\nFinish by September 8, 2026.\n" + EMAIL
+    )
+    header = "From: The School\nDate: Tue, Sep 8, 2026 09:14\nSubject: Missing work\n" + EMAIL
+    forwarded = "On Tue, Sep 8, 2026 at 9:14 AM The School wrote:\n" + EMAIL
+    stray = "Read by Sep 8, 2026.\n" + EMAIL
+
+    def report_day(text: str) -> tuple[date, str]:
+        told = next(item for item in read_text(text, now=NOW, today=TODAY).items if item.reports)
+        return told.reports[0].reported_on, told.reports[0].dated_by
+
+    assert report_day(in_a_title) == (TODAY, PASTE_DAY)
+    assert report_day(in_an_instruction) == (TODAY, PASTE_DAY)
+    assert report_day(stray) == (TODAY, PASTE_DAY)
+    assert report_day(header) == (date(2026, 9, 8), EMAIL_DATE_LINE)
+    assert report_day(forwarded) == (date(2026, 9, 8), EMAIL_DATE_LINE)
 
 
 def test_the_type_is_a_task_only_for_paperwork_and_materials() -> None:
@@ -742,6 +766,145 @@ def test_a_type_typed_with_an_entry_corrects_a_saved_row_and_the_correction_is_k
     assert [change.state for change in pasted_again] == [KNOWN]
     assert pasted_again[0].kind is AssignmentKind.HOMEWORK
     assert still.kind is AssignmentKind.HOMEWORK
+
+
+SAVED_WEEK = "Tuesday 9/1/2026\nMath\nDue: Weekly practice:\n"
+THREE_CARDS = (
+    SAVED_WEEK
+    + "Tuesday 9/8/2026\nMath\nDue: Weekly practice:\nTeacher instruction.\n"
+    + "Monday 9/14/2026\nMath\nAssigned: Weekly practice: (Due:09/15/2026)\n"
+)
+"""One saved week again, a week later with the teacher's words, and a week after that as
+assigned work: three cards about one assignment."""
+
+
+def test_several_cards_about_one_saved_row_compose_into_one_row(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two updates said yes to and one card already saved, in one text: the date the last
+    card gives, the note the middle one gives, the assigned date the last one fills, and
+    every date observation, all in one row, counted once; the same text saved again moves
+    nothing; and a write refused by the file leaves the row as it was."""
+    path = tmp_path / "blossom.sqlite3"
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        keep(readings(SAVED_WEEK), store)
+        cards = readings(THREE_CARDS)
+        asked = changes_for(cards, store)
+        answered = changes_for(cards, store, occurrences={1: UPDATE, 2: UPDATE})
+        kept = keep(cards, store, occurrences={1: UPDATE, 2: UPDATE})
+        rows = store.all_assignments()
+        claims = store.deadline_records(rows[0].assignment_id)
+    finally:
+        store.close()
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        after_restart = store.all_assignments()
+        replayed = keep(cards, store, occurrences={1: UPDATE, 2: UPDATE})
+        rows_after_replay = store.all_assignments()
+        claims_after_replay = store.deadline_records(rows[0].assignment_id)
+    finally:
+        store.close()
+    refusing = ProjectStateStore.open(tmp_path / "refusing.sqlite3", fixture_clock())
+    try:
+        keep(readings(SAVED_WEEK), refusing)
+
+        def refuse(*_: object) -> None:
+            msg = "the file refused the claims"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(refusing, "_record_claims_locked", refuse)
+        with pytest.raises(RuntimeError, match="refused"):
+            keep(cards, refusing, occurrences={1: UPDATE, 2: UPDATE})
+        untouched = refusing.all_assignments()
+        untouched_claims = refusing.deadline_records(untouched[0].assignment_id)
+    finally:
+        refusing.close()
+
+    assert [(item.due_date, item.occurrence) for item in cards] == [
+        (date(2026, 9, 1), None),
+        (date(2026, 9, 8), "2026-09-08"),
+        (date(2026, 9, 15), "2026-09-15"),
+    ]
+    assert [change.state for change in asked] == [KNOWN, REVIEW, REVIEW]
+    assert [change.state for change in answered] == [KNOWN, CLAIMED, CLAIMED]
+    assert answered[1].label == "Saved; adds the due date and the note"
+    assert answered[2].label == "Saved; adds the due date and the assigned date"
+    assert kept == Kept(added=0, updated=1, unchanged=0)
+    assert len(rows) == 1
+    assert (rows[0].due_date, rows[0].assigned_on) == (date(2026, 9, 15), date(2026, 9, 14))
+    assert rows[0].note == "Teacher instruction."
+    assert rows[0].origins["due_date"] is SourceChannel.LMS
+    assert rows[0].origins["note"] is SourceChannel.LMS
+    assert [(said.asserted_value, said.seen_in) for said in claims] == [
+        ("2026-09-01", DAY_HEADER),
+        ("2026-09-08", DAY_HEADER),
+        ("2026-09-15", OWN_LINE),
+    ]
+    assert after_restart == rows
+    assert replayed == Kept(added=0, updated=0, unchanged=1)
+    assert rows_after_replay == rows
+    assert claims_after_replay == claims
+    assert [(row.due_date, row.note) for row in untouched] == [(date(2026, 9, 1), None)]
+    assert len(untouched_claims) == 1
+
+
+MISSING_LINE = "09/09 Math - A: Homework: Practice Grade: Missing\n"
+PAGE_CARD = "Tuesday 9/8/2026\nMath\nAssigned: Practice: (Due:09/10/2026)\nBring the packet.\n"
+
+
+def test_each_field_keeps_the_channel_that_gave_it_whatever_the_order(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The email names an assignment and reports it missing; the portal's card dates it
+    and carries the teacher's words. Pasted together in either order, or saved one after
+    the other in either order, the dates and the note are the portal's, the report is the
+    email's, and only the record's own origin says which named it first."""
+    email_first = MISSING_LINE + "\n" + PAGE_CARD
+    page_first = PAGE_CARD + "\n" + MISSING_LINE
+    outcomes: dict[str, tuple[Assignment, list[SourceChannel], list[SourceChannel]]] = {}
+    for name, texts in {
+        "email first": [email_first],
+        "page first": [page_first],
+        "email, then the page": [MISSING_LINE, PAGE_CARD],
+        "the page, then the email": [PAGE_CARD, MISSING_LINE],
+    }.items():
+        path = tmp_path / f"{slug(name)}.sqlite3"
+        store = ProjectStateStore.open(path, fixture_clock())
+        try:
+            for text in texts:
+                keep(readings(text), store)
+        finally:
+            store.close()
+        store = ProjectStateStore.open(path, fixture_clock())
+        try:
+            row = store.all_assignments()[0]
+            outcomes[name] = (
+                row,
+                [said.channel for said in store.deadline_records(row.assignment_id)],
+                [report.channel for report in store.status_reports(row.assignment_id)],
+            )
+        finally:
+            store.close()
+    mixed = readings(email_first)[0]
+
+    assert mixed.origin is SourceChannel.EMAIL
+    assert mixed.origin_of("due_date") is SourceChannel.LMS
+    assert mixed.origin_of("note") is SourceChannel.LMS
+    for name, (row, claim_channels, report_channels) in outcomes.items():
+        assert row.due_date == date(2026, 9, 10), name
+        assert row.assigned_on == date(2026, 9, 8), name
+        assert row.note == "Bring the packet.", name
+        assert row.reported_submission_status == "missing", name
+        assert row.origins["due_date"] is SourceChannel.LMS, name
+        assert row.origins["assigned_on"] is SourceChannel.LMS, name
+        assert row.origins["note"] is SourceChannel.LMS, name
+        assert claim_channels == [SourceChannel.LMS], name
+        assert report_channels == [SourceChannel.EMAIL], name
+    assert outcomes["email first"][0].origins["record"] is SourceChannel.EMAIL
+    assert outcomes["page first"][0].origins["record"] is SourceChannel.LMS
+    assert outcomes["email, then the page"][0].origins["record"] is SourceChannel.EMAIL
+    assert outcomes["the page, then the email"][0].origins["record"] is SourceChannel.LMS
 
 
 def test_a_paste_matches_a_row_on_record_by_its_course_and_title(tmp_path: pathlib.Path) -> None:

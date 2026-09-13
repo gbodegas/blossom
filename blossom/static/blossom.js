@@ -15,7 +15,8 @@
 
   The third is for the review page: when everything read is saved already,
   its Save button is disabled, and a type changed on a card or a question
-  answered hands the button back, as "Save changes".
+  answered hands the button back, as "Save changes"; the card's own line
+  says what the changed type does.
 */
 (function () {
   "use strict";
@@ -108,6 +109,19 @@
       var name = event.target.name || "";
       if (name.indexOf("kind-") !== 0 && name.indexOf("occurrence-") !== 0) {
         return;
+      }
+      if (name.indexOf("kind-") === 0) {
+        var card = event.target.closest("article");
+        var effect = card ? card.querySelector(".effect") : null;
+        if (effect) {
+          if (effect.dataset.original === undefined) {
+            effect.dataset.original = effect.textContent;
+          }
+          var chosen = event.target.value === "TASK" ? "task" : "homework";
+          effect.textContent = event.target.value === event.target.dataset.saved
+            ? effect.dataset.original
+            : effect.dataset.original + " The type becomes " + chosen + ", as chosen.";
+        }
       }
       var button = review.querySelector("button.primary[disabled]");
       if (button) {

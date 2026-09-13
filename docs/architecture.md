@@ -47,9 +47,12 @@ before this schema is brought up to it by adding columns, and by dropping
 the one index a version between made. A recorded due date is replaced by a
 paste only when a parent says the assignment moved; each fact on a row carries
 its origin, the portal, the email, or a parent, so the pages can say whose
-it is. A plan carries a fingerprint of the week it was made from, and a
-waiting plan whose week reads differently is stale on both pages and refused
-at approval.
+it is, each field with the channel that gave it when a text mixes the email
+and the portal. A plan carries a fingerprint of the week it was made from,
+the reported status included, and a waiting plan whose week reads
+differently is stale on both pages and refused at approval; a decided plan
+is history. Saving and deciding share the decision lock, so a decision is
+checked against a week that holds still until it lands.
 
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and

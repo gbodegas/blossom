@@ -620,6 +620,24 @@ def test_work_added_in_the_plans_window_makes_the_waiting_plan_stale() -> None:
     assert 'value="approve"' in fresh
 
 
+def test_a_status_the_school_reports_makes_the_waiting_plan_stale() -> None:
+    """The planner reads the reported status with every assignment, so a report the
+    school makes after the plan changes what the plan was made from."""
+    told = (
+        "Assignments:\n"
+        "09/09 World History - A: Homework: Canal Era comparison essay Grade: Missing\n"
+    )
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        saved = client.post("/parent/inbox/keep", data={"text": told})
+        page = client.get("/parent").text
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+
+    assert saved.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
+    assert ASSIGNMENTS_CHANGED in page
+    assert record["stale"] is not None
+
+
 def test_a_type_corrected_on_a_saved_row_makes_the_waiting_plan_stale() -> None:
     """The type is part of what a plan is made from, so correcting it changes the week."""
     retyped = {"course": "World History", "title": "Canal Era comparison essay", "kind": "TASK"}
@@ -659,8 +677,11 @@ def test_a_decided_plan_is_history_and_is_not_measured_against_the_week_again() 
         client.post(f"/parent/actions/decide/{draft_id}", data={"decision": "approve"})
         client.post("/parent/inbox/keep", data=IN_THE_WINDOW)
         page = client.get("/parent").text
+        hers = client.get("/student/due-this-week").text
         record = client.get(f"/parent/approvals/{draft_id}").json()
 
     assert "<strong>Looks good.</strong>" in page
     assert ASSIGNMENTS_CHANGED not in page
+    assert HER_ASSIGNMENTS_CHANGED not in hers
+    assert "Looks good." in hers
     assert record["decision"] == "approved"
