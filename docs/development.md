@@ -253,7 +253,10 @@ kept as theirs, and the type typed with an entry corrects a saved row the
 same way. A choice is a select changed from what the page showed; a card
 left as shown is no answer, so when several cards are about one assignment
 a type chosen on any of them, a folded one included, is the assignment's,
-and two cards choosing different types stop the save until one is picked. Several cards about one saved assignment in one text compose: the
+and two cards choosing different types stop the save until one is picked.
+A page that comes back because a question is still open keeps every choice
+made on it, the folded cards' answers included, and says whether the
+question is one it put or one the record raised since. Several cards about one saved assignment in one text compose: the
 date one moves, the note another adds, and the assigned date a third fills
 all reach the one row, every date observation with them, and the count on
 return says how many assignments changed, not how many cards. The Save

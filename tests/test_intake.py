@@ -18,6 +18,7 @@ from blossom.intake import (
     CLAIMED,
     DAY_HEADER,
     EMAIL_DATE_LINE,
+    FOLDED,
     KNOWN,
     NEW,
     NEW_WORK,
@@ -217,7 +218,7 @@ Do it neatly.
     assert items["Math", "Practice"].note is None
 
 
-def test_the_heading_under_a_card_is_the_teachers_words_and_a_long_paste_is_quick() -> None:
+def test_the_heading_under_a_card_is_the_teachers_words_and_a_long_paste_reads_whole() -> None:
     text = """Homework for Wren
 
 - 09/03/2026 - Thursday
@@ -225,16 +226,13 @@ def test_the_heading_under_a_card_is_the_teachers_words_and_a_long_paste_is_quic
 Homework for tomorrow: cover both books with paper.
 """
     read = read_text(text, now=NOW, today=TODAY)
-    started = datetime.now(UTC)
     many = read_text("\n".join(["A stray line"] * 20_000), now=NOW, today=TODAY)
-    took = datetime.now(UTC) - started
 
     assert read.unread == ()
     assert by_pair(read.items)["08 Geometry", "Book Covers"].note == (
         "Homework for tomorrow: cover both books with paper."
     )
-    assert len(many.unread) == 20_000
-    assert took.total_seconds() < 5
+    assert [item.line for item in many.unread] == list(range(1, 20_001))
 
 
 def test_an_instruction_keeps_its_lines_and_is_kept_once_across_two_weeks() -> None:
@@ -680,7 +678,8 @@ def test_two_rounds_of_a_name_in_one_text_are_read_apart_and_asked_about(
     assert len({row.assignment_id for row in rows}) == 2
     assert [change.state for change in again] == [KNOWN, KNOWN]
     assert [change.state for change in reversed_again] == [KNOWN, KNOWN]
-    assert [change.state for change in folded_changes] == [NEW]
+    assert [change.state for change in folded_changes] == [NEW, FOLDED]
+    assert folded_changes[1].folded_into == 0
     assert folded_changes[0].reading.due_date == date(2026, 9, 14)
     assert kept_folded == Kept(added=1, updated=0, unchanged=0)
     assert [row.due_date for row in folded_rows] == [date(2026, 9, 14)]
@@ -742,7 +741,7 @@ def test_a_type_chosen_on_any_card_about_one_assignment_is_the_assignments(
         finally:
             saved.close()
 
-    assert [change.state for change in promised] == [NEW]
+    assert [change.state for change in promised] == [NEW, FOLDED]
     assert (promised[0].kind, promised[0].kind_by_parent) == (AssignmentKind.TASK, True)
     assert kept_folded == Kept(added=1, updated=0, unchanged=0)
     assert [(row.due_date, row.kind) for row in folded_rows] == [

@@ -6,7 +6,9 @@ what the record lacks. A form that fails comes back with its fields as they
 were. The text is synthetic, in the portal's shapes.
 """
 
+import html
 import pathlib
+import re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date
 
@@ -22,6 +24,7 @@ from blossom.routes.inbox import (
     FAR_DUE_DATE,
     LONG_NOTE,
     LOOK_AGAIN,
+    NEEDS_ANSWER,
     NEEDS_COURSE,
     NEEDS_TITLE,
     NOT_A_DUE_DATE,
@@ -83,6 +86,20 @@ def article_for(page: str, title: str) -> str:
     return page.split(title, 1)[1].split("</article>", 1)[0]
 
 
+def review_form(page: str) -> dict[str, str]:
+    """The review form as a browser would send it back untouched: the hidden fields, each
+    select's chosen option, and the text, read from the page itself."""
+    fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page))
+    for name, body in re.findall(r'<select name="([^"]+)"[^>]*>(.*?)</select>', page, re.S):
+        chosen = re.search(r'<option value="([^"]+)" selected>', body)
+        assert chosen is not None, name
+        fields[name] = chosen.group(1)
+    text = re.search(r'<textarea name="text" hidden>(.*?)</textarea>', page, re.S)
+    assert text is not None
+    fields["text"] = html.unescape(text.group(1))
+    return fields
+
+
 def test_the_family_page_offers_the_paste_box_and_the_entry_form(tmp_path: pathlib.Path) -> None:
     with TestClient(create_app(settings_in(tmp_path))) as client:
         page = client.get("/parent", headers=PAGE).text
@@ -131,7 +148,10 @@ def test_a_paste_is_reviewed_week_by_week_and_saved_only_when_asked(
     covers = article_for(shown.text, "<h2>Book Covers</h2>")
     assert "Due Tuesday, September 8, 2026" in covers
     assert '<span class="source">Assigned Thursday, September 3, 2026</span>' in covers
-    assert '<p class="effect">Saved as a new assignment.</p>' in covers
+    assert (
+        '<p class="effect" data-base="Saved as a new assignment.">Saved as a new assignment.</p>'
+        in (covers)
+    )
     assert '<option value="TASK" selected>Task</option>' in covers
     assert "From the teacher: <q>Cover both books with paper.</q>" in covers
     assert "school portal (the assignment&#39;s own line): 2026-09-08" in covers
@@ -466,6 +486,129 @@ def test_a_type_chosen_on_one_card_about_a_saved_row_is_not_undone_by_the_other(
         ], name
         assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY, name
         assert replayed_to == "/parent?added=0&updated=0&unchanged=1", name
+
+
+THREE_WEEKS_OF_PRACTICE = (
+    TWO_WEEKS_OF_PRACTICE + "\nTuesday 9/22/2026\nMath\nDue: Weekly practice:\n"
+)
+
+
+def test_a_choice_survives_a_page_returned_for_an_unanswered_question(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The first card is changed to Task and the page is saved with the second card's
+    question left open, twice. Each returned page shows Task chosen and knows it was a
+    choice; answering the question then saves a task, the next preview shows Task, the
+    same form sent again changes nothing, and the row is a task after a restart."""
+    settings = settings_in(tmp_path)
+    with TestClient(create_app(settings), follow_redirects=False) as client:
+        preview = client.post("/parent/inbox/read", data={"text": TWO_WEEKS_OF_PRACTICE}).text
+        form = {**review_form(preview), "kind-0": "TASK"}
+        returned = client.post("/parent/inbox/keep", data=form)
+        again = client.post("/parent/inbox/keep", data=review_form(returned.text))
+        answered = {**review_form(again.text), "occurrence-1": "update"}
+        saved = client.post("/parent/inbox/keep", data=answered)
+        rows = state_of(client).project_state.all_assignments()
+        later = client.post(
+            "/parent/inbox/read", data={"text": TWO_WEEKS_OF_PRACTICE.split("\n\n")[1]}
+        ).text
+        replayed = client.post("/parent/inbox/keep", data=answered)
+    with TestClient(create_app(settings)) as restarted:
+        after_restart = state_of(restarted).project_state.all_assignments()
+
+    assert review_form(preview)["suggested-0"] == "HOMEWORK"
+    assert "asked-1" in review_form(preview)
+    for page in (returned, again):
+        assert page.status_code == 200
+        assert NEEDS_ANSWER in page.text
+        assert LOOK_AGAIN not in page.text
+        fields = review_form(page.text)
+        assert (fields["kind-0"], fields["suggested-0"]) == ("TASK", "HOMEWORK")
+        assert "asked-1" in fields
+        assert "The type becomes task, as chosen." in article_for(
+            page.text, "<h2>Weekly practice</h2>"
+        )
+    assert saved.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
+    assert [(row.due_date, row.kind) for row in rows] == [(date(2026, 9, 15), AssignmentKind.TASK)]
+    assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY
+    assert review_form(later)["kind-0"] == "TASK"
+    assert review_form(later)["suggested-0"] == "TASK"
+    assert replayed.headers["location"] == "/parent?added=0&updated=0&unchanged=1"
+    assert after_restart == rows
+
+
+def test_a_folded_cards_answers_travel_with_a_returned_page(tmp_path: pathlib.Path) -> None:
+    """Three cards a week apart. The second is folded into the first with Task chosen on
+    it; the third's question is left open. The returned page carries the fold and the
+    choice as hidden fields, and answering the third saves one task with both dates and
+    one new row, nothing lost."""
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
+        first = {**review_form(preview), "occurrence-1": "update", "kind-1": "TASK"}
+        returned = client.post("/parent/inbox/keep", data=first)
+        carried = review_form(returned.text)
+        saved = client.post("/parent/inbox/keep", data={**carried, "occurrence-2": "new"})
+        state = state_of(client)
+        rows = sorted(
+            state.project_state.all_assignments(), key=lambda row: row.due_date or date.min
+        )
+        claims = state.project_state.deadline_records(rows[0].assignment_id)
+
+    assert {"asked-1", "asked-2"} <= set(review_form(preview))
+    assert returned.status_code == 200
+    assert NEEDS_ANSWER in returned.text
+    assert "1 card folded into the card for the same assignment, as you said." in returned.text
+    assert (carried["occurrence-1"], carried["kind-1"], carried["suggested-1"]) == (
+        "update",
+        "TASK",
+        "HOMEWORK",
+    )
+    assert carried["kind-0"] == "TASK"
+    assert "asked-2" in carried
+    assert "<h2>Weekly practice</h2>" in returned.text
+    assert returned.text.count("<h2>Weekly practice</h2>") == 2
+    assert saved.headers["location"] == "/parent?added=2&updated=0&unchanged=0"
+    assert [(row.due_date, row.kind) for row in rows] == [
+        (date(2026, 9, 15), AssignmentKind.TASK),
+        (date(2026, 9, 22), AssignmentKind.HOMEWORK),
+    ]
+    assert rows[0].origins["kind"] is SourceChannel.PARENT_ENTRY
+    assert [said.asserted_value for said in claims] == ["2026-09-08", "2026-09-15"]
+
+
+def test_a_change_back_to_the_suggested_type_is_a_choice_too(tmp_path: pathlib.Path) -> None:
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        client.post(
+            "/parent/inbox/keep",
+            data={"text": SAVED_WEEK, "kind-0": "TASK", "suggested-0": "HOMEWORK"},
+        )
+        preview = client.post("/parent/inbox/read", data={"text": SAVED_WEEK}).text
+        back = client.post(
+            "/parent/inbox/keep", data={**review_form(preview), "kind-0": "HOMEWORK"}
+        )
+        row = state_of(client).project_state.all_assignments()[0]
+
+    assert review_form(preview)["suggested-0"] == "TASK"
+    assert back.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
+    assert row.kind is AssignmentKind.HOMEWORK
+    assert row.origins["kind"] is SourceChannel.PARENT_ENTRY
+
+
+def test_a_question_the_record_raised_since_the_page_is_said_apart(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A page with no question is made; another saving puts the week before on record; the
+    page sent back now meets a question it never put, and says the record changed."""
+    later_week = TWO_WEEKS_OF_PRACTICE.split("\n\n")[1]
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        preview = client.post("/parent/inbox/read", data={"text": later_week}).text
+        client.post("/parent/inbox/keep", data={"text": SAVED_WEEK})
+        returned = client.post("/parent/inbox/keep", data=review_form(preview))
+
+    assert "asked-0" not in review_form(preview)
+    assert returned.status_code == 200
+    assert LOOK_AGAIN in returned.text
+    assert NEEDS_ANSWER not in returned.text
 
 
 def test_a_select_left_as_the_page_showed_it_is_no_answer(tmp_path: pathlib.Path) -> None:

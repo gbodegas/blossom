@@ -657,6 +657,7 @@ NEW: Final = "new"
 KNOWN: Final = "known"
 CLAIMED: Final = "claimed"
 REVIEW: Final = "review"
+FOLDED: Final = "folded"
 NOTE_STANDS: Final = "The saved note stands; the pasted one differs and is not saved."
 
 
@@ -697,6 +698,18 @@ class Change:
     choices_conflict: bool = False
     """Whether two cards folded into this one chose different types, which no saving
     settles on its own."""
+    suggested_kind: AssignmentKind | None = None
+    """What the review page shows for the card before any choice: the saved row's kind, or
+    the reader's suggestion. Kept apart from ``kind`` so a page returned with a choice
+    still pending shows the choice and still knows it was one."""
+    folded_into: int | None = None
+    """The key of the card this one was folded into, as the parent said; such a card is
+    not shown, saves nothing of its own, and its answers travel with the page."""
+
+    @property
+    def suggested(self) -> AssignmentKind:
+        """The kind the page shows for the card before any choice."""
+        return self.kind if self.suggested_kind is None else self.suggested_kind
 
     @property
     def standing(self) -> Assignment | None:
@@ -742,8 +755,10 @@ class Change:
 
     @property
     def state(self) -> str:
-        """``review`` for a question the parent must answer, else ``new``, ``claimed``, or
-        ``known``."""
+        """``review`` for a question the parent must answer, ``folded`` for a card folded
+        into another, else ``new``, ``claimed``, or ``known``."""
+        if self.folded_into is not None:
+            return FOLDED
         if self.ambiguous:
             return REVIEW
         if self.on_record is None or self.occurrence == NEW_WORK:
@@ -757,6 +772,8 @@ class Change:
         """The state as the review page says it."""
         if self.state == REVIEW:
             return "Needs your answer"
+        if self.state == FOLDED:
+            return "Folded into the card for the same assignment"
         if self.state == NEW:
             return "New"
         if self.state == KNOWN:
@@ -783,6 +800,20 @@ class Change:
     @property
     def effect(self) -> str:
         """Exactly what saving does for this reading, in one or two sentences."""
+        return " ".join(part for part in (self.effect_base, self.type_effect) if part)
+
+    @property
+    def type_effect(self) -> str:
+        """What saving does with the type, when a parent chose one; empty otherwise."""
+        if self.state == NEW and self.kind_by_parent:
+            return f"The type becomes {self.kind.value.lower()}, as chosen."
+        if self.state == CLAIMED and self.new_kind is not None:
+            return f"The type becomes {self.new_kind.value.lower()}, as chosen."
+        return ""
+
+    @property
+    def effect_base(self) -> str:
+        """What saving does apart from the type, which the page rewrites as the select changes."""
         if self.state == REVIEW:
             where = (
                 "The saved assignment is due"
@@ -794,6 +825,8 @@ class Change:
                 f"{where}{when}. Say whether this is the same assignment with its due date "
                 "changed, or new work under the same name."
             )
+        if self.state == FOLDED:
+            return "Folded into the card for the same assignment, as you said."
         if self.state == NEW:
             return "Saved as a new assignment."
         if self.state == KNOWN:
@@ -830,8 +863,6 @@ class Change:
             parts.append("The school's note replaces the school's earlier note.")
         elif self.note_change == "kept":
             parts.append(NOTE_STANDS)
-        if self.new_kind is not None:
-            parts.append(f"The type becomes {self.new_kind.value.lower()}, as chosen.")
         return " ".join(parts)
 
 
@@ -941,6 +972,7 @@ def changes_for(
             answer = None
         if twin is not None and asked and answer == UPDATE:
             changes[twin] = _folded(changes[twin], key, reading, kinds, seen)
+            changes.append(_folded_marker(key, reading, changes[twin].key, kinds))
             continue
         if existing is None or answer == NEW_WORK:
             change = _new_change(key, reading, existing, answer, asked, kinds, seen, other)
@@ -965,9 +997,9 @@ def changes_for(
 
 def _kind_for(
     key: int, reading: Reading, saved: Assignment | None, kinds: Mapping[int, AssignmentKind]
-) -> tuple[AssignmentKind, bool]:
-    """The kind a reading's row will have, and whether a parent chose it: on the page, or
-    with the entry they typed.
+) -> tuple[AssignmentKind, bool, AssignmentKind]:
+    """The kind a reading's row will have, whether a parent chose it, on the page or with
+    the entry they typed, and what the page shows for the card before any choice.
 
     A choice is a select changed from what the review page showed for the
     card: the saved row's kind, or the reader's suggestion for a new one.
@@ -977,10 +1009,10 @@ def _kind_for(
     assignment chose.
     """
     if reading.origin == SourceChannel.PARENT_ENTRY:
-        return kinds.get(key, reading.kind), True
+        return kinds.get(key, reading.kind), True, reading.kind
     suggested = reading.kind if saved is None else saved.kind
     chosen = kinds.get(key, suggested)
-    return chosen, chosen != suggested
+    return chosen, chosen != suggested, suggested
 
 
 def _new_change(
@@ -995,7 +1027,7 @@ def _new_change(
 ) -> Change:
     """A reading with no row to land on, or one the parent said is new work, or one that
     waits on the parent's answer about ``beside``, the other date under its name."""
-    kind, by_parent = _kind_for(key, reading, None, kinds)
+    kind, by_parent, suggested = _kind_for(key, reading, None, kinds)
     change = Change(
         key,
         reading,
@@ -1011,6 +1043,7 @@ def _new_change(
         asked and answer is None,
         answer,
         beside=beside,
+        suggested_kind=suggested,
     )
     if change.state == REVIEW:
         return change
@@ -1039,7 +1072,7 @@ def _change_to(
     news = seen.novel_reports(existing.assignment_id, True, reading.reports)
     if not fresh and not news:
         asked, answer = False, None
-    kind, by_parent = _kind_for(key, reading, existing, kinds)
+    kind, by_parent, suggested = _kind_for(key, reading, existing, kinds)
     moves = asked and answer == UPDATE and reading.due_date != base.due_date
     return Change(
         key,
@@ -1057,6 +1090,7 @@ def _change_to(
         answer,
         beside=existing.due_date,
         base=base,
+        suggested_kind=suggested,
     )
 
 
@@ -1070,7 +1104,7 @@ def _folded(
     """The first reading of a name in this text with a later card folded in, as the parent
     said: the due date is the later card's, and its claims, note, and reports come along,
     as does a type chosen on it; a type chosen on both cards must be the same."""
-    kind, chosen = _kind_for(key, reading, None, kinds)
+    kind, chosen, _ = _kind_for(key, reading, None, kinds)
     if chosen and anchor.kind_by_parent and anchor.kind != kind:
         return dataclasses.replace(anchor, choices_conflict=True)
     first = anchor.reading
@@ -1100,6 +1134,32 @@ def _folded(
     )
 
 
+def _folded_marker(
+    key: int, reading: Reading, into: int, kinds: Mapping[int, AssignmentKind]
+) -> Change:
+    """The card that was folded, kept in the list so the page can carry its answers, the
+    parent's word that it is the same assignment and any type chosen on it, through a
+    page that comes back with another question still open."""
+    kind, chosen, suggested = _kind_for(key, reading, None, kinds)
+    return Change(
+        key,
+        reading,
+        None,
+        (),
+        (),
+        False,
+        False,
+        False,
+        None,
+        kind,
+        chosen,
+        False,
+        UPDATE,
+        suggested_kind=suggested,
+        folded_into=into,
+    )
+
+
 def conflicting_choices(changes: list[Change]) -> list[str]:
     """The assignments whose cards choose different types, named as the page names them.
 
@@ -1109,6 +1169,8 @@ def conflicting_choices(changes: list[Change]) -> list[str]:
     chosen: dict[str, set[AssignmentKind]] = {}
     names: dict[str, str] = {}
     for change in changes:
+        if change.state == FOLDED:
+            continue
         if change.choices_conflict:
             chosen.setdefault(change.assignment_id, set()).update(AssignmentKind)
         elif change.kind_by_parent:
@@ -1184,6 +1246,8 @@ def keep(
         updated: set[str] = set()
         unchanged: set[str] = set()
         for change in changes:
+            if change.state == FOLDED:
+                continue
             if change.state == KNOWN:
                 unchanged.add(change.assignment_id)
                 continue
@@ -1265,6 +1329,8 @@ def by_week(changes: list[Change]) -> list[WeekGroup]:
     """The changes grouped by the school week of their due date, earliest first, undated last."""
     groups: dict[date | None, list[Change]] = {}
     for change in changes:
+        if change.state == FOLDED:
+            continue
         due = change.reading.due_date
         groups.setdefault(None if due is None else monday_of(due), []).append(change)
     dated = sorted(start for start in groups if start is not None)

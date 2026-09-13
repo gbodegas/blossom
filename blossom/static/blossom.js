@@ -114,13 +114,11 @@
         var card = event.target.closest("article");
         var effect = card ? card.querySelector(".effect") : null;
         if (effect) {
-          if (effect.dataset.original === undefined) {
-            effect.dataset.original = effect.textContent;
-          }
+          var base = effect.dataset.base === undefined ? effect.textContent : effect.dataset.base;
           var chosen = event.target.value === "TASK" ? "task" : "homework";
           effect.textContent = event.target.value === event.target.dataset.saved
-            ? effect.dataset.original
-            : effect.dataset.original + " The type becomes " + chosen + ", as chosen.";
+            ? base
+            : (base ? base + " " : "") + "The type becomes " + chosen + ", as chosen.";
         }
       }
       var button = review.querySelector("button.primary[disabled]");

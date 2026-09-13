@@ -28,7 +28,12 @@ from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.settings import REPOSITORY_ROOT, Settings
 from blossom.sources import FixtureSource
 from blossom.stores.paths import UnsafeCheckpointPath
-from blossom.stores.project_state import Assignment, ProjectStateStore
+from blossom.stores.project_state import (
+    Assignment,
+    AssignmentKind,
+    ProjectStateStore,
+    StatusReport,
+)
 from tests.support import FIXTURES, fixture_clock, fixture_settings
 
 PAGE = {"Accept": "text/html"}
@@ -480,6 +485,125 @@ def test_a_file_from_the_version_between_loses_its_index_and_keeps_every_observa
         "2026-08-21T09:00:00+00:00",
     ]
     assert [row.assignment_id for row in rows] == ["assignment-essay"]
+
+
+def a_row(note: str | None, origins: dict[str, SourceChannel]) -> Assignment:
+    return Assignment(
+        assignment_id="assignment-essay",
+        course="World History",
+        title="Canal Era comparison essay",
+        due_date=date(2026, 8, 21),
+        dependencies=[],
+        reported_submission_status="in_progress",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+        note=note,
+        origins=origins,
+    )
+
+
+def a_report(day: date) -> StatusReport:
+    return StatusReport(
+        status="missing",
+        channel=SourceChannel.EMAIL,
+        reported_on=day,
+        dated_by="the day it was pasted",
+        observed_at=datetime(2026, 9, 12, 20, 0, tzinfo=UTC),
+    )
+
+
+def test_a_report_is_kept_once_per_channel_status_and_day_whoever_writes_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The file itself keeps a report once per channel, status, and day, so a caller that
+    writes the same report twice, or two callers, leave one; a file from a version that
+    kept no such index folds its duplicates to the first and gains the index."""
+    path = tmp_path / "blossom.sqlite3"
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        store.put_on_record([a_row(None, {})], {})
+        store.record_status_reports("assignment-essay", [a_report(date(2026, 9, 9))] * 2)
+        store.record_status_reports("assignment-essay", [a_report(date(2026, 9, 9))])
+        store.put_on_record([], {}, {"assignment-essay": [a_report(date(2026, 9, 10))]})
+        reports = store.status_reports("assignment-essay")
+    finally:
+        store.close()
+
+    before = tmp_path / "before.sqlite3"
+    old = sqlite3.connect(before)
+    old.executescript(
+        """
+        CREATE TABLE assignments (
+            assignment_id TEXT PRIMARY KEY, course TEXT NOT NULL, title TEXT NOT NULL,
+            due_date TEXT, dependencies TEXT NOT NULL, reported_submission_status TEXT NOT NULL,
+            assigned_on TEXT, kind TEXT NOT NULL, note TEXT, origins TEXT
+        );
+        CREATE TABLE status_reports (
+            assignment_id TEXT NOT NULL, status TEXT NOT NULL, channel TEXT NOT NULL,
+            reported_on TEXT NOT NULL, dated_by TEXT NOT NULL, observed_at TEXT NOT NULL,
+            source_date_text TEXT
+        );
+        INSERT INTO assignments VALUES
+            ('assignment-essay', 'World History', 'Canal Era comparison essay', '2026-08-21',
+             '', 'missing', NULL, 'HOMEWORK', NULL, NULL);
+        INSERT INTO status_reports VALUES
+            ('assignment-essay', 'missing', 'EMAIL', '2026-09-09', 'the day it was pasted',
+             '2026-09-12T20:00:00+00:00', '09/09'),
+            ('assignment-essay', 'missing', 'EMAIL', '2026-09-09', 'the day it was pasted',
+             '2026-09-12T21:00:00+00:00', '09/09'),
+            ('assignment-essay', 'missing', 'EMAIL', '2026-09-10', 'the day it was pasted',
+             '2026-09-13T20:00:00+00:00', '09/09');
+        """
+    )
+    old.commit()
+    old.close()
+    upgraded = ProjectStateStore.open(before, fixture_clock())
+    try:
+        kept = upgraded.status_reports("assignment-essay")
+        unique = {
+            str(row[1])
+            for row in upgraded._connection.execute("PRAGMA index_list(status_reports)")
+            if row[2]
+        }
+    finally:
+        upgraded.close()
+
+    assert [(report.reported_on, report.status) for report in reports] == [
+        (date(2026, 9, 9), "missing"),
+        (date(2026, 9, 10), "missing"),
+    ]
+    assert [report.observed_at.isoformat() for report in kept] == [
+        "2026-09-12T20:00:00+00:00",
+        "2026-09-13T20:00:00+00:00",
+    ]
+    assert unique == {"status_reports_once"}
+
+
+def test_a_row_written_without_a_note_or_origins_keeps_the_saved_ones(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A row written over a saved one carries its note and its origins only when it has
+    them; a row without them, as a set read from a file is, erases neither. A row with
+    another note replaces the note."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        store.put_on_record(
+            [a_row("Pencil only.", {"record": SourceChannel.LMS, "note": SourceChannel.LMS})], {}
+        )
+        store.put_on_record([a_row(None, {})], {})
+        kept = store.all_assignments()[0]
+        store.put_on_record(
+            [a_row("Ink.", {"record": SourceChannel.LMS, "note": SourceChannel.PARENT_ENTRY})],
+            {},
+        )
+        replaced = store.all_assignments()[0]
+    finally:
+        store.close()
+
+    assert kept.note == "Pencil only."
+    assert kept.origins == {"record": SourceChannel.LMS, "note": SourceChannel.LMS}
+    assert replaced.note == "Ink."
+    assert replaced.origins["note"] is SourceChannel.PARENT_ENTRY
 
 
 def test_a_record_write_that_fails_at_the_claims_keeps_no_assignment_either(

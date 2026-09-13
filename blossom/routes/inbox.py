@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.intake import (
     CLAIMED,
+    FOLDED,
     KNOWN,
     NEW,
     NEW_WORK,
@@ -80,6 +81,10 @@ NOT_A_KIND: Final = "Choose Homework or Task."
 LOOK_AGAIN: Final = (
     "The saved assignments changed since this preview, and one of these needs your answer "
     "now. Look it over again before saving."
+)
+NEEDS_ANSWER: Final = (
+    "A question above still needs your answer. Answer it, then save; what you chose on the "
+    "other cards is kept."
 )
 CHOOSE_ONE_TYPE: Final = (
     "Two cards about the same assignment choose different types. Pick one type for it, then save."
@@ -185,6 +190,17 @@ def answers_from(
     return occurrences, chosen
 
 
+def asked_on(form: Mapping[str, str]) -> set[int]:
+    """The cards the page put a question to, which the page sends back beside them; a
+    question on any other card is one the record raised since the page was made."""
+    asked: set[int] = set()
+    for name in form:
+        head, _, number = name.rpartition("-")
+        if head == "asked" and number.isdigit():
+            asked.add(int(number))
+    return asked
+
+
 def unasked_for(state: ApplicationState, read: Read) -> dict[int, set[AssignmentKind]]:
     """For each card, the types that are no choice when a form carries no note of what the
     page showed: what the page would show for it now, and what the reader suggests."""
@@ -235,11 +251,13 @@ def preview_page(
     changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
     if notice is None and conflicting_choices(changes):
         notice = CHOOSE_ONE_TYPE
+    shown = [change for change in changes if change.state != FOLDED]
+    folded = [change for change in changes if change.state == FOLDED]
     counts = {
-        "new": sum(1 for change in changes if change.state == NEW),
-        "updated": sum(1 for change in changes if change.state == CLAIMED),
-        "unchanged": sum(1 for change in changes if change.state == KNOWN),
-        "review": sum(1 for change in changes if change.state == REVIEW),
+        "new": sum(1 for change in shown if change.state == NEW),
+        "updated": sum(1 for change in shown if change.state == CLAIMED),
+        "unchanged": sum(1 for change in shown if change.state == KNOWN),
+        "review": sum(1 for change in shown if change.state == REVIEW),
     }
     to_save = counts["new"] + counts["updated"] + counts["review"]
     return templates.TemplateResponse(
@@ -247,7 +265,8 @@ def preview_page(
         "inbox_preview.html",
         {
             "weeks": by_week(changes),
-            "changes": changes,
+            "changes": shown,
+            "folded": folded,
             "counts": counts,
             "to_save": to_save,
             "unread": read.unread,
@@ -308,7 +327,9 @@ async def edit_draft(request: Request, state: State) -> Response:
 @router.post("/keep", response_class=HTMLResponse, include_in_schema=False)
 async def keep_readings(request: Request, state: State) -> Response:
     """Read the draft again, save what is new against the record as it is, and say what
-    was added, updated, and unchanged; or show the review again if a question is open.
+    was added, updated, and unchanged; or show the review again if a question is open,
+    saying whether the question is one the page put and the parent left, or one the record
+    raised since. Whatever was chosen on the cards comes back chosen.
 
     The saving runs under the decision lock, as a signal does: a plan's
     approval checks the week the plan was made from against the week as it
@@ -325,7 +346,13 @@ async def keep_readings(request: Request, state: State) -> Response:
     async with state.decision_lock:
         kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
     if not isinstance(kept, Kept):
-        notice = CHOOSE_ONE_TYPE if conflicting_choices(kept) else LOOK_AGAIN
+        open_questions = {change.key for change in kept if change.state == REVIEW}
+        if conflicting_choices(kept):
+            notice = CHOOSE_ONE_TYPE
+        elif open_questions <= asked_on(form):
+            notice = NEEDS_ANSWER
+        else:
+            notice = LOOK_AGAIN
         return preview_page(
             request, state, read, draft, occurrences=occurrences, kinds=kinds, notice=notice
         )

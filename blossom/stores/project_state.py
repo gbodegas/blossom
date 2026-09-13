@@ -206,8 +206,37 @@ class ProjectStateStore:
         writes, and not this table's. The one thing taken away is an index a
         version between made, which held a claim once and so refused that
         history; a file that carries it loses the index and keeps its rows.
+        Reports are the other way about: one per channel, status, and day is
+        the promise, kept by an index, and a file from a version without it
+        keeps the first of any duplicates.
         """
         self._connection.execute("DROP INDEX IF EXISTS date_claims_once")
+        indexes = {
+            str(row[1]) for row in self._connection.execute("PRAGMA index_list(status_reports)")
+        }
+        if "status_reports_once" not in indexes:
+            # A report is one per channel, status, and day, as promised; a
+            # file from a version that kept no index on that is folded to
+            # one, the first kept, before the index is made. The fold is a
+            # write, so it is committed here unless a start's own transaction
+            # is open around it, which then commits it with the tables.
+            outer = self._connection.in_transaction
+            self._connection.execute(
+                """
+                DELETE FROM status_reports WHERE rowid NOT IN (
+                    SELECT MIN(rowid) FROM status_reports
+                    GROUP BY assignment_id, channel, status, reported_on
+                )
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE UNIQUE INDEX status_reports_once
+                ON status_reports (assignment_id, channel, status, reported_on)
+                """
+            )
+            if not outer and self._connection.in_transaction:
+                self._connection.commit()
         columns = {
             str(row[1]) for row in self._connection.execute("PRAGMA table_info(assignments)")
         }
@@ -342,8 +371,13 @@ class ProjectStateStore:
     def _record_status_reports_locked(
         self, assignment_id: str, reports: Iterable[StatusReport]
     ) -> None:
+        """Keep each report once per channel, status, and day, whoever writes it: the index
+        the file keeps refuses a second, and only that conflict is passed over."""
         self._connection.executemany(
-            "INSERT INTO status_reports VALUES (?, ?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO status_reports VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (assignment_id, channel, status, reported_on) DO NOTHING
+            """,
             [
                 (
                     assignment_id,
@@ -386,6 +420,9 @@ class ProjectStateStore:
         return {str(row[0]): report_from(row[1:]) for row in rows}
 
     def _upsert_assignments_locked(self, assignments: Iterable[Assignment]) -> None:
+        """Write each row, over the row with its id when there is one. A note or origins
+        the new row lacks leave the saved ones standing: a row written without them, a
+        set read from a file among them, never erases what a parent or a paste put there."""
         for assignment in assignments:
             self._connection.execute(
                 """
@@ -398,8 +435,8 @@ class ProjectStateStore:
                     reported_submission_status=excluded.reported_submission_status,
                     assigned_on=excluded.assigned_on,
                     kind=excluded.kind,
-                    note=excluded.note,
-                    origins=excluded.origins
+                    note=COALESCE(excluded.note, assignments.note),
+                    origins=COALESCE(excluded.origins, assignments.origins)
                 """,
                 (
                     assignment.assignment_id,

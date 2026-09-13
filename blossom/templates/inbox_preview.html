@@ -70,6 +70,20 @@
         </p>
       {% endif %}
 
+      {#
+        A card folded into another, as the parent said, is not shown, but
+        its answers travel with the page, so a page that comes back with
+        another question still open loses nothing.
+      #}
+      {% for change in folded %}
+        <input type="hidden" name="occurrence-{{ change.key }}" value="update">
+        <input type="hidden" name="kind-{{ change.key }}" value="{{ change.kind.value }}">
+        <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
+      {% endfor %}
+      {% if folded %}
+        <p class="note">{{ folded|length }} card{% if folded|length != 1 %}s{% endif %} folded into the card for the same assignment, as you said.</p>
+      {% endif %}
+
       {% for week in weeks %}
         <section class="review-week">
           <h2>{{ week.label }}</h2>
@@ -99,17 +113,18 @@
                   {% if reading.assigned_on %}<span class="source">Assigned {{ spoken_day(reading.assigned_on) }}</span>{% endif %}
                 </p>
               {% endif %}
-              <p class="effect">{{ change.effect }}</p>
+              <p class="effect" data-base="{{ change.effect_base }}">{{ change.effect }}</p>
               {% if change.state == "review" %}
+                <input type="hidden" name="asked-{{ change.key }}" value="1">
                 <fieldset class="choice">
                   <legend>Which is it?</legend>
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment, its due date changed</label>
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
                 </fieldset>
               {% endif %}
-              <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.kind.value }}">
+              <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
               <label class="type-choice">Type
-                <select name="kind-{{ change.key }}" data-saved="{{ change.kind.value }}">
+                <select name="kind-{{ change.key }}" data-saved="{{ change.suggested.value }}">
                   {% for value, label in kind_choices %}
                     <option value="{{ value }}"{% if value == change.kind.value %} selected{% endif %}>{{ label }}</option>
                   {% endfor %}
