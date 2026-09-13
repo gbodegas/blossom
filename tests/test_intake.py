@@ -13,10 +13,13 @@ from datetime import UTC, date, datetime
 from blossom.intake import (
     CLAIMED,
     DAY_HEADER,
+    EMAIL_DATE_LINE,
     KNOWN,
     NEW,
     OWN_LINE,
+    PASTE_DAY,
     SCHOOL_EMAIL,
+    Kept,
     Reading,
     by_hand,
     changes_for,
@@ -26,6 +29,7 @@ from blossom.intake import (
     nearest_year,
     read_text,
     slug,
+    spoken_report,
     within_a_school_year,
 )
 from blossom.reconciliation import SourceChannel
@@ -150,9 +154,46 @@ def test_the_missing_email_is_read_with_the_nearest_year_and_no_other_grade() ->
     assert [(said.channel, said.seen_in) for said in covers.claims] == [
         (SourceChannel.EMAIL, SCHOOL_EMAIL)
     ]
+    assert covers.reported_status == "missing"
+    assert [(r.channel, r.status, r.reported_on, r.dated_by) for r in covers.reports] == [
+        (SourceChannel.EMAIL, "missing", TODAY, PASTE_DAY)
+    ]
+    assert covers.assignment().reported_submission_status == "missing"
+    assert (
+        spoken_report(covers.reports[0])
+        == "From the school email, pasted Saturday, September 12, 2026."
+    )
+    dated = read_text("Tue, Sep 8, 2026 at 9:14 AM\n" + EMAIL, now=NOW, today=TODAY)
+    report = by_pair(dated.items)["08 Geometry", "Book Covers"].reports[0]
+    assert (report.reported_on, report.dated_by) == (date(2026, 9, 8), EMAIL_DATE_LINE)
+    assert spoken_report(report) == "From the school email, dated Tuesday, September 8, 2026."
     assert items["Humanities", "Reading check"].due_date == date(2027, 1, 15)
     assert nearest_year(2, 29, date(2027, 6, 1)) == date(2028, 2, 29)
     assert nearest_year(13, 1, TODAY) is None
+
+
+def test_the_heading_under_a_card_is_the_teachers_words_and_a_long_paste_is_quick() -> None:
+    """Only the summary's heading is read as nothing; a teacher's line that starts the same
+    way, under a card, is kept as the note. And a paste of many short lines is read in one
+    pass, not one pass per line."""
+    text = """Homework for Wren
+
+* 09/03/2026 - Thursday
+08 Geometry - Assigned: Book Covers: (Due:09/08/2026)
+Homework for tomorrow: cover both books with paper.
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+    long = "\n".join(["A stray line"] * 20_000)
+    started = datetime.now(UTC)
+    many = read_text(long, now=NOW, today=TODAY)
+    took = datetime.now(UTC) - started
+
+    assert read.unread == ()
+    assert by_pair(read.items)["08 Geometry", "Book Covers"].note == (
+        "Homework for tomorrow: cover both books with paper."
+    )
+    assert len(many.unread) == 20_000
+    assert took.total_seconds() < 5
 
 
 def test_lines_not_understood_are_kept_as_unread_and_nothing_is_invented() -> None:
@@ -249,6 +290,14 @@ def test_changes_are_new_known_or_claimed_and_kept_as_one(tmp_path: pathlib.Path
             "08 Geometry", "Book Covers"
         ]
         claims = store.deadline_records(covers.assignment_id)
+        told = read_text(EMAIL, now=NOW, today=TODAY)
+        reported = changes_for(told.items, store)
+        kept_told = keep(told.items, store)
+        covers_after = {(item.course, item.title): item for item in store.all_assignments()}[
+            "08 Geometry", "Book Covers"
+        ]
+        reports = store.status_reports(covers_after.assignment_id)
+        kept_told_again = keep(told.items, store)
         typed = by_hand(
             "Art",
             "Sketchbook, three pages",
@@ -272,14 +321,26 @@ def test_changes_are_new_known_or_claimed_and_kept_as_one(tmp_path: pathlib.Path
         store.close()
 
     assert [change.state for change in first] == [NEW] * 9
-    assert kept_first == 9
+    assert kept_first == Kept(new=9, changed=0)
+    assert covers.note == "Cover both books with paper."
     assert [change.state for change in again] == [KNOWN] * 9
-    assert kept_again == 0
+    assert kept_again == Kept(new=0, changed=0)
     assert [change.state for change in moved] == [CLAIMED]
     assert moved[0].label == "On record; a new date claim"
-    assert kept_moved == 1
+    assert kept_moved == Kept(new=0, changed=1)
     assert covers.due_date == date(2026, 9, 8)
     assert [said.asserted_value for said in claims] == ["2026-09-08", "2026-09-08", "2026-09-10"]
+    labels = {change.reading.pair: change.label for change in reported}
+    assert labels["08 Geometry", "Book Covers"] == (
+        "On record; a new date claim and what the school reports"
+    )
+    assert labels["Humanities", "Reading check"] == (
+        "On record; a new date claim and what the school reports"
+    )
+    assert kept_told == Kept(new=0, changed=2)
+    assert covers_after.reported_submission_status == "missing"
+    assert [(r.status, r.reported_on) for r in reports] == [("missing", TODAY)]
+    assert kept_told_again == Kept(new=0, changed=0)
     assert filled[0].label == "On record; a new date claim and the assigned date"
     assert sketch.assigned_on == date(2026, 9, 8)
     assert sketch.due_date == date(2026, 9, 18)
@@ -307,7 +368,7 @@ def test_a_paste_matches_a_row_on_record_by_its_course_and_title(tmp_path: pathl
 
     assert [change.state for change in changes] == [CLAIMED]
     assert changes[0].assignment_id == "assignment-canal-essay"
-    assert kept == 1
+    assert kept == Kept(new=0, changed=1)
     assert len(after) == before
     assert essay_claims[-1].asserted_value == "2026-08-18"
     assert essay_claims[-1].seen_in == DAY_HEADER
@@ -320,7 +381,7 @@ def test_two_keepings_of_one_text_at_once_add_nothing_twice(tmp_path: pathlib.Pa
     read = read_text(SUMMARY, now=NOW, today=TODAY)
     released = threading.Barrier(2)
 
-    def one_keeping(_: int) -> int:
+    def one_keeping(_: int) -> Kept:
         released.wait()
         return keep(read.items, store)
 
@@ -333,6 +394,6 @@ def test_two_keepings_of_one_text_at_once_add_nothing_twice(tmp_path: pathlib.Pa
     finally:
         store.close()
 
-    assert sorted(counts) == [0, 9]
+    assert sorted(count.new for count in counts) == [0, 9]
     assert len(rows) == 9
     assert len(claims) == 2

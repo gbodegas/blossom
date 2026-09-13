@@ -73,12 +73,14 @@ def test_a_paste_is_shown_first_and_kept_only_when_asked(tmp_path: pathlib.Path)
     assert "school portal (the assignment&#39;s own line): 2026-09-08" in shown.text
     assert "Assigned Thursday, September 3, 2026" in shown.text
     assert "The teacher wrote: <q>Cover both books with paper.</q>" in shown.text
-    assert "Shown here, not kept." in shown.text
+    assert "Kept with the assignment." in shown.text
     assert "Book Covers" not in nothing_yet
     assert kept.status_code == 303
-    assert kept.headers["location"] == "/parent?kept=3"
+    assert kept.headers["location"] == "/parent?kept=3&changed=0"
     assert "3 assignments put on record." in family
     assert "Book Covers" in hers
+    assert "From the teacher: <q>Cover both books with paper.</q>" in hers
+    assert "Reported status:" not in hers.split("Book Covers", 1)[1].split("</article>", 1)[0]
     assert "Binder, labeled dividers and lined paper check" in hers
     assert "Summer Reading - Log" not in hers
     assert again.count("Already on record, nothing new") == 3
@@ -105,10 +107,10 @@ def test_an_entry_by_hand_is_shown_then_kept_as_the_familys_claim(tmp_path: path
     assert "This would go on record when put there below, and not before." in shown.text
     assert "family entry: 2026-09-11" in shown.text
     assert '<input type="hidden" name="title" value="Vocabulary list, unit two">' in shown.text
-    assert kept.headers["location"] == "/parent?kept=1"
+    assert kept.headers["location"] == "/parent?kept=1&changed=0"
     assert "One assignment put on record." in family
     assert "Vocabulary list, unit two" in hers
-    assert twice.headers["location"] == "/parent?kept=0"
+    assert twice.headers["location"] == "/parent?kept=0&changed=0"
 
 
 def test_what_cannot_be_read_or_entered_is_said_on_the_family_page(tmp_path: pathlib.Path) -> None:
@@ -147,6 +149,33 @@ def test_what_cannot_be_read_or_entered_is_said_on_the_family_page(tmp_path: pat
     assert odd.status_code == 200
     assert huge.status_code == 200
     assert "put on record" not in odd.text.split("<h1>", 1)[1].split("</h1>", 1)[1][:400]
+
+
+def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The email's "Missing" is kept as a report and shown on her page and the family page
+    as a fact the school reported, with where it came from and the day, and the count
+    tells a changed row from a new one."""
+    email = "Assignments:\n09/09 08 Geometry - A: Homework/Classwork: Book Covers Grade: Missing\n"
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        client.post("/parent/inbox/keep", data={"text": SUMMARY})
+        shown = client.post("/parent/inbox/read", data={"text": email}).text
+        kept = client.post("/parent/inbox/keep", data={"text": email})
+        family = client.get(kept.headers["location"], headers=PAGE).text
+        hers = client.get("/student/due-this-week", headers=PAGE).text
+
+    assert '<span class="pill">The school reports it missing</span>' in shown
+    assert "From the school email, pasted Monday, September 7, 2026." in shown
+    assert "On record; a new date claim and what the school reports" in shown
+    assert kept.headers["location"] == "/parent?kept=0&changed=1"
+    assert "one already on record changed." in family
+    assert "<h2>Reported by the school</h2>" in family
+    assert "<strong>Book Covers: the school reports it missing.</strong>" in family
+    assert "From the school email, pasted Monday, September 7, 2026." in family
+    assert "<strong>The school reports this missing.</strong>" in hers
+    assert "From the school email, pasted Monday, September 7, 2026." in hers
+    assert "Reported status: missing" in hers
 
 
 def test_the_way_in_is_a_parents(tmp_path: pathlib.Path) -> None:

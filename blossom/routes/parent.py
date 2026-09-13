@@ -59,7 +59,7 @@ from blossom.anthropic_client import model_configured
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
-from blossom.intake import TEXT_MAX_LENGTH
+from blossom.intake import TEXT_MAX_LENGTH, spoken_report
 from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
@@ -74,6 +74,7 @@ from blossom.views import (
     ParentCheckpointView,
     PlanRunView,
     RunView,
+    SchoolReportView,
 )
 
 logger = logging.getLogger(__name__)
@@ -403,6 +404,7 @@ def review_page(
     problem: str | None = None,
     refreshed: bool = False,
     kept: int | None = None,
+    changed: int | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to put assignments
@@ -430,10 +432,27 @@ def review_page(
             "zone": state.clock.zone,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "kept": kept,
+            "changed": changed,
             "text_max_length": TEXT_MAX_LENGTH,
+            "reported": reported_by_the_school(state),
         },
         status_code=status_code,
     )
+
+
+def reported_by_the_school(state: ApplicationState) -> list[SchoolReportView]:
+    """Every assignment the school has reported on, with its latest report, by due date."""
+    latest = state.project_state.latest_status_reports()
+    rows = [item for item in state.project_state.all_assignments() if item.assignment_id in latest]
+    return [
+        SchoolReportView(
+            course=item.course,
+            title=item.title,
+            status=latest[item.assignment_id].status,
+            sentence=spoken_report(latest[item.assignment_id]),
+        )
+        for item in rows
+    ]
 
 
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
@@ -447,14 +466,23 @@ def review(
         str | None,
         Query(description="how many readings the last keeping put on record; a note, no more"),
     ] = None,
+    changed: Annotated[
+        str | None,
+        Query(description="how many rows already on record the last keeping changed; a note"),
+    ] = None,
 ) -> HTMLResponse:
     """The parent's page: what she asked for, what is waiting, and the folds below."""
+    return review_page(
+        request, state, refreshed=refreshed == "1", kept=a_count(kept), changed=a_count(changed)
+    )
+
+
+def a_count(given: str | None) -> int | None:
+    """A count from the address, or none: anything that is not a count is no note."""
     try:
-        counted = None if kept is None else int(kept)
+        return None if given is None else int(given)
     except ValueError:
-        # A note, not an instruction: anything that is not a count is no note.
-        counted = None
-    return review_page(request, state, refreshed=refreshed == "1", kept=counted)
+        return None
 
 
 @router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)

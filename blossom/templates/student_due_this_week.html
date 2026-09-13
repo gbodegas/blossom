@@ -280,9 +280,25 @@
         <p class="source">What they gave: {{ assignment.contradiction|join("; ") }}.</p>
       {% endif %}
 
-      <p class="status">
-        <span class="pill">Reported status: {{ assignment.submission_status|replace("_", " ") }}</span>
-      </p>
+      {#
+        What the school reports is a fact of its own, said with who reported
+        it and when, so that it is never taken for the family's judgment or
+        for the record's date.
+      #}
+      {% if assignment.school_report %}
+        <p class="confidence disagree" role="status">
+          <strong>The school reports this {{ assignment.submission_status|replace("_", " ") }}.</strong>
+          {{ assignment.school_report }}
+        </p>
+      {% endif %}
+      {% if assignment.note %}
+        <p class="from-teacher">From the teacher: <q>{{ assignment.note }}</q></p>
+      {% endif %}
+      {% if assignment.submission_status != "unknown" %}
+        <p class="status">
+          <span class="pill">Reported status: {{ assignment.submission_status|replace("_", " ") }}</span>
+        </p>
+      {% endif %}
     </article>
   {% endfor %}
 
@@ -294,6 +310,7 @@
           <li>
             <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
             Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
+            {% if assignment.school_report %}<br><span class="pill">The school reports this {{ assignment.submission_status|replace("_", " ") }}</span> {{ assignment.school_report }}{% endif %}
           </li>
         {% endfor %}
       </ul>

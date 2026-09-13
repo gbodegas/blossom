@@ -28,9 +28,12 @@ the tests and the sample rely on.
 Beside the gate, `blossom/intake.py` is the way in for assignments: a reader
 for the school portal's own text, its homework page, its weekly summary, and
 its "Missing" email, pasted by a parent, and for one assignment typed by hand.
-It reads line shapes, not a model, and reads them into assignments and into
+It reads line shapes, not a model, and reads them into assignments, into
 each channel's claim about a due date, with where the claim was read, so the
-reconciliation treats a pasted page as it treats a fixture. It writes nothing:
+reconciliation treats a pasted page as it treats a fixture, into the
+teacher's note under a card, and into what the school reports about an
+assignment's status, a fact of its own kept with who reported it and the day,
+and shown on both pages as such. It writes nothing:
 `blossom/routes/inbox.py` shows what was read, card by card and against the
 record as it is, and writes only when a parent says so, in one transaction,
 never a claim twice and never over a recorded date. Lines it does not

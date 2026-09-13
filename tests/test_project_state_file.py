@@ -358,6 +358,60 @@ def test_a_batch_that_fails_leaves_nothing_of_itself_and_frees_the_file(
     assert on_record == []
 
 
+def test_a_file_from_before_is_brought_up_to_the_schema_and_keeps_its_rows(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A file written before the note column and before claims were kept once: the column
+    is added, the duplicate claims are folded to the earliest, and every row stays."""
+    path = tmp_path / "blossom.sqlite3"
+    old = sqlite3.connect(path)
+    old.executescript(
+        """
+        CREATE TABLE assignments (
+            assignment_id TEXT PRIMARY KEY, course TEXT NOT NULL, title TEXT NOT NULL,
+            due_date TEXT, dependencies TEXT NOT NULL, reported_submission_status TEXT NOT NULL,
+            assigned_on TEXT, kind TEXT NOT NULL
+        );
+        CREATE TABLE date_claims (
+            assignment_id TEXT NOT NULL, channel TEXT NOT NULL, asserted_value TEXT NOT NULL,
+            observed_at TEXT NOT NULL, confidence REAL NOT NULL, seen_in TEXT
+        );
+        INSERT INTO assignments VALUES
+            ('assignment-essay', 'World History', 'Canal Era comparison essay', '2026-08-21',
+             '', 'in_progress', NULL, 'HOMEWORK');
+        INSERT INTO date_claims VALUES
+            ('assignment-essay', 'LMS', '2026-08-21', '2026-08-19T09:00:00+00:00', 0.9, NULL),
+            ('assignment-essay', 'LMS', '2026-08-21', '2026-08-19T10:00:00+00:00', 0.9, NULL),
+            ('assignment-essay', 'PARENT_ENTRY', '2026-08-22',
+             '2026-08-19T11:00:00+00:00', 0.7, NULL);
+        """
+    )
+    old.commit()
+    old.close()
+
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        rows = store.all_assignments()
+        claims = store.deadline_records("assignment-essay")
+        indexes = {
+            str(row[0])
+            for row in store._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+    finally:
+        store.close()
+
+    assert [row.assignment_id for row in rows] == ["assignment-essay"]
+    assert rows[0].note is None
+    assert [(said.channel.value, said.asserted_value) for said in claims] == [
+        ("LMS", "2026-08-21"),
+        ("PARENT_ENTRY", "2026-08-22"),
+    ]
+    assert claims[0].observed_at.isoformat() == "2026-08-19T09:00:00+00:00"
+    assert "date_claims_once" in indexes
+
+
 def test_a_record_write_that_fails_at_the_claims_keeps_no_assignment_either(
     tmp_path: pathlib.Path,
 ) -> None:

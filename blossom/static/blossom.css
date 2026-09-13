@@ -941,3 +941,10 @@ select {
   color: var(--text-soft);
   overflow-wrap: anywhere;
 }
+
+/* What the teacher wrote under a card, in the soft tone, quoted as the portal shows it. */
+.from-teacher {
+  margin: 0.35rem 0 0.75rem;
+  color: var(--text-soft);
+  font-size: 0.92rem;
+}

@@ -135,6 +135,8 @@ def assignments_block(
         }
         if item.assigned_on is not None:
             attributes["assigned"] = item.assigned_on.isoformat()
+        if item.note:
+            attributes["teacher_wrote"] = item.note
         lines.append(block("assignment", item.title, **attributes))
     return "<assignments>\n" + "\n".join(lines) + "\n</assignments>"
 

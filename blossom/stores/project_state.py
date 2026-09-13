@@ -31,7 +31,7 @@ from datetime import date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from blossom.clock import Clock
 from blossom.reconciliation import SourceChannel, SourceRecord
@@ -78,6 +78,28 @@ class Assignment(BaseModel):
     reported_submission_status: str
     assigned_on: date | None = None
     kind: AssignmentKind = AssignmentKind.HOMEWORK
+    note: str | None = None
+    """What the teacher wrote under the card, as the portal shows it: an instruction
+    about the work, kept with the assignment because it is part of it."""
+
+
+class StatusReport(BaseModel):
+    """What a school channel reported about an assignment's status, as of a day.
+
+    A fact of another kind than a date claim: not a value to reconcile but a
+    statement the school made, kept with who made it and when, so that
+    everyone reading it sees a fact reported by the school and the day it
+    was reported. ``dated_by`` says where the day came from: the email's own
+    date line when the paste carried one, or the day it was pasted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    channel: SourceChannel
+    reported_on: date
+    dated_by: str
+    observed_at: AwareDatetime
 
 
 class ProjectStateStore:
@@ -121,8 +143,27 @@ class ProjectStateStore:
                 dependencies TEXT NOT NULL,
                 reported_submission_status TEXT NOT NULL,
                 assigned_on TEXT,
-                kind TEXT NOT NULL
+                kind TEXT NOT NULL,
+                note TEXT
             )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS status_reports (
+                assignment_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                reported_on TEXT NOT NULL,
+                dated_by TEXT NOT NULL,
+                observed_at TEXT NOT NULL
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS status_reports_once
+            ON status_reports (assignment_id, channel, status, reported_on)
             """
         )
         self._connection.execute(
@@ -140,6 +181,7 @@ class ProjectStateStore:
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS date_claims_by_assignment ON date_claims (assignment_id)"
         )
+        self._upgrade()
         # One claim is on record once: the same channel saying the same value
         # from the same place is one fact however many times it is pasted.
         self._connection.execute(
@@ -148,6 +190,41 @@ class ProjectStateStore:
             ON date_claims (assignment_id, channel, asserted_value, COALESCE(seen_in, ''))
             """
         )
+
+    def _upgrade(self) -> None:
+        """Bring a file from before up to this schema, once, and keep what it holds.
+
+        The note column is added where it is missing. A file written before
+        claims were kept once may hold the same claim twice; the earliest of
+        each is kept and the rest folded, so the index that keeps claims once
+        can be made without refusing the file.
+        """
+        # Inside a first start's transaction the step joins it; on its own it
+        # is kept at once, so the index made next is not left in a transaction
+        # nothing commits.
+        joined = self._connection.in_transaction
+        columns = {
+            str(row[1]) for row in self._connection.execute("PRAGMA table_info(assignments)")
+        }
+        if "note" not in columns:
+            self._connection.execute("ALTER TABLE assignments ADD COLUMN note TEXT")
+        indexes = {
+            str(row[0])
+            for row in self._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        if "date_claims_once" not in indexes:
+            self._connection.execute(
+                """
+                DELETE FROM date_claims WHERE rowid NOT IN (
+                    SELECT MIN(rowid) FROM date_claims
+                    GROUP BY assignment_id, channel, asserted_value, COALESCE(seen_in, '')
+                )
+                """
+            )
+            if not joined:
+                self._connection.commit()
 
     @classmethod
     def open(cls, path: Path, clock: Clock) -> "ProjectStateStore":
@@ -248,20 +325,77 @@ class ProjectStateStore:
             self._upsert_assignments_locked(assignments)
 
     def put_on_record(
-        self, assignments: Iterable[Assignment], claims: Mapping[str, Iterable[SourceRecord]]
+        self,
+        assignments: Iterable[Assignment],
+        claims: Mapping[str, Iterable[SourceRecord]],
+        reports: Mapping[str, Iterable[StatusReport]] | None = None,
     ) -> None:
-        """Keep assignments and the claims about their dates in one transaction, all or
-        none, like the two writes above."""
+        """Keep assignments, the claims about their dates, and what the school reports, in
+        one transaction, all or none, like the writes above."""
         with self._lock, self._connection:
             self._upsert_assignments_locked(assignments)
             for assignment_id, records in claims.items():
                 self._record_claims_locked(assignment_id, records)
+            for assignment_id, said in (reports or {}).items():
+                self._record_status_reports_locked(assignment_id, said)
+
+    def record_status_reports(self, assignment_id: str, reports: Iterable[StatusReport]) -> None:
+        """Keep what a school channel reported about one assignment, once per day and status."""
+        with self._lock, self._connection:
+            self._record_status_reports_locked(assignment_id, reports)
+
+    def _record_status_reports_locked(
+        self, assignment_id: str, reports: Iterable[StatusReport]
+    ) -> None:
+        self._connection.executemany(
+            """
+            INSERT INTO status_reports VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (assignment_id, channel, status, reported_on) DO NOTHING
+            """,
+            [
+                (
+                    assignment_id,
+                    report.status,
+                    report.channel.value,
+                    report.reported_on.isoformat(),
+                    report.dated_by,
+                    report.observed_at.isoformat(),
+                )
+                for report in reports
+            ],
+        )
+
+    def status_reports(self, assignment_id: str) -> list[StatusReport]:
+        """Everything the school reported about one assignment, in the order kept."""
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT status, channel, reported_on, dated_by, observed_at
+                FROM status_reports
+                WHERE assignment_id = ?
+                ORDER BY rowid
+                """,
+                (assignment_id,),
+            ).fetchall()
+        return [report_from(row) for row in rows]
+
+    def latest_status_reports(self) -> dict[str, StatusReport]:
+        """The latest report per assignment, by the day reported and then the order kept."""
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT assignment_id, status, channel, reported_on, dated_by, observed_at
+                FROM status_reports
+                ORDER BY reported_on, rowid
+                """
+            ).fetchall()
+        return {str(row[0]): report_from(row[1:]) for row in rows}
 
     def _upsert_assignments_locked(self, assignments: Iterable[Assignment]) -> None:
         for assignment in assignments:
             self._connection.execute(
                 """
-                INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(assignment_id) DO UPDATE SET
                     course=excluded.course,
                     title=excluded.title,
@@ -269,7 +403,8 @@ class ProjectStateStore:
                     dependencies=excluded.dependencies,
                     reported_submission_status=excluded.reported_submission_status,
                     assigned_on=excluded.assigned_on,
-                    kind=excluded.kind
+                    kind=excluded.kind,
+                    note=excluded.note
                 """,
                 (
                     assignment.assignment_id,
@@ -280,6 +415,7 @@ class ProjectStateStore:
                     assignment.reported_submission_status,
                     None if assignment.assigned_on is None else assignment.assigned_on.isoformat(),
                     assignment.kind.value,
+                    assignment.note,
                 ),
             )
 
@@ -357,7 +493,7 @@ class ProjectStateStore:
             rows = self._connection.execute(
                 """
                 SELECT assignment_id, course, title, due_date, dependencies,
-                       reported_submission_status, assigned_on, kind
+                       reported_submission_status, assigned_on, kind, note
                 FROM assignments
                 WHERE due_date BETWEEN ? AND ?
                 ORDER BY due_date, course, title
@@ -382,7 +518,7 @@ class ProjectStateStore:
             rows = self._connection.execute(
                 """
                 SELECT assignment_id, course, title, due_date, dependencies,
-                       reported_submission_status, assigned_on, kind
+                       reported_submission_status, assigned_on, kind, note
                 FROM assignments
                 ORDER BY due_date IS NULL, due_date, course, title
                 """
@@ -395,7 +531,7 @@ class ProjectStateStore:
             rows = self._connection.execute(
                 """
                 SELECT assignment_id, course, title, due_date, dependencies,
-                       reported_submission_status, assigned_on, kind
+                       reported_submission_status, assigned_on, kind, note
                 FROM assignments
                 WHERE due_date IS NULL
                 ORDER BY course, title
@@ -439,4 +575,16 @@ def assignment_from(row: tuple[object, ...]) -> Assignment:
         reported_submission_status=str(row[5]),
         assigned_on=None if row[6] is None else date.fromisoformat(str(row[6])),
         kind=AssignmentKind(str(row[7])),
+        note=None if row[8] is None else str(row[8]),
+    )
+
+
+def report_from(row: tuple[object, ...]) -> StatusReport:
+    """Build a report from a row in the order the report queries select."""
+    return StatusReport(
+        status=str(row[0]),
+        channel=SourceChannel(str(row[1])),
+        reported_on=date.fromisoformat(str(row[2])),
+        dated_by=str(row[3]),
+        observed_at=datetime.fromisoformat(str(row[4])),
     )

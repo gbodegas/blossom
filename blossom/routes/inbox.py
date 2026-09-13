@@ -26,6 +26,7 @@ from blossom.intake import (
     changes_for,
     keep,
     read_text,
+    spoken_report,
     within_a_school_year,
 )
 from blossom.routes.parent import review_page
@@ -94,6 +95,7 @@ def preview_page(
             "unread": read.unread,
             "fields": fields,
             "sample": state.settings.sample,
+            "spoken_report": spoken_report,
         },
     )
 
@@ -167,4 +169,6 @@ def keep_readings(
             request, state, problem=read, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT
         )
     kept = keep(read.items, state.project_state)
-    return RedirectResponse(f"/parent?kept={kept}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(
+        f"/parent?kept={kept.new}&changed={kept.changed}", status_code=status.HTTP_303_SEE_OTHER
+    )

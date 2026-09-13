@@ -32,7 +32,11 @@
       <p class="status">
         <span class="pill">{{ change.label }}</span>
         {% if reading.kind == "TASK" %}<span class="pill">Read as a task</span>{% endif %}
+        {% if reading.reported_status %}<span class="pill">The school reports it {{ reading.reported_status }}</span>{% endif %}
       </p>
+      {% for report in reading.reports %}
+        <p class="source">{{ spoken_report(report) }}</p>
+      {% endfor %}
       {% if reading.claims %}
         <ul class="claims-read">
           {% for said in reading.claims %}
@@ -41,7 +45,7 @@
         </ul>
       {% endif %}
       {% if reading.note %}
-        <p class="note">The teacher wrote: <q>{{ reading.note }}</q> Shown here, not kept.</p>
+        <p class="note">The teacher wrote: <q>{{ reading.note }}</q> Kept with the assignment.</p>
       {% endif %}
     </article>
   {% endfor %}

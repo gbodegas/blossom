@@ -29,7 +29,9 @@
     <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
   {% endif %}
   {% if kept is not none %}
-    <p class="note" role="status">{% if kept == 0 %}Nothing new to put on record; everything read was there already.{% elif kept == 1 %}One assignment put on record.{% else %}{{ kept }} assignments put on record.{% endif %}</p>
+    <p class="note" role="status">
+      {% if kept == 0 and not changed %}Nothing new to put on record; everything read was there already.{% else %}{% if kept == 1 %}One assignment put on record{% elif kept > 1 %}{{ kept }} assignments put on record{% endif %}{% if kept and changed %}, and {% endif %}{% if changed == 1 %}one already on record changed{% elif changed and changed > 1 %}{{ changed }} already on record changed{% endif %}.{% endif %}
+    </p>
   {% endif %}
 
   {#
@@ -82,6 +84,25 @@
       </details>
     {% endif %}
   </section>
+
+  {#
+    What the school reports is a fact of its own, shown here as on her page:
+    who reported it and when, never the family's judgment.
+  #}
+  {% if reported %}
+    <section>
+      <h2>Reported by the school</h2>
+      {% for item in reported %}
+        <article class="draft">
+          <p class="course">{{ item.course }}</p>
+          <p class="decision-line">
+            <strong>{{ item.title }}: the school reports it {{ item.status|replace("_", " ") }}.</strong>
+            {{ item.sentence }}
+          </p>
+        </article>
+      {% endfor %}
+    </section>
+  {% endif %}
 
   <section>
     <h2>Waiting for your review</h2>

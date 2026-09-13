@@ -72,6 +72,23 @@ class StudentAssignmentView(BaseModel):
     school_contradicts: bool = False
     """Whether a school channel is among those; only then is the contradiction a banner."""
     assigned_on: date | None = None
+    note: str | None = None
+    """What the teacher wrote under the card, as the portal shows it."""
+    school_report: str = ""
+    """Where and when the school reported the status shown, as the page says it; empty
+    when the school has reported nothing."""
+
+
+class SchoolReportView(BaseModel):
+    """One assignment the school has reported on, as the family page lists it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    course: str
+    title: str
+    status: str
+    sentence: str
+    """Where and when the school reported it, as the page says it."""
 
 
 class WorkloadSignalView(BaseModel):

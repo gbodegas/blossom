@@ -57,6 +57,7 @@ from blossom.anthropic_client import model_configured
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
+from blossom.intake import spoken_report
 from blossom.noticing import (
     Noticing,
     expect_due_date,
@@ -80,7 +81,7 @@ from blossom.routes.runs import Graphs, require_model, run_plan
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
-from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment
+from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, StatusReport
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.templating import page_templates
 from blossom.views import (
@@ -365,7 +366,10 @@ def channels_in_words(channels: Sequence[str]) -> str:
 
 
 def assignment_view(
-    assignment: Assignment, records: Sequence[SourceRecord], noticed: Noticing
+    assignment: Assignment,
+    records: Sequence[SourceRecord],
+    noticed: Noticing,
+    report: StatusReport | None = None,
 ) -> StudentAssignmentView:
     """One assignment as she sees it, with where its date came from said once per channel.
 
@@ -422,6 +426,8 @@ def assignment_view(
         school_contradicts=noticed.contradicted
         and any(record.channel in SCHOOL_CHANNELS for record in readable),
         assigned_on=assignment.assigned_on,
+        note=assignment.note,
+        school_report="" if report is None else spoken_report(report),
     )
 
 
@@ -474,10 +480,14 @@ def build_student_due_this_week_view(
     frame = week_shown(today, week)
     on_record = state.project_state
     shown = read_week(on_record, on_record, frame.start)
+    reported = on_record.latest_status_reports()
     # Never filter here; see the module docstring.
     views = [
         assignment_view(
-            item, shown.records[item.assignment_id], shown.noticings[item.assignment_id]
+            item,
+            shown.records[item.assignment_id],
+            shown.noticings[item.assignment_id],
+            reported.get(item.assignment_id),
         )
         for item in shown.assignments
     ]
@@ -488,7 +498,12 @@ def build_student_due_this_week_view(
             continue
         records = on_record.deadline_records(item.assignment_id)
         assigned.append(
-            assignment_view(item, records, notice_due_date(expect_due_date(item), records))
+            assignment_view(
+                item,
+                records,
+                notice_due_date(expect_due_date(item), records),
+                reported.get(item.assignment_id),
+            )
         )
     tonight = state.workload_signals.for_evening(today)
     household = state.settings

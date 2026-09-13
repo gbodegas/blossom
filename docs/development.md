@@ -231,8 +231,11 @@ Nothing is written when the text is read. A page of its own shows each
 reading as a card with what keeping it would do: new to the record; on record
 with a new claim about its date, kept beside the recorded date rather than in
 its place, so her page can say the sources disagree; or already on record
-with nothing to add. The teacher's instructions under a card are shown and
-not kept. Lines the reader did not understand are listed under "Not read",
+with nothing to add. The teacher's instruction under a card is kept with the
+assignment and shown on her card, and the planner reads it. A "Missing" line
+in the school's email is kept as what the school reported, with the day: the
+email's own date when the paste carries its date line, otherwise the day it
+was pasted, and both pages say which. Lines the reader did not understand are listed under "Not read",
 so nothing is dropped in silence; an assignment they name can be typed in.
 "Put on record" writes all of it in one step and returns to the family page
 with a count. Pasting the same page or week again is safe: what is there
@@ -244,11 +247,13 @@ homework or a task. It is shown the same way before it is kept, and its date
 is the family's own claim, which her page names as such. A date more than a
 year from today is refused, since it is almost always a mistyped year.
 
-What is never kept: the heading's first name, teachers' names in
-instructions, grades, and anything the reader did not understand; a line in
-the email's shape with a grade other than "Missing" is left unread. The
-school-reported "Missing" status in the email is not yet shown on the pages;
-the email's assignments and dates are read like the portal's.
+What is never kept: the heading's first name, grades other than "Missing",
+and anything the reader did not understand; a line in the email's shape with
+another grade is left unread. A teacher's name inside an instruction is kept
+with it, as the portal shows it, since the instruction is the assignment's.
+Her page shows what the school reported as a banner on the card, "The school
+reports this missing", with the source and the day; the family page lists
+the same under "Reported by the school".
 
 ## The sample week
 

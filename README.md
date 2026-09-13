@@ -75,9 +75,11 @@ updates; opening the parent's page does not count as a response.
 homework page, its weekly summary, or its "Missing" email as text, or type
 one assignment by hand. What was read is shown first, card by card, with what
 keeping it would do: put it on record, add the portal's date beside the
-recorded one, or nothing, because it is there already. Nothing is written
-until a parent says so, lines the reader did not understand are listed, and
-pasting the same week twice adds nothing twice.
+recorded one, or nothing, because it is there already. What the teacher wrote
+under a card is kept with the assignment, and the school's "Missing" email is
+kept as what the school reported, shown on both pages with where it came from
+and the day. Nothing is written until a parent says so, lines the reader did
+not understand are listed, and pasting the same week twice adds nothing twice.
 
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device

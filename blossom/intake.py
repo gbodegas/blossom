@@ -3,11 +3,13 @@
 The school's portal writes its homework page and its weekly summary in two
 small sets of line shapes, and its "Missing" email in a third. A parent
 pastes any of them as text, and this module reads the shapes into
-assignments and into each channel's claim about a due date, with no
-credential, no scraper, and no network. Nothing is written here: what was
-read is shown to the parent first, and put on record only when they say so.
-A line the reader does not understand is kept and shown as such, since a
-line dropped in silence is an assignment lost.
+assignments, into each channel's claim about a due date, into what the
+teacher wrote under a card, and into what the school reports about an
+assignment's status, with no credential, no scraper, and no network.
+Nothing is written here: what was read is shown to the parent first, and
+put on record only when they say so. A line the reader does not understand
+is kept and shown as such, since a line dropped in silence is an assignment
+lost.
 
 The shapes, as the portal writes them:
 
@@ -19,10 +21,13 @@ The shapes, as the portal writes them:
   line ``* MM/DD/YYYY - Tuesday``, then the same cards with the course and
   the card on one line, ``<Course> - Assigned: <Title>: (Due:MM/DD/YYYY)``
   or ``<Course> - Due: <Title>:``. A teacher's instruction may follow either
-  kind of card, on lines of its own.
+  kind of card, on lines of its own, and is kept with the assignment.
 - The email: ``MM/DD <Course> - <Section>: <Category>: <Title> Grade:
-  Missing``, one line per assignment, under ``Assignments:``. A line in that
-  shape with any other grade is not the "Missing" email and is left unread.
+  Missing``, one line per assignment, under ``Assignments:``. Each such line
+  is the school reporting the assignment missing, kept as a report with the
+  day: the email's own date when the paste carries its date line, otherwise
+  the day it was pasted, and the report says which. A line in that shape
+  with any other grade is not the "Missing" email and is left unread.
 
 One item appears under an assigned day and under a due day, often in two
 weeks, and is one assignment matched by its course and title, exactly as the
@@ -44,8 +49,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Final
 
-from blossom.reconciliation import SourceChannel, SourceRecord
-from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
+from blossom.reconciliation import CHANNEL_NAMES, SourceChannel, SourceRecord
+from blossom.stores.project_state import (
+    Assignment,
+    AssignmentKind,
+    ProjectStateStore,
+    StatusReport,
+)
 
 PORTAL_CONFIDENCE: Final = 0.9
 """The portal's own page, pasted whole: the school's word, as it wrote it."""
@@ -57,6 +67,8 @@ FAMILY_CONFIDENCE: Final = 0.8
 OWN_LINE: Final = "the assignment's own line"
 DAY_HEADER: Final = "the day's header"
 SCHOOL_EMAIL: Final = "the school's email"
+EMAIL_DATE_LINE: Final = "the email's date line"
+PASTE_DAY: Final = "the day it was pasted"
 
 TASK_WORD: Final = re.compile(
     r"\b(?:sign|signed|signature|syllabus|cover|covers|covered|binder|supplies|permission|bring)\b",
@@ -87,7 +99,7 @@ SUMMARY_DAY_LINE: Final = re.compile(
 )
 WEEK_LINE: Final = re.compile(r"^Week of\s+\d{1,2}/\d{1,2}/\d{4}\s*$", re.IGNORECASE)
 HEADING_LINE: Final = re.compile(r"^Homework for\b", re.IGNORECASE)
-"""The summary's heading, which carries her first name: read as nothing."""
+"""The summary's heading, which carries her first name: read as nothing, outside a card."""
 CARD_LINE: Final = re.compile(r"^(?P<course>.+?)\s+-\s+(?P<card>(?:Assigned|Due):.*)$")
 """The summary's card, course and card on one line, split at the first joining dash."""
 ASSIGNED_LINE: Final = re.compile(
@@ -99,7 +111,14 @@ EMAIL_LINE: Final = re.compile(
     r"(?P<category>[^:]+?):\s+(?P<title>.+?)\s+Grade:\s+(?P<grade>.+?)\s*$"
 )
 MISSING: Final = "missing"
-"""The one grade the school's email is read for."""
+"""The one grade the school's email is read for, kept as the status it reports."""
+MONTHS: Final = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+EMAIL_DATE: Final = re.compile(
+    r"\b(?P<month>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+"
+    r"(?P<day>\d{1,2}),\s+(?P<year>\d{4})\b"
+)
+"""A date as a mail program writes it, ``Sep 9, 2026`` or ``September 9, 2026``, anywhere in
+the pasted email: the day the school reported, when the paste carries it."""
 COURSE_LENGTH: Final = 60
 """A course line is short; a longer plain line is a teacher's instruction or a stray."""
 TEXT_MAX_LENGTH: Final = 40_000
@@ -141,7 +160,9 @@ class Reading:
     kind: AssignmentKind
     claims: tuple[SourceRecord, ...]
     note: str | None = None
-    """A teacher's instruction under the card, shown to the parent and not kept."""
+    """What the teacher wrote under the card, kept with the assignment."""
+    reports: tuple[StatusReport, ...] = ()
+    """What the school reports about the assignment's status, with the day."""
 
     @property
     def pair(self) -> tuple[str, str]:
@@ -153,6 +174,11 @@ class Reading:
         """The id a new row would have; a row already on record keeps its own."""
         return identity(self.course, self.title)
 
+    @property
+    def reported_status(self) -> str | None:
+        """The status the school reports, when it reports one."""
+        return self.reports[-1].status if self.reports else None
+
     def assignment(self) -> Assignment:
         """The record's row for a reading that is new to it."""
         return Assignment(
@@ -161,9 +187,10 @@ class Reading:
             title=self.title,
             due_date=self.due_date,
             dependencies=[],
-            reported_submission_status="unknown",
+            reported_submission_status=self.reported_status or "unknown",
             assigned_on=self.assigned_on,
             kind=self.kind,
+            note=self.note,
         )
 
 
@@ -199,6 +226,15 @@ def nearest_year(month: int, day: int, today: date) -> date | None:
     return min(found, key=lambda when: abs(when - today))
 
 
+def email_date(text: str) -> date | None:
+    """The day the email says it was sent, when the paste carries its date line."""
+    found = EMAIL_DATE.search(text)
+    if found is None:
+        return None
+    month = MONTHS.index(found.group("month").lower()) + 1
+    return a_date(found.group("year"), str(month), found.group("day"))
+
+
 def claim(
     channel: SourceChannel, value: date, seen_in: str | None, now: datetime, confidence: float
 ) -> SourceRecord:
@@ -212,6 +248,16 @@ def claim(
     )
 
 
+def spoken_report(report: StatusReport) -> str:
+    """The report's source and day as the pages say them, after the status itself."""
+    day = report.reported_on
+    when = f"{day.strftime('%A, %B')} {day.day}, {day.year}"
+    where = CHANNEL_NAMES[report.channel]
+    if report.dated_by == EMAIL_DATE_LINE:
+        return f"From the {where}, dated {when}."
+    return f"From the {where}, pasted {when}."
+
+
 @dataclass
 class _Draft:
     """A reading being assembled while the lines are walked."""
@@ -221,6 +267,7 @@ class _Draft:
     due_date: date | None = None
     assigned_on: date | None = None
     claims: list[SourceRecord] = field(default_factory=list)
+    reports: list[StatusReport] = field(default_factory=list)
     note_lines: list[str] = field(default_factory=list)
 
     def reading(self) -> Reading:
@@ -232,6 +279,7 @@ class _Draft:
             kind=kind_of(self.title),
             claims=tuple(self.claims),
             note=" ".join(self.note_lines) or None,
+            reports=tuple(self.reports),
         )
 
 
@@ -247,6 +295,10 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     are one reading with both claims.
     """
     lines = [line.strip() for line in text.splitlines()]
+    following = _next_lines(lines)
+    reported_on, dated_by = email_date(text), EMAIL_DATE_LINE
+    if reported_on is None:
+        reported_on, dated_by = today, PASTE_DAY
     drafts: dict[tuple[str, str], _Draft] = {}
     unread: list[str] = []
     day: date | None = None
@@ -256,8 +308,12 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
         if not line:
             last = None
             continue
-        if line.lower() in NOISE or WEEK_LINE.match(line) or HEADING_LINE.match(line):
+        if line.lower() in NOISE or WEEK_LINE.match(line):
             last = None
+            continue
+        if HEADING_LINE.match(line) and last is None:
+            # The summary's heading, outside a card; under a card the same
+            # words are a teacher's instruction and are kept as one.
             continue
         if day_match := DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line):
             day = a_date(day_match.group("year"), day_match.group("month"), day_match.group("day"))
@@ -274,6 +330,15 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             draft = _draft_for(drafts, email.group("course").strip(), email.group("title").strip())
             draft.claims.append(
                 claim(SourceChannel.EMAIL, when, SCHOOL_EMAIL, now, EMAIL_CONFIDENCE)
+            )
+            draft.reports.append(
+                StatusReport(
+                    status=MISSING,
+                    channel=SourceChannel.EMAIL,
+                    reported_on=reported_on,
+                    dated_by=dated_by,
+                    observed_at=now,
+                )
             )
             if draft.due_date is None:
                 draft.due_date = when
@@ -306,7 +371,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 draft.due_date = day
             last = draft
             continue
-        if _is_course_line(line, lines[index + 1 :]):
+        if _is_course_line(line, following[index]):
             course = line
             last = None
             continue
@@ -318,6 +383,17 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     return Read(items=tuple(draft.reading() for draft in drafts.values()), unread=tuple(unread))
 
 
+def _next_lines(lines: list[str]) -> list[str | None]:
+    """For each line, the next line that is not blank, found in one pass from the end."""
+    following: list[str | None] = [None] * len(lines)
+    ahead: str | None = None
+    for index in range(len(lines) - 1, -1, -1):
+        following[index] = ahead
+        if lines[index]:
+            ahead = lines[index]
+    return following
+
+
 def _draft_for(drafts: dict[tuple[str, str], _Draft], course: str, title: str) -> _Draft:
     key = pair(course, title)
     if key not in drafts:
@@ -325,15 +401,11 @@ def _draft_for(drafts: dict[tuple[str, str], _Draft], course: str, title: str) -
     return drafts[key]
 
 
-def _is_course_line(line: str, following: list[str]) -> bool:
+def _is_course_line(line: str, following: str | None) -> bool:
     """A short plain line whose next line is a card's line names the card's course."""
-    if len(line) > COURSE_LENGTH or line.endswith(":"):
+    if len(line) > COURSE_LENGTH or line.endswith(":") or following is None:
         return False
-    for candidate in following:
-        if not candidate:
-            continue
-        return bool(ASSIGNED_LINE.match(candidate) or DUE_LINE.match(candidate))
-    return False
+    return bool(ASSIGNED_LINE.match(following) or DUE_LINE.match(following))
 
 
 def by_hand(
@@ -387,7 +459,9 @@ class Change:
     reading: Reading
     on_record: Assignment | None
     new_claims: tuple[SourceRecord, ...]
+    new_reports: tuple[StatusReport, ...]
     fills_assigned_on: bool
+    fills_note: bool
 
     @property
     def assignment_id(self) -> str:
@@ -397,11 +471,25 @@ class Change:
         return self.reading.assignment_id
 
     @property
+    def additions(self) -> tuple[str, ...]:
+        """What a reading adds to a row already on record, in the preview's words."""
+        parts = []
+        if self.new_claims:
+            parts.append("a new date claim")
+        if self.new_reports:
+            parts.append("what the school reports")
+        if self.fills_assigned_on:
+            parts.append("the assigned date")
+        if self.fills_note:
+            parts.append("the teacher's note")
+        return tuple(parts)
+
+    @property
     def state(self) -> str:
         """``new`` to the record, ``known`` with nothing to add, or ``claimed`` with something."""
         if self.on_record is None:
             return NEW
-        if self.new_claims or self.fills_assigned_on:
+        if self.additions:
             return CLAIMED
         return KNOWN
 
@@ -412,11 +500,9 @@ class Change:
             return "New"
         if self.state == KNOWN:
             return "Already on record, nothing new"
-        if self.new_claims and self.fills_assigned_on:
-            return "On record; a new date claim and the assigned date"
-        if self.new_claims:
-            return "On record; a new date claim"
-        return "On record; the assigned date is new"
+        parts = self.additions
+        joined = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+        return f"On record; {joined}"
 
 
 def changes_for(items: tuple[Reading, ...], store: ProjectStateStore) -> list[Change]:
@@ -425,18 +511,19 @@ def changes_for(items: tuple[Reading, ...], store: ProjectStateStore) -> list[Ch
     A reading matches a row by its course and title, whatever the row's id,
     so an assignment on record from a fixture or an earlier paste takes the
     claims rather than a twin. A claim already on record, the same channel
-    saying the same value from the same place, is not made twice. The
-    recorded due date is never replaced by a paste; a different date is a
-    claim beside it, which the page shows as a disagreement. The assigned
-    date is filled in when the record has none, since that is a fact the
-    record lacked, not one it holds.
+    saying the same value from the same place, is not made twice, and
+    neither is a report of the same status on the same day. The recorded
+    due date is never replaced by a paste; a different date is a claim
+    beside it, which the page shows as a disagreement. The assigned date and
+    the teacher's note are filled in when the record has none, since those
+    are facts the record lacked, not ones it holds.
     """
     on_record = {pair(item.course, item.title): item for item in store.all_assignments()}
     changes: list[Change] = []
     for reading in items:
         existing = on_record.get(reading.pair)
         if existing is None:
-            changes.append(Change(reading, None, reading.claims, False))
+            changes.append(Change(reading, None, reading.claims, reading.reports, False, False))
             continue
         had = {
             (record.channel, record.asserted_value, record.seen_in)
@@ -447,13 +534,31 @@ def changes_for(items: tuple[Reading, ...], store: ProjectStateStore) -> list[Ch
             for record in reading.claims
             if (record.channel, record.asserted_value, record.seen_in) not in had
         )
+        said = {
+            (report.channel, report.status, report.reported_on)
+            for report in store.status_reports(existing.assignment_id)
+        }
+        news = tuple(
+            report
+            for report in reading.reports
+            if (report.channel, report.status, report.reported_on) not in said
+        )
         fills = existing.assigned_on is None and reading.assigned_on is not None
-        changes.append(Change(reading, existing, fresh, fills))
+        fills_note = existing.note is None and reading.note is not None
+        changes.append(Change(reading, existing, fresh, news, fills, fills_note))
     return changes
 
 
-def keep(items: tuple[Reading, ...], store: ProjectStateStore) -> int:
-    """Compare and write as one: put on record what the record lacks, and say how many.
+@dataclass(frozen=True)
+class Kept:
+    """What one keeping did: rows put on record, and rows already there that changed."""
+
+    new: int
+    changed: int
+
+
+def keep(items: tuple[Reading, ...], store: ProjectStateStore) -> Kept:
+    """Compare and write as one: put on record what the record lacks, and say what changed.
 
     The comparison and the write happen while the store is held for this
     caller alone, so two keepings of the same text, a double press or two
@@ -464,18 +569,28 @@ def keep(items: tuple[Reading, ...], store: ProjectStateStore) -> int:
         changes = changes_for(items, store)
         rows: list[Assignment] = []
         claims: dict[str, list[SourceRecord]] = {}
-        kept = 0
+        reports: dict[str, list[StatusReport]] = {}
+        new = changed = 0
         for change in changes:
             if change.state == KNOWN:
                 continue
-            kept += 1
             if change.on_record is None:
+                new += 1
                 rows.append(change.reading.assignment())
-            elif change.fills_assigned_on:
-                rows.append(
-                    change.on_record.model_copy(update={"assigned_on": change.reading.assigned_on})
-                )
+            else:
+                changed += 1
+                filled: dict[str, object] = {}
+                if change.fills_assigned_on:
+                    filled["assigned_on"] = change.reading.assigned_on
+                if change.fills_note:
+                    filled["note"] = change.reading.note
+                if change.new_reports:
+                    filled["reported_submission_status"] = change.new_reports[-1].status
+                if filled:
+                    rows.append(change.on_record.model_copy(update=filled))
             if change.new_claims:
                 claims[change.assignment_id] = list(change.new_claims)
-        store.put_on_record(rows, claims)
-    return kept
+            if change.new_reports:
+                reports[change.assignment_id] = list(change.new_reports)
+        store.put_on_record(rows, claims, reports)
+    return Kept(new=new, changed=changed)
