@@ -983,6 +983,31 @@ def test_her_page_is_read_as_one_snapshot_of_the_record(tmp_path: pathlib.Path) 
     assert "Book Covers" in page.text
 
 
+def test_the_family_page_reads_the_schools_reports_as_one_snapshot(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The family page reads the reports and the rows while it holds the store, as her page
+    does: while the store is held elsewhere, the page waits, and comes once it is let go."""
+    with (
+        TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        client.post("/parent/inbox/keep", data={"text": SUMMARY})
+        client.post("/parent/inbox/keep", data={"text": EMAIL})
+        held = state_of(client).project_state.exclusively()
+        held.__enter__()
+        try:
+            reading = pool.submit(client.get, "/parent", headers=PAGE)
+            _, still_waiting = wait([reading], timeout=0.3)
+        finally:
+            held.__exit__(None, None, None)
+        page = reading.result(timeout=10)
+
+    assert reading in still_waiting
+    assert page.status_code == 200
+    assert "<strong>Book Covers: the school reports it missing.</strong>" in page.text
+
+
 def test_the_way_in_is_a_parents(tmp_path: pathlib.Path) -> None:
     settings = settings_in(
         tmp_path,

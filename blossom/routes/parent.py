@@ -464,9 +464,17 @@ def review_page(
 
 
 def reported_by_the_school(state: ApplicationState) -> list[SchoolReportView]:
-    """Every assignment the school has reported on, with its latest report, by due date."""
-    latest = state.project_state.latest_status_reports()
-    rows = [item for item in state.project_state.all_assignments() if item.assignment_id in latest]
+    """Every assignment the school has reported on, with its latest report, by due date.
+
+    The reports and the rows are read while the store is held, one
+    snapshot, as her page reads them: a saving landing between the two
+    reads could otherwise pair new rows with old reports.
+    """
+    with state.project_state.exclusively():
+        latest = state.project_state.latest_status_reports()
+        rows = [
+            item for item in state.project_state.all_assignments() if item.assignment_id in latest
+        ]
     return [
         SchoolReportView(
             course=item.course,
