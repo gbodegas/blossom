@@ -80,7 +80,7 @@ from blossom.clock import Clock
 from blossom.dependencies import ApplicationState
 from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
-from blossom.noticing import Noticing, read_week, reconcile_dates
+from blossom.noticing import Noticing, planning_digest, read_week, reconcile_dates
 from blossom.plan_checks import (
     PlanVerification,
     check_plan,
@@ -197,6 +197,7 @@ class PlanState(TypedDict):
     confidence: NotRequired[dict[str, SourceConfidence]]
     noticings: NotRequired[list[Noticing]]
     too_much: NotRequired[bool]
+    inputs_digest: NotRequired[str]
     budget_minutes: NotRequired[int]
     support_rules: NotRequired[list[str]]
     reflections: NotRequired[list[str]]
@@ -292,6 +293,9 @@ def build_plan_graph(
             "confidence": confidence,
             "noticings": noticings,
             "too_much": too_much,
+            # Taken here, as the week is read, so a change between the reading
+            # and the draft reads as a change too.
+            "inputs_digest": planning_digest(week),
             "budget_minutes": budget,
             "support_rules": rules,
             "reflections": notes,
@@ -405,6 +409,7 @@ def build_plan_graph(
             outcome=cast(Literal["accepted", "unsettled"], outcome),
             steps=state.get("steps", []),
             too_much=state.get("too_much", False),
+            inputs_digest=state.get("inputs_digest"),
         )
         return {"draft": draft}
 

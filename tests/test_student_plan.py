@@ -305,7 +305,7 @@ def test_times_read_as_she_reads_a_clock() -> None:
         page = client.get(PAGE).text
 
     assert re.search(r"You said it was too much</strong> at \d{1,2}:\d{2} [AP]M\.", page)
-    assert not re.search(r"\b[01]\d:\d{2}\b(?! [AP]M)", page.split("<main>", 1)[1]), (
+    assert not re.search(r"\b[01]\d:\d{2}\b(?! [AP]M)", page.split('<main id="main">', 1)[1]), (
         "no 24-hour time anywhere on the page"
     )
     assert "Nothing has been planned yet; the plan you make will be the shorter one." in page
@@ -500,7 +500,7 @@ def test_the_planning_forms_carry_the_pending_words_and_the_others_do_not() -> N
         theirs = client.get("/parent").text
         script = client.get("/static/blossom.js")
 
-    assert '<script src="/static/blossom.js" defer></script>' in hers
+    assert re.search(r'<script src="/static/blossom\.js\?v=[0-9a-f]{12}" defer></script>', hers)
     assert 'data-pending="Making your plan"' in hers
     assert 'data-pending="Making the plan"' in theirs
     assert hers.count('data-pending="') == 1

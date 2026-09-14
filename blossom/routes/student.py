@@ -57,6 +57,7 @@ from blossom.anthropic_client import model_configured
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
+from blossom.intake import spoken_report
 from blossom.noticing import (
     Noticing,
     expect_due_date,
@@ -80,7 +81,7 @@ from blossom.routes.runs import Graphs, require_model, run_plan
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
-from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment
+from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, StatusReport
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.templating import page_templates
 from blossom.views import (
@@ -117,6 +118,10 @@ SIGNALED_SINCE: Final = (
 SIGNAL_ENDED: Final = (
     "This plan was kept to the smaller evening for a signal that is not there now. "
     "It stays until a new one is made; plan again for the full evening."
+)
+ASSIGNMENTS_CHANGED: Final = (
+    "Your assignments changed after this plan was made, so it does not cover your week "
+    "as it stands. It stays until a new one is made; plan again when you are ready."
 )
 
 router = APIRouter(prefix="/student", tags=["student"])
@@ -275,13 +280,21 @@ def take_back_help(request_id: str, state: State) -> Response:
 
 
 def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
-    """Her projection of a draft: the plan, a parent's review if any, and whether it still fits."""
+    """Her projection of a draft: the plan, a parent's review if any, and whether it still fits.
+
+    A decided plan is history: it is measured against her signal, as it
+    always was, but not against the week, which may well change after a
+    parent has said the plan looks good.
+    """
     stale = None
-    match staleness(state.workload_signals, record):
+    week = state.project_state if record.waiting else None
+    match staleness(state.workload_signals, record, week):
         case Staleness.SIGNALED_SINCE:
             stale = SIGNALED_SINCE
         case Staleness.SIGNAL_ENDED:
             stale = SIGNAL_ENDED
+        case Staleness.ASSIGNMENTS_CHANGED:
+            stale = ASSIGNMENTS_CHANGED
         case None:
             stale = None
     return StudentPlanView(
@@ -365,7 +378,10 @@ def channels_in_words(channels: Sequence[str]) -> str:
 
 
 def assignment_view(
-    assignment: Assignment, records: Sequence[SourceRecord], noticed: Noticing
+    assignment: Assignment,
+    records: Sequence[SourceRecord],
+    noticed: Noticing,
+    report: StatusReport | None = None,
 ) -> StudentAssignmentView:
     """One assignment as she sees it, with where its date came from said once per channel.
 
@@ -422,6 +438,10 @@ def assignment_view(
         school_contradicts=noticed.contradicted
         and any(record.channel in SCHOOL_CHANNELS for record in readable),
         assigned_on=assignment.assigned_on,
+        note=assignment.note,
+        note_by_a_parent=assignment.origins.get("note") == SourceChannel.PARENT_ENTRY,
+        entered_by_a_parent=assignment.origins.get("record") == SourceChannel.PARENT_ENTRY,
+        school_report="" if report is None else spoken_report(report),
     )
 
 
@@ -473,23 +493,39 @@ def build_student_due_this_week_view(
     today = state.clock.today()
     frame = week_shown(today, week)
     on_record = state.project_state
-    shown = read_week(on_record, on_record, frame.start)
+    with on_record.exclusively():
+        # One snapshot: a saving landing between two reads could otherwise
+        # show a card whose status and report disagree.
+        shown = read_week(on_record, on_record, frame.start)
+        reported = on_record.latest_status_reports()
+        in_frame = {item.assignment_id for item in shown.assignments}
+        later = [
+            item
+            for item in on_record.all_assignments()
+            if item.assignment_id not in in_frame and assigned_for_later(item, frame)
+        ]
+        later_records = {
+            item.assignment_id: on_record.deadline_records(item.assignment_id) for item in later
+        }
     # Never filter here; see the module docstring.
     views = [
         assignment_view(
-            item, shown.records[item.assignment_id], shown.noticings[item.assignment_id]
+            item,
+            shown.records[item.assignment_id],
+            shown.noticings[item.assignment_id],
+            reported.get(item.assignment_id),
         )
         for item in shown.assignments
     ]
-    in_frame = {item.assignment_id for item in shown.assignments}
-    assigned: list[StudentAssignmentView] = []
-    for item in state.project_state.all_assignments():
-        if item.assignment_id in in_frame or not assigned_for_later(item, frame):
-            continue
-        records = on_record.deadline_records(item.assignment_id)
-        assigned.append(
-            assignment_view(item, records, notice_due_date(expect_due_date(item), records))
+    assigned = [
+        assignment_view(
+            item,
+            later_records[item.assignment_id],
+            notice_due_date(expect_due_date(item), later_records[item.assignment_id]),
+            reported.get(item.assignment_id),
         )
+        for item in later
+    ]
     tonight = state.workload_signals.for_evening(today)
     household = state.settings
     return StudentDueThisWeekView(

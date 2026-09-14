@@ -46,6 +46,7 @@ Without that, the visibility policy is stated but not observable.
 """
 
 import logging
+from collections.abc import Mapping
 from datetime import date
 from typing import Annotated, Any, Final
 
@@ -59,6 +60,8 @@ from blossom.anthropic_client import model_configured
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
+from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
+from blossom.intake import TEXT_MAX_LENGTH, spoken_report
 from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
@@ -73,6 +76,7 @@ from blossom.views import (
     ParentCheckpointView,
     PlanRunView,
     RunView,
+    SchoolReportView,
 )
 
 logger = logging.getLogger(__name__)
@@ -120,6 +124,12 @@ SIGNAL_ENDED: Final = (
     "Her signal for this evening is gone, taken back or past its week, and this plan "
     "was kept short for it. Plan again for the full evening."
 )
+ASSIGNMENTS_CHANGED: Final = (
+    "Assignments changed after this plan was made: work was added or taken away in its "
+    "window, or a date, a type, a note, a status the school reports, or what a source "
+    "says about a date changed. The plan does not cover the week as it stands. Plan again "
+    "before approving."
+)
 
 
 def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
@@ -144,11 +154,13 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
     """
     if not record.waiting or record.plan_date < state.clock.today():
         return None
-    match staleness(state.workload_signals, record):
+    match staleness(state.workload_signals, record, state.project_state):
         case Staleness.SIGNALED_SINCE:
             return SIGNALED_SINCE
         case Staleness.SIGNAL_ENDED:
             return SIGNAL_ENDED
+        case Staleness.ASSIGNMENTS_CHANGED:
+            return ASSIGNMENTS_CHANGED
         case None:
             return None
 
@@ -400,14 +412,24 @@ def review_page(
     state: ApplicationState,
     *,
     problem: str | None = None,
+    problem_field: str | None = None,
     refreshed: bool = False,
+    added: int | None = None,
+    updated: int | None = None,
+    unchanged: int | None = None,
+    paste: str | None = None,
+    entry: Mapping[str, str] | None = None,
+    entry_open: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
-    """Render the queue, the decisions, and the form to plan an evening.
+    """Render the queue, the decisions, the forms to plan an evening and to add assignments,
+    and the folds below.
 
     ``problem`` is what a form action could not do, shown once at the top with
     the status the JSON route would have answered, so the page tells the truth
-    the API tells.
+    the API tells; ``problem_field`` names the entry field it is about, so the
+    page can mark it and put the cursor there. ``paste`` and ``entry`` are a
+    draft to show again, as it was, with the section open.
     """
     return templates.TemplateResponse(
         request,
@@ -426,9 +448,42 @@ def review_page(
             "sample": state.settings.sample,
             "zone": state.clock.zone,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
+            "added": added,
+            "updated": updated,
+            "unchanged": unchanged,
+            "problem_field": problem_field,
+            "paste": paste or "",
+            "entry": dict(entry or {}),
+            "entry_open": entry_open or bool(paste) or bool(entry),
+            "text_max_length": TEXT_MAX_LENGTH,
+            "entry_note_max_length": ENTRY_NOTE_MAX_LENGTH,
+            "reported": reported_by_the_school(state),
         },
         status_code=status_code,
     )
+
+
+def reported_by_the_school(state: ApplicationState) -> list[SchoolReportView]:
+    """Every assignment the school has reported on, with its latest report, by due date.
+
+    The reports and the rows are read while the store is held, one
+    snapshot, as her page reads them: a saving landing between the two
+    reads could otherwise pair new rows with old reports.
+    """
+    with state.project_state.exclusively():
+        latest = state.project_state.latest_status_reports()
+        rows = [
+            item for item in state.project_state.all_assignments() if item.assignment_id in latest
+        ]
+    return [
+        SchoolReportView(
+            course=item.course,
+            title=item.title,
+            status=latest[item.assignment_id].status,
+            sentence=spoken_report(latest[item.assignment_id]),
+        )
+        for item in rows
+    ]
 
 
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
@@ -438,9 +493,35 @@ def review(
     refreshed: Annotated[
         str | None, Query(description="1 after a refresh, to say when; changes nothing else")
     ] = None,
+    added: Annotated[
+        str | None, Query(description="how many assignments the last save added; a note")
+    ] = None,
+    updated: Annotated[
+        str | None, Query(description="how many saved assignments the last save changed; a note")
+    ] = None,
+    unchanged: Annotated[
+        str | None, Query(description="how many the last save left as they were; a note")
+    ] = None,
 ) -> HTMLResponse:
     """The parent's page: what she asked for, what is waiting, and the folds below."""
-    return review_page(request, state, refreshed=refreshed == "1")
+    return review_page(
+        request,
+        state,
+        refreshed=refreshed == "1",
+        added=a_count(added),
+        updated=a_count(updated),
+        unchanged=a_count(unchanged),
+    )
+
+
+def a_count(given: str | None) -> int | None:
+    """A count from the address, or none: anything that is not a count, a number below
+    zero included, is no note."""
+    try:
+        count = None if given is None else int(given)
+    except ValueError:
+        return None
+    return None if count is not None and count < 0 else count
 
 
 @router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)

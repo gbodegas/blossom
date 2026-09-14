@@ -5,10 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Blossom{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/mark.svg">
-    <link rel="stylesheet" href="/static/blossom.css">
-    <script src="/static/blossom.js" defer></script>
+    <link rel="stylesheet" href="/static/blossom.css?v={{ asset_tag }}">
+    <script src="/static/blossom.js?v={{ asset_tag }}" defer></script>
   </head>
   <body>
+    <a class="skip" href="#main">Skip to main content</a>
     <header class="masthead">
       <a class="brand" href="/student/due-this-week">
         <img class="mark" src="/static/mark.svg" alt="" width="44" height="33">
@@ -29,7 +30,7 @@
         {% endif %}
       </nav>
     </header>
-    <main>
+    <main id="main"{% if wide %} class="wide"{% endif %}>
       {% if sample %}<p class="sample-label">Sample week</p>{% endif %}
       {% block content %}{% endblock %}
     </main>

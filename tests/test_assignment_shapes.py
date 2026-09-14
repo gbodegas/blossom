@@ -192,6 +192,27 @@ def test_the_planner_is_told_the_kind_the_assigned_date_and_an_unknown_due_date(
     assert 'due="unknown"' in text
 
 
+def test_the_planner_is_told_whose_words_a_note_is() -> None:
+    """A teacher's instruction and a parent's guidance are different things to plan around,
+    and the record says which a note is; a note with no origin is read as the teacher's."""
+    teachers = ESSAY.model_copy(
+        update={"note": "Cite two sources.", "origins": {"note": SourceChannel.LMS}}
+    )
+    parents = SYLLABUS.model_copy(
+        update={"note": "Signed on Sunday.", "origins": {"note": SourceChannel.PARENT_ENTRY}}
+    )
+    unmarked = ESSAY.model_copy(
+        update={"assignment_id": "assignment-reading", "note": "Read chapter two."}
+    )
+    text = assignments_block([teachers, parents, unmarked], {})
+
+    assert 'teacher_wrote="Cite two sources."' in text
+    assert 'parent_wrote="Signed on Sunday."' in text
+    assert 'teacher_wrote="Read chapter two."' in text
+    assert text.count("parent_wrote=") == 1
+    assert text.count("teacher_wrote=") == 2
+
+
 def test_the_critic_is_told_which_assignments_have_no_date() -> None:
     plan = DailyPlan(
         plan_date=PLAN_DATE,

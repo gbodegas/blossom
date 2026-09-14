@@ -21,10 +21,12 @@ No model takes part. The rules fit in one function, and
 ``tests/noticing_cases.py`` holds them to a labeled table.
 """
 
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import StrEnum
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict
 
@@ -186,6 +188,43 @@ def monday_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
+PLANNING_DIGEST: Final = uuid.UUID("c4a2b3d1-6e5f-4a7b-8c9d-0e1f2a3b4c5d")
+"""The namespace a week's fingerprint is drawn from."""
+
+
+def planning_digest(week: Week) -> str:
+    """A fingerprint of what a plan is made from: the week's assignments and what is said
+    about them, in a fixed order, so the same week reads the same and any change reads
+    differently.
+
+    Covered: each assignment's id, due date, assigned date, kind, note, and
+    reported status, and each claim about its date, channel, value, and where
+    it was read. Not covered: when a claim was made or how sure it was, which
+    change nothing a plan is built on.
+    """
+    lines = []
+    for item in sorted(week.assignments, key=lambda item: item.assignment_id):
+        lines.append(
+            "\t".join(
+                [
+                    item.assignment_id,
+                    "" if item.due_date is None else item.due_date.isoformat(),
+                    "" if item.assigned_on is None else item.assigned_on.isoformat(),
+                    item.kind.value,
+                    item.note or "",
+                    item.reported_submission_status,
+                ]
+            )
+        )
+        for record in week.records.get(item.assignment_id, []):
+            lines.append(
+                "\t".join(
+                    ["claim", record.channel.value, record.asserted_value, record.seen_in or ""]
+                )
+            )
+    return uuid.uuid5(PLANNING_DIGEST, "\n".join(lines)).hex
+
+
 def read_week(project_state: ProjectStateStore, source: DateClaims, start: date) -> Week:
     """Read the week from ``start``: state each record's date, read the sources, then select.
 
@@ -195,12 +234,16 @@ def read_week(project_state: ProjectStateStore, source: DateClaims, start: date)
     looking at, the planner on the evening being planned, so a plan looks at
     the seven days ahead and her page says so. Every assignment on record is
     considered, because the sources decide the window along with the record.
+    The rows and the claims are read while the store is held, one snapshot,
+    so a saving landing between two reads cannot give a week whose rows and
+    claims disagree, nor a plan's fingerprint that misses a change just made.
     """
-    everything = project_state.all_assignments()
+    with project_state.exclusively():
+        everything = project_state.all_assignments()
+        records = {
+            item.assignment_id: source.deadline_records(item.assignment_id) for item in everything
+        }
     expectations = [expect_due_date(item) for item in everything]
-    records = {
-        item.assignment_id: source.deadline_records(item.assignment_id) for item in everything
-    }
     noticed = {
         expectation.assignment_id: notice_due_date(expectation, records[expectation.assignment_id])
         for expectation in expectations

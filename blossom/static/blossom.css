@@ -165,7 +165,7 @@ summary {
 }
 
 .signout button {
-  min-height: 2.25rem;
+  min-height: 2.75rem;
   padding: 0.35rem 1rem;
 }
 
@@ -735,6 +735,8 @@ input::placeholder {
 /* Focus is the action blue at full strength, so it reads on the paper and on
    a card, and never only by a change of color inside the control. */
 input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible {
@@ -873,5 +875,309 @@ form.inline button {
   article,
   .panel {
     padding: 1.1rem 1.2rem;
+  }
+}
+
+/* ------------------------------------------------------------- the way in */
+
+/* The paste box and the entry form take the same field as the text inputs.
+   The box is as wide as the column and tall enough for a page of the
+   portal's text; the entry's fields sit in columns where there is room and
+   stack where there is not, so the form is one shape on a wide screen, a
+   laptop, and a tablet. */
+textarea,
+select {
+  font: inherit;
+  font-family: var(--font-body);
+  color: var(--text);
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-small);
+  background: var(--surface-strong);
+}
+
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 11rem;
+  resize: vertical;
+}
+
+select {
+  min-height: 2.75rem;
+}
+
+.entry {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.75rem 1rem;
+  align-items: end;
+}
+
+.entry .actions {
+  grid-column: 1 / -1;
+}
+
+.entry-heading {
+  margin-top: 1.5rem;
+}
+
+/* What a paste claims about a date, under its card, in the words her page uses. */
+.claims-read {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--text-soft);
+  font-size: 0.92rem;
+}
+
+/* Lines the reader did not understand, shown as they were pasted. */
+.unread li {
+  margin: 0.35rem 0;
+}
+
+.unread code {
+  font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+/* What the teacher wrote under a card, in the soft tone, quoted as the portal shows it. */
+.from-teacher {
+  margin: 0.35rem 0 0.75rem;
+  color: var(--text-soft);
+  font-size: 0.92rem;
+}
+
+/* ------------------------------------------------------------- the way in, reviewed */
+
+/* A field's outline has to be seen on its own, before it is focused, so a
+   blank field shows its extent: a slate a step darker than the decorative
+   edges, reading at least 3:1 on the card and on the field. Card borders
+   keep their softer tone. */
+:root {
+  --field-edge: #6b7d90;
+}
+
+input[type="text"],
+input[type="date"],
+textarea,
+select {
+  border-color: var(--field-edge);
+  min-width: 0;
+  max-width: 100%;
+}
+
+input[aria-invalid="true"],
+textarea[aria-invalid="true"],
+select[aria-invalid="true"] {
+  border-color: var(--rose-ink);
+  border-width: 2px;
+}
+
+/* A link for the keyboard, before everything else, shown only when it has focus. */
+.skip {
+  position: absolute;
+  left: -999px;
+  top: 0.5rem;
+  z-index: 10;
+  padding: 0.6rem 1rem;
+  border-radius: var(--pill);
+  background: var(--blue-action);
+  color: #fff;
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.skip:focus {
+  left: 1rem;
+}
+
+/* Text that came from the school, or from a parent, is never clipped and
+   never cut: a long title, a course, a note, or an unread line wraps inside
+   its card, at any width. */
+.assignment h2,
+.assignment .course,
+.course-name,
+.from-teacher,
+.source,
+.claims-read,
+.unread,
+.effect,
+.compare dd,
+.kept li,
+.assigned li {
+  overflow-wrap: anywhere;
+}
+
+.from-teacher {
+  white-space: pre-line;
+}
+
+.entry > * {
+  min-width: 0;
+}
+
+.entry .span-all {
+  grid-column: 1 / -1;
+}
+
+.entry label {
+  margin: 0;
+}
+
+.entry .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.helper {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-soft);
+}
+
+.lead-action {
+  margin: -0.5rem 0 1.25rem;
+}
+
+.lead-action a {
+  color: var(--blue-action);
+  font-weight: 700;
+}
+
+/* An empty state that is only a sentence, not a card of dashes. */
+.empty.quiet {
+  padding: 0.25rem 0;
+  border: 0;
+  text-align: left;
+  color: var(--text-soft);
+}
+
+/* A button that is disabled because the work is done, not because work is
+   under way: no progress cursor, and the page says why beside it. */
+button[disabled].done {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.steps-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+  color: var(--text-soft);
+  font-family: var(--font-display);
+}
+
+.steps-line li[aria-current="step"] {
+  color: var(--blue-action);
+}
+
+pre.example {
+  font-size: 0.9rem;
+  color: var(--text-soft);
+}
+
+.course-name {
+  margin: 0 0 0.1rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--rose-ink);
+}
+
+.compare {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0;
+}
+
+.compare dt {
+  color: var(--text-soft);
+}
+
+.compare dd {
+  margin: 0;
+}
+
+.effect {
+  margin: 0.5rem 0;
+}
+
+.choice {
+  margin: 0.75rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--field-edge);
+  border-radius: var(--radius-small);
+}
+
+.choice legend {
+  font-family: var(--font-display);
+  font-weight: 600;
+  padding: 0 0.35rem;
+}
+
+.choice label {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  margin: 0;
+  font-family: var(--font-body);
+}
+
+.type-choice {
+  margin-top: 0.5rem;
+  max-width: 14rem;
+}
+
+.line-number {
+  color: var(--text-soft);
+  font-size: 0.9rem;
+}
+
+.needs-review {
+  border-left: 3px solid var(--amber-ink);
+}
+
+.review-week h2 {
+  margin-top: 1.5rem;
+}
+
+.review-actions {
+  align-items: center;
+}
+
+.cancel {
+  color: var(--rose-ink);
+  font-weight: 700;
+}
+
+/* The review page: a bounded workspace on a wide screen, the cards in one
+   column and the save decision beside them; one column where there is no
+   room, the decision after the cards. */
+main.wide {
+  max-width: 46rem;
+}
+
+@media (min-width: 72rem) {
+  main.wide {
+    max-width: 72rem;
+  }
+
+  main.wide .review-form {
+    display: grid;
+    grid-template-columns: minmax(0, 46rem) minmax(16rem, 22rem);
+    gap: 0 2rem;
+    align-items: start;
+  }
+
+  main.wide .review-aside {
+    position: sticky;
+    top: 1rem;
   }
 }

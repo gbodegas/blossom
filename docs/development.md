@@ -214,6 +214,127 @@ else: never forward the port through the router or put the server on the
 internet. The sign-in tells the two people apart on the family's own network;
 it is not a defense against the internet.
 
+## Adding assignments
+
+The family page has a fold, "Add assignments", with the two ways in. The
+first is a box for the school portal's own text: open the homework page, the
+weekly summary, or the school's "Missing" email, select the text, copy it,
+and paste it whole; "See an example" shows the shape. The reader knows the
+portal's line shapes: the day headers, with or without a bullet before them,
+the course lines, the ``Assigned: <Title>: (Due:MM/DD/YYYY)`` and
+``Due: <Title>:`` cards, the summary's one-line cards, the download's
+trailing backslashes, and the email's one line per assignment with the grade
+"Missing". It reads them into assignments and into the portal's claims about
+their dates, with where each claim was read: the assignment's own line or
+the day's header. One item seen under an assigned day and again under a due
+day, often in two weeks, is one assignment, matched by its course and title
+as the portal writes them.
+
+"Preview assignments" writes nothing. The review page groups what was read
+by school week, Monday to Sunday, so work due on a Sunday sits in the week
+before the one the portal's Sunday-first picker shows it under, and heads
+each week with a count: new, updates, already saved. Each card says exactly
+what saving would do. New work is saved as new. A date that differs from the
+saved one is shown beside it, "Saved due date" and "Pasted due date", and is
+saved as evidence beside the saved date, which stays, so her page can say
+the sources disagree. A record with no due date takes the pasted one; an
+assigned date or a note the record lacks is filled in. Work that comes round
+again under the same name, a weekly practice named again a week or more
+from the saved date, or twice in one text a week or more apart, is not
+merged in silence: the card asks whether it is the same assignment with its
+due date changed or new work. Saying it is the same moves the saved date to
+the pasted one, or folds the later card into the first; saying it is new
+work makes a row of its own. Either answer is kept, so the next paste of
+that text finds the right row and asks nothing, and the same answer sent
+twice, from a retry or a page left open, changes nothing. The type, homework
+or task, is suggested from the title, paperwork and materials being tasks,
+and can be changed on any card, a saved one included; a parent's choice is
+kept as theirs, and the type typed with an entry corrects a saved row the
+same way. A choice is a select changed from what the page showed; a card
+left as shown is no answer, so when several cards are about one assignment
+a type chosen on any of them, a folded one included, is the assignment's,
+and two cards choosing different types stop the save until one is picked.
+A page that comes back because a question is still open keeps every choice
+made on it, the folded cards' answers and the questions answered already
+included, and says whether the question is one it put or one the record
+raised since. The card shown for
+an assignment decides its type: a change made on it, a change back to what
+the reader suggested included, stands over any choice a folded card carried. Several cards about one saved assignment in one text compose: the
+date one moves, the note another adds, and the assigned date a third fills
+all reach the one row, every date observation with them, and the count on
+return says how many assignments changed, not how many cards. The Save
+button counts a question waiting for an answer as a save. "Save N assignments" writes all of it
+in one step and returns to the family page with what was added, updated, and
+unchanged; "Edit" goes back with the text or the fields as they were;
+"Cancel import" writes nothing. Pasting the same page or week again is safe:
+what is there already is said to be, and nothing is added twice, even from
+two tabs at once.
+
+Lines the reader did not take are listed first, as text that needs review,
+with their line numbers, so nothing is dropped in silence. A line shaped
+like a day or a card that does not read as one, ``(Due:TBD)`` for instance,
+is listed there and never taken for a teacher's words, and it ends the card
+before it.
+
+The teacher's instruction under a card is kept with the assignment, line
+breaks and all, and shown on her card as "From the teacher"; a note typed by
+a parent shows as "A parent wrote", and the planner is told whose words a
+note is. The record keeps where each fact came
+from, the row itself, its note, its due and assigned dates, and its type, so
+her page can say "Entered by a parent" and the review page can say whose
+note stands: a parent's note replaces any saved note and is never replaced
+by the school's, and the school's note replaces the school's own.
+
+A "Missing" line in the school's email is kept as what the school reported,
+with the day: the email's own date when the paste carries its date line, a
+``Date:`` or ``Sent:`` header, a forwarded "On Tue, Sep 8, 2026 at 9:14 AM
+... wrote:", or the line "Tue, Sep 8, 2026" itself, otherwise the day it
+was pasted, and both pages say which; the day it was pasted is the day the
+text was first previewed, carried through the review, so a review that
+spans midnight saves the day the page said; the date line is read where it
+stands, before the lines it dates, and a date inside a title or an
+instruction never dates the email. When one text holds the email and the
+portal's page, or the two are saved one after the other, each fact keeps the
+channel that gave it: the report is the email's, the dates and the
+instruction are the portal's, whichever named the assignment first. The date the
+email writes beside an assignment is kept as the text it is, "The email
+writes 09/09 beside it, which it does not explain", and is never a due date.
+Her page shows the report as a banner on the card, "The school reports this
+missing", with the source and the day; the family page lists the same under
+"Reported by the school".
+
+The second way in is one assignment by hand: a course as the portal names
+it and a title are required; a due date, an assigned date, the type, and a
+note are optional, and a type left as it is keeps a saved assignment's type
+and takes the title's suggestion for a new one, so an entry that only adds
+a date or a note to a saved task leaves it a task. A date more than a year from today is refused, since it
+is almost always a mistyped year. A form that fails comes back with every
+field as it was, the failing field named and focused, and the fold open. An
+entry is reviewed the same way before it is saved, and its date is the
+family's own claim, which her page names as such.
+
+What is never kept: the heading's first name, grades other than "Missing",
+and anything the reader did not understand; a line in the email's shape with
+another grade is left for review. A teacher's name inside an instruction is
+kept with it, as the portal shows it, since the instruction is the
+assignment's.
+
+A plan is made from the week as it stands. When work is saved into a waiting
+plan's window, or a date, a type, a note, a status the school reports, or
+what a source says about a date changes there, both pages say so, "Assignments changed after this plan was
+made", and the plan is not approved as it stands; plan again. Saving what is
+on record already, or work due well past the plan's week, changes nothing
+the plan was made from, and a plan a parent has decided is history, measured
+against the week no more. A saving and a decision never cross: the saving
+waits the moment a decision takes, and a decision after a saving is refused
+as stale. A household file from before this schema is brought
+up to it on the first start: columns it lacks are added, the index a
+version between made on the claims, which held each claim once, is dropped
+so that every observation is kept, and status reports the file holds twice
+for one channel, status, and day are folded to the first before the index
+that keeps them once is made. No assignment and no claim is dropped or
+rewritten.
+
 ## The sample week
 
 `data/sample/` is a second synthetic set for showing Blossom: four ordinary
@@ -315,14 +436,21 @@ time zone has no default. Start with `--env-file .env.example`, or set
 the shell.
 
 **The weekly page is empty.** With no fixture named, the record starts empty
-and stays so until something puts an assignment on it, and nothing in the app
-does that yet, so an empty page with no fixture is the expected shape.
+and stays so until a parent adds assignments from the family page, under
+"Add assignments"; an empty page with no fixture and nothing pasted yet is
+the expected shape.
 To see the synthetic set, load the sample week's launch file, or name the set
 and pin the clock to its week, `BLOSSOM_FIXTURE_PATH=data/synthetic` and
 `BLOSSOM_TODAY=2026-08-19`, into a state folder of its own, since a fixture is
 read only into a file the start creates. With the clock unpinned, "this week"
 is the real week, and the only item of the set in every week is the one with
 no due date.
+
+**A waiting plan says assignments changed.** Something in the plan's window
+changed after the plan was made: work saved from the family page, or a date,
+a type, a note, or what a source says about a date. The plan stays as
+history, but it does not cover the week as it stands, so approving it is
+refused. Plan again and review the new plan.
 
 **The app refuses to start and says saved state may not live on a network
 share or in a synced folder.** The repository is inside a folder that

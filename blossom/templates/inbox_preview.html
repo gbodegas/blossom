@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% set wide = true %}
+{% block title %}Blossom - Review assignments{% endblock %}
+{% block content %}
+  <h1>Review assignments</h1>
+  <ol class="steps-line" aria-label="Steps">
+    <li>1. Paste or enter</li>
+    <li aria-current="step"><strong>2. Review</strong></li>
+    <li>3. Saved</li>
+  </ol>
+
+  {#
+    Nothing is saved yet. Each card says what the text says about one
+    assignment and, against the record as it is now, exactly what saving
+    would do: save it as new, add a date beside the saved one, fill in what
+    the record lacks, or nothing, because it is saved already. Lines the
+    reader did not take are listed first, so nothing is dropped in silence,
+    and a question the record cannot settle is asked before anything is
+    written.
+  #}
+  {% if notice %}
+    <p class="problem" role="alert">{{ notice }}</p>
+  {% endif %}
+  {% set total = changes|length %}
+  {% set dated = weeks|selectattr("start")|list|length %}
+  {% set undated = weeks|rejectattr("start")|map(attribute="changes")|map("length")|sum %}
+  {% if total == 0 %}
+    <p class="empty">Nothing in the text was read as an assignment.</p>
+  {% else %}
+    <p class="note review-summary" role="status">
+      {{ total }} assignment{% if total != 1 %}s{% endif %}{% if dated %} across {{ dated }} week{% if dated != 1 %}s{% endif %}{% if undated %}, {{ undated }} with no due date yet{% endif %}{% else %} with no due date yet{% endif %}:
+      {{ counts.new }} new, {{ counts.updated }} update{% if counts.updated != 1 %}s{% endif %}, {{ counts.unchanged }} already saved{% if counts.review %}, {{ counts.review }} need{% if counts.review == 1 %}s{% endif %} your answer{% endif %}.
+      Nothing is saved until Save is pressed.
+    </p>
+  {% endif %}
+
+  <form method="post" action="/parent/inbox/keep" class="review-form">
+    {% for name, value in draft.items() %}
+      {% if name == "text" %}
+        <textarea name="text" hidden>{{ value }}</textarea>
+      {% else %}
+        <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endif %}
+    {% endfor %}
+
+    <div class="review-main">
+      {% if unread %}
+        <section class="panel needs-review" aria-labelledby="needs-review">
+          <h2 id="needs-review">Text that needs review</h2>
+          <p class="note">
+            These lines were not read as assignments, so nothing from them will be saved.
+            Edit the text to fix a line, or save the rest and enter the assignment by hand.
+          </p>
+          <ul class="unread">
+            {% for item in unread %}
+              <li><span class="line-number">Line {{ item.line }}:</span> <code>{{ item.text }}</code></li>
+            {% endfor %}
+          </ul>
+          <div class="actions">
+            <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate>Edit the text</button>
+          </div>
+        </section>
+      {% endif %}
+
+      {% if total %}
+        <p class="note">
+          Weeks here run Monday to Sunday. The portal's week picker starts on Sunday, so work due
+          on a Sunday sits in the week before the one the portal shows it under.
+        </p>
+      {% endif %}
+
+      {#
+        A card folded into another, as the parent said, is not shown, but
+        its answers travel with the page, so a page that comes back with
+        another question still open loses nothing.
+      #}
+      {% for change in folded %}
+        <input type="hidden" name="occurrence-{{ change.key }}" value="update">
+        <input type="hidden" name="kind-{{ change.key }}" value="{{ change.kind.value }}">
+        <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
+        <input type="hidden" name="folded-{{ change.key }}" value="{{ change.folded_into }}">
+        {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}
+      {% endfor %}
+      {% if folded %}
+        <p class="note">{{ folded|length }} card{% if folded|length != 1 %}s{% endif %} folded into the card for the same assignment, as you said.</p>
+      {% endif %}
+
+      {% for week in weeks %}
+        <section class="review-week">
+          <h2>{{ week.label }}</h2>
+          <p class="note">
+            {{ week.changes|length }} assignment{% if week.changes|length != 1 %}s{% endif %}:
+            {{ week.count("new") }} new, {{ week.count("claimed") }} update{% if week.count("claimed") != 1 %}s{% endif %}, {{ week.count("known") }} already saved{% if week.count("review") %}, {{ week.count("review") }} need{% if week.count("review") == 1 %}s{% endif %} your answer{% endif %}.
+          </p>
+          {% for change in week.changes %}
+            {% set reading = change.reading %}
+            <article class="assignment reading-{{ change.state }}">
+              <p class="course-name">{{ reading.course }}</p>
+              <h2>{{ reading.title }}</h2>
+              <p class="status">
+                <span class="pill">{{ change.label }}</span>
+                {% if reading.reported_status %}<span class="pill">School reported: {{ reading.reported_status }}</span>{% endif %}
+              </p>
+              {% if (change.dates_differ or change.state == "review") and change.beside and reading.due_date %}
+                <dl class="compare">
+                  <dt>{% if change.on_record %}Saved due date{% else %}Also due in this text{% endif %}</dt>
+                  <dd>{{ spoken_day(change.beside) }}</dd>
+                  <dt>{% if reading.origin == "PARENT_ENTRY" %}Entered due date{% else %}Pasted due date{% endif %}</dt>
+                  <dd>{{ spoken_day(reading.due_date) }}{% if reading.claims %} ({{ reading.claims[-1].spoken() }}){% endif %}</dd>
+                </dl>
+              {% else %}
+                <p class="due">
+                  {% if reading.due_date %}Due {{ spoken_day(reading.due_date) }}{% elif reading.origin == "PARENT_ENTRY" %}No due date given{% else %}No due date in the text{% endif %}
+                  {% if reading.assigned_on %}<span class="source">Assigned {{ spoken_day(reading.assigned_on) }}</span>{% endif %}
+                </p>
+              {% endif %}
+              <p class="effect" data-base="{{ change.effect_base }}">{{ change.effect }}</p>
+              {% if change.state == "review" %}
+                <input type="hidden" name="asked-{{ change.key }}" value="1">
+                <fieldset class="choice">
+                  <legend>Which is it?</legend>
+                  <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment, its due date changed</label>
+                  <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
+                </fieldset>
+              {% elif change.occurrence %}
+                {# An answer given already rides along, so a page returned for another question keeps it. #}
+                <input type="hidden" name="occurrence-{{ change.key }}" value="{{ change.occurrence }}">
+              {% endif %}
+              <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
+              <input type="hidden" name="shown-{{ change.key }}" value="{{ change.kind.value }}">
+              {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}
+              <label class="type-choice">Type
+                <select name="kind-{{ change.key }}" data-saved="{{ change.suggested.value }}">
+                  {% for value, label in kind_choices %}
+                    <option value="{{ value }}"{% if value == change.kind.value %} selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <p class="helper">Task: a form to sign, supplies to bring, or similar. {% if change.on_record %}As saved; change it if it is wrong.{% else %}Suggested from the title; change it if it is wrong.{% endif %}</p>
+              {% if reading.note %}
+                <p class="from-teacher">{% if reading.origin == "PARENT_ENTRY" %}Your note{% else %}From the teacher{% endif %}: <q>{{ reading.note }}</q></p>
+              {% endif %}
+              {% for report in reading.reports %}
+                <p class="source">{{ spoken_report(report) }}</p>
+              {% endfor %}
+              <details class="steps">
+                <summary>Source details</summary>
+                {% if reading.claims %}
+                  <ul class="claims-read">
+                    {% for said in reading.claims %}
+                      <li>{{ said.spoken() }}{% if change.on_record and said not in change.new_claims %} (already saved){% endif %}</li>
+                    {% endfor %}
+                  </ul>
+                {% endif %}
+                {% if reading.at_line %}<p class="note">Read from line {{ reading.at_line }} of the text.</p>{% endif %}
+                {% if reading.origin == "PARENT_ENTRY" %}<p class="note">Entered by a parent.</p>{% endif %}
+                {% if change.on_record %}<p class="note">Saved as {{ change.on_record.kind.value|lower }}{% if change.on_record.note %}, with a note{% endif %}.</p>{% endif %}
+              </details>
+            </article>
+          {% endfor %}
+        </section>
+      {% endfor %}
+    </div>
+
+    <aside class="review-aside" aria-label="Save or go back">
+      <div class="panel">
+        {% if total %}
+          <p class="note">
+            {% if to_save == 0 and counts.review == 0 %}Everything here is saved already; there is nothing to save. A type changed on a card can still be saved.{% elif counts.review %}Answer the question{% if counts.review != 1 %}s{% endif %} above, then save.{% else %}Saving adds {{ counts.new }} and updates {{ counts.updated }}; the other {{ counts.unchanged }} stay as they are.{% endif %}
+          </p>
+        {% endif %}
+        <div class="actions review-actions">
+          {% if total %}
+            <button type="submit" class="primary{% if to_save == 0 and counts.review == 0 %} done{% endif %}"{% if to_save == 0 and counts.review == 0 %} disabled aria-disabled="true"{% endif %} data-changed-label="Save changes">Save {{ to_save }} assignment{% if to_save != 1 %}s{% endif %}</button>
+          {% endif %}
+          <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate>Edit</button>
+        </div>
+        <p class="return"><a class="cancel" href="/parent">Cancel import</a></p>
+      </div>
+    </aside>
+  </form>
+{% endblock %}

@@ -60,12 +60,13 @@ ALLOWED_IMPORTS: dict[str, str] = {
         "see CLOSED_PREFIXES"
     ),
     "langsmith": "hosted tracing client; imported only to force tracing off, see NETWORK_CAPABLE",
+    "hashlib": "standard library; tags the packaged stylesheet and script by their contents",
     "hmac": "standard library; signs and checks the household sign-in cookie, nothing more",
     "logging": "standard library; reports failures to the process log only, never to a page",
     "msvcrt": "standard library; the Windows lock behind one process per household",
     "operator": "standard library; the reducer on a graph state key",
     "os": "standard library; the environment, and the sign-in secret written owner-only",
-    "re": "standard library; reads the composer's own line shapes back for the page",
+    "re": "standard library; the composer's line shapes for the page, the portal's from a paste",
     "secrets": "standard library; makes the sign-in secret, compares passphrases in constant time",
     "starlette": "the toolkit under FastAPI; the middleware base the household gate extends",
     "urllib": (

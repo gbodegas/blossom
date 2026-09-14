@@ -35,9 +35,10 @@ I intend to define what success looks like with her rather than on her behalf.
 ## What works today
 
 Blossom is an early project for one household. Assignments live in the
-household's own database; the bundled synthetic records seed it for the sample
-and the tests. It does not import assignments from a live school platform or
-email account.
+household's own database, put there from the school portal's own text pasted
+by a parent, or typed by hand; the bundled synthetic records seed it for the
+sample and the tests. It does not connect to the school platform or read a
+mailbox.
 
 **My week.** Browse the school week, see due dates and their sources, and keep
 work assigned this week but due later in sight. Missing dates stay visible;
@@ -69,6 +70,23 @@ updates; opening the parent's page does not count as a response.
 </p>
 
 *A synthetic help request and reply. Family review puts help she asked for first.*
+
+**Add assignments.** On the family page, paste the school portal's homework
+page, its weekly summary, or its "Missing" email as text, or enter one
+assignment by hand; only the course and title are required. A review page
+shows what was read, week by week, Monday to Sunday, with a count of what is
+new, what updates a saved assignment, and what is saved already, and each
+card says exactly what saving would do: save it as new, put the pasted date
+beside the saved one for her page to show, fill in a date or a note the
+record lacks, or nothing. The record keeps where each fact came from, the
+portal, the school's email, or a parent, so her page can say so. Work that
+comes round again under the same name, a weekly practice, is asked about
+rather than merged. The school's "Missing" email is kept as what the school
+reported, with the day; the date the email writes beside an assignment is
+kept as text, never as a due date. Lines the reader did not take are listed
+as text that needs review. Nothing is written until "Save" is pressed,
+pasting the same week twice adds nothing twice, and a plan waiting for
+review says so when the week it was made from changes.
 
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device

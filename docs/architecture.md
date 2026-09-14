@@ -25,6 +25,36 @@ signs that person out. Wrong passphrases are counted per device and answered
 with a wait past ten. With neither passphrase set the gate stands open, which
 the tests and the sample rely on.
 
+Beside the gate, `blossom/intake.py` is the way in for assignments: a reader
+for the school portal's own text, its homework page, its weekly summary, and
+its "Missing" email, pasted by a parent, and for one assignment typed by hand.
+It reads line shapes, not a model, in one pass over the lines: into
+assignments, into each channel's claim about a due date with where the claim
+was read, so the reconciliation treats a pasted page as it treats a fixture,
+into the teacher's note under a card, and into what the school reports about
+an assignment's status, a fact of its own kept with who reported it and the
+day. A line shaped like a card that does not read as one is text for review,
+never a teacher's words. The reader writes nothing. `blossom/routes/inbox.py`
+compares what was read with the record as it is, row by row, matched by
+course and title whatever the row's id, and shows the result week by week
+with what saving would do; the saving compares again and writes under the
+store's lock, in one transaction, so the same text saved twice, from two
+tabs, adds nothing twice, an answer of new work included, since the row
+that answer makes is found by its id. That is the import's doing, not a
+constraint on the claims table: every observation a channel makes is kept,
+a card repeated in one text is one observation, and a household file from
+before this schema is brought up to it by adding columns, by dropping
+the one index a version between made on the claims, and by folding status
+reports held twice for one day to the first. A recorded due date is replaced by a
+paste only when a parent says the assignment moved; each fact on a row carries
+its origin, the portal, the email, or a parent, so the pages can say whose
+it is, each field with the channel that gave it when a text mixes the email
+and the portal. A plan carries a fingerprint of the week it was made from,
+the reported status included, and a waiting plan whose week reads
+differently is stale on both pages and refused at approval; a decided plan
+is history. Saving and deciding share the decision lock, so a decision is
+checked against a week that holds still until it lands.
+
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and
 each receives only what the policy permits. What exists is the gate at the
