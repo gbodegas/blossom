@@ -234,12 +234,16 @@ def read_week(project_state: ProjectStateStore, source: DateClaims, start: date)
     looking at, the planner on the evening being planned, so a plan looks at
     the seven days ahead and her page says so. Every assignment on record is
     considered, because the sources decide the window along with the record.
+    The rows and the claims are read while the store is held, one snapshot,
+    so a saving landing between two reads cannot give a week whose rows and
+    claims disagree, nor a plan's fingerprint that misses a change just made.
     """
-    everything = project_state.all_assignments()
+    with project_state.exclusively():
+        everything = project_state.all_assignments()
+        records = {
+            item.assignment_id: source.deadline_records(item.assignment_id) for item in everything
+        }
     expectations = [expect_due_date(item) for item in everything]
-    records = {
-        item.assignment_id: source.deadline_records(item.assignment_id) for item in everything
-    }
     noticed = {
         expectation.assignment_id: notice_due_date(expectation, records[expectation.assignment_id])
         for expectation in expectations

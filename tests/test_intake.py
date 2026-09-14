@@ -8,7 +8,7 @@ has the structure of a real download, hyphen bullets included.
 
 import pathlib
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime
 
 import pytest
@@ -40,6 +40,7 @@ from blossom.intake import (
     spoken_report,
     within_a_school_year,
 )
+from blossom.noticing import read_week
 from blossom.reconciliation import SourceChannel
 from blossom.sources import FixtureSource, read_whole
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
@@ -1139,6 +1140,31 @@ def test_a_paste_matches_a_row_on_record_by_its_course_and_title(tmp_path: pathl
     assert kept == Kept(added=0, updated=1, unchanged=0)
     assert len(after) == before
     assert essay_claims[-1].asserted_value == "2026-08-18"
+
+
+def test_the_week_is_read_as_one_snapshot_of_the_record(tmp_path: pathlib.Path) -> None:
+    """The week's rows and claims are read while the store is held, so a saving cannot land
+    between the two reads: while the store is held elsewhere the reading waits, and comes
+    whole once it is let go. Her page, the planner, and a plan's fingerprint all read
+    the week this way."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        keep(readings(SAVED_WEEK), store)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            held = store.exclusively()
+            held.__enter__()
+            try:
+                reading = pool.submit(read_week, store, store, date(2026, 8, 31))
+                _, still_waiting = wait([reading], timeout=0.3)
+            finally:
+                held.__exit__(None, None, None)
+            week = reading.result(timeout=10)
+    finally:
+        store.close()
+
+    assert reading in still_waiting
+    assert [item.title for item in week.assignments] == ["Weekly practice"]
+    assert len(week.records[week.assignments[0].assignment_id]) == 1
 
 
 def test_two_savings_of_one_text_at_once_add_nothing_twice(tmp_path: pathlib.Path) -> None:
