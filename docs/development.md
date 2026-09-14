@@ -289,7 +289,9 @@ A "Missing" line in the school's email is kept as what the school reported,
 with the day: the email's own date when the paste carries its date line, a
 ``Date:`` or ``Sent:`` header, a forwarded "On Tue, Sep 8, 2026 at 9:14 AM
 ... wrote:", or the line "Tue, Sep 8, 2026" itself, otherwise the day it
-was pasted, and both pages say which; the date line is read where it
+was pasted, and both pages say which; the day it was pasted is the day the
+text was first previewed, carried through the review, so a review that
+spans midnight saves the day the page said; the date line is read where it
 stands, before the lines it dates, and a date inside a title or an
 instruction never dates the email. When one text holds the email and the
 portal's page, or the two are saved one after the other, each fact keeps the

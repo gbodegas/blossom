@@ -6,15 +6,17 @@ what the record lacks. A form that fails comes back with its fields as they
 were. The text is synthetic, in the portal's shapes.
 """
 
+import dataclasses
 import html
 import pathlib
 import re
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import date
+from datetime import UTC, date, datetime
 
 from fastapi.testclient import TestClient
 
 from blossom.app import create_app
+from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.household import COOKIE
 from blossom.intake import NOTE_MAX_LENGTH, TEXT_MAX_LENGTH
@@ -1006,6 +1008,38 @@ def test_the_family_page_reads_the_schools_reports_as_one_snapshot(
     assert reading in still_waiting
     assert page.status_code == 200
     assert "<strong>Book Covers: the school reports it missing.</strong>" in page.text
+
+
+def test_a_review_that_spans_midnight_saves_the_day_the_page_said(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The report's day is the day the email was pasted, as the review page says; a save
+    after midnight keeps that day, because the page carries the moment it was first read.
+    A form without that moment is read as of now."""
+    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+        client.post("/parent/inbox/keep", data={"text": SUMMARY})
+        preview = client.post("/parent/inbox/read", data={"text": EMAIL}).text
+        carried = review_form(preview)
+        state = state_of(client)
+        next_day = FrozenClock(datetime(2026, 9, 8, 20, 0, tzinfo=UTC), state.clock.zone)
+        setattr(client.app.state, STATE_ATTRIBUTE, dataclasses.replace(state, clock=next_day))  # type: ignore[attr-defined]
+        saved = client.post("/parent/inbox/keep", data=carried)
+        family = client.get(saved.headers["location"], headers=PAGE).text
+        fresh = client.post("/parent/inbox/read", data={"text": EMAIL}).text
+        bare = client.post("/parent/inbox/keep", data={"text": EMAIL})
+        covers = next(
+            row for row in state.project_state.all_assignments() if row.title == "Book Covers"
+        )
+        reports = state.project_state.status_reports(covers.assignment_id)
+
+    assert carried["read_on"] == "2026-09-07"
+    assert "From the school email, pasted Monday, September 7, 2026." in preview
+    assert saved.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
+    assert "From the school email, pasted Monday, September 7, 2026." in family
+    assert review_form(fresh)["read_on"] == "2026-09-08"
+    assert "From the school email, pasted Tuesday, September 8, 2026." in fresh
+    assert bare.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
+    assert [report.reported_on for report in reports] == [date(2026, 9, 7), date(2026, 9, 8)]
 
 
 def test_the_way_in_is_a_parents(tmp_path: pathlib.Path) -> None:

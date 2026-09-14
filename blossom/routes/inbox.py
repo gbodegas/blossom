@@ -15,7 +15,7 @@ field as it was, the failing field named, and the section open.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -99,8 +99,9 @@ class Problem:
     message: str
 
 
-def entry_from(state: ApplicationState, fields: Mapping[str, str]) -> Read | Problem:
-    """A reading from the entry form's fields, or the problem with them, named by field."""
+def entry_from(fields: Mapping[str, str], *, now: datetime, today: date) -> Read | Problem:
+    """A reading from the entry form's fields, or the problem with them, named by field,
+    read as of ``now`` and ``today``: the moment the entry was first reviewed."""
     course = " ".join(fields.get("course", "").split())
     title = " ".join(fields.get("title", "").split())
     note = fields.get("note", "").strip()
@@ -114,7 +115,6 @@ def entry_from(state: ApplicationState, fields: Mapping[str, str]) -> Read | Pro
         return Problem("title", LONG_TITLE)
     if len(note) > NOTE_MAX_LENGTH:
         return Problem("note", LONG_NOTE)
-    today = state.clock.today()
     due = _a_date(fields.get("due_date", ""), Problem("due_date", NOT_A_DUE_DATE))
     if isinstance(due, Problem):
         return due
@@ -132,7 +132,7 @@ def entry_from(state: ApplicationState, fields: Mapping[str, str]) -> Read | Pro
             kind = AssignmentKind(given)
         except ValueError:
             return Problem("kind", NOT_A_KIND)
-    reading = by_hand(course, title, due, assigned, kind, note or None, now=state.clock.now())
+    reading = by_hand(course, title, due, assigned, kind, note or None, now=now)
     return Read(items=(reading,), unread=())
 
 
@@ -147,12 +147,44 @@ def _a_date(given: str, wrong: Problem) -> date | None | Problem:
         return wrong
 
 
+STAMPS: Final = ("read_on", "read_at")
+"""The day and the moment a draft was first read, carried with it through the review, so
+what is saved is dated as it was reviewed: a review that spans midnight keeps the day the
+text was pasted, which is the day the page said."""
+
+
 def draft_of(form: Mapping[str, str]) -> dict[str, str]:
-    """The draft a form carries: the pasted text, or the entry's fields, as submitted."""
+    """The draft a form carries: the pasted text, or the entry's fields, as submitted, and
+    the day and moment it was first read when the form carries them."""
     text = form.get("text", "")
-    if text.strip():
-        return {"text": text}
-    return {name: form.get(name, "") for name in ENTRY_FIELDS}
+    draft = {"text": text} if text.strip() else {name: form.get(name, "") for name in ENTRY_FIELDS}
+    for name in STAMPS:
+        if form.get(name):
+            draft[name] = form[name]
+    return draft
+
+
+def stamped(state: ApplicationState, draft: Mapping[str, str]) -> dict[str, str]:
+    """The draft with the day and the moment it is first read, by the household's clock."""
+    return {
+        **draft,
+        "read_on": state.clock.today().isoformat(),
+        "read_at": state.clock.now().isoformat(),
+    }
+
+
+def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[datetime, date]:
+    """When a draft is read as of: the day and moment it was first read, when the draft
+    carries them and they read as a day within a school year of today; else now."""
+    now, today = state.clock.now(), state.clock.today()
+    try:
+        read_on = date.fromisoformat(draft.get("read_on", ""))
+        read_at = datetime.fromisoformat(draft.get("read_at", ""))
+    except ValueError:
+        return now, today
+    if read_at.tzinfo is None or not within_a_school_year(read_on, today):
+        return now, today
+    return read_at, read_on
 
 
 def answers_from(
@@ -237,13 +269,15 @@ def unasked_for(state: ApplicationState, read: Read) -> dict[int, set[Assignment
 
 
 def read_draft(state: ApplicationState, draft: Mapping[str, str]) -> Read | Problem:
-    """Read what a draft holds: the pasted text, or the entry, the same way every time."""
+    """Read what a draft holds: the pasted text, or the entry, the same way every time, as
+    of the moment it was first read."""
+    now, today = moment_of(state, draft)
     text = draft.get("text", "")
     if text.strip():
         if len(text) > TEXT_MAX_LENGTH:
             return Problem("text", TOO_LONG)
-        return read_text(text, now=state.clock.now(), today=state.clock.today())
-    return entry_from(state, draft)
+        return read_text(text, now=now, today=today)
+    return entry_from(draft, now=now, today=today)
 
 
 def problem_page(
@@ -318,7 +352,7 @@ async def read_paste(request: Request, state: State) -> Response:
     form = await submitted(request)
     if not form.get("text", "").strip():
         return problem_page(request, state, {"text": ""}, Problem("text", NOTHING_PASTED))
-    draft = draft_of(form)
+    draft = stamped(state, draft_of(form))
     read = read_draft(state, draft)
     if isinstance(read, Problem):
         return problem_page(request, state, draft, read)
@@ -329,8 +363,8 @@ async def read_paste(request: Request, state: State) -> Response:
 async def read_entry(request: Request, state: State) -> Response:
     """Read one assignment typed by hand and show it, without writing anything."""
     form = await submitted(request)
-    draft = {name: form.get(name, "") for name in ENTRY_FIELDS}
-    read = entry_from(state, draft)
+    draft = stamped(state, {name: form.get(name, "") for name in ENTRY_FIELDS})
+    read = read_draft(state, draft)
     if isinstance(read, Problem):
         return problem_page(request, state, draft, read)
     return preview_page(request, state, read, draft)
