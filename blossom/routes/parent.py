@@ -62,7 +62,14 @@ from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, staleness
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
 from blossom.intake import TEXT_MAX_LENGTH, spoken_report
-from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
+from blossom.routes.runs import (
+    Graphs,
+    PlanGraphBuilder,
+    require_model,
+    require_work,
+    run_plan,
+    tidy_thread,
+)
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
@@ -126,9 +133,9 @@ SIGNAL_ENDED: Final = (
 )
 ASSIGNMENTS_CHANGED: Final = (
     "Assignments changed after this plan was made: work was added or taken away in its "
-    "window, or a date, a type, a note, a status the school reports, or what a source "
-    "says about a date changed. The plan does not cover the week as it stands. Plan again "
-    "before approving."
+    "window, or a date, a type, a note, a status the school reports, what she reports "
+    "about her part, or what a source says about a date changed. The plan does not cover "
+    "the week as it stands. Plan again before approving."
 )
 
 
@@ -197,6 +204,7 @@ async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> Plan
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=passed(evening))
     if evening > date.max - CALENDAR_MARGIN:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=beyond(evening))
+    require_work(state, evening)
     require_model(graphs)
     return await run_plan(
         graphs.build(),
@@ -556,6 +564,7 @@ async def plan_from_the_page(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     try:
+        require_work(state, evening)
         require_model(graphs)
         await run_plan(
             graphs.build(),

@@ -17,6 +17,7 @@ from blossom.assignment_status import (
     normalize_note,
     statuses_for,
 )
+from blossom.noticing import planning_digest, read_week
 from blossom.reconciliation import SourceChannel
 from blossom.sources import FixtureSource, read_whole
 from blossom.stores.project_state import (
@@ -511,3 +512,82 @@ def test_the_sample_set_seeds_her_report_once_and_the_synthetic_set_seeds_none(
     assert synthetic.student_reports == []
     assert list(seeded) == [sample.student_reports[0].assignment_id]
     assert after_restart[sample.student_reports[0].assignment_id] == undone.report
+
+
+def test_what_she_reports_is_part_of_what_a_plan_is_made_from_within_its_bounds(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A "not yet", the words with it, and a "done" each change the week's fingerprint; the
+    words with a "done" do not, since finished work is out of what a plan is built on; an
+    undo that restores the week's input restores its fingerprint; and the work reported
+    done is out of the week's active set while it stands."""
+    store = a_store(tmp_path / "blossom.sqlite3")
+
+    def week() -> tuple[str, list[str], list[str]]:
+        read = read_week(store, store, TODAY)
+        return (
+            planning_digest(read),
+            [item.assignment_id for item in read.active()],
+            read.done_ids(),
+        )
+
+    try:
+        before = week()
+        not_yet = store.report_status(
+            PRACTICE, "not_yet", None, expected_head=None, now=NOW, today=TODAY
+        )
+        assert isinstance(not_yet, Saved)
+        said_not_yet = week()
+        with_words = store.report_status(
+            PRACTICE,
+            "not_yet",
+            "Half left.",
+            expected_head=not_yet.report.report_id,
+            now=NOW,
+            today=TODAY,
+        )
+        assert isinstance(with_words, Saved)
+        said_more = week()
+        done = store.report_status(
+            PRACTICE,
+            "done",
+            "All of it.",
+            expected_head=with_words.report.report_id,
+            now=NOW,
+            today=TODAY,
+        )
+        assert isinstance(done, Saved)
+        said_done = week()
+        other_words = store.report_status(
+            PRACTICE,
+            "done",
+            "Every bit.",
+            expected_head=done.report.report_id,
+            now=NOW,
+            today=TODAY,
+        )
+        assert isinstance(other_words, Saved)
+        said_done_otherwise = week()
+        undone = store.undo_report(PRACTICE, other_words.report.report_id, now=NOW, today=TODAY)
+        assert isinstance(undone, Undone)
+        restored_done = week()
+        back_to_words = store.report_status(
+            PRACTICE,
+            "not_yet",
+            "Half left.",
+            expected_head=undone.report.report_id,
+            now=NOW,
+            today=TODAY,
+        )
+        assert isinstance(back_to_words, Saved)
+        restored_words = week()
+    finally:
+        store.close()
+
+    assert before[1:] == ([LOG, PRACTICE], [])
+    assert said_not_yet[1:] == ([LOG, PRACTICE], [])
+    assert said_done[1:] == ([LOG], [PRACTICE])
+    assert len({before[0], said_not_yet[0], said_more[0], said_done[0]}) == 4
+    assert said_done_otherwise[0] == said_done[0]
+    assert restored_done == said_done
+    assert restored_words == said_more

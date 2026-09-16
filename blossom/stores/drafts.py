@@ -18,6 +18,7 @@ is a draft a person may now copy out by hand. The store records that the
 permission was given, and nothing else.
 """
 
+import json
 import sqlite3
 import threading
 from collections.abc import Sequence
@@ -93,6 +94,10 @@ class DraftRecord(BaseModel):
     the moment it is composed, as the record, and published once its run has
     paused, which is when it reaches the pages and takes the place of the
     plan before it. Until then it is nobody's plan."""
+    plan_assignment_ids: list[str] | None = None
+    """Every assignment the plan speaks about, worked on or put off, each once, so a page
+    can say which of them she has since reported done. ``None`` for a draft from before
+    plans carried them, which is not the same as a plan that speaks about nothing."""
 
     @property
     def waiting(self) -> bool:
@@ -155,7 +160,8 @@ class DraftsStore:
                 too_much INTEGER NOT NULL DEFAULT 0,
                 superseded_by TEXT,
                 published INTEGER NOT NULL DEFAULT 0,
-                published_order INTEGER
+                published_order INTEGER,
+                plan_assignment_ids TEXT
             )
             """
         )
@@ -181,6 +187,11 @@ class DraftsStore:
             # A file from before plans carried a fingerprint of their window:
             # its drafts have none, and are not measured against the week.
             self._connection.execute("ALTER TABLE drafts ADD COLUMN inputs_digest TEXT")
+        if "plan_assignment_ids" not in columns:
+            # A file from before drafts named the work their plan speaks about:
+            # its drafts name none, which is told from a plan that speaks
+            # about nothing, which names an empty list.
+            self._connection.execute("ALTER TABLE drafts ADD COLUMN plan_assignment_ids TEXT")
         if "published_order" not in columns:
             self._connection.execute("ALTER TABLE drafts ADD COLUMN published_order INTEGER")
             if "saved_order" in columns:
@@ -306,6 +317,7 @@ class DraftsStore:
         steps: Sequence[StepRecord] = (),
         too_much: bool = False,
         inputs_digest: str | None = None,
+        plan_assignment_ids: Sequence[str] | None = None,
     ) -> None:
         """Save a draft the moment it exists, before the gate pauses on it, as the record.
 
@@ -326,14 +338,15 @@ class DraftsStore:
                 """
                 INSERT INTO drafts (
                     draft_id, thread_id, plan_date, status, outcome, body, created_at,
-                    too_much, inputs_digest
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    too_much, inputs_digest, plan_assignment_ids
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
                     status=excluded.status,
                     outcome=excluded.outcome,
                     body=excluded.body,
                     too_much=excluded.too_much,
-                    inputs_digest=excluded.inputs_digest
+                    inputs_digest=excluded.inputs_digest,
+                    plan_assignment_ids=excluded.plan_assignment_ids
                 """,
                 (
                     draft.draft_id,
@@ -345,6 +358,7 @@ class DraftsStore:
                     draft.created_at.isoformat(),
                     int(too_much),
                     inputs_digest,
+                    None if plan_assignment_ids is None else json.dumps(list(plan_assignment_ids)),
                 ),
             )
             self._write_run(thread_id, plan_date, outcome, steps)
@@ -617,6 +631,7 @@ DRAFTS_WITH_STEPS = """
     SELECT drafts.draft_id, drafts.thread_id, drafts.plan_date, drafts.status,
            drafts.outcome, drafts.body, drafts.created_at, drafts.decided_at,
            drafts.decision, drafts.reason, drafts.too_much, drafts.inputs_digest, drafts.published,
+           drafts.plan_assignment_ids,
            steps.node, steps.round, steps.expected, steps.found,
            steps.recorded_at AS step_recorded_at
     FROM drafts LEFT JOIN steps ON steps.thread_id = drafts.thread_id
@@ -680,4 +695,7 @@ def record_from(row: sqlite3.Row, steps: list[StepRecord]) -> DraftRecord:
         too_much=bool(row["too_much"]),
         inputs_digest=None if row["inputs_digest"] is None else str(row["inputs_digest"]),
         published=bool(row["published"]),
+        plan_assignment_ids=None
+        if row["plan_assignment_ids"] is None
+        else [str(name) for name in json.loads(str(row["plan_assignment_ids"]))],
     )

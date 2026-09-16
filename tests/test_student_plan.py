@@ -15,11 +15,13 @@ from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.clock import spoken_time
+from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
+from blossom.noticing import read_week
 from blossom.plan_text import present_plan
 from blossom.plans import DailyPlan
-from blossom.routes.runs import plan_graphs
+from blossom.routes.runs import NOTHING_TO_SCHEDULE, plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.stores.drafts import DraftsStore
 from tests.support import (
@@ -583,3 +585,27 @@ def test_taking_the_signal_back_after_a_reduced_plan_says_so_in_her_words() -> N
         "It stays until a new one is made; plan again for the full evening."
     )
     assert "because you said today was too much" in page
+
+
+def test_with_nothing_left_to_plan_her_routes_refuse_before_any_run() -> None:
+    """Every assignment in today's window reported done: the JSON route and the button
+    answer 409 with the one sentence, no run is written, and no model is asked."""
+    with browser() as client:
+        state: ApplicationState = getattr(
+            client.app.state,  # type: ignore[attr-defined]
+            STATE_ATTRIBUTE,
+        )
+        window = read_week(state.project_state, state.project_state, PLAN_DATE)
+        for item in window.assignments:
+            state.project_state.report_status(
+                item.assignment_id, "done", None, expected_head=None, now=CREATED, today=PLAN_DATE
+            )
+        over_json = client.post("/student/plans")
+        from_the_page = client.post("/student/actions/plan")
+        ended = state.drafts.runs_without_a_draft()
+
+    assert over_json.status_code == 409
+    assert over_json.json()["detail"] == NOTHING_TO_SCHEDULE
+    assert from_the_page.status_code == 409
+    assert NOTHING_TO_SCHEDULE in from_the_page.text
+    assert ended == []

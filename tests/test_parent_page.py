@@ -21,11 +21,13 @@ from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_applicat
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.intake import identity
+from blossom.noticing import read_week
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
-from blossom.routes.runs import PlanGraphs, plan_graphs
+from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
+from blossom.stores.project_state import Saved, Undone
 from tests.support import FIXTURE_TIMEZONE, SAME_ORIGIN, Scripted, fixture_settings, ok
 
 PLAN_DATE = date(2026, 8, 19)
@@ -534,7 +536,7 @@ def test_the_page_shows_how_a_waiting_plan_was_made() -> None:
     assert "How this plan was made" in page
     assert '<span class="step-node">retrieve</span>' in page
     assert "Expected: the record&#39;s due dates hold against the school&#39;s sources." in page
-    assert "Found: all 6 checks passed." in page
+    assert "Found: all 7 checks passed." in page
     assert "Found: accepted on every criterion." in page
     assert "Ended without a plan" not in page
 
@@ -564,7 +566,7 @@ def test_a_run_that_ended_without_a_plan_is_on_the_page_with_its_steps() -> None
     assert "The plan failed its checks after every revision." in page
     assert "How this run went" in page
     assert page.count('<span class="step-node">plan</span>') == 3
-    assert "Found: 1 of 6 checks failed:" in page
+    assert "Found: 1 of 7 checks failed:" in page
     assert "No plans need your review." in page
 
 
@@ -685,3 +687,58 @@ def test_a_decided_plan_is_history_and_is_not_measured_against_the_week_again() 
     assert HER_ASSIGNMENTS_CHANGED not in hers
     assert "Looks good." in hers
     assert record["decision"] == "approved"
+
+
+def test_her_report_that_work_is_done_makes_the_waiting_plan_stale_and_an_undo_unmakes_it() -> None:
+    """What she reports about her part is part of what a plan is made from; taking the
+    report back restores the week the plan was made from, and the plan stands again."""
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        state: ApplicationState = getattr(
+            client.app.state,  # type: ignore[attr-defined]
+            STATE_ATTRIBUTE,
+        )
+        saved = state.project_state.report_status(
+            "assignment-canal-essay", "done", None, expected_head=None, now=CREATED, today=PLAN_DATE
+        )
+        assert isinstance(saved, Saved)
+        page = client.get("/parent").text
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+        undone = state.project_state.undo_report(
+            "assignment-canal-essay", saved.report.report_id, now=CREATED, today=PLAN_DATE
+        )
+        fresh = client.get("/parent").text
+        fresh_record = client.get(f"/parent/approvals/{draft_id}").json()
+
+    assert ASSIGNMENTS_CHANGED in page
+    assert 'value="approve"' not in page
+    assert record["stale"] is not None
+    assert isinstance(undone, Undone)
+    assert ASSIGNMENTS_CHANGED not in fresh
+    assert 'value="approve"' in fresh
+    assert fresh_record["stale"] is None
+
+
+def test_an_evening_with_nothing_left_to_do_is_refused_before_any_run() -> None:
+    """Every assignment in the window reported done: the form and the JSON route answer
+    409 with the one sentence, and no run is written."""
+    with browser() as client:
+        state: ApplicationState = getattr(
+            client.app.state,  # type: ignore[attr-defined]
+            STATE_ATTRIBUTE,
+        )
+        window = read_week(state.project_state, state.project_state, PLAN_DATE)
+        for item in window.assignments:
+            state.project_state.report_status(
+                item.assignment_id, "done", None, expected_head=None, now=CREATED, today=PLAN_DATE
+            )
+        posted = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        over_json = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        ended = state.drafts.runs_without_a_draft()
+
+    assert len(window.assignments) == 7
+    assert posted.status_code == 409
+    assert NOTHING_TO_SCHEDULE in posted.text
+    assert over_json.status_code == 409
+    assert over_json.json()["detail"] == NOTHING_TO_SCHEDULE
+    assert ended == []

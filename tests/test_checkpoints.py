@@ -252,7 +252,7 @@ def test_a_plan_and_its_verdict_survive_the_serializer() -> None:
                 node="verify",
                 round=1,
                 expected="every tier-one check passes",
-                found="all 6 checks passed",
+                found="all 7 checks passed",
                 recorded_at=datetime(2026, 8, 19, 22, 0, tzinfo=UTC),
             )
         ],

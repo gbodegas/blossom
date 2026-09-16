@@ -8,8 +8,10 @@ for their reader, and neither says which came first, since a signal can change
 while a run is still on its way to the draft.
 """
 
+from dataclasses import dataclass
 from enum import StrEnum
 
+from blossom.assignment_status import statuses_for
 from blossom.noticing import planning_digest, read_week
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.project_state import ProjectStateStore
@@ -25,9 +27,9 @@ class Staleness(StrEnum):
     """The plan was made for a reduced evening and the signal is gone, taken
     back or past its week; the store does not say which."""
     ASSIGNMENTS_CHANGED = "assignments_changed"
-    """The assignments in the plan's window read differently from when the run
-    read them: work added or taken away, a date, a kind, a note, or what a
-    source says about a date."""
+    """The work in the plan's window reads differently from when the run read
+    it: work added or taken away, a date, a kind, a note, what a source says
+    about a date, or what she has reported about her part."""
 
 
 def staleness(
@@ -51,3 +53,41 @@ def staleness(
         if now != record.inputs_digest:
             return Staleness.ASSIGNMENTS_CHANGED
     return None
+
+
+@dataclass(frozen=True)
+class ReportedDone:
+    """Work a plan speaks about that she has since reported done."""
+
+    titles: tuple[str, ...]
+    """The assignments named, by title, in the plan's order, when the plan carries the
+    ids it speaks about."""
+    known: bool
+    """Whether the plan carries those ids. A plan from before plans carried them cannot
+    name the work; it is told only that something in its window is reported done."""
+
+
+def reported_done(project_state: ProjectStateStore, record: DraftRecord) -> ReportedDone | None:
+    """Work in ``record``'s plan she has reported done since, or ``None`` while there is none.
+
+    A plan is made from the work still to do when the run read it, and says
+    nothing about what she had reported done by then; what it speaks about
+    and she reports done afterward is what a page names. A plan that carries
+    no ids is measured against its window instead, and named nothing. Both
+    pages read this one rule and word it for their reader; neither judges
+    whether the plan should be made again, which is hers to decide.
+    """
+    with project_state.exclusively():
+        if record.plan_assignment_ids is None:
+            week = read_week(project_state, project_state, record.plan_date)
+            return ReportedDone(titles=(), known=False) if week.done_ids() else None
+        if not record.plan_assignment_ids:
+            return None
+        statuses = statuses_for(project_state, record.plan_assignment_ids)
+        titles = {item.assignment_id: item.title for item in project_state.all_assignments()}
+    named = tuple(
+        titles.get(name, name)
+        for name in record.plan_assignment_ids
+        if not statuses[name].needs_homework
+    )
+    return ReportedDone(titles=named, known=True) if named else None

@@ -77,7 +77,14 @@ from blossom.reconciliation import (
     SourceRecord,
     classify_confidence,
 )
-from blossom.routes.runs import Graphs, require_model, run_plan
+from blossom.routes.runs import (
+    Graphs,
+    ended_without_a_plan,
+    no_plan_made,
+    require_model,
+    require_work,
+    run_plan,
+)
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
@@ -120,8 +127,9 @@ SIGNAL_ENDED: Final = (
     "It stays until a new one is made; plan again for the full evening."
 )
 ASSIGNMENTS_CHANGED: Final = (
-    "Your assignments changed after this plan was made, so it does not cover your week "
-    "as it stands. It stays until a new one is made; plan again when you are ready."
+    "Your assignments or your updates changed after this plan was made, so it does not "
+    "cover your week as it stands. It stays until a new one is made; plan again when you "
+    "are ready."
 )
 
 router = APIRouter(prefix="/student", tags=["student"])
@@ -332,8 +340,10 @@ async def make_todays_plan(state: State, graphs: Graphs) -> StudentPlanView:
 
     A run that ends without a plan, because the checks never passed or the
     model did not answer, is a 409 naming the outcome, and her page keeps
-    whatever plan it had.
+    whatever plan it had. An evening with nothing left to plan is a 409 too,
+    before any run is written or a model asked for.
     """
+    require_work(state, state.clock.today())
     require_model(graphs)
     run = await run_plan(
         graphs.build(),
@@ -341,9 +351,7 @@ async def make_todays_plan(state: State, graphs: Graphs) -> StudentPlanView:
         state,
     )
     if run.draft_id is None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, detail=f"no plan was made: the run ended with {run.outcome}"
-        )
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=no_plan_made(run.outcome))
     record = state.drafts.get(run.draft_id)
     if record is None:
         msg = f"the run made {run.draft_id!r} but the table has no such draft"
@@ -635,6 +643,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     than answering with a bare error.
     """
     try:
+        require_work(state, state.clock.today())
         require_model(graphs)
         run = await run_plan(
             graphs.build(),
@@ -663,7 +672,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return student_page(
             request,
             state,
-            problem=f"No plan was made this time: the run ended with {run.outcome}.",
+            problem=ended_without_a_plan(run.outcome),
             status_code=status.HTTP_409_CONFLICT,
         )
     return RedirectResponse(f"{PAGE}?show_plan=1", status_code=status.HTTP_303_SEE_OTHER)

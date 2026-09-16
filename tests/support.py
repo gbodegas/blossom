@@ -47,7 +47,12 @@ from blossom.settings import (
     Settings,
 )
 from blossom.stores.drafts import DraftsStore
-from blossom.stores.project_state import Assignment, ProjectStateStore
+from blossom.stores.project_state import (
+    Assignment,
+    ProjectStateStore,
+    Saved,
+    StudentStatus,
+)
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.stores.support_rules import SupportRule, SupportRulesStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
@@ -279,8 +284,16 @@ def graph_with(
     signals: WorkloadSignalsStore | None = None,
     evening_minutes: int = DEFAULT_EVENING_MINUTES,
     too_much_minutes: int = DEFAULT_TOO_MUCH_MINUTES,
+    reports: Sequence[tuple[str, StudentStatus, str | None]] = (),
 ) -> CompiledPlanGraph:
+    """The graph over in-memory stores. ``reports`` are what she has said about her part
+    of each assignment named, status and note, saved before the run reads the week."""
     project_state, support_rules, reflections = stores(assignments)
+    for assignment_id, status, note in reports:
+        saved = project_state.report_status(
+            assignment_id, status, note, expected_head=None, now=OBSERVED, today=PLAN_DATE
+        )
+        assert isinstance(saved, Saved)
     for index, rule in enumerate(rules):
         support_rules.add_rule(
             SupportRule(rule_id=f"rule-{index}", instruction=rule, asserted_at=OBSERVED)

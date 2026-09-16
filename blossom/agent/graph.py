@@ -60,6 +60,7 @@ from blossom.agent.steps import (
     EXPECT_ACCEPTANCE,
     EXPECT_ALL_CHECKS,
     EXPECT_RECORD_HOLDS,
+    NOTHING_TO_SCHEDULE,
     StepRecord,
     describe_failure,
     describe_plan,
@@ -90,7 +91,7 @@ from blossom.reconciliation import SourceConfidence, classify_confidence
 from blossom.settings import DEFAULT_EVENING_MINUTES, DEFAULT_TOO_MUCH_MINUTES, Settings
 from blossom.sources import DateClaims
 from blossom.stores.drafts import DraftsStore
-from blossom.stores.project_state import Assignment, ProjectStateStore
+from blossom.stores.project_state import Assignment, ProjectStateStore, StudentReport
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
@@ -194,6 +195,12 @@ class PlanState(TypedDict):
     rounds: Annotated[int, operator.add]
     steps: NotRequired[Annotated[list[StepRecord], operator.add]]
     assignments: NotRequired[list[Assignment]]
+    """The window's work still to plan: what the planner, the critic, and the checks see."""
+    done_ids: NotRequired[list[str]]
+    """The window's work she had reported done when the run read it, kept out of
+    ``assignments`` and held against the plan by the checks."""
+    student_reports: NotRequired[dict[str, StudentReport]]
+    """Her standing report on each assignment in ``assignments`` that has one."""
     confidence: NotRequired[dict[str, SourceConfidence]]
     noticings: NotRequired[list[Noticing]]
     too_much: NotRequired[bool]
@@ -254,6 +261,7 @@ def build_plan_graph(
             "assignments": state.get("assignments", []),
             "confidence": state.get("confidence", {}),
             "noticings": state.get("noticings", []),
+            "student_reports": state.get("student_reports", {}),
             "support_rules": state.get("support_rules", []),
             "reflections": state.get("reflections", []),
         }
@@ -268,28 +276,60 @@ def build_plan_graph(
         the evening's budget here, before the planner is asked, so it is a
         constraint the checks enforce rather than an argument the planner may
         answer.
+
+        Work she has reported done is read here too, and left out: the
+        planner, the critic, and the checks see only the work still to do, a
+        dependency on finished work included, while the ids of what was left
+        out are kept so the checks can hold the plan to it. A window with
+        nothing left to do ends the run here, with its record and no model
+        asked; the route asks the same question before the run, and asks it
+        here again because a report can land in between.
         """
         week = read_week(project_state, source, state["plan_date"])
+        done = week.done_ids()
+        left_out = set(done)
+        active = [
+            item.model_copy(
+                update={"dependencies": [d for d in item.dependencies if d not in left_out]}
+            )
+            for item in week.active()
+        ]
         confidence = {
             name: classify_confidence(reconcile_dates(found))
             for name, found in week.records.items()
+            if name not in left_out
         }
-        noticings = [week.noticings[item.assignment_id] for item in week.assignments]
+        noticings = [week.noticings[item.assignment_id] for item in active]
+        said = {
+            item.assignment_id: status.asserted
+            for item in active
+            if (status := week.statuses.get(item.assignment_id)) is not None
+            and status.asserted is not None
+        }
         rules = [rule.instruction for rule in support_rules.list_all()]
         notes = [note.observation for note in reflections.list_all()]
         too_much = bool(signals.for_evening(state["plan_date"]))
         budget = too_much_minutes if too_much else evening_minutes
         found = describe_week(
-            week.assignments,
+            active,
             noticings,
             confidence,
             rules=len(rules),
             notes=len(notes),
             budget=budget,
             too_much=too_much,
+            done=len(done),
         )
+        if not active:
+            return {
+                "done_ids": done,
+                "outcome": NOTHING_TO_SCHEDULE,
+                "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found)],
+            }
         return {
-            "assignments": week.assignments,
+            "assignments": active,
+            "done_ids": done,
+            "student_reports": said,
             "confidence": confidence,
             "noticings": noticings,
             "too_much": too_much,
@@ -337,6 +377,7 @@ def build_plan_graph(
             confidence=state.get("confidence", {}),
             noticings=state.get("noticings", []),
             daily_minutes=state.get("budget_minutes", evening_minutes),
+            reported_done=state.get("done_ids", []),
         )
         record = step(
             "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
@@ -410,6 +451,7 @@ def build_plan_graph(
             steps=state.get("steps", []),
             too_much=state.get("too_much", False),
             inputs_digest=state.get("inputs_digest"),
+            plan_assignment_ids=sorted(set(state["plan"].assignment_ids)),
         )
         return {"draft": draft}
 
@@ -444,6 +486,9 @@ def build_plan_graph(
         )
         return {}
 
+    def after_retrieve(state: PlanState) -> str:
+        return "record_run" if "outcome" in state else "plan"
+
     def after_plan(state: PlanState) -> str:
         return "record_run" if "outcome" in state else "verify"
 
@@ -468,7 +513,9 @@ def build_plan_graph(
     graph.add_node("record_decision", record_decision)
     graph.add_node("record_run", record_run)
     graph.add_edge(START, "retrieve")
-    graph.add_edge("retrieve", "plan")
+    graph.add_conditional_edges(
+        "retrieve", after_retrieve, {"plan": "plan", "record_run": "record_run"}
+    )
     graph.add_conditional_edges(
         "plan", after_plan, {"verify": "verify", "record_run": "record_run"}
     )

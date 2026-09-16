@@ -641,3 +641,26 @@ def test_putting_off_a_contradicted_record_is_measured_against_the_school_date()
         "assignment-canal-essay is due 2026-08-19 by the earliest date the record or a "
         "source gives and is put off from 2026-08-19, past it",
     )
+
+
+def test_speaking_about_work_reported_done_fails_and_is_not_also_called_unknown() -> None:
+    """The plan was given the work still to do; a block or a deferral for work she has
+    reported done fails the check made for it, and that alone."""
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+        deferred=[Deferral(assignment_id="assignment-algebra-set", reason="she says it is done")],
+    )
+
+    result = check_plan(
+        plan, due_in_window=[ESSAY], zone=ZONE, reported_done=["assignment-algebra-set"]
+    )
+    without_the_word = check_plan(plan, due_in_window=[ESSAY], zone=ZONE)
+
+    assert PlanCheck.NO_REPORTED_DONE_WORK in ORDERED_PLAN_CHECKS
+    assert len(ORDERED_PLAN_CHECKS) == 7
+    assert result.failed_checks == (PlanCheck.NO_REPORTED_DONE_WORK,)
+    assert result.as_findings() == (
+        "assignment-algebra-set is reported done and the plan still speaks about it",
+    )
+    assert without_the_word.failed_checks == (PlanCheck.ASSIGNMENTS_EXIST,)

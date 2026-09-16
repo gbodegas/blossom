@@ -47,7 +47,13 @@ class PlanCheck(StrEnum):
     """Every assignment the plan names is one the store knows."""
 
     NOTHING_OMITTED = "NOTHING_OMITTED"
-    """Every assignment due in the window is blocked or deferred with a reason."""
+    """Every assignment due in the window and still to do is blocked or deferred with a
+    reason."""
+
+    NO_REPORTED_DONE_WORK = "NO_REPORTED_DONE_WORK"
+    """Nothing she has reported done is worked on or put off. The plan is for the work
+    that is left, and what she has reported is read from the record at the time of the
+    check, never from the plan."""
 
     ONE_DECISION_PER_ASSIGNMENT = "ONE_DECISION_PER_ASSIGNMENT"
     """Each assignment is worked on or put off, not both, and put off at most
@@ -67,6 +73,7 @@ class PlanCheck(StrEnum):
 ORDERED_PLAN_CHECKS: tuple[PlanCheck, ...] = (
     PlanCheck.ASSIGNMENTS_EXIST,
     PlanCheck.NOTHING_OMITTED,
+    PlanCheck.NO_REPORTED_DONE_WORK,
     PlanCheck.ONE_DECISION_PER_ASSIGNMENT,
     PlanCheck.BLOCKS_MEET_DEADLINES,
     PlanCheck.BLOCKS_DO_NOT_OVERLAP,
@@ -132,23 +139,31 @@ def check_plan(
     confidence: dict[str, SourceConfidence] | None = None,
     noticings: Sequence[Noticing] = (),
     daily_minutes: int = DEFAULT_EVENING_MINUTES,
+    reported_done: Sequence[str] = (),
 ) -> PlanVerification:
     """Run every tier-one check over ``plan`` and report what failed and why.
 
-    ``due_in_window`` is what the store says is due; the plan is measured
-    against it rather than against itself. ``confidence`` is optional because
-    a plan can be checked before reconciliation has run, and an absent label
-    is simply not flagged. ``noticings`` are the record's due dates set against
-    the sources; where the sources contradict the record, the deadline is the
-    earliest date either gives.
+    ``due_in_window`` is what the store says is due and still to do; the plan
+    is measured against it rather than against itself. ``confidence`` is
+    optional because a plan can be checked before reconciliation has run, and
+    an absent label is simply not flagged. ``noticings`` are the record's due
+    dates set against the sources; where the sources contradict the record,
+    the deadline is the earliest date either gives. ``reported_done`` names
+    the work in the window she has reported done, which the plan was given
+    nothing about and must say nothing about.
     """
     known = {assignment.assignment_id: assignment for assignment in due_in_window}
+    done = set(reported_done)
     contradicted = {item.assignment_id: item for item in noticings if item.contradicted}
     findings: dict[PlanCheck, list[str]] = {check: [] for check in ORDERED_PLAN_CHECKS}
 
-    unknown = [name for name in plan.assignment_ids if name not in known]
+    unknown = [name for name in plan.assignment_ids if name not in known and name not in done]
     findings[PlanCheck.ASSIGNMENTS_EXIST].extend(
         f"{name} is not an assignment in this window" for name in sorted(set(unknown))
+    )
+    findings[PlanCheck.NO_REPORTED_DONE_WORK].extend(
+        f"{name} is reported done and the plan still speaks about it"
+        for name in sorted(done.intersection(plan.assignment_ids))
     )
 
     spoken_for = set(plan.assignment_ids)

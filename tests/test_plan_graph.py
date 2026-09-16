@@ -37,6 +37,7 @@ from blossom.heuristic_relevance import (
     Judgment,
 )
 from blossom.noticing import Verdict
+from blossom.plan_checks import PlanCheck
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
@@ -753,7 +754,7 @@ def test_every_node_leaves_a_step_saying_what_it_expected_and_found() -> None:
     assert steps[1].expected == "a plan that accounts for every assignment inside 150 minutes"
     assert steps[1].found == "1 block and 1 deferral asking 60 minutes"
     assert steps[2].expected == "every tier-one check passes"
-    assert steps[2].found == "all 6 checks passed"
+    assert steps[2].found == "all 7 checks passed"
     assert steps[3].expected == "the reviewer passes every criterion"
     assert steps[3].found == "accepted on every criterion"
     assert all(item.recorded_at == fixture_clock().now() for item in steps)
@@ -798,7 +799,7 @@ def test_a_run_that_fails_its_checks_records_every_attempt() -> None:
         "verify",
     ]
     assert steps[2].found == (
-        "1 of 6 checks failed: assignment-algebra-set is due in this window and the plan "
+        "1 of 7 checks failed: assignment-algebra-set is due in this window and the plan "
         "does not mention it"
     )
     assert steps[3].expected == "a revised plan that answers 1 finding"
@@ -885,3 +886,126 @@ def test_a_model_that_stops_still_leaves_the_runs_record() -> None:
     ended = drafts.runs_without_a_draft()
     assert [item.outcome for item in ended] == ["model_refused"]
     assert [item.node for item in ended[0].steps] == ["retrieve", "plan"]
+
+
+# ------------------------------------------------------------- what she has reported
+
+
+def test_work_she_reports_done_is_left_out_of_what_the_planner_and_critic_see() -> None:
+    """The essay is reported done, with a note: the planner is briefed on the problem set
+    alone, with no word of the essay or her note, the checks hold the plan to that, the
+    critic sees the same, and the record says what was left out."""
+    planner = Scripted(
+        ok(
+            DailyPlan(
+                plan_date=PLAN_DATE, blocks=[block("assignment-algebra-set", "16:30", "17:15")]
+            )
+        )
+    )
+    critic = Scripted(ok(accepting()))
+
+    result = run(
+        graph_with(
+            planner, critic, reports=[("assignment-canal-essay", "done", "Handed in Tuesday.")]
+        )
+    )
+
+    brief = human_text(planner.briefs[0])
+    assert 'id="assignment-algebra-set"' in brief
+    assert "assignment-canal-essay" not in brief
+    assert "Canal Era" not in brief
+    assert "Handed in Tuesday." not in brief
+    assert "assignment-canal-essay" not in human_text(critic.briefs[0])
+    assert [item.assignment_id for item in result["assignments"]] == ["assignment-algebra-set"]
+    assert result["done_ids"] == ["assignment-canal-essay"]
+    assert result["verification"].passed
+    assert result["steps"][0].found.startswith(
+        "1 assignment in the week, 1 reported done and left out: "
+    )
+    assert "__interrupt__" in result
+    assert "Canal Era" not in result["draft"].body
+
+
+def test_her_not_yet_and_her_words_reach_the_planner_as_hers() -> None:
+    planner = Scripted(ok(good_plan()))
+
+    run(
+        graph_with(
+            planner,
+            Scripted(ok(accepting())),
+            reports=[("assignment-canal-essay", "not_yet", "Two paragraphs <left>.")],
+        )
+    )
+
+    brief = human_text(planner.briefs[0])
+    assert 'student_says="not yet"' in brief
+    assert 'student_wrote="Two paragraphs &lt;left&gt;."' in brief
+    assert (
+        "student_says"
+        not in brief.split('id="assignment-algebra-set"')[1].split("</assignment>")[0]
+    )
+
+
+def test_a_plan_that_speaks_about_work_reported_done_fails_its_checks() -> None:
+    """The plan was given the problem set alone and speaks about the essay too: the check
+    made for that fails, by name, the essay is not also called unknown, and the finding
+    goes back to the planner as feedback until the rounds are spent."""
+    planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
+    critic: Scripted[CriticVerdict] = Scripted()
+
+    result = run(graph_with(planner, critic, reports=[("assignment-canal-essay", "done", None)]))
+
+    verification = result["verification"]
+    assert result["outcome"] == "checks_failed"
+    assert critic.calls == 0
+    assert PlanCheck.NO_REPORTED_DONE_WORK in verification.failed_checks
+    assert PlanCheck.ASSIGNMENTS_EXIST not in verification.failed_checks
+    assert (
+        "assignment-canal-essay is reported done and the plan still speaks about it"
+        in verification.as_findings()
+    )
+    assert "reported done and the plan still speaks about it" in human_text(planner.briefs[1])
+
+
+def test_a_window_with_nothing_left_to_do_ends_the_run_before_any_model_is_asked() -> None:
+    """Both assignments reported done: the run ends at the first node with its record, no
+    model is asked, no draft is made, and nothing waits for review."""
+    drafts = drafts_in_memory()
+    planner: Scripted[DailyPlan] = Scripted()
+    critic: Scripted[CriticVerdict] = Scripted()
+
+    result = run(
+        graph_with(
+            planner,
+            critic,
+            drafts=drafts,
+            reports=[
+                ("assignment-canal-essay", "done", None),
+                ("assignment-algebra-set", "done", None),
+            ],
+        )
+    )
+
+    ended = drafts.runs_without_a_draft()
+    assert result["outcome"] == "nothing_to_schedule"
+    assert (planner.calls, critic.calls) == (0, 0)
+    assert "draft" not in result
+    assert "__interrupt__" not in result
+    assert [item.node for item in result["steps"]] == ["retrieve"]
+    assert result["steps"][0].found.startswith(
+        "0 assignments in the week, 2 reported done and left out: "
+    )
+    assert [(item.outcome, [step.node for step in item.steps]) for item in ended] == [
+        ("nothing_to_schedule", ["retrieve"])
+    ]
+    assert drafts.waiting() == []
+
+
+def test_the_draft_names_every_assignment_its_plan_speaks_about_once() -> None:
+    drafts = drafts_in_memory()
+
+    result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())), drafts=drafts))
+
+    record = drafts.get(result["draft"].draft_id)
+    assert record is not None
+    assert record.plan_assignment_ids == ["assignment-algebra-set", "assignment-canal-essay"]
