@@ -320,7 +320,9 @@ email writes beside an assignment is kept as the text it is, "The email
 writes 09/09 beside it, which it does not explain", and is never a due date.
 Her page shows the report as a banner on the card, "The school reports this
 missing", with the source and the day; the family page lists the same under
-"Reported by the school".
+"Assignment updates", beside her own word about the work, and puts a "done"
+of hers that stands beside a school "missing" first, as worth checking
+together.
 
 The second way in is one assignment by hand: a course as the portal names
 it and a title are required; a due date, an assigned date, the type, and a
