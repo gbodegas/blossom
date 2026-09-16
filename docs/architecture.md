@@ -23,7 +23,12 @@ the database and that person's passphrase, so nothing here needs a library
 or a service, a cookie made elsewhere is refused, and a changed passphrase
 signs that person out. Wrong passphrases are counted per device and answered
 with a wait past ten. With neither passphrase set the gate stands open, which
-the tests and the sample rely on.
+the tests and the sample rely on. Open or not, the gate turns away any request
+that would change something and does not name this server as where it came
+from, read from the browser's Origin header or, failing that, its Referer,
+against the address the request was sent to: a page elsewhere cannot make a
+signed-in browser send a form here. That check comes before the sign-in and
+the open routes, and the tests' client sends the header with every request.
 
 Beside the gate, `blossom/intake.py` is the way in for assignments: a reader
 for the school portal's own text, its homework page, its weekly summary, and

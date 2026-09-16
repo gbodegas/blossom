@@ -35,10 +35,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
@@ -69,6 +69,15 @@ COOLDOWN_SECONDS: Final = 60
 """How long that device waits; its count starts over afterward."""
 ATTEMPT_ADDRESSES: Final = 64
 """How many devices are counted at once; past that the oldest count is forgotten."""
+SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
+"""The methods that change nothing, which the origin check leaves alone."""
+DEFAULT_PORTS: Final = {"http": 80, "https": 443}
+"""The port an address means when it names none, by scheme; no other scheme is an origin."""
+NOT_AN_AUTHORITY: Final = frozenset(r"\/?#@")
+"""Marks that never belong in a host: a path, a query, a fragment, or a user before it."""
+ELSEWHERE: Final = "This request must come from the same origin."
+"""The refusal for a request that would change something and does not name this server as
+where it came from."""
 
 templates = page_templates()
 
@@ -323,6 +332,93 @@ def may_open(role: Principal, path: str) -> bool:
     return role is Principal.PARENT
 
 
+def read_authority(text: str, scheme: str) -> tuple[str, int] | None:
+    """A Host header or a URL's authority as hostname and port, or ``None`` when unreadable.
+
+    The hostname is folded to lowercase, a port left out is the scheme's own,
+    and an IPv6 address keeps its brackets, so the same server named two ways
+    reads the same. Anything else in the text, a path, a user, a space, a
+    second colon outside brackets, a port that is not a number in range, makes
+    it unreadable, and unreadable is refused rather than guessed at.
+    """
+    if not text or not text.isprintable() or " " in text or NOT_AN_AUTHORITY & set(text):
+        return None
+    if text.startswith("["):
+        close = text.find("]")
+        if close < 2:
+            return None
+        host, rest = text[: close + 1], text[close + 1 :]
+    elif text.count(":") > 1:
+        return None
+    else:
+        host, separator, digits = text.partition(":")
+        rest = f"{separator}{digits}"
+    if not host:
+        return None
+    if rest == "":
+        port = DEFAULT_PORTS.get(scheme)
+        return None if port is None else (host.lower(), port)
+    digits = rest[1:]
+    if not (digits.isascii() and digits.isdigit()) or not 0 < int(digits) <= 65535:
+        return None
+    return host.lower(), int(digits)
+
+
+def read_origin(value: str, *, whole_address: bool) -> tuple[str, str, int] | None:
+    """An Origin header, or a Referer's origin, as scheme, hostname, and port.
+
+    An Origin is a scheme and an authority and nothing more: a path, a query,
+    or a fragment after it makes it unreadable, as does "null", an empty
+    value, or a scheme other than http and https. A Referer is a whole
+    address, so its path is expected and only its origin is read.
+    """
+    if not value or not value.isprintable() or " " in value:
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
+    if parts.scheme not in DEFAULT_PORTS or not parts.netloc:
+        return None
+    if not whole_address and value[len(parts.scheme) :] != f"://{parts.netloc}":
+        return None
+    authority = read_authority(parts.netloc, parts.scheme)
+    if authority is None:
+        return None
+    return parts.scheme, *authority
+
+
+def from_this_origin(request: Request) -> bool:
+    """Whether a request that would change something names this server as where it came from.
+
+    The reference is the address the request was sent to: its scheme, with
+    the one Host header, read as an authority; no Host header, two, or one
+    that cannot be read is refused. The Origin header is the browser's own
+    word for where a form or a script call came from and is judged first,
+    alone: one value, an http or https origin with nothing after the
+    authority, naming the reference. "null", an empty value, several values,
+    an unreadable one, or another origin is refused outright, with no second
+    look at the Referer. Only a request with no Origin header at all is
+    judged by its one Referer, whose origin must name the reference. A
+    request carrying neither is refused: a browser sends one or the other
+    with every form and every script call, so the only requests without both
+    are made by hand, and the guide says what to send with those.
+    """
+    hosts = request.headers.getlist("host")
+    if len(hosts) != 1:
+        return False
+    scheme = request.url.scheme
+    reference = read_authority(hosts[0], scheme)
+    if reference is None:
+        return False
+    expected = (scheme, *reference)
+    origins = request.headers.getlist("origin")
+    if origins:
+        return len(origins) == 1 and read_origin(origins[0], whole_address=False) == expected
+    referers = request.headers.getlist("referer")
+    return len(referers) == 1 and read_origin(referers[0], whole_address=True) == expected
+
+
 def wants_a_page(request: Request) -> bool:
     """Whether the request comes from a browser, which is answered with a page, not JSON.
 
@@ -342,6 +438,14 @@ class HouseholdGate(BaseHTTPMiddleware):
     Every answer but a static file is marked not to be stored: pages, calls,
     the sign-in and its redirects, and the gate's own refusals, so a shared
     browser or anything on the way keeps no copy to show after a sign-out.
+
+    Before any of that, and whether or not the sign-in is on, a request that
+    would change something must come from this server's own pages: a page on
+    another site that a signed-in browser opens can make that browser send a
+    form here, cookie and all, and the browser's Origin or Referer header is
+    what gives such a form away. One that names another origin, or none, is
+    answered 403 in plain text, for every method but GET, HEAD, and OPTIONS,
+    the sign-in and sign-out forms and the static files included.
     """
 
     def __init__(self, app: ASGIApp, settings: Settings) -> None:
@@ -351,6 +455,10 @@ class HouseholdGate(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
+        if request.method not in SAFE_METHODS and not from_this_origin(request):
+            return PlainTextResponse(
+                ELSEWHERE, status_code=403, headers={"Cache-Control": "no-store"}
+            )
         if not self.settings.household_sign_in:
             return await call_next(request)
         if request.url.path.startswith(STATIC_PREFIX):

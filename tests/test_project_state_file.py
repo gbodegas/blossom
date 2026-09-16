@@ -34,7 +34,7 @@ from blossom.stores.project_state import (
     ProjectStateStore,
     StatusReport,
 )
-from tests.support import FIXTURES, fixture_clock, fixture_settings
+from tests.support import FIXTURES, SAME_ORIGIN, fixture_clock, fixture_settings
 
 PAGE = {"Accept": "text/html"}
 
@@ -185,7 +185,7 @@ def test_a_household_with_no_fixture_starts_with_nothing_on_record(
 ) -> None:
     settings = settings_in(tmp_path, BLOSSOM_FIXTURE_PATH="")
     assert settings.fixture_path is None
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         page = client.get("/student/due-this-week", headers=PAGE)
     state = build_application_state(settings, InMemorySaver())
     try:

@@ -52,7 +52,7 @@ from blossom.stores.paths import (
 )
 from blossom.stores.project_state import Assignment, AssignmentKind
 from blossom.verification import CheckOutcome
-from tests.support import fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings
 
 # ------------------------------------------------------------------- the path
 
@@ -388,7 +388,7 @@ def test_the_lifespan_opens_the_store_on_the_configured_path(tmp_path: pathlib.P
     settings = fixture_settings(**{CHECKPOINT_PATH_VARIABLE: str(path)})
     app = create_app(settings)
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=SAME_ORIGIN) as client:
         assert client.get("/student/due-this-week").status_code == 200
         state: ApplicationState = getattr(app.state, STATE_ATTRIBUTE)
         assert isinstance(state.checkpointer, AsyncSqliteSaver)
@@ -401,5 +401,5 @@ def test_startup_refuses_a_checkpoint_path_inside_a_synced_folder(tmp_path: path
         **{CHECKPOINT_PATH_VARIABLE: str(tmp_path / "OneDrive" / "checkpoints.sqlite3")}
     )
 
-    with pytest.raises(UnsafeCheckpointPath), TestClient(create_app(settings)):
+    with pytest.raises(UnsafeCheckpointPath), TestClient(create_app(settings), headers=SAME_ORIGIN):
         pass

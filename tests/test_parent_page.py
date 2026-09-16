@@ -26,7 +26,7 @@ from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
 from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
-from tests.support import FIXTURE_TIMEZONE, Scripted, fixture_settings, ok
+from tests.support import FIXTURE_TIMEZONE, SAME_ORIGIN, Scripted, fixture_settings, ok
 
 PLAN_DATE = date(2026, 8, 19)
 CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
@@ -115,7 +115,7 @@ def browser(
     with_key = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"}
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **with_key))
     app.dependency_overrides[plan_graphs] = scripted_graphs(verdict, plans)
-    return TestClient(app, follow_redirects=False)
+    return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
 
 
 def waiting_draft_id(client: TestClient) -> str:
@@ -353,7 +353,7 @@ def test_each_decision_button_says_which_draft_it_decides() -> None:
     """One waiting draft is named by its evening; two evenings waiting get a position each."""
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     app.dependency_overrides[plan_graphs] = scripted_graphs()
-    with TestClient(app, follow_redirects=False) as client:
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         one_waiting = client.get("/parent").text
         app.dependency_overrides[plan_graphs] = scripted_graphs(plans=lambda: [tomorrows_plan()])
@@ -440,7 +440,7 @@ def test_a_failure_on_the_way_is_said_on_the_page_and_the_queue_stays() -> None:
     """A planner that raises is not a refusal; the page still says so and keeps its queue."""
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     app.dependency_overrides[plan_graphs] = scripted_graphs()
-    with TestClient(app, follow_redirects=False) as client:
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         draft_id = waiting_draft_id(client)
         app.dependency_overrides[plan_graphs] = scripted_graphs(plans=list)
         response = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
@@ -459,7 +459,7 @@ def test_a_waiting_draft_can_be_decided_from_the_page_without_a_key() -> None:
     """The page says deciding needs no key, so it must not."""
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     app.dependency_overrides[plan_graphs] = scripted_graphs()
-    with TestClient(app, follow_redirects=False) as client:
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         draft_id = waiting_draft_id(client)
         app.dependency_overrides.clear()
 
@@ -501,7 +501,7 @@ def test_without_a_key_the_page_reads_and_the_plan_form_says_why_not() -> None:
     settings = fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat())
     assert settings.anthropic_api_key is None
 
-    with TestClient(create_app(settings), follow_redirects=False) as client:
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         page = client.get("/parent")
         posted = client.post("/parent/actions/plan", data={"plan_date": ""})
 

@@ -22,7 +22,7 @@ from blossom.reconciliation import SourceChannel, SourceConfidence, classify_con
 from blossom.routes.student import build_student_due_this_week_view
 from blossom.settings import REPOSITORY_ROOT, SAMPLE_VARIABLE, Settings
 from blossom.sources import FixtureSource
-from tests.support import fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings
 
 SAMPLE = REPOSITORY_ROOT / "data" / "sample"
 SAMPLE_DAY = "2026-09-07"
@@ -67,7 +67,7 @@ def test_the_sample_holds_four_ordinary_items_each_with_one_portal_date() -> Non
 
 
 def test_the_sample_page_is_a_plain_week_with_the_reading_log_assigned_for_later() -> None:
-    with TestClient(create_app(sample_settings())) as client:
+    with TestClient(create_app(sample_settings()), headers=SAME_ORIGIN) as client:
         this_week = client.get("/student/due-this-week").text
         next_week = client.get("/student/due-this-week", params={"week": "2026-09-14"}).text
 
@@ -100,16 +100,16 @@ def test_the_reading_log_keeps_its_id_across_the_two_weeks() -> None:
 
 
 def test_the_week_before_the_sample_is_empty_and_says_so() -> None:
-    with TestClient(create_app(sample_settings())) as client:
+    with TestClient(create_app(sample_settings()), headers=SAME_ORIGIN) as client:
         before = client.get("/student/due-this-week", params={"week": "2026-08-31"}).text
 
     assert "No assignments are recorded as due that week." in before
 
 
 def test_the_sample_label_shows_on_both_pages_only_when_the_flag_is_set() -> None:
-    with TestClient(create_app(sample_settings(BLOSSOM_SAMPLE="1"))) as client:
+    with TestClient(create_app(sample_settings(BLOSSOM_SAMPLE="1")), headers=SAME_ORIGIN) as client:
         labeled = (client.get("/student/due-this-week").text, client.get("/parent").text)
-    with TestClient(create_app(sample_settings())) as client:
+    with TestClient(create_app(sample_settings()), headers=SAME_ORIGIN) as client:
         plain = (client.get("/student/due-this-week").text, client.get("/parent").text)
 
     for page in labeled:
@@ -168,7 +168,7 @@ def test_the_sample_state_folder_is_created_on_first_launch(tmp_path: pathlib.Pa
         BLOSSOM_TRACE_PATH=str(folder / "traces.sqlite3"),
     )
 
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         status = client.get("/student/due-this-week").status_code
 
     assert status == 200

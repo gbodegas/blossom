@@ -19,7 +19,7 @@ from blossom.app import create_app
 from blossom.noticing import monday_of
 from blossom.settings import STATIC_PATH as STATIC
 from blossom.settings import TEMPLATE_PATH as TEMPLATES
-from tests.support import fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings
 
 PINNED_TODAY = "2026-08-19"
 MONDAY = "2026-08-17"
@@ -39,7 +39,7 @@ def page(week: str | None = None, **environment: str) -> tuple[int, str]:
     """Her page with the clock pinned to the fixture week unless ``environment`` says otherwise."""
     settings = fixture_settings(**{"BLOSSOM_TODAY": PINNED_TODAY, **environment})
     params = {} if week is None else {"week": week}
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         response = client.get("/student/due-this-week", params=params)
     return response.status_code, response.text
 
@@ -213,7 +213,7 @@ def test_the_page_shows_the_households_budgets() -> None:
     settings = fixture_settings(
         BLOSSOM_TODAY=PINNED_TODAY, BLOSSOM_EVENING_MINUTES="120", BLOSSOM_TOO_MUCH_MINUTES="40"
     )
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         client.post("/student/actions/too-much", follow_redirects=False)
         shown = client.get("/student/due-this-week").text
 

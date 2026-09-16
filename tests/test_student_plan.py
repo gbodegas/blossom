@@ -25,6 +25,7 @@ from blossom.stores.drafts import DraftsStore
 from tests.support import (
     FIXTURE_TIMEZONE,
     PLAN_DATE,
+    SAME_ORIGIN,
     accepting,
     drafts_in_memory,
     fixture_settings,
@@ -68,7 +69,7 @@ def browser(
         app.dependency_overrides[plan_graphs] = scripted_graphs(
             lambda: [plan()], lambda: [critic()]
         )
-    return TestClient(app, follow_redirects=False)
+    return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
 
 
 SHOWN = f"{PAGE}?show_plan=1"
@@ -187,7 +188,7 @@ def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() ->
     app.dependency_overrides[plan_graphs] = scripted_graphs(
         lambda: [forgetful_fixture_plan()] * 3, lambda: [accepting()]
     )
-    with TestClient(app, follow_redirects=False) as client:
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         response = client.post("/student/actions/plan")
         over_json = client.post("/student/plans")
 
@@ -207,7 +208,7 @@ def test_a_failure_on_the_way_is_said_on_the_page_and_the_plan_stays() -> None:
     app.dependency_overrides[plan_graphs] = scripted_graphs(
         lambda: [fixture_week_plan()], lambda: [accepting()]
     )
-    with TestClient(app, follow_redirects=False) as client:
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         client.post("/student/actions/plan")
         app.dependency_overrides[plan_graphs] = scripted_graphs(list, lambda: [accepting()])
         response = client.post("/student/actions/plan")

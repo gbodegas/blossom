@@ -56,6 +56,12 @@ FIXTURE_TIMEZONE = "America/New_York"
 """The zone the synthetic fixtures are written in. A fictional household's."""
 FIXTURES = REPOSITORY_ROOT / "data" / "synthetic"
 """The synthetic set the suite runs against; the household's default is no fixture."""
+ORIGIN = "http://testserver"
+"""Where the test client's requests come from, as the app reads them: its own address."""
+SAME_ORIGIN = {"Origin": ORIGIN}
+"""The header every test client sends with every request, as a browser sends it with a
+form or a script call: a request that would change something is refused without one
+naming this server, so a client without it stands for a request made from elsewhere."""
 
 
 class OffsetlessTimeZone(tzinfo):

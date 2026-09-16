@@ -19,7 +19,7 @@ from blossom.retrieval import (
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.tools import TOOL_REGISTRY
 from blossom.views import ParentCheckpointView, StudentAssignmentView, VerifierClaimView
-from tests.support import fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings
 
 
 class RecordingRetriever:
@@ -398,7 +398,7 @@ def test_reconciler_preserves_all_four_conflicting_records() -> None:
 
 
 def test_empty_workload_signal_post_succeeds() -> None:
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(), headers=SAME_ORIGIN) as client:
         response = client.post("/student/workload-signals")
 
     assert response.status_code == 201
@@ -424,7 +424,7 @@ def test_student_due_this_week_renders_disagreement() -> None:
     """The clock is pinned because the fixtures carry fixed August 2026 dates."""
     settings = fixture_settings(BLOSSOM_TODAY="2026-08-19")
 
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         response = client.get("/student/due-this-week")
 
     assert response.status_code == 200

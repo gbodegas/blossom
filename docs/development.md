@@ -69,6 +69,14 @@ pages, and anyone who can reach the server can open all of them. That is the
 shape for a machine only the family touches. For the household's own use, see
 "Running for the household" below.
 
+Whether or not the passphrases are set, a request that changes something, any
+POST or DELETE, must say it came from this server: browsers send an Origin
+header with every form and script call, and one naming another site, or none,
+is answered 403 in plain text. For curl requests that change state through
+the JSON routes, send an Origin header matching the URL's scheme, host, and
+port, for example `-H 'Origin: http://localhost:8000'` when calling
+`http://localhost:8000`. The interactive API page sends it on its own.
+
 ## Configuration
 
 Every setting is an environment variable named in `.env.example`, and
