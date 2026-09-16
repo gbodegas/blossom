@@ -943,7 +943,9 @@ def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
     )
     assert "What the school reports is saved with the day." in shown
     assert kept.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
-    assert "<h2>Reported by the school</h2>" in family
+    assert "<h2>Assignment updates</h2>" in family
+    assert "<h3>School reports</h3>" in family
+    assert "Worth checking together" not in family
     assert "<strong>Book Covers: the school reports it missing.</strong>" in family
     assert "From the school email, pasted Monday, September 7, 2026." in family
     assert "<strong>The school reports this missing.</strong>" in hers

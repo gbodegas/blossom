@@ -47,7 +47,7 @@ Without that, the visibility policy is stated but not observable.
 
 import logging
 from collections.abc import Mapping
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response, status
@@ -57,9 +57,10 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.anthropic_client import model_configured
+from blossom.assignment_status import statuses_for
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
-from blossom.evening import Staleness, staleness
+from blossom.evening import Staleness, reported_done, staleness
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
 from blossom.intake import TEXT_MAX_LENGTH, spoken_report
 from blossom.routes.runs import (
@@ -77,13 +78,14 @@ from blossom.templating import page_templates
 from blossom.views import (
     ApprovalQueueView,
     ApprovalView,
+    AssignmentUpdatesView,
+    AssignmentUpdateView,
     DecisionView,
     HelpRequestView,
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
     RunView,
-    SchoolReportView,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,6 +139,10 @@ ASSIGNMENTS_CHANGED: Final = (
     "about her part, or what a source says about a date changed. The plan does not cover "
     "the week as it stands. Plan again before approving."
 )
+PLAN_INCLUDES_DONE: Final = "This plan includes work she now reports as Done: {}."
+PLAN_WINDOW_DONE: Final = "Some work in this plan's window is now reported Done."
+RECENT_DAYS: Final = 14
+"""How many household days an update of hers stays under "Recent updates"."""
 
 
 def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
@@ -172,9 +178,25 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
             return None
 
 
+def done_since(state: ApplicationState, record: DraftRecord) -> str | None:
+    """That a plan of today's or a later evening speaks about work she has since reported
+    done, naming it when the plan carries its ids; decided plans included, since the
+    parent reads them beside what she has finished."""
+    if record.plan_date < state.clock.today():
+        return None
+    found = reported_done(state.project_state, record)
+    if found is None:
+        return None
+    if not found.known:
+        return PLAN_WINDOW_DONE
+    return PLAN_INCLUDES_DONE.format(", ".join(found.titles))
+
+
 def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
     """A draft as the parent sees it, with whether it still fits the evening."""
-    return ApprovalView.from_record(record, stale=stale_reason(state, record))
+    return ApprovalView.from_record(
+        record, stale=stale_reason(state, record), reported_done=done_since(state, record)
+    )
 
 
 def passed(evening: date) -> str:
@@ -465,33 +487,65 @@ def review_page(
             "entry_open": entry_open or bool(paste) or bool(entry),
             "text_max_length": TEXT_MAX_LENGTH,
             "entry_note_max_length": ENTRY_NOTE_MAX_LENGTH,
-            "reported": reported_by_the_school(state),
+            "updates": assignment_updates(state),
         },
         status_code=status_code,
     )
 
 
-def reported_by_the_school(state: ApplicationState) -> list[SchoolReportView]:
-    """Every assignment the school has reported on, with its latest report, by due date.
+def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
+    """What she and the school have reported, in the family page's three groups.
 
-    The reports and the rows are read while the store is held, one
-    snapshot, as her page reads them: a saving landing between the two
-    reads could otherwise pair new rows with old reports.
+    Her "done" beside the school's latest "missing" is worth checking
+    together, and comes first, open; her standing updates of the last
+    fourteen household days follow, most recent first; and every other
+    assignment the school has reported on closes the section with the
+    school's latest report, in the record's order. The rows, her reports,
+    and the school's are read while the store is held, one snapshot, as her
+    page reads them, in a few batched reads whatever the number of rows.
     """
+    today = state.clock.today()
     with state.project_state.exclusively():
+        rows = state.project_state.all_assignments()
         latest = state.project_state.latest_status_reports()
-        rows = [
-            item for item in state.project_state.all_assignments() if item.assignment_id in latest
-        ]
-    return [
-        SchoolReportView(
+        statuses = statuses_for(state.project_state, [item.assignment_id for item in rows])
+    views: dict[str, AssignmentUpdateView] = {}
+    for item in rows:
+        status = statuses[item.assignment_id]
+        report = latest.get(item.assignment_id)
+        views[item.assignment_id] = AssignmentUpdateView(
+            assignment_id=item.assignment_id,
             course=item.course,
             title=item.title,
-            status=latest[item.assignment_id].status,
-            sentence=spoken_report(latest[item.assignment_id]),
+            status=status.status,
+            reported_on=status.reported_on,
+            restored_on=status.restored_on,
+            note=status.note,
+            school_status=None if report is None else report.status,
+            school_sentence="" if report is None else spoken_report(report),
+            check=status.check_the_school_record,
         )
-        for item in rows
+    check = [views[name] for name in views if statuses[name].check_the_school_record]
+    recent = sorted(
+        (
+            views[name]
+            for name in views
+            if (asserted := statuses[name].asserted) is not None
+            and asserted.reported_on > today - timedelta(days=RECENT_DAYS)
+        ),
+        key=lambda view: (
+            statuses[view.assignment_id].asserted.reported_at  # type: ignore[union-attr]
+            if statuses[view.assignment_id].asserted is not None
+            else datetime.min.replace(tzinfo=UTC)
+        ),
+        reverse=True,
+    )
+    school = [
+        views[name]
+        for name in views
+        if views[name].school_status is not None and not statuses[name].check_the_school_record
     ]
+    return AssignmentUpdatesView(check=check, recent=recent, school=school)
 
 
 @router.get("", response_class=HTMLResponse, include_in_schema=False)

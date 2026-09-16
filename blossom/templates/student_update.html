@@ -1,0 +1,81 @@
+{#
+  Her own update on one assignment, included by every card and by the
+  assigned-later list. A standing update shows as a summary with its day,
+  what it means for the next plan, and a way to change or take it back; a
+  card without one offers the form, Done or Not yet with an optional note,
+  and the form alone: it works without a script. The form carries the last
+  event the card showed, so a save lands on the chain the page showed or is
+  shown what changed. A parent signed in reads the summary and is told the
+  update is hers to make.
+#}
+{% set here = card and card.assignment_id == assignment.assignment_id %}
+{% set standing = assignment.update_status is not none %}
+{% set form_open = view.can_update and (not standing or (here and card.change)) %}
+{% set chosen = card.status if (here and card.status) else (assignment.update_status if (standing and here and card.change) else none) %}
+{% set typed = card.note if (here and card.note is not none) else ((assignment.update_note or "") if (standing and here and card.change) else "") %}
+<div class="update">
+  {% if here and card.said %}
+    <p class="note" role="status">{{ card.said }}</p>
+  {% endif %}
+  {% if here and card.problem %}
+    <p class="problem" role="alert" id="update-problem-{{ assignment.assignment_id }}">{{ card.problem }}</p>
+  {% endif %}
+  {% if standing %}
+    <p class="update-summary">
+      <span class="pill">{% if view.viewer == "parent" %}Student update{% else %}Your update{% endif %}: {% if assignment.update_status == "done" %}Done{% else %}Not yet{% endif %}</span>
+      Reported {{ assignment.update_reported_on.strftime("%B") }} {{ assignment.update_reported_on.day }}{% if assignment.update_restored_on %}, restored {{ assignment.update_restored_on.strftime("%B") }} {{ assignment.update_restored_on.day }}{% endif %}
+    </p>
+    {% if assignment.update_note %}
+      <p class="from-teacher">{% if view.viewer == "parent" %}She wrote{% else %}You wrote{% endif %}: <q>{{ assignment.update_note }}</q></p>
+    {% endif %}
+    <p class="effect">
+      {% if assignment.update_status == "done" %}This is out of work to plan. Your school record is separate.
+      {% elif assignment.in_planning_window %}This stays in work to plan when it is in the planning window.
+      {% else %}Saved as Not yet. This assignment is outside today's planning window.{% endif %}
+    </p>
+    {% if view.can_update and not form_open %}
+      <div class="actions">
+        <form method="get" action="/student/due-this-week" class="action">
+          <input type="hidden" name="week" value="{{ view.week.start.isoformat() }}">
+          <input type="hidden" name="change" value="{{ assignment.assignment_id }}">
+          <button type="submit" class="secondary" aria-label="Change your update on {{ assignment.title }}">Change</button>
+        </form>
+        {% if assignment.undo_report_id %}
+          <form method="post" action="/student/actions/assignments/{{ assignment.assignment_id }}/undo-report" class="action">
+            <input type="hidden" name="report_id" value="{{ assignment.undo_report_id }}">
+            <input type="hidden" name="week" value="{{ view.week.start.isoformat() }}">
+            <button type="submit" class="secondary" aria-label="Undo your update on {{ assignment.title }}">Undo</button>
+          </form>
+        {% endif %}
+      </div>
+    {% elif view.viewer == "parent" %}
+      <p class="note">Sign in as the student to update.</p>
+    {% endif %}
+  {% elif view.viewer == "parent" %}
+    <p class="note">No student update yet. Sign in as the student to update.</p>
+  {% endif %}
+  {% if form_open %}
+    <form method="post" action="/student/actions/assignments/{{ assignment.assignment_id }}/report" class="report">
+      <fieldset class="choice"{% if here and card.problem %} aria-describedby="update-problem-{{ assignment.assignment_id }}"{% endif %}>
+        <legend>Your update</legend>
+        <label><input type="radio" name="status" value="done"{% if chosen == "done" %} checked{% endif %}> Done</label>
+        <label><input type="radio" name="status" value="not_yet"{% if chosen == "not_yet" %} checked{% endif %}> Not yet</label>
+      </fieldset>
+      <p class="note">Done means you have finished your part. It does not turn work in.</p>
+      <details class="steps note-fold"{% if typed %} open{% endif %}>
+        <summary>Add a note (optional)</summary>
+        <label for="update-note-{{ assignment.assignment_id }}">Your note</label>
+        <textarea id="update-note-{{ assignment.assignment_id }}" name="note" rows="2" maxlength="{{ update_note_max_length }}">{{ typed }}</textarea>
+        <p class="note">Your parents can read this. Notes on work being planned are shared with the planning model.</p>
+      </details>
+      <input type="hidden" name="expected_report_id" value="{{ assignment.update_head_id or '' }}">
+      <input type="hidden" name="week" value="{{ view.week.start.isoformat() }}">
+      <div class="actions">
+        <button type="submit" class="primary" aria-label="Save your update on {{ assignment.title }}">Save update</button>
+        {% if standing %}
+          <a class="cancel" href="/student/due-this-week?week={{ view.week.start.isoformat() }}#assignment-{{ assignment.assignment_id }}">Keep it as it is</a>
+        {% endif %}
+      </div>
+    </form>
+  {% endif %}
+</div>

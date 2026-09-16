@@ -81,18 +81,64 @@ class StudentAssignmentView(BaseModel):
     school_report: str = ""
     """Where and when the school reported the status shown, as the page says it; empty
     when the school has reported nothing."""
+    update_status: str | None = None
+    """What she has reported about her part, ``done`` or ``not_yet``; ``None`` while no
+    report of hers stands. Hers, read apart from the school's, and never merged with it."""
+    update_note: str | None = None
+    update_reported_on: date | None = None
+    """The day of the report whose words stand."""
+    update_restored_on: date | None = None
+    """The day an undo restored that report, when one did."""
+    update_head_id: str | None = None
+    """The last event in her chain, carried by the form so a save lands on the chain the
+    page showed; ``None`` when she has said nothing yet."""
+    undo_report_id: str | None = None
+    """The report she can take back, when the head is one she made."""
+    in_planning_window: bool = False
+    """Whether the assignment is in today's planning window, which is what a "not yet"
+    means for the next plan."""
+    check_school: bool = False
+    """Whether her "done" stands beside a school report of missing: something for the
+    family to check, said on both pages and decided by neither."""
 
 
-class SchoolReportView(BaseModel):
-    """One assignment the school has reported on, as the family page lists it."""
+class AssignmentUpdateView(BaseModel):
+    """One assignment with what she and the school have reported, as the family page lists it.
+
+    The two accounts sit side by side, each with its day and its source, and
+    the page decides nothing between them: a "done" of hers beside a
+    "missing" of the school's is something to check, not a verdict on either.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
+    assignment_id: str
     course: str
     title: str
-    status: str
-    sentence: str
+    status: str | None = None
+    """Her standing report, ``done`` or ``not_yet``; ``None`` when the school alone has spoken."""
+    reported_on: date | None = None
+    restored_on: date | None = None
+    note: str | None = None
+    school_status: str | None = None
+    """The school's latest word about the status, or ``None`` when it has said nothing."""
+    school_sentence: str = ""
     """Where and when the school reported it, as the page says it."""
+    check: bool = False
+    """Whether her "done" stands beside a school "missing"."""
+
+
+class AssignmentUpdatesView(BaseModel):
+    """The family page's section on assignment updates, in its three groups."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    check: list[AssignmentUpdateView] = []
+    """Her "done" beside a school "missing": worth checking together, shown open."""
+    recent: list[AssignmentUpdateView] = []
+    """Her standing reports of the last fourteen household days, most recent first."""
+    school: list[AssignmentUpdateView] = []
+    """Every other assignment the school has reported on, with its latest report."""
 
 
 class WorkloadSignalView(BaseModel):
@@ -155,6 +201,9 @@ class StudentPlanView(BaseModel):
     decision: Decision | None = None
     reason: str | None = None
     stale: str | None = None
+    reported_done: str | None = None
+    """In her words, that the plan speaks about work she has since reported done, naming
+    it when the plan carries the ids it speaks about; ``None`` while it does not."""
 
 
 class WeekView(BaseModel):
@@ -182,7 +231,11 @@ class StudentDueThisWeekView(BaseModel):
     for, which needs a model. ``too_much`` is tonight's signal when she has
     given one, and ``budget_minutes`` is what the next plan is held to as a
     result. ``signals`` is everything the store still keeps, so she can see it
-    and take any of it back.
+    and take any of it back. ``viewer`` is who is at the keyboard as the gate
+    says, and ``can_update`` whether the cards offer her update: to her, or to
+    anyone while the sign-in is off, and never to a parent. ``nothing_to_plan``
+    is whether today's planning window holds no work still to do, in which
+    case the page says so and offers no plan button.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -203,6 +256,9 @@ class StudentDueThisWeekView(BaseModel):
     help_requests: list[HelpRequestView] = []
     """Her requests for help still open, oldest first, then those resolved within
     two weeks, most recent first, so she sees each step a parent takes."""
+    viewer: str = "anyone"
+    can_update: bool = True
+    nothing_to_plan: bool = False
 
 
 class ParentCheckpointAssignmentView(BaseModel):
@@ -298,12 +354,18 @@ class ApprovalView(BaseModel):
     stale: str | None = None
     """Why this draft is not approved as it stands, when her signal has changed
     since it was made; ``None`` while the draft still fits the evening."""
+    reported_done: str | None = None
+    """That the plan speaks about work she has since reported done, naming it when the
+    plan carries the ids it speaks about; ``None`` while it does not."""
 
     @classmethod
-    def from_record(cls, record: DraftRecord, stale: str | None = None) -> "ApprovalView":
+    def from_record(
+        cls, record: DraftRecord, stale: str | None = None, reported_done: str | None = None
+    ) -> "ApprovalView":
         """The parent's projection of a table row. The thread id stays out of it."""
         return cls(
             stale=stale,
+            reported_done=reported_done,
             steps=record.steps,
             draft_id=record.draft_id,
             plan_date=record.plan_date,
