@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Protocol
 
 from blossom.reconciliation import SourceRecord
-from blossom.stores.project_state import Assignment, Seed
+from blossom.stores.project_state import Assignment, Seed, StudentReport
 from blossom.stores.reflections import Reflection, ReflectionSubject
 from blossom.stores.support_rules import SupportRule
 
@@ -66,6 +66,11 @@ class StateSource(DateClaims, Protocol):
         """Return the planner's notes about its own past plans. Empty is a valid answer."""
         ...
 
+    def student_reports(self) -> list[StudentReport]:
+        """Return the reports she is taken to have made already. Empty is the usual answer;
+        only the sample supplies any."""
+        ...
+
 
 def read_whole(source: StateSource) -> Seed:
     """A source's assignments, and every claim about their dates, read and checked whole.
@@ -82,10 +87,20 @@ def read_whole(source: StateSource) -> Seed:
     if unknown:
         msg = f"the set claims dates for assignments it does not list: {', '.join(unknown)}"
         raise ValueError(msg)
-    return assignments, {
-        assignment.assignment_id: list(claims.get(assignment.assignment_id, []))
-        for assignment in assignments
-    }
+    known = {assignment.assignment_id for assignment in assignments}
+    reports = source.student_reports()
+    unplaced = sorted({report.assignment_id for report in reports} - known)
+    if unplaced:
+        msg = f"the set reports on assignments it does not list: {', '.join(unplaced)}"
+        raise ValueError(msg)
+    return Seed(
+        assignments,
+        {
+            assignment.assignment_id: list(claims.get(assignment.assignment_id, []))
+            for assignment in assignments
+        },
+        reports,
+    )
 
 
 class FixtureSource:
@@ -114,6 +129,13 @@ class FixtureSource:
             )
             grouped.setdefault(str(item["assignment_id"]), []).append(record)
         return grouped
+
+    def student_reports(self) -> list[StudentReport]:
+        """Load ``student_reports.json``, the reports she is taken to have made: a file only
+        the sample carries, read with the same checks as any of her reports."""
+        return [
+            StudentReport.model_validate(item) for item in self._optional("student_reports.json")
+        ]
 
     def support_rules(self) -> list[SupportRule]:
         """Load ``support_rules.json``. A fixture set without one has no rules."""
@@ -187,6 +209,10 @@ class LMSSource:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
 
+    def student_reports(self) -> list[StudentReport]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
 
 class EmailSource:
     """Inbound email import belongs here if a local, non-transmitting source is approved."""
@@ -208,5 +234,9 @@ class EmailSource:
         raise NotImplementedError
 
     def reflections(self) -> list[Reflection]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
+    def student_reports(self) -> list[StudentReport]:
         """Not implemented. See the class docstring."""
         raise NotImplementedError

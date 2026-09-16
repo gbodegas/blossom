@@ -1120,8 +1120,8 @@ def test_each_field_keeps_the_channel_that_gave_it_whatever_the_order(
 def test_a_paste_matches_a_row_on_record_by_its_course_and_title(tmp_path: pathlib.Path) -> None:
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:
-        assignments, claims = read_whole(FixtureSource(FIXTURES))
-        store.put_on_record(assignments, claims)
+        seed = read_whole(FixtureSource(FIXTURES))
+        store.put_on_record(seed.assignments, seed.claims)
         before = len(store.all_assignments())
         read = read_text(
             "Tuesday 8/18/2026\nWorld History\nDue: Canal Era comparison essay:\n",
