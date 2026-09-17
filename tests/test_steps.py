@@ -5,14 +5,11 @@ from blossom.agent.steps import (
     describe_failure,
     describe_outcome,
     describe_verdict,
-    describe_verification,
     describe_week,
     expect_plan,
     tokens_note,
 )
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
-from blossom.plan_checks import ORDERED_PLAN_CHECKS, PlanVerification
-from blossom.verification import CheckOutcome
 from tests.support import ESSAY
 
 
@@ -106,14 +103,4 @@ def test_the_week_says_what_was_left_out_as_reported_done_only_when_something_wa
     assert less == (
         "1 assignment in the week, 2 reported done and left out: 0 contradicted, 0 uncertain, "
         "0 undated; 0 rules and 0 notes to follow; budget 150 minutes"
-    )
-
-
-def test_a_check_says_when_the_record_had_moved_under_the_plan() -> None:
-    passed = PlanVerification(outcomes=dict.fromkeys(ORDERED_PLAN_CHECKS, CheckOutcome.PASSED))
-
-    assert describe_verification(passed) == "all 7 checks passed"
-    assert describe_verification(passed, moved=True) == (
-        "the record changed while the plan was being made, so the checks were held to it "
-        "as it stands: all 7 checks passed"
     )

@@ -604,27 +604,28 @@ class ReportsWhileAsked[T: BaseModel]:
         return ok(self.answers.pop(0))
 
 
-def without_the_essay() -> DailyPlan:
-    whole = fixture_week_plan()
-    return DailyPlan(plan_date=PLAN_DATE, blocks=whole.blocks[1:], deferred=whole.deferred)
-
-
-def test_a_done_saved_while_the_reviewer_is_asked_leaves_the_plan_stale_and_named() -> None:
-    """Her Done lands after the plan has passed its checks, while the reviewer is asked.
-    The save is not kept waiting for the model; the draft keeps the fingerprint and the
-    ids of the reading its plan was made from; and the moment it is published it reads as
-    stale on both pages, its notice names the essay, and approving is refused."""
-    asked: list[ReportsWhileAsked[CriticVerdict]] = []
+@pytest.mark.parametrize("during", ["the planner", "the reviewer"])
+def test_a_done_saved_while_a_model_is_asked_leaves_the_plan_stale_and_named(during: str) -> None:
+    """Her Done lands while a model call is pending, the planner's or the reviewer's, and
+    the run does the same either way. The save is not kept waiting for the model; each
+    model is asked once; the draft keeps the fingerprint and the ids of what the run
+    read; and the moment it is published it reads as stale on both pages, its notice
+    names the essay, no approval is offered, and approving is refused."""
+    planners: list[ReportsWhileAsked[DailyPlan] | Scripted[DailyPlan]] = []
+    critics: list[ReportsWhileAsked[CriticVerdict] | Scripted[CriticVerdict]] = []
 
     def override(
         state: Annotated[ApplicationState, Depends(get_application_state)],
     ) -> PlanGraphs:
-        if not asked:
-            asked.append(ReportsWhileAsked(state, accepting()))
+        if not planners:
+            if during == "the planner":
+                planners.append(ReportsWhileAsked(state, fixture_week_plan()))
+                critics.append(Scripted(ok(accepting())))
+            else:
+                planners.append(Scripted(ok(fixture_week_plan())))
+                critics.append(ReportsWhileAsked(state, accepting()))
         return PlanGraphs(
-            build=lambda: plan_graph_for(
-                state, planner=Scripted(ok(fixture_week_plan())), critic=asked[0]
-            ),
+            build=lambda: plan_graph_for(state, planner=planners[0], critic=critics[0]),
             may_start=True,
         )
 
@@ -645,8 +646,13 @@ def test_a_done_saved_while_the_reviewer_is_asked_leaves_the_plan_stale_and_name
         )
         after = state.drafts.get(record.draft_id)
 
-    assert asked[0].lock_was_free
-    assert isinstance(asked[0].saved, Saved)
+    held = planners[0] if during == "the planner" else critics[0]
+    assert isinstance(held, ReportsWhileAsked)
+    assert held.lock_was_free
+    assert isinstance(held.saved, Saved)
+    assert (len(planners[0].briefs), len(critics[0].briefs)) == (1, 1)
+    assert f'id="{ESSAY}"' in human_text(planners[0].briefs[0])
+    assert f'id="{ESSAY}"' in human_text(critics[0].briefs[0])
     assert planned.status_code == 303
     assert record.waiting
     assert record.inputs_digest == as_read
@@ -658,55 +664,67 @@ def test_a_done_saved_while_the_reviewer_is_asked_leaves_the_plan_stale_and_name
     assert f"In it: {ESSAY_TITLE}." in hers
     assert THEIR_ASSIGNMENTS_CHANGED in family
     assert SHE_REPORTS in family
+    assert f"In it: {ESSAY_TITLE}." in family
     assert 'value="approve"' not in family
     assert refused.status_code == 409
     assert after is not None
     assert after.waiting
 
 
-def test_a_done_saved_while_the_planner_is_asked_is_caught_before_the_plan_is_hers() -> None:
-    """Her Done lands while the first plan is being made. The plan that comes back speaks
-    about the essay and fails the checks of the record as it stands; the planner is asked
-    again without the essay; and the plan she gets is current, with nothing to say about
-    work reported done since."""
-    asked: list[ReportsWhileAsked[DailyPlan]] = []
+def test_work_finished_between_the_routes_question_and_the_runs_reading_ends_the_run_plainly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Everything is reported done after the route has asked whether there is work and
+    before the run reads the week. The run ends at its first node: no model is asked, no
+    draft is made, the plan already there stays hers, nothing is left in flight, and the
+    family page says why, after a restart too, and never that the run was interrupted."""
+    settings = fixture_settings(
+        BLOSSOM_TODAY=PLAN_DATE.isoformat(),
+        **{ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"},
+    )
+    planners: list[Scripted[DailyPlan]] = []
 
     def override(
         state: Annotated[ApplicationState, Depends(get_application_state)],
     ) -> PlanGraphs:
-        if not asked:
-            asked.append(ReportsWhileAsked(state, fixture_week_plan(), without_the_essay()))
+        planner = Scripted(ok(fixture_week_plan()))
+        planners.append(planner)
         return PlanGraphs(
-            build=lambda: plan_graph_for(state, planner=asked[0], critic=Scripted(ok(accepting()))),
+            build=lambda: plan_graph_for(state, planner=planner, critic=Scripted(ok(accepting()))),
             may_start=True,
         )
 
-    with browser(key=True) as client:
-        client.app.dependency_overrides[plan_graphs] = override  # type: ignore[attr-defined]
+    app = create_app(settings)
+    app.dependency_overrides[plan_graphs] = override
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         state = state_of(client)
-        planned = client.post("/student/actions/plan")
-        record = state.drafts.latest_for(PLAN_DATE)
-        as_it_stands = planning_digest(
-            read_week(state.project_state, state.project_state, PLAN_DATE)
-        )
-        hers = client.get(PAGE, headers=PAGE_HEADERS).text
-        family = client.get("/parent", headers=PAGE_HEADERS).text
+        first = client.post("/student/plans")
+        kept = state.drafts.latest_for(PLAN_DATE)
+        for item in state.project_state.all_assignments():
+            report(client, item.assignment_id, "done")
+        asked_before = sum(planner.calls for planner in planners)
+        monkeypatch.setattr(student_routes, "require_work", lambda *_: None)
+        late = client.post("/student/plans")
+        asked_after = sum(planner.calls for planner in planners)
+        ended = state.drafts.runs_without_a_draft()
+        still = state.drafts.latest_for(PLAN_DATE)
+        in_flight = set(state.in_flight)
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as again:
+        family = again.get("/parent", headers=PAGE_HEADERS).text
 
-    again = human_text(asked[0].briefs[1])
-    assert asked[0].lock_was_free
-    assert isinstance(asked[0].saved, Saved)
-    assert len(asked[0].briefs) == 2
-    assert f'id="{ESSAY}"' not in again
-    assert ESSAY_TITLE not in again
-    assert "reported done" not in again
-    assert planned.status_code == 303
-    assert record is not None
-    assert record.inputs_digest == as_it_stands
-    assert record.plan_assignment_ids is not None
-    assert ESSAY not in record.plan_assignment_ids
-    assert ASSIGNMENTS_CHANGED not in hers
-    assert "<strong>Your updates.</strong>" not in hers
-    assert 'value="approve"' in family
+    assert first.status_code == 201
+    assert late.status_code == 409
+    assert late.json()["detail"] == NOTHING_TO_SCHEDULE
+    assert (asked_before, asked_after) == (1, 1)
+    assert [(run.outcome, [step.node for step in run.steps]) for run in ended] == [
+        ("nothing_to_schedule", ["retrieve"])
+    ]
+    assert kept is not None
+    assert still is not None
+    assert still.draft_id == kept.draft_id
+    assert in_flight == set()
+    assert "The run ended because nothing was left to schedule." in family
+    assert "interrupted" not in family
 
 
 def test_the_missing_a_check_rests_on_is_shown_whatever_the_latest_report_says() -> None:

@@ -151,12 +151,11 @@ class AssignmentStatus:
 
     @property
     def history_rows(self) -> tuple[HistoryRow, ...]:
-        """Her events as a page lists them, each undo with the report it put back."""
+        """Her events as a page lists them, each undo with the report it put back, worked
+        out for the whole chain in one pass."""
         return tuple(
-            HistoryRow(event, None if event.operation == REPORT else standing_report(chain))
-            for event, chain in (
-                (event, self.history[: index + 1]) for index, event in enumerate(self.history)
-            )
+            HistoryRow(event, None if event.operation == REPORT else stands)
+            for event, stands in zip(self.history, standing_after_each(self.history), strict=True)
         )
 
 
@@ -190,26 +189,37 @@ def statuses_for(
     return statuses
 
 
-def standing_report(chain: Sequence[StudentReport]) -> StudentReport | None:
-    """The report whose words stand at the end of ``chain``, or ``None`` when none does.
+def standing_after_each(chain: Sequence[StudentReport]) -> list[StudentReport | None]:
+    """The report whose words stand after each event of ``chain``, in the chain's order.
 
-    An undo restores what stood before the report it takes back, and what
-    stood there may itself have been put back by an earlier undo. So the
-    walk goes from the head back through every undo it meets, each time to
-    the event before the report that undo took back, until it reaches a
-    report or the start of the chain. A report, an undo, another report, and
-    another undo end at the first report, with the first report's day. Each
-    step moves toward the start, so the walk ends within the chain's length;
-    a link that leads nowhere, or round in a ring, ends it with no report,
+    One pass from the start. After a report, that report stands. An undo
+    restores what stood before the report it takes back, and what stood
+    there was worked out when the pass went by it, whether a report or
+    something an earlier undo had put back; so a report, an undo, another
+    report, and another undo end at the first report, with the first
+    report's day, and a chain of any length costs one look at each event. An
+    undo can only reach back: one that names an event the pass has not met,
+    a link that leads nowhere or round in a ring, leaves nothing standing,
     and a page then shows her status without putting a correction's day on
     her words.
     """
-    by_id = {event.report_id: event for event in chain}
-    event = chain[-1] if chain else None
-    for _ in chain:
-        if event is None or event.operation == REPORT:
-            return event
-        taken_back = by_id.get(event.undoes_report_id or "")
-        before = None if taken_back is None else taken_back.previous_report_id
-        event = None if before is None else by_id.get(before)
-    return event if event is None or event.operation == REPORT else None
+    met: dict[str, StudentReport] = {}
+    stood: dict[str, StudentReport | None] = {}
+    after: list[StudentReport | None] = []
+    for event in chain:
+        if event.operation == REPORT:
+            stands: StudentReport | None = event
+        else:
+            taken_back = met.get(event.undoes_report_id or "")
+            before = None if taken_back is None else taken_back.previous_report_id
+            stands = None if before is None else stood.get(before)
+        met[event.report_id] = event
+        stood[event.report_id] = stands
+        after.append(stands)
+    return after
+
+
+def standing_report(chain: Sequence[StudentReport]) -> StudentReport | None:
+    """The report whose words stand at the end of ``chain``, or ``None`` when none does."""
+    after = standing_after_each(chain)
+    return after[-1] if after else None

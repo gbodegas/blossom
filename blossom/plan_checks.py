@@ -51,11 +51,12 @@ class PlanCheck(StrEnum):
     reason."""
 
     NO_REPORTED_DONE_WORK = "NO_REPORTED_DONE_WORK"
-    """Nothing she has reported done is worked on or put off. The ids are read from the
-    record when the plan is checked, not when the run first read the week, and are kept
-    on the server; no model is sent them. Such an id is outside the window the plan is
-    held to, so ``ASSIGNMENTS_EXIST`` fails with it, and this check names the reason for
-    the record."""
+    """Nothing she had reported done when the run read the week is worked on or put off.
+    The ids are the run's own reading, fixed with the rest of its input and kept on the
+    server; no model is sent them. Such an id is outside the window the plan was given,
+    so ``ASSIGNMENTS_EXIST`` fails with it, and this check names the reason for the
+    record. A report that lands after the reading is not this check's to catch: the
+    draft's fingerprint is, on the pages and at approval."""
 
     ONE_DECISION_PER_ASSIGNMENT = "ONE_DECISION_PER_ASSIGNMENT"
     """Each assignment is worked on or put off, not both, and put off at most

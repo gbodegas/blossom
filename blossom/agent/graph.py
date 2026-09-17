@@ -314,10 +314,16 @@ def build_plan_graph(
         asked; the route asks the same question before the run, and asks it
         here again because a report can land in between.
 
-        A report can also land later, while a model is being asked, since
-        the run holds no lock then. ``verify`` reads the week again for that
-        reason and holds the plan to the record as it stands; what becomes
-        of this reading when the two differ is said there.
+        What is read here is the run's input from here on, her reports
+        included: both models, the checks, and every revision work from this
+        one reading, and the fingerprint saved with the draft is this
+        reading's. The models are asked without the decision lock, so a report
+        of hers can land while one is answering; it is not swapped in half
+        way, and no second plan is paid for on its account. The draft reads
+        as stale on both pages the moment it is published, its notice names
+        work she reports as done, and approving it is refused until a new
+        plan is asked for. Nothing left to do ends a run only here, before
+        any model is asked.
         """
         read = reading(read_week(project_state, source, state["plan_date"]))
         rules = [rule.instruction for rule in support_rules.list_all()]
@@ -376,48 +382,26 @@ def build_plan_graph(
         }
 
     def verify(state: PlanState) -> dict[str, Any]:
-        """Tier one, held to the record as it stands. A failing plan becomes feedback, or the
-        end when rounds are spent.
+        """Tier one, against the reading both models were given. A failing plan becomes
+        feedback, or the end when rounds are spent.
 
-        The models are asked without the decision lock, so her page can save
-        an update while a plan is being made. The week is therefore read
-        again here, and the checks hold the plan to that reading: work she
-        has reported done since is work the plan may not speak about, and
-        work that became hers to do again is work it may not leave out.
-
-        A plan that passes keeps the reading it was made from, fingerprint
-        included, so a change it happens to survive still shows on the pages
-        as a change. A plan that fails goes back to the planner with the
-        record as it stands, and the fingerprint moves with that reading,
-        since the next plan is made from it; nothing the planner is sent
-        says what she reported done. A week with nothing left to do ends the
-        run, as it does at the start. The step's record says when the record
-        had moved.
+        The plan is held to what ``retrieve`` read: the work still to do then,
+        and the ids of what she had reported done then. A report that lands
+        after that reading is not this step's to catch; the draft's
+        fingerprint is, on the pages and at approval.
         """
-        current = reading(read_week(project_state, source, state["plan_date"]))
-        moved = current["inputs_digest"] != state.get("inputs_digest")
         verification = check_plan(
             state["plan"],
-            due_in_window=current["assignments"],
+            due_in_window=state.get("assignments", []),
             zone=zone,
-            confidence=current["confidence"],
-            noticings=current["noticings"],
+            confidence=state.get("confidence", {}),
+            noticings=state.get("noticings", []),
             daily_minutes=state.get("budget_minutes", evening_minutes),
-            reported_done=current["done_ids"],
+            reported_done=state.get("done_ids", []),
         )
         record = step(
-            "verify",
-            state["rounds"],
-            EXPECT_ALL_CHECKS,
-            describe_verification(verification, moved=moved),
+            "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
         )
-        if not current["assignments"]:
-            return {
-                "verification": verification,
-                "done_ids": current["done_ids"],
-                "outcome": NOTHING_TO_SCHEDULE,
-                "steps": [record],
-            }
         if verification.passed:
             return {"verification": verification, "feedback": [], "steps": [record]}
         update: dict[str, Any] = {
@@ -425,8 +409,6 @@ def build_plan_graph(
             "feedback": list(verification.as_feedback()),
             "steps": [record],
         }
-        if moved:
-            update.update(current)
         if state["rounds"] > MAX_REVISIONS:
             update["outcome"] = "checks_failed"
         return update
@@ -531,9 +513,9 @@ def build_plan_graph(
         return "record_run" if "outcome" in state else "verify"
 
     def after_verify(state: PlanState) -> str:
-        if "outcome" in state:
-            return "record_run"
-        return "critique" if state["verification"].passed else "plan"
+        if state["verification"].passed:
+            return "critique"
+        return "record_run" if "outcome" in state else "plan"
 
     def after_critique(state: PlanState) -> str:
         outcome = state.get("outcome")

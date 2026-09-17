@@ -7,11 +7,13 @@ stood before, and read back as what stands now.
 
 import pathlib
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 
 import pytest
 from pydantic import ValidationError
 
+from blossom import assignment_status
 from blossom.assignment_status import (
     NOTE_MAX_LENGTH,
     AssignmentStatus,
@@ -905,3 +907,50 @@ def test_a_chain_whose_links_lead_nowhere_or_round_gives_no_report_a_borrowed_da
 
     assert standing_report(nowhere) is None
     assert standing_report(ring) is None
+
+
+def test_a_long_history_is_worked_out_in_one_pass_over_its_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A first report, then two thousand updates each taken back. Every correction's row
+    names the first report, the head's standing report is the first too, and listing the
+    rows works the chain out once, not once for each row."""
+
+    def made(number: int, operation: str, previous: str | None) -> StudentReport:
+        return StudentReport.model_construct(
+            report_id=f"r{number}",
+            assignment_id=PRACTICE,
+            operation=operation,
+            status="not_yet" if operation == "undo" or number == 0 else "done",
+            note=None,
+            reported_at=NOW,
+            reported_on=TODAY,
+            previous_report_id=previous,
+            undoes_report_id=previous if operation == "undo" else None,
+        )
+
+    chain = [made(0, "report", None)]
+    for number in range(1, 4001):
+        chain.append(made(number, "report" if number % 2 else "undo", f"r{number - 1}"))
+    status = AssignmentStatus(
+        assignment_id=PRACTICE,
+        head=chain[-1],
+        asserted=standing_report(chain),
+        school={},
+        history=tuple(chain),
+    )
+    passes: list[int] = []
+    whole = assignment_status.standing_after_each
+
+    def counted(events: Sequence[StudentReport]) -> list[StudentReport | None]:
+        passes.append(len(events))
+        return whole(events)
+
+    monkeypatch.setattr(assignment_status, "standing_after_each", counted)
+    rows = status.history_rows
+
+    assert passes == [4001]
+    assert status.asserted == chain[0]
+    assert len(rows) == 4001
+    assert all(row.restored is None for row in rows if row.event.operation == "report")
+    assert {row.restored for row in rows if row.event.operation == "undo"} == {chain[0]}

@@ -427,19 +427,20 @@ record or any source puts in the window. It reads her updates with the rows
 and leaves out what she has reported done, so the planner, the critic, and
 the checks see the work still to do, each assignment with its dependencies
 as the record has them, while the ids left out are kept on the server for
-the check that fails a plan speaking about them. The models are asked
-without the decision lock, so her page can save an update while a plan is
-being made; `verify` reads the week again for that reason and holds the plan
-to the record as it stands, so work reported done since may not be spoken
-about and work that became hers again may not be left out. A plan that passes
-keeps the reading it was made from, fingerprint included, and a change it
-survives still reads as stale on both pages; a plan that fails goes back to
-the planner with the record as it stands, and the fingerprint moves with that
-reading, since the next plan is made from it. The run's record keeps every
+the check that fails a plan speaking about them. That reading is the run's
+input from there on: both models, the checks, and every revision work from
+it, and the draft carries its fingerprint. The models are asked without the
+decision lock, so her page can save an update while one is answering; the
+update is not swapped in half way and no second plan is paid for on its
+account. The draft reads as stale on both pages the moment it is published,
+its notice names work she reports as done, and approval is refused until a
+new plan is asked for, the same whichever model was being asked when the
+update landed. The run's record keeps every
 finding in full; what goes back to the planner leaves out every finding that
 names work she has reported done, whichever check it tripped, and says only
-to use the work listed; a window with nothing left ends the run there, with its record
-and no model asked, as the routes refuse such an evening before the run.
+to use the work listed; a window with nothing left when it is read ends the run
+there, with its record and no model asked, as the routes refuse such an
+evening before the run.
 `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
 back to `plan` with the findings before any critic sees it, because a
 judgment about a plan that is already wrong is a wasted call. `critique` asks
