@@ -100,6 +100,10 @@ class StudentAssignmentView(BaseModel):
     check_school: bool = False
     """Whether her "done" stands beside a school report of missing: something for the
     family to check, said on both pages and decided by neither."""
+    school_missing: list[str] = []
+    """Where and when each school channel reported it missing, for the channels whose
+    latest word that is and whose report is not the one ``school_report`` already says:
+    the card that raises the check shows every report the check rests on."""
 
 
 class AssignmentUpdateView(BaseModel):
@@ -124,6 +128,9 @@ class AssignmentUpdateView(BaseModel):
     """The school's latest word about the status, or ``None`` when it has said nothing."""
     school_sentence: str = ""
     """Where and when the school reported it, as the page says it."""
+    missing: list[str] = []
+    """Where and when each school channel reported it missing, for every channel whose
+    latest word that is: what the check rests on, whatever the latest report overall says."""
     check: bool = False
     """Whether her "done" stands beside a school "missing"."""
 

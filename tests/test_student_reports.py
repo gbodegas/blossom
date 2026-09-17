@@ -10,11 +10,13 @@ import sqlite3
 from datetime import UTC, date, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from blossom.assignment_status import (
     NOTE_MAX_LENGTH,
     AssignmentStatus,
     normalize_note,
+    standing_report,
     statuses_for,
 )
 from blossom.noticing import planning_digest, read_week
@@ -27,6 +29,7 @@ from blossom.stores.project_state import (
     Conflict,
     ProjectStateStore,
     Saved,
+    Seed,
     StatusReport,
     StudentReport,
     Undone,
@@ -591,3 +594,165 @@ def test_what_she_reports_is_part_of_what_a_plan_is_made_from_within_its_bounds(
     assert said_done_otherwise[0] == said_done[0]
     assert restored_done == said_done
     assert restored_words == said_more
+
+
+def test_a_report_restored_twice_over_keeps_its_own_day(tmp_path: pathlib.Path) -> None:
+    """Not yet on the 14th, done on the 15th and undone, done again on the 16th and undone:
+    what stands is the first report, with the 14th as its day and the last undo's day as
+    the day it was restored, however many undos lie between."""
+    store = a_store(tmp_path / "blossom.sqlite3")
+
+    def at(day: int) -> tuple[datetime, date]:
+        return datetime(2026, 9, day, 23, 0, tzinfo=UTC), date(2026, 9, day)
+
+    try:
+        first = store.report_status(
+            PRACTICE, "not_yet", "Half left.", expected_head=None, now=at(14)[0], today=at(14)[1]
+        )
+        assert isinstance(first, Saved)
+        head = first.report.report_id
+        for day in (15, 16, 17):
+            now, today = at(day)
+            done = store.report_status(
+                PRACTICE, "done", None, expected_head=head, now=now, today=today
+            )
+            assert isinstance(done, Saved)
+            undone = store.undo_report(PRACTICE, done.report.report_id, now=now, today=today)
+            assert isinstance(undone, Undone)
+            head = undone.report.report_id
+        status = status_of(store, PRACTICE)
+        chain = store.student_reports(PRACTICE)
+    finally:
+        store.close()
+
+    assert [event.operation for event in chain] == [
+        "report",
+        "report",
+        "undo",
+        "report",
+        "undo",
+        "report",
+        "undo",
+    ]
+    assert status.asserted == first.report
+    assert standing_report(chain) == first.report
+    assert standing_report(chain[:3]) == first.report
+    assert standing_report(chain[:2]) == chain[1]
+    assert standing_report([]) is None
+    assert (status.status, status.note) == ("not_yet", "Half left.")
+    assert (status.reported_on, status.restored_on) == (date(2026, 9, 14), date(2026, 9, 17))
+
+
+def an_event(
+    report_id: str, operation: str, status: str | None, **more: str | None
+) -> dict[str, object]:
+    return {
+        "report_id": report_id,
+        "assignment_id": PRACTICE,
+        "operation": operation,
+        "status": status,
+        "note": more.get("note"),
+        "reported_at": NOW.isoformat(),
+        "reported_on": TODAY.isoformat(),
+        "previous_report_id": more.get("previous"),
+        "undoes_report_id": more.get("undoes"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("shape", "said"),
+    [
+        (an_event("u", "undo", None), "must follow the report it takes back"),
+        (an_event("u", "undo", None, previous="a"), "must follow the report it takes back"),
+        (an_event("u", "undo", None, previous="a", undoes="b"), "must follow the report"),
+        (an_event("r", "report", None), "says neither done nor not yet"),
+        (an_event("r", "report", "done", previous="a", undoes="a"), "as only an undo does"),
+        (an_event("u", "undo", None, note="words", previous="a", undoes="a"), "with no status"),
+    ],
+)
+def test_an_event_that_is_not_whole_is_refused_where_it_is_read(
+    shape: dict[str, object], said: str
+) -> None:
+    with pytest.raises(ValidationError, match=said):
+        StudentReport.model_validate(shape)
+
+
+@pytest.mark.parametrize(
+    ("events", "said"),
+    [
+        (
+            [
+                an_event("a", "report", "not_yet", note="Half left."),
+                an_event("b", "report", "done", previous="a"),
+                an_event("u", "undo", "done", previous="b", undoes="b"),
+            ],
+            "does not restore what stood before",
+        ),
+        (
+            [
+                an_event("a", "report", "done"),
+                an_event("u", "undo", "not_yet", previous="a", undoes="a"),
+            ],
+            "does not restore what stood before",
+        ),
+        (
+            [
+                an_event("a", "report", "done"),
+                an_event("u", "undo", None, previous="a", undoes="a"),
+                an_event("v", "undo", None, previous="u", undoes="u"),
+            ],
+            "does not take back a report at the head",
+        ),
+        (
+            [
+                an_event("a", "report", "done"),
+                an_event("b", "report", "not_yet", previous="a"),
+                an_event("u", "undo", None, previous="a", undoes="a"),
+            ],
+            "does not follow the head",
+        ),
+    ],
+)
+def test_a_seeded_chain_is_held_to_the_same_rules_as_her_own_saves(
+    tmp_path: pathlib.Path, events: list[dict[str, object]], said: str
+) -> None:
+    """A seed whose undo restores something other than what stood before, takes back an
+    undo, or names an event that is not the head is refused by name, and the file the
+    start would have made is not left behind."""
+    path = tmp_path / "blossom.sqlite3"
+    seed = Seed(
+        [a_row(PRACTICE, "Weekly practice")],
+        {},
+        [StudentReport.model_validate(event) for event in events],
+    )
+
+    with pytest.raises(ValueError, match=said):
+        ProjectStateStore.initialize(path, fixture_clock(), lambda: seed)
+
+    assert not path.exists()
+
+
+def test_a_well_formed_seeded_chain_is_kept_and_read_like_her_own(tmp_path: pathlib.Path) -> None:
+    events = [
+        an_event("a", "report", "not_yet", note="Half left."),
+        an_event("b", "report", "done", previous="a"),
+        an_event("u", "undo", "not_yet", note="Half left.", previous="b", undoes="b"),
+    ]
+    seed = Seed(
+        [a_row(PRACTICE, "Weekly practice")],
+        {},
+        [StudentReport.model_validate(event) for event in events],
+    )
+    store = ProjectStateStore.initialize(
+        tmp_path / "blossom.sqlite3", fixture_clock(), lambda: seed
+    )
+    try:
+        status = status_of(store, PRACTICE)
+    finally:
+        store.close()
+
+    assert status.head is not None
+    assert status.head.report_id == "u"
+    assert status.asserted is not None
+    assert status.asserted.report_id == "a"
+    assert (status.status, status.note) == ("not_yet", "Half left.")

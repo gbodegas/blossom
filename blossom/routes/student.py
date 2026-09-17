@@ -533,6 +533,11 @@ def assignment_view(
         else status.head.report_id,
         in_planning_window=in_planning_window,
         check_school=status is not None and status.check_the_school_record,
+        school_missing=[
+            spoken_report(missing)
+            for missing in (status.missing_reports if status is not None else ())
+            if status is not None and status.check_the_school_record and missing != report
+        ],
     )
 
 

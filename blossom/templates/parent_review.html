@@ -106,7 +106,12 @@
             <p class="course">{{ item.course }}</p>
             <p class="decision-line"><strong>{{ item.title }}</strong></p>
             <p>{{ her_update(item) }}</p>
-            <p>The school reports it {{ item.school_status|replace("_", " ") }}. {{ item.school_sentence }}</p>
+            {% for sentence in item.missing %}
+              <p>The school reports it missing. {{ sentence }}</p>
+            {% endfor %}
+            {% if item.school_status != "missing" %}
+              <p>The latest school report says {{ item.school_status|replace("_", " ") }}. {{ item.school_sentence }}</p>
+            {% endif %}
             <p class="confidence disagree">
               <strong>Check the school record.</strong>
               Check whether it was turned in and whether the school record needs updating.

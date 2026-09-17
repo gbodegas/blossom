@@ -33,9 +33,9 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Final, Literal, NamedTuple, cast
+from typing import Final, Literal, NamedTuple, Self, cast
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
 from blossom.clock import Clock
 from blossom.reconciliation import SourceChannel, SourceRecord
@@ -146,6 +146,32 @@ class StudentReport(BaseModel):
     """The event before this one under the same assignment; ``None`` for the first."""
     undoes_report_id: str | None = None
     """For an undo, the report it takes back; ``None`` for a report."""
+
+    @model_validator(mode="after")
+    def _is_a_whole_event(self) -> Self:
+        """An event has one of two shapes, and anything else is refused where it is read.
+
+        A report says done or not yet and takes nothing back. An undo takes
+        back the event before it, so it names that event twice, as what it
+        follows and as what it undoes; it can never be first. A note stands
+        only with a status. What the chain adds, that the event named is the
+        head, is a report, and that an undo restores what stood before it,
+        is the store's to check as it writes.
+        """
+        if self.operation == REPORT:
+            if self.status is None:
+                msg = f"report {self.report_id!r} says neither done nor not yet"
+                raise ValueError(msg)
+            if self.undoes_report_id is not None:
+                msg = f"report {self.report_id!r} names a report to take back, as only an undo does"
+                raise ValueError(msg)
+        elif self.undoes_report_id is None or self.previous_report_id != self.undoes_report_id:
+            msg = f"undo {self.report_id!r} must follow the report it takes back, and name it"
+            raise ValueError(msg)
+        if self.status is None and self.note is not None:
+            msg = f"event {self.report_id!r} carries a note with no status for it to stand with"
+            raise ValueError(msg)
+        return self
 
 
 class Seed(NamedTuple):
@@ -571,9 +597,11 @@ class ProjectStateStore:
             ).fetchall()
         return [student_report_from(row) for row in rows]
 
-    def student_reports_by_id(self, report_ids: Iterable[str]) -> dict[str, StudentReport]:
-        """The events named, by id, in one read."""
-        wanted = sorted(set(report_ids))
+    def student_report_chains(
+        self, assignment_ids: Iterable[str]
+    ) -> dict[str, list[StudentReport]]:
+        """Every event under each assignment named, in stored order, in one read."""
+        wanted = sorted(set(assignment_ids))
         if not wanted:
             return {}
         marks = ", ".join("?" for _ in wanted)
@@ -581,10 +609,13 @@ class ProjectStateStore:
             rows = self._connection.execute(
                 "SELECT report_id, assignment_id, operation, status, note, reported_at, "  # noqa: S608
                 "reported_on, previous_report_id, undoes_report_id FROM student_reports "
-                f"WHERE report_id IN ({marks})",
+                f"WHERE assignment_id IN ({marks}) ORDER BY rowid",
                 wanted,
             ).fetchall()
-        return {str(row[0]): student_report_from(row) for row in rows}
+        chains: dict[str, list[StudentReport]] = {}
+        for row in rows:
+            chains.setdefault(str(row[1]), []).append(student_report_from(row))
+        return chains
 
     def report_status(
         self,
@@ -707,8 +738,11 @@ class ProjectStateStore:
         """Append one event after the head, checking the chain as it is written.
 
         The event's predecessor must be the head now and belong to the same
-        assignment, and an undo must name that head; a seeded first report
-        has no predecessor. A chain that would fork is refused, so a write
+        assignment. An undo must take back that head, the head must be a
+        report, and the status and note the undo carries must be what stood
+        before that report, read from the chain; a seeded first report has no
+        predecessor, and an undo is never first. The seed goes through the
+        same checks as her own saves. A chain that would fork is refused, so a write
         that gets this far and still fails leaves nothing, the transaction
         rolling the event back with it.
         """
@@ -720,9 +754,25 @@ class ProjectStateStore:
                 f"report {report.report_id!r} does not follow the head of {report.assignment_id!r}"
             )
             raise ValueError(msg)
-        if report.operation == UNDO and report.undoes_report_id != head_id:
-            msg = f"undo {report.report_id!r} does not name the head of {report.assignment_id!r}"
-            raise ValueError(msg)
+        if report.operation == UNDO:
+            if head is None or head.operation != REPORT or report.undoes_report_id != head_id:
+                msg = (
+                    f"undo {report.report_id!r} does not take back a report at the head of "
+                    f"{report.assignment_id!r}"
+                )
+                raise ValueError(msg)
+            before = (
+                None
+                if head.previous_report_id is None
+                else self._report_locked(head.previous_report_id)
+            )
+            stood = (None, None) if before is None else (before.status, before.note)
+            if (report.status, report.note) != stood:
+                msg = (
+                    f"undo {report.report_id!r} does not restore what stood before "
+                    f"{head.report_id!r}"
+                )
+                raise ValueError(msg)
         self._connection.execute(
             """
             INSERT INTO student_reports (

@@ -523,6 +523,7 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
             note=status.note,
             school_status=None if report is None else report.status,
             school_sentence="" if report is None else spoken_report(report),
+            missing=[spoken_report(missing) for missing in status.missing_reports],
             check=status.check_the_school_record,
         )
     check = [views[name] for name in views if statuses[name].check_the_school_record]

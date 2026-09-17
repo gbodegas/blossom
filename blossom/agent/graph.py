@@ -81,7 +81,7 @@ from blossom.clock import Clock
 from blossom.dependencies import ApplicationState
 from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
-from blossom.noticing import Noticing, planning_digest, read_week, reconcile_dates
+from blossom.noticing import Noticing, Week, planning_digest, read_week, reconcile_dates
 from blossom.plan_checks import (
     PlanVerification,
     check_plan,
@@ -266,6 +266,32 @@ def build_plan_graph(
             "reflections": state.get("reflections", []),
         }
 
+    def reading(week: Week) -> dict[str, Any]:
+        """The run's input from one reading of the week: the work still to do, what is said
+        of it, the ids of what she has reported done, and the reading's fingerprint."""
+        done = week.done_ids()
+        left_out = set(done)
+        active = week.active()
+        return {
+            "assignments": active,
+            "done_ids": done,
+            "student_reports": {
+                item.assignment_id: status.asserted
+                for item in active
+                if (status := week.statuses.get(item.assignment_id)) is not None
+                and status.asserted is not None
+            },
+            "confidence": {
+                name: classify_confidence(reconcile_dates(found))
+                for name, found in week.records.items()
+                if name not in left_out
+            },
+            "noticings": [week.noticings[item.assignment_id] for item in active],
+            # Taken as the week is read, so a change between a reading and
+            # the draft reads as a change too.
+            "inputs_digest": planning_digest(week),
+        }
+
     def retrieve(state: PlanState) -> dict[str, Any]:
         """Read the week from the stores. Whole corpora, no index: they are small.
 
@@ -288,61 +314,35 @@ def build_plan_graph(
         asked; the route asks the same question before the run, and asks it
         here again because a report can land in between.
 
-        What is read here is the run's input from here on, her reports
-        included: the planner, the critic, and the checks all work from this
-        one reading, and the fingerprint saved with the draft is this
-        reading's. A report that lands while a model is being asked cannot
-        be unsent, and is not swapped in half way as though the plan had
-        been made from it; the draft reads as stale on both pages the moment
-        it is published, its notice names the work since reported done, and
-        approving it is refused.
+        A report can also land later, while a model is being asked, since
+        the run holds no lock then. ``verify`` reads the week again for that
+        reason and holds the plan to the record as it stands; what becomes
+        of this reading when the two differ is said there.
         """
-        week = read_week(project_state, source, state["plan_date"])
-        done = week.done_ids()
-        left_out = set(done)
-        active = week.active()
-        confidence = {
-            name: classify_confidence(reconcile_dates(found))
-            for name, found in week.records.items()
-            if name not in left_out
-        }
-        noticings = [week.noticings[item.assignment_id] for item in active]
-        said = {
-            item.assignment_id: status.asserted
-            for item in active
-            if (status := week.statuses.get(item.assignment_id)) is not None
-            and status.asserted is not None
-        }
+        read = reading(read_week(project_state, source, state["plan_date"]))
         rules = [rule.instruction for rule in support_rules.list_all()]
         notes = [note.observation for note in reflections.list_all()]
         too_much = bool(signals.for_evening(state["plan_date"]))
         budget = too_much_minutes if too_much else evening_minutes
         found = describe_week(
-            active,
-            noticings,
-            confidence,
+            read["assignments"],
+            read["noticings"],
+            read["confidence"],
             rules=len(rules),
             notes=len(notes),
             budget=budget,
             too_much=too_much,
-            done=len(done),
+            done=len(read["done_ids"]),
         )
-        if not active:
+        if not read["assignments"]:
             return {
-                "done_ids": done,
+                "done_ids": read["done_ids"],
                 "outcome": NOTHING_TO_SCHEDULE,
                 "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found)],
             }
         return {
-            "assignments": active,
-            "done_ids": done,
-            "student_reports": said,
-            "confidence": confidence,
-            "noticings": noticings,
+            **read,
             "too_much": too_much,
-            # Taken here, as the week is read, so a change between the reading
-            # and the draft reads as a change too.
-            "inputs_digest": planning_digest(week),
             "budget_minutes": budget,
             "support_rules": rules,
             "reflections": notes,
@@ -376,19 +376,48 @@ def build_plan_graph(
         }
 
     def verify(state: PlanState) -> dict[str, Any]:
-        """Tier one. A failing plan becomes feedback, or the end when rounds are spent."""
+        """Tier one, held to the record as it stands. A failing plan becomes feedback, or the
+        end when rounds are spent.
+
+        The models are asked without the decision lock, so her page can save
+        an update while a plan is being made. The week is therefore read
+        again here, and the checks hold the plan to that reading: work she
+        has reported done since is work the plan may not speak about, and
+        work that became hers to do again is work it may not leave out.
+
+        A plan that passes keeps the reading it was made from, fingerprint
+        included, so a change it happens to survive still shows on the pages
+        as a change. A plan that fails goes back to the planner with the
+        record as it stands, and the fingerprint moves with that reading,
+        since the next plan is made from it; nothing the planner is sent
+        says what she reported done. A week with nothing left to do ends the
+        run, as it does at the start. The step's record says when the record
+        had moved.
+        """
+        current = reading(read_week(project_state, source, state["plan_date"]))
+        moved = current["inputs_digest"] != state.get("inputs_digest")
         verification = check_plan(
             state["plan"],
-            due_in_window=state.get("assignments", []),
+            due_in_window=current["assignments"],
             zone=zone,
-            confidence=state.get("confidence", {}),
-            noticings=state.get("noticings", []),
+            confidence=current["confidence"],
+            noticings=current["noticings"],
             daily_minutes=state.get("budget_minutes", evening_minutes),
-            reported_done=state.get("done_ids", []),
+            reported_done=current["done_ids"],
         )
         record = step(
-            "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
+            "verify",
+            state["rounds"],
+            EXPECT_ALL_CHECKS,
+            describe_verification(verification, moved=moved),
         )
+        if not current["assignments"]:
+            return {
+                "verification": verification,
+                "done_ids": current["done_ids"],
+                "outcome": NOTHING_TO_SCHEDULE,
+                "steps": [record],
+            }
         if verification.passed:
             return {"verification": verification, "feedback": [], "steps": [record]}
         update: dict[str, Any] = {
@@ -396,6 +425,8 @@ def build_plan_graph(
             "feedback": list(verification.as_feedback()),
             "steps": [record],
         }
+        if moved:
+            update.update(current)
         if state["rounds"] > MAX_REVISIONS:
             update["outcome"] = "checks_failed"
         return update
@@ -500,9 +531,9 @@ def build_plan_graph(
         return "record_run" if "outcome" in state else "verify"
 
     def after_verify(state: PlanState) -> str:
-        if state["verification"].passed:
-            return "critique"
-        return "record_run" if "outcome" in state else "plan"
+        if "outcome" in state:
+            return "record_run"
+        return "critique" if state["verification"].passed else "plan"
 
     def after_critique(state: PlanState) -> str:
         outcome = state.get("outcome")

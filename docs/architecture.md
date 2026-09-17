@@ -66,7 +66,12 @@ report is Done, meaning she has finished her part, or Not yet, with a note if
 she wants one; the store keeps each as an event in a chain per assignment,
 with the status and note that stand after it, the day it was made, and the
 event before it, so what stands now is the chain's head and an undo is one
-more event that restores what stood before. A save carries the head the page
+more event that restores what stood before. The report whose words stand is
+found by walking back from the head through every undo, however many, so a
+restored report keeps its own day; and the store refuses an event that is not
+whole, an undo that is first, takes back anything but the report at the head,
+or restores something other than what stood before it, the sample's seed
+included. A save carries the head the page
 showed: the same update as the one standing is already saved and writes
 nothing, a page whose head has moved on is refused with the newer update
 shown, and anything else is appended, one operation under the decision lock
@@ -415,12 +420,17 @@ record or any source puts in the window. It reads her updates with the rows
 and leaves out what she has reported done, so the planner, the critic, and
 the checks see the work still to do, each assignment with its dependencies
 as the record has them, while the ids left out are kept on the server for
-the check that fails a plan speaking about them. That reading is the run's
-input from there on: a report that lands while a model is being asked is not
-swapped in half way, the draft carries the fingerprint of what it was made
-from, and it reads as stale on both pages the moment it is published. What
-goes back to the planner from that check is only that the id is not in its
-window, never that the work is done; a window with nothing left ends the run there, with its record
+the check that fails a plan speaking about them. The models are asked
+without the decision lock, so her page can save an update while a plan is
+being made; `verify` reads the week again for that reason and holds the plan
+to the record as it stands, so work reported done since may not be spoken
+about and work that became hers again may not be left out. A plan that passes
+keeps the reading it was made from, fingerprint included, and a change it
+survives still reads as stale on both pages; a plan that fails goes back to
+the planner with the record as it stands, and the fingerprint moves with that
+reading, since the next plan is made from it. What goes back to the planner
+from that check is only that the id is not in its window, never that the work
+is done; a window with nothing left ends the run there, with its record
 and no model asked, as the routes refuse such an evening before the run.
 `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
 back to `plan` with the findings before any critic sees it, because a

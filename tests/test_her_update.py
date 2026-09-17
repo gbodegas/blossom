@@ -17,13 +17,17 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 from langchain_core.messages import BaseMessage
 from markupsafe import escape
+from pydantic import BaseModel
 
 from blossom.agent.graph import ModelAnswer, plan_graph_for
 from blossom.app import create_app
 from blossom.assignment_status import statuses_for
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
+from blossom.heuristic_relevance import CriticVerdict
+from blossom.intake import PASTE_DAY
 from blossom.noticing import planning_digest, read_week
 from blossom.plans import DailyPlan
+from blossom.reconciliation import SourceChannel
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.parent import PLAN_INCLUDES_DONE as SHE_REPORTS
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
@@ -45,6 +49,7 @@ from blossom.stores.project_state import (
     AssignmentKind,
     ProjectStateStore,
     Saved,
+    StatusReport,
 )
 from tests.support import (
     PLAN_DATE,
@@ -54,6 +59,7 @@ from tests.support import (
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
+    human_text,
     ok,
     scripted_graphs,
 )
@@ -522,8 +528,21 @@ def test_reading_the_statuses_takes_the_same_few_reads_whatever_the_number_of_ro
             store.put_on_record(rows(count), {})
             now = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
             for n in range(0, count, 2):
-                store.report_status(
-                    f"assignment-{n}", "done", None, expected_head=None, now=now, today=PLAN_DATE
+                first = store.report_status(
+                    f"assignment-{n}", "not_yet", None, expected_head=None, now=now, today=PLAN_DATE
+                )
+                assert isinstance(first, Saved)
+                second = store.report_status(
+                    f"assignment-{n}",
+                    "done",
+                    None,
+                    expected_head=first.report.report_id,
+                    now=now,
+                    today=PLAN_DATE,
+                )
+                assert isinstance(second, Saved)
+                store.undo_report(
+                    f"assignment-{n}", second.report.report_id, now=now, today=PLAN_DATE
                 )
             statements: list[str] = []
             store._connection.set_trace_callback(statements.append)
@@ -536,50 +555,60 @@ def test_reading_the_statuses_takes_the_same_few_reads_whatever_the_number_of_ro
     few, many = reads(2), reads(40)
 
     assert few == many
-    assert many <= 4
+    assert many == 3
     assert isinstance(sqlite3.connect(":memory:"), sqlite3.Connection)
 
 
-class ReportsWhileAsked:
-    """A planner whose answer comes only after her Done has landed, as a report does that
-    arrives while the model call is pending. It takes the decision lock for the save, as
-    her page's route does, so a run that held the lock through the call would never
+class ReportsWhileAsked[T: BaseModel]:
+    """A model callable whose first answer comes only after her Done has landed, as a save
+    does that arrives while the call is pending. It takes the decision lock for the save,
+    as her page's route does, so a run that held the lock through the call would never
     answer."""
 
-    def __init__(self, state: ApplicationState) -> None:
+    def __init__(self, state: ApplicationState, *answers: T) -> None:
         self.state = state
+        self.answers = list(answers)
+        self.briefs: list[list[BaseMessage]] = []
         self.lock_was_free = False
         self.saved: object = None
 
-    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[DailyPlan]:
-        self.lock_was_free = not self.state.decision_lock.locked()
-        async with self.state.decision_lock:
-            self.saved = self.state.project_state.report_status(
-                ESSAY,
-                "done",
-                None,
-                expected_head=None,
-                now=self.state.clock.now(),
-                today=self.state.clock.today(),
-            )
-        return ok(fixture_week_plan())
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[T]:
+        self.briefs.append(list(messages))
+        if self.saved is None:
+            self.lock_was_free = not self.state.decision_lock.locked()
+            async with self.state.decision_lock:
+                self.saved = self.state.project_state.report_status(
+                    ESSAY,
+                    "done",
+                    None,
+                    expected_head=None,
+                    now=self.state.clock.now(),
+                    today=self.state.clock.today(),
+                )
+        return ok(self.answers.pop(0))
 
 
-def test_a_done_saved_while_the_planner_is_asked_leaves_the_plan_stale_and_named() -> None:
-    """Her Done lands while the model call is pending. The save is not kept waiting for the
-    model; the run works from what it read, so the plan passes its checks and its draft
-    keeps the fingerprint and the ids of that reading; and the moment it is published it
-    reads as stale on both pages, its notice names the essay, and approving is refused."""
-    asked: list[ReportsWhileAsked] = []
+def without_the_essay() -> DailyPlan:
+    whole = fixture_week_plan()
+    return DailyPlan(plan_date=PLAN_DATE, blocks=whole.blocks[1:], deferred=whole.deferred)
+
+
+def test_a_done_saved_while_the_reviewer_is_asked_leaves_the_plan_stale_and_named() -> None:
+    """Her Done lands after the plan has passed its checks, while the reviewer is asked.
+    The save is not kept waiting for the model; the draft keeps the fingerprint and the
+    ids of the reading its plan was made from; and the moment it is published it reads as
+    stale on both pages, its notice names the essay, and approving is refused."""
+    asked: list[ReportsWhileAsked[CriticVerdict]] = []
 
     def override(
         state: Annotated[ApplicationState, Depends(get_application_state)],
     ) -> PlanGraphs:
         if not asked:
-            asked.append(ReportsWhileAsked(state))
-        planner = asked[0]
+            asked.append(ReportsWhileAsked(state, accepting()))
         return PlanGraphs(
-            build=lambda: plan_graph_for(state, planner=planner, critic=Scripted(ok(accepting()))),
+            build=lambda: plan_graph_for(
+                state, planner=Scripted(ok(fixture_week_plan())), critic=asked[0]
+            ),
             may_start=True,
         )
 
@@ -600,7 +629,6 @@ def test_a_done_saved_while_the_planner_is_asked_leaves_the_plan_stale_and_named
         )
         after = state.drafts.get(record.draft_id)
 
-    assert len(asked) == 1
     assert asked[0].lock_was_free
     assert isinstance(asked[0].saved, Saved)
     assert planned.status_code == 303
@@ -617,3 +645,82 @@ def test_a_done_saved_while_the_planner_is_asked_leaves_the_plan_stale_and_named
     assert refused.status_code == 409
     assert after is not None
     assert after.waiting
+
+
+def test_a_done_saved_while_the_planner_is_asked_is_caught_before_the_plan_is_hers() -> None:
+    """Her Done lands while the first plan is being made. The plan that comes back speaks
+    about the essay and fails the checks of the record as it stands; the planner is asked
+    again without the essay; and the plan she gets is current, with nothing to say about
+    work reported done since."""
+    asked: list[ReportsWhileAsked[DailyPlan]] = []
+
+    def override(
+        state: Annotated[ApplicationState, Depends(get_application_state)],
+    ) -> PlanGraphs:
+        if not asked:
+            asked.append(ReportsWhileAsked(state, fixture_week_plan(), without_the_essay()))
+        return PlanGraphs(
+            build=lambda: plan_graph_for(state, planner=asked[0], critic=Scripted(ok(accepting()))),
+            may_start=True,
+        )
+
+    with browser(key=True) as client:
+        client.app.dependency_overrides[plan_graphs] = override  # type: ignore[attr-defined]
+        state = state_of(client)
+        planned = client.post("/student/actions/plan")
+        record = state.drafts.latest_for(PLAN_DATE)
+        as_it_stands = planning_digest(
+            read_week(state.project_state, state.project_state, PLAN_DATE)
+        )
+        hers = client.get(PAGE, headers=PAGE_HEADERS).text
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+
+    again = human_text(asked[0].briefs[1])
+    assert asked[0].lock_was_free
+    assert isinstance(asked[0].saved, Saved)
+    assert len(asked[0].briefs) == 2
+    assert f'id="{ESSAY}"' not in again
+    assert ESSAY_TITLE not in again
+    assert "reported done" not in again
+    assert planned.status_code == 303
+    assert record is not None
+    assert record.inputs_digest == as_it_stands
+    assert record.plan_assignment_ids is not None
+    assert ESSAY not in record.plan_assignment_ids
+    assert ASSIGNMENTS_CHANGED not in hers
+    assert "Reported done since." not in hers
+    assert 'value="approve"' in family
+
+
+def test_the_missing_a_check_rests_on_is_shown_whatever_the_latest_report_says() -> None:
+    """The school's email says Missing, then the portal says Submitted, and she reports
+    Done. The check rests on the email's word, so her card and the family page show that
+    report beside the portal's later one, and nothing the check points at is hidden."""
+    submitted = StatusReport(
+        status="submitted",
+        channel=SourceChannel.LMS,
+        reported_on=PLAN_DATE,
+        dated_by=PASTE_DAY,
+        observed_at=datetime(2026, 8, 19, 22, 30, tzinfo=UTC),
+    )
+    with browser() as client:
+        client.post("/parent/inbox/keep", data={"text": MISSING_EMAIL})
+        state_of(client).project_state.record_status_reports(ESSAY, [submitted])
+        report(client, ESSAY, "done")
+        hers = client.get(PAGE, params={"week": WEEK, "show": ESSAY}, headers=PAGE_HEADERS).text
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+        status = statuses_for(state_of(client).project_state, [ESSAY])[ESSAY]
+
+    card = hers[hers.index(f'id="assignment-{ESSAY}"') :]
+    card = card[: card.index("</article>")]
+    checking, _, _ = family.partition("<h3>School reports</h3>")
+    assert status.check_the_school_record
+    assert [item.channel for item in status.missing_reports] == [SourceChannel.EMAIL]
+    assert "has a school report to check" in hers
+    assert "<strong>The school reports this submitted.</strong>" in card
+    assert "From the school portal, pasted" in card
+    assert "<strong>The school also reports this missing.</strong>" in card
+    assert "From the school email, pasted" in card
+    assert "<h3>Worth checking together</h3>" in checking
+    assert "The school reports it missing. From the school email, pasted" in checking
+    assert "The latest school report says submitted. From the school portal, pasted" in checking

@@ -285,10 +285,15 @@ def graph_with(
     evening_minutes: int = DEFAULT_EVENING_MINUTES,
     too_much_minutes: int = DEFAULT_TOO_MUCH_MINUTES,
     reports: Sequence[tuple[str, StudentStatus, str | None]] = (),
+    on_record: ProjectStateStore | None = None,
 ) -> CompiledPlanGraph:
     """The graph over in-memory stores. ``reports`` are what she has said about her part
-    of each assignment named, status and note, saved before the run reads the week."""
+    of each assignment named, status and note, saved before the run reads the week.
+    ``on_record`` is a store the test made itself, from ``stores``, so it can change the
+    record while a run is on its way."""
     project_state, support_rules, reflections = stores(assignments)
+    if on_record is not None:
+        project_state = on_record
     for assignment_id, status, note in reports:
         saved = project_state.report_status(
             assignment_id, status, note, expected_head=None, now=OBSERVED, today=PLAN_DATE

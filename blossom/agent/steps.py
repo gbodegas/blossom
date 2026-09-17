@@ -133,14 +133,22 @@ def describe_failure(outcome: str, what: str, tokens: str) -> str:
     return f"no {what}: {FAILURES.get(outcome, outcome)}{tokens}"
 
 
-def describe_verification(verification: PlanVerification) -> str:
-    """Which checks passed, or which failed and why."""
+RECORD_MOVED: Final = (
+    "the record changed while the plan was being made, so the checks were held to it as it stands: "
+)
+"""What the record of a check says first when the week read for the check is not the week
+the run read at its start."""
+
+
+def describe_verification(verification: PlanVerification, *, moved: bool = False) -> str:
+    """Which checks passed, or which failed and why, and whether the record had moved."""
     total = len(ORDERED_PLAN_CHECKS)
+    first = RECORD_MOVED if moved else ""
     if verification.passed:
-        return f"all {total} checks passed"
+        return f"{first}all {total} checks passed"
     failed = verification.failed_checks
     findings = "; ".join(verification.as_findings())
-    return f"{len(failed)} of {total} checks failed: {findings}"
+    return f"{first}{len(failed)} of {total} checks failed: {findings}"
 
 
 def describe_verdict(verdict: CriticVerdict, tokens: str) -> str:

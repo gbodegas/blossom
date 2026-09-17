@@ -9,11 +9,12 @@ because where a title sits in the message is a security property.
 
 import asyncio
 import pathlib
+from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -36,15 +37,22 @@ from blossom.heuristic_relevance import (
     CriticVerdict,
     Judgment,
 )
-from blossom.noticing import Verdict
+from blossom.noticing import Verdict, planning_digest, read_week
 from blossom.plan_checks import ONLY_WHAT_IS_LISTED, PlanCheck
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
-from blossom.stores.project_state import Assignment, AssignmentKind
+from blossom.stores.project_state import (
+    Assignment,
+    AssignmentKind,
+    ProjectStateStore,
+    Saved,
+    Undone,
+)
 from tests.support import (
     ESSAY,
+    OBSERVED,
     PLAN_DATE,
     PROBLEM_SET,
     Scripted,
@@ -59,6 +67,7 @@ from tests.support import (
     graph_with,
     human_text,
     ok,
+    stores,
 )
 
 # ------------------------------------------------------------------ scripting
@@ -1050,3 +1059,175 @@ def test_work_still_to_do_keeps_its_dependency_on_finished_work_and_no_brief_nam
     for brief in (planner.briefs[0], critic.briefs[0]):
         assert "assignment-canal-essay" not in human_text(brief)
         assert "Canal Era" not in human_text(brief)
+
+
+# ------------------------------------------------- a save that lands while a model is asked
+
+
+class ChangesTheRecord:
+    """A planner that answers only after the record has changed, as a save of hers does that
+    lands while the call is pending. The change is made once, before the first answer."""
+
+    def __init__(self, change: Callable[[], None], *plans: DailyPlan) -> None:
+        self.change = change
+        self.plans = list(plans)
+        self.briefs: list[list[BaseMessage]] = []
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[DailyPlan]:
+        self.briefs.append(list(messages))
+        if len(self.briefs) == 1:
+            self.change()
+        return ok(self.plans.pop(0))
+
+    @property
+    def calls(self) -> int:
+        return len(self.briefs)
+
+
+def problem_set_alone() -> DailyPlan:
+    return DailyPlan(
+        plan_date=PLAN_DATE, blocks=[block("assignment-algebra-set", "16:30", "17:15")]
+    )
+
+
+def as_it_stands(on_record: ProjectStateStore) -> str:
+    return planning_digest(read_week(on_record, TwoChannelSource(), PLAN_DATE))
+
+
+def test_a_done_saved_while_the_planner_is_asked_is_held_against_the_plan_that_comes_back() -> None:
+    """She reports the essay done while the first plan is being made, and the plan comes
+    back with the essay in it. The check reads the record as it stands and fails the plan
+    by name; the planner is asked again with the essay gone from its brief and no word
+    that it is done; and the draft carries the fingerprint of the record as it stands."""
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+
+    def she_finishes_the_essay() -> None:
+        saved = on_record.report_status(
+            ESSAY.assignment_id, "done", None, expected_head=None, now=OBSERVED, today=PLAN_DATE
+        )
+        assert isinstance(saved, Saved)
+
+    as_first_read = as_it_stands(on_record)
+    planner = ChangesTheRecord(she_finishes_the_essay, good_plan(), problem_set_alone())
+
+    result = run(graph_with(planner, Scripted(ok(accepting())), drafts=drafts, on_record=on_record))
+
+    first_check = next(item for item in result["steps"] if item.node == "verify")
+    again = human_text(planner.briefs[1])
+    record = drafts.get(result["draft"].draft_id)
+    assert planner.calls == 2
+    assert first_check.found.startswith("the record changed while the plan was being made")
+    assert "2 of 7 checks failed" in first_check.found
+    assert "assignment-canal-essay is reported done" in first_check.found
+    assert 'id="assignment-canal-essay"' not in again
+    assert "Canal Era" not in again
+    assert "reported done" not in again
+    assert "assignment-canal-essay is not an assignment in this window" in again
+    assert [item.assignment_id for item in result["assignments"]] == ["assignment-algebra-set"]
+    assert result["done_ids"] == ["assignment-canal-essay"]
+    assert result["verification"].passed
+    assert record is not None
+    assert record.inputs_digest == as_it_stands(on_record) != as_first_read
+    assert record.plan_assignment_ids == ["assignment-algebra-set"]
+
+
+def test_an_undo_while_the_planner_is_asked_puts_the_work_back_in_what_the_plan_must_cover() -> (
+    None
+):
+    """The essay was reported done when the run read the week, and she takes that back
+    while the plan is being made. A plan for the problem set alone leaves out work that
+    is hers again: the omission check fails it against the record as it stands, and the
+    planner is asked again with the essay in its brief."""
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+    first = on_record.report_status(
+        ESSAY.assignment_id, "done", None, expected_head=None, now=OBSERVED, today=PLAN_DATE
+    )
+    assert isinstance(first, Saved)
+
+    def she_takes_it_back() -> None:
+        undone = on_record.undo_report(
+            ESSAY.assignment_id, first.report.report_id, now=OBSERVED, today=PLAN_DATE
+        )
+        assert isinstance(undone, Undone)
+
+    planner = ChangesTheRecord(she_takes_it_back, problem_set_alone(), good_plan())
+
+    result = run(graph_with(planner, Scripted(ok(accepting())), drafts=drafts, on_record=on_record))
+
+    first_check = next(item for item in result["steps"] if item.node == "verify")
+    record = drafts.get(result["draft"].draft_id)
+    assert 'id="assignment-canal-essay"' not in human_text(planner.briefs[0])
+    assert first_check.found.startswith("the record changed while the plan was being made")
+    assert (
+        "assignment-canal-essay is due in this window and the plan does not mention it"
+        in first_check.found
+    )
+    assert 'id="assignment-canal-essay"' in human_text(planner.briefs[1])
+    assert sorted(item.assignment_id for item in result["assignments"]) == [
+        "assignment-algebra-set",
+        "assignment-canal-essay",
+    ]
+    assert result["done_ids"] == []
+    assert record is not None
+    assert record.inputs_digest == as_it_stands(on_record)
+
+
+def test_a_plan_that_survives_a_change_keeps_the_reading_it_was_made_from() -> None:
+    """She adds a Not yet with a note while the plan is being made. The plan passes the
+    checks of the record as it stands, and is still a plan made without her note: the
+    draft keeps the fingerprint of the first reading, which the pages read as stale."""
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+
+    def she_says_not_yet() -> None:
+        saved = on_record.report_status(
+            ESSAY.assignment_id,
+            "not_yet",
+            "Two paragraphs left.",
+            expected_head=None,
+            now=OBSERVED,
+            today=PLAN_DATE,
+        )
+        assert isinstance(saved, Saved)
+
+    as_first_read = as_it_stands(on_record)
+    planner = ChangesTheRecord(she_says_not_yet, good_plan())
+
+    result = run(graph_with(planner, Scripted(ok(accepting())), drafts=drafts, on_record=on_record))
+
+    check = next(item for item in result["steps"] if item.node == "verify")
+    record = drafts.get(result["draft"].draft_id)
+    assert planner.calls == 1
+    assert check.found.startswith("the record changed while the plan was being made")
+    assert check.found.endswith("all 7 checks passed")
+    assert "student_reports" not in result or result["student_reports"] == {}
+    assert record is not None
+    assert record.inputs_digest == as_first_read != as_it_stands(on_record)
+
+
+def test_a_week_finished_while_the_planner_is_asked_ends_the_run_with_nothing_to_schedule() -> None:
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+    critic: Scripted[CriticVerdict] = Scripted()
+
+    def she_finishes_everything() -> None:
+        for item in (ESSAY, PROBLEM_SET):
+            saved = on_record.report_status(
+                item.assignment_id, "done", None, expected_head=None, now=OBSERVED, today=PLAN_DATE
+            )
+            assert isinstance(saved, Saved)
+
+    planner = ChangesTheRecord(she_finishes_everything, good_plan())
+
+    result = run(graph_with(planner, critic, drafts=drafts, on_record=on_record))
+
+    ended = drafts.runs_without_a_draft()
+    assert result["outcome"] == "nothing_to_schedule"
+    assert (planner.calls, critic.calls) == (1, 0)
+    assert "draft" not in result
+    assert [(item.outcome, [step.node for step in item.steps]) for item in ended] == [
+        ("nothing_to_schedule", ["retrieve", "plan", "verify"])
+    ]
+    assert drafts.waiting() == []

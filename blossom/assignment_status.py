@@ -15,7 +15,7 @@ the undo and the standing report is the one it restored, and both are read
 here so a page can say "restored your update of the 16th" and mean it.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Final, Literal
@@ -111,6 +111,16 @@ class AssignmentStatus:
         return any(report.status == MISSING for report in self.school.values())
 
     @property
+    def missing_reports(self) -> tuple[StatusReport, ...]:
+        """Each school channel's latest report that says missing, in channel order: the
+        reports a check rests on, which a page that raises the check also shows."""
+        return tuple(
+            report
+            for _, report in sorted(self.school.items(), key=lambda pair: str(pair[0]))
+            if report.status == MISSING
+        )
+
+    @property
     def check_the_school_record(self) -> bool:
         """Whether her "done" stands beside a school "missing": something to check together,
         with both statements shown, and nothing decided for either."""
@@ -124,49 +134,50 @@ def statuses_for(
 
     Callers that need the statuses to agree with the rows they were read
     beside hold the store's lock around both; the reads here take the same
-    re-entrant lock and add none of their own per assignment.
+    re-entrant lock and add none of their own per assignment: her heads, the
+    school's reports by channel, and the whole chains of the few assignments
+    whose head is an undo that restored a report.
     """
     wanted = list(dict.fromkeys(assignment_ids))
     heads = store.student_report_heads()
     school = store.latest_status_reports_by_channel()
-    restored_ids = [
-        head.undoes_report_id
-        for head in heads.values()
-        if head.operation != REPORT and head.undoes_report_id is not None
+    restored = [
+        name for name, head in heads.items() if head.operation != REPORT and head.status is not None
     ]
-    undone = store.student_reports_by_id(restored_ids)
-    before_undone = store.student_reports_by_id(
-        [
-            report.previous_report_id
-            for report in undone.values()
-            if report.previous_report_id is not None
-        ]
-    )
+    chains = store.student_report_chains(restored)
     statuses: dict[str, AssignmentStatus] = {}
     for assignment_id in wanted:
         head = heads.get(assignment_id)
+        if head is None or head.operation == REPORT:
+            asserted = head
+        else:
+            asserted = standing_report(chains.get(assignment_id, []))
         statuses[assignment_id] = AssignmentStatus(
             assignment_id=assignment_id,
             head=head,
-            asserted=_asserted(head, undone, before_undone),
+            asserted=asserted,
             school=school.get(assignment_id, {}),
         )
     return statuses
 
 
-def _asserted(
-    head: StudentReport | None,
-    undone: Mapping[str, StudentReport],
-    before_undone: Mapping[str, StudentReport],
-) -> StudentReport | None:
-    """The report whose words stand after ``head``."""
-    if head is None:
-        return None
-    if head.operation == REPORT:
-        return head
-    if head.status is None or head.undoes_report_id is None:
-        return None
-    taken_back = undone.get(head.undoes_report_id)
-    if taken_back is None or taken_back.previous_report_id is None:
-        return None
-    return before_undone.get(taken_back.previous_report_id)
+def standing_report(chain: Sequence[StudentReport]) -> StudentReport | None:
+    """The report whose words stand at the end of ``chain``, or ``None`` when none does.
+
+    An undo restores what stood before the report it takes back, and what
+    stood there may itself have been put back by an earlier undo. So the
+    walk goes from the head back through every undo it meets, each time to
+    the event before the report that undo took back, until it reaches a
+    report or the start of the chain. A report, an undo, another report, and
+    another undo end at the first report, with the first report's day. Each
+    step moves toward the start, so the walk ends within the chain's length.
+    """
+    by_id = {event.report_id: event for event in chain}
+    event = chain[-1] if chain else None
+    for _ in chain:
+        if event is None or event.operation == REPORT:
+            return event
+        taken_back = by_id.get(event.undoes_report_id or "")
+        before = None if taken_back is None else taken_back.previous_report_id
+        event = None if before is None else by_id.get(before)
+    return event if event is None or event.operation == REPORT else None
