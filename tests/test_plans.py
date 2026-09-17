@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.noticing import Noticing, Verdict
 from blossom.plan_checks import (
+    ONLY_WHAT_IS_LISTED,
     ORDERED_PLAN_CHECKS,
     PlanCheck,
     PlanVerification,
@@ -643,9 +644,11 @@ def test_putting_off_a_contradicted_record_is_measured_against_the_school_date()
     )
 
 
-def test_speaking_about_work_reported_done_fails_and_is_not_also_called_unknown() -> None:
+def test_speaking_about_work_reported_done_fails_by_name_and_as_outside_the_window() -> None:
     """The plan was given the work still to do; a block or a deferral for work she has
-    reported done fails the check made for it, and that alone."""
+    reported done is outside that window and fails the check made for it too, which names
+    the reason for the record. The planner is sent back the first finding and one plain
+    instruction, and no word that the work is done."""
     plan = DailyPlan(
         plan_date=PLAN_DATE,
         blocks=[block("assignment-canal-essay", "16:30", "17:30")],
@@ -659,8 +662,17 @@ def test_speaking_about_work_reported_done_fails_and_is_not_also_called_unknown(
 
     assert PlanCheck.NO_REPORTED_DONE_WORK in ORDERED_PLAN_CHECKS
     assert len(ORDERED_PLAN_CHECKS) == 7
-    assert result.failed_checks == (PlanCheck.NO_REPORTED_DONE_WORK,)
+    assert result.failed_checks == (
+        PlanCheck.ASSIGNMENTS_EXIST,
+        PlanCheck.NO_REPORTED_DONE_WORK,
+    )
     assert result.as_findings() == (
+        "assignment-algebra-set is not an assignment in this window",
         "assignment-algebra-set is reported done and the plan still speaks about it",
     )
+    assert result.as_feedback() == (
+        "assignment-algebra-set is not an assignment in this window",
+        ONLY_WHAT_IS_LISTED,
+    )
     assert without_the_word.failed_checks == (PlanCheck.ASSIGNMENTS_EXIST,)
+    assert without_the_word.as_feedback() == without_the_word.as_findings()

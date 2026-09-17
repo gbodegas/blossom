@@ -278,22 +278,29 @@ def build_plan_graph(
         answer.
 
         Work she has reported done is read here too, and left out: the
-        planner, the critic, and the checks see only the work still to do, a
-        dependency on finished work included, while the ids of what was left
-        out are kept so the checks can hold the plan to it. A window with
+        planner, the critic, and the checks see only the work still to do,
+        while the ids of what was left out are kept on the server so the
+        checks can hold the plan to it. An assignment still to do keeps its
+        dependencies as the record has them, finished work among them; no
+        brief renders a dependency, so no id of finished work reaches a
+        model that way, and a test holds the briefs to that. A window with
         nothing left to do ends the run here, with its record and no model
         asked; the route asks the same question before the run, and asks it
         here again because a report can land in between.
+
+        What is read here is the run's input from here on, her reports
+        included: the planner, the critic, and the checks all work from this
+        one reading, and the fingerprint saved with the draft is this
+        reading's. A report that lands while a model is being asked cannot
+        be unsent, and is not swapped in half way as though the plan had
+        been made from it; the draft reads as stale on both pages the moment
+        it is published, its notice names the work since reported done, and
+        approving it is refused.
         """
         week = read_week(project_state, source, state["plan_date"])
         done = week.done_ids()
         left_out = set(done)
-        active = [
-            item.model_copy(
-                update={"dependencies": [d for d in item.dependencies if d not in left_out]}
-            )
-            for item in week.active()
-        ]
+        active = week.active()
         confidence = {
             name: classify_confidence(reconcile_dates(found))
             for name, found in week.records.items()
@@ -386,7 +393,7 @@ def build_plan_graph(
             return {"verification": verification, "feedback": [], "steps": [record]}
         update: dict[str, Any] = {
             "verification": verification,
-            "feedback": list(verification.as_findings()),
+            "feedback": list(verification.as_feedback()),
             "steps": [record],
         }
         if state["rounds"] > MAX_REVISIONS:

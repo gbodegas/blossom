@@ -37,7 +37,7 @@ from blossom.heuristic_relevance import (
     Judgment,
 )
 from blossom.noticing import Verdict
-from blossom.plan_checks import PlanCheck
+from blossom.plan_checks import ONLY_WHAT_IS_LISTED, PlanCheck
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
@@ -947,9 +947,10 @@ def test_her_not_yet_and_her_words_reach_the_planner_as_hers() -> None:
 
 
 def test_a_plan_that_speaks_about_work_reported_done_fails_its_checks() -> None:
-    """The plan was given the problem set alone and speaks about the essay too: the check
-    made for that fails, by name, the essay is not also called unknown, and the finding
-    goes back to the planner as feedback until the rounds are spent."""
+    """The plan was given the problem set alone and speaks about the essay too: the essay
+    is outside its window, the check made for finished work fails by name in the record,
+    and the planner is sent back that the id is not in its window and to plan only what is
+    listed, with no word that the work is done, until the rounds are spent."""
     planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
     critic: Scripted[CriticVerdict] = Scripted()
 
@@ -958,13 +959,20 @@ def test_a_plan_that_speaks_about_work_reported_done_fails_its_checks() -> None:
     verification = result["verification"]
     assert result["outcome"] == "checks_failed"
     assert critic.calls == 0
-    assert PlanCheck.NO_REPORTED_DONE_WORK in verification.failed_checks
-    assert PlanCheck.ASSIGNMENTS_EXIST not in verification.failed_checks
+    assert verification.failed_checks == (
+        PlanCheck.ASSIGNMENTS_EXIST,
+        PlanCheck.NO_REPORTED_DONE_WORK,
+    )
     assert (
         "assignment-canal-essay is reported done and the plan still speaks about it"
         in verification.as_findings()
     )
-    assert "reported done and the plan still speaks about it" in human_text(planner.briefs[1])
+    assert "reported done" in result["steps"][-1].found
+    sent_back = human_text(planner.briefs[1])
+    assert "assignment-canal-essay is not an assignment in this window" in sent_back
+    assert ONLY_WHAT_IS_LISTED in sent_back
+    assert "reported done" not in sent_back
+    assert "Canal Era" not in sent_back
 
 
 def test_a_window_with_nothing_left_to_do_ends_the_run_before_any_model_is_asked() -> None:
@@ -1009,3 +1017,36 @@ def test_the_draft_names_every_assignment_its_plan_speaks_about_once() -> None:
     record = drafts.get(result["draft"].draft_id)
     assert record is not None
     assert record.plan_assignment_ids == ["assignment-algebra-set", "assignment-canal-essay"]
+
+
+def test_work_still_to_do_keeps_its_dependency_on_finished_work_and_no_brief_names_it() -> None:
+    """The problem set depends on the essay, and the essay is reported done. The run's
+    assignment keeps the dependency as the record has it, the essay itself stays out of
+    the plan set, and neither brief carries the essay's id, its title, or the dependency."""
+    depends = PROBLEM_SET.model_copy(update={"dependencies": [ESSAY.assignment_id]})
+    planner = Scripted(
+        ok(
+            DailyPlan(
+                plan_date=PLAN_DATE, blocks=[block("assignment-algebra-set", "16:30", "17:15")]
+            )
+        )
+    )
+    critic = Scripted(ok(accepting()))
+
+    result = run(
+        graph_with(
+            planner,
+            critic,
+            assignments=(ESSAY, depends),
+            reports=[("assignment-canal-essay", "done", None)],
+        )
+    )
+
+    assert [(item.assignment_id, item.dependencies) for item in result["assignments"]] == [
+        ("assignment-algebra-set", ["assignment-canal-essay"])
+    ]
+    assert result["done_ids"] == ["assignment-canal-essay"]
+    assert result["verification"].passed
+    for brief in (planner.briefs[0], critic.briefs[0]):
+        assert "assignment-canal-essay" not in human_text(brief)
+        assert "Canal Era" not in human_text(brief)

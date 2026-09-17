@@ -51,9 +51,12 @@ class PlanCheck(StrEnum):
     reason."""
 
     NO_REPORTED_DONE_WORK = "NO_REPORTED_DONE_WORK"
-    """Nothing she has reported done is worked on or put off. The plan is for the work
-    that is left, and what she has reported is read from the record at the time of the
-    check, never from the plan."""
+    """Nothing she had reported done when the run read the week is worked on or put off.
+    The ids are the run's own reading, frozen with the rest of its input and kept on the
+    server; no model is sent them. Such an id is outside the window the plan was given,
+    so ``ASSIGNMENTS_EXIST`` fails with it, and this check names the reason for the
+    record. A report that lands after the reading is not this check's to catch: the
+    draft's fingerprint is, on the pages and at approval."""
 
     ONE_DECISION_PER_ASSIGNMENT = "ONE_DECISION_PER_ASSIGNMENT"
     """Each assignment is worked on or put off, not both, and put off at most
@@ -69,6 +72,10 @@ class PlanCheck(StrEnum):
     WITHIN_TIME_BUDGET = "WITHIN_TIME_BUDGET"
     """The evening's total is inside the household's limit."""
 
+
+ONLY_WHAT_IS_LISTED = "plan only the assignments listed, and leave out anything else"
+"""What the planner is told when its plan spoke about work she had reported done, in place
+of the finding that says so."""
 
 ORDERED_PLAN_CHECKS: tuple[PlanCheck, ...] = (
     PlanCheck.ASSIGNMENTS_EXIST,
@@ -125,10 +132,28 @@ class PlanVerification(BaseModel):
         )
 
     def as_findings(self) -> tuple[str, ...]:
-        """Every finding, flattened, for a prompt or a page to render."""
+        """Every finding, flattened, for the run's record and a page to render."""
         return tuple(
             finding for check in ORDERED_PLAN_CHECKS for finding in self.findings.get(check, ())
         )
+
+    def as_feedback(self) -> tuple[str, ...]:
+        """The findings as the planner is sent them back: every one but what she has reported.
+
+        That a plan speaks about work reported done stays in the record. The
+        planner was never given that work, and is not told of it now: the
+        same id fails ``ASSIGNMENTS_EXIST``, whose finding says only that it
+        is not in the window, and one plain instruction goes with it.
+        """
+        kept = tuple(
+            finding
+            for check in ORDERED_PLAN_CHECKS
+            if check is not PlanCheck.NO_REPORTED_DONE_WORK
+            for finding in self.findings.get(check, ())
+        )
+        if PlanCheck.NO_REPORTED_DONE_WORK not in self.findings:
+            return kept
+        return (*kept, ONLY_WHAT_IS_LISTED)
 
 
 def check_plan(
@@ -157,7 +182,7 @@ def check_plan(
     contradicted = {item.assignment_id: item for item in noticings if item.contradicted}
     findings: dict[PlanCheck, list[str]] = {check: [] for check in ORDERED_PLAN_CHECKS}
 
-    unknown = [name for name in plan.assignment_ids if name not in known and name not in done]
+    unknown = [name for name in plan.assignment_ids if name not in known]
     findings[PlanCheck.ASSIGNMENTS_EXIST].extend(
         f"{name} is not an assignment in this window" for name in sorted(set(unknown))
     )

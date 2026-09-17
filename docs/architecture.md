@@ -413,9 +413,14 @@ states each one's due date before it reads the sources, sets the two against
 each other, and then selects the week: undated work, and dated work that the
 record or any source puts in the window. It reads her updates with the rows
 and leaves out what she has reported done, so the planner, the critic, and
-the checks see the work still to do, a dependency on finished work included,
-while the ids left out are kept for the check that fails a plan speaking
-about them; a window with nothing left ends the run there, with its record
+the checks see the work still to do, each assignment with its dependencies
+as the record has them, while the ids left out are kept on the server for
+the check that fails a plan speaking about them. That reading is the run's
+input from there on: a report that lands while a model is being asked is not
+swapped in half way, the draft carries the fingerprint of what it was made
+from, and it reads as stale on both pages the moment it is published. What
+goes back to the planner from that check is only that the id is not in its
+window, never that the work is done; a window with nothing left ends the run there, with its record
 and no model asked, as the routes refuse such an evening before the run.
 `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
 back to `plan` with the findings before any critic sees it, because a

@@ -9,17 +9,26 @@ the family page makes of her word beside the school's.
 import pathlib
 import re
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
+from typing import Annotated
 
+from fastapi import Depends
 from fastapi.testclient import TestClient
+from langchain_core.messages import BaseMessage
 from markupsafe import escape
 
+from blossom.agent.graph import ModelAnswer, plan_graph_for
 from blossom.app import create_app
 from blossom.assignment_status import statuses_for
-from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
+from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
+from blossom.noticing import planning_digest, read_week
+from blossom.plans import DailyPlan
+from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.parent import PLAN_INCLUDES_DONE as SHE_REPORTS
-from blossom.routes.runs import NOTHING_TO_SCHEDULE, plan_graphs
+from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import (
+    ASSIGNMENTS_CHANGED,
     CHOOSE_ONE,
     NOT_HERS_TO_UPDATE,
     NOTE_TOO_LONG,
@@ -31,14 +40,21 @@ from blossom.routes.student import (
     UPDATE_UNDONE,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, Settings
-from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
+from blossom.stores.project_state import (
+    Assignment,
+    AssignmentKind,
+    ProjectStateStore,
+    Saved,
+)
 from tests.support import (
     PLAN_DATE,
     SAME_ORIGIN,
+    Scripted,
     accepting,
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
+    ok,
     scripted_graphs,
 )
 
@@ -522,3 +538,82 @@ def test_reading_the_statuses_takes_the_same_few_reads_whatever_the_number_of_ro
     assert few == many
     assert many <= 4
     assert isinstance(sqlite3.connect(":memory:"), sqlite3.Connection)
+
+
+class ReportsWhileAsked:
+    """A planner whose answer comes only after her Done has landed, as a report does that
+    arrives while the model call is pending. It takes the decision lock for the save, as
+    her page's route does, so a run that held the lock through the call would never
+    answer."""
+
+    def __init__(self, state: ApplicationState) -> None:
+        self.state = state
+        self.lock_was_free = False
+        self.saved: object = None
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[DailyPlan]:
+        self.lock_was_free = not self.state.decision_lock.locked()
+        async with self.state.decision_lock:
+            self.saved = self.state.project_state.report_status(
+                ESSAY,
+                "done",
+                None,
+                expected_head=None,
+                now=self.state.clock.now(),
+                today=self.state.clock.today(),
+            )
+        return ok(fixture_week_plan())
+
+
+def test_a_done_saved_while_the_planner_is_asked_leaves_the_plan_stale_and_named() -> None:
+    """Her Done lands while the model call is pending. The save is not kept waiting for the
+    model; the run works from what it read, so the plan passes its checks and its draft
+    keeps the fingerprint and the ids of that reading; and the moment it is published it
+    reads as stale on both pages, its notice names the essay, and approving is refused."""
+    asked: list[ReportsWhileAsked] = []
+
+    def override(
+        state: Annotated[ApplicationState, Depends(get_application_state)],
+    ) -> PlanGraphs:
+        if not asked:
+            asked.append(ReportsWhileAsked(state))
+        planner = asked[0]
+        return PlanGraphs(
+            build=lambda: plan_graph_for(state, planner=planner, critic=Scripted(ok(accepting()))),
+            may_start=True,
+        )
+
+    with browser(key=True) as client:
+        client.app.dependency_overrides[plan_graphs] = override  # type: ignore[attr-defined]
+        state = state_of(client)
+        as_read = planning_digest(read_week(state.project_state, state.project_state, PLAN_DATE))
+        planned = client.post("/student/actions/plan")
+        record = state.drafts.latest_for(PLAN_DATE)
+        as_it_stands = planning_digest(
+            read_week(state.project_state, state.project_state, PLAN_DATE)
+        )
+        hers = client.get(PAGE, headers=PAGE_HEADERS).text
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+        assert record is not None
+        refused = client.post(
+            f"/parent/actions/decide/{record.draft_id}", data={"decision": "approve"}
+        )
+        after = state.drafts.get(record.draft_id)
+
+    assert len(asked) == 1
+    assert asked[0].lock_was_free
+    assert isinstance(asked[0].saved, Saved)
+    assert planned.status_code == 303
+    assert record.waiting
+    assert record.inputs_digest == as_read
+    assert as_it_stands != as_read
+    assert record.plan_assignment_ids is not None
+    assert ESSAY in record.plan_assignment_ids
+    assert ASSIGNMENTS_CHANGED in hers
+    assert PLAN_INCLUDES_DONE.format(ESSAY_TITLE) in hers
+    assert THEIR_ASSIGNMENTS_CHANGED in family
+    assert SHE_REPORTS.format(ESSAY_TITLE) in family
+    assert 'value="approve"' not in family
+    assert refused.status_code == 409
+    assert after is not None
+    assert after.waiting

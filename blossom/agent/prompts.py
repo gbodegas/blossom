@@ -228,11 +228,11 @@ def planner_brief(
     confidence: dict[str, SourceConfidence],
     support_rules: Sequence[str],
     reflections: Sequence[str],
+    feedback: Sequence[str],
+    round_number: int,
     noticings: Sequence[Noticing] = (),
     too_much: bool = False,
     student_reports: Mapping[str, StudentReport] | None = None,
-    feedback: Sequence[str],
-    round_number: int,
 ) -> list[BaseMessage]:
     """Everything the planner reads, data first and the request last."""
     parts = [
@@ -269,11 +269,11 @@ def critic_brief(
     confidence: dict[str, SourceConfidence],
     support_rules: Sequence[str],
     reflections: Sequence[str],
+    plan: DailyPlan,
+    verification: PlanVerification,
     noticings: Sequence[Noticing] = (),
     too_much: bool = False,
     student_reports: Mapping[str, StudentReport] | None = None,
-    plan: DailyPlan,
-    verification: PlanVerification,
 ) -> list[BaseMessage]:
     """Everything the critic reads: the same evening, then the plan, then the request."""
     parts = [
