@@ -21,6 +21,7 @@ No model takes part. The rules fit in one function, and
 ``tests/noticing_cases.py`` holds them to a labeled table.
 """
 
+import json
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -31,7 +32,12 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict
 
 from blossom.assignment_status import AssignmentStatus, statuses_for
-from blossom.reconciliation import Reconciler, ReconciliationResult, SourceRecord
+from blossom.reconciliation import (
+    Reconciler,
+    ReconciliationResult,
+    SourceChannel,
+    SourceRecord,
+)
 from blossom.sources import DateClaims
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, ProjectStateStore
 
@@ -209,53 +215,65 @@ def monday_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-PLANNING_DIGEST: Final = uuid.UUID("7d1e9b4a-2c3f-4e58-9a6b-1f0c2d3e4a5b")
+PLANNING_DIGEST: Final = uuid.UUID("3b9c1f52-8a47-4d06-b1e3-5c7a9d2f4e68")
 """The namespace a week's fingerprint is drawn from. A namespace of its own for each
 shape the fingerprint has had, so a draft fingerprinted under an earlier one reads as
 stale rather than as unchanged."""
 
 
-def planning_digest(week: Week) -> str:
-    """A fingerprint of what a plan is made from: the week's work still to plan and what is
-    said about it, in a fixed order, so the same week reads the same and any change reads
-    differently.
+def canonical_active_input(week: Week) -> list[dict[str, object]]:
+    """What a plan is made from, as plain values in a fixed order: the one account of it
+    that the fingerprint is drawn from.
 
-    Covered, for each assignment she has not reported done: its id, course,
-    title, due date, assigned date, kind, note, and reported status; whether
-    she has said "not yet" and what she wrote with it; and each claim about
-    its date, channel, value, and where it was read. Not covered: when a
-    claim or a report was made, which report it was, how sure a claim was,
-    or anything about work reported done, which is out of what a plan is
-    built on; so an undo that restores the week's input restores its
-    fingerprint, and a report that changes nothing a plan reads changes
-    nothing here.
+    For each assignment she has not reported done, by id: its course, title,
+    due and assigned dates, kind, note and whether a parent wrote it, which
+    the planner is told, and reported status; whether she has said "not yet"
+    and what she wrote with it; and each claim about its date, channel,
+    value, and where it was read, sorted. Left out: when a claim or a report
+    was made, which report it was, how sure a claim was, her history, and
+    anything about work reported done, which is out of what a plan is built
+    on.
     """
-    lines = []
+    rows: list[dict[str, object]] = []
     for item in sorted(week.active(), key=lambda item: item.assignment_id):
         said = week.statuses.get(item.assignment_id)
-        lines.append(
-            "\t".join(
-                [
-                    item.assignment_id,
-                    item.course,
-                    item.title,
-                    "" if item.due_date is None else item.due_date.isoformat(),
-                    "" if item.assigned_on is None else item.assigned_on.isoformat(),
-                    item.kind.value,
-                    item.note or "",
-                    item.reported_submission_status,
-                    "" if said is None else said.status or "",
-                    "" if said is None else said.note or "",
-                ]
-            )
+        rows.append(
+            {
+                "id": item.assignment_id,
+                "course": item.course,
+                "title": item.title,
+                "due": None if item.due_date is None else item.due_date.isoformat(),
+                "assigned": None if item.assigned_on is None else item.assigned_on.isoformat(),
+                "kind": item.kind.value,
+                "note": item.note,
+                "note_by_a_parent": bool(item.note)
+                and item.origins.get("note") == SourceChannel.PARENT_ENTRY,
+                "reported_status": item.reported_submission_status,
+                "student_status": None if said is None else said.status,
+                "student_note": None if said is None else said.note,
+                "claims": sorted(
+                    [record.channel.value, record.asserted_value, record.seen_in or ""]
+                    for record in week.records.get(item.assignment_id, [])
+                ),
+            }
         )
-        for record in week.records.get(item.assignment_id, []):
-            lines.append(
-                "\t".join(
-                    ["claim", record.channel.value, record.asserted_value, record.seen_in or ""]
-                )
-            )
-    return uuid.uuid5(PLANNING_DIGEST, "\n".join(lines)).hex
+    return rows
+
+
+def planning_digest(week: Week) -> str:
+    """A fingerprint of what a plan is made from, so the same week reads the same and any
+    change reads differently.
+
+    Drawn from ``canonical_active_input`` written as JSON with sorted keys:
+    every value sits in a field of its own, so words in a note can never
+    read as another field or another claim, whatever they hold. An undo that
+    restores the week's input restores its fingerprint, and a report that
+    changes nothing a plan reads changes nothing here.
+    """
+    serialized = json.dumps(
+        canonical_active_input(week), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return uuid.uuid5(PLANNING_DIGEST, serialized).hex
 
 
 def read_week(project_state: ProjectStateStore, source: DateClaims, start: date) -> Week:

@@ -26,6 +26,7 @@ from blossom.agent.graph import (
     PlanState,
     plan_graph_for,
 )
+from blossom.agent.prompts import assignments_block
 from blossom.agent.runs import DURABILITY, RECURSION_LIMIT, run_config
 from blossom.agent.steps import StepRecord
 from blossom.anthropic_client import ModelUnavailable
@@ -48,6 +49,7 @@ from blossom.stores.project_state import (
     AssignmentKind,
     ProjectStateStore,
     Saved,
+    StudentReport,
     Undone,
 )
 from tests.support import (
@@ -958,8 +960,8 @@ def test_her_not_yet_and_her_words_reach_the_planner_as_hers() -> None:
 def test_a_plan_that_speaks_about_work_reported_done_fails_its_checks() -> None:
     """The plan was given the problem set alone and speaks about the essay too: the essay
     is outside its window, the check made for finished work fails by name in the record,
-    and the planner is sent back that the id is not in its window and to plan only what is
-    listed, with no word that the work is done, until the rounds are spent."""
+    and every brief the planner is sent, the revisions included, carries neither the
+    essay's id nor its title nor a word that it is done, only to use the work listed."""
     planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
     critic: Scripted[CriticVerdict] = Scripted()
 
@@ -977,11 +979,14 @@ def test_a_plan_that_speaks_about_work_reported_done_fails_its_checks() -> None:
         in verification.as_findings()
     )
     assert "reported done" in result["steps"][-1].found
-    sent_back = human_text(planner.briefs[1])
-    assert "assignment-canal-essay is not an assignment in this window" in sent_back
-    assert ONLY_WHAT_IS_LISTED in sent_back
-    assert "reported done" not in sent_back
-    assert "Canal Era" not in sent_back
+    assert "assignment-canal-essay is not an assignment in this window" in result["steps"][-1].found
+    for brief in planner.briefs:
+        sent_back = human_text(brief)
+        assert "assignment-canal-essay" not in sent_back
+        assert "reported done" not in sent_back
+        assert "Canal Era" not in sent_back
+    assert ONLY_WHAT_IS_LISTED in human_text(planner.briefs[1])
+    assert ONLY_WHAT_IS_LISTED in human_text(planner.briefs[2])
 
 
 def test_a_window_with_nothing_left_to_do_ends_the_run_before_any_model_is_asked() -> None:
@@ -1098,7 +1103,8 @@ def test_a_done_saved_while_the_planner_is_asked_is_held_against_the_plan_that_c
     """She reports the essay done while the first plan is being made, and the plan comes
     back with the essay in it. The check reads the record as it stands and fails the plan
     by name; the planner is asked again with the essay gone from its brief and no word
-    that it is done; and the draft carries the fingerprint of the record as it stands."""
+    that it is done, nor its id; and the draft carries the fingerprint of the record as it
+    stands."""
     on_record, _, _ = stores()
     drafts = drafts_in_memory()
 
@@ -1120,10 +1126,10 @@ def test_a_done_saved_while_the_planner_is_asked_is_held_against_the_plan_that_c
     assert first_check.found.startswith("the record changed while the plan was being made")
     assert "2 of 7 checks failed" in first_check.found
     assert "assignment-canal-essay is reported done" in first_check.found
-    assert 'id="assignment-canal-essay"' not in again
+    assert "assignment-canal-essay" not in again
     assert "Canal Era" not in again
     assert "reported done" not in again
-    assert "assignment-canal-essay is not an assignment in this window" in again
+    assert ONLY_WHAT_IS_LISTED in again
     assert [item.assignment_id for item in result["assignments"]] == ["assignment-algebra-set"]
     assert result["done_ids"] == ["assignment-canal-essay"]
     assert result["verification"].passed
@@ -1231,3 +1237,82 @@ def test_a_week_finished_while_the_planner_is_asked_ends_the_run_with_nothing_to
         ("nothing_to_schedule", ["retrieve", "plan", "verify"])
     ]
     assert drafts.waiting() == []
+
+
+def test_finished_work_put_off_or_in_both_places_never_reaches_a_revision_either() -> None:
+    """The plan puts the finished essay off, and the next works on it and puts it off: each
+    revision the planner is sent is held to the same rule as the first brief."""
+    put_off = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-algebra-set", "16:30", "17:15")],
+        deferred=[Deferral(assignment_id="assignment-canal-essay", reason="it can wait")],
+    )
+    both = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            block("assignment-algebra-set", "16:30", "17:15"),
+            block("assignment-canal-essay", "17:30", "18:00"),
+        ],
+        deferred=[Deferral(assignment_id="assignment-canal-essay", reason="and later")],
+    )
+    planner = Scripted(ok(put_off), ok(both), ok(problem_set_alone()))
+
+    result = run(
+        graph_with(
+            planner,
+            Scripted(ok(accepting())),
+            reports=[("assignment-canal-essay", "done", "Handed in Tuesday.")],
+        )
+    )
+
+    checks = [item.found for item in result["steps"] if item.node == "verify"]
+    assert planner.calls == 3
+    assert "assignment-canal-essay is reported done" in checks[0]
+    assert "assignment-canal-essay is both worked on and put off" in checks[1]
+    assert checks[2] == "all 7 checks passed"
+    for brief in planner.briefs:
+        text = human_text(brief)
+        assert "assignment-canal-essay" not in text
+        assert "Canal Era" not in text
+        assert "Handed in Tuesday." not in text
+        assert "reported done" not in text
+    assert ONLY_WHAT_IS_LISTED in human_text(planner.briefs[1])
+    assert ONLY_WHAT_IS_LISTED in human_text(planner.briefs[2])
+
+
+def test_her_report_comes_back_from_the_saved_state_as_itself(tmp_path: pathlib.Path) -> None:
+    """Two event loops stand in for two processes, through the real SQLite saver: the
+    standing report the run carries is a report again on the other side, and the brief
+    can still be written from it."""
+    path = tmp_path / "checkpoints.sqlite3"
+    config = run_config("plan:reports")
+
+    async def first_process() -> None:
+        async with open_checkpointer(path) as saver:
+            graph = graph_with(
+                Scripted(ok(good_plan())),
+                Scripted(ok(undecided())),
+                checkpointer=saver,
+                reports=[("assignment-canal-essay", "not_yet", "Two paragraphs left.")],
+            )
+            paused = await graph.ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
+            )
+            assert len(paused["__interrupt__"]) == 1
+
+    async def second_process() -> dict[str, Any]:
+        async with open_checkpointer(path) as saver:
+            graph = graph_with(Scripted(), Scripted(), checkpointer=saver)
+            waiting = await graph.aget_state(config)
+            return dict(waiting.values)
+
+    asyncio.run(first_process())
+    values = asyncio.run(second_process())
+
+    said = values["student_reports"]["assignment-canal-essay"]
+    assert isinstance(said, StudentReport)
+    assert (said.status, said.note) == ("not_yet", "Two paragraphs left.")
+    brief = assignments_block(
+        values["assignments"], values["confidence"], values["student_reports"]
+    )
+    assert 'student_says="not yet"' in brief

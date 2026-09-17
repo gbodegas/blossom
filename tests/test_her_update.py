@@ -9,10 +9,11 @@ the family page makes of her word beside the school's.
 import pathlib
 import re
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
-from typing import Annotated
+from typing import Annotated, Protocol
 
+import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from langchain_core.messages import BaseMessage
@@ -28,13 +29,19 @@ from blossom.intake import PASTE_DAY
 from blossom.noticing import planning_digest, read_week
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceChannel
+from blossom.routes import student as student_routes
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.parent import PLAN_INCLUDES_DONE as SHE_REPORTS
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import (
     ASSIGNMENTS_CHANGED,
+    BAD_FORM,
+    CANNOT_UNDO,
     CHOOSE_ONE,
     NOT_HERS_TO_UPDATE,
+    NOT_SAVED,
+    NOT_THIS_CARDS,
+    NOT_UNDONE,
     NOTE_TOO_LONG,
     PLAN_INCLUDES_DONE,
     PLAN_WINDOW_DONE,
@@ -43,7 +50,7 @@ from blossom.routes.student import (
     UPDATE_SAVED,
     UPDATE_UNDONE,
 )
-from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, Settings
+from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT, Settings
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -107,10 +114,10 @@ def state_of(client: TestClient) -> ApplicationState:
 
 
 def card_for(page: str, assignment_id: str) -> str:
-    """One card or list entry, from its id to the end of its update block."""
+    """One card or list entry, whole: from its id to the next card's, or the page's end."""
     start = page.index(f'id="assignment-{assignment_id}"')
-    end = page.index("</div>\n", page.index('<div class="update">', start))
-    return page[start:end]
+    following = page.find('id="assignment-', start + 1)
+    return page[start:] if following < 0 else page[start:following]
 
 
 def hidden(html: str, name: str) -> str:
@@ -146,13 +153,15 @@ def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -
         after = client.get(location, headers=PAGE_HEADERS).text
         history = state_of(client).project_state.student_reports(ESSAY)
 
-    assert "<legend>Your update</legend>" in card
+    assert "<legend>Your update<span" in card
     assert 'type="radio" name="status" value="done">' in card
     assert 'type="radio" name="status" value="not_yet">' in card
     assert "checked" not in card
     assert "Done means you have finished your part. It does not turn work in." in card
-    assert "<summary>Add a note (optional)</summary>" in card
-    assert "Your parents can read this. Notes on work being planned are shared" in card
+    assert "<summary>Add a note (optional)<span" in card
+    assert "Up to 500 characters. Your parents can read this. Notes on work being" in card
+    assert "maxlength" not in card
+    assert '<span class="visually-hidden"> on Canal Era comparison essay</span>' in card
     assert hidden(card, "expected_report_id") == ""
     assert hidden(card, "week") == WEEK
     assert location == f"{PAGE}?week={WEEK}&saved={ESSAY}#assignment-{ESSAY}"
@@ -167,7 +176,7 @@ def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -
     assert "This is out of work to plan. Your school record is separate." in saved
     assert ">Change</button>" in saved
     assert f'action="/student/actions/assignments/{ESSAY}/undo-report"' in saved
-    assert "<legend>Your update</legend>" not in saved
+    assert "<legend>Your update<span" not in saved
     assert [(item.status, item.note) for item in history] == [
         ("done", "Turned in on paper.\nTwo pages.")
     ]
@@ -341,10 +350,11 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
     assert 'name="report_id"' not in restored
     assert ">Change</button>" in restored
     assert stale.status_code == 409
-    assert SAVED_ELSEWHERE in card_for(stale.text, ESSAY)
+    assert CANNOT_UNDO in card_for(stale.text, ESSAY)
+    assert f'href="#assignment-{ESSAY}"' in stale.text
     assert to_nothing.status_code == 303
     assert UPDATE_UNDONE in blank_again
-    assert "<legend>Your update</legend>" in blank_again
+    assert "<legend>Your update<span" in blank_again
     assert hidden(blank_again, "expected_report_id") == statuses[LOG].head_id
     assert (statuses[ESSAY].work_state, statuses[LOG].work_state) == ("not_yet", "unreported")
 
@@ -399,10 +409,10 @@ def test_a_parent_signed_in_reads_her_update_and_cannot_make_one(tmp_path: pathl
     assert anonymous.status_code == 303
     assert anonymous.headers["location"] == "/sign-in"
     assert "No student update yet. Sign in as the student to update." in parent_card
-    assert "<legend>Your update</legend>" not in parent_card
+    assert "<legend>Your update<span" not in parent_card
     assert refused.status_code == 403
     assert NOT_HERS_TO_UPDATE in refused.text
-    assert "<legend>Your update</legend>" in card_for(as_her, ESSAY)
+    assert "<legend>Your update<span" in card_for(as_her, ESSAY)
     assert '<span class="pill">Your update: Done</span>' in card_for(saved, ESSAY)
     assert '<span class="pill">Student update: Done</span>' in parent_after
     assert "She wrote: <q>On paper.</q>" in parent_after
@@ -431,10 +441,15 @@ def test_a_plan_that_speaks_about_work_she_has_since_finished_says_so_on_both_pa
         legacy = client.get(PAGE, headers=PAGE_HEADERS).text
         legacy_family = client.get("/parent", headers=PAGE_HEADERS).text
 
-    assert "Reported done since." not in quiet
-    assert PLAN_INCLUDES_DONE.format(ESSAY_TITLE) in hers
-    assert SHE_REPORTS.format(ESSAY_TITLE) in family
-    assert over_json["reported_done"] == PLAN_INCLUDES_DONE.format(ESSAY_TITLE)
+    assert "<strong>Your updates.</strong>" not in quiet
+    assert PLAN_INCLUDES_DONE == "This plan includes work you now report as Done."
+    assert (
+        f"{PLAN_INCLUDES_DONE}\n        In it: {ESSAY_TITLE}. A new plan will leave it out." in hers
+    )
+    assert f"<strong>Student updates.</strong> {SHE_REPORTS} In it: {ESSAY_TITLE}." in family
+    assert over_json["reported_done"] == PLAN_INCLUDES_DONE
+    assert over_json["reported_done_titles"] == [ESSAY_TITLE]
+    assert "Reported done since" not in hers + family
     assert draft_id
     assert str(escape(PLAN_WINDOW_DONE)) in legacy
     assert str(escape("Some work in this plan's window is now reported Done.")) in legacy_family
@@ -486,7 +501,8 @@ def test_her_done_beside_the_schools_missing_is_something_to_check_on_both_pages
     assert "The school reports it missing. From the school email, pasted" in checking
     assert "<strong>Check the school record.</strong>" in checking
     assert "Blossom is not scheduling more homework for this assignment." in checking
-    assert "<summary>Recent updates (1)</summary>" in checking
+    assert family.count(f'id="update-{ESSAY}"') == 1
+    assert "Recent updates" not in family
     assert ESSAY_TITLE not in rest
     assert told_again.status_code == 303
     assert (still.work_state, still.check_the_school_record) == ("done", True)
@@ -499,7 +515,7 @@ def test_the_assigned_later_list_takes_her_update_the_same_way() -> None:
         after = client.get(location, headers=PAGE_HEADERS).text
 
     _, _, later_before = before.partition("Assigned this week, due later")
-    assert "<legend>Your update</legend>" in card_for(later_before, LOG)
+    assert "<legend>Your update<span" in card_for(later_before, LOG)
     _, _, later_after = after.partition("Assigned this week, due later")
     assert "<summary>Reported done (1)</summary>" in later_after
     assert '<span class="pill">Your update: Done</span>' in card_for(later_after, LOG)
@@ -555,7 +571,7 @@ def test_reading_the_statuses_takes_the_same_few_reads_whatever_the_number_of_ro
     few, many = reads(2), reads(40)
 
     assert few == many
-    assert many == 3
+    assert many == 2
     assert isinstance(sqlite3.connect(":memory:"), sqlite3.Connection)
 
 
@@ -638,9 +654,10 @@ def test_a_done_saved_while_the_reviewer_is_asked_leaves_the_plan_stale_and_name
     assert record.plan_assignment_ids is not None
     assert ESSAY in record.plan_assignment_ids
     assert ASSIGNMENTS_CHANGED in hers
-    assert PLAN_INCLUDES_DONE.format(ESSAY_TITLE) in hers
+    assert PLAN_INCLUDES_DONE in hers
+    assert f"In it: {ESSAY_TITLE}." in hers
     assert THEIR_ASSIGNMENTS_CHANGED in family
-    assert SHE_REPORTS.format(ESSAY_TITLE) in family
+    assert SHE_REPORTS in family
     assert 'value="approve"' not in family
     assert refused.status_code == 409
     assert after is not None
@@ -688,7 +705,7 @@ def test_a_done_saved_while_the_planner_is_asked_is_caught_before_the_plan_is_he
     assert record.plan_assignment_ids is not None
     assert ESSAY not in record.plan_assignment_ids
     assert ASSIGNMENTS_CHANGED not in hers
-    assert "Reported done since." not in hers
+    assert "<strong>Your updates.</strong>" not in hers
     assert 'value="approve"' in family
 
 
@@ -719,8 +736,552 @@ def test_the_missing_a_check_rests_on_is_shown_whatever_the_latest_report_says()
     assert "has a school report to check" in hers
     assert "<strong>The school reports this submitted.</strong>" in card
     assert "From the school portal, pasted" in card
-    assert "<strong>The school also reports this missing.</strong>" in card
+    assert "<strong>The school reports this missing.</strong>" in card
     assert "From the school email, pasted" in card
     assert "<h3>Worth checking together</h3>" in checking
     assert "The school reports it missing. From the school email, pasted" in checking
-    assert "The latest school report says submitted. From the school portal, pasted" in checking
+    assert "The school reports it submitted. From the school portal, pasted" in checking
+
+
+# ------------------------------------------------------------- the form, held to what it sends
+
+
+class Answer(Protocol):
+    """What these tests read of a response, whatever client library made it."""
+
+    @property
+    def status_code(self) -> int: ...
+
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def headers(self) -> Mapping[str, str]: ...
+
+
+def post_report(client: TestClient, assignment_id: str, **fields: str | list[str]) -> Answer:
+    return client.post(
+        f"/student/actions/assignments/{assignment_id}/report",
+        data=fields,
+        headers=PAGE_HEADERS,
+    )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        pytest.param({"status": ["done", "not_yet"]}, id="two-choices"),
+        pytest.param({"status": "done", "note": ["one", "two"]}, id="two-notes"),
+        pytest.param({"status": "done", "expected_report_id": ["", ""]}, id="two-tokens"),
+        pytest.param({"status": "done", "week": [WEEK, WEEK]}, id="two-weeks"),
+        pytest.param({"status": "done", "channel": "LMS"}, id="a-channel"),
+        pytest.param({"status": "done", "reported_on": "2026-01-01"}, id="a-day"),
+    ],
+)
+def test_a_form_that_is_not_whole_writes_nothing_and_says_so(
+    fields: dict[str, str | list[str]],
+) -> None:
+    sent: dict[str, str | list[str]] = {
+        "note": "kept words",
+        "expected_report_id": "",
+        "week": WEEK,
+        **fields,
+    }
+    with browser() as client:
+        answer = post_report(client, ESSAY, **sent)
+        nothing = state_of(client).project_state.student_reports(ESSAY)
+
+    assert answer.status_code == 422
+    assert BAD_FORM in card_for(answer.text, ESSAY)
+    assert nothing == []
+
+
+def test_an_undo_form_that_is_not_whole_changes_nothing() -> None:
+    with browser() as client:
+        page = client.get(report(client, ESSAY, "done"), headers=PAGE_HEADERS).text
+        named = hidden(card_for(page, ESSAY), "report_id")
+        twice = client.post(
+            f"/student/actions/assignments/{ESSAY}/undo-report",
+            data={"report_id": [named, named], "week": WEEK},
+        )
+        extra = client.post(
+            f"/student/actions/assignments/{ESSAY}/undo-report",
+            data={"report_id": named, "week": WEEK, "status": "not_yet"},
+        )
+        history = state_of(client).project_state.student_reports(ESSAY)
+
+    assert (twice.status_code, extra.status_code) == (422, 422)
+    assert BAD_FORM in card_for(twice.text, ESSAY)
+    assert [event.operation for event in history] == ["report"]
+
+
+def test_a_form_must_name_an_update_of_its_own_card_whatever_else_it_says() -> None:
+    """Forms read from the pages, then their token swapped: a made-up name, a name that is
+    no id at all, and another card's real update are refused with the same update as the
+    one standing and with another, and nothing is written. The card's own stale token
+    with the same update is already saved. An undo is held to the same."""
+    with browser() as client:
+        report(client, LOG, "done")
+        page = client.get(report(client, ESSAY, "done", "Finished."), headers=PAGE_HEADERS).text
+        own = hidden(card_for(page, ESSAY), "report_id")
+        other = hidden(card_for(page, LOG), "report_id")
+        refusals = [
+            post_report(
+                client,
+                ESSAY,
+                status=status,
+                note=note,
+                expected_report_id=token,
+                week=WEEK,
+            )
+            for token in ("report-000000000000", "' OR 1=1 --", other, "x" * 400)
+            for status, note in (("done", "Finished."), ("not_yet", ""))
+        ]
+        report(client, ESSAY, "not_yet")
+        stale_and_same = post_report(
+            client, ESSAY, status="not_yet", note="", expected_report_id=own, week=WEEK
+        )
+        undo_unknown = client.post(
+            f"/student/actions/assignments/{ESSAY}/undo-report",
+            data={"report_id": "report-000000000000", "week": WEEK},
+        )
+        undo_another = client.post(
+            f"/student/actions/assignments/{ESSAY}/undo-report",
+            data={"report_id": other, "week": WEEK},
+        )
+        undo_stale = client.post(
+            f"/student/actions/assignments/{ESSAY}/undo-report",
+            data={"report_id": own, "week": WEEK},
+        )
+        history = state_of(client).project_state.student_reports(ESSAY)
+
+    assert [answer.status_code for answer in refusals] == [422] * 8
+    assert all(NOT_THIS_CARDS in card_for(a.text, ESSAY) for a in refusals)
+    assert stale_and_same.status_code == 303
+    assert stale_and_same.headers["location"].endswith(f"&same={ESSAY}#assignment-{ESSAY}")
+    assert (undo_unknown.status_code, undo_another.status_code) == (422, 422)
+    assert undo_stale.status_code == 409
+    assert CANNOT_UNDO in card_for(undo_stale.text, ESSAY)
+    assert [event.status for event in history] == ["done", "not_yet"]
+
+
+# ------------------------------------------------------------- a save the file refuses
+
+
+def test_a_save_the_file_refuses_keeps_her_words_and_says_nothing_of_a_save(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The insert is refused, then the write fails after the insert: each time the page
+    comes back with her choice and her words, no redirect, no word of a save, and no
+    event. With the fault gone, the same form saves. An undo the file refuses says so
+    and leaves her update standing."""
+    with browser() as client:
+        store = state_of(client).project_state
+        store._connection.execute(
+            "CREATE TRIGGER refuse_reports BEFORE INSERT ON student_reports "
+            "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+        )
+        store._connection.commit()
+        refused = post_report(
+            client, ESSAY, status="done", note="kept <words>", expected_report_id="", week=WEEK
+        )
+        store._connection.execute("DROP TRIGGER refuse_reports")
+        store._connection.commit()
+        after_refusal = store.student_reports(ESSAY)
+
+        def fail(_: object) -> None:
+            msg = "the head could not be read back"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(store, "_confirm_head_locked", fail)
+        failed_late = post_report(
+            client, ESSAY, status="done", note="kept <words>", expected_report_id="", week=WEEK
+        )
+        monkeypatch.undo()
+        after_late_failure = store.student_reports(ESSAY)
+        card = card_for(failed_late.text, ESSAY)
+        retried = post_report(
+            client,
+            ESSAY,
+            status="done",
+            note="kept <words>",
+            expected_report_id=hidden(card, "expected_report_id"),
+            week=WEEK,
+        )
+        saved_page = client.get(retried.headers["location"], headers=PAGE_HEADERS).text
+        store._connection.execute(
+            "CREATE TRIGGER refuse_reports BEFORE INSERT ON student_reports "
+            "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+        )
+        store._connection.commit()
+        undo_refused = client.post(
+            f"/student/actions/assignments/{ESSAY}/undo-report",
+            data={"report_id": hidden(card_for(saved_page, ESSAY), "report_id"), "week": WEEK},
+        )
+        store._connection.execute("DROP TRIGGER refuse_reports")
+        store._connection.commit()
+        standing = statuses_for(store, [ESSAY])[ESSAY]
+
+    for answer in (refused, failed_late):
+        body = card_for(answer.text, ESSAY)
+        assert answer.status_code == 500
+        assert NOT_SAVED in body
+        assert UPDATE_SAVED not in answer.text
+        assert 'value="done" checked' in body
+        assert ">kept &lt;words&gt;</textarea>" in body
+    assert after_refusal == []
+    assert after_late_failure == []
+    assert retried.status_code == 303
+    assert undo_refused.status_code == 500
+    assert NOT_UNDONE in card_for(undo_refused.text, ESSAY)
+    assert UPDATE_UNDONE not in undo_refused.text
+    assert (standing.status, standing.note) == ("done", "kept <words>")
+
+
+def test_when_her_week_cannot_be_read_back_either_her_words_still_come_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        store._connection.execute(
+            "CREATE TRIGGER refuse_reports BEFORE INSERT ON student_reports "
+            "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+        )
+        store._connection.commit()
+
+        def unreadable(*_: object, **__: object) -> None:
+            msg = "the week could not be read"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(student_routes, "student_page", unreadable)
+        answer = post_report(
+            client, ESSAY, status="not_yet", note="kept <words>", expected_report_id="", week=WEEK
+        )
+
+    assert answer.status_code == 500
+    text = answer.text
+    assert NOT_SAVED in text
+    assert "Your choice: Not yet." in text
+    assert "readonly>kept &lt;words&gt;</textarea>" in text
+
+
+# ------------------------------------------------------------- a card whose dates moved
+
+
+def test_a_card_whose_dates_took_it_out_of_the_week_is_still_shown_with_the_result() -> None:
+    """Two forms from one page; one saves, then the assignment's date moves out of the
+    week. The other form's save is refused, 409, and the page still shows the card, apart,
+    with the newer update, her choice and words, and the head for another try; a long
+    note is refused the same way; and the save that then lands shows its confirmation on
+    the card, apart."""
+    with browser() as client:
+        entered = client.post(
+            "/parent/inbox/keep",
+            data={"course": "Art", "title": "Poster", "due_date": "2026-08-20"},
+        )
+        assert entered.status_code == 303
+        store = state_of(client).project_state
+        poster = next(
+            item.assignment_id for item in store.all_assignments() if item.title == "Poster"
+        )
+        first_page = client.get(PAGE, headers=PAGE_HEADERS).text
+        stale_head = hidden(card_for(first_page, poster), "expected_report_id")
+        report(client, poster, "done")
+        store._connection.execute(
+            "UPDATE assignments SET due_date='2026-10-08' WHERE assignment_id=?", (poster,)
+        )
+        store._connection.execute("DELETE FROM date_claims WHERE assignment_id=?", (poster,))
+        store._connection.commit()
+        plain = client.get(PAGE, params={"week": WEEK}, headers=PAGE_HEADERS).text
+        refused = post_report(
+            client,
+            poster,
+            status="not_yet",
+            note="still the last corner",
+            expected_report_id=stale_head,
+            week=WEEK,
+        )
+        apart = card_for(refused.text, poster)
+        too_long = post_report(
+            client,
+            poster,
+            status="not_yet",
+            note="x" * 501,
+            expected_report_id=hidden(apart, "expected_report_id"),
+            week=WEEK,
+        )
+        landed = post_report(
+            client,
+            poster,
+            status="not_yet",
+            note="still the last corner",
+            expected_report_id=hidden(apart, "expected_report_id"),
+            week=WEEK,
+        )
+        after = client.get(landed.headers["location"], headers=PAGE_HEADERS).text
+
+    assert f'id="assignment-{poster}"' not in plain
+    assert refused.status_code == 409
+    assert "<h2>Outside the week shown</h2>" in refused.text
+    assert SAVED_ELSEWHERE in apart
+    assert '<span class="pill">Your update: Done</span>' in apart
+    assert 'value="not_yet" checked' in apart
+    assert ">still the last corner</textarea>" in apart
+    assert "Due Thursday, October 8" in apart
+    assert too_long.status_code == 422
+    assert NOTE_TOO_LONG in card_for(too_long.text, poster)
+    assert landed.status_code == 303
+    assert "<h2>Outside the week shown</h2>" in after
+    assert UPDATE_SAVED in card_for(after, poster)
+    assert '<span class="pill">Your update: Not yet</span>' in card_for(after, poster)
+
+
+# ------------------------------------------------- where the page lands, and what it says
+
+
+def test_change_and_errors_land_on_the_card_and_name_the_field() -> None:
+    """Change goes to the card's own fragment and the way back opens the fold it sits in;
+    a missing choice puts the cursor on the first choice and ties the words to the group;
+    a long note marks the field, ties the words and the hint to it, and takes the cursor;
+    a refusal about neither is said at the top with a link to the card."""
+    with browser() as client:
+        saved = client.get(report(client, ESSAY, "done", "Finished."), headers=PAGE_HEADERS).text
+        changing = client.get(
+            PAGE, params={"week": WEEK, "change": ESSAY}, headers=PAGE_HEADERS
+        ).text
+        unchosen = post_report(client, LOG, status="", note="", expected_report_id="", week=WEEK)
+        too_long = post_report(
+            client, LOG, status="done", note="x" * 501, expected_report_id="", week=WEEK
+        )
+        report(client, QUIZ, "done")
+        conflict = post_report(
+            client, QUIZ, status="not_yet", note="", expected_report_id="", week=WEEK
+        )
+
+    card = card_for(saved, ESSAY)
+    assert f'action="/student/due-this-week#assignment-{ESSAY}"' in card
+    back = card_for(changing, ESSAY)
+    assert f"week={WEEK}&amp;show={ESSAY}#assignment-{ESSAY}" in back
+    assert '<details class="steps reported-done" open>' in changing
+    group = card_for(unchosen.text, LOG)
+    assert f'<fieldset class="choice" aria-describedby="update-problem-{LOG}">' in group
+    assert 'value="done" autofocus>' in group
+    assert 'aria-invalid="true"' not in group
+    field = card_for(too_long.text, LOG)
+    assert (
+        f'aria-describedby="update-problem-{LOG} update-hint-{LOG}" aria-invalid="true" autofocus>'
+        in field
+    )
+    assert '<details class="steps note-fold" open>' in field
+    assert 'value="done" checked>' in field
+    top = conflict.text
+    assert (
+        f'<p class="problem" role="alert">{SAVED_ELSEWHERE} '
+        f'<a href="#assignment-{QUIZ}">Go to the assignment.</a></p>' in top
+    )
+    assert "autofocus" not in card_for(top, QUIZ)
+
+
+def test_the_note_limit_is_five_hundred_characters_as_the_server_counts_them() -> None:
+    """Five hundred characters from beyond the basic plane, a thousand units as a browser's
+    own limit would count them, are saved whole; one more is refused with every one kept;
+    and edges and line endings are not counted against her."""
+    exactly = "\U0001f33c" * 500
+    with browser() as client:
+        saved = post_report(
+            client, ESSAY, status="done", note=f"  {exactly}\r\n", expected_report_id="", week=WEEK
+        )
+        refused = post_report(
+            client,
+            LOG,
+            status="done",
+            note=exactly + "\U0001f33c",
+            expected_report_id="",
+            week=WEEK,
+        )
+        kept = state_of(client).project_state.student_reports(ESSAY)
+        nothing = state_of(client).project_state.student_reports(LOG)
+
+    assert saved.status_code == 303
+    assert [event.note for event in kept] == [exactly]
+    assert refused.status_code == 422
+    assert exactly + "\U0001f33c</textarea>" in card_for(refused.text, LOG)
+    assert nothing == []
+
+
+# ------------------------------------------------------------- her history, and the school's, apart
+
+
+def test_the_history_fold_lists_her_updates_and_corrections_and_the_schools_reports_apart(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Not yet with a note, then Done with another, then the Done taken back: the fold lists
+    all three with their days, the first note included, and says what the correction put
+    back; the school's reports are listed apart under their own label; a card with
+    nothing more to say than it shows has no fold; and a parent reads the same fold with
+    no way to change anything."""
+    with TestClient(
+        create_app(signed_in_household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        client.post("/parent/inbox/keep", data={"text": MISSING_EMAIL})
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": HERS})
+        report(client, ESSAY, "not_yet", "The first note.")
+        page = client.get(
+            report(client, ESSAY, "done", "The second note."), headers=PAGE_HEADERS
+        ).text
+        client.post(
+            f"/student/actions/assignments/{ESSAY}/undo-report",
+            data={"report_id": hidden(card_for(page, ESSAY), "report_id"), "week": WEEK},
+        )
+        hers = client.get(PAGE, headers=PAGE_HEADERS).text
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    card = card_for(hers, ESSAY)
+    assert "<summary>Update history" in card
+    fold = card[card.index("<summary>Update history") :]
+    assert '<p class="history-label">Your updates</p>' in fold
+    assert "Not yet. <q>The first note.</q>" in fold
+    assert "Done. <q>The second note.</q>" in fold
+    assert "Correction. The update before it was taken back, which restored Not yet" in fold
+    assert "from August 19" in fold
+    assert (
+        fold.index("The first note.") < fold.index("The second note.") < fold.index("Correction.")
+    )
+    assert '<p class="history-label">From the school</p>' in fold
+    assert "Missing. From the school email, pasted" in fold
+    assert "<summary>Update history" not in card_for(hers, LOG)
+    parent_card = card_for(theirs, ESSAY)
+    assert '<p class="history-label">Student updates</p>' in parent_card
+    assert "The second note." in parent_card
+    assert "undo-report" not in parent_card
+    assert ">Change</button>" not in parent_card
+
+
+# ------------------------------------------------------------- the family page's groups
+
+
+def school_said(status: str, channel: SourceChannel, day: date) -> StatusReport:
+    return StatusReport(
+        status=status,
+        channel=channel,
+        reported_on=day,
+        dated_by=PASTE_DAY,
+        observed_at=datetime(2026, 8, 19, 22, 30, tzinfo=UTC),
+    )
+
+
+def test_each_assignment_is_in_one_family_group_with_every_fact_it_was_grouped_by() -> None:
+    """Done beside Missing is worth checking; a recent Not yet beside Missing is a recent
+    update, with the school's word in its row; a recent Done the school has said nothing
+    about is a recent update; and a school report on work she has said nothing about is
+    under the school's reports. No assignment is in two groups."""
+    science = "assignment-science-fair-proposal"
+    cover = "assignment-textbook-cover"
+    with browser() as client:
+        store = state_of(client).project_state
+        for name in (ESSAY, LOG, cover):
+            store.record_status_reports(
+                name, [school_said("missing", SourceChannel.EMAIL, date(2026, 8, 18))]
+            )
+        report(client, ESSAY, "done")
+        report(client, LOG, "not_yet", "Two chapters left.")
+        report(client, science, "done")
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+
+    section = family[family.index("<h2>Assignment updates</h2>") :]
+    section = section[: section.index("<h2>Waiting for your review</h2>")]
+    checking, _, rest = section.partition("<summary>Recent updates (2)</summary>")
+    recent, _, school = rest.partition("<h3>School reports</h3>")
+    titles = {
+        ESSAY: ESSAY_TITLE,
+        LOG: "Reading log, week one",
+        science: "Science fair topic proposal",
+        cover: "Cover the textbook",
+    }
+    assert [name for name in titles if titles[name] in checking] == [ESSAY]
+    assert [name for name in titles if titles[name] in recent] == [LOG, science]
+    assert [name for name in titles if titles[name] in school] == [cover]
+    assert (
+        "She reported it not yet done on August 19. She wrote: <q>Two chapters left.</q>" in recent
+    )
+    assert (
+        "The school reports it missing. From the school email, pasted Tuesday, August 18" in recent
+    )
+    assert "the school reports it missing.</strong>" in school
+
+
+@pytest.mark.parametrize(
+    ("said", "checks", "shown"),
+    [
+        pytest.param(
+            [("missing", SourceChannel.EMAIL, 18), ("submitted", SourceChannel.LMS, 19)],
+            True,
+            [
+                "missing. From the school email, pasted Tuesday, August 18",
+                "submitted. From the school portal, pasted Wednesday, August 19",
+            ],
+            id="email-missing-then-portal-submitted",
+        ),
+        pytest.param(
+            [("missing", SourceChannel.LMS, 18), ("submitted", SourceChannel.EMAIL, 19)],
+            True,
+            [
+                "missing. From the school portal, pasted Tuesday, August 18",
+                "submitted. From the school email, pasted Wednesday, August 19",
+            ],
+            id="portal-missing-then-email-submitted",
+        ),
+        pytest.param(
+            [("missing", SourceChannel.EMAIL, 17), ("missing", SourceChannel.LMS, 19)],
+            True,
+            [
+                "missing. From the school email, pasted Monday, August 17",
+                "missing. From the school portal, pasted Wednesday, August 19",
+            ],
+            id="two-channels-missing-on-different-days",
+        ),
+        pytest.param(
+            [("missing", SourceChannel.EMAIL, 18), ("submitted", SourceChannel.EMAIL, 19)],
+            False,
+            ["submitted. From the school email, pasted Wednesday, August 19"],
+            id="one-channel-missing-then-submitted",
+        ),
+    ],
+)
+def test_both_pages_show_what_each_school_channel_says_now_with_its_day(
+    said: list[tuple[str, SourceChannel, int]], checks: bool, shown: list[str]
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        for status, channel, day in said:
+            store.record_status_reports(ESSAY, [school_said(status, channel, date(2026, 8, day))])
+        report(client, ESSAY, "done")
+        hers = client.get(PAGE, params={"week": WEEK, "show": ESSAY}, headers=PAGE_HEADERS).text
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+
+    card = card_for(hers, ESSAY)
+    banners = card[: card.index('<div class="update">')]
+    section = family[family.index("<h2>Assignment updates</h2>") :]
+    for fact in shown:
+        assert (
+            f"The school reports this {fact}".replace(". From", ".</strong>\n          From")
+            in banners
+        )
+        assert f"The school reports it {fact}" in section
+    assert banners.count("<strong>The school reports this") == len(shown)
+    assert ("has a school report to check" in hers) is checks
+    assert ("<h3>Worth checking together</h3>" in section) is checks
+
+
+def test_her_words_wrap_and_keep_their_lines_on_both_pages() -> None:
+    """The rules the pages rely on for a long unbroken note: it wraps rather than widening
+    the page, and the line breaks she typed are kept, in her card and the family's rows."""
+    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
+
+    assert ".assignment-updates,\n.update {\n  overflow-wrap: anywhere;\n}" in css
+    assert ".assignment-updates q,\n.update q {\n  white-space: pre-line;\n}" in css
+    assert ".visually-hidden {" in css

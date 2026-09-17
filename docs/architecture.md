@@ -72,10 +72,17 @@ restored report keeps its own day; and the store refuses an event that is not
 whole, an undo that is first, takes back anything but the report at the head,
 or restores something other than what stood before it, the sample's seed
 included. A save carries the head the page
-showed: the same update as the one standing is already saved and writes
-nothing, a page whose head has moved on is refused with the newer update
-shown, and anything else is appended, one operation under the decision lock
-and the store's. Her Done decides one thing, whether the assignment is still
+showed, and the form is read whole first: its own fields, each once, and an
+update it names must be one of that assignment's events, or nothing is
+compared or written. Then the same update as the one standing is already
+saved and writes nothing, a page whose head has moved on is refused with the
+newer update shown, and anything else is appended, one operation under the
+decision lock and the store's. A write the file refuses is rolled back whole,
+and the page comes back with her words and no word of a save. The pages read
+her events and the school's reports in two batched reads whatever the number
+of cards: each card shows what every school channel says now, not one latest
+report, and folds her history under it, her updates and corrections with
+their days and the school's reports apart. Her Done decides one thing, whether the assignment is still
 work to plan: the planner, the critic, and the checks see only the work that
 is left, a check of its own fails a plan that speaks about finished work, and
 a window with nothing left ends a run before any model is asked. A Done
@@ -428,9 +435,10 @@ about and work that became hers again may not be left out. A plan that passes
 keeps the reading it was made from, fingerprint included, and a change it
 survives still reads as stale on both pages; a plan that fails goes back to
 the planner with the record as it stands, and the fingerprint moves with that
-reading, since the next plan is made from it. What goes back to the planner
-from that check is only that the id is not in its window, never that the work
-is done; a window with nothing left ends the run there, with its record
+reading, since the next plan is made from it. The run's record keeps every
+finding in full; what goes back to the planner leaves out every finding that
+names work she has reported done, whichever check it tripped, and says only
+to use the work listed; a window with nothing left ends the run there, with its record
 and no model asked, as the routes refuse such an evening before the run.
 `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
 back to `plan` with the findings before any critic sees it, because a

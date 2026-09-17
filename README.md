@@ -92,12 +92,14 @@ review says so when the week it was made from changes.
 her part, or Not yet, with a note if she wants one. Done takes the assignment
 out of the work to plan and folds its card under the active ones; it does not
 turn work in, and the school's record stays separate. She can change or undo
-an update, and a save from a page that another device has moved past is
-shown the newer update first. Her updates and notes are visible on the family
-page, and a Not yet on work being planned goes to the planner with her note.
-A plan that speaks about work she has since finished says so on both pages,
-and where her Done stands beside a school report of Missing, the family page
-lists it as worth checking together.
+an update, a fold under the card keeps the history of her updates and
+corrections with their days, and a save from a page that another device has
+moved past is shown the newer update first. Her updates and notes are visible
+on the family page, and a Not yet on work being planned goes to the planner
+with her note. A plan that includes work she reports as Done says so on both
+pages, and where her Done stands beside a school report of Missing, from any
+one of the school's channels, the family page lists it as worth checking
+together, with what each channel says and the day it said it.
 
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device

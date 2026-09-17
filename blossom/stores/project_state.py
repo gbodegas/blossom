@@ -44,6 +44,9 @@ from blossom.stores.paths import refuse_unsafe_path
 
 DUE_THIS_WEEK_KEY = "due_this_week"
 DUE_THIS_WEEK_SPAN = timedelta(days=6)
+MANY_NAMES: Final = 500
+"""Past this many names, a read by name reads the whole table instead and sorts it out in
+memory, well inside what one query may carry."""
 
 
 StudentStatus = Literal["done", "not_yet"]
@@ -181,6 +184,23 @@ class Seed(NamedTuple):
     assignments: Sequence[Assignment]
     claims: Mapping[str, Sequence[SourceRecord]]
     student_reports: Sequence[StudentReport] = ()
+
+
+class UnknownReport(LookupError):
+    """A form named an update that is not one of the assignment's: no such event, or an
+    event under another assignment. Such a name proves nothing about the page it came
+    from, so it is refused before anything is compared or written."""
+
+
+class CouldNotSave(RuntimeError):
+    """The file refused a write of hers, or the chain failed its checks while writing.
+
+    Whatever was begun was rolled back with it, so nothing of the update is
+    kept; the page that catches this says so and keeps her words.
+    """
+
+    def __init__(self, assignment_id: str, cause: BaseException) -> None:
+        super().__init__(f"the update on {assignment_id!r} could not be saved: {cause}")
 
 
 class UnknownAssignment(LookupError):
@@ -548,9 +568,10 @@ class ProjectStateStore:
             ).fetchall()
         return [report_from(row) for row in rows]
 
-    def latest_status_reports_by_channel(self) -> dict[str, dict[SourceChannel, StatusReport]]:
-        """The latest report per assignment and channel, by the day reported and then the
-        order kept: what each school channel says now, read apart from the others."""
+    def status_reports_by_assignment(self) -> dict[str, list[StatusReport]]:
+        """Every report the school has made, by assignment, by the day reported and then the
+        order kept, in one read. The last report of a channel in that order is what the
+        channel says now; the rest is the school's history, kept apart from hers."""
         with self._lock:
             rows = self._connection.execute(
                 """
@@ -560,11 +581,10 @@ class ProjectStateStore:
                 ORDER BY reported_on, rowid
                 """
             ).fetchall()
-        latest: dict[str, dict[SourceChannel, StatusReport]] = {}
+        reports: dict[str, list[StatusReport]] = {}
         for row in rows:
-            report = report_from(row[1:])
-            latest.setdefault(str(row[0]), {})[report.channel] = report
-        return latest
+            reports.setdefault(str(row[0]), []).append(report_from(row[1:]))
+        return reports
 
     def student_report_heads(self) -> dict[str, StudentReport]:
         """The last event under each assignment, by stored order: what stands now."""
@@ -598,23 +618,34 @@ class ProjectStateStore:
         return [student_report_from(row) for row in rows]
 
     def student_report_chains(
-        self, assignment_ids: Iterable[str]
+        self, assignment_ids: Iterable[str] | None = None
     ) -> dict[str, list[StudentReport]]:
-        """Every event under each assignment named, in stored order, in one read."""
-        wanted = sorted(set(assignment_ids))
-        if not wanted:
+        """Every event under each assignment named, in stored order, in one read.
+
+        With no names, or more names than a query takes comfortably, the
+        whole table is read and sorted out here: a handful of events per
+        assignment is a small table.
+        """
+        wanted = None if assignment_ids is None else set(assignment_ids)
+        if wanted is not None and not wanted:
             return {}
-        marks = ", ".join("?" for _ in wanted)
+        columns = (
+            "SELECT report_id, assignment_id, operation, status, note, reported_at, "
+            "reported_on, previous_report_id, undoes_report_id FROM student_reports "
+        )
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT report_id, assignment_id, operation, status, note, reported_at, "  # noqa: S608
-                "reported_on, previous_report_id, undoes_report_id FROM student_reports "
-                f"WHERE assignment_id IN ({marks}) ORDER BY rowid",
-                wanted,
-            ).fetchall()
+            if wanted is None or len(wanted) > MANY_NAMES:
+                rows = self._connection.execute(columns + "ORDER BY rowid").fetchall()
+            else:
+                marks = ", ".join("?" for _ in wanted)
+                rows = self._connection.execute(
+                    columns + f"WHERE assignment_id IN ({marks}) ORDER BY rowid",
+                    sorted(wanted),
+                ).fetchall()
         chains: dict[str, list[StudentReport]] = {}
         for row in rows:
-            chains.setdefault(str(row[1]), []).append(student_report_from(row))
+            if wanted is None or str(row[1]) in wanted:
+                chains.setdefault(str(row[1]), []).append(student_report_from(row))
         return chains
 
     def report_status(
@@ -629,72 +660,94 @@ class ProjectStateStore:
     ) -> Saved | AlreadySaved | Conflict:
         """Keep what she says about an assignment, once, as of now.
 
-        Under the store's lock and one transaction, in this order: what she
-        sent is compared with what stands, and the same status and note is
-        already saved, whatever page it came from; otherwise the head her
-        page showed must be the head now, or the chain moved on since and
-        nothing is written; otherwise the report is appended after the
-        head. The writer is reserved before the read, so another connection
-        cannot slip a write between the comparison and the append.
+        Under the store's lock and one transaction, in this order. An update
+        the form names must be one of this assignment's events, or the form
+        proves nothing and is refused, ``UnknownReport``, whatever it says.
+        Then what she sent is compared with what stands, and the same status
+        and note is already saved, whatever page of hers it came from.
+        Otherwise the head her page showed must be the head now, or the
+        chain moved on since and nothing is written. Otherwise the report is
+        appended after the head. The writer is reserved before the read, so
+        another connection cannot slip a write between the comparison and
+        the append. A write the file refuses, or a chain that fails its
+        checks, is rolled back whole and raised as ``CouldNotSave``.
         """
-        with self._lock, self._connection:
-            self._reserve_locked()
-            self._require_assignment_locked(assignment_id)
-            head = self._head_locked(assignment_id)
-            standing = (head.status, head.note) if head is not None else (None, None)
-            if standing == (status, note):
-                assert head is not None  # noqa: S101  (a report never stands as none)
-                return AlreadySaved(head)
-            if (None if head is None else head.report_id) != expected_head:
-                return Conflict(head)
-            report = StudentReport(
-                report_id=new_report_id(),
-                assignment_id=assignment_id,
-                operation=REPORT,
-                status=status,
-                note=note,
-                reported_at=now,
-                reported_on=today,
-                previous_report_id=None if head is None else head.report_id,
-            )
-            self._append_student_report_locked(report)
-            return Saved(report)
+        try:
+            with self._lock, self._connection:
+                self._reserve_locked()
+                self._require_assignment_locked(assignment_id)
+                if expected_head is not None:
+                    self._require_report_locked(assignment_id, expected_head)
+                head = self._head_locked(assignment_id)
+                standing = (head.status, head.note) if head is not None else (None, None)
+                if standing == (status, note):
+                    assert head is not None  # noqa: S101  (a report never stands as none)
+                    return AlreadySaved(head)
+                if (None if head is None else head.report_id) != expected_head:
+                    return Conflict(head)
+                report = StudentReport(
+                    report_id=new_report_id(),
+                    assignment_id=assignment_id,
+                    operation=REPORT,
+                    status=status,
+                    note=note,
+                    reported_at=now,
+                    reported_on=today,
+                    previous_report_id=None if head is None else head.report_id,
+                )
+                self._append_student_report_locked(report)
+                return Saved(report)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CouldNotSave(assignment_id, error) from error
 
     def undo_report(
         self, assignment_id: str, report_id: str, *, now: datetime, today: date
     ) -> Undone | Conflict:
         """Take back her current report, restoring what stood before it.
 
-        Only the head can be undone, and only when it is a report: an undo
-        names the event it takes back, and a page whose button names any
-        other event than the head finds the chain moved on. What is
-        restored is read from the chain, never from the page.
+        The update the button names must be one of this assignment's events,
+        or it is refused, ``UnknownReport``. Only the head can be undone, and
+        only when it is a report: a button that names any other event of
+        hers finds the chain moved on, and there is no exception for a
+        repeat. What is restored is read from the chain, never from the
+        page. A refused write is rolled back whole and raised as
+        ``CouldNotSave``.
         """
-        with self._lock, self._connection:
-            self._reserve_locked()
-            self._require_assignment_locked(assignment_id)
-            head = self._head_locked(assignment_id)
-            if head is None or head.report_id != report_id or head.operation != REPORT:
-                return Conflict(head)
-            restored_status: StudentStatus | None = None
-            restored_note: str | None = None
-            if head.previous_report_id is not None:
-                before = self._report_locked(head.previous_report_id)
-                if before is not None:
-                    restored_status, restored_note = before.status, before.note
-            undo = StudentReport(
-                report_id=new_report_id(),
-                assignment_id=assignment_id,
-                operation=UNDO,
-                status=restored_status,
-                note=restored_note,
-                reported_at=now,
-                reported_on=today,
-                previous_report_id=head.report_id,
-                undoes_report_id=head.report_id,
-            )
-            self._append_student_report_locked(undo)
-            return Undone(undo)
+        try:
+            with self._lock, self._connection:
+                self._reserve_locked()
+                self._require_assignment_locked(assignment_id)
+                self._require_report_locked(assignment_id, report_id)
+                head = self._head_locked(assignment_id)
+                if head is None or head.report_id != report_id or head.operation != REPORT:
+                    return Conflict(head)
+                restored_status: StudentStatus | None = None
+                restored_note: str | None = None
+                if head.previous_report_id is not None:
+                    before = self._report_locked(head.previous_report_id)
+                    if before is not None:
+                        restored_status, restored_note = before.status, before.note
+                undo = StudentReport(
+                    report_id=new_report_id(),
+                    assignment_id=assignment_id,
+                    operation=UNDO,
+                    status=restored_status,
+                    note=restored_note,
+                    reported_at=now,
+                    reported_on=today,
+                    previous_report_id=head.report_id,
+                    undoes_report_id=head.report_id,
+                )
+                self._append_student_report_locked(undo)
+                return Undone(undo)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CouldNotSave(assignment_id, error) from error
+
+    def _require_report_locked(self, assignment_id: str, report_id: str) -> None:
+        """Refuse a name that is not one of this assignment's events."""
+        named = self._report_locked(report_id) if report_id else None
+        if named is None or named.assignment_id != assignment_id:
+            raise UnknownReport(report_id)
 
     def _reserve_locked(self) -> None:
         """Reserve the writer before a read that a write depends on, unless a transaction

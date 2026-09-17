@@ -250,3 +250,51 @@ def test_an_origin_is_a_scheme_and_an_authority_and_a_referer_is_a_whole_address
     value: str, whole_address: bool, expected: tuple[str, str, int] | None
 ) -> None:
     assert read_origin(value, whole_address=whole_address) == expected
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param(
+            {"Origin": "http://testserver:" + "9" * 4400}, id="origin-port-of-4400-digits"
+        ),
+        pytest.param(
+            {"Host": "testserver:" + "9" * 4400, "Origin": ORIGIN}, id="host-port-of-4400-digits"
+        ),
+        pytest.param(
+            {"Referer": "http://testserver:" + "9" * 4400 + "/parent"},
+            id="referer-port-of-4400-digits",
+        ),
+        pytest.param({"Origin": "http://testserver:65536"}, id="origin-port-past-the-last"),
+        pytest.param({"Origin": "http://testserver:0"}, id="origin-port-zero"),
+    ],
+)
+def test_a_port_that_is_no_port_is_refused_in_plain_text_and_never_raised(
+    headers: Headers,
+) -> None:
+    with TestClient(create_app(fixture_settings())) as client:
+        answer = client.post("/student/help-requests", json={"note": "hi"}, headers=headers)
+        kept = client.get("/student/help-requests").json()
+
+    assert is_the_refusal(answer), (answer.status_code, answer.text[:200])
+    assert kept == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("testserver:0080", ("testserver", 80)),
+        ("testserver:000000443", ("testserver", 443)),
+        ("testserver:65535", ("testserver", 65535)),
+        ("testserver:065535", ("testserver", 65535)),
+        ("testserver:65536", None),
+        ("testserver:000", None),
+        ("testserver:" + "1" * 4400, None),
+        ("[::1]18000", None),
+        ("[::1]:08000", ("[::1]", 8000)),
+    ],
+)
+def test_a_port_is_judged_as_text_before_it_is_a_number(
+    text: str, expected: tuple[str, int] | None
+) -> None:
+    assert read_authority(text, "http") == expected

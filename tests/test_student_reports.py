@@ -27,6 +27,7 @@ from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
     Conflict,
+    CouldNotSave,
     ProjectStateStore,
     Saved,
     Seed,
@@ -34,6 +35,7 @@ from blossom.stores.project_state import (
     StudentReport,
     Undone,
     UnknownAssignment,
+    UnknownReport,
 )
 from tests.support import FIXTURES, fixture_clock
 
@@ -230,7 +232,8 @@ def test_a_page_whose_head_has_moved_on_conflicts_and_writes_nothing(
         )
         undone = store.undo_report(PRACTICE, moved.report.report_id, now=NOW, today=TODAY)
         assert isinstance(undone, Undone)
-        undone_again = store.undo_report(LOG, "report-000000000000", now=NOW, today=TODAY)
+        with pytest.raises(UnknownReport):
+            store.undo_report(LOG, "report-000000000000", now=NOW, today=TODAY)
         fresh_log = store.report_status(LOG, "done", None, expected_head=None, now=NOW, today=TODAY)
         assert isinstance(fresh_log, Saved)
         log_undone = store.undo_report(LOG, fresh_log.report.report_id, now=NOW, today=TODAY)
@@ -246,8 +249,6 @@ def test_a_page_whose_head_has_moved_on_conflicts_and_writes_nothing(
     assert other_blank.head == first.report
     assert isinstance(old_done_again, Conflict)
     assert old_done_again.head == moved.report
-    assert isinstance(undone_again, Conflict)
-    assert undone_again.head is None
     assert isinstance(blank_after_undo, Conflict)
     assert blank_after_undo.head == log_undone.report
     assert [event.operation for event in history] == ["report", "report", "undo"]
@@ -291,7 +292,8 @@ def test_undo_restores_what_stood_before_and_keeps_the_correction(
         )
         only = store.report_status(LOG, "done", None, expected_head=None, now=NOW, today=TODAY)
         assert isinstance(only, Saved)
-        wrong_assignment = store.undo_report(PRACTICE, only.report.report_id, now=NOW, today=TODAY)
+        with pytest.raises(UnknownReport):
+            store.undo_report(PRACTICE, only.report.report_id, now=NOW, today=TODAY)
         to_nothing = store.undo_report(LOG, only.report.report_id, now=NOW, today=TODAY)
         assert isinstance(to_nothing, Undone)
         nothing = status_of(store, LOG)
@@ -317,7 +319,6 @@ def test_undo_restores_what_stood_before_and_keeps_the_correction(
     assert (restored.reported_on, restored.restored_on) == (TODAY, date(2026, 9, 17))
     assert isinstance(twice, Conflict)
     assert isinstance(again, Conflict)
-    assert isinstance(wrong_assignment, Conflict)
     assert (to_nothing.report.status, to_nothing.report.note) == (None, None)
     assert (nothing.head, nothing.asserted, nothing.work_state) == (
         to_nothing.report,
@@ -389,7 +390,7 @@ def test_another_writer_holding_the_file_makes_the_save_wait_or_fail_whole(
             "'2026-09-16T00:00:00+00:00', 0.9, NULL)"
         )
         store._connection.execute("PRAGMA busy_timeout = 200")
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises(CouldNotSave, match="locked"):
             store.report_status(PRACTICE, "done", None, expected_head=None, now=NOW, today=TODAY)
         other.rollback()
         nothing = store.student_reports(PRACTICE)
@@ -756,3 +757,151 @@ def test_a_well_formed_seeded_chain_is_kept_and_read_like_her_own(tmp_path: path
     assert status.asserted is not None
     assert status.asserted.report_id == "a"
     assert (status.status, status.note) == ("not_yet", "Half left.")
+
+
+def test_a_form_must_name_one_of_the_assignments_own_updates_before_anything_else(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A name that is no event, or another assignment's event, is refused whatever the form
+    says, the same update as the one standing included, and nothing is written. A real
+    but stale name with the same update is already saved; with another it conflicts; and
+    no name at all is the first save's."""
+    store = a_store(tmp_path / "blossom.sqlite3")
+    try:
+        first = store.report_status(
+            PRACTICE, "done", None, expected_head=None, now=NOW, today=TODAY
+        )
+        assert isinstance(first, Saved)
+        other = store.report_status(LOG, "done", None, expected_head=None, now=NOW, today=TODAY)
+        assert isinstance(other, Saved)
+        second = store.report_status(
+            PRACTICE, "not_yet", None, expected_head=first.report.report_id, now=NOW, today=TODAY
+        )
+        assert isinstance(second, Saved)
+        for name in ("report-000000000000", "not an id", other.report.report_id):
+            for status in ("not_yet", "done"):
+                with pytest.raises(UnknownReport):
+                    store.report_status(
+                        PRACTICE, status, None, expected_head=name, now=NOW, today=TODAY
+                    )
+        stale_and_same = store.report_status(
+            PRACTICE, "not_yet", None, expected_head=first.report.report_id, now=NOW, today=TODAY
+        )
+        stale_and_other = store.report_status(
+            PRACTICE, "done", None, expected_head=first.report.report_id, now=NOW, today=TODAY
+        )
+        history = store.student_reports(PRACTICE)
+    finally:
+        store.close()
+
+    assert isinstance(stale_and_same, AlreadySaved)
+    assert isinstance(stale_and_other, Conflict)
+    assert [event.status for event in history] == ["done", "not_yet"]
+
+
+def test_the_words_that_stand_keep_their_day_through_a_restart_and_clocks_out_of_order(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Not yet on the 10th, done on the 11th, undone on the 12th, done on the 13th, undone
+    on the 14th: what stands is the 10th's report, restored on the 14th, by the order the
+    events were kept in and not by their clocks, which here run backward, and the same
+    after the file is opened again."""
+    path = tmp_path / "blossom.sqlite3"
+    store = a_store(path)
+
+    def at(day: int, hour: int) -> tuple[datetime, date]:
+        return datetime(2026, 9, day, hour, 0, tzinfo=UTC), date(2026, 9, day)
+
+    try:
+        first = store.report_status(
+            PRACTICE,
+            "not_yet",
+            "Half left.",
+            expected_head=None,
+            now=at(10, 23)[0],
+            today=at(10, 23)[1],
+        )
+        assert isinstance(first, Saved)
+        done = store.report_status(
+            PRACTICE,
+            "done",
+            None,
+            expected_head=first.report.report_id,
+            now=at(11, 9)[0],
+            today=at(11, 9)[1],
+        )
+        assert isinstance(done, Saved)
+        undone = store.undo_report(
+            PRACTICE, done.report.report_id, now=at(12, 8)[0], today=at(12, 8)[1]
+        )
+        assert isinstance(undone, Undone)
+        again = store.report_status(
+            PRACTICE,
+            "done",
+            None,
+            expected_head=undone.report.report_id,
+            now=at(13, 7)[0],
+            today=at(13, 7)[1],
+        )
+        assert isinstance(again, Saved)
+        late = datetime(2026, 9, 9, 6, 0, tzinfo=UTC)
+        last = store.undo_report(
+            PRACTICE, again.report.report_id, now=late, today=date(2026, 9, 14)
+        )
+        assert isinstance(last, Undone)
+        before_restart = status_of(store, PRACTICE)
+    finally:
+        store.close()
+    reopened = ProjectStateStore.open(path, fixture_clock())
+    try:
+        after_restart = status_of(reopened, PRACTICE)
+    finally:
+        reopened.close()
+
+    for status in (before_restart, after_restart):
+        assert status.asserted == first.report
+        assert status.head == last.report
+        assert (status.status, status.note) == ("not_yet", "Half left.")
+        assert (status.reported_on, status.restored_on) == (date(2026, 9, 10), date(2026, 9, 14))
+        rows = status.history_rows
+        assert [row.event.operation for row in rows] == [
+            "report",
+            "report",
+            "undo",
+            "report",
+            "undo",
+        ]
+        assert [None if row.restored is None else row.restored.reported_on for row in rows] == [
+            None,
+            None,
+            date(2026, 9, 10),
+            None,
+            date(2026, 9, 10),
+        ]
+
+
+def test_a_chain_whose_links_lead_nowhere_or_round_gives_no_report_a_borrowed_day() -> None:
+    """Links the store would never write, made here by hand: the walk ends with no report
+    rather than put a correction's day on her words."""
+
+    def made(report_id: str, operation: str, **links: str | None) -> StudentReport:
+        return StudentReport.model_construct(
+            report_id=report_id,
+            assignment_id=PRACTICE,
+            operation=operation,
+            status="not_yet",
+            note=None,
+            reported_at=NOW,
+            reported_on=TODAY,
+            previous_report_id=links.get("previous"),
+            undoes_report_id=links.get("undoes"),
+        )
+
+    nowhere = [made("u", "undo", previous="gone", undoes="gone")]
+    ring = [
+        made("a", "undo", previous="b", undoes="b"),
+        made("b", "undo", previous="a", undoes="a"),
+    ]
+
+    assert standing_report(nowhere) is None
+    assert standing_report(ring) is None

@@ -11,16 +11,72 @@ store directly and renders whatever it likes would bypass them; the design notes
 call for that policy layer.
 """
 
+from collections.abc import Sequence
 from datetime import date
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from blossom.agent.steps import StepRecord, describe_outcome
+from blossom.assignment_status import HistoryRow
 from blossom.drafts import Decision, DraftStatus
-from blossom.reconciliation import SourceConfidence
+from blossom.intake import spoken_report
+from blossom.reconciliation import CHANNEL_NAMES, SourceConfidence
 from blossom.stores.drafts import DraftRecord, RunRecord
 from blossom.stores.help_requests import HelpState
-from blossom.stores.project_state import AssignmentKind
+from blossom.stores.project_state import AssignmentKind, StatusReport
+
+
+class SchoolStatementView(BaseModel):
+    """What one school channel reported about an assignment's status, with its day and where
+    the day came from: a fact of the school's, shown as the school's on every page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel: str
+    source: str
+    """The channel as a person reads it, "school email" or "school portal"."""
+    status: str
+    reported_on: date
+    sentence: str
+    """Where and when it was reported, with how the day is known, as the pages say it."""
+
+    @classmethod
+    def from_report(cls, report: StatusReport) -> "SchoolStatementView":
+        """One report of the school's as the pages show it."""
+        return cls(
+            channel=report.channel.value,
+            source=CHANNEL_NAMES[report.channel],
+            status=report.status,
+            reported_on=report.reported_on,
+            sentence=spoken_report(report),
+        )
+
+
+class UpdateHistoryRowView(BaseModel):
+    """One event of hers as the history lists it: an update, or a correction of one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: str
+    """``report`` for an update of hers, ``undo`` for a correction that took one back."""
+    status: str | None
+    """What stood after the event; ``None`` when a correction left no update standing."""
+    note: str | None
+    reported_on: date
+    """The day the event was accepted: for a correction, the day of the correction."""
+    restored_from: date | None = None
+    """For a correction that put an update back, that update's own day."""
+
+    @classmethod
+    def from_row(cls, row: HistoryRow) -> "UpdateHistoryRowView":
+        """One row of her history as the pages show it."""
+        return cls(
+            operation=row.event.operation,
+            status=row.event.status,
+            note=row.event.note,
+            reported_on=row.event.reported_on,
+            restored_from=None if row.restored is None else row.restored.reported_on,
+        )
 
 
 class StudentAssignmentView(BaseModel):
@@ -78,9 +134,13 @@ class StudentAssignmentView(BaseModel):
     note_by_a_parent: bool = False
     entered_by_a_parent: bool = False
     """Whether the assignment itself came from a parent's entry rather than the school."""
-    school_report: str = ""
-    """Where and when the school reported the status shown, as the page says it; empty
-    when the school has reported nothing."""
+    school_statements: list[SchoolStatementView] = []
+    """What each school channel says now, the latest day first: every current statement,
+    not one latest report, so a check never rests on something the card does not show."""
+    school_history: list[SchoolStatementView] = []
+    """Every report the school has made about it, oldest first, for the history fold."""
+    update_history: list[UpdateHistoryRowView] = []
+    """Every update and correction of hers, oldest first, for the history fold."""
     update_status: str | None = None
     """What she has reported about her part, ``done`` or ``not_yet``; ``None`` while no
     report of hers stands. Hers, read apart from the school's, and never merged with it."""
@@ -100,10 +160,6 @@ class StudentAssignmentView(BaseModel):
     check_school: bool = False
     """Whether her "done" stands beside a school report of missing: something for the
     family to check, said on both pages and decided by neither."""
-    school_missing: list[str] = []
-    """Where and when each school channel reported it missing, for the channels whose
-    latest word that is and whose report is not the one ``school_report`` already says:
-    the card that raises the check shows every report the check rests on."""
 
 
 class AssignmentUpdateView(BaseModel):
@@ -124,13 +180,9 @@ class AssignmentUpdateView(BaseModel):
     reported_on: date | None = None
     restored_on: date | None = None
     note: str | None = None
-    school_status: str | None = None
-    """The school's latest word about the status, or ``None`` when it has said nothing."""
-    school_sentence: str = ""
-    """Where and when the school reported it, as the page says it."""
-    missing: list[str] = []
-    """Where and when each school channel reported it missing, for every channel whose
-    latest word that is: what the check rests on, whatever the latest report overall says."""
+    school_statements: list[SchoolStatementView] = []
+    """What each school channel says now, the latest day first; the check rests on the
+    ones that say missing, and every one is shown."""
     check: bool = False
     """Whether her "done" stands beside a school "missing"."""
 
@@ -209,8 +261,11 @@ class StudentPlanView(BaseModel):
     reason: str | None = None
     stale: str | None = None
     reported_done: str | None = None
-    """In her words, that the plan speaks about work she has since reported done, naming
-    it when the plan carries the ids it speaks about; ``None`` while it does not."""
+    """In her words, that the plan includes work she reports as done as things stand;
+    ``None`` while it includes none. Nothing here says which came first, the plan or the
+    report, since a report can land while a plan is being made."""
+    reported_done_titles: list[str] = []
+    """That work, by title, joined by id, when the plan carries the ids it speaks about."""
 
 
 class WeekView(BaseModel):
@@ -266,6 +321,10 @@ class StudentDueThisWeekView(BaseModel):
     viewer: str = "anyone"
     can_update: bool = True
     nothing_to_plan: bool = False
+    apart: StudentAssignmentView | None = None
+    """The assignment a save, an undo, or a link named, when it is on record and outside the
+    week shown, its dates having changed: shown apart, so the result and anything she
+    typed are never lost to a week the card has left."""
 
 
 class ParentCheckpointAssignmentView(BaseModel):
@@ -362,17 +421,24 @@ class ApprovalView(BaseModel):
     """Why this draft is not approved as it stands, when her signal has changed
     since it was made; ``None`` while the draft still fits the evening."""
     reported_done: str | None = None
-    """That the plan speaks about work she has since reported done, naming it when the
-    plan carries the ids it speaks about; ``None`` while it does not."""
+    """That today's plan includes work she reports as done as things stand; ``None`` for
+    any other plan, and while it includes none."""
+    reported_done_titles: list[str] = []
+    """That work, by title, joined by id, when the plan carries the ids it speaks about."""
 
     @classmethod
     def from_record(
-        cls, record: DraftRecord, stale: str | None = None, reported_done: str | None = None
+        cls,
+        record: DraftRecord,
+        stale: str | None = None,
+        reported_done: str | None = None,
+        reported_done_titles: Sequence[str] = (),
     ) -> "ApprovalView":
         """The parent's projection of a table row. The thread id stays out of it."""
         return cls(
             stale=stale,
             reported_done=reported_done,
+            reported_done_titles=list(reported_done_titles),
             steps=record.steps,
             draft_id=record.draft_id,
             plan_date=record.plan_date,

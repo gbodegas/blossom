@@ -73,7 +73,6 @@ from blossom.assignment_status import AssignmentStatus, normalize_note, statuses
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, reported_done, staleness
-from blossom.intake import spoken_report
 from blossom.noticing import (
     Noticing,
     expect_due_date,
@@ -111,19 +110,22 @@ from blossom.stores.project_state import (
     AlreadySaved,
     Assignment,
     Conflict,
+    CouldNotSave,
     Saved,
-    StatusReport,
     StudentStatus,
     Undone,
     UnknownAssignment,
+    UnknownReport,
 )
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.templating import page_templates
 from blossom.views import (
     HelpRequestView,
+    SchoolStatementView,
     StudentAssignmentView,
     StudentDueThisWeekView,
     StudentPlanView,
+    UpdateHistoryRowView,
     WeekView,
     WorkloadSignalView,
 )
@@ -155,11 +157,11 @@ SIGNAL_ENDED: Final = (
     "It stays until a new one is made; plan again for the full evening."
 )
 ASSIGNMENTS_CHANGED: Final = (
-    "Your assignments or your updates changed after this plan was made, so it does not "
-    "cover your week as it stands. It stays until a new one is made; plan again when you "
-    "are ready."
+    "Your assignments or updates differ from the work this plan used, so it does not cover "
+    "your week as it stands. It stays until a new one is made; plan again when you are "
+    "ready."
 )
-PLAN_INCLUDES_DONE: Final = "This plan includes work you now report as Done: {}."
+PLAN_INCLUDES_DONE: Final = "This plan includes work you now report as Done."
 PLAN_WINDOW_DONE: Final = (
     "Some work in this plan's window is now reported Done. Make a new plan to reflect your updates."
 )
@@ -171,6 +173,24 @@ NOTE_TOO_LONG: Final = f"Keep your note to {UPDATE_NOTE_MAX_LENGTH} characters o
 SAVED_ELSEWHERE: Final = "An update was saved on another device. Review it before saving yours."
 NOT_HERS_TO_UPDATE: Final = "Sign in as the student to update."
 NOT_ON_RECORD: Final = "That assignment is not on record, so nothing was changed."
+NOT_THIS_CARDS: Final = (
+    "That form names an update this assignment does not have, so nothing was saved. The card "
+    "shows what stands; choose and save from here."
+)
+BAD_FORM: Final = (
+    "That form carried a field twice, or one this page does not send, so nothing was saved. "
+    "Choose and save again."
+)
+CANNOT_UNDO: Final = (
+    "Your update has changed, so it cannot be undone from that page. The card shows what stands."
+)
+NOT_SAVED: Final = "Your update could not be saved. Your words are still here. Try again."
+NOT_UNDONE: Final = "Your update could not be undone, and nothing was changed. Try again."
+REPORT_FIELDS: Final = frozenset({"status", "note", "expected_report_id", "week"})
+UNDO_FIELDS: Final = frozenset({"report_id", "week"})
+"""The fields each form sends, each once. Anything else, or anything twice, is refused."""
+TOKEN_MAX_LENGTH: Final = 200
+"""Longer than any id the store makes or a seed carries; a longer one is not looked up."""
 CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": UPDATE_SAVED,
     "same": UPDATE_ALREADY_SAVED,
@@ -334,13 +354,16 @@ def take_back_help(request_id: str, state: State) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def done_since(state: ApplicationState, record: DraftRecord) -> str | None:
-    """In her words, that a plan speaks about work she has since reported done.
+def done_in(state: ApplicationState, record: DraftRecord) -> tuple[str, list[str]] | None:
+    """In her words, that a plan includes work she reports as done as things stand, and
+    which work, or ``None`` while it includes none.
 
-    Said for a plan of today's or a later evening, decided or not: a parent's
-    "looks good" is about the plan as it was, and what she has finished since
-    is hers to know about when she reads it. A plan from before plans carried
-    the ids they speak about is told only that its window holds such work.
+    Said for a plan of today's or a later evening, whatever a parent decided:
+    a parent's "looks good" is about the plan as it was. What is compared is
+    the ids the plan carries and her updates as they stand, never the time of
+    either, since an update can land while a plan is being made. A plan from
+    before plans carried their ids is told only that its window holds such
+    work, and named nothing.
     """
     if record.plan_date < state.clock.today():
         return None
@@ -348,8 +371,8 @@ def done_since(state: ApplicationState, record: DraftRecord) -> str | None:
     if found is None:
         return None
     if not found.known:
-        return PLAN_WINDOW_DONE
-    return PLAN_INCLUDES_DONE.format(", ".join(found.titles))
+        return PLAN_WINDOW_DONE, []
+    return PLAN_INCLUDES_DONE, list(found.titles)
 
 
 def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
@@ -361,6 +384,7 @@ def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
     since reported done is said whatever a parent decided.
     """
     stale = None
+    included = done_in(state, record)
     week = state.project_state if record.waiting else None
     match staleness(state.workload_signals, record, week):
         case Staleness.SIGNALED_SINCE:
@@ -382,7 +406,8 @@ def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
         decision=record.decision,
         reason=record.reason,
         stale=stale,
-        reported_done=done_since(state, record),
+        reported_done=None if included is None else included[0],
+        reported_done_titles=[] if included is None else included[1],
     )
 
 
@@ -456,7 +481,6 @@ def assignment_view(
     assignment: Assignment,
     records: Sequence[SourceRecord],
     noticed: Noticing,
-    report: StatusReport | None = None,
     status: AssignmentStatus | None = None,
     *,
     in_planning_window: bool = False,
@@ -468,9 +492,10 @@ def assignment_view(
     second source nor a conflict. The card shows the record's date, so a
     channel confirms it only by giving a value that reads as that date. A value
     the comparator cannot read is carried apart; it is not the origin of
-    anything. ``status`` is what she has reported about her part, read with
-    the rows; it goes on the card as hers, beside the school's report and not
-    in place of it.
+    anything. ``status`` is what she and the school have reported, read with
+    the rows: her update goes on the card as hers, and what each school
+    channel says now goes on it as the school's, every channel, so a check of
+    her "done" against a "missing" always shows the report it rests on.
     """
     said = status.asserted if status is not None else None
     readable = [record for record in records if read_date(record.asserted_value) is not None]
@@ -522,7 +547,18 @@ def assignment_view(
         note=assignment.note,
         note_by_a_parent=assignment.origins.get("note") == SourceChannel.PARENT_ENTRY,
         entered_by_a_parent=assignment.origins.get("record") == SourceChannel.PARENT_ENTRY,
-        school_report="" if report is None else spoken_report(report),
+        school_statements=[
+            SchoolStatementView.from_report(report)
+            for report in (status.school_statements if status is not None else ())
+        ],
+        school_history=[
+            SchoolStatementView.from_report(report)
+            for report in (status.school_history if status is not None else ())
+        ],
+        update_history=[
+            UpdateHistoryRowView.from_row(row)
+            for row in (status.history_rows if status is not None else ())
+        ],
         update_status=None if status is None else status.status,
         update_note=None if status is None else status.note,
         update_reported_on=None if said is None else said.reported_on,
@@ -533,11 +569,6 @@ def assignment_view(
         else status.head.report_id,
         in_planning_window=in_planning_window,
         check_school=status is not None and status.check_the_school_record,
-        school_missing=[
-            spoken_report(missing)
-            for missing in (status.missing_reports if status is not None else ())
-            if status is not None and status.check_the_school_record and missing != report
-        ],
     )
 
 
@@ -580,12 +611,19 @@ def week_shown(today: date, chosen: date | None) -> WeekView:
 
 
 def build_student_due_this_week_view(
-    state: ApplicationState, week: date | None = None, *, viewer: str = "anyone"
+    state: ApplicationState,
+    week: date | None = None,
+    *,
+    viewer: str = "anyone",
+    focus: str | None = None,
 ) -> StudentDueThisWeekView:
     """Assemble the student's weekly view from the stores ``ApplicationState``
     opened at startup; nothing is opened or seeded per request. ``week`` is any
     day in the school week to show; today's week when ``None``. ``viewer`` is
-    who is at the keyboard as the gate says.
+    who is at the keyboard as the gate says. ``focus`` is the assignment a
+    save, an undo, or a link named: when it is on record and in neither list
+    of the week shown, its dates having changed meanwhile, it is built apart
+    so the page can still show it.
     """
     today = state.clock.today()
     frame = week_shown(today, week)
@@ -595,40 +633,46 @@ def build_student_due_this_week_view(
         # show a card whose status, report, and update disagree.
         shown = read_week(on_record, on_record, frame.start)
         window = read_week(on_record, on_record, today)
-        reported = on_record.latest_status_reports()
+        everything = on_record.all_assignments()
         in_frame = {item.assignment_id for item in shown.assignments}
         later = [
             item
-            for item in on_record.all_assignments()
+            for item in everything
             if item.assignment_id not in in_frame and assigned_for_later(item, frame)
         ]
-        later_records = {
-            item.assignment_id: on_record.deadline_records(item.assignment_id) for item in later
+        listed = in_frame | {item.assignment_id for item in later}
+        elsewhere = [
+            item
+            for item in everything
+            if focus is not None and item.assignment_id == focus and focus not in listed
+        ]
+        beside = [*later, *elsewhere]
+        beside_records = {
+            item.assignment_id: on_record.deadline_records(item.assignment_id) for item in beside
         }
-        later_statuses = statuses_for(on_record, [item.assignment_id for item in later])
+        beside_statuses = statuses_for(on_record, [item.assignment_id for item in beside])
     in_window = {item.assignment_id for item in window.assignments}
+
+    def beside_view(item: Assignment) -> StudentAssignmentView:
+        records = beside_records[item.assignment_id]
+        return assignment_view(
+            item,
+            records,
+            notice_due_date(expect_due_date(item), records),
+            beside_statuses.get(item.assignment_id),
+            in_planning_window=item.assignment_id in in_window,
+        )
+
     # Never filter here; see the module docstring.
     views = [
         assignment_view(
             item,
             shown.records[item.assignment_id],
             shown.noticings[item.assignment_id],
-            reported.get(item.assignment_id),
             shown.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
         )
         for item in shown.assignments
-    ]
-    assigned = [
-        assignment_view(
-            item,
-            later_records[item.assignment_id],
-            notice_due_date(expect_due_date(item), later_records[item.assignment_id]),
-            reported.get(item.assignment_id),
-            later_statuses.get(item.assignment_id),
-            in_planning_window=item.assignment_id in in_window,
-        )
-        for item in later
     ]
     tonight = state.workload_signals.for_evening(today)
     household = state.settings
@@ -637,7 +681,7 @@ def build_student_due_this_week_view(
         today=today,
         week=frame,
         assignments=views,
-        assigned_this_week=assigned,
+        assigned_this_week=[beside_view(item) for item in later],
         plan_horizon_end=today + DUE_THIS_WEEK_SPAN,
         full_budget_minutes=household.evening_minutes,
         budget_minutes=household.too_much_minutes if tonight else household.evening_minutes,
@@ -649,6 +693,7 @@ def build_student_due_this_week_view(
         viewer=viewer,
         can_update=viewer != "parent",
         nothing_to_plan=not window.active(),
+        apart=beside_view(elsewhere[0]) if elsewhere else None,
     )
 
 
@@ -670,14 +715,19 @@ class CardState:
     ``said`` is the sentence a save or an undo left for the card; ``change``
     opens the form on a card with a standing update, with ``status`` and
     ``note`` as she had them, so nothing she typed is lost to a refusal; and
-    ``problem`` is what the save could not do. ``saved_elsewhere`` marks the
-    refusal that comes with a newer update to look at.
+    ``problem`` is what the save could not do. ``field`` says which field the
+    problem is about, ``status`` or ``note``, so the page can mark that field,
+    tie the words to it, and put the cursor there; a problem about neither,
+    an update saved elsewhere among them, is said at the top of the page with
+    a link to the card. ``saved_elsewhere`` marks the refusal that comes with
+    a newer update to look at.
     """
 
     assignment_id: str
     said: str | None = None
     change: bool = False
     problem: str | None = None
+    field: str | None = None
     status: str | None = None
     note: str | None = None
     saved_elsewhere: bool = False
@@ -698,15 +748,25 @@ def student_page(
 
     ``plan_open`` shows today's plan unfolded and ``refreshed`` says when the
     page was last asked for; ``card`` is what one card shows beyond its
-    record. All three change how the page is presented and nothing else.
+    record. All three change how the page is presented and nothing else. A
+    card's problem is said at the top too, with a link to the card, so it is
+    met on a page that opens at its top; the card named is shown even when
+    its dates have taken it out of the week.
     """
-    view = build_student_due_this_week_view(state, week, viewer=viewer_of(request))
+    view = build_student_due_this_week_view(
+        state,
+        week,
+        viewer=viewer_of(request),
+        focus=None if card is None else card.assignment_id,
+    )
+    about_a_card = card is not None and card.problem is not None and problem is None
     return templates.TemplateResponse(
         request,
         "student_due_this_week.html",
         {
             "view": view,
-            "problem": problem,
+            "problem": card.problem if card is not None and about_a_card else problem,
+            "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "plan_open": plan_open,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
@@ -814,32 +874,74 @@ def back_to_the_card(week: date | None, said: str, assignment_id: str) -> str:
     return f"{PAGE}?{where}{said}={assignment_id}#assignment-{assignment_id}"
 
 
+async def fields_of(request: Request, allowed: frozenset[str]) -> tuple[dict[str, str], bool]:
+    """The form's fields, and whether the form was whole.
+
+    Whole means every field is one this form sends, comes once, and is text:
+    a field sent twice, a field of another form's, a channel among them, or
+    an uploaded file makes it not whole, and nothing is written for such a
+    form. The first text value of each allowed field is still handed back,
+    so the page that refuses can keep what she typed.
+    """
+    form = await request.form()
+    fields: dict[str, str] = {}
+    whole = True
+    for name, value in form.multi_items():
+        if name not in allowed or name in fields or not isinstance(value, str):
+            whole = False
+            continue
+        fields[name] = value
+    return fields, whole
+
+
+def could_not(
+    request: Request,
+    state: ApplicationState,
+    week: date | None,
+    card: CardState,
+) -> HTMLResponse:
+    """The page after a write the file refused: the card with what she typed, and no word of
+    a save. When the page itself cannot be read back, a plain page with her words instead."""
+    try:
+        return student_page(
+            request,
+            state,
+            week=week,
+            card=card,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    except Exception:
+        logger.exception("her page could not be read back after a failed save")
+        return templates.TemplateResponse(
+            request,
+            "student_update_recovery.html",
+            {"card": card, "sample": state.settings.sample},
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
 @router.post(
     "/actions/assignments/{assignment_id}/report",
     response_class=HTMLResponse,
     include_in_schema=False,
 )
-async def report_from_the_page(
-    request: Request,
-    assignment_id: str,
-    state: State,
-    chosen: Annotated[str, Form(alias="status")] = "",
-    note: Annotated[str, Form()] = "",
-    expected_report_id: Annotated[str, Form()] = "",
-    week: Annotated[str, Form()] = "",
-) -> Response:
+async def report_from_the_page(request: Request, assignment_id: str, state: State) -> Response:
     """Her update on one assignment: Done or Not yet, with a note if she wants one.
 
-    The form carries the last event the page showed, so a save lands on the
-    chain the page showed or is shown what changed: the same update as the
-    one standing is already saved, with no write and no new day; a page whose
-    head has moved on is answered 409 with the newer update above her form
-    and her typed words kept; anything else is appended. The comparison and
-    the write are one operation under the decision lock, so two devices
-    saving together get one save and one refusal. A parent signed in is told
-    the update is hers to make, 403, and nothing is written.
+    The form is read whole before anything else: its four fields, each
+    once, and nothing more. It carries the last event the page showed, which
+    must be one of this assignment's, so a save lands on the chain the page
+    showed or is shown what changed: the same update as the one standing is
+    already saved, with no write and no new day; a page whose head has moved
+    on is answered 409 with the newer update above her form and her typed
+    words kept; anything else is appended. The comparison and the write are
+    one operation under the decision lock, so two devices saving together
+    get one save and one refusal. A write the file refuses is answered with
+    the card and her words, and never with a word of a save. A parent signed
+    in is told the update is hers to make, 403, and nothing is written.
     """
-    frame = week_named(week)
+    fields, whole = await fields_of(request, REPORT_FIELDS)
+    frame = week_named(fields.get("week", ""))
     if viewer_of(request) == "parent":
         return student_page(
             request,
@@ -848,44 +950,67 @@ async def report_from_the_page(
             problem=NOT_HERS_TO_UPDATE,
             status_code=status.HTTP_403_FORBIDDEN,
         )
-    said = chosen.strip()
+    said = fields.get("status", "").strip()
+    note = fields.get("note", "")
     words = normalize_note(note)
-    if said not in (DONE, NOT_YET):
-        return student_page(
-            request,
-            state,
-            week=frame,
-            card=CardState(assignment_id, change=True, problem=CHOOSE_ONE, note=note),
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        )
-    if words is not None and len(words) > UPDATE_NOTE_MAX_LENGTH:
+    token = fields.get("expected_report_id", "").strip()
+
+    def refused(
+        problem: str, code: int, *, field: str | None = None, saved_elsewhere: bool = False
+    ) -> Response:
+        chosen = said if said in (DONE, NOT_YET) else None
         return student_page(
             request,
             state,
             week=frame,
             card=CardState(
-                assignment_id, change=True, problem=NOTE_TOO_LONG, status=said, note=note
+                assignment_id,
+                change=True,
+                problem=problem,
+                field=field,
+                status=chosen if whole else None,
+                note=note,
+                saved_elsewhere=saved_elsewhere,
             ),
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=code,
         )
-    async with state.decision_lock:
-        try:
+
+    if not whole:
+        return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    if said not in (DONE, NOT_YET):
+        return refused(CHOOSE_ONE, status.HTTP_422_UNPROCESSABLE_CONTENT, field="status")
+    if words is not None and len(words) > UPDATE_NOTE_MAX_LENGTH:
+        return refused(NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
+    if len(token) > TOKEN_MAX_LENGTH:
+        return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    try:
+        async with state.decision_lock:
             result = state.project_state.report_status(
                 assignment_id,
                 cast(StudentStatus, said),
                 words,
-                expected_head=expected_report_id.strip() or None,
+                expected_head=token or None,
                 now=state.clock.now(),
                 today=state.clock.today(),
             )
-        except UnknownAssignment:
-            return student_page(
-                request,
-                state,
-                week=frame,
-                problem=NOT_ON_RECORD,
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
+    except UnknownAssignment:
+        return student_page(
+            request,
+            state,
+            week=frame,
+            problem=NOT_ON_RECORD,
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    except UnknownReport:
+        return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    except CouldNotSave:
+        logger.exception("her update on %s could not be saved", assignment_id)
+        return could_not(
+            request,
+            state,
+            frame,
+            CardState(assignment_id, change=True, problem=NOT_SAVED, status=said, note=note),
+        )
     match result:
         case Saved():
             return RedirectResponse(
@@ -898,20 +1023,7 @@ async def report_from_the_page(
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         case Conflict():
-            return student_page(
-                request,
-                state,
-                week=frame,
-                card=CardState(
-                    assignment_id,
-                    change=True,
-                    problem=SAVED_ELSEWHERE,
-                    status=said,
-                    note=note,
-                    saved_elsewhere=True,
-                ),
-                status_code=status.HTTP_409_CONFLICT,
-            )
+            return refused(SAVED_ELSEWHERE, status.HTTP_409_CONFLICT, saved_elsewhere=True)
 
 
 @router.post(
@@ -919,20 +1031,18 @@ async def report_from_the_page(
     response_class=HTMLResponse,
     include_in_schema=False,
 )
-async def undo_report_from_the_page(
-    request: Request,
-    assignment_id: str,
-    state: State,
-    report_id: Annotated[str, Form()] = "",
-    week: Annotated[str, Form()] = "",
-) -> Response:
+async def undo_report_from_the_page(request: Request, assignment_id: str, state: State) -> Response:
     """Take her latest update back, restoring what stood before it.
 
-    The button names the update it takes back; one that is not the latest,
-    or is itself an undo, meets a 409 with the card as it stands, since what
-    she meant to take back is not what is there. A parent is answered 403.
+    The form is read whole, its two fields each once. The button names the
+    update it takes back, which must be one of this assignment's; one that
+    is not the latest, or is itself an undo, meets a 409 that says the update
+    has changed, with the card as it stands, since what she meant to take
+    back is not what is there. A write the file refuses is said as that, and
+    never as an undo. A parent is answered 403.
     """
-    frame = week_named(week)
+    fields, whole = await fields_of(request, UNDO_FIELDS)
+    frame = week_named(fields.get("week", ""))
     if viewer_of(request) == "parent":
         return student_page(
             request,
@@ -941,22 +1051,42 @@ async def undo_report_from_the_page(
             problem=NOT_HERS_TO_UPDATE,
             status_code=status.HTTP_403_FORBIDDEN,
         )
-    async with state.decision_lock:
-        try:
+    named = fields.get("report_id", "").strip()
+
+    def refused(problem: str, code: int, *, saved_elsewhere: bool = False) -> Response:
+        return student_page(
+            request,
+            state,
+            week=frame,
+            card=CardState(assignment_id, problem=problem, saved_elsewhere=saved_elsewhere),
+            status_code=code,
+        )
+
+    if not whole:
+        return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    if len(named) > TOKEN_MAX_LENGTH:
+        return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    try:
+        async with state.decision_lock:
             result = state.project_state.undo_report(
                 assignment_id,
-                report_id.strip(),
+                named,
                 now=state.clock.now(),
                 today=state.clock.today(),
             )
-        except UnknownAssignment:
-            return student_page(
-                request,
-                state,
-                week=frame,
-                problem=NOT_ON_RECORD,
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
+    except UnknownAssignment:
+        return student_page(
+            request,
+            state,
+            week=frame,
+            problem=NOT_ON_RECORD,
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    except UnknownReport:
+        return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    except CouldNotSave:
+        logger.exception("her update on %s could not be undone", assignment_id)
+        return could_not(request, state, frame, CardState(assignment_id, problem=NOT_UNDONE))
     match result:
         case Undone():
             return RedirectResponse(
@@ -964,13 +1094,7 @@ async def undo_report_from_the_page(
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         case Conflict():
-            return student_page(
-                request,
-                state,
-                week=frame,
-                card=CardState(assignment_id, problem=SAVED_ELSEWHERE, saved_elsewhere=True),
-                status_code=status.HTTP_409_CONFLICT,
-            )
+            return refused(CANNOT_UNDO, status.HTTP_409_CONFLICT, saved_elsewhere=True)
 
 
 @router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)

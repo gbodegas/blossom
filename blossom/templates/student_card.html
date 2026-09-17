@@ -4,7 +4,7 @@
   Included by her page for every card in the week, the active ones and
   the ones she has reported done alike, so the two groups read the same.
 #}
-    <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}" id="assignment-{{ assignment.assignment_id }}">
+    <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}" id="assignment-{{ assignment.assignment_id }}" tabindex="-1">
       <p class="course">{{ assignment.course }}</p>
       <h2>{{ assignment.title }}</h2>
       {#
@@ -108,22 +108,15 @@
         it and when, so that it is never taken for the family's judgment or
         for the record's date.
       #}
-      {% if assignment.school_report %}
-        <p class="confidence disagree" role="status">
-          <strong>The school reports this {{ assignment.submission_status|replace("_", " ") }}.</strong>
-          {{ assignment.school_report }}
-        </p>
-      {% endif %}
       {#
-        A check of her "done" against the school's "missing" rests on each
-        channel's latest word, which need not be the latest report overall;
-        the reports it rests on are shown, so the check never points at
-        something the card does not say.
+        Every school channel's current word is shown, not one latest report:
+        a check of her "done" against a "missing" rests on a channel's own
+        latest word, and the card shows each report it could rest on.
       #}
-      {% for sentence in assignment.school_missing %}
+      {% for statement in assignment.school_statements %}
         <p class="confidence disagree" role="status">
-          <strong>The school also reports this missing.</strong>
-          {{ sentence }}
+          <strong>The school reports this {{ statement.status|replace("_", " ") }}.</strong>
+          {{ statement.sentence }}
         </p>
       {% endfor %}
       {% if assignment.note %}

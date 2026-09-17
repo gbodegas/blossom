@@ -647,8 +647,8 @@ def test_putting_off_a_contradicted_record_is_measured_against_the_school_date()
 def test_speaking_about_work_reported_done_fails_by_name_and_as_outside_the_window() -> None:
     """The plan was given the work still to do; a block or a deferral for work she has
     reported done is outside that window and fails the check made for it too, which names
-    the reason for the record. The planner is sent back the first finding and one plain
-    instruction, and no word that the work is done."""
+    the reason for the record. The planner is sent back one plain instruction, and neither
+    the id nor a word that the work is done."""
     plan = DailyPlan(
         plan_date=PLAN_DATE,
         blocks=[block("assignment-canal-essay", "16:30", "17:30")],
@@ -670,9 +670,41 @@ def test_speaking_about_work_reported_done_fails_by_name_and_as_outside_the_wind
         "assignment-algebra-set is not an assignment in this window",
         "assignment-algebra-set is reported done and the plan still speaks about it",
     )
-    assert result.as_feedback() == (
-        "assignment-algebra-set is not an assignment in this window",
-        ONLY_WHAT_IS_LISTED,
-    )
+    assert result.as_feedback() == (ONLY_WHAT_IS_LISTED,)
     assert without_the_word.failed_checks == (PlanCheck.ASSIGNMENTS_EXIST,)
     assert without_the_word.as_feedback() == without_the_word.as_findings()
+
+
+def test_no_finding_that_names_finished_work_goes_back_to_the_planner() -> None:
+    """Finished work worked on twice over, put off as well, and overlapping work still to
+    do: the record keeps every finding in full, and what goes back to the planner names
+    the essay's own faults and nothing about the finished problem set, whichever check
+    it tripped."""
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            block("assignment-canal-essay", "16:30", "17:30"),
+            block("assignment-algebra-set", "17:00", "17:45"),
+        ],
+        deferred=[
+            Deferral(assignment_id="assignment-algebra-set", reason="later"),
+            Deferral(assignment_id="assignment-algebra-set", reason="later still"),
+            Deferral(assignment_id="assignment-canal-essay", reason="and this too"),
+        ],
+    )
+
+    result = check_plan(
+        plan, due_in_window=[ESSAY], zone=ZONE, reported_done=["assignment-algebra-set"]
+    )
+
+    record = " | ".join(result.as_findings())
+    sent = result.as_feedback()
+    assert "assignment-algebra-set is not an assignment in this window" in record
+    assert "assignment-algebra-set is reported done" in record
+    assert "assignment-algebra-set is both worked on and put off" in record
+    assert "assignment-algebra-set is put off 2 times" in record
+    assert "overlaps assignment-algebra-set" in record
+    assert all("assignment-algebra-set" not in line for line in sent)
+    assert all("done" not in line for line in sent)
+    assert "assignment-canal-essay is both worked on and put off" in sent
+    assert sent[-1] == ONLY_WHAT_IS_LISTED

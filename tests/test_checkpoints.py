@@ -20,6 +20,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import BaseModel
 
 from blossom.agent.gates import ApprovalState, build_approval_graph
+from blossom.agent.prompts import assignments_block
 from blossom.agent.runs import (
     DURABILITY,
     GRAPH_VERSION,
@@ -50,7 +51,7 @@ from blossom.stores.paths import (
     local_form,
     refuse_unsafe_path,
 )
-from blossom.stores.project_state import Assignment, AssignmentKind
+from blossom.stores.project_state import Assignment, AssignmentKind, StudentReport
 from blossom.verification import CheckOutcome
 from tests.support import SAME_ORIGIN, fixture_settings
 
@@ -191,6 +192,7 @@ def test_every_type_the_graphs_carry_is_on_the_allowlist() -> None:
     carried = {
         Assignment,
         AssignmentKind,
+        StudentReport,
         SourceConfidence,
         Noticing,
         Verdict,
@@ -403,3 +405,36 @@ def test_startup_refuses_a_checkpoint_path_inside_a_synced_folder(tmp_path: path
 
     with pytest.raises(UnsafeCheckpointPath), TestClient(create_app(settings), headers=SAME_ORIGIN):
         pass
+
+
+def test_her_report_survives_the_serializer_as_itself_and_still_reaches_a_brief() -> None:
+    """The run carries her standing report on each assignment still to do. Off the
+    allowlist it would come back as a dictionary, and the brief reads it by attribute."""
+    serde = checkpoint_serializer()
+    said = StudentReport(
+        report_id="report-a",
+        assignment_id="a",
+        operation="report",
+        status="not_yet",
+        note="Two paragraphs left.",
+        reported_at=datetime(2026, 8, 19, 22, 0, tzinfo=UTC),
+        reported_on=date(2026, 8, 19),
+    )
+    work = Assignment(
+        assignment_id="a",
+        course="World History",
+        title="Essay",
+        due_date=date(2026, 8, 21),
+        dependencies=[],
+        reported_submission_status="in_progress",
+    )
+
+    revived = serde.loads_typed(
+        serde.dumps_typed({"assignments": [work], "student_reports": {"a": said}})
+    )
+
+    assert revived["student_reports"] == {"a": said}
+    assert isinstance(revived["student_reports"]["a"], StudentReport)
+    brief = assignments_block(revived["assignments"], {}, revived["student_reports"])
+    assert 'student_says="not yet"' in brief
+    assert 'student_wrote="Two paragraphs left."' in brief

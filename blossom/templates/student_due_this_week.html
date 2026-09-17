@@ -19,8 +19,13 @@
     </nav>
   </div>
 
+  {#
+    A problem with one card is said here as well as on the card, with a link
+    to it: a page that comes back from a form opens at its top, and the card
+    may be far below.
+  #}
   {% if problem %}
-    <p class="problem" role="alert">{{ problem }}</p>
+    <p class="problem" role="alert">{{ problem }}{% if problem_target %} <a href="#assignment-{{ problem_target }}">Go to the assignment.</a>{% endif %}</p>
   {% endif %}
 
   {% if view.week.current %}
@@ -45,7 +50,10 @@
       so is knowing which of it is finished.
     #}
     {% if view.plan and view.plan.reported_done %}
-      <p class="confidence disagree" role="status"><strong>Reported done since.</strong> {{ view.plan.reported_done }}</p>
+      <p class="confidence disagree" role="status">
+        <strong>Your updates.</strong> {{ view.plan.reported_done }}
+        {% if view.plan.reported_done_titles %}In it: {{ view.plan.reported_done_titles|join(", ") }}. A new plan will leave it out.{% endif %}
+      </p>
     {% endif %}
     {% if view.plan and view.plan.decision in ("approved", "rejected") %}
       <div class="from-parents {{ view.plan.decision }}">
@@ -186,6 +194,19 @@
     <p class="return"><a href="/student/due-this-week">Return to this week and today's plan</a></p>
   {% endif %}
 
+  {#
+    The card a save, an undo, or a link named, when its dates have taken it
+    out of the week shown: apart, so the result and anything she typed are
+    never lost to a week the card has left.
+  #}
+  {% if view.apart %}
+    <section class="panel apart">
+      <h2>Outside the week shown</h2>
+      <p class="note">The dates of this assignment put it outside the week shown here, so it is shown apart with its update.</p>
+      {% with assignment = view.apart %}{% include "student_card.html" %}{% endwith %}
+    </section>
+  {% endif %}
+
   <h2 class="list-heading">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
 
   {% if not view.assignments %}
@@ -232,11 +253,10 @@
       {% set later_done = view.assigned_this_week|selectattr("update_status", "equalto", "done")|list %}
       <ul>
         {% for assignment in later_active %}
-          <li id="assignment-{{ assignment.assignment_id }}">
+          <li id="assignment-{{ assignment.assignment_id }}" tabindex="-1">
             <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
             Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
-            {% if assignment.school_report %}<br><span class="pill">The school reports this {{ assignment.submission_status|replace("_", " ") }}</span> {{ assignment.school_report }}{% endif %}
-            {% for sentence in assignment.school_missing %}<br><span class="pill">The school also reports this missing</span> {{ sentence }}{% endfor %}
+            {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
             {% include "student_update.html" %}
           </li>
         {% endfor %}
@@ -247,11 +267,10 @@
           <summary>Reported done ({{ later_done|length }})</summary>
           <ul>
             {% for assignment in later_done %}
-              <li id="assignment-{{ assignment.assignment_id }}">
+              <li id="assignment-{{ assignment.assignment_id }}" tabindex="-1">
                 <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
                 Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
-                {% if assignment.school_report %}<br><span class="pill">The school reports this {{ assignment.submission_status|replace("_", " ") }}</span> {{ assignment.school_report }}{% endif %}
-            {% for sentence in assignment.school_missing %}<br><span class="pill">The school also reports this missing</span> {{ sentence }}{% endfor %}
+                {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
                 {% include "student_update.html" %}
               </li>
             {% endfor %}

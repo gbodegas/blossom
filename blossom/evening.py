@@ -55,6 +55,11 @@ def staleness(
     return None
 
 
+NOT_ON_RECORD = "an assignment that is not on record"
+"""What a notice calls work a plan speaks about whose row cannot be found: never a guess at
+another assignment by its title."""
+
+
 @dataclass(frozen=True)
 class ReportedDone:
     """Work a plan speaks about that she has since reported done."""
@@ -86,7 +91,7 @@ def reported_done(project_state: ProjectStateStore, record: DraftRecord) -> Repo
         statuses = statuses_for(project_state, record.plan_assignment_ids)
         titles = {item.assignment_id: item.title for item in project_state.all_assignments()}
     named = tuple(
-        titles.get(name, name)
+        titles.get(name, NOT_ON_RECORD)
         for name in record.plan_assignment_ids
         if not statuses[name].needs_homework
     )

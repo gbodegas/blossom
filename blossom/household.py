@@ -358,10 +358,18 @@ def read_authority(text: str, scheme: str) -> tuple[str, int] | None:
     if rest == "":
         port = DEFAULT_PORTS.get(scheme)
         return None if port is None else (host.lower(), port)
-    digits = rest[1:]
-    if not (digits.isascii() and digits.isdigit()) or not 0 < int(digits) <= 65535:
+    if not rest.startswith(":"):
         return None
-    return host.lower(), int(digits)
+    digits = rest[1:]
+    if not digits or not digits.isascii() or not digits.isdigit():
+        return None
+    # Judged as text before it is a number: leading zeros aside, a port has at
+    # most five digits, and one thousands of digits long is refused here
+    # rather than handed to a conversion that raises on it.
+    significant = digits.lstrip("0") or "0"
+    if len(significant) > 5 or not 1 <= int(significant) <= 65535:
+        return None
+    return host.lower(), int(significant)
 
 
 def read_origin(value: str, *, whole_address: bool) -> tuple[str, str, int] | None:

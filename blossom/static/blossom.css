@@ -1264,3 +1264,55 @@ details.reported-done > summary {
 .assignment-updates h3 {
   margin: 1.25rem 0 0.25rem;
 }
+
+/* Her words are hers to break as she likes: a long address or an unbroken
+   run of letters wraps rather than widening the page, and the line breaks
+   she typed are kept, on her card and on the family page alike. */
+.assignment-updates,
+.update {
+  overflow-wrap: anywhere;
+}
+
+.assignment-updates q,
+.update q {
+  white-space: pre-line;
+}
+
+/* Words for a reader who hears the page and does not see it: which
+   assignment a repeated control or field belongs to. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.update .history {
+  margin-top: 0.5rem;
+}
+
+.update .history ol {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.25rem;
+}
+
+.update .history li {
+  margin: 0.35rem 0;
+}
+
+.history-label {
+  margin: 0.5rem 0 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.panel.apart article {
+  margin-bottom: 0;
+}
