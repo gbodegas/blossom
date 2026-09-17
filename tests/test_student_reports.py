@@ -5,6 +5,7 @@ is appended once, compared before it is written, undone by restoring what
 stood before, and read back as what stands now.
 """
 
+import json
 import pathlib
 import sqlite3
 from collections.abc import Sequence
@@ -15,9 +16,7 @@ from pydantic import ValidationError
 
 from blossom import assignment_status
 from blossom.assignment_status import (
-    NOTE_MAX_LENGTH,
     AssignmentStatus,
-    normalize_note,
     standing_report,
     statuses_for,
 )
@@ -25,11 +24,13 @@ from blossom.noticing import planning_digest, read_week
 from blossom.reconciliation import SourceChannel
 from blossom.sources import FixtureSource, read_whole
 from blossom.stores.project_state import (
+    NOTE_MAX_LENGTH,
     AlreadySaved,
     Assignment,
     AssignmentKind,
     Conflict,
     CouldNotSave,
+    NoteTooLong,
     ProjectStateStore,
     Saved,
     Seed,
@@ -38,6 +39,7 @@ from blossom.stores.project_state import (
     Undone,
     UnknownAssignment,
     UnknownReport,
+    normalize_note,
 )
 from tests.support import FIXTURES, fixture_clock
 
@@ -954,3 +956,86 @@ def test_a_long_history_is_worked_out_in_one_pass_over_its_events(
     assert len(rows) == 4001
     assert all(row.restored is None for row in rows if row.event.operation == "report")
     assert {row.restored for row in rows if row.event.operation == "undo"} == {chain[0]}
+
+
+def test_a_note_is_kept_normalized_and_within_the_limit_whoever_makes_the_event(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The model holds the rule, so it holds for her page, for any caller of the store, and
+    for a seed: line endings as one kind, edges trimmed, blank as none, five hundred code
+    points at most. The store normalizes before it compares, so the same words with
+    another line ending are already saved, and a note past the limit writes nothing."""
+
+    def event(note: str | None) -> StudentReport:
+        return StudentReport(
+            report_id="r",
+            assignment_id=PRACTICE,
+            operation="report",
+            status="done",
+            note=note,
+            reported_at=NOW,
+            reported_on=TODAY,
+        )
+
+    longest = "\U0001f33c" * NOTE_MAX_LENGTH
+    store = a_store(tmp_path / "blossom.sqlite3")
+    try:
+        first = store.report_status(
+            PRACTICE,
+            "done",
+            "  Finished.\r\nAll of it.  ",
+            expected_head=None,
+            now=NOW,
+            today=TODAY,
+        )
+        assert isinstance(first, Saved)
+        same = store.report_status(
+            PRACTICE,
+            "done",
+            "Finished.\rAll of it.\n",
+            expected_head=first.report.report_id,
+            now=NOW,
+            today=TODAY,
+        )
+        with pytest.raises(NoteTooLong, match="501"):
+            store.report_status(
+                LOG, "done", f" {longest}x\r\n", expected_head=None, now=NOW, today=TODAY
+            )
+        whole = store.report_status(
+            LOG, "done", f" {longest}\r\n", expected_head=None, now=NOW, today=TODAY
+        )
+        kept = store.student_reports(PRACTICE)
+        log = store.student_reports(LOG)
+    finally:
+        store.close()
+
+    assert event("  one\r\ntwo\rthree \n").note == "one\ntwo\nthree"
+    assert event(" \r\n ").note is None
+    assert event(longest).note == longest
+    with pytest.raises(ValidationError, match="at most 500"):
+        event(longest + "x")
+    assert isinstance(same, AlreadySaved)
+    assert [item.note for item in kept] == ["Finished.\nAll of it."]
+    assert isinstance(whole, Saved)
+    assert [item.note for item in log] == [longest]
+
+
+def test_a_seed_files_note_is_held_to_the_same_rule(tmp_path: pathlib.Path) -> None:
+    def a_set(name: str, note: str) -> FixtureSource:
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "assignments.json").write_text(
+            json.dumps([a_row(PRACTICE, "Weekly practice").model_dump(mode="json")]),
+            encoding="utf-8",
+        )
+        (folder / "deadline_sources.json").write_text("[]", encoding="utf-8")
+        (folder / "student_reports.json").write_text(
+            json.dumps([{**an_event("a", "report", "done"), "note": note}]), encoding="utf-8"
+        )
+        return FixtureSource(folder)
+
+    seeded = read_whole(a_set("kept", "  Signed.\r\nIn my folder. "))
+
+    assert [item.note for item in seeded.student_reports] == ["Signed.\nIn my folder."]
+    with pytest.raises(ValidationError, match="at most 500"):
+        read_whole(a_set("refused", "x" * 501))

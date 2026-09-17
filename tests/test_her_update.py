@@ -443,9 +443,9 @@ def test_a_plan_that_speaks_about_work_she_has_since_finished_says_so_on_both_pa
 
     assert "<strong>Your updates.</strong>" not in quiet
     assert PLAN_INCLUDES_DONE == "This plan includes work you now report as Done."
-    assert (
-        f"{PLAN_INCLUDES_DONE}\n        In it: {ESSAY_TITLE}. A new plan will leave it out." in hers
-    )
+    assert PLAN_INCLUDES_DONE in hers
+    assert f"In it: {ESSAY_TITLE}." in hers
+    assert "A new plan will leave it out." in hers
     assert f"<strong>Student updates.</strong> {SHE_REPORTS} In it: {ESSAY_TITLE}." in family
     assert over_json["reported_done"] == PLAN_INCLUDES_DONE
     assert over_json["reported_done_titles"] == [ESSAY_TITLE]
@@ -1303,3 +1303,134 @@ def test_her_words_wrap_and_keep_their_lines_on_both_pages() -> None:
     assert ".assignment-updates,\n.update {\n  overflow-wrap: anywhere;\n}" in css
     assert ".assignment-updates q,\n.update q {\n  white-space: pre-line;\n}" in css
     assert ".visually-hidden {" in css
+
+
+# ------------------------------------------------- the Today panel with nothing left to plan
+
+
+def today_panel(page: str) -> str:
+    start = page.index('<section class="panel today">')
+    return page[start : page.index('<h2 class="list-heading">')]
+
+
+def finish_everything(client: TestClient) -> None:
+    for item in state_of(client).project_state.all_assignments():
+        report(client, item.assignment_id, "done")
+
+
+def asks_for_nothing(panel: str) -> bool:
+    """Whether the panel points her at no plan she cannot ask for."""
+    return not any(
+        words in panel
+        for words in (
+            'action="/student/actions/plan"',
+            "Plan again",
+            "plan again",
+            "Make a smaller plan",
+            "Make a new plan",
+            "You can start anyway",
+            "A new plan will leave it out",
+            "A plan is ready.",
+        )
+    )
+
+
+@pytest.mark.parametrize("decision", ["waiting", "refuse", "approve"])
+def test_with_everything_done_the_today_panel_informs_and_asks_for_nothing(decision: str) -> None:
+    """A plan is made, left waiting or decided, and then she reports everything done. The
+    panel keeps the saved plan, what a parent said, the exact notice with the work named,
+    and that the plan differs from the record, and nothing in it sends her to a plan she
+    cannot ask for."""
+    with browser(key=True) as client:
+        assert client.post("/student/actions/plan").status_code == 303
+        draft_id = client.get("/parent/approvals").json()["waiting"][0]["draft_id"]
+        if decision != "waiting":
+            decided = client.post(
+                f"/parent/actions/decide/{draft_id}",
+                data={"decision": decision, "reason": "Start with the essay."},
+            )
+            assert decided.status_code == 303
+        finish_everything(client)
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+
+    panel = today_panel(page)
+    assert asks_for_nothing(panel), panel
+    assert "Your saved plan is below." in panel
+    assert NOTHING_TO_SCHEDULE in panel
+    assert PLAN_INCLUDES_DONE in panel
+    assert "In it: " in panel
+    assert f"{ESSAY_TITLE}," in panel
+    assert "View today's plan" in panel
+    assert 'action="/parent/actions/plan"' in family
+    if decision == "waiting":
+        assert "A parent has not reviewed it yet." in panel
+        assert "<strong>Saved plan.</strong>" in panel
+        assert "The work or updates on record differ from what this plan used." in panel
+    elif decision == "refuse":
+        assert "A change was asked for on this saved plan." in panel
+        assert "<q>Start with the essay.</q>" in panel
+    else:
+        assert "Looks good." in panel
+        assert "<q>Start with the essay.</q>" in panel
+
+
+def test_a_plan_from_before_ids_and_a_smaller_evening_ask_for_nothing_either() -> None:
+    """The plan carries no ids and she has said today is too much: the panel gives the
+    general notice about the plan's window, names no work, and offers no smaller plan."""
+    with browser(key=True) as client:
+        assert client.post("/student/actions/plan").status_code == 303
+        state = state_of(client)
+        state.drafts._connection.execute("UPDATE drafts SET plan_assignment_ids=NULL")
+        state.drafts._connection.commit()
+        assert client.post("/student/actions/too-much").status_code == 303
+        finish_everything(client)
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    panel = today_panel(page)
+    assert asks_for_nothing(panel), panel
+    assert PLAN_WINDOW_DONE == "Some work in this plan's window is now reported Done."
+    assert str(escape(PLAN_WINDOW_DONE)) in panel
+    assert "In it:" not in panel
+    assert NOTHING_TO_SCHEDULE in panel
+    assert "You said it was too much" in panel
+    assert "<strong>Saved plan.</strong>" in panel
+
+
+def test_a_not_yet_in_the_window_brings_the_plan_button_back_and_one_outside_does_not() -> None:
+    with browser(key=True) as client:
+        assert client.post("/student/actions/plan").status_code == 303
+        entered = client.post(
+            "/parent/inbox/keep",
+            data={"course": "Art", "title": "Poster", "due_date": "2026-09-10"},
+        )
+        assert entered.status_code == 303
+        poster = next(
+            item.assignment_id
+            for item in state_of(client).project_state.all_assignments()
+            if item.title == "Poster"
+        )
+        finish_everything(client)
+        far_off = client.get(PAGE, params={"week": "2026-09-07", "change": poster}).text
+        outside = client.post(
+            f"/student/actions/assignments/{poster}/report",
+            data={
+                "status": "not_yet",
+                "expected_report_id": hidden(card_for(far_off, poster), "expected_report_id"),
+                "week": "2026-09-07",
+            },
+        )
+        still_nothing = today_panel(client.get(PAGE, headers=PAGE_HEADERS).text)
+        later_week = client.get(outside.headers["location"], headers=PAGE_HEADERS).text
+        report(client, ESSAY, "not_yet")
+        back = today_panel(client.get(PAGE, headers=PAGE_HEADERS).text)
+
+    assert outside.status_code == 303
+    assert asks_for_nothing(still_nothing), still_nothing
+    assert "outside today's planning window" in card_for(later_week, poster)
+    assert 'action="/student/actions/plan"' in back
+    assert ">Plan again</button>" in back
+    assert "A plan is ready." in back
+    assert ASSIGNMENTS_CHANGED in back
+    assert "A new plan will leave it out." in back
+    assert NOTHING_TO_SCHEDULE not in back

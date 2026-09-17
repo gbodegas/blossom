@@ -40,33 +40,52 @@
       hers from the moment it is made, and what a parent says about it is
       one more thing she can see.
     #}
-    <p class="standing">{% if view.plan %}A plan is ready.{% else %}No plan for today yet.{% endif %}</p>
+    <p class="standing">
+      {% if view.plan %}
+        {% if view.nothing_to_plan %}Your saved plan is below.{% else %}A plan is ready.{% endif %}
+      {% else %}
+        No plan for today yet.
+      {% endif %}
+    </p>
     {% if view.nothing_to_plan %}
       <p class="note" role="status">Nothing to schedule from the work in this planning window.</p>
     {% endif %}
     {#
-      Work the plan speaks about that she has since reported done is said
-      here, whatever a parent decided about the plan: the plan is hers, and
-      so is knowing which of it is finished.
+      Work the plan includes that she reports as done is said here,
+      whatever a parent decided about the plan: the plan is hers, and so is
+      knowing which of it is finished. With nothing left to plan the panel
+      only informs: no line in it points her at a plan she cannot ask for.
     #}
     {% if view.plan and view.plan.reported_done %}
       <p class="confidence disagree" role="status">
         <strong>Your updates.</strong> {{ view.plan.reported_done }}
-        {% if view.plan.reported_done_titles %}In it: {{ view.plan.reported_done_titles|join(", ") }}. A new plan will leave it out.{% endif %}
+        {% if view.plan.reported_done_titles %}
+          In it: {{ view.plan.reported_done_titles|join(", ") }}.
+          {% if not view.nothing_to_plan %}A new plan will leave it out.{% endif %}
+        {% endif %}
       </p>
     {% endif %}
     {% if view.plan and view.plan.decision in ("approved", "rejected") %}
       <div class="from-parents {{ view.plan.decision }}">
         <p class="from-heading">From your parents</p>
         <p class="from-text">
-          {% if view.plan.decision == "approved" %}Looks good.{% else %}A change is asked for; plan again when you are ready.{% endif %}
+          {% if view.plan.decision == "approved" %}
+            Looks good.
+          {% elif view.nothing_to_plan %}
+            A change was asked for on this saved plan.
+          {% else %}
+            A change is asked for; plan again when you are ready.
+          {% endif %}
           {% if view.plan.reason %}<q>{{ view.plan.reason }}</q>{% endif %}
         </p>
       </div>
     {% elif view.plan and view.plan.decision == "expired" %}
       <p class="note">Nobody reviewed this plan.</p>
     {% elif view.plan %}
-      <p class="note">A parent has not reviewed it yet. You can start anyway.</p>
+      <p class="note">
+        A parent has not reviewed it yet.
+        {% if not view.nothing_to_plan %}You can start anyway.{% endif %}
+      </p>
     {% endif %}
     {#
       What the plan button offers follows the evening as it stands: a plan
@@ -77,7 +96,14 @@
     {% set smaller_wanted = view.too_much and not (view.plan and view.plan.too_much) %}
     {% set plan_label = "Make a smaller plan" if smaller_wanted else ("Plan again" if view.plan else "Plan today") %}
     {% if view.plan and view.plan.stale %}
-      <p class="confidence disagree" role="status"><strong>{{ plan_label }}.</strong> {{ view.plan.stale }}</p>
+      {% if view.nothing_to_plan %}
+        <p class="confidence disagree" role="status">
+          <strong>Saved plan.</strong>
+          The work or updates on record differ from what this plan used.
+        </p>
+      {% else %}
+        <p class="confidence disagree" role="status"><strong>{{ plan_label }}.</strong> {{ view.plan.stale }}</p>
+      {% endif %}
     {% elif view.plan and view.plan.too_much and view.too_much %}
       <p class="note">This plan already uses the smaller budget, {{ view.budget_minutes }} minutes.</p>
     {% endif %}
@@ -95,7 +121,7 @@
       <p class="confidence disagree">
         <strong>You said it was too much</strong> at {{ view.too_much.given_local|clock }}.
         Your next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
-        {% if not view.plan %}Nothing has been planned yet; the plan you make will be the shorter one.{% endif %}
+        {% if not view.plan and not view.nothing_to_plan %}Nothing has been planned yet; the plan you make will be the shorter one.{% endif %}
         {% if view.too_much.detail %}You added <q>{{ view.too_much.detail }}</q>.{% endif %}
       </p>
     {% endif %}

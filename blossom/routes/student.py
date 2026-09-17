@@ -66,10 +66,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from blossom.anthropic_client import model_configured
-from blossom.assignment_status import (
-    NOTE_MAX_LENGTH as UPDATE_NOTE_MAX_LENGTH,
-)
-from blossom.assignment_status import AssignmentStatus, normalize_note, statuses_for
+from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, reported_done, staleness
@@ -111,12 +108,15 @@ from blossom.stores.project_state import (
     Assignment,
     Conflict,
     CouldNotSave,
+    NoteTooLong,
     Saved,
     StudentStatus,
     Undone,
     UnknownAssignment,
     UnknownReport,
+    normalize_note,
 )
+from blossom.stores.project_state import NOTE_MAX_LENGTH as UPDATE_NOTE_MAX_LENGTH
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.templating import page_templates
 from blossom.views import (
@@ -162,9 +162,9 @@ ASSIGNMENTS_CHANGED: Final = (
     "ready."
 )
 PLAN_INCLUDES_DONE: Final = "This plan includes work you now report as Done."
-PLAN_WINDOW_DONE: Final = (
-    "Some work in this plan's window is now reported Done. Make a new plan to reflect your updates."
-)
+PLAN_WINDOW_DONE: Final = "Some work in this plan's window is now reported Done."
+"""The notice for a plan from before plans carried their ids: a fact about its window and
+no more. What to do about it, when anything can be done, is the stale warning's to say."""
 UPDATE_SAVED: Final = "Your update is saved."
 UPDATE_ALREADY_SAVED: Final = "Your update is already saved."
 UPDATE_UNDONE: Final = "Your update is undone."
@@ -1003,6 +1003,8 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
         )
     except UnknownReport:
         return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    except NoteTooLong:
+        return refused(NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
     except CouldNotSave:
         logger.exception("her update on %s could not be saved", assignment_id)
         return could_not(

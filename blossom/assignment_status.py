@@ -37,20 +37,6 @@ WorkState = Literal["unreported", "not_yet", "done"]
 UNREPORTED: Final = "unreported"
 MISSING: Final = "missing"
 """The school's word that makes a "done" of hers something to check."""
-NOTE_MAX_LENGTH: Final = 500
-"""How long her note may be, in code points, once its edges and line endings are normalized."""
-
-
-def normalize_note(text: str | None) -> str | None:
-    """Her note as it is kept: line endings as one kind, edges trimmed, blank as none.
-
-    The words inside stay as she typed them, line breaks included; the same
-    note typed on two devices reads the same, so a repeat is a repeat.
-    """
-    if text is None:
-        return None
-    cleaned = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    return cleaned or None
 
 
 @dataclass(frozen=True)

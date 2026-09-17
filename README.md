@@ -155,8 +155,11 @@ Press "Plan today" on her page. Requests include the assignments still to
 do and their date sources, her Not yet updates on that work with any note she
 wrote, household rules, the planner's notes about earlier plans, and whether
 she has said the evening is too much; work she has reported done is left out.
-Later calls also include the proposed plan and feedback on it. A run makes one to six model calls. Approving a plan makes
-no additional model request.
+Later calls also include the proposed plan and feedback on it. A run that
+reaches the planner makes one to six model calls. A run that finds nothing
+left to schedule when it reads the week, everything in its window reported
+done, makes none, and the pages refuse such an evening before a run starts
+whenever they can. Approving a plan makes no additional model request.
 
 Local traces retain complete prompts and answers. The
 [development guide](docs/development.md) explains storage, retention, and

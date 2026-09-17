@@ -35,7 +35,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final, Literal, NamedTuple, Self, cast
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator, model_validator
 
 from blossom.clock import Clock
 from blossom.reconciliation import SourceChannel, SourceRecord
@@ -55,6 +55,22 @@ DONE: Final = "done"
 NOT_YET: Final = "not_yet"
 REPORT: Final = "report"
 UNDO: Final = "undo"
+NOTE_MAX_LENGTH: Final = 500
+"""How long her note may be, in code points, once its edges and line endings are normalized."""
+
+
+def normalize_note(text: str | None) -> str | None:
+    """Her note as it is kept: line endings as one kind, edges trimmed, blank as none.
+
+    The words inside stay as she typed them, line breaks included; the same
+    note typed on two devices reads the same, so a repeat is a repeat. Every
+    way a note comes to be kept goes through here: her page, the store's own
+    callers, and a seed read from a file.
+    """
+    if text is None:
+        return None
+    cleaned = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return cleaned or None
 
 
 class AssignmentKind(StrEnum):
@@ -150,6 +166,22 @@ class StudentReport(BaseModel):
     undoes_report_id: str | None = None
     """For an undo, the report it takes back; ``None`` for a report."""
 
+    @field_validator("note")
+    @classmethod
+    def _is_kept_as_it_is_compared(cls, note: str | None) -> str | None:
+        """The note as every event holds it: normalized, and within the limit.
+
+        An event made from a form, by a caller of the store, or from a seed
+        file holds the same note for the same words, so the comparison that
+        finds an update already saved never turns on a line ending, and
+        nothing longer than the limit is ever kept, whoever made the event.
+        """
+        kept = normalize_note(note)
+        if kept is not None and len(kept) > NOTE_MAX_LENGTH:
+            msg = f"a note is at most {NOTE_MAX_LENGTH} characters; this one is {len(kept)}"
+            raise ValueError(msg)
+        return kept
+
     @model_validator(mode="after")
     def _is_a_whole_event(self) -> Self:
         """An event has one of two shapes, and anything else is refused where it is read.
@@ -190,6 +222,14 @@ class UnknownReport(LookupError):
     """A form named an update that is not one of the assignment's: no such event, or an
     event under another assignment. Such a name proves nothing about the page it came
     from, so it is refused before anything is compared or written."""
+
+
+class NoteTooLong(ValueError):
+    """A note past the limit reached the store. Her page says so before it gets this far;
+    this is the same rule for every other caller, and nothing is written."""
+
+    def __init__(self, length: int) -> None:
+        super().__init__(f"a note is at most {NOTE_MAX_LENGTH} characters; this one is {length}")
 
 
 class CouldNotSave(RuntimeError):
@@ -670,8 +710,14 @@ class ProjectStateStore:
         appended after the head. The writer is reserved before the read, so
         another connection cannot slip a write between the comparison and
         the append. A write the file refuses, or a chain that fails its
-        checks, is rolled back whole and raised as ``CouldNotSave``.
+        checks, is rolled back whole and raised as ``CouldNotSave``. The note
+        is normalized here, whatever the caller did with it, so what is
+        compared is what is kept; one past the limit is ``NoteTooLong``, with
+        nothing read or written.
         """
+        note = normalize_note(note)
+        if note is not None and len(note) > NOTE_MAX_LENGTH:
+            raise NoteTooLong(len(note))
         try:
             with self._lock, self._connection:
                 self._reserve_locked()
