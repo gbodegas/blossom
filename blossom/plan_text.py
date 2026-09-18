@@ -59,6 +59,14 @@ def plain(text: str) -> str:
     return ESCAPE.sub(single, SURROGATE_PAIR.sub(pair, text))
 
 
+def one_line(text: str) -> str:
+    """A value on one line and in plain characters, so a line of the draft is one thing,
+    stays with its shape, and reads as written rather than as an escape sequence. The
+    composer writes every reason through this, and a page that shows a saved plan by its
+    rows does too, so a reason reads the same in the text and beside its row."""
+    return " ".join(plain(text).split())
+
+
 NOTHING_SCHEDULED = "Nothing is scheduled tonight."
 
 BLOCK = re.compile(

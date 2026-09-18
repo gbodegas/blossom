@@ -49,6 +49,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from enum import Enum
 from typing import Annotated, Final, cast
 
 from fastapi import (
@@ -69,7 +70,7 @@ from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
-from blossom.evening import Staleness, reported_done, staleness
+from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
 from blossom.noticing import (
     Noticing,
     expect_due_date,
@@ -79,6 +80,7 @@ from blossom.noticing import (
     read_week,
     reconcile_dates,
 )
+from blossom.plan_reading import DoneMark, PlanReading, Reader, read_plan
 from blossom.principals import Principal
 from blossom.reconciliation import (
     CHANNEL_NAMES,
@@ -90,6 +92,7 @@ from blossom.reconciliation import (
     classify_confidence,
 )
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
+from blossom.routes.navigation import details_href
 from blossom.routes.runs import (
     Graphs,
     ended_without_a_plan,
@@ -202,6 +205,17 @@ CONFIRMATIONS: Final[dict[str, str]] = {
 }
 """What the address says happened to a card's update, and the sentence the card shows for
 it: the server chooses which, the address only carries the choice."""
+
+
+class Unread(Enum):
+    """The one value that says a caller has not read today's plan, told from having read it
+    and found none."""
+
+    UNREAD = "unread"
+
+
+UNREAD: Final = Unread.UNREAD
+
 
 router = APIRouter(prefix="/student", tags=["student"])
 templates = page_templates()
@@ -359,22 +373,20 @@ def take_back_help(request_id: str, state: State) -> Response:
 
 
 def done_in(
-    state: ApplicationState, record: DraftRecord
+    state: ApplicationState, record: DraftRecord, found: ReportedDone | None
 ) -> tuple[str, list[NamedAssignmentView]] | None:
     """In her words, that a plan includes work she reports as done as things stand, and
     which work, or ``None`` while it includes none.
 
     Said for a plan of today's or a later evening, whatever a parent decided:
-    a parent's "looks good" is about the plan as it was. What is compared is
-    the ids the plan carries and her updates as they stand, never the time of
-    either, since an update can land while a plan is being made. A plan from
-    before plans carried their ids is told only that its window holds such
-    work, and named nothing.
+    a parent's "looks good" is about the plan as it was. ``found`` is what
+    the record says, read once with everything else the page shows about
+    the plan. What is compared is the ids the plan carries and her updates
+    as they stand, never the time of either, since an update can land while
+    a plan is being made. A plan from before plans carried their ids is told
+    only that its window holds such work, and named nothing.
     """
-    if record.plan_date < state.clock.today():
-        return None
-    found = reported_done(state.project_state, record)
-    if found is None:
+    if record.plan_date < state.clock.today() or found is None:
         return None
     if not found.known:
         return PLAN_WINDOW_DONE, []
@@ -383,20 +395,44 @@ def done_in(
     ]
 
 
-def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
-    """Her projection of a draft: the plan, a parent's review if any, and whether it still fits.
+def done_marks(updates: PlanUpdates) -> dict[str, DoneMark]:
+    """The current mark for each assignment of a plan she reports as Done as things stand:
+    the day of the report whose words stand, and the day an undo put it back when one did.
+    The one rule is that the assignment's effective status is Done now; nothing is
+    compared with when the plan was made, what a parent checked, or what the school says."""
+    return {
+        name: DoneMark(reported_on=status.reported_on, restored_on=status.restored_on)
+        for name, status in updates.statuses.items()
+        if not status.needs_homework and status.reported_on is not None
+    }
+
+
+@dataclass(frozen=True)
+class PlanRead:
+    """One plan read once for a page: her view of it, and how the page shows it."""
+
+    view: StudentPlanView
+    reading: PlanReading
+
+
+def read_a_plan(
+    state: ApplicationState, record: DraftRecord, *, reader: Reader = "student", current: bool
+) -> PlanRead:
+    """Her projection of a draft and its reading, from one reading of the record.
 
     A decided plan is history: it is measured against her signal, as it
     always was, but not against the week, which may well change after a
     parent has said the plan looks good. Work it speaks about that she has
-    since reported done is said whatever a parent decided.
+    since reported done is said whatever a parent decided. The notice above
+    the plan, the marks beside its rows, and whether the week reads as it
+    did all come from one hold of the store: read apart, a report landing
+    between them could leave them at odds. ``current`` is the caller's word
+    that this is today's working plan, the one reading that shows marks.
     """
     stale = None
-    # One reading of her reports for both: what the plan includes that she
-    # reports as done, and whether the week reads as it did. Read apart, a
-    # report landing between the two could leave the two lines at odds.
     with state.project_state.exclusively():
-        included = done_in(state, record)
+        updates = plan_updates(state.project_state, record)
+        included = done_in(state, record, updates.done)
         week = state.project_state if record.waiting else None
         found = staleness(state.workload_signals, record, week)
     match found:
@@ -408,7 +444,7 @@ def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
             stale = ASSIGNMENTS_CHANGED
         case None:
             stale = None
-    return StudentPlanView(
+    view = StudentPlanView(
         draft_id=record.draft_id,
         plan_date=record.plan_date,
         body=record.body,
@@ -422,12 +458,34 @@ def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
         reported_done=None if included is None else included[0],
         reported_done_work=[] if included is None else included[1],
     )
+    reading = read_plan(
+        record,
+        reader=reader,
+        current=current,
+        link_for=lambda name: details_href(name, return_to="today"),
+        on_record=updates.on_record,
+        done=done_marks(updates),
+    )
+    return PlanRead(view=view, reading=reading)
+
+
+def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
+    """Her projection of a draft: the plan, a parent's review if any, and whether it still fits."""
+    return read_a_plan(state, record, current=False).view
+
+
+def todays_plan_read(state: ApplicationState, reader: Reader = "student") -> PlanRead | None:
+    """Today's latest plan, looked up once, with the reading that shows her updates beside
+    it; ``None`` when none has been made. Latest is by the published order, whatever a
+    parent decided and whenever it was made."""
+    record = state.drafts.latest_for(state.clock.today())
+    return None if record is None else read_a_plan(state, record, reader=reader, current=True)
 
 
 def todays_plan(state: ApplicationState) -> StudentPlanView | None:
     """Today's latest plan, or ``None`` when none has been made."""
-    record = state.drafts.latest_for(state.clock.today())
-    return None if record is None else plan_view(state, record)
+    found = todays_plan_read(state)
+    return None if found is None else found.view
 
 
 @router.get("/plans/today", response_model=StudentPlanView)
@@ -631,10 +689,13 @@ def build_student_due_this_week_view(
     *,
     viewer: str = "anyone",
     focus: str | None = None,
+    plan: StudentPlanView | None | Unread = UNREAD,
 ) -> StudentDueThisWeekView:
     """Assemble the student's weekly view from the stores ``ApplicationState``
     opened at startup; nothing is opened or seeded per request. ``week`` is any
-    day in the school week to show; today's week when ``None``. ``viewer`` is
+    day in the school week to show; today's week when ``None``. ``plan`` is
+    today's plan when the caller has read it already, so a page looks it up
+    once; left out, it is read here. ``viewer`` is
     who is at the keyboard as the gate says. ``focus`` is the assignment a
     save, an undo, or a link named: when it is on record and in neither list
     of the week shown, its dates having changed meanwhile, it is built apart
@@ -700,7 +761,7 @@ def build_student_due_this_week_view(
         plan_horizon_end=today + DUE_THIS_WEEK_SPAN,
         full_budget_minutes=household.evening_minutes,
         budget_minutes=household.too_much_minutes if tonight else household.evening_minutes,
-        plan=todays_plan(state),
+        plan=todays_plan(state) if isinstance(plan, Unread) else plan,
         can_plan=model_configured(state.settings),
         too_much=signal_view(state, tonight[-1]) if tonight else None,
         signals=[signal_view(state, signal) for signal in state.workload_signals.held()],
@@ -768,11 +829,14 @@ def student_page(
     met on a page that opens at its top; the card named is shown even when
     its dates have taken it out of the week.
     """
+    viewer = viewer_of(request)
+    todays = todays_plan_read(state, "family" if viewer == "parent" else "student")
     view = build_student_due_this_week_view(
         state,
         week,
-        viewer=viewer_of(request),
+        viewer=viewer,
         focus=None if card is None else card.assignment_id,
+        plan=None if todays is None else todays.view,
     )
     about_a_card = card is not None and card.problem is not None and problem is None
     return templates.TemplateResponse(
@@ -783,6 +847,7 @@ def student_page(
             "problem": card.problem if card is not None and about_a_card else problem,
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "plan_open": plan_open,
+            "plan_reading": None if todays is None else todays.reading,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
             "update_note_max_length": UPDATE_NOTE_MAX_LENGTH,

@@ -29,6 +29,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
+from blossom.agent.compose import Composition, compose
 from blossom.agent.graph import (
     Ask,
     CompiledPlanGraph,
@@ -42,8 +43,10 @@ from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.intake import PASTE_DAY
+from blossom.noticing import Noticing, Verdict
+from blossom.plan_checks import check_plan
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.reconciliation import SourceChannel, SourceRecord
+from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
@@ -587,3 +590,93 @@ def school_missing(day: date) -> StatusReport:
 
 def status_of(store: ProjectStateStore, assignment_id: str) -> AssignmentStatus:
     return statuses_for(store, [assignment_id])[assignment_id]
+
+
+# ------------------------------------------------------------- a composition with every shape
+
+SYLLABUS = Assignment(
+    assignment_id="assignment-signed-syllabus",
+    course="Geometry",
+    title="Syllabus, signed",
+    due_date=None,
+    dependencies=[],
+    reported_submission_status="not_started",
+)
+NAMESAKE_ESSAY = Assignment(
+    assignment_id="assignment-canal-essay-english",
+    course="English",
+    title="Canal Era comparison essay",
+    due_date=date(2026, 8, 21),
+    dependencies=[],
+    reported_submission_status="not_started",
+)
+
+
+def plan_block(
+    assignment_id: str, start: str, end: str, why: str = "while it is fresh"
+) -> PlanBlock:
+    return PlanBlock(
+        assignment_id=assignment_id,
+        starts_at=time.fromisoformat(start),
+        ends_at=time.fromisoformat(end),
+        rationale=why,
+    )
+
+
+def two_sittings() -> DailyPlan:
+    """The essay in two sittings, its namesake in one, the problem set put off, and the
+    undated syllabus put off too."""
+    return DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            plan_block(ESSAY.assignment_id, "18:00", "18:30", "the second half\nafter a break"),
+            plan_block(ESSAY.assignment_id, "16:30", "17:00", "the outline first"),
+            plan_block(NAMESAKE_ESSAY.assignment_id, "17:15", "17:45"),
+        ],
+        deferred=[
+            Deferral(assignment_id=PROBLEM_SET.assignment_id, reason="not due until Monday"),
+            Deferral(assignment_id=SYLLABUS.assignment_id, reason="ask what the date is"),
+        ],
+    )
+
+
+SITTINGS_WINDOW = [ESSAY, NAMESAKE_ESSAY, PROBLEM_SET, SYLLABUS]
+
+
+def contested() -> list[Noticing]:
+    """The portal gives the problem set another date than the record's."""
+    return [
+        Noticing(
+            assignment_id=PROBLEM_SET.assignment_id,
+            expected=PROBLEM_SET.due_date,
+            observed=("LMS says 2026-08-26",),
+            spoken=("the school portal says August 26",),
+            observed_dates=(date(2026, 8, 26),),
+            verdict=Verdict.CONTRADICTED,
+        )
+    ]
+
+
+def dissent() -> CriticVerdict:
+    """One criterion judged and failed, the rest not considered."""
+    return CriticVerdict(
+        findings=[finding(Judgment.FAILS, Criterion.ORDER, "the hard one\tcomes  late")]
+    )
+
+
+def composed_plan(plan: DailyPlan | None = None, **over: object) -> Composition:
+    plan = plan or two_sittings()
+    given: dict[str, object] = {
+        "draft_id": "draft:plan:2026-08-19:abc12345",
+        "plan": plan,
+        "assignments": SITTINGS_WINDOW,
+        "verification": check_plan(plan, due_in_window=SITTINGS_WINDOW, zone=ZONE),
+        "verdict": dissent(),
+        "settled": False,
+        "noticings": contested(),
+        "confidence": {ESSAY.assignment_id: SourceConfidence.SOURCES_DISAGREE},
+        "too_much": True,
+        "budget_minutes": 45,
+    }
+    given.update(over)
+    return compose(**given)  # type: ignore[arg-type]

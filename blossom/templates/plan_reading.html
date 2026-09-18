@@ -1,0 +1,111 @@
+{#
+  One saved plan as a page reads it. ``reading`` comes from a view, which
+  decided everything: whether the plan can be shown by assignment, whether
+  this page presents it as today's working plan, which rows carry a current
+  mark, and which assignments have a record to link to. Nothing here reads a
+  store or works any of that out. ``review_open`` unfolds the reviewer's
+  notes, which the family page wants open and hers folded; ``plan_level`` is
+  the level of the headings inside the plan, three unless the page says
+  otherwise.
+
+  A structured plan keeps every saved row where it was, with its time, its
+  assignment, and its reason. A row of today's working plan whose assignment
+  she now reports as Done says so beside the row, with the day of the report,
+  and labels the reason as the reason when planned; nothing is struck out,
+  faded, moved, or folded, and the link stays a link. The text as composed is
+  kept whole in a fold of its own and is never annotated. A plan without a
+  usable snapshot is shown as its saved text, with a sentence that says why.
+#}
+{% set level = plan_level|default(3) %}
+{% set hers = reading.reader == "student" %}
+{% macro named(work) %}
+  <span class="plan-item">{{ work.course }} &middot; {% if work.href %}<a href="{{ work.href }}" aria-label="{{ work.link_name }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %}</span>{% if work.reference %} <span class="plan-ref">{{ work.reference }}</span>{% endif %}
+{% endmacro %}
+{% macro due(work) %}
+  <p class="plan-due">{% if work.due_date %}Due {{ work.due_date|long_date }}{% else %}No due date on record{% endif %}{% if work.unavailable %}. Current assignment record unavailable.{% endif %}</p>
+{% endmacro %}
+{% macro mark(done) %}
+  <p class="plan-mark"><span class="pill">Reported done</span> Reported {{ done.reported_on|long_date }}{% if done.restored_on %}, restored {{ done.restored_on|long_date }}{% endif %}</p>
+{% endmacro %}
+<div class="plan-reading" id="{{ reading.anchor }}" tabindex="-1">
+  {% if reading.structured %}
+    <div class="plan-text">
+      <p class="plan-title">{{ reading.title }}</p>
+      {% for note in reading.intro %}
+        <p class="plan-note">{{ note }}</p>
+      {% endfor %}
+      {% if reading.annotated %}
+        <p class="plan-note plan-updates">{% if hers %}Your{% else %}Her{% endif %} updates are shown beside the saved plan. Its times have not changed.</p>
+      {% endif %}
+      {% if not reading.current %}
+        <p class="plan-note">This is the saved plan. Assignment links open the current record.</p>
+      {% endif %}
+      {% if reading.blocks %}
+        <ol class="plan-rows">
+          {% for row in reading.blocks %}
+            <li class="plan-block{% if row.done %} reported-done{% endif %}" id="{{ row.dom_id }}">
+              <p class="plan-when"><strong>{{ row.span }}</strong></p>
+              <p class="plan-what">{{ named(row.work) }}</p>
+              {{ due(row.work) }}
+              {% if row.done %}
+                {{ mark(row.done) }}
+                <p class="plan-mark-words">{% if hers %}You report this as Done. You can skip this block.{% else %}She reports this as Done. She can skip this block.{% endif %}</p>
+              {% endif %}
+              <p class="plan-why">{% if row.done %}<span class="plan-why-label">Reason when planned:</span> {% endif %}{{ row.rationale }}</p>
+            </li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="plan-note">Nothing is scheduled tonight.</p>
+      {% endif %}
+      {% if reading.deferrals %}
+        <h{{ level }} class="plan-heading">Saved for another day</h{{ level }}>
+        <ul class="plan-rows">
+          {% for row in reading.deferrals %}
+            <li class="plan-deferral{% if row.done %} reported-done{% endif %}" id="{{ row.dom_id }}">
+              <p class="plan-what">{{ named(row.work) }}</p>
+              {{ due(row.work) }}
+              {% if row.done %}
+                {{ mark(row.done) }}
+                <p class="plan-mark-words">{% if hers %}You now report this as Done. It is out of work to plan.{% else %}She now reports this as Done. It is out of work to plan.{% endif %}</p>
+              {% endif %}
+              <p class="plan-why">{% if row.done %}<span class="plan-why-label">Reason when planned:</span> {% endif %}{{ row.reason }}</p>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      {% if reading.clarifications %}
+        <h{{ level }} class="plan-heading">Dates needing clarification</h{{ level }}>
+        <ul class="plan-list">
+          {% for row in reading.clarifications %}
+            <li>{{ named(row.work) }}: {{ row.text }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      {% if reading.review %}
+        <details class="steps plan-review"{% if review_open %} open{% endif %}>
+          <summary>Blossom's review notes</summary>
+          <ul class="plan-list">
+            {% for line in reading.review.intro %}
+              <li>{{ line }}</li>
+            {% endfor %}
+            {% for finding in reading.review.findings %}
+              <li><strong>{{ finding.label }}:</strong> {{ finding.text }}</li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
+    </div>
+    <details class="steps plan-original">
+      <summary>Original saved text</summary>
+      <pre class="plan-original-text">{{ reading.body }}</pre>
+    </details>
+  {% else %}
+    {% if reading.unavailable %}
+      <p class="plan-note">The saved text is shown because this plan's structured view is unavailable.</p>
+    {% else %}
+      <p class="plan-note">This plan uses the earlier text format. Assignment links and block updates are available in newly made plans.</p>
+    {% endif %}
+    {% with body = reading.body %}{% include "plan_body.html" %}{% endwith %}
+  {% endif %}
+</div>

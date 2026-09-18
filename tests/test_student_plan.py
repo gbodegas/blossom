@@ -281,8 +281,9 @@ def test_a_change_asked_for_is_said_in_her_words() -> None:
 
 
 def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
-    """The time range and the item in bold, the reason under it, the lists under
-    headings, the reviewer's notes behind a fold; every part of the saved text."""
+    """The time range in bold, the assignment under it as a link to its details by id, its
+    due date, the reason, the work put off under a heading, the reviewer's notes behind a
+    fold, and the text as composed in a fold of its own; every part of the saved text."""
     with browser() as client:
         client.post("/student/actions/plan")
         body = client.get("/student/plans/today").json()["body"]
@@ -291,9 +292,19 @@ def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
 
     text = present_plan(body)
     assert text.blocks[0].span == "4:30 PM to 5:30 PM"
-    assert '<strong>4:30 PM to 5:30 PM</strong>, set aside for <span class="plan-item">' in page
+    assert '<p class="plan-when"><strong>4:30 PM to 5:30 PM</strong></p>' in page
+    assert (
+        '<span class="plan-item">World History &middot; <a '
+        'href="/student/assignments/assignment-canal-essay?return_to=today" '
+        'aria-label="Canal Era comparison essay, World History">Canal Era comparison essay</a>'
+    ) in page
+    assert '<p class="plan-due">Due August 21, 2026</p>' in page
+    assert "return_to=family&amp;plan_id=draft%3Aplan%3A2026-08-19%3A" in theirs
     assert '<p class="plan-why">' in page
-    assert '<h3 class="plan-heading">Waiting for another day</h3>' in page
+    assert '<h3 class="plan-heading">Saved for another day</h3>' in page
+    assert '<h4 class="plan-heading">Saved for another day</h4>' in theirs
+    assert "<summary>Original saved text</summary>" in page
+    assert "<summary>Original saved text</summary>" in theirs
     assert "<summary>Blossom's review notes</summary>" in page
     assert '<details class="steps plan-review">' in page, "folded on her page"
     assert '<details class="steps plan-review" open>' in theirs, "open on the parent's"

@@ -20,8 +20,6 @@ from pydantic import ValidationError
 from blossom.agent.compose import Composition, MissingPlanMetadata, compose, compose_draft
 from blossom.agent.steps import StepRecord
 from blossom.drafts import Draft, DraftStatus
-from blossom.heuristic_relevance import Criterion, CriticVerdict, Judgment
-from blossom.noticing import Noticing, Verdict
 from blossom.plan_checks import check_plan
 from blossom.plan_snapshot import (
     SNAPSHOT_VERSION,
@@ -30,107 +28,27 @@ from blossom.plan_snapshot import (
     SnapshotReading,
     read_snapshot,
 )
-from blossom.plans import DailyPlan, Deferral, PlanBlock
+from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceConfidence
 from blossom.stores.drafts import DraftsStore, IncoherentBundle, IncompatibleReplay
-from blossom.stores.project_state import Assignment
 from tests.support import (
     ESSAY,
+    NAMESAKE_ESSAY,
     PLAN_DATE,
     PROBLEM_SET,
+    SITTINGS_WINDOW,
+    SYLLABUS,
     ZONE,
+    composed_plan,
+    contested,
+    dissent,
     drafts_in_memory,
-    finding,
     fixture_clock,
+    plan_block,
+    two_sittings,
 )
 
 CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
-SYLLABUS = Assignment(
-    assignment_id="assignment-signed-syllabus",
-    course="Geometry",
-    title="Syllabus, signed",
-    due_date=None,
-    dependencies=[],
-    reported_submission_status="not_started",
-)
-OTHER_ESSAY = Assignment(
-    assignment_id="assignment-canal-essay-english",
-    course="English",
-    title="Canal Era comparison essay",
-    due_date=date(2026, 8, 21),
-    dependencies=[],
-    reported_submission_status="not_started",
-)
-
-
-def a_block(assignment_id: str, start: str, end: str, why: str = "while it is fresh") -> PlanBlock:
-    return PlanBlock(
-        assignment_id=assignment_id,
-        starts_at=time.fromisoformat(start),
-        ends_at=time.fromisoformat(end),
-        rationale=why,
-    )
-
-
-def two_sittings() -> DailyPlan:
-    """The essay in two sittings, its namesake in one, the problem set put off, and the
-    undated syllabus put off too."""
-    return DailyPlan(
-        plan_date=PLAN_DATE,
-        blocks=[
-            a_block(ESSAY.assignment_id, "18:00", "18:30", "the second half\nafter a break"),
-            a_block(ESSAY.assignment_id, "16:30", "17:00", "the outline first"),
-            a_block(OTHER_ESSAY.assignment_id, "17:15", "17:45"),
-        ],
-        deferred=[
-            Deferral(assignment_id=PROBLEM_SET.assignment_id, reason="not due until Monday"),
-            Deferral(assignment_id=SYLLABUS.assignment_id, reason="ask what the date is"),
-        ],
-    )
-
-
-WINDOW = [ESSAY, OTHER_ESSAY, PROBLEM_SET, SYLLABUS]
-
-
-def contested() -> list[Noticing]:
-    """The portal gives the problem set another date than the record's."""
-    return [
-        Noticing(
-            assignment_id=PROBLEM_SET.assignment_id,
-            expected=PROBLEM_SET.due_date,
-            observed=("LMS says 2026-08-26",),
-            spoken=("the school portal says August 26",),
-            observed_dates=(date(2026, 8, 26),),
-            verdict=Verdict.CONTRADICTED,
-        )
-    ]
-
-
-def dissent() -> CriticVerdict:
-    """One criterion judged and failed, the rest not considered."""
-    return CriticVerdict(
-        findings=[finding(Judgment.FAILS, Criterion.ORDER, "the hard one\tcomes  late")]
-    )
-
-
-def composed(plan: DailyPlan | None = None, **over: object) -> Composition:
-    plan = plan or two_sittings()
-    given: dict[str, object] = {
-        "draft_id": "draft:plan:2026-08-19:abc12345",
-        "plan": plan,
-        "assignments": WINDOW,
-        "verification": check_plan(plan, due_in_window=WINDOW, zone=ZONE),
-        "verdict": dissent(),
-        "settled": False,
-        "noticings": contested(),
-        "confidence": {ESSAY.assignment_id: SourceConfidence.SOURCES_DISAGREE},
-        "too_much": True,
-        "budget_minutes": 45,
-    }
-    given.update(over)
-    return compose(**given)  # type: ignore[arg-type]
-
-
 # ------------------------------------------------------------- one composition, two things
 
 
@@ -140,7 +58,7 @@ def test_a_composition_keeps_the_plan_the_assignments_it_names_and_every_sentenc
     keeps the plan in its own order with every field, the frozen title, course, and due
     date of exactly the assignments it speaks about, and the sentences as the text says
     them; it goes to JSON and comes back the same."""
-    made = composed()
+    made = composed_plan()
     snapshot = made.snapshot
     back = PlanSnapshot.model_validate_json(snapshot.model_dump_json())
 
@@ -152,7 +70,7 @@ def test_a_composition_keeps_the_plan_the_assignments_it_names_and_every_sentenc
         time(16, 30),
         time(17, 15),
     ]
-    assert snapshot.assignment_ids == sorted(item.assignment_id for item in WINDOW)
+    assert snapshot.assignment_ids == sorted(item.assignment_id for item in SITTINGS_WINDOW)
     assert list(snapshot.assignments) == snapshot.assignment_ids
     assert snapshot.assignments[ESSAY.assignment_id] == SavedAssignment(
         title="Canal Era comparison essay", course="World History", due_date=date(2026, 8, 21)
@@ -181,13 +99,13 @@ def test_a_composition_keeps_the_plan_the_assignments_it_names_and_every_sentenc
 def test_the_text_is_the_text_it_always_was_and_says_what_the_snapshot_keeps() -> None:
     """The text of a composition is the text alone composed from the same inputs, line for
     line, and every sentence the snapshot keeps is a line of it."""
-    made = composed()
+    made = composed_plan()
     plan = two_sittings()
     alone = compose_draft(
         draft_id=made.draft.draft_id,
         plan=plan,
-        assignments=WINDOW,
-        verification=check_plan(plan, due_in_window=WINDOW, zone=ZONE),
+        assignments=SITTINGS_WINDOW,
+        verification=check_plan(plan, due_in_window=SITTINGS_WINDOW, zone=ZONE),
         verdict=dissent(),
         settled=False,
         noticings=contested(),
@@ -246,7 +164,9 @@ def test_an_evening_with_nothing_scheduled_and_no_review_is_a_snapshot_too() -> 
 def test_a_plan_that_names_work_the_run_did_not_read_composes_nothing() -> None:
     """There is no title to save beside such an assignment, so no draft comes of it; the text
     alone, for a caller with nothing to save, still names it by its id."""
-    plan = DailyPlan(plan_date=PLAN_DATE, blocks=[a_block("assignment-nowhere", "16:30", "17:00")])
+    plan = DailyPlan(
+        plan_date=PLAN_DATE, blocks=[plan_block("assignment-nowhere", "16:30", "17:00")]
+    )
     checked = check_plan(plan, due_in_window=[ESSAY], zone=ZONE)
 
     with pytest.raises(MissingPlanMetadata, match="assignment-nowhere"):
@@ -272,7 +192,7 @@ def test_a_plan_that_names_work_the_run_did_not_read_composes_nothing() -> None:
 
 
 def test_a_snapshot_that_does_not_agree_with_itself_is_not_one() -> None:
-    whole = composed().snapshot.model_dump(mode="json")
+    whole = composed_plan().snapshot.model_dump(mode="json")
 
     def broken(**over: object) -> dict[str, object]:
         return {**whole, **over}
@@ -313,7 +233,7 @@ def save(store: DraftsStore, made: Composition, **over: object) -> None:
 
 def test_a_bundle_is_saved_together_and_read_back_after_a_restart(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "blossom.sqlite3"
-    made = composed()
+    made = composed_plan()
     store = DraftsStore.open(path, fixture_clock())
     try:
         save(store, made)
@@ -341,7 +261,7 @@ def test_a_bundle_is_saved_together_and_read_back_after_a_restart(tmp_path: path
 
 
 def test_a_bundle_whose_parts_disagree_is_refused_before_anything_is_written() -> None:
-    made = composed()
+    made = composed_plan()
     store = drafts_in_memory()
     try:
         with pytest.raises(IncoherentBundle, match="another|for 2026"):
@@ -370,7 +290,7 @@ def test_a_save_that_fails_leaves_no_part_of_the_bundle_and_displaces_nothing(
     path = tmp_path / "blossom.sqlite3"
     store = DraftsStore.open(path, fixture_clock())
     earlier = Draft(draft_id="draft:earlier", body="the plan before", created_at=CREATED)
-    made = composed()
+    made = composed_plan()
     reader: sqlite3.Connection | None = None
     try:
         store.record_waiting(
@@ -432,17 +352,17 @@ def test_a_replay_takes_the_whole_bundle_before_publication_and_nothing_after() 
     and keeps the time it was first made; a save that would drop the snapshot it has, or
     that names another thread, is refused. Once published, the same composition changes
     nothing, a decision and its steps included, and a different one is refused."""
-    first = composed()
+    first = composed_plan()
     revised_plan = DailyPlan(
         plan_date=PLAN_DATE,
-        blocks=[a_block(ESSAY.assignment_id, "16:30", "17:30", "one sitting")],
+        blocks=[plan_block(ESSAY.assignment_id, "16:30", "17:30", "one sitting")],
         deferred=[
-            Deferral(assignment_id=OTHER_ESSAY.assignment_id, reason="tomorrow"),
+            Deferral(assignment_id=NAMESAKE_ESSAY.assignment_id, reason="tomorrow"),
             Deferral(assignment_id=PROBLEM_SET.assignment_id, reason="Monday"),
             Deferral(assignment_id=SYLLABUS.assignment_id, reason="ask"),
         ],
     )
-    second = composed(revised_plan)
+    second = composed_plan(revised_plan)
     later = second.draft.model_copy(update={"created_at": CREATED.replace(hour=23)})
     store = drafts_in_memory()
     try:
@@ -514,7 +434,7 @@ def test_a_file_from_before_gains_the_column_twice_over_and_keeps_its_drafts(
     )
     old.commit()
     old.close()
-    made = composed()
+    made = composed_plan()
     for _ in range(2):
         store = DraftsStore.open(path, fixture_clock())
         try:
@@ -551,7 +471,7 @@ def test_a_reader_uses_a_snapshot_only_when_it_is_whole_and_its_drafts(
     version, a missing field, metadata that does not match, another evening, and another
     list of assignments are each unavailable, logged with the draft's id and where it
     failed, and never with what the plan says."""
-    snapshot = composed().snapshot
+    snapshot = composed_plan().snapshot
     whole = snapshot.model_dump(mode="json")
     ids = snapshot.assignment_ids
 

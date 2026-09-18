@@ -37,7 +37,7 @@ from blossom.plan_snapshot import (
     SavedFinding,
     SavedReview,
 )
-from blossom.plan_text import plain
+from blossom.plan_text import one_line
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence
 from blossom.stores.project_state import Assignment
@@ -95,12 +95,6 @@ def spoken_date(value: date) -> str:
 def short_date(value: date) -> str:
     """A date short enough for a parenthesis: ``Aug 21``."""
     return f"{value:%b} {value.day}"
-
-
-def one_line(text: str) -> str:
-    """A value on one line and in plain characters, so a line of the draft is one thing,
-    stays with its shape, and reads as written rather than as an escape sequence."""
-    return " ".join(plain(text).split())
 
 
 def named(saved: SavedAssignment | None, assignment_id: str) -> str:

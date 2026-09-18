@@ -2,11 +2,11 @@
 
 from datetime import time
 
-from blossom.agent.compose import compose_draft, one_line
+from blossom.agent.compose import compose_draft
 from blossom.clock import spoken_time
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.plan_checks import check_plan
-from blossom.plan_text import present_plan
+from blossom.plan_text import one_line, present_plan
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from tests.support import ESSAY, PLAN_DATE, PROBLEM_SET, ZONE
 

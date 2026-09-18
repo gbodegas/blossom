@@ -591,6 +591,73 @@ details.plan .body {
   color: var(--text-soft);
 }
 
+/* A saved plan read by its rows: one column in time order on every screen,
+   each row with its time, its assignment, its due date, and its reason. A
+   row whose assignment she now reports as Done keeps its place and its
+   words, with a quiet tinted edge, a small label, and the day of the
+   report; nothing is struck out or faded, and the link stays a link. Long
+   titles and reasons wrap inside the row, and the text as composed is kept
+   in a fold, wrapped, never scrolled sideways. */
+.plan-reading {
+  min-width: 0;
+}
+
+.plan-reading:focus {
+  outline: 2px solid var(--blue-action);
+  outline-offset: 4px;
+}
+
+.plan-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.plan-rows li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plan-deferral {
+  margin: 0.75rem 0;
+}
+
+.plan-what,
+.plan-due,
+.plan-mark,
+.plan-mark-words {
+  margin: 0.15rem 0;
+}
+
+.plan-due,
+.plan-ref {
+  color: var(--text-soft);
+  font-size: 0.92rem;
+}
+
+.plan-rows .reported-done {
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--blue-action);
+  background: var(--slate-bg);
+  border-radius: 0 var(--radius-small) var(--radius-small) 0;
+}
+
+.plan-mark .pill {
+  margin-right: 0.5rem;
+}
+
+.plan-why-label {
+  font-weight: 600;
+}
+
+.plan-original-text {
+  margin: 0.5rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 0.92rem;
+}
+
 .plan-heading {
   margin: 1.25rem 0 0.25rem;
   font-size: 1rem;

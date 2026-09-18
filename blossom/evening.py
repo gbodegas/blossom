@@ -8,10 +8,11 @@ for their reader, and neither says which came first, since a signal can change
 while a run is still on its way to the draft.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from blossom.assignment_status import statuses_for
+from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.noticing import planning_digest, read_week
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.project_state import ProjectStateStore
@@ -73,27 +74,57 @@ class ReportedDone:
     name the work; it is told only that something in its window is reported done."""
 
 
-def reported_done(project_state: ProjectStateStore, record: DraftRecord) -> ReportedDone | None:
-    """Work in ``record``'s plan she has reported done since, or ``None`` while there is none.
+@dataclass(frozen=True)
+class PlanUpdates:
+    """What stands now about the work one saved plan speaks about, from one reading of the
+    record: what a page says above the plan and what it shows beside the plan's rows come
+    from here, so the two never disagree."""
+
+    done: ReportedDone | None
+    """What the notice above the plan says, or ``None`` while it has nothing to say."""
+    statuses: Mapping[str, AssignmentStatus]
+    """What she and the school have said about each assignment the plan carries by id;
+    empty for a plan from before plans carried their ids."""
+    on_record: frozenset[str]
+    """Every assignment id on record at that reading, so a row whose assignment is gone
+    gets no link, and no other assignment is ever put in its place."""
+
+
+def plan_updates(project_state: ProjectStateStore, record: DraftRecord) -> PlanUpdates:
+    """Read what stands about ``record``'s work, once, while the store is held.
 
     A plan is made from the work still to do when the run read it, and says
     nothing about what she had reported done by then; what it speaks about
     and she reports done afterward is what a page names. A plan that carries
-    no ids is measured against its window instead, and named nothing. Both
-    pages read this one rule and word it for their reader; neither judges
-    whether the plan should be made again, which is hers to decide.
+    no ids is measured against its window instead, and named nothing. Her
+    updates are read in one batch for the distinct assignments of the plan,
+    however many rows it has, and the assignments on record in one more.
+    Both pages read this one rule and word it for their reader; neither
+    judges whether the plan should be made again, which is hers to decide.
     """
     with project_state.exclusively():
+        rows = project_state.all_assignments()
+        on_record = frozenset(item.assignment_id for item in rows)
         if record.plan_assignment_ids is None:
             week = read_week(project_state, project_state, record.plan_date)
-            return ReportedDone(named=(), known=False) if week.done_ids() else None
+            found = ReportedDone(named=(), known=False) if week.done_ids() else None
+            return PlanUpdates(done=found, statuses={}, on_record=on_record)
         if not record.plan_assignment_ids:
-            return None
+            return PlanUpdates(done=None, statuses={}, on_record=on_record)
         statuses = statuses_for(project_state, record.plan_assignment_ids)
-        titles = {item.assignment_id: item.title for item in project_state.all_assignments()}
+    titles = {item.assignment_id: item.title for item in rows}
     named = tuple(
         (name, titles.get(name, NOT_ON_RECORD))
         for name in record.plan_assignment_ids
         if not statuses[name].needs_homework
     )
-    return ReportedDone(named=named, known=True) if named else None
+    return PlanUpdates(
+        done=ReportedDone(named=named, known=True) if named else None,
+        statuses=statuses,
+        on_record=on_record,
+    )
+
+
+def reported_done(project_state: ProjectStateStore, record: DraftRecord) -> ReportedDone | None:
+    """Work in ``record``'s plan she has reported done since, or ``None`` while there is none."""
+    return plan_updates(project_state, record).done

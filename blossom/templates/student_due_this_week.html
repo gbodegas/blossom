@@ -212,7 +212,7 @@
           {% if view.plan.too_much %}Kept to a shorter evening because you said today was too much.{% endif %}
           Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
         </p>
-        {% with body = view.plan.body, review_open = false %}{% include "plan_body.html" %}{% endwith %}
+        {% with reading = plan_reading, review_open = false %}{% include "plan_reading.html" %}{% endwith %}
       </details>
     {% endif %}
   </section>

@@ -247,7 +247,7 @@
             <strong>Blossom's review:</strong> could not settle every point. Its notes are at the end of the text.
           </p>
         {% endif %}
-        {% with body = draft.body, review_open = true %}{% include "plan_body.html" %}{% endwith %}
+        {% with reading = readings[draft.draft_id], review_open = true, plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
         {{ steps_list(draft.steps, "How this plan was made") }}
         {% if draft.stale %}
           <p class="confidence disagree" role="alert"><strong>Plan again.</strong> {{ draft.stale }}</p>
@@ -423,7 +423,7 @@ Cover both books with paper.</pre>
           {% endif %}
           <details>
             <summary>{% if draft.decision in ("approved", "rejected") %}The plan as it was reviewed{% else %}The plan as it was{% endif %}</summary>
-            {% with body = draft.body, review_open = true %}{% include "plan_body.html" %}{% endwith %}
+            {% with reading = readings[draft.draft_id], review_open = true, plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
           </details>
           {{ steps_list(draft.steps, "How this plan was made") }}
         </article>
