@@ -52,7 +52,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
-from blossom.agent.compose import compose_draft
+from blossom.agent.compose import compose as compose_plan
 from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.prompts import critic_brief, planner_brief
 from blossom.agent.runs import draft_id_for
@@ -443,6 +443,14 @@ def build_plan_graph(
     def compose(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
         """Render the plan as the text she reads, and save it as the record of this run.
 
+        One composition, from the state the run froze when it read the week:
+        the text, and the snapshot of the plan as data saved beside it, with
+        the titles, courses, and due dates the run read, never the record as
+        it stands now. Both, the assignments the plan speaks about, and the
+        fingerprint of what was read are saved together, so they describe the
+        same plan. The snapshot is made here and kept out of the state, so
+        what a paused run saves is what it always saved.
+
         The draft id comes from the thread, so this node run twice yields the
         same draft and the same row. Saving happens here, before the gate,
         because the gate must do nothing before it pauses and the record must
@@ -451,7 +459,7 @@ def build_plan_graph(
         """
         thread_id = str(config["configurable"]["thread_id"])
         outcome = state["outcome"]
-        draft = compose_draft(
+        composed = compose_plan(
             draft_id=draft_id_for(thread_id),
             plan=state["plan"],
             assignments=state.get("assignments", []),
@@ -467,16 +475,17 @@ def build_plan_graph(
             msg = f"compose reached with outcome {outcome!r}, which produces no draft"
             raise RuntimeError(msg)
         drafts.record_waiting(
-            draft,
+            composed.draft,
             thread_id=thread_id,
             plan_date=state["plan_date"],
             outcome=cast(Literal["accepted", "unsettled"], outcome),
             steps=state.get("steps", []),
             too_much=state.get("too_much", False),
             inputs_digest=state.get("inputs_digest"),
-            plan_assignment_ids=sorted(set(state["plan"].assignment_ids)),
+            plan_assignment_ids=composed.snapshot.assignment_ids,
+            plan_snapshot=composed.snapshot,
         )
-        return {"draft": draft}
+        return {"draft": composed.draft}
 
     def record_run(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
         """Save the record of a run that ended before the gate. Writes nothing to state.

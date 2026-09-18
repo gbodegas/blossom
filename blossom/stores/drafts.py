@@ -7,9 +7,13 @@ a queue is a question across threads: what is waiting, what was approved, what
 was refused and why. That question is answered here, in one table, and the
 rows outlive the process that wrote them.
 
-Both writes are upserts keyed by a draft id the graph derives from its thread,
-so a node that runs twice, as a resumed or crashed node does, leaves one row
-rather than two. The file lives at ``BLOSSOM_DATABASE_PATH``, under the same
+Both writes are keyed by a draft id the graph derives from its thread, so a
+node that runs twice, as a resumed or crashed node does, leaves one row rather
+than two. What a composition saves is one bundle, the text, the snapshot of
+the plan as data, the assignments it speaks about, and the fingerprint of what
+the run read, written whole or not at all; once a draft is on the pages that
+bundle is the record, and a different one is refused rather than written over
+it. The file lives at ``BLOSSOM_DATABASE_PATH``, under the same
 guard as the saved-state store: not on a share, not in a synced folder, with
 deleted rows overwritten, because a refused draft is still text about her.
 
@@ -21,7 +25,8 @@ permission was given, and nothing else.
 import json
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Final, Literal, NamedTuple, cast
@@ -31,6 +36,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from blossom.agent.steps import StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Decision, Draft, DraftStatus
+from blossom.plan_snapshot import PlanSnapshot
 from blossom.stores.paths import refuse_unsafe_path
 
 Outcome = Literal["accepted", "unsettled"]
@@ -50,6 +56,18 @@ class Displaced(NamedTuple):
 
     draft_id: str
     thread_id: str
+
+
+class IncoherentBundle(ValueError):
+    """A composition whose parts do not describe one plan: a snapshot for another evening
+    than its draft, or for other assignments than the draft lists. Refused before anything
+    is written."""
+
+
+class IncompatibleReplay(RuntimeError):
+    """A save that would change a record it may not change: a different composition for a
+    draft already on the pages, or one that would drop the snapshot a saved draft has.
+    Nothing is written, and the draft stands as it was."""
 
 
 class AlreadyDecided(RuntimeError):
@@ -98,6 +116,11 @@ class DraftRecord(BaseModel):
     """Every assignment the plan speaks about, worked on or put off, each once, so a page
     can say which of them she has since reported done. ``None`` for a draft from before
     plans carried them, which is not the same as a plan that speaks about nothing."""
+    plan_snapshot: str | None = None
+    """The plan as data, one versioned JSON document saved with the text, as it was
+    written. ``None`` for a draft from before plans carried one. Kept as text here: what
+    it lets a page show is decided where it is read, one record at a time, so one that
+    cannot be used never stops another from being shown."""
 
     @property
     def waiting(self) -> bool:
@@ -161,7 +184,8 @@ class DraftsStore:
                 superseded_by TEXT,
                 published INTEGER NOT NULL DEFAULT 0,
                 published_order INTEGER,
-                plan_assignment_ids TEXT
+                plan_assignment_ids TEXT,
+                plan_snapshot TEXT
             )
             """
         )
@@ -192,6 +216,10 @@ class DraftsStore:
             # its drafts name none, which is told from a plan that speaks
             # about nothing, which names an empty list.
             self._connection.execute("ALTER TABLE drafts ADD COLUMN plan_assignment_ids TEXT")
+        if "plan_snapshot" not in columns:
+            # A file from before plans were saved as data beside their text: its
+            # drafts have no snapshot and keep none, and are read as text.
+            self._connection.execute("ALTER TABLE drafts ADD COLUMN plan_snapshot TEXT")
         if "published_order" not in columns:
             self._connection.execute("ALTER TABLE drafts ADD COLUMN published_order INTEGER")
             if "saved_order" in columns:
@@ -307,6 +335,24 @@ class DraftsStore:
         with self._lock:
             self._connection.close()
 
+    @contextmanager
+    def _writing(self) -> Iterator[None]:
+        """One transaction that reserves the writer first, for a write that depends on a read.
+
+        The writer is reserved with ``BEGIN IMMEDIATE`` before the read, so no
+        other connection can write between the comparison and the write that
+        follows from it. The commit is inside the scope that rolls back: a
+        commit the file refuses leaves nothing open and nothing that could
+        land with a later write.
+        """
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            self._connection.commit()
+        except BaseException:
+            self._connection.rollback()
+            raise
+
     def record_waiting(
         self,
         draft: Draft,
@@ -318,47 +364,126 @@ class DraftsStore:
         too_much: bool = False,
         inputs_digest: str | None = None,
         plan_assignment_ids: Sequence[str] | None = None,
+        plan_snapshot: PlanSnapshot | None = None,
     ) -> None:
         """Save a draft the moment it exists, before the gate pauses on it, as the record.
 
-        An upsert: the same draft saved again replaces its text and status and
-        keeps its first ``created_at``, so a node that runs twice leaves one row.
-        The record of the run that produced the draft is saved in the same
-        transaction, so a draft is never on the page without its account or
-        the other way around.
+        What is saved is one bundle: the text, the snapshot of the plan as
+        data, the assignments the plan speaks about, the fingerprint of what
+        the run read, and the run's record. It is checked and written to text
+        before anything is written: a snapshot for another evening than the
+        draft's, or for other assignments than the draft lists, is
+        ``IncoherentBundle``. Then the bundle and the run's record are
+        written in one transaction, so a draft is never on the page without
+        its account, its text never without its snapshot, or the other way
+        around, and a write that fails leaves nothing of any of them.
+
+        The same draft saved again, as a node that runs twice does, keeps its
+        first ``created_at`` and leaves one row. Before its run has paused,
+        the whole bundle takes the place of the one before, never part of
+        it; a save that would drop the snapshot the draft has, or that names
+        another thread or evening, is ``IncompatibleReplay``. Once the draft
+        is on the pages its bundle is the record: the same composition again
+        changes nothing, not the status, the decision, its reason, its place
+        in the published order, nor the steps its run recorded since, and a
+        different one is refused, ``IncompatibleReplay``, because a plan
+        already shown or reviewed is not written over. What is compared is
+        the composition, the text, the snapshot, the assignments, the
+        fingerprint, the thread, the evening, the outcome, and whether the
+        evening was kept short, never a decision made since or the time a
+        replay constructed.
 
         Saving is not publishing. The draft reaches no page and displaces no
         plan until ``publish`` says its run has paused with it, so a run that
         fails between saving and pausing has shown nobody anything and taken
-        nothing away, and a node replayed after a crash saves its text again
-        and changes nothing else.
+        nothing away.
         """
-        with self._lock, self._connection:
+        names = None if plan_assignment_ids is None else list(plan_assignment_ids)
+        if plan_snapshot is not None:
+            if plan_snapshot.plan.plan_date != plan_date:
+                msg = (
+                    f"the snapshot of {draft.draft_id!r} is for "
+                    f"{plan_snapshot.plan.plan_date.isoformat()}, its draft for "
+                    f"{plan_date.isoformat()}"
+                )
+                raise IncoherentBundle(msg)
+            if names != plan_snapshot.assignment_ids:
+                msg = (
+                    f"the snapshot of {draft.draft_id!r} speaks about other assignments than "
+                    "its draft lists"
+                )
+                raise IncoherentBundle(msg)
+        composed = (
+            thread_id,
+            plan_date.isoformat(),
+            outcome,
+            draft.body,
+            int(too_much),
+            inputs_digest,
+            None if names is None else json.dumps(names),
+            None if plan_snapshot is None else plan_snapshot.model_dump_json(),
+        )
+        with self._lock, self._writing():
+            row = self._connection.execute(
+                """
+                SELECT thread_id, plan_date, outcome, body, too_much, inputs_digest,
+                       plan_assignment_ids, plan_snapshot, published
+                FROM drafts WHERE draft_id=?
+                """,
+                (draft.draft_id,),
+            ).fetchone()
+            if row is not None:
+                standing = (
+                    str(row["thread_id"]),
+                    str(row["plan_date"]),
+                    str(row["outcome"]),
+                    str(row["body"]),
+                    int(row["too_much"]),
+                    None if row["inputs_digest"] is None else str(row["inputs_digest"]),
+                    None if row["plan_assignment_ids"] is None else str(row["plan_assignment_ids"]),
+                    None if row["plan_snapshot"] is None else str(row["plan_snapshot"]),
+                )
+                if row["published"]:
+                    if standing == composed:
+                        return
+                    msg = (
+                        f"draft {draft.draft_id!r} is on the pages; a different composition "
+                        "cannot take its place"
+                    )
+                    raise IncompatibleReplay(msg)
+                if standing[:2] != composed[:2]:
+                    msg = f"draft {draft.draft_id!r} was saved for another thread or evening"
+                    raise IncompatibleReplay(msg)
+                if standing[7] is not None and composed[7] is None:
+                    msg = f"a save of draft {draft.draft_id!r} would drop the snapshot it has"
+                    raise IncompatibleReplay(msg)
             self._connection.execute(
                 """
                 INSERT INTO drafts (
                     draft_id, thread_id, plan_date, status, outcome, body, created_at,
-                    too_much, inputs_digest, plan_assignment_ids
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    too_much, inputs_digest, plan_assignment_ids, plan_snapshot
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
                     status=excluded.status,
                     outcome=excluded.outcome,
                     body=excluded.body,
                     too_much=excluded.too_much,
                     inputs_digest=excluded.inputs_digest,
-                    plan_assignment_ids=excluded.plan_assignment_ids
+                    plan_assignment_ids=excluded.plan_assignment_ids,
+                    plan_snapshot=excluded.plan_snapshot
                 """,
                 (
                     draft.draft_id,
-                    thread_id,
-                    plan_date.isoformat(),
+                    composed[0],
+                    composed[1],
                     draft.status.value,
-                    outcome,
-                    draft.body,
+                    composed[2],
+                    composed[3],
                     draft.created_at.isoformat(),
-                    int(too_much),
-                    inputs_digest,
-                    None if plan_assignment_ids is None else json.dumps(list(plan_assignment_ids)),
+                    composed[4],
+                    composed[5],
+                    composed[6],
+                    composed[7],
                 ),
             )
             self._write_run(thread_id, plan_date, outcome, steps)
@@ -631,7 +756,7 @@ DRAFTS_WITH_STEPS = """
     SELECT drafts.draft_id, drafts.thread_id, drafts.plan_date, drafts.status,
            drafts.outcome, drafts.body, drafts.created_at, drafts.decided_at,
            drafts.decision, drafts.reason, drafts.too_much, drafts.inputs_digest, drafts.published,
-           drafts.plan_assignment_ids,
+           drafts.plan_assignment_ids, drafts.plan_snapshot,
            steps.node, steps.round, steps.expected, steps.found,
            steps.recorded_at AS step_recorded_at
     FROM drafts LEFT JOIN steps ON steps.thread_id = drafts.thread_id
@@ -698,4 +823,5 @@ def record_from(row: sqlite3.Row, steps: list[StepRecord]) -> DraftRecord:
         plan_assignment_ids=None
         if row["plan_assignment_ids"] is None
         else [str(name) for name in json.loads(str(row["plan_assignment_ids"]))],
+        plan_snapshot=None if row["plan_snapshot"] is None else str(row["plan_snapshot"]),
     )

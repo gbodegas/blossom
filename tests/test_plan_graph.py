@@ -40,6 +40,7 @@ from blossom.heuristic_relevance import (
 )
 from blossom.noticing import Verdict, planning_digest, read_week
 from blossom.plan_checks import ONLY_WHAT_IS_LISTED, PlanCheck
+from blossom.plan_snapshot import read_snapshot
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
@@ -1144,6 +1145,72 @@ def test_a_done_saved_while_the_planner_is_asked_leaves_the_run_on_what_it_read(
     assert record is not None
     assert record.inputs_digest == as_first_read != as_it_stands(on_record)
     assert record.plan_assignment_ids == ["assignment-algebra-set", "assignment-canal-essay"]
+
+
+def test_the_saved_bundle_describes_the_plan_the_run_read_whatever_lands_meanwhile() -> None:
+    """While the planner is asked, the essay is renamed, given another due date, and
+    reported done. The draft's text, its snapshot, its ids, and its fingerprint all describe
+    the one plan made from what the run read: the snapshot names the essay as the run read
+    it, its plan is the plan returned, and it agrees with the draft it sits beside."""
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+    as_first_read = as_it_stands(on_record)
+    finishes = she_finishes(on_record, ESSAY)
+
+    def the_record_moves() -> None:
+        on_record.put_on_record(
+            [ESSAY.model_copy(update={"title": "Renamed essay", "due_date": date(2026, 8, 28)})],
+            {},
+        )
+        finishes()
+
+    planner = ChangesTheRecord(the_record_moves, good_plan())
+
+    result = run(graph_with(planner, Scripted(ok(accepting())), drafts=drafts, on_record=on_record))
+
+    record = drafts.get(result["draft"].draft_id)
+    assert record is not None
+    reading = read_snapshot(
+        record.draft_id,
+        record.plan_snapshot,
+        plan_date=record.plan_date,
+        plan_assignment_ids=record.plan_assignment_ids,
+    )
+    assert reading.snapshot is not None
+    assert reading.snapshot.plan == good_plan()
+    assert reading.snapshot.assignments[ESSAY.assignment_id].title == ESSAY.title
+    assert reading.snapshot.assignments[ESSAY.assignment_id].due_date == ESSAY.due_date
+    assert ESSAY.title in record.body
+    assert "Renamed essay" not in record.body
+    assert record.plan_assignment_ids == reading.snapshot.assignment_ids
+    assert record.inputs_digest == as_first_read != as_it_stands(on_record)
+    assert "plan_snapshot" not in result
+    assert planner.calls == 1
+
+
+def test_a_week_with_nothing_left_saves_no_draft_and_no_snapshot() -> None:
+    """Everything in the window is reported done when the run reads it: no model is asked,
+    no draft is saved, and so no snapshot."""
+    drafts = drafts_in_memory()
+    planner = Scripted(ok(good_plan()))
+
+    result = run(
+        graph_with(
+            planner,
+            Scripted(ok(accepting())),
+            drafts=drafts,
+            reports=[
+                (ESSAY.assignment_id, "done", None),
+                (PROBLEM_SET.assignment_id, "done", None),
+            ],
+        )
+    )
+
+    assert result["outcome"] == "nothing_to_schedule"
+    assert planner.calls == 0
+    assert "draft" not in result
+    assert drafts.waiting() == []
+    assert drafts.unpublished() == []
 
 
 def test_an_undo_while_the_planner_is_asked_adds_no_work_to_the_run() -> None:
