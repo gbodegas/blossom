@@ -1107,15 +1107,18 @@ class ProjectStateStore:
         refused, ``UnknownCheck``. Then the basis the page was made against
         is compared with ``basis_now``, worked out inside the transaction
         from her events and the school's reports as they stand, and with
-        the last check event: a check of that basis standing already, while
-        it is the basis now, is already made, whatever note was typed
-        since, and nothing is written. Otherwise the basis must be the one
-        now and the check the page showed must be the head now, or what the
-        page rested on moved since and nothing is written. Otherwise the
-        check is appended. A write the file refuses is rolled back whole and
-        raised as ``CouldNotSave``. The note is normalized here, and one
-        past the limit is ``NoteTooLong``, with nothing read or written.
-        Nothing here writes her events or the school's reports.
+        the last check event. The same check standing already, that basis,
+        the basis now, and that note, is already made, and nothing is
+        written. A check standing with any other note is another parent's:
+        a conflict, so the words typed are never dropped for a check that
+        says something else. Otherwise the basis must be the one now and
+        the check the page showed must be the head now, or what the page
+        rested on moved since and nothing is written. Otherwise the check
+        is appended. A write the file refuses is rolled back whole and
+        raised as ``CouldNotSave``. The note is normalized here, so a
+        repeat is a repeat whatever its line endings, and one past the
+        limit is ``NoteTooLong``, with nothing read or written. Nothing
+        here writes her events or the school's reports.
         """
         note = normalize_note(note)
         if note is not None and len(note) > NOTE_MAX_LENGTH:
@@ -1127,14 +1130,15 @@ class ProjectStateStore:
                     self._require_check_locked(assignment_id, expected_check)
                 head = self._check_head_locked(assignment_id)
                 current = basis_now()
-                if (
-                    head is not None
-                    and head.operation == CHECKED
-                    and head.basis == basis == current
-                ):
-                    return AlreadyChecked(head)
+                stands = (
+                    head
+                    if head is not None and head.operation == CHECKED and head.basis == current
+                    else None
+                )
+                if stands is not None and basis == current and stands.note == note:
+                    return AlreadyChecked(stands)
                 head_id = None if head is None else head.check_id
-                if current != basis or head_id != expected_check:
+                if stands is not None or current != basis or head_id != expected_check:
                     return CheckConflict(head)
                 check = FamilyCheck(
                     check_id=new_check_id(),
@@ -1152,23 +1156,44 @@ class ProjectStateStore:
             raise CouldNotSave(assignment_id, error, what="the check") from error
 
     def check_again(
-        self, assignment_id: str, check_id: str, *, now: datetime, today: date
+        self,
+        assignment_id: str,
+        check_id: str,
+        *,
+        expected_basis: str | None,
+        basis_now: Callable[[], str | None],
+        now: datetime,
+        today: date,
     ) -> Reopened | CheckConflict:
         """Reopen the family's check on an assignment, and nothing else.
 
         The check the button names must be one of this assignment's events,
         or it is refused, ``UnknownCheck``. Only the head can be reopened,
         and only when it marks the row checked: a button that names any
-        other event finds the chain moved on. The reopening carries the
-        basis of the check it reopens, and that check stays in the record.
-        A refused write is rolled back whole and raised as ``CouldNotSave``.
+        other event finds the record moved on. The facts are held to the
+        page as well: ``expected_basis`` is the basis the page showed, none
+        when it showed nothing to check, and it must be ``basis_now``,
+        worked out inside the transaction, or her update or the school's
+        report moved since the page was made and nothing is written. What
+        is compared is the page's basis, never the basis of the check
+        reopened, so a check made against facts that have moved can still
+        be reopened from a page that shows them as they are. The reopening
+        carries the basis of the check it reopens, and that check stays in
+        the record. A refused write is rolled back whole and raised as
+        ``CouldNotSave``.
         """
         try:
             with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
                 self._require_check_locked(assignment_id, check_id)
                 head = self._check_head_locked(assignment_id)
-                if head is None or head.check_id != check_id or head.operation != CHECKED:
+                current = basis_now()
+                if (
+                    head is None
+                    or head.check_id != check_id
+                    or head.operation != CHECKED
+                    or current != expected_basis
+                ):
                     return CheckConflict(head)
                 reopened = FamilyCheck(
                     check_id=new_check_id(),

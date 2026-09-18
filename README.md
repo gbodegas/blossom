@@ -115,7 +115,9 @@ had not reported before, puts the row back among those worth checking and
 says what differs; the same report pasted again does not, nor does a change
 to her note alone. A check whose facts moved stays on its row as the check
 that was made, with its day, its note, and what differs now. Two devices
-acting on one row get one record and one refusal that shows what stands now.
+acting on one row get one record and one refusal that shows what stands now,
+the note on record and the note typed both; Check again is refused the same
+way when her update or the school's report moved after its page was made.
 
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device

@@ -97,8 +97,9 @@ against a basis worked out from her events and the school's reports, the
 report that began her Done and each current statement of Missing, and
 compared again under the decision lock and the store's, the writer reserved
 first, before it is written; a row whose facts or record moved is refused
-with what stands now. Check again reopens it. A check changes neither
-account, no plan, and no digest.
+with what stands now. A check another parent made with other words is refused
+the same way, both notes shown. Check again reopens it, held to the basis its
+page showed. A check changes neither account, no plan, and no digest.
 
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and

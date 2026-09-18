@@ -164,7 +164,7 @@ RECENT_DAYS: Final = 14
 """How many household days an update of hers stays under "Recent updates", and a check of
 the family's under "Checked recently"."""
 CHECK_FIELDS: Final = frozenset({"basis", "expected_check_id", "note"})
-AGAIN_FIELDS: Final = frozenset({"check_id"})
+AGAIN_FIELDS: Final = frozenset({"check_id", "basis"})
 """The fields each check form sends, each once. Anything else, or anything twice, is refused."""
 BASIS_MAX_LENGTH: Final = 500
 """Longer than any basis the page makes: an assignment id, a report id, and a statement or two."""
@@ -882,6 +882,24 @@ def help_from_the_page(
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
 
+def check_could_not(request: Request, state: ApplicationState, check: CheckState) -> HTMLResponse:
+    """The page after a check or a reopening the file refused: the row with the note typed,
+    and no word of a check. When the family page cannot be read back either, a plain page
+    with the note instead, which reads no store."""
+    try:
+        return review_page(
+            request, state, check=check, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+    except Exception:
+        logger.exception("the family page could not be read back after a failed check")
+        return templates.TemplateResponse(
+            request,
+            "family_check_recovery.html",
+            {"check": check, "sample": state.settings.sample},
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
 def back_to_the_row(said: str, assignment_id: str) -> str:
     """Where a check or a reopening sends a parent: the page, the row, and what happened."""
     return f"/parent?{said}={assignment_id}#update-{assignment_id}"
@@ -903,15 +921,18 @@ async def mark_checked_from_the_page(
     the decision lock and the store's, in one transaction that reserves the
     writer before it reads, the basis is worked out again from her events
     and the school's reports as they stand and compared with the form's,
-    and the check event with the head: the same check standing already is
-    already made, with no write and no new day; a basis that differs, or a
-    record that moved on, is answered 409 with the row as it stands now and
-    the note typed kept; otherwise the check is appended. A write the file
-    refuses is answered with the page and the note, and never with a word
-    of a check. The gate admits only a parent's device to this path, so her
-    device is answered 403 before this runs; with the sign-in off, whoever
-    is at the keyboard is the family. Her events, the school's reports, the
-    plans, and the digest are untouched by any answer here.
+    and the check event with the head: the same check standing already,
+    note and all, is already made, with no write and no new day; a basis
+    that differs, a record that moved on, or a check another parent made
+    with other words, is answered 409 with the row as it stands now and
+    the note typed kept; otherwise the check is appended. Whatever is
+    refused, the note that could be read comes back with the page. A write
+    the file refuses is answered with the page and the note, or with a
+    plain page and the note when the page cannot be read either, and never
+    with a word of a check. The gate admits only a parent's device to this
+    path, so her device is answered 403 before this runs; with the sign-in
+    off, whoever is at the keyboard is the family. Her events, the school's
+    reports, the plans, and the digest are untouched by any answer here.
     """
     fields, whole = await fields_of(request, CHECK_FIELDS)
     basis = fields.get("basis", "").strip()
@@ -923,9 +944,7 @@ async def mark_checked_from_the_page(
         return review_page(
             request,
             state,
-            check=CheckState(
-                assignment_id, problem=problem, field=field, note=note if whole else ""
-            ),
+            check=CheckState(assignment_id, problem=problem, field=field, note=note),
             status_code=code,
         )
 
@@ -957,7 +976,9 @@ async def mark_checked_from_the_page(
         return refused(CHECK_NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
     except CouldNotSave:
         logger.exception("the check on %s could not be saved", assignment_id)
-        return refused(CHECK_NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return check_could_not(
+            request, state, CheckState(assignment_id, problem=CHECK_NOT_SAVED, note=note)
+        )
     match result:
         case Checked():
             return RedirectResponse(
@@ -969,7 +990,8 @@ async def mark_checked_from_the_page(
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         case CheckConflict(head=head):
-            moved = (None if head is None else head.check_id) != (token or None)
+            marked_since = head is not None and head.operation == CHECKED and head.basis == basis
+            moved = marked_since or (None if head is None else head.check_id) != (token or None)
             return refused(
                 CHECK_MOVED_ON if moved else CHECK_FACTS_CHANGED, status.HTTP_409_CONFLICT
             )
@@ -981,15 +1003,20 @@ async def mark_checked_from_the_page(
 async def check_again_from_the_page(request: Request, assignment_id: str, state: State) -> Response:
     """Check again: a parent reopens the family's check on one assignment, and nothing else.
 
-    The form carries the check it reopens, which must be this assignment's
-    and at the head of its record, or the record moved on since the page
-    was made and the answer is 409 with the row as it stands. The check
-    reopened stays in the record; her update and the school's report are
-    untouched, and the row is worth checking together again while her Done
-    stands beside a Missing. The gate admits only a parent's device here.
+    The form carries the check it reopens and the basis its page showed,
+    blank when the page showed nothing to check. The check must be this
+    assignment's and at the head of its record, and the basis must be the
+    one worked out from her events and the school's reports as they stand,
+    inside the store's transaction under the decision lock: a record that
+    moved on, or facts that moved since the page was made, is answered 409
+    with the row as it stands and nothing written. The check reopened
+    stays in the record; her update and the school's report are untouched,
+    and the row is worth checking together again while her Done stands
+    beside a Missing. The gate admits only a parent's device here.
     """
     fields, whole = await fields_of(request, AGAIN_FIELDS)
     token = fields.get("check_id", "").strip()
+    basis = fields.get("basis", "").strip()
 
     def refused(problem: str, code: int) -> Response:
         return review_page(
@@ -998,12 +1025,18 @@ async def check_again_from_the_page(request: Request, assignment_id: str, state:
 
     if not whole:
         return refused(BAD_CHECK_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
-    if not token or len(token) > TOKEN_MAX_LENGTH:
+    if not token or len(token) > TOKEN_MAX_LENGTH or len(basis) > BASIS_MAX_LENGTH:
         return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    store = state.project_state
     try:
         async with state.decision_lock:
-            result = state.project_state.check_again(
-                assignment_id, token, now=state.clock.now(), today=state.clock.today()
+            result = store.check_again(
+                assignment_id,
+                token,
+                expected_basis=basis or None,
+                basis_now=lambda: statuses_for(store, [assignment_id])[assignment_id].check_basis,
+                now=state.clock.now(),
+                today=state.clock.today(),
             )
     except UnknownAssignment:
         return review_page(
@@ -1013,14 +1046,19 @@ async def check_again_from_the_page(request: Request, assignment_id: str, state:
         return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     except CouldNotSave:
         logger.exception("the check on %s could not be reopened", assignment_id)
-        return refused(CHECK_NOT_REOPENED, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return check_could_not(
+            request, state, CheckState(assignment_id, problem=CHECK_NOT_REOPENED)
+        )
     match result:
         case Reopened():
             return RedirectResponse(
                 back_to_the_row("reopened", assignment_id), status_code=status.HTTP_303_SEE_OTHER
             )
-        case CheckConflict():
-            return refused(CHECK_MOVED_ON, status.HTTP_409_CONFLICT)
+        case CheckConflict(head=head):
+            same_check = head is not None and head.check_id == token and head.operation == CHECKED
+            return refused(
+                CHECK_FACTS_CHANGED if same_check else CHECK_MOVED_ON, status.HTTP_409_CONFLICT
+            )
 
 
 @router.post("/actions/decide/{draft_id}", response_class=HTMLResponse, include_in_schema=False)
