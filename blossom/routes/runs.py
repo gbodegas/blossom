@@ -83,6 +83,18 @@ def no_plan_made(outcome: str) -> str:
     return f"no plan was made: the run ended with {outcome}"
 
 
+def refuse_an_empty_run(run: PlanRunView) -> None:
+    """Refuse, 409, a run that ended at its first node with nothing left to schedule.
+
+    The route asked whether there was work before the run, and a report of
+    hers landed between that question and the run's reading. Such a run made
+    no plan and asked no model, so it is answered as the guard would have
+    answered, not as a plan made; the run's own record stays in the ledger.
+    """
+    if run.draft_id is None and run.outcome == NOTHING_TO_SCHEDULE_OUTCOME:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=NOTHING_TO_SCHEDULE)
+
+
 def ended_without_a_plan(outcome: str) -> str:
     """The same, as her page says it."""
     if outcome == NOTHING_TO_SCHEDULE_OUTCOME:

@@ -298,3 +298,90 @@ def test_a_port_is_judged_as_text_before_it_is_a_number(
     text: str, expected: tuple[str, int] | None
 ) -> None:
     assert read_authority(text, "http") == expected
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param({"Host": "test<server", "Origin": "http://test<server"}, id="a-mark-in-both"),
+        pytest.param({"Origin": "http://test<server"}, id="a-mark-in-the-origin"),
+        pytest.param({"Host": "test_server", "Origin": "http://test_server"}, id="an-underscore"),
+        pytest.param({"Host": "a..b", "Origin": "http://a..b"}, id="an-empty-label"),
+        pytest.param({"Host": "-lead", "Origin": "http://-lead"}, id="a-hyphen-first"),
+        pytest.param(
+            {"Host": "[not-an-address]", "Origin": "http://[not-an-address]"},
+            id="a-name-in-brackets",
+        ),
+        pytest.param({"Host": "[]", "Origin": "http://[]"}, id="empty-brackets"),
+        pytest.param(
+            {"Host": "[::1%25eth0]", "Origin": "http://[::1%25eth0]"}, id="a-zone-in-brackets"
+        ),
+    ],
+)
+def test_a_host_that_is_no_host_is_refused_even_when_the_origin_matches_it(
+    headers: Headers,
+) -> None:
+    """Two unreadable values that happen to agree prove nothing: a mark no name holds, an
+    empty label, a name in brackets. Each is the plain 403, whichever header carries it."""
+    with TestClient(create_app(fixture_settings())) as client:
+        answer = client.post("/student/help-requests", json={"note": "hi"}, headers=headers)
+        kept = client.get("/student/help-requests").json()
+
+    assert is_the_refusal(answer), (answer.status_code, answer.text[:200])
+    assert kept == []
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param(
+            {"Host": "pakal-laptop", "Origin": "http://pakal-laptop"}, id="a-computer-name"
+        ),
+        pytest.param(
+            {"Host": "Family-PC.local:8000", "Origin": "http://family-pc.local:8000"},
+            id="a-name-with-a-domain-in-another-case",
+        ),
+        pytest.param(
+            {"Host": "192.168.1.5:8000", "Origin": "http://192.168.1.5:8000"}, id="a-dotted-address"
+        ),
+        pytest.param(
+            {"Host": "localhost.", "Origin": "http://localhost."}, id="a-name-with-its-final-dot"
+        ),
+        pytest.param(
+            {"Host": "[fe80::1]:8000", "Origin": "http://[FE80::1]:8000"},
+            id="an-address-in-another-case",
+        ),
+    ],
+)
+def test_the_names_a_home_server_goes_by_are_read_as_hosts(headers: Headers) -> None:
+    with TestClient(create_app(fixture_settings())) as client:
+        answer = client.post("/student/help-requests", json={"note": "hi"}, headers=headers)
+
+    assert answer.status_code == 201, (answer.status_code, answer.text[:200])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("test<server", None),
+        ("test server", None),
+        ("test_server", None),
+        ("a..b", None),
+        (".a", None),
+        ("-a", None),
+        ("a-", None),
+        ("a" * 64, None),
+        ("[not-an-address]", None),
+        ("[::1%25eth0]", None),
+        ("[1.2.3.4]", None),
+        ("localhost.", ("localhost", 80)),
+        ("Pakal-Laptop.local", ("pakal-laptop.local", 80)),
+        ("192.168.1.5:8000", ("192.168.1.5", 8000)),
+        ("[2001:db8::1]:8000", ("[2001:db8::1]", 8000)),
+        ("a" * 63, ("a" * 63, 80)),
+    ],
+)
+def test_a_host_is_a_name_or_an_address_and_nothing_else(
+    text: str, expected: tuple[str, int] | None
+) -> None:
+    assert read_authority(text, "http") == expected

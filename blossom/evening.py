@@ -64,9 +64,10 @@ another assignment by its title."""
 class ReportedDone:
     """Work a plan speaks about that she has since reported done."""
 
-    titles: tuple[str, ...]
-    """The assignments named, by title, in the plan's order, when the plan carries the
-    ids it speaks about."""
+    named: tuple[tuple[str, str], ...]
+    """The assignments, each as its id and its title, in the order the draft keeps their
+    ids, which is sorted, when the plan carries the ids it speaks about. The id is what
+    tells two assignments with one title apart, so the pages show it with the title."""
     known: bool
     """Whether the plan carries those ids. A plan from before plans carried them cannot
     name the work; it is told only that something in its window is reported done."""
@@ -85,14 +86,14 @@ def reported_done(project_state: ProjectStateStore, record: DraftRecord) -> Repo
     with project_state.exclusively():
         if record.plan_assignment_ids is None:
             week = read_week(project_state, project_state, record.plan_date)
-            return ReportedDone(titles=(), known=False) if week.done_ids() else None
+            return ReportedDone(named=(), known=False) if week.done_ids() else None
         if not record.plan_assignment_ids:
             return None
         statuses = statuses_for(project_state, record.plan_assignment_ids)
         titles = {item.assignment_id: item.title for item in project_state.all_assignments()}
     named = tuple(
-        titles.get(name, NOT_ON_RECORD)
+        (name, titles.get(name, NOT_ON_RECORD))
         for name in record.plan_assignment_ids
         if not statuses[name].needs_homework
     )
-    return ReportedDone(titles=named, known=True) if named else None
+    return ReportedDone(named=named, known=True) if named else None

@@ -179,6 +179,9 @@ class AssignmentUpdateView(BaseModel):
     """Her standing report, ``done`` or ``not_yet``; ``None`` when the school alone has spoken."""
     reported_on: date | None = None
     restored_on: date | None = None
+    cleared_on: date | None = None
+    """The day her latest event took back her only update, leaving none standing: a
+    correction the page lists as recent activity, saying that no update stands."""
     note: str | None = None
     school_statements: list[SchoolStatementView] = []
     """What each school channel says now, the latest day first; the check rests on the
@@ -238,6 +241,15 @@ class HelpRequestView(BaseModel):
     response: str | None = None
 
 
+class NamedAssignmentView(BaseModel):
+    """One assignment a notice names: its id, which is what tells it apart, and its title."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignment_id: str
+    title: str
+
+
 class StudentPlanView(BaseModel):
     """Today's plan as she sees it: the text, when it was made, and what a parent said.
 
@@ -264,8 +276,8 @@ class StudentPlanView(BaseModel):
     """In her words, that the plan includes work she reports as done as things stand;
     ``None`` while it includes none. Nothing here says which came first, the plan or the
     report, since a report can land while a plan is being made."""
-    reported_done_titles: list[str] = []
-    """That work, by title, joined by id, when the plan carries the ids it speaks about."""
+    reported_done_work: list[NamedAssignmentView] = []
+    """That work, each by id and title, when the plan carries the ids it speaks about."""
 
 
 class WeekView(BaseModel):
@@ -423,8 +435,8 @@ class ApprovalView(BaseModel):
     reported_done: str | None = None
     """That today's plan includes work she reports as done as things stand; ``None`` for
     any other plan, and while it includes none."""
-    reported_done_titles: list[str] = []
-    """That work, by title, joined by id, when the plan carries the ids it speaks about."""
+    reported_done_work: list[NamedAssignmentView] = []
+    """That work, each by id and title, when the plan carries the ids it speaks about."""
 
     @classmethod
     def from_record(
@@ -432,13 +444,13 @@ class ApprovalView(BaseModel):
         record: DraftRecord,
         stale: str | None = None,
         reported_done: str | None = None,
-        reported_done_titles: Sequence[str] = (),
+        reported_done_work: Sequence[NamedAssignmentView] = (),
     ) -> "ApprovalView":
         """The parent's projection of a table row. The thread id stays out of it."""
         return cls(
             stale=stale,
             reported_done=reported_done,
-            reported_done_titles=list(reported_done_titles),
+            reported_done_work=list(reported_done_work),
             steps=record.steps,
             draft_id=record.draft_id,
             plan_date=record.plan_date,

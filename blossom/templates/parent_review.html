@@ -94,7 +94,7 @@
     the rest of the school's reports close the section, as before.
   #}
   {% macro her_update(item) %}
-    She reported it {% if item.status == "done" %}done{% else %}not yet done{% endif %}{% if item.reported_on %} on {{ item.reported_on.strftime("%B") }} {{ item.reported_on.day }}{% if item.restored_on %}, restored {{ item.restored_on.strftime("%B") }} {{ item.restored_on.day }}{% endif %}{% endif %}.{% if item.note %} She wrote: <q>{{ item.note }}</q>{% endif %}
+    {% if item.cleared_on %}She took back her update on {{ item.cleared_on.strftime("%B") }} {{ item.cleared_on.day }}; no update stands.{% else %}She reported it {% if item.status == "done" %}done{% else %}not yet done{% endif %}{% if item.reported_on %} on {{ item.reported_on.strftime("%B") }} {{ item.reported_on.day }}{% if item.restored_on %}, restored {{ item.restored_on.strftime("%B") }} {{ item.restored_on.day }}{% endif %}{% endif %}.{% if item.note %} She wrote: <q>{{ item.note }}</q>{% endif %}{% endif %}
   {% endmacro %}
   {% if updates.check or updates.recent or updates.school %}
     <section class="assignment-updates">
@@ -145,7 +145,7 @@
                 {{ statement.sentence }}
               </p>
             {% endfor %}
-            {% if item.status %}<p class="note">{{ her_update(item) }}</p>{% endif %}
+            {% if item.status or item.cleared_on %}<p class="note">{{ her_update(item) }}</p>{% endif %}
           </article>
         {% endfor %}
       {% endif %}
@@ -179,7 +179,7 @@
           <p class="confidence disagree" role="alert"><strong>Plan again.</strong> {{ draft.stale }}</p>
         {% endif %}
         {% if draft.reported_done %}
-          <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if draft.reported_done_titles %} In it: {{ draft.reported_done_titles|join(", ") }}. A new plan will leave it out.{% endif %}</p>
+          <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if draft.reported_done_work %} In it: {% for work in draft.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% endif %}</p>
         {% endif %}
         {#
           Each button names the draft it decides, so several waiting drafts
@@ -345,7 +345,7 @@ Cover both books with paper.</pre>
             <span class="when">{% if draft.decision in ("approved", "rejected") %}Reviewed{% else %}Closed{% endif %} {{ local(draft.decided_at) }}.</span>
           </p>
           {% if draft.reported_done %}
-            <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if draft.reported_done_titles %} In it: {{ draft.reported_done_titles|join(", ") }}. A new plan will leave it out.{% endif %}</p>
+            <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if draft.reported_done_work %} In it: {% for work in draft.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% endif %}</p>
           {% endif %}
           <details>
             <summary>{% if draft.decision in ("approved", "rejected") %}The plan as it was reviewed{% else %}The plan as it was{% endif %}</summary>

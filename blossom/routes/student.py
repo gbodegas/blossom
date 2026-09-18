@@ -121,6 +121,7 @@ from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.templating import page_templates
 from blossom.views import (
     HelpRequestView,
+    NamedAssignmentView,
     SchoolStatementView,
     StudentAssignmentView,
     StudentDueThisWeekView,
@@ -354,7 +355,9 @@ def take_back_help(request_id: str, state: State) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def done_in(state: ApplicationState, record: DraftRecord) -> tuple[str, list[str]] | None:
+def done_in(
+    state: ApplicationState, record: DraftRecord
+) -> tuple[str, list[NamedAssignmentView]] | None:
     """In her words, that a plan includes work she reports as done as things stand, and
     which work, or ``None`` while it includes none.
 
@@ -372,7 +375,9 @@ def done_in(state: ApplicationState, record: DraftRecord) -> tuple[str, list[str
         return None
     if not found.known:
         return PLAN_WINDOW_DONE, []
-    return PLAN_INCLUDES_DONE, list(found.titles)
+    return PLAN_INCLUDES_DONE, [
+        NamedAssignmentView(assignment_id=name, title=title) for name, title in found.named
+    ]
 
 
 def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
@@ -407,7 +412,7 @@ def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
         reason=record.reason,
         stale=stale,
         reported_done=None if included is None else included[0],
-        reported_done_titles=[] if included is None else included[1],
+        reported_done_work=[] if included is None else included[1],
     )
 
 

@@ -68,13 +68,18 @@ class AssignmentStatus:
 
     @property
     def status(self) -> str | None:
-        """What stands: ``done``, ``not_yet``, or ``None`` for no report."""
-        return None if self.head is None else self.head.status
+        """What stands: ``done``, ``not_yet``, or ``None`` for no report.
+
+        Read from the report whose words stand, never from the head's own
+        fields: an undo carries what it restored, and a chain whose links
+        lead nowhere restores nothing, whatever its last event says.
+        """
+        return None if self.asserted is None else self.asserted.status
 
     @property
     def note(self) -> str | None:
-        """The note that stands with her report, if any."""
-        return None if self.head is None else self.head.note
+        """The note that stands with her report, if any; from the same report."""
+        return None if self.asserted is None else self.asserted.note
 
     @property
     def work_state(self) -> WorkState:
@@ -100,6 +105,13 @@ class AssignmentStatus:
         """The day an undo restored the standing report, when the head is an undo that
         restored one; ``None`` otherwise."""
         if self.head is None or self.head.operation == REPORT or self.asserted is None:
+            return None
+        return self.head.reported_on
+
+    @property
+    def cleared_on(self) -> date | None:
+        """The day an undo left no update standing, when the head is such an undo."""
+        if self.head is None or self.head.operation == REPORT or self.head.status is not None:
             return None
         return self.head.reported_on
 

@@ -59,8 +59,8 @@
     {% if view.plan and view.plan.reported_done %}
       <p class="confidence disagree" role="status">
         <strong>Your updates.</strong> {{ view.plan.reported_done }}
-        {% if view.plan.reported_done_titles %}
-          In it: {{ view.plan.reported_done_titles|join(", ") }}.
+        {% if view.plan.reported_done_work %}
+          In it: {% for work in view.plan.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}.
           {% if not view.nothing_to_plan %}A new plan will leave it out.{% endif %}
         {% endif %}
       </p>

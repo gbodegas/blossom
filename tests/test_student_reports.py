@@ -909,6 +909,16 @@ def test_a_chain_whose_links_lead_nowhere_or_round_gives_no_report_a_borrowed_da
 
     assert standing_report(nowhere) is None
     assert standing_report(ring) is None
+    broken = AssignmentStatus(
+        assignment_id=PRACTICE,
+        head=ring[-1],
+        asserted=standing_report(ring),
+        school={},
+        history=tuple(ring),
+    )
+    assert (broken.status, broken.note, broken.work_state) == (None, None, "unreported")
+    assert broken.needs_homework
+    assert broken.reported_on is None
 
 
 def test_a_long_history_is_worked_out_in_one_pass_over_its_events(

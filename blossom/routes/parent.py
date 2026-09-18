@@ -66,6 +66,7 @@ from blossom.intake import TEXT_MAX_LENGTH
 from blossom.routes.runs import (
     Graphs,
     PlanGraphBuilder,
+    refuse_an_empty_run,
     require_model,
     require_work,
     run_plan,
@@ -82,6 +83,7 @@ from blossom.views import (
     AssignmentUpdateView,
     DecisionView,
     HelpRequestView,
+    NamedAssignmentView,
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
@@ -179,7 +181,9 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
             return None
 
 
-def done_in(state: ApplicationState, record: DraftRecord) -> tuple[str, list[str]] | None:
+def done_in(
+    state: ApplicationState, record: DraftRecord
+) -> tuple[str, list[NamedAssignmentView]] | None:
     """That today's plan includes work she reports as done as things stand, and which work.
 
     Said only for the plan her page shows as today's, whatever was decided
@@ -199,7 +203,9 @@ def done_in(state: ApplicationState, record: DraftRecord) -> tuple[str, list[str
         return None
     if not found.known:
         return PLAN_WINDOW_DONE, []
-    return PLAN_INCLUDES_DONE, list(found.titles)
+    return PLAN_INCLUDES_DONE, [
+        NamedAssignmentView(assignment_id=name, title=title) for name, title in found.named
+    ]
 
 
 def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
@@ -209,7 +215,7 @@ def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
         record,
         stale=stale_reason(state, record),
         reported_done=None if included is None else included[0],
-        reported_done_titles=[] if included is None else included[1],
+        reported_done_work=[] if included is None else included[1],
     )
 
 
@@ -233,7 +239,11 @@ async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> Plan
     """Run the plan graph for one evening, up to the gate or to the reason it stopped.
 
     An evening that has passed, or one past the edge of the calendar, is
-    refused with 422 before anything runs.
+    refused with 422 before anything runs, and so is an evening with nothing
+    left to plan, before and after the run: a report of hers can land between
+    the question and the run's reading, and such a run made no plan. A run
+    that reached a model and ended without a plan is answered with its
+    record, since the page lists those.
     """
     evening = request.plan_date or state.clock.today()
     if evening < state.clock.today():
@@ -242,11 +252,13 @@ async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> Plan
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=beyond(evening))
     require_work(state, evening)
     require_model(graphs)
-    return await run_plan(
+    run = await run_plan(
         graphs.build(),
         evening,
         state,
     )
+    refuse_an_empty_run(run)
+    return run
 
 
 @router.get("/approvals", response_model=ApprovalQueueView)
@@ -513,9 +525,9 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
     Each assignment is in one group, the first that fits. Her "done" beside
     any school channel's current "missing" is worth checking together, and
     comes first, open, however old. Of the rest, the assignments with a
-    standing update of hers and an event of hers, a correction included, in
-    the last fourteen household days follow, by that latest event, most
-    recent first, each showing the day of the update that stands. Every other
+    event of hers in the last fourteen household days, a correction included,
+    follow, by that latest event, most recent first, each showing the day of
+    the update that stands, or that none does. Every other
     assignment the school has a current statement about closes the section,
     in the record's order. Whichever group a row is in, it shows her update
     when she has one and what each school channel says now, every channel,
@@ -536,6 +548,7 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
             status=statuses[item.assignment_id].status,
             reported_on=statuses[item.assignment_id].reported_on,
             restored_on=statuses[item.assignment_id].restored_on,
+            cleared_on=statuses[item.assignment_id].cleared_on,
             note=statuses[item.assignment_id].note,
             school_statements=[
                 SchoolStatementView.from_report(report)
@@ -555,16 +568,12 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
     def lately(view: AssignmentUpdateView) -> bool:
         """Whether her latest event under the assignment, a correction included, falls in
         the window: an old update she puts back today is recent activity, dated as the
-        old update it is."""
+        old update it is, and so is taking back her only update, which leaves none."""
         head = statuses[view.assignment_id].head
         return head is not None and head.reported_on > today - timedelta(days=RECENT_DAYS)
 
     recent = sorted(
-        (
-            view
-            for view in views.values()
-            if view.assignment_id not in shown and view.status is not None and lately(view)
-        ),
+        (view for view in views.values() if view.assignment_id not in shown and lately(view)),
         key=latest_at,
         reverse=True,
     )
@@ -649,11 +658,12 @@ async def plan_from_the_page(
     try:
         require_work(state, evening)
         require_model(graphs)
-        await run_plan(
+        run = await run_plan(
             graphs.build(),
             evening,
             state,
         )
+        refuse_an_empty_run(run)
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     except Exception:

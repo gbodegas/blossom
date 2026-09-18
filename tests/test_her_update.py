@@ -6,6 +6,7 @@ undo restores, who may make an update, what it means for the plan, and what
 the family page makes of her word beside the school's.
 """
 
+import json
 import pathlib
 import re
 import sqlite3
@@ -29,6 +30,7 @@ from blossom.intake import PASTE_DAY
 from blossom.noticing import planning_digest, read_week
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceChannel
+from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.parent import PLAN_INCLUDES_DONE as SHE_REPORTS
@@ -444,11 +446,13 @@ def test_a_plan_that_speaks_about_work_she_has_since_finished_says_so_on_both_pa
     assert "<strong>Your updates.</strong>" not in quiet
     assert PLAN_INCLUDES_DONE == "This plan includes work you now report as Done."
     assert PLAN_INCLUDES_DONE in hers
-    assert f"In it: {ESSAY_TITLE}." in hers
+    assert f"In it: {ESSAY_TITLE} ({ESSAY})." in hers
     assert "A new plan will leave it out." in hers
-    assert f"<strong>Student updates.</strong> {SHE_REPORTS} In it: {ESSAY_TITLE}." in family
+    assert (
+        f"<strong>Student updates.</strong> {SHE_REPORTS} In it: {ESSAY_TITLE} ({ESSAY})." in family
+    )
     assert over_json["reported_done"] == PLAN_INCLUDES_DONE
-    assert over_json["reported_done_titles"] == [ESSAY_TITLE]
+    assert over_json["reported_done_work"] == [{"assignment_id": ESSAY, "title": ESSAY_TITLE}]
     assert "Reported done since" not in hers + family
     assert draft_id
     assert str(escape(PLAN_WINDOW_DONE)) in legacy
@@ -661,10 +665,10 @@ def test_a_done_saved_while_a_model_is_asked_leaves_the_plan_stale_and_named(dur
     assert ESSAY in record.plan_assignment_ids
     assert ASSIGNMENTS_CHANGED in hers
     assert PLAN_INCLUDES_DONE in hers
-    assert f"In it: {ESSAY_TITLE}." in hers
+    assert f"In it: {ESSAY_TITLE} ({ESSAY})." in hers
     assert THEIR_ASSIGNMENTS_CHANGED in family
     assert SHE_REPORTS in family
-    assert f"In it: {ESSAY_TITLE}." in family
+    assert f"In it: {ESSAY_TITLE} ({ESSAY})." in family
     assert 'value="approve"' not in family
     assert refused.status_code == 409
     assert after is not None
@@ -1360,7 +1364,7 @@ def test_with_everything_done_the_today_panel_informs_and_asks_for_nothing(decis
     assert NOTHING_TO_SCHEDULE in panel
     assert PLAN_INCLUDES_DONE in panel
     assert "In it: " in panel
-    assert f"{ESSAY_TITLE}," in panel
+    assert f"{ESSAY_TITLE} ({ESSAY})," in panel
     assert "View today's plan" in panel
     assert 'action="/parent/actions/plan"' in family
     if decision == "waiting":
@@ -1474,3 +1478,114 @@ def test_an_old_update_put_back_today_is_recent_by_its_correction_and_dated_as_i
         "She wrote: <q>Two parts left.</q>"
     ) in fold
     assert "Vocabulary quiz, unit one" not in section
+
+
+def test_taking_back_her_only_update_is_recent_activity_that_says_no_update_stands() -> None:
+    """A Done on the essay, then taken back: her latest event is today's correction, so the
+    essay is a recent update, saying that she took the update back and none stands; her
+    card offers the form again."""
+    with browser() as client:
+        page = client.get(report(client, ESSAY, "done"), headers=PAGE_HEADERS).text
+        taken_back = client.post(
+            f"/student/actions/assignments/{ESSAY}/undo-report",
+            data={"report_id": hidden(card_for(page, ESSAY), "report_id"), "week": WEEK},
+        )
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+        hers = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    assert taken_back.status_code == 303
+    section = family[family.index("<h2>Assignment updates</h2>") :]
+    section = section[: section.index("<h2>Waiting for your review</h2>")]
+    assert "<summary>Recent updates (1)</summary>" in section
+    assert ESSAY_TITLE in section
+    assert "She took back her update on August 19; no update stands." in section
+    assert "She reported it" not in section
+    assert "<legend>Your update<span" in card_for(hers, ESSAY)
+
+
+def test_the_familys_planning_routes_refuse_a_run_that_found_nothing_left_to_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Everything is reported done between the family route's question and the run's
+    reading. The JSON route answers 409 with the one sentence rather than 201 for a plan
+    it did not make; the form comes back to the page with the sentence rather than
+    redirecting as if a plan were made; no model is asked; and a run that reached a model
+    and ended without a plan is still answered with its record, as before."""
+    planners: list[Scripted[DailyPlan]] = []
+    plans: list[DailyPlan] = [fixture_week_plan()]
+
+    def override(
+        state: Annotated[ApplicationState, Depends(get_application_state)],
+    ) -> PlanGraphs:
+        planner = Scripted(*[ok(plan) for plan in plans])
+        planners.append(planner)
+        return PlanGraphs(
+            build=lambda: plan_graph_for(state, planner=planner, critic=Scripted(ok(accepting()))),
+            may_start=True,
+        )
+
+    with browser(key=True) as client:
+        client.app.dependency_overrides[plan_graphs] = override  # type: ignore[attr-defined]
+        state = state_of(client)
+        finish_everything(client)
+        monkeypatch.setattr(parent_routes, "require_work", lambda *_: None)
+        over_json = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        from_the_form = client.post(
+            "/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()}
+        )
+        ended = state.drafts.runs_without_a_draft()
+        asked = sum(planner.calls for planner in planners)
+        monkeypatch.undo()
+        report(client, ESSAY, "not_yet")
+        plans[:] = [
+            DailyPlan(plan_date=PLAN_DATE, blocks=[], deferred=[]),
+            DailyPlan(plan_date=PLAN_DATE, blocks=[], deferred=[]),
+            DailyPlan(plan_date=PLAN_DATE, blocks=[], deferred=[]),
+        ]
+        checks_failed = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+
+    assert over_json.status_code == 409
+    assert over_json.json()["detail"] == NOTHING_TO_SCHEDULE
+    assert from_the_form.status_code == 409
+    assert NOTHING_TO_SCHEDULE in from_the_form.text
+    assert [run.outcome for run in ended] == ["nothing_to_schedule", "nothing_to_schedule"]
+    assert asked == 0
+    assert checks_failed.status_code == 201
+    assert checks_failed.json()["draft_id"] is None
+    assert checks_failed.json()["outcome"] == "checks_failed"
+
+
+def test_two_assignments_with_one_title_are_told_apart_in_the_notice_by_their_ids() -> None:
+    """Two posters, one for Art and one for Music, both in the plan and both reported done:
+    the notice on each page names each with its id beside the title."""
+    with browser(key=True) as client:
+        for course in ("Art", "Music"):
+            entered = client.post(
+                "/parent/inbox/keep",
+                data={"course": course, "title": "Poster", "due_date": "2026-09-10"},
+            )
+            assert entered.status_code == 303
+        state = state_of(client)
+        posters = sorted(
+            item.assignment_id
+            for item in state.project_state.all_assignments()
+            if item.title == "Poster"
+        )
+        assert client.post("/student/actions/plan").status_code == 303
+        state.drafts._connection.execute(
+            "UPDATE drafts SET plan_assignment_ids=?", (json.dumps(posters),)
+        )
+        state.drafts._connection.commit()
+        for poster in posters:
+            report(client, poster, "done", week="2026-09-07")
+        hers = client.get(PAGE, headers=PAGE_HEADERS).text
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+        over_json = client.get("/student/plans/today").json()
+
+    assert len(posters) == 2
+    named = ", ".join(f"Poster ({poster})" for poster in posters)
+    assert f"In it: {named}." in hers
+    assert f"In it: {named}." in family
+    assert over_json["reported_done_work"] == [
+        {"assignment_id": poster, "title": "Poster"} for poster in posters
+    ]

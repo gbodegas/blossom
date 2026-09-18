@@ -27,7 +27,9 @@ for the tests, the sample, and a machine only the family touches.
 """
 
 import hmac
+import ipaddress
 import os
+import re
 import secrets
 import threading
 import time
@@ -73,8 +75,10 @@ SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
 """The methods that change nothing, which the origin check leaves alone."""
 DEFAULT_PORTS: Final = {"http": 80, "https": 443}
 """The port an address means when it names none, by scheme; no other scheme is an origin."""
-NOT_AN_AUTHORITY: Final = frozenset(r"\/?#@")
-"""Marks that never belong in a host: a path, a query, a fragment, or a user before it."""
+HOST_LABEL: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+"""One label of a host name: letters, digits, and hyphens inside, up to 63 long. A
+computer's name on the home network, ``localhost``, a dotted address, and a name with a
+domain are all labels joined by dots; anything else in a host is not a host."""
 ELSEWHERE: Final = "This request must come from the same origin."
 """The refusal for a request that would change something and does not name this server as
 where it came from."""
@@ -337,15 +341,18 @@ def read_authority(text: str, scheme: str) -> tuple[str, int] | None:
 
     The hostname is folded to lowercase, a port left out is the scheme's own,
     and an IPv6 address keeps its brackets, so the same server named two ways
-    reads the same. Anything else in the text, a path, a user, a space, a
-    second colon outside brackets, a port that is not a number in range, makes
-    it unreadable, and unreadable is refused rather than guessed at.
+    reads the same. A host is a host name, labels of letters, digits, and
+    hyphens joined by dots, or an IPv6 address in brackets; anything else in
+    the text, a path, a user, a space, a mark that no name holds, a second
+    colon outside brackets, a port that is not a number in range, makes it
+    unreadable, and unreadable is refused rather than guessed at, since two
+    unreadable values that happen to match prove nothing.
     """
-    if not text or not text.isprintable() or " " in text or NOT_AN_AUTHORITY & set(text):
+    if not text or not text.isprintable():
         return None
     if text.startswith("["):
         close = text.find("]")
-        if close < 2:
+        if close < 2 or not an_ipv6_address(text[1:close]):
             return None
         host, rest = text[: close + 1], text[close + 1 :]
     elif text.count(":") > 1:
@@ -353,8 +360,9 @@ def read_authority(text: str, scheme: str) -> tuple[str, int] | None:
     else:
         host, separator, digits = text.partition(":")
         rest = f"{separator}{digits}"
-    if not host:
-        return None
+        if not a_host_name(host):
+            return None
+        host = without_final_dot(host)
     if rest == "":
         port = DEFAULT_PORTS.get(scheme)
         return None if port is None else (host.lower(), port)
@@ -364,12 +372,37 @@ def read_authority(text: str, scheme: str) -> tuple[str, int] | None:
     if not digits or not digits.isascii() or not digits.isdigit():
         return None
     # Judged as text before it is a number: leading zeros aside, a port has at
-    # most five digits, and one thousands of digits long is refused here
+    # most five digits, and one a thousand digits long is refused here
     # rather than handed to a conversion that raises on it.
     significant = digits.lstrip("0") or "0"
     if len(significant) > 5 or not 1 <= int(significant) <= 65535:
         return None
     return host.lower(), int(significant)
+
+
+def a_host_name(host: str) -> bool:
+    """Whether ``host`` is a name a server can be reached by: labels joined by dots, each of
+    letters, digits, and hyphens inside, with at most one dot at the end."""
+    return bool(host) and all(
+        HOST_LABEL.fullmatch(label) for label in without_final_dot(host).split(".")
+    )
+
+
+def without_final_dot(host: str) -> str:
+    """A host name without the dot a fully written name ends in: the same name either way."""
+    return host[:-1] if host.endswith(".") else host
+
+
+def an_ipv6_address(inside: str) -> bool:
+    """Whether the text between brackets is an IPv6 address, as the standard library reads
+    one; a name, a mark, or an empty pair of brackets is not."""
+    try:
+        address = ipaddress.IPv6Address(inside)
+    except ValueError:
+        return False
+    # A zone name after the address names an interface of one computer, and
+    # no browser writes one in an address bar; refused rather than compared.
+    return address.scope_id is None
 
 
 def read_origin(value: str, *, whole_address: bool) -> tuple[str, str, int] | None:
