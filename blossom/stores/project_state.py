@@ -44,9 +44,35 @@ from blossom.stores.paths import refuse_unsafe_path
 
 DUE_THIS_WEEK_KEY = "due_this_week"
 DUE_THIS_WEEK_SPAN = timedelta(days=6)
-MANY_NAMES: Final = 500
-"""Past this many names, a read by name reads the whole table instead and sorts it out in
-memory, well inside what one query may carry."""
+EVERY_STUDENT_REPORT: Final = """
+    SELECT report_id, assignment_id, operation, status, note, reported_at, reported_on,
+        previous_report_id, undoes_report_id
+    FROM student_reports
+    ORDER BY rowid
+"""
+STUDENT_REPORTS_NAMED: Final = """
+    SELECT report_id, assignment_id, operation, status, note, reported_at, reported_on,
+        previous_report_id, undoes_report_id
+    FROM student_reports
+    WHERE assignment_id IN (SELECT value FROM json_each(?))
+    ORDER BY rowid
+"""
+EVERY_FAMILY_CHECK: Final = """
+    SELECT check_id, assignment_id, operation, basis, note, checked_at, checked_on,
+        previous_check_id
+    FROM family_checks
+    ORDER BY rowid
+"""
+FAMILY_CHECKS_NAMED: Final = """
+    SELECT check_id, assignment_id, operation, basis, note, checked_at, checked_on,
+        previous_check_id
+    FROM family_checks
+    WHERE assignment_id IN (SELECT value FROM json_each(?))
+    ORDER BY rowid
+"""
+"""The reads by assignment, each a statement written once and whole. The names go in as one
+bound value, a JSON list the statement unpacks, so no statement is ever put together from
+its pieces, however many names there are."""
 
 
 StudentStatus = Literal["done", "not_yet"]
@@ -786,25 +812,18 @@ class ProjectStateStore:
     ) -> dict[str, list[StudentReport]]:
         """Every event under each assignment named, in stored order, in one read.
 
-        With no names, or more names than a query takes comfortably, the
-        whole table is read and sorted out here: a handful of events per
-        assignment is a small table.
+        With no names given, the whole table. The names are bound as one
+        value, whatever their number.
         """
         wanted = None if assignment_ids is None else set(assignment_ids)
         if wanted is not None and not wanted:
             return {}
-        columns = (
-            "SELECT report_id, assignment_id, operation, status, note, reported_at, "
-            "reported_on, previous_report_id, undoes_report_id FROM student_reports "
-        )
         with self._lock:
-            if wanted is None or len(wanted) > MANY_NAMES:
-                rows = self._connection.execute(columns + "ORDER BY rowid").fetchall()
+            if wanted is None:
+                rows = self._connection.execute(EVERY_STUDENT_REPORT).fetchall()
             else:
-                marks = ", ".join("?" for _ in wanted)
                 rows = self._connection.execute(
-                    columns + f"WHERE assignment_id IN ({marks}) ORDER BY rowid",
-                    sorted(wanted),
+                    STUDENT_REPORTS_NAMED, (json.dumps(sorted(wanted)),)
                 ).fetchall()
         chains: dict[str, list[StudentReport]] = {}
         for row in rows:
@@ -817,24 +836,18 @@ class ProjectStateStore:
     ) -> dict[str, list[FamilyCheck]]:
         """Every check event under each assignment named, in stored order, in one read.
 
-        Read as her chains are: with no names, or more names than a query
-        takes comfortably, the whole table, sorted out here.
+        Read as her chains are: with no names given, the whole table, and
+        the names bound as one value.
         """
         wanted = None if assignment_ids is None else set(assignment_ids)
         if wanted is not None and not wanted:
             return {}
-        columns = (
-            "SELECT check_id, assignment_id, operation, basis, note, checked_at, checked_on, "
-            "previous_check_id FROM family_checks "
-        )
         with self._lock:
-            if wanted is None or len(wanted) > MANY_NAMES:
-                rows = self._connection.execute(columns + "ORDER BY rowid").fetchall()
+            if wanted is None:
+                rows = self._connection.execute(EVERY_FAMILY_CHECK).fetchall()
             else:
-                marks = ", ".join("?" for _ in wanted)
                 rows = self._connection.execute(
-                    columns + f"WHERE assignment_id IN ({marks}) ORDER BY rowid",
-                    sorted(wanted),
+                    FAMILY_CHECKS_NAMED, (json.dumps(sorted(wanted)),)
                 ).fetchall()
         chains: dict[str, list[FamilyCheck]] = {}
         for row in rows:

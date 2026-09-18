@@ -10,9 +10,9 @@ import json
 import pathlib
 import re
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
-from typing import Annotated, Protocol
+from typing import Annotated
 
 import pytest
 from fastapi import Depends
@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from blossom.agent.graph import ModelAnswer, plan_graph_for
 from blossom.app import create_app
 from blossom.assignment_status import statuses_for
-from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
+from blossom.dependencies import ApplicationState, get_application_state
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.intake import PASTE_DAY
 from blossom.noticing import planning_digest, read_week
@@ -52,7 +52,7 @@ from blossom.routes.student import (
     UPDATE_SAVED,
     UPDATE_UNDONE,
 )
-from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT, Settings
+from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -60,88 +60,36 @@ from blossom.stores.project_state import (
     Saved,
     StatusReport,
 )
+from tests.support import ESSAY_ID as ESSAY
 from tests.support import (
+    ESSAY_TITLE,
+    HERS,
+    MISSING_EMAIL,
+    PAGE_HEADERS,
     PLAN_DATE,
     SAME_ORIGIN,
+    THEIRS,
+    Answer,
     Scripted,
     accepting,
+    browser,
+    card_for,
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
+    hidden,
     human_text,
     ok,
-    scripted_graphs,
+    report,
+    school_said,
+    signed_in_household,
+    state_of,
 )
+from tests.support import FIXTURE_WEEK as WEEK
+from tests.support import HER_PAGE as PAGE
 
-PAGE = "/student/due-this-week"
-ESSAY = "assignment-canal-essay"
-ESSAY_TITLE = "Canal Era comparison essay"
 LOG = "assignment-reading-log"
 QUIZ = "assignment-vocabulary-quiz"
-WEEK = "2026-08-17"
-"""The Monday of the fixture week her page shows on the pinned day."""
-HERS = "the blue bicycle in the hallway"
-THEIRS = "coffee before the school run"
-PAGE_HEADERS = {"Accept": "text/html"}
-MISSING_EMAIL = (
-    "Assignments:\n08/19 World History - A: Homework: Canal Era comparison essay Grade: Missing\n"
-)
-
-
-def browser(*, key: bool = False, **environ: str) -> TestClient:
-    """Her page on the pinned day, with scripted models when ``key`` is set."""
-    with_key = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"} if key else {}
-    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **with_key, **environ))
-    if key:
-        app.dependency_overrides[plan_graphs] = scripted_graphs(
-            lambda: [fixture_week_plan()], lambda: [accepting()]
-        )
-    return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
-
-
-def signed_in_household(tmp_path: pathlib.Path) -> Settings:
-    return fixture_settings(
-        BLOSSOM_TODAY=PLAN_DATE.isoformat(),
-        BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
-        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
-        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
-        BLOSSOM_STUDENT_PASSPHRASE=HERS,
-        BLOSSOM_PARENT_PASSPHRASE=THEIRS,
-    )
-
-
-def state_of(client: TestClient) -> ApplicationState:
-    state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
-    return state
-
-
-def card_for(page: str, assignment_id: str) -> str:
-    """One card or list entry, whole: from its id to the next card's, or the page's end."""
-    start = page.index(f'id="assignment-{assignment_id}"')
-    following = page.find('id="assignment-', start + 1)
-    return page[start:] if following < 0 else page[start:following]
-
-
-def hidden(html: str, name: str) -> str:
-    match = re.search(rf'name="{name}" value="([^"]*)"', html)
-    assert match is not None, name
-    return match.group(1)
-
-
-def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:
-    """Send her update from the card as it stands and return the address it goes back to."""
-    page = client.get(
-        PAGE,
-        params={"week": more.pop("week", WEEK), "change": assignment_id},
-        headers=PAGE_HEADERS,
-    ).text
-    head = hidden(card_for(page, assignment_id), "expected_report_id")
-    answer = client.post(
-        f"/student/actions/assignments/{assignment_id}/report",
-        data={"status": status, "note": note, "expected_report_id": head, "week": WEEK, **more},
-    )
-    assert answer.status_code == 303, (answer.status_code, answer.text[:400])
-    return answer.headers["location"]
 
 
 def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -> None:
@@ -220,7 +168,12 @@ def test_not_yet_says_what_it_means_inside_and_outside_todays_window() -> None:
         head = hidden(card_for(later_page, poster), "expected_report_id")
         answer = client.post(
             f"/student/actions/assignments/{poster}/report",
-            data={"status": "not_yet", "expected_report_id": head, "week": "2026-09-07"},
+            data={
+                "status": "not_yet",
+                "note": "",
+                "expected_report_id": head,
+                "week": "2026-09-07",
+            },
         )
         later = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
         history = state_of(client).project_state.student_reports(poster)
@@ -293,11 +246,11 @@ def test_a_save_from_a_page_that_has_moved_on_is_refused_with_the_newer_update_s
         )
         blank_twice = client.post(
             f"/student/actions/assignments/{LOG}/report",
-            data={"status": "done", "expected_report_id": "", "week": WEEK},
+            data={"status": "done", "note": "", "expected_report_id": "", "week": WEEK},
         )
         blank_again = client.post(
             f"/student/actions/assignments/{LOG}/report",
-            data={"status": "done", "expected_report_id": "", "week": WEEK},
+            data={"status": "done", "note": "", "expected_report_id": "", "week": WEEK},
         )
         history = state_of(client).project_state.student_reports(ESSAY)
 
@@ -383,7 +336,7 @@ def test_a_parent_signed_in_reads_her_update_and_cannot_make_one(tmp_path: pathl
     ) as client:
         anonymous = client.post(
             f"/student/actions/assignments/{ESSAY}/report",
-            data={"status": "done", "expected_report_id": "", "week": WEEK},
+            data={"status": "done", "note": "", "expected_report_id": "", "week": WEEK},
             headers=PAGE_HEADERS,
         )
         client.post("/sign-in", data={"passphrase": THEIRS})
@@ -391,7 +344,7 @@ def test_a_parent_signed_in_reads_her_update_and_cannot_make_one(tmp_path: pathl
         parent_card = card_for(as_parent, ESSAY)
         refused = client.post(
             f"/student/actions/assignments/{ESSAY}/report",
-            data={"status": "done", "expected_report_id": "", "week": WEEK},
+            data={"status": "done", "note": "", "expected_report_id": "", "week": WEEK},
             headers=PAGE_HEADERS,
         )
         client.post("/sign-out")
@@ -770,19 +723,6 @@ def test_the_missing_a_check_rests_on_is_shown_whatever_the_latest_report_says()
 # ------------------------------------------------------------- the form, held to what it sends
 
 
-class Answer(Protocol):
-    """What these tests read of a response, whatever client library made it."""
-
-    @property
-    def status_code(self) -> int: ...
-
-    @property
-    def text(self) -> str: ...
-
-    @property
-    def headers(self) -> Mapping[str, str]: ...
-
-
 def post_report(client: TestClient, assignment_id: str, **fields: str | list[str]) -> Answer:
     return client.post(
         f"/student/actions/assignments/{assignment_id}/report",
@@ -817,6 +757,29 @@ def test_a_form_that_is_not_whole_writes_nothing_and_says_so(
 
     assert answer.status_code == 422
     assert BAD_FORM in card_for(answer.text, ESSAY)
+    assert nothing == []
+
+
+@pytest.mark.parametrize("left_out", ["note", "expected_report_id", "week"])
+def test_a_form_with_a_field_left_out_writes_nothing_and_no_choice_is_still_asked_for(
+    left_out: str,
+) -> None:
+    """Her browser sends the note, the update the card showed, and the week whether or not
+    anything is in them, so a form without one is not the card's and is refused whole. Two
+    radio buttons with none chosen send nothing, so a form without a status is the card's
+    own, and the card asks her to choose."""
+    sent = {"status": "done", "note": "", "expected_report_id": "", "week": WEEK}
+    del sent[left_out]
+    with browser() as client:
+        answer = post_report(client, ESSAY, **sent)
+        unchosen = post_report(client, ESSAY, note="kept words", expected_report_id="", week=WEEK)
+        nothing = state_of(client).project_state.student_reports(ESSAY)
+
+    assert answer.status_code == 422
+    assert BAD_FORM in answer.text
+    assert unchosen.status_code == 422
+    assert CHOOSE_ONE in card_for(unchosen.text, ESSAY)
+    assert "kept words</textarea>" in card_for(unchosen.text, ESSAY)
     assert nothing == []
 
 
@@ -1188,16 +1151,6 @@ def test_the_history_fold_lists_her_updates_and_corrections_and_the_schools_repo
 # ------------------------------------------------------------- the family page's groups
 
 
-def school_said(status: str, channel: SourceChannel, day: date) -> StatusReport:
-    return StatusReport(
-        status=status,
-        channel=channel,
-        reported_on=day,
-        dated_by=PASTE_DAY,
-        observed_at=datetime(2026, 8, 19, 22, 30, tzinfo=UTC),
-    )
-
-
 def test_each_assignment_is_in_one_family_group_with_every_fact_it_was_grouped_by() -> None:
     """Done beside Missing is worth checking; a recent Not yet beside Missing is a recent
     update, with the school's word in its row; a recent Done the school has said nothing
@@ -1422,6 +1375,7 @@ def test_a_not_yet_in_the_window_brings_the_plan_button_back_and_one_outside_doe
             f"/student/actions/assignments/{poster}/report",
             data={
                 "status": "not_yet",
+                "note": "",
                 "expected_report_id": hidden(card_for(far_off, poster), "expected_report_id"),
                 "week": "2026-09-07",
             },

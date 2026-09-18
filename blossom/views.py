@@ -204,12 +204,16 @@ class AssignmentUpdateView(BaseModel):
     checked_on: date | None = None
     check_note: str | None = None
     check_id: str | None = None
-    """The check that stands, which Check again reopens."""
+    """The last check a parent marked, standing or not, which Check again reopens; ``None``
+    when there is none or it was reopened."""
     checked_before_on: date | None = None
-    """The day of a check that stands in the record against facts that differ now, when the
-    row is worth checking again: said with what differs, so the page explains itself."""
-    new_done: bool = False
-    """Whether the Done standing is a new one since that check: a Not yet stood between."""
+    """The day of a check that is in the record against facts that differ now. The row says
+    so whichever group it is in, with what differs, so a check made is never out of sight
+    because her update or the school's report moved."""
+    checked_before_note: str | None = None
+    """A parent's words with that check, if any."""
+    differs: list[str] = []
+    """What differs from the facts that check was made against, each as a few words."""
     new_missing: bool = False
     """Whether the school's statements of missing are not the ones that check was made
     against: a report the school had not made then, or a day from a fresh paste."""

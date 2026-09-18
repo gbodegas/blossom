@@ -60,38 +60,39 @@ differently is stale on both pages and refused at approval; a decided plan
 is history. Saving and deciding share the decision lock, so a decision is
 checked against a week that holds still until it lands.
 
-Her own word about her work is the third account, beside the school's and
-the record's dates, and `blossom/assignment_status.py` reads them apart. A
-report is Done, meaning she has finished her part, or Not yet, with a note if
-she wants one; the store keeps each as an event in a chain per assignment,
-with the status and note that stand after it, the day it was made, and the
-event before it, so what stands now is the chain's head and an undo is one
-more event that restores what stood before. The report whose words stand is
-found by walking back from the head through every undo, however many, so a
-restored report keeps its own day; and the store refuses an event that is not
-whole, an undo that is first, takes back anything but the report at the head,
-or restores something other than what stood before it, the sample's seed
-included. A save carries the head the page
-showed, and the form is read whole first: its own fields, each once, and an
-update it names must be one of that assignment's events, or nothing is
-compared or written. Then the same update as the one standing is already
-saved and writes nothing, a page whose head has moved on is refused with the
-newer update shown, and anything else is appended, one operation under the
-decision lock and the store's. A write the file refuses is rolled back whole,
-and the page comes back with her words and no word of a save. The pages read
-her events and the school's reports in two batched reads whatever the number
-of cards: each card shows what every school channel says now, not one latest
-report, and folds her history under it, her updates and corrections with
-their days and the school's reports apart. Her Done decides one thing, whether the assignment is still
-work to plan: the planner, the critic, and the checks see only the work that
-is left, a check of its own fails a plan that speaks about finished work, and
-a window with nothing left ends a run before any model is asked. A Done
-beside a school report of Missing is something for the family to check, said
-on both pages and decided by neither. The form is a form alone, a parent
+Her own word about her work is the third account, beside the school's and the
+record's dates, and `blossom/assignment_status.py` reads them apart. A report
+is Done, meaning she has finished her part, or Not yet, with a note if she
+wants one; the store keeps each as an event in a chain per assignment, with
+the status and note that stand after it, the day it was made, and the event
+before it, so what stands now is the chain's head and an undo is one more
+event that restores what stood before. The report whose words stand is found
+by walking back from the head through every undo, however many, so a restored
+report keeps its own day; and the store refuses an event that is not whole,
+an undo that is first, takes back anything but the report at the head, or
+restores something other than what stood before it, the sample's seed
+included. A save carries the head the page showed, and the form is read whole
+first: its own fields, each once, and an update it names must be one of that
+assignment's events, or nothing is compared or written. Then the same update
+as the one standing is already saved and writes nothing, a page whose head
+has moved on is refused with the newer update shown, and anything else is
+appended, one operation under the decision lock and the store's. A write the
+file refuses is rolled back whole, and the page comes back with her words and
+no word of a save. The pages read her events, the school's reports, and the
+family's checks in three batched reads whatever the number of cards, each a
+statement written whole with the names bound as one value: each card shows
+what every school channel says now, not one latest report, and folds her
+history under it, her updates and corrections with their days and the
+school's reports apart. Her Done decides one thing, whether the assignment is
+still work to plan: the planner, the critic, and the checks see only the work
+that is left, a check of its own fails a plan that speaks about finished
+work, and a window with nothing left ends a run before any model is asked. A
+Done beside a school report of Missing is something for the family to check,
+said on both pages and decided by neither. The form is a form alone, a parent
 signed in reads her update and cannot make one, and nothing writes her
 account but her own device. Where her Done stands beside a Missing, a parent
-can mark the pair checked on the family page, with a note her card shows.
-The check is a chain of the family's own events in a table of its own, made
+can mark the pair checked on the family page, with a note her card shows. The
+check is a chain of the family's own events in a table of its own, made
 against a basis worked out from her events and the school's reports, the
 report that began her Done and each current statement of Missing, and
 compared again under the decision lock and the store's, the writer reserved

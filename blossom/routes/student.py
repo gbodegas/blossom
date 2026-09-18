@@ -190,7 +190,11 @@ NOT_SAVED: Final = "Your update could not be saved. Your words are still here. T
 NOT_UNDONE: Final = "Your update could not be undone, and nothing was changed. Try again."
 REPORT_FIELDS: Final = frozenset({"status", "note", "expected_report_id", "week"})
 UNDO_FIELDS: Final = frozenset({"report_id", "week"})
-"""The fields each form sends, each once. Anything else, or anything twice, is refused."""
+"""The fields each form sends, each once. Anything else, anything twice, or a form with one
+of them left out, is refused."""
+NOTHING_CHOSEN: Final = frozenset({"status"})
+"""The field her browser leaves out when neither Done nor Not yet is chosen: two radio
+buttons with none checked send nothing. The card then asks her to choose one."""
 CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": UPDATE_SAVED,
     "same": UPDATE_ALREADY_SAVED,
@@ -931,7 +935,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     the card and her words, and never with a word of a save. A parent signed
     in is told the update is hers to make, 403, and nothing is written.
     """
-    fields, whole = await fields_of(request, REPORT_FIELDS)
+    fields, whole = await fields_of(request, REPORT_FIELDS, may_be_absent=NOTHING_CHOSEN)
     frame = week_named(fields.get("week", ""))
     if viewer_of(request) == "parent":
         return student_page(

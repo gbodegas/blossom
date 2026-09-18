@@ -4,20 +4,24 @@ Anything two test modules need lives here rather than in one of them, so the
 modules do not import each other; cross-imports between test files make the
 suite's collection order matter, which it should not. That covers the source
 records, the scripted models, the two-assignment graph the plan graph tests
-drive, and the fixture-week plans and route override the application tests
-drive.
+drive, the fixture-week plans and route override the application tests
+drive, the browser on her page with its cards and forms, and the small store
+her reports and the family's checks are tested in.
 
 This is a plain module rather than `conftest.py`: importing from a conftest
 makes the same file reachable under two module names, which mypy rejects.
 """
 
+import pathlib
+import re
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends
+from fastapi.testclient import TestClient
 from langchain_core.callbacks.manager import CallbackManager
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tracers.langchain import LangChainTracer
@@ -32,13 +36,17 @@ from blossom.agent.graph import (
     build_plan_graph,
     plan_graph_for,
 )
+from blossom.app import create_app
+from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.clock import FrozenClock
-from blossom.dependencies import ApplicationState, get_application_state
+from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
+from blossom.intake import PASTE_DAY
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceRecord
-from blossom.routes.runs import PlanGraphs
+from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import (
+    ANTHROPIC_API_KEY_VARIABLE,
     DEFAULT_EVENING_MINUTES,
     DEFAULT_TOO_MUCH_MINUTES,
     FIXTURE_PATH_VARIABLE,
@@ -49,8 +57,10 @@ from blossom.settings import (
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import (
     Assignment,
+    AssignmentKind,
     ProjectStateStore,
     Saved,
+    StatusReport,
     StudentStatus,
 )
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
@@ -429,3 +439,151 @@ def human_text(brief: Sequence[BaseMessage]) -> str:
     human = [message for message in brief if isinstance(message, HumanMessage)]
     assert len(human) == 1
     return str(human[0].content)
+
+
+# ------------------------------------------------------------- her page, driven through the app
+
+HER_PAGE = "/student/due-this-week"
+ESSAY_ID = "assignment-canal-essay"
+ESSAY_TITLE = "Canal Era comparison essay"
+FIXTURE_WEEK = "2026-08-17"
+"""The Monday of the fixture week her page shows on the pinned day."""
+HERS = "the blue bicycle in the hallway"
+THEIRS = "coffee before the school run"
+PAGE_HEADERS = {"Accept": "text/html"}
+MISSING_EMAIL = (
+    "Assignments:\n08/19 World History - A: Homework: Canal Era comparison essay Grade: Missing\n"
+)
+
+
+class Answer(Protocol):
+    """What these tests read of a response, whatever client library made it."""
+
+    @property
+    def status_code(self) -> int: ...
+
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def headers(self) -> Mapping[str, str]: ...
+
+
+def browser(*, key: bool = False, **environ: str) -> TestClient:
+    """Her page on the pinned day, with scripted models when ``key`` is set."""
+    with_key = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"} if key else {}
+    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **with_key, **environ))
+    if key:
+        app.dependency_overrides[plan_graphs] = scripted_graphs(
+            lambda: [fixture_week_plan()], lambda: [accepting()]
+        )
+    return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
+
+
+def signed_in_household(tmp_path: pathlib.Path) -> Settings:
+    """The pinned day with the sign-in on, its files under ``tmp_path``."""
+    return fixture_settings(
+        BLOSSOM_TODAY=PLAN_DATE.isoformat(),
+        BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
+        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
+        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+        BLOSSOM_STUDENT_PASSPHRASE=HERS,
+        BLOSSOM_PARENT_PASSPHRASE=THEIRS,
+    )
+
+
+def state_of(client: TestClient) -> ApplicationState:
+    state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+    return state
+
+
+def card_for(page: str, assignment_id: str) -> str:
+    """One card or list entry, whole: from its id to the next card's, or the page's end."""
+    start = page.index(f'id="assignment-{assignment_id}"')
+    following = page.find('id="assignment-', start + 1)
+    return page[start:] if following < 0 else page[start:following]
+
+
+def hidden(html: str, name: str) -> str:
+    """The value of the hidden field ``name`` in a piece of a page."""
+    match = re.search(rf'name="{name}" value="([^"]*)"', html)
+    assert match is not None, name
+    return match.group(1)
+
+
+def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:
+    """Send her update from the card as it stands and return the address it goes back to."""
+    page = client.get(
+        HER_PAGE,
+        params={"week": more.pop("week", FIXTURE_WEEK), "change": assignment_id},
+        headers=PAGE_HEADERS,
+    ).text
+    head = hidden(card_for(page, assignment_id), "expected_report_id")
+    answer = client.post(
+        f"/student/actions/assignments/{assignment_id}/report",
+        data={
+            "status": status,
+            "note": note,
+            "expected_report_id": head,
+            "week": FIXTURE_WEEK,
+            **more,
+        },
+    )
+    assert answer.status_code == 303, (answer.status_code, answer.text[:400])
+    return answer.headers["location"]
+
+
+def school_said(status: str, channel: SourceChannel, day: date) -> StatusReport:
+    """One report of the school's, dated by the day it was pasted."""
+    return StatusReport(
+        status=status,
+        channel=channel,
+        reported_on=day,
+        dated_by=PASTE_DAY,
+        observed_at=datetime(2026, 8, 19, 22, 30, tzinfo=UTC),
+    )
+
+
+# ------------------------------------------------------------- her reports, in a store alone
+
+SAID_AT = datetime(2026, 9, 16, 23, 30, tzinfo=UTC)
+SAID_ON = date(2026, 9, 16)
+"""Half past four in the afternoon in the fixtures' zone, on the day the report is made."""
+PRACTICE = "assignment-practice"
+PRACTICE_LOG = "assignment-log"
+
+
+def a_row(assignment_id: str, title: str) -> Assignment:
+    return Assignment(
+        assignment_id=assignment_id,
+        course="Math",
+        title=title,
+        due_date=date(2026, 9, 18),
+        dependencies=[],
+        reported_submission_status="not_started",
+        kind=AssignmentKind.HOMEWORK,
+    )
+
+
+def practice_store(path: pathlib.Path) -> ProjectStateStore:
+    """A store of two assignments, the weekly practice and the reading log, and nothing said."""
+    store = ProjectStateStore.open(path, fixture_clock())
+    store.put_on_record(
+        [a_row(PRACTICE, "Weekly practice"), a_row(PRACTICE_LOG, "Reading log")], {}
+    )
+    return store
+
+
+def school_missing(day: date) -> StatusReport:
+    """The school's email saying missing, as of ``day``."""
+    return StatusReport(
+        status="missing",
+        channel=SourceChannel.EMAIL,
+        reported_on=day,
+        dated_by="the day it was pasted",
+        observed_at=SAID_AT,
+    )
+
+
+def status_of(store: ProjectStateStore, assignment_id: str) -> AssignmentStatus:
+    return statuses_for(store, [assignment_id])[assignment_id]

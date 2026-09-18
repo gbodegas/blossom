@@ -95,8 +95,11 @@
     each with a way to check again; her recent updates fold; the rest of
     the school's reports close the section. A check is the family's own
     record: it changes neither account, sets no status, and sends nothing.
-    Every row has an id, so a word about it can point at it, and takes
-    focus when pointed at.
+    The last check a parent marked stays on its row whichever group the
+    row is in: as the check that stands, or, when her update or the
+    school's report moved since, as the check that was made, with what
+    differs now. Every row has an id, so a word about it can point at it,
+    and takes focus when pointed at.
   #}
   {% macro her_update(item) %}
     {% if item.cleared_on %}She took back her update on {{ item.cleared_on.strftime("%B") }} {{ item.cleared_on.day }}; no update stands.{% else %}She reported it {% if item.status == "done" %}done{% else %}not yet done{% endif %}{% if item.reported_on %} on {{ item.reported_on.strftime("%B") }} {{ item.reported_on.day }}{% if item.restored_on %}, restored {{ item.restored_on.strftime("%B") }} {{ item.restored_on.day }}{% endif %}{% endif %}.{% if item.note %} She wrote: <q>{{ item.note }}</q>{% endif %}{% endif %}
@@ -107,12 +110,21 @@
       {% if check.problem %}<p class="problem" role="alert" id="check-problem-{{ item.assignment_id }}">{{ check.problem }}{% if check.note and (item.checked or not item.basis) %} The note typed with it was not saved: <q>{{ check.note }}</q>{% endif %}</p>{% endif %}
     {% endif %}
   {% endmacro %}
-  {% macro checked_line(item) %}
-    <p class="checked-line">A parent marked this checked with her on {{ item.checked_on.strftime("%B") }} {{ item.checked_on.day }}.{% if item.check_note %} The note with it: <q>{{ item.check_note }}</q>{% endif %}</p>
+  {% macro again_form(item) %}
     <form method="post" action="/parent/actions/checks/{{ item.assignment_id }}/again" class="check-again">
       <input type="hidden" name="check_id" value="{{ item.check_id }}">
       <button type="submit" class="secondary" aria-label="Check again: {{ item.title }}">Check again</button>
     </form>
+  {% endmacro %}
+  {% macro checked_line(item) %}
+    <p class="checked-line">A parent marked this checked with her on {{ item.checked_on.strftime("%B") }} {{ item.checked_on.day }}.{% if item.check_note %} The note with it: <q>{{ item.check_note }}</q>{% endif %}</p>
+    {{ again_form(item) }}
+  {% endmacro %}
+  {% macro checked_before(item) %}
+    <p class="checked-line note">A parent marked this checked on {{ item.checked_before_on.strftime("%B") }} {{ item.checked_before_on.day }}, and what it rests on differs now: {{ item.differs|join(", and ") }}.{% if item.new_missing %} A report dated by the day it was pasted carries that day, which is not proof of a new warning from the school.{% endif %}{% if item.checked_before_note %} The note with it: <q>{{ item.checked_before_note }}</q>{% endif %}</p>
+  {% endmacro %}
+  {% macro check_on_record(item) %}
+    {% if item.checked %}{{ checked_line(item) }}{% elif item.checked_before_on %}{{ checked_before(item) }}{{ again_form(item) }}{% endif %}
   {% endmacro %}
   {% if updates.check or updates.checked or updates.recent or updates.school %}
     <section class="assignment-updates">
@@ -135,9 +147,7 @@
               Check whether it was turned in and whether the school record needs updating.
               Blossom is not scheduling more homework for this assignment.
             </p>
-            {% if item.checked_before_on %}
-              <p class="note">A parent marked this checked on {{ item.checked_before_on.strftime("%B") }} {{ item.checked_before_on.day }}, and what it rests on differs now:{% if item.new_done %} her Done is a new one{% if item.new_missing %}, and{% endif %}{% endif %}{% if item.new_missing %} the school's report listed is not the one checked then. A report dated by the day it was pasted carries that day, which is not proof of a new warning from the school{% endif %}.</p>
-            {% endif %}
+            {% if item.checked_before_on %}{{ checked_before(item) }}{% endif %}
             <form method="post" action="/parent/actions/checks/{{ item.assignment_id }}/mark" class="decision check">
               <label for="check-note-{{ item.assignment_id }}">Note for her card (optional)</label>
               <textarea id="check-note-{{ item.assignment_id }}" name="note" rows="2" aria-describedby="{% if at_note %}check-problem-{{ item.assignment_id }} {% endif %}check-hint-{{ item.assignment_id }}"{% if at_note %} aria-invalid="true" autofocus{% endif %}>{{ check.note if here else "" }}</textarea>
@@ -185,7 +195,7 @@
                 {% for statement in item.school_statements %}
                   The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}
                 {% endfor %}
-                {% if item.checked %}{{ checked_line(item) }}{% endif %}
+                {{ check_on_record(item) }}
               </li>
             {% endfor %}
           </ul>
@@ -205,7 +215,7 @@
               </p>
             {% endfor %}
             {% if item.status or item.cleared_on %}<p class="note">{{ her_update(item) }}</p>{% endif %}
-            {% if item.checked %}{{ checked_line(item) }}{% endif %}
+            {{ check_on_record(item) }}
           </article>
         {% endfor %}
       {% endif %}

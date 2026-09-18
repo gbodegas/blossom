@@ -194,6 +194,11 @@ NOT_THIS_ROWS: Final = (
 NOT_ON_RECORD: Final = "No assignment with that id is on record. Nothing was written."
 CHECK_NOT_SAVED: Final = "The check could not be saved. Nothing was written."
 CHECK_NOT_REOPENED: Final = "The check could not be reopened. Nothing was written."
+NEW_DONE: Final = "her Done is a new one"
+NEW_MISSING: Final = "the school's report listed is not the one checked then"
+DONE_GONE: Final = "her update is not Done"
+MISSING_GONE: Final = "no school channel reports it missing"
+"""What can differ from the facts a check was made against, as the row says it."""
 CHECK_CONFIRMATIONS: Final[dict[str, str]] = {
     "checked": CHECK_RECORDED,
     "checked_already": CHECK_ALREADY,
@@ -674,19 +679,38 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
 def update_view(item: Assignment, status: AssignmentStatus) -> AssignmentUpdateView:
     """One row of the section: her account, the school's, and the family's check, read apart.
 
-    A check that stands in the record against facts that differ now, a
-    check event at the head that marks checked something other than what
-    there is to check, is said with what differs, her Done or the school's
-    statements, and the row says what makes it worth checking again.
+    The last check a parent marked stays on the row whatever happened to
+    the facts since. While it stands against them, the row says it was
+    checked. When her update or the school's report moved, the row says
+    the check was made, on what day, with what note, and what differs now:
+    a Done that is a new one or a school report that is not the one
+    checked, on a row that is open again, or an update that is not Done
+    and a school that does not say missing, on a row with nothing to
+    check. The current basis decides only whether the row is open.
     """
     standing = status.check
-    before = status.check_head if status.needs_a_check else None
-    before = before if before is not None and before.operation == CHECKED else None
-    new_done = new_missing = False
+    head = status.check_head
+    marked = head if head is not None and head.operation == CHECKED else None
+    before = marked if standing is None else None
+    differs: list[str] = []
+    new_missing = False
     if before is not None and status.check_basis is not None:
         then, now = basis_parts(before.basis), basis_parts(status.check_basis)
-        new_done = then[1] != now[1]
         new_missing = then[2] != now[2]
+        differs = [
+            words
+            for words, applies in ((NEW_DONE, then[1] != now[1]), (NEW_MISSING, new_missing))
+            if applies
+        ]
+    elif before is not None:
+        differs = [
+            words
+            for words, applies in (
+                (DONE_GONE, status.needs_homework),
+                (MISSING_GONE, not status.school_says_missing),
+            )
+            if applies
+        ]
     return AssignmentUpdateView(
         assignment_id=item.assignment_id,
         course=item.course,
@@ -705,9 +729,10 @@ def update_view(item: Assignment, status: AssignmentStatus) -> AssignmentUpdateV
         checked=standing is not None,
         checked_on=None if standing is None else standing.checked_on,
         check_note=None if standing is None else standing.note,
-        check_id=None if standing is None else standing.check_id,
+        check_id=None if marked is None else marked.check_id,
         checked_before_on=None if before is None else before.checked_on,
-        new_done=new_done,
+        checked_before_note=None if before is None else before.note,
+        differs=differs,
         new_missing=new_missing,
     )
 

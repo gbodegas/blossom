@@ -56,32 +56,36 @@ from blossom.stores.project_state import (
     UnknownCheck,
 )
 from tests.support import (
-    PLAN_DATE,
-    SAME_ORIGIN,
-    accepting,
-    fixture_clock,
-    fixture_week_plan,
-    scripted_graphs,
-)
-from tests.test_her_update import (
-    ESSAY,
+    ESSAY_ID,
     ESSAY_TITLE,
+    FIXTURE_WEEK,
+    HER_PAGE,
     HERS,
     MISSING_EMAIL,
-    PAGE,
     PAGE_HEADERS,
+    PLAN_DATE,
+    PRACTICE,
+    PRACTICE_LOG,
+    SAID_AT,
+    SAID_ON,
+    SAME_ORIGIN,
     THEIRS,
-    WEEK,
     Answer,
+    accepting,
     browser,
     card_for,
+    fixture_clock,
+    fixture_week_plan,
     hidden,
+    practice_store,
     report,
+    school_missing,
     school_said,
+    scripted_graphs,
     signed_in_household,
     state_of,
+    status_of,
 )
-from tests.test_student_reports import LOG, NOW, PRACTICE, TODAY, a_store, missing, status_of
 
 HELPER = "This records your check here. It does not change her update or the school's report."
 HEADINGS = ("Worth checking together", "Checked recently", "Recent updates", "School reports")
@@ -106,8 +110,8 @@ def event(
         operation=operation,  # type: ignore[arg-type]
         status=status,  # type: ignore[arg-type]
         note=note,
-        reported_at=NOW,
-        reported_on=TODAY,
+        reported_at=SAID_AT,
+        reported_on=SAID_ON,
         previous_report_id=previous,
         undoes_report_id=undoes,
     )
@@ -119,8 +123,8 @@ def a_check(**over: object) -> FamilyCheck:
         "assignment_id": PRACTICE,
         "operation": "checked",
         "basis": f"{PRACTICE}|report-1|EMAIL:missing:2026-09-10",
-        "checked_at": NOW,
-        "checked_on": TODAY,
+        "checked_at": SAID_AT,
+        "checked_on": SAID_ON,
     }
     fields.update(over)
     return FamilyCheck(**fields)  # type: ignore[arg-type]
@@ -185,12 +189,12 @@ def test_the_basis_names_the_assignment_the_period_and_each_current_missing_in_o
     assignment, the report that began the Done, and each channel's current missing, sorted;
     a second channel adds one, an older statement arriving late adds nothing, and a channel
     that says something else drops out."""
-    store = a_store(tmp_path / "blossom.sqlite3")
+    store = practice_store(tmp_path / "blossom.sqlite3")
     try:
-        store.record_status_reports(PRACTICE, [missing(date(2026, 9, 10))])
+        store.record_status_reports(PRACTICE, [school_missing(date(2026, 9, 10))])
         without_done = status_of(store, PRACTICE)
         saved = store.report_status(
-            PRACTICE, "done", None, expected_head=None, now=NOW, today=TODAY
+            PRACTICE, "done", None, expected_head=None, now=SAID_AT, today=SAID_ON
         )
         assert isinstance(saved, Saved)
         one = status_of(store, PRACTICE)
@@ -198,13 +202,13 @@ def test_the_basis_names_the_assignment_the_period_and_each_current_missing_in_o
             PRACTICE, [school_said("missing", SourceChannel.LMS, date(2026, 9, 12))]
         )
         two = status_of(store, PRACTICE)
-        store.record_status_reports(PRACTICE, [missing(date(2026, 9, 1))])
+        store.record_status_reports(PRACTICE, [school_missing(date(2026, 9, 1))])
         late = status_of(store, PRACTICE)
         store.record_status_reports(
             PRACTICE, [school_said("turned_in", SourceChannel.EMAIL, date(2026, 9, 14))]
         )
         cleared = status_of(store, PRACTICE)
-        nothing = status_of(store, LOG)
+        nothing = status_of(store, PRACTICE_LOG)
     finally:
         store.close()
 
@@ -239,10 +243,12 @@ def test_a_check_is_appended_once_read_back_after_a_restart_and_a_file_from_befo
     tmp_path: pathlib.Path,
 ) -> None:
     path = tmp_path / "blossom.sqlite3"
-    store = a_store(path)
+    store = practice_store(path)
     try:
-        store.record_status_reports(PRACTICE, [missing(date(2026, 9, 10))])
-        done = store.report_status(PRACTICE, "done", None, expected_head=None, now=NOW, today=TODAY)
+        store.record_status_reports(PRACTICE, [school_missing(date(2026, 9, 10))])
+        done = store.report_status(
+            PRACTICE, "done", None, expected_head=None, now=SAID_AT, today=SAID_ON
+        )
         assert isinstance(done, Saved)
         basis = status_of(store, PRACTICE).check_basis
         assert basis is not None
@@ -256,8 +262,8 @@ def test_a_check_is_appended_once_read_back_after_a_restart_and_a_file_from_befo
             "  Teacher has it.\r\nSaid so Tuesday.  ",
             expected_check=None,
             basis_now=basis_now,
-            now=NOW,
-            today=TODAY,
+            now=SAID_AT,
+            today=SAID_ON,
         )
         assert isinstance(marked, Checked)
         again = store.mark_checked(
@@ -266,8 +272,8 @@ def test_a_check_is_appended_once_read_back_after_a_restart_and_a_file_from_befo
             "Teacher has it.",
             expected_check=None,
             basis_now=basis_now,
-            now=NOW,
-            today=TODAY,
+            now=SAID_AT,
+            today=SAID_ON,
         )
         other_note = store.mark_checked(
             PRACTICE,
@@ -275,8 +281,8 @@ def test_a_check_is_appended_once_read_back_after_a_restart_and_a_file_from_befo
             "Something else.",
             expected_check=marked.check.check_id,
             basis_now=basis_now,
-            now=NOW,
-            today=TODAY,
+            now=SAID_AT,
+            today=SAID_ON,
         )
     finally:
         store.close()
@@ -293,7 +299,7 @@ def test_a_check_is_appended_once_read_back_after_a_restart_and_a_file_from_befo
     assert chain == [marked.check]
     assert marked.check.note == "Teacher has it.\nSaid so Tuesday."
     assert (marked.check.operation, marked.check.basis) == ("checked", basis)
-    assert (marked.check.checked_at, marked.check.checked_on) == (NOW, TODAY)
+    assert (marked.check.checked_at, marked.check.checked_on) == (SAID_AT, SAID_ON)
     assert marked.check.previous_check_id is None
     assert marked.check.check_id.startswith("check-")
     assert status.checked
@@ -348,8 +354,8 @@ def test_a_check_is_appended_once_read_back_after_a_restart_and_a_file_from_befo
             None,
             expected_check=None,
             basis_now=lambda: status_of(upgraded, "assignment-essay").check_basis,
-            now=NOW,
-            today=TODAY,
+            now=SAID_AT,
+            today=SAID_ON,
         )
     finally:
         upgraded.close()
@@ -368,10 +374,12 @@ def test_a_check_meets_the_basis_and_the_record_as_they_stand_when_it_is_written
     standing is already made. A note change, the same paste, and an undo that restores the
     period keep the check; a missing the school had not reported before opens the row
     again with the check still in the record."""
-    store = a_store(tmp_path / "blossom.sqlite3")
+    store = practice_store(tmp_path / "blossom.sqlite3")
     try:
-        store.record_status_reports(PRACTICE, [missing(date(2026, 9, 10))])
-        done = store.report_status(PRACTICE, "done", None, expected_head=None, now=NOW, today=TODAY)
+        store.record_status_reports(PRACTICE, [school_missing(date(2026, 9, 10))])
+        done = store.report_status(
+            PRACTICE, "done", None, expected_head=None, now=SAID_AT, today=SAID_ON
+        )
         assert isinstance(done, Saved)
         first = status_of(store, PRACTICE).check_basis
         assert first is not None
@@ -386,17 +394,27 @@ def test_a_check_meets_the_basis_and_the_record_as_they_stand_when_it_is_written
                 note,
                 expected_check=expected,
                 basis_now=basis_now,
-                now=NOW,
-                today=TODAY,
+                now=SAID_AT,
+                today=SAID_ON,
             )
 
         not_yet = store.report_status(
-            PRACTICE, "not_yet", None, expected_head=done.report.report_id, now=NOW, today=TODAY
+            PRACTICE,
+            "not_yet",
+            None,
+            expected_head=done.report.report_id,
+            now=SAID_AT,
+            today=SAID_ON,
         )
         assert isinstance(not_yet, Saved)
         gone = mark(first, None, None)
         done_again = store.report_status(
-            PRACTICE, "done", None, expected_head=not_yet.report.report_id, now=NOW, today=TODAY
+            PRACTICE,
+            "done",
+            None,
+            expected_head=not_yet.report.report_id,
+            now=SAID_AT,
+            today=SAID_ON,
         )
         assert isinstance(done_again, Saved)
         renewed = basis_now()
@@ -405,7 +423,7 @@ def test_a_check_meets_the_basis_and_the_record_as_they_stand_when_it_is_written
         marked = mark(renewed, None, None)
         assert isinstance(marked, Checked)
         behind = mark(renewed, "Late note.", None)
-        reopened = store.check_again(PRACTICE, marked.check.check_id, now=NOW, today=TODAY)
+        reopened = store.check_again(PRACTICE, marked.check.check_id, now=SAID_AT, today=SAID_ON)
         assert isinstance(reopened, Reopened)
         after_reopening = status_of(store, PRACTICE)
         from_the_old_page = mark(renewed, None, marked.check.check_id)
@@ -416,28 +434,30 @@ def test_a_check_meets_the_basis_and_the_record_as_they_stand_when_it_is_written
             "done",
             "Both parts.",
             expected_head=done_again.report.report_id,
-            now=NOW,
-            today=TODAY,
+            now=SAID_AT,
+            today=SAID_ON,
         )
         assert isinstance(noted, Saved)
         after_the_note = status_of(store, PRACTICE).check
-        store.record_status_reports(PRACTICE, [missing(date(2026, 9, 10))])
+        store.record_status_reports(PRACTICE, [school_missing(date(2026, 9, 10))])
         after_the_same_paste = status_of(store, PRACTICE).check
-        undone = store.undo_report(PRACTICE, noted.report.report_id, now=NOW, today=TODAY)
+        undone = store.undo_report(PRACTICE, noted.report.report_id, now=SAID_AT, today=SAID_ON)
         assert isinstance(undone, Undone)
         after_the_undo = status_of(store, PRACTICE).check
         store.record_status_reports(
             PRACTICE, [school_said("missing", SourceChannel.LMS, date(2026, 9, 12))]
         )
         moved = status_of(store, PRACTICE)
-        reopened_twice = store.check_again(PRACTICE, fresh.check.check_id, now=NOW, today=TODAY)
-        once_more = store.check_again(PRACTICE, fresh.check.check_id, now=NOW, today=TODAY)
+        reopened_twice = store.check_again(
+            PRACTICE, fresh.check.check_id, now=SAID_AT, today=SAID_ON
+        )
+        once_more = store.check_again(PRACTICE, fresh.check.check_id, now=SAID_AT, today=SAID_ON)
         with pytest.raises(UnknownCheck):
             mark(renewed, None, "check-nowhere")
         with pytest.raises(UnknownCheck):
-            store.check_again(PRACTICE, "check-nowhere", now=NOW, today=TODAY)
+            store.check_again(PRACTICE, "check-nowhere", now=SAID_AT, today=SAID_ON)
         with pytest.raises(UnknownCheck):
-            store.check_again(LOG, fresh.check.check_id, now=NOW, today=TODAY)
+            store.check_again(PRACTICE_LOG, fresh.check.check_id, now=SAID_AT, today=SAID_ON)
         with pytest.raises(UnknownAssignment):
             store.mark_checked(
                 "assignment-nowhere",
@@ -445,13 +465,13 @@ def test_a_check_meets_the_basis_and_the_record_as_they_stand_when_it_is_written
                 None,
                 expected_check=None,
                 basis_now=basis_now,
-                now=NOW,
-                today=TODAY,
+                now=SAID_AT,
+                today=SAID_ON,
             )
         with pytest.raises(NoteTooLong):
             mark(renewed, "x" * 501, None)
         chain = store.family_checks(PRACTICE)
-        log_chain = store.family_checks(LOG)
+        log_chain = store.family_checks(PRACTICE_LOG)
     finally:
         store.close()
 
@@ -537,7 +557,7 @@ def a_discrepancy(client: TestClient) -> None:
     """The school's email says the essay is missing; she reports it done."""
     told = client.post("/parent/inbox/keep", data={"text": MISSING_EMAIL})
     assert told.status_code == 303
-    report(client, ESSAY, "done", "Handed in Tuesday.")
+    report(client, ESSAY_ID, "done", "Handed in Tuesday.")
 
 
 def mark(client: TestClient, assignment_id: str, note: str = "") -> Answer:
@@ -566,11 +586,13 @@ def check_again(client: TestClient, assignment_id: str) -> Answer:
 
 def undo(client: TestClient, assignment_id: str) -> None:
     """Take back her latest update from her card."""
-    page = client.get(PAGE, params={"week": WEEK, "show": assignment_id}, headers=PAGE_HEADERS).text
+    page = client.get(
+        HER_PAGE, params={"week": FIXTURE_WEEK, "show": assignment_id}, headers=PAGE_HEADERS
+    ).text
     head = hidden(card_for(page, assignment_id), "report_id")
     answer = client.post(
         f"/student/actions/assignments/{assignment_id}/undo-report",
-        data={"report_id": head, "week": WEEK},
+        data={"report_id": head, "week": FIXTURE_WEEK},
     )
     assert answer.status_code == 303, answer.text[:300]
 
@@ -583,32 +605,32 @@ def test_the_family_page_offers_mark_checked_and_a_check_shows_on_both_pages() -
     with browser() as client:
         a_discrepancy(client)
         before = family_page(client)
-        row = row_for(before, ESSAY)
-        marked = mark(client, ESSAY, "Teacher has it on paper.\r\nSaid so Tuesday.")
+        row = row_for(before, ESSAY_ID)
+        marked = mark(client, ESSAY_ID, "Teacher has it on paper.\r\nSaid so Tuesday.")
         after = client.get(marked.headers["location"], headers=PAGE_HEADERS).text
-        hers = card_for(client.get(PAGE, headers=PAGE_HEADERS).text, ESSAY)
-        chain = state_of(client).project_state.family_checks(ESSAY)
+        hers = card_for(client.get(HER_PAGE, headers=PAGE_HEADERS).text, ESSAY_ID)
+        chain = state_of(client).project_state.family_checks(ESSAY_ID)
 
     assert "<h3>Worth checking together</h3>" in before
-    assert f'<article class="draft needs-review" id="update-{ESSAY}" tabindex="-1">' in before
-    assert f'action="/parent/actions/checks/{ESSAY}/mark"' in row
+    assert f'<article class="draft needs-review" id="update-{ESSAY_ID}" tabindex="-1">' in before
+    assert f'action="/parent/actions/checks/{ESSAY_ID}/mark"' in row
     assert HELPER in row
-    assert f'<label for="check-note-{ESSAY}">Note for her card (optional)</label>' in row
+    assert f'<label for="check-note-{ESSAY_ID}">Note for her card (optional)</label>' in row
     assert "Up to 500 characters. She reads this on her card." in row
     assert hidden(row, "expected_check_id") == ""
-    assert hidden(row, "basis").startswith(f"{ESSAY}|report-")
+    assert hidden(row, "basis").startswith(f"{ESSAY_ID}|report-")
     assert hidden(row, "basis").endswith("|EMAIL:missing:2026-08-19")
     assert f'aria-label="Mark checked: {ESSAY_TITLE}"' in row
     assert "maxlength" not in row
     assert "data-pending" not in row
     assert "<script" not in row
     assert marked.status_code == 303
-    assert marked.headers["location"] == f"/parent?checked={ESSAY}#update-{ESSAY}"
+    assert marked.headers["location"] == f"/parent?checked={ESSAY_ID}#update-{ESSAY_ID}"
     assert "<h3>Worth checking together</h3>" not in after
     assert '<details class="steps checked-recently" open>' in after
     assert "<summary>Checked recently (1)</summary>" in after
-    checked = row_for(after, ESSAY)
-    assert where(after, ESSAY) == "Checked recently"
+    checked = row_for(after, ESSAY_ID)
+    assert where(after, ESSAY_ID) == "Checked recently"
     assert RECORDED in checked
     assert (
         "A parent marked this checked with her on August 19. The note with it: "
@@ -616,10 +638,10 @@ def test_the_family_page_offers_mark_checked_and_a_check_shows_on_both_pages() -
     ) in checked
     assert "She reported it done on August 19. She wrote: <q>Handed in Tuesday.</q>" in checked
     assert "The school reports it missing." in checked
-    assert f'action="/parent/actions/checks/{ESSAY}/again"' in checked
+    assert f'action="/parent/actions/checks/{ESSAY_ID}/again"' in checked
     assert f'aria-label="Check again: {ESSAY_TITLE}"' in checked
     assert hidden(checked, "check_id") == chain[0].check_id
-    assert f'action="/parent/actions/checks/{ESSAY}/mark"' not in after
+    assert f'action="/parent/actions/checks/{ESSAY_ID}/mark"' not in after
     assert "Check again reopens it here." in after
     assert (
         "A parent marked this checked with you on August 19. The note with it: "
@@ -643,28 +665,28 @@ def test_only_a_parents_device_marks_a_check_and_the_check_holds_through_a_resta
         assert client.post("/parent/inbox/keep", data={"text": MISSING_EMAIL}).status_code == 303
         client.post("/sign-out")
         client.post("/sign-in", data={"passphrase": HERS})
-        report(client, ESSAY, "done")
+        report(client, ESSAY_ID, "done")
         hers = client.post(
-            f"/parent/actions/checks/{ESSAY}/mark",
+            f"/parent/actions/checks/{ESSAY_ID}/mark",
             data={"basis": "x", "expected_check_id": "", "note": ""},
             headers=PAGE_HEADERS,
         )
         hers_again = client.post(
-            f"/parent/actions/checks/{ESSAY}/again",
+            f"/parent/actions/checks/{ESSAY_ID}/again",
             data={"check_id": "x"},
             headers=PAGE_HEADERS,
         )
         client.post("/sign-out")
         client.post("/sign-in", data={"passphrase": THEIRS})
-        marked = mark(client, ESSAY, "On paper.")
-        chain = state_of(client).project_state.family_checks(ESSAY)
+        marked = mark(client, ESSAY_ID, "On paper.")
+        chain = state_of(client).project_state.family_checks(ESSAY_ID)
     with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         client.post("/sign-in", data={"passphrase": THEIRS})
         family = family_page(client)
-        as_parent = card_for(client.get(PAGE, headers=PAGE_HEADERS).text, ESSAY)
+        as_parent = card_for(client.get(HER_PAGE, headers=PAGE_HEADERS).text, ESSAY_ID)
         client.post("/sign-out")
         client.post("/sign-in", data={"passphrase": HERS})
-        as_her = card_for(client.get(PAGE, headers=PAGE_HEADERS).text, ESSAY)
+        as_her = card_for(client.get(HER_PAGE, headers=PAGE_HEADERS).text, ESSAY_ID)
 
     assert (hers.status_code, hers_again.status_code) == (403, 403)
     assert marked.status_code == 303
@@ -691,12 +713,12 @@ def test_a_check_from_a_page_the_facts_or_the_record_moved_past_is_refused_with_
     with browser() as client:
         a_discrepancy(client)
         store = state_of(client).project_state
-        first = row_for(family_page(client), ESSAY)
+        first = row_for(family_page(client), ESSAY_ID)
         store.record_status_reports(
-            ESSAY, [school_said("missing", SourceChannel.LMS, date(2026, 8, 18))]
+            ESSAY_ID, [school_said("missing", SourceChannel.LMS, date(2026, 8, 18))]
         )
         moved = client.post(
-            f"/parent/actions/checks/{ESSAY}/mark",
+            f"/parent/actions/checks/{ESSAY_ID}/mark",
             data={
                 "basis": hidden(first, "basis"),
                 "expected_check_id": hidden(first, "expected_check_id"),
@@ -704,10 +726,10 @@ def test_a_check_from_a_page_the_facts_or_the_record_moved_past_is_refused_with_
             },
             headers=PAGE_HEADERS,
         )
-        second = row_for(family_page(client), ESSAY)
-        marked = mark(client, ESSAY, "Checked both.")
+        second = row_for(family_page(client), ESSAY_ID)
+        marked = mark(client, ESSAY_ID, "Checked both.")
         from_before = client.post(
-            f"/parent/actions/checks/{ESSAY}/mark",
+            f"/parent/actions/checks/{ESSAY_ID}/mark",
             data={
                 "basis": hidden(second, "basis"),
                 "expected_check_id": hidden(second, "expected_check_id"),
@@ -716,10 +738,10 @@ def test_a_check_from_a_page_the_facts_or_the_record_moved_past_is_refused_with_
             headers=PAGE_HEADERS,
         )
         already = client.get(from_before.headers["location"], headers=PAGE_HEADERS).text
-        checked = row_for(family_page(client), ESSAY)
-        reopened = check_again(client, ESSAY)
+        checked = row_for(family_page(client), ESSAY_ID)
+        reopened = check_again(client, ESSAY_ID)
         behind = client.post(
-            f"/parent/actions/checks/{ESSAY}/mark",
+            f"/parent/actions/checks/{ESSAY_ID}/mark",
             data={
                 "basis": hidden(second, "basis"),
                 "expected_check_id": hidden(second, "expected_check_id"),
@@ -728,14 +750,14 @@ def test_a_check_from_a_page_the_facts_or_the_record_moved_past_is_refused_with_
             headers=PAGE_HEADERS,
         )
         twice = client.post(
-            f"/parent/actions/checks/{ESSAY}/again",
+            f"/parent/actions/checks/{ESSAY_ID}/again",
             data={"check_id": hidden(checked, "check_id")},
             headers=PAGE_HEADERS,
         )
-        third = row_for(family_page(client), ESSAY)
-        report(client, ESSAY, "not_yet", "Found a page left.")
+        third = row_for(family_page(client), ESSAY_ID)
+        report(client, ESSAY_ID, "not_yet", "Found a page left.")
         gone = client.post(
-            f"/parent/actions/checks/{ESSAY}/mark",
+            f"/parent/actions/checks/{ESSAY_ID}/mark",
             data={
                 "basis": hidden(third, "basis"),
                 "expected_check_id": hidden(third, "expected_check_id"),
@@ -743,33 +765,35 @@ def test_a_check_from_a_page_the_facts_or_the_record_moved_past_is_refused_with_
             },
             headers=PAGE_HEADERS,
         )
-        chain = store.family_checks(ESSAY)
+        chain = store.family_checks(ESSAY_ID)
 
     assert moved.status_code == 409
     assert FACTS_CHANGED in moved.text
-    assert f'<a href="#update-{ESSAY}">Go to the row.</a>' in moved.text
-    moved_row = row_for(moved.text, ESSAY)
-    assert f'id="check-problem-{ESSAY}">{FACTS_CHANGED}</p>' in moved_row
+    assert f'<a href="#update-{ESSAY_ID}">Go to the row.</a>' in moved.text
+    moved_row = row_for(moved.text, ESSAY_ID)
+    assert f'id="check-problem-{ESSAY_ID}">{FACTS_CHANGED}</p>' in moved_row
     assert "Typed before the portal spoke.</textarea>" in moved_row
     assert "school portal" in moved_row
     assert "school email" in moved_row
     assert hidden(moved_row, "basis").endswith("|EMAIL:missing:2026-08-19|LMS:missing:2026-08-18")
     assert marked.status_code == 303
     assert from_before.status_code == 303
-    assert from_before.headers["location"] == f"/parent?checked_already={ESSAY}#update-{ESSAY}"
-    assert CHECK_ALREADY in row_for(already, ESSAY)
-    assert "<q>Checked both.</q>" in row_for(already, ESSAY)
+    assert (
+        from_before.headers["location"] == f"/parent?checked_already={ESSAY_ID}#update-{ESSAY_ID}"
+    )
+    assert CHECK_ALREADY in row_for(already, ESSAY_ID)
+    assert "<q>Checked both.</q>" in row_for(already, ESSAY_ID)
     assert "A second parent's words." not in already
     assert reopened.status_code == 303
-    assert reopened.headers["location"] == f"/parent?reopened={ESSAY}#update-{ESSAY}"
+    assert reopened.headers["location"] == f"/parent?reopened={ESSAY_ID}#update-{ESSAY_ID}"
     assert behind.status_code == 409
-    assert CHECK_MOVED_ON in row_for(behind.text, ESSAY)
-    assert where(behind.text, ESSAY) == "Worth checking together"
+    assert CHECK_MOVED_ON in row_for(behind.text, ESSAY_ID)
+    assert where(behind.text, ESSAY_ID) == "Worth checking together"
     assert twice.status_code == 409
-    assert CHECK_MOVED_ON in row_for(twice.text, ESSAY)
+    assert CHECK_MOVED_ON in row_for(twice.text, ESSAY_ID)
     assert gone.status_code == 409
-    assert where(gone.text, ESSAY) == "Recent updates"
-    gone_row = row_for(gone.text, ESSAY)
+    assert where(gone.text, ESSAY_ID) == "Recent updates"
+    gone_row = row_for(gone.text, ESSAY_ID)
     assert FACTS_CHANGED in gone_row
     assert "The note typed with it was not saved: <q>Typed before her change.</q>" in gone_row
     assert "<textarea" not in gone_row
@@ -786,58 +810,66 @@ def test_what_reopens_a_checked_row_and_what_does_not() -> None:
     with browser() as client:
         a_discrepancy(client)
         store = state_of(client).project_state
-        assert mark(client, ESSAY, "Seen.").status_code == 303
+        assert mark(client, ESSAY_ID, "Seen.").status_code == 303
         assert client.post("/parent/inbox/keep", data={"text": MISSING_EMAIL}).status_code == 303
         same_paste = family_page(client)
-        report(client, ESSAY, "done", "Handed in Tuesday, both parts.")
+        report(client, ESSAY_ID, "done", "Handed in Tuesday, both parts.")
         note_only = family_page(client)
         store.record_status_reports(
-            ESSAY, [school_said("missing", SourceChannel.EMAIL, date(2026, 8, 10))]
+            ESSAY_ID, [school_said("missing", SourceChannel.EMAIL, date(2026, 8, 10))]
         )
         late = family_page(client)
-        report(client, ESSAY, "not_yet", "Found a page left.")
+        report(client, ESSAY_ID, "not_yet", "Found a page left.")
         out = family_page(client)
-        undo(client, ESSAY)
+        undo(client, ESSAY_ID)
         restored = family_page(client)
-        hers_restored = card_for(client.get(PAGE, headers=PAGE_HEADERS).text, ESSAY)
-        report(client, ESSAY, "not_yet")
-        report(client, ESSAY, "done")
+        hers_restored = card_for(client.get(HER_PAGE, headers=PAGE_HEADERS).text, ESSAY_ID)
+        report(client, ESSAY_ID, "not_yet")
+        report(client, ESSAY_ID, "done")
         renewed = family_page(client)
-        hers_renewed = card_for(client.get(PAGE, headers=PAGE_HEADERS).text, ESSAY)
-        assert mark(client, ESSAY).status_code == 303
+        hers_renewed = card_for(client.get(HER_PAGE, headers=PAGE_HEADERS).text, ESSAY_ID)
+        assert mark(client, ESSAY_ID).status_code == 303
         store.record_status_reports(
-            ESSAY, [school_said("missing", SourceChannel.LMS, date(2026, 8, 18))]
+            ESSAY_ID, [school_said("missing", SourceChannel.LMS, date(2026, 8, 18))]
         )
         newly = family_page(client)
-        chain = store.family_checks(ESSAY)
-        reports = store.student_reports(ESSAY)
+        chain = store.family_checks(ESSAY_ID)
+        reports = store.student_reports(ESSAY_ID)
 
-    assert where(same_paste, ESSAY) == "Checked recently"
-    assert where(note_only, ESSAY) == "Checked recently"
-    assert "<q>Handed in Tuesday, both parts.</q>" in row_for(note_only, ESSAY)
-    assert where(late, ESSAY) == "Checked recently"
-    assert where(out, ESSAY) == "Recent updates"
-    assert "A parent marked this checked" not in row_for(out, ESSAY)
-    assert where(restored, ESSAY) == "Checked recently"
-    assert "restored August 19" in row_for(restored, ESSAY)
+    assert where(same_paste, ESSAY_ID) == "Checked recently"
+    assert where(note_only, ESSAY_ID) == "Checked recently"
+    assert "<q>Handed in Tuesday, both parts.</q>" in row_for(note_only, ESSAY_ID)
+    assert where(late, ESSAY_ID) == "Checked recently"
+    assert where(out, ESSAY_ID) == "Recent updates"
+    out_row = row_for(out, ESSAY_ID)
+    assert (
+        "A parent marked this checked on August 19, and what it rests on differs now: her "
+        "update is not Done. The note with it: <q>Seen.</q></p>"
+    ) in out_row
+    assert "A parent marked this checked with her" not in out_row
+    assert f'aria-label="Check again: {ESSAY_TITLE}"' in out_row
+    assert f'action="/parent/actions/checks/{ESSAY_ID}/mark"' not in out_row
+    assert where(restored, ESSAY_ID) == "Checked recently"
+    assert "restored August 19" in row_for(restored, ESSAY_ID)
     assert (
         "A parent marked this checked with you on August 19. The note with it: <q>Seen.</q>"
         in hers_restored
     )
-    assert where(renewed, ESSAY) == "Worth checking together"
-    renewed_row = row_for(renewed, ESSAY)
+    assert where(renewed, ESSAY_ID) == "Worth checking together"
+    renewed_row = row_for(renewed, ESSAY_ID)
     assert (
         "A parent marked this checked on August 19, and what it rests on differs now: her "
-        "Done is a new one.</p>"
+        "Done is a new one. The note with it: <q>Seen.</q></p>"
     ) in renewed_row
     assert "A parent marked this checked with" not in hers_renewed
-    assert where(newly, ESSAY) == "Worth checking together"
-    newly_row = row_for(newly, ESSAY)
-    assert (
+    assert where(newly, ESSAY_ID) == "Worth checking together"
+    newly_row = row_for(newly, ESSAY_ID)
+    said = escape(
         "A parent marked this checked on August 19, and what it rests on differs now: the "
         "school's report listed is not the one checked then. A report dated by the day it "
-        "was pasted carries that day, which is not proof of a new warning from the school.</p>"
-    ) in newly_row
+        "was pasted carries that day, which is not proof of a new warning from the school."
+    )
+    assert f"{said}</p>" in newly_row
     assert "school portal" in newly_row
     assert [item.operation for item in chain] == ["checked", "checked"]
     assert chain[0].basis != chain[1].basis
@@ -857,7 +889,7 @@ def test_checks_leave_her_account_the_schools_the_plan_and_the_digest_as_they_we
     same before and after, and neither page says the assignments changed."""
     whole = fixture_week_plan()
     without_the_essay = whole.model_copy(
-        update={"blocks": [block for block in whole.blocks if block.assignment_id != ESSAY]}
+        update={"blocks": [block for block in whole.blocks if block.assignment_id != ESSAY_ID]}
     )
     with browser(key=True) as client:
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
@@ -874,7 +906,7 @@ def test_checks_leave_her_account_the_schools_the_plan_and_the_digest_as_they_we
             week = read_week(store, store, PLAN_DATE)
             latest = state.drafts.latest_for(PLAN_DATE)
             return (
-                store.student_reports(ESSAY),
+                store.student_reports(ESSAY_ID),
                 store.status_reports_by_assignment(),
                 planning_digest(week),
                 None if latest is None else (latest.draft_id, latest.plan_assignment_ids),
@@ -882,13 +914,13 @@ def test_checks_leave_her_account_the_schools_the_plan_and_the_digest_as_they_we
             )
 
         before = snapshot()
-        assert mark(client, ESSAY, "Seen.").status_code == 303
-        assert check_again(client, ESSAY).status_code == 303
-        assert mark(client, ESSAY, "Seen twice.").status_code == 303
+        assert mark(client, ESSAY_ID, "Seen.").status_code == 303
+        assert check_again(client, ESSAY_ID).status_code == 303
+        assert mark(client, ESSAY_ID, "Seen twice.").status_code == 303
         after = snapshot()
-        hers = client.get(PAGE, headers=PAGE_HEADERS).text
+        hers = client.get(HER_PAGE, headers=PAGE_HEADERS).text
         family = family_page(client)
-        chain = store.family_checks(ESSAY)
+        chain = store.family_checks(ESSAY_ID)
 
     assert before == after
     assert record.inputs_digest == before[2]
@@ -905,9 +937,9 @@ def test_the_check_form_is_read_whole_and_comes_back_with_the_words_kept() -> No
     an assignment not on record are refused as such. Nothing is written by any of them."""
     with browser() as client:
         a_discrepancy(client)
-        row = row_for(family_page(client), ESSAY)
+        row = row_for(family_page(client), ESSAY_ID)
         basis, head = hidden(row, "basis"), hidden(row, "expected_check_id")
-        mark_at = f"/parent/actions/checks/{ESSAY}/mark"
+        mark_at = f"/parent/actions/checks/{ESSAY_ID}/mark"
         long = client.post(
             mark_at,
             data={"basis": basis, "expected_check_id": head, "note": "x" * 501},
@@ -920,7 +952,7 @@ def test_the_check_form_is_read_whole_and_comes_back_with_the_words_kept() -> No
         )
         stranger = client.post(
             mark_at,
-            data={"basis": basis, "expected_check_id": head, "note": "", "week": WEEK},
+            data={"basis": basis, "expected_check_id": head, "note": "", "week": FIXTURE_WEEK},
             headers=PAGE_HEADERS,
         )
         elsewhere = client.post(
@@ -939,25 +971,25 @@ def test_the_check_form_is_read_whole_and_comes_back_with_the_words_kept() -> No
             headers=PAGE_HEADERS,
         )
         again_blank = client.post(
-            f"/parent/actions/checks/{ESSAY}/again", data={"check_id": ""}, headers=PAGE_HEADERS
+            f"/parent/actions/checks/{ESSAY_ID}/again", data={"check_id": ""}, headers=PAGE_HEADERS
         )
         again_doubled = client.post(
-            f"/parent/actions/checks/{ESSAY}/again",
+            f"/parent/actions/checks/{ESSAY_ID}/again",
             data={"check_id": ["a", "b"]},
             headers=PAGE_HEADERS,
         )
-        chain = state_of(client).project_state.family_checks(ESSAY)
+        chain = state_of(client).project_state.family_checks(ESSAY_ID)
 
     assert long.status_code == 422
-    assert f'{CHECK_NOTE_TOO_LONG} <a href="#update-{ESSAY}">Go to the row.</a>' in long.text
-    long_row = row_for(long.text, ESSAY)
-    assert f'id="check-problem-{ESSAY}">{CHECK_NOTE_TOO_LONG}</p>' in long_row
+    assert f'{CHECK_NOTE_TOO_LONG} <a href="#update-{ESSAY_ID}">Go to the row.</a>' in long.text
+    long_row = row_for(long.text, ESSAY_ID)
+    assert f'id="check-problem-{ESSAY_ID}">{CHECK_NOTE_TOO_LONG}</p>' in long_row
     assert (
-        f'aria-describedby="check-problem-{ESSAY} check-hint-{ESSAY}" aria-invalid="true" '
+        f'aria-describedby="check-problem-{ESSAY_ID} check-hint-{ESSAY_ID}" aria-invalid="true" '
         f"autofocus>{'x' * 501}</textarea>"
     ) in long_row
     assert doubled.status_code == 422
-    assert BAD_CHECK_FORM in row_for(doubled.text, ESSAY)
+    assert BAD_CHECK_FORM in row_for(doubled.text, ESSAY_ID)
     assert "Twice." not in doubled.text
     assert stranger.status_code == 422
     assert BAD_CHECK_FORM in stranger.text
@@ -974,6 +1006,122 @@ def test_the_check_form_is_read_whole_and_comes_back_with_the_words_kept() -> No
     assert chain == []
 
 
+@pytest.mark.parametrize(
+    ("path", "sent"),
+    [
+        pytest.param("mark", {"basis": "b", "expected_check_id": ""}, id="no-note"),
+        pytest.param("mark", {"basis": "b", "note": ""}, id="no-check-shown"),
+        pytest.param("mark", {"expected_check_id": "", "note": ""}, id="no-basis"),
+        pytest.param("again", {}, id="no-check-named"),
+    ],
+)
+def test_a_check_form_with_a_field_left_out_writes_nothing(path: str, sent: dict[str, str]) -> None:
+    """The page's forms send every field they have, blank or not; one that leaves a field
+    out is not the page's form, whatever the fields it does send say, and the row with no
+    check on it stays so."""
+    with browser() as client:
+        a_discrepancy(client)
+        row = row_for(family_page(client), ESSAY_ID)
+        fields = {
+            name: hidden(row, "basis") if value == "b" else value for name, value in sent.items()
+        }
+        answer = client.post(
+            f"/parent/actions/checks/{ESSAY_ID}/{path}", data=fields, headers=PAGE_HEADERS
+        )
+        chain = state_of(client).project_state.family_checks(ESSAY_ID)
+
+    assert answer.status_code == 422
+    assert BAD_CHECK_FORM in row_for(answer.text, ESSAY_ID)
+    assert chain == []
+
+
+def test_a_check_whose_facts_moved_stays_on_its_row_and_can_be_reopened() -> None:
+    """The school's email says something else after the check: the row is not worth checking,
+    and it still says a parent marked it checked, on what day, with what note, and that no
+    school channel reports it missing now, with Check again beside it. Her Not yet on top
+    of that is said too. Her card says nothing of a check that does not stand. Reopened,
+    the line goes and both events are in the record."""
+    with browser() as client:
+        a_discrepancy(client)
+        store = state_of(client).project_state
+        assert mark(client, ESSAY_ID, "Seen.").status_code == 303
+        store.record_status_reports(
+            ESSAY_ID, [school_said("turned_in", SourceChannel.EMAIL, PLAN_DATE)]
+        )
+        cleared = family_page(client)
+        hers = card_for(client.get(HER_PAGE, headers=PAGE_HEADERS).text, ESSAY_ID)
+        report(client, ESSAY_ID, "not_yet", "Found a page left.")
+        both = family_page(client)
+        reopened = check_again(client, ESSAY_ID)
+        after = client.get(reopened.headers["location"], headers=PAGE_HEADERS).text
+        chain = store.family_checks(ESSAY_ID)
+
+    assert where(cleared, ESSAY_ID) == "Recent updates"
+    cleared_row = row_for(cleared, ESSAY_ID)
+    assert (
+        "A parent marked this checked on August 19, and what it rests on differs now: no "
+        "school channel reports it missing. The note with it: <q>Seen.</q></p>"
+    ) in cleared_row
+    assert f'aria-label="Check again: {ESSAY_TITLE}"' in cleared_row
+    assert hidden(cleared_row, "check_id") == chain[0].check_id
+    assert "The school reports it turned in." in cleared_row
+    assert "Worth checking together" not in cleared
+    assert "Checked recently" not in cleared
+    assert "A parent marked this checked" not in hers
+    assert (
+        "differs now: her update is not Done, and no school channel reports it missing."
+    ) in row_for(both, ESSAY_ID)
+    assert reopened.status_code == 303
+    after_row = row_for(after, ESSAY_ID)
+    assert CHECK_REOPENED in after_row
+    assert "A parent marked this checked" not in after_row
+    assert "Check again" not in after_row
+    assert [item.operation for item in chain] == ["checked", "reopened"]
+
+
+def test_reads_by_name_take_any_number_of_names_as_one_bound_value(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Two thousand names, two of them on record: her events and the family's checks come
+    back for those two, each statement written once with the names bound as one value."""
+    store = practice_store(tmp_path / "blossom.sqlite3")
+    try:
+        store.record_status_reports(PRACTICE, [school_missing(date(2026, 9, 10))])
+        done = store.report_status(
+            PRACTICE, "done", None, expected_head=None, now=SAID_AT, today=SAID_ON
+        )
+        assert isinstance(done, Saved)
+        basis = status_of(store, PRACTICE).check_basis
+        assert basis is not None
+        marked = store.mark_checked(
+            PRACTICE,
+            basis,
+            None,
+            expected_check=None,
+            basis_now=lambda: status_of(store, PRACTICE).check_basis,
+            now=SAID_AT,
+            today=SAID_ON,
+        )
+        assert isinstance(marked, Checked)
+        names = [f"assignment-{n}" for n in range(2000)] + [PRACTICE, PRACTICE_LOG]
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+        reports = store.student_report_chains(names)
+        checks = store.family_check_chains(names)
+        store._connection.set_trace_callback(None)
+        odd = store.family_check_chains(["it's", 'a "name"', "x'); DROP TABLE family_checks; --"])
+        still = store.family_checks(PRACTICE)
+    finally:
+        store.close()
+
+    assert reports == {PRACTICE: [done.report]}
+    assert checks == {PRACTICE: [marked.check]}
+    assert len(statements) == 2
+    assert all("json_each" in statement for statement in statements)
+    assert odd == {}
+    assert still == [marked.check]
+
+
 def test_a_check_older_than_the_window_keeps_its_line_and_its_button_in_the_rows_group() -> None:
     """A check made fifteen household days ago stands, so its row is not worth checking; it
     is past the fold's window, so it is under the school's reports with the line that says
@@ -981,7 +1129,7 @@ def test_a_check_older_than_the_window_keeps_its_line_and_its_button_in_the_rows
     with browser() as client:
         a_discrepancy(client)
         store = state_of(client).project_state
-        assert mark(client, ESSAY, "Seen.").status_code == 303
+        assert mark(client, ESSAY_ID, "Seen.").status_code == 303
         store._connection.execute(
             "UPDATE family_checks SET checked_on = ?",
             ((PLAN_DATE - date.resolution * 15).isoformat(),),
@@ -992,16 +1140,16 @@ def test_a_check_older_than_the_window_keeps_its_line_and_its_button_in_the_rows
         )
         store._connection.commit()
         family = family_page(client)
-        reopened = check_again(client, ESSAY)
+        reopened = check_again(client, ESSAY_ID)
         after = client.get(reopened.headers["location"], headers=PAGE_HEADERS).text
 
-    assert where(family, ESSAY) == "School reports"
-    row = row_for(family, ESSAY)
+    assert where(family, ESSAY_ID) == "School reports"
+    row = row_for(family, ESSAY_ID)
     assert (
         "A parent marked this checked with her on August 4. The note with it: <q>Seen.</q>" in row
     )
     assert f'aria-label="Check again: {ESSAY_TITLE}"' in row
     assert "Checked recently" not in family
     assert reopened.status_code == 303
-    assert where(after, ESSAY) == "Worth checking together"
-    assert CHECK_REOPENED in row_for(after, ESSAY)
+    assert where(after, ESSAY_ID) == "Worth checking together"
+    assert CHECK_REOPENED in row_for(after, ESSAY_ID)
