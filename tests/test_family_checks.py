@@ -49,6 +49,7 @@ from blossom.stores.project_state import (
     AlreadyChecked,
     CheckConflict,
     Checked,
+    CouldNotSave,
     FamilyCheck,
     NoteTooLong,
     ProjectStateStore,
@@ -900,6 +901,8 @@ def test_what_reopens_a_checked_row_and_what_does_not() -> None:
         "A parent marked this checked on August 19, and what it rests on differs now: her "
         "Done is a new one. The note with it: <q>Seen.</q></p>"
     ) in renewed_row
+    assert f'aria-label="Check again: {ESSAY_TITLE}"' in renewed_row
+    assert hidden(renewed_row, "check_id") == chain[0].check_id
     assert "A parent marked this checked with" not in hers_renewed
     assert where(newly, ESSAY_ID) == "Worth checking together"
     newly_row = row_for(newly, ESSAY_ID)
@@ -1011,7 +1014,11 @@ def test_the_check_form_is_read_whole_and_comes_back_with_the_words_kept() -> No
         )
         nowhere = client.post(
             "/parent/actions/checks/assignment-nowhere/mark",
-            data={"basis": basis, "expected_check_id": "", "note": ""},
+            data={
+                "basis": "assignment-nowhere|report-1|EMAIL:missing:2026-08-19",
+                "expected_check_id": "",
+                "note": "",
+            },
             headers=PAGE_HEADERS,
         )
         two_notes = client.post(
@@ -1461,3 +1468,193 @@ def test_each_note_field_names_its_assignment_for_a_reader_who_hears_the_page() 
     assert f'aria-label="Mark checked: {item.title}"' in log_row
     assert log_row.index("<textarea") < log_row.index("Mark checked</button>")
     assert family.count("Note for her card (optional)") == 2
+
+
+def test_a_row_open_again_keeps_check_again_for_the_check_that_was_made() -> None:
+    """The school's portal says missing too after the check: the row is worth checking again
+    and offers both forms, the one that marks what stands now and Check again for the check
+    that was made, each carrying the basis the page shows. Reopened, the check that was made
+    is off the row, the row stays open, and its form names the reopening as the last event."""
+    with browser() as client:
+        a_discrepancy(client)
+        store = state_of(client).project_state
+        assert mark(client, ESSAY_ID, "Seen.").status_code == 303
+        store.record_status_reports(
+            ESSAY_ID, [school_said("missing", SourceChannel.LMS, date(2026, 8, 18))]
+        )
+        open_again = row_for(family_page(client), ESSAY_ID)
+        reopened = check_again(client, ESSAY_ID)
+        after = client.get(reopened.headers["location"], headers=PAGE_HEADERS).text
+        chain = store.family_checks(ESSAY_ID)
+
+    assert f'action="/parent/actions/checks/{ESSAY_ID}/mark"' in open_again
+    assert f'action="/parent/actions/checks/{ESSAY_ID}/again"' in open_again
+    assert open_again.index("Check again</button>") < open_again.index("<textarea")
+    assert hidden(open_again, "check_id") == chain[0].check_id
+    assert open_again.count(f'name="basis" value="{hidden(open_again, "basis")}"') == 2
+    assert reopened.status_code == 303
+    assert where(after, ESSAY_ID) == "Worth checking together"
+    after_row = row_for(after, ESSAY_ID)
+    assert CHECK_REOPENED in after_row
+    assert "A parent marked this checked" not in after_row
+    assert f'action="/parent/actions/checks/{ESSAY_ID}/again"' not in after_row
+    assert hidden(after_row, "expected_check_id") == chain[1].check_id
+    assert [item.operation for item in chain] == ["checked", "reopened"]
+
+
+def test_a_basis_that_names_another_row_is_not_this_rows_form() -> None:
+    """Two rows worth checking. The reading log's basis sent to the essay's paths, and a
+    basis that names no assignment, are refused as not this row's, 422, before anything is
+    compared: a form put together wrong is told apart from a page the facts moved past.
+    Nothing is written, and the note typed comes back."""
+    log = "assignment-reading-log"
+    with browser() as client:
+        a_discrepancy(client)
+        store = state_of(client).project_state
+        store.record_status_reports(log, [school_said("missing", SourceChannel.EMAIL, PLAN_DATE)])
+        report(client, log, "done")
+        family = family_page(client)
+        theirs = hidden(row_for(family, log), "basis")
+        crossed = client.post(
+            f"/parent/actions/checks/{ESSAY_ID}/mark",
+            data={"basis": theirs, "expected_check_id": "", "note": "Kept words."},
+            headers=PAGE_HEADERS,
+        )
+        shapeless = client.post(
+            f"/parent/actions/checks/{ESSAY_ID}/mark",
+            data={"basis": "lone", "expected_check_id": "", "note": ""},
+            headers=PAGE_HEADERS,
+        )
+        assert mark(client, ESSAY_ID).status_code == 303
+        checked = row_for(family_page(client), ESSAY_ID)
+        crossed_again = client.post(
+            f"/parent/actions/checks/{ESSAY_ID}/again",
+            data={"check_id": hidden(checked, "check_id"), "basis": theirs},
+            headers=PAGE_HEADERS,
+        )
+        chains = (store.family_checks(ESSAY_ID), store.family_checks(log))
+
+    assert theirs.startswith(f"{log}|")
+    assert crossed.status_code == 422
+    crossed_row = row_for(crossed.text, ESSAY_ID)
+    assert NOT_THIS in crossed_row
+    assert "Kept words.</textarea>" in crossed_row
+    assert FACTS_CHANGED not in crossed.text
+    assert shapeless.status_code == 422
+    assert NOT_THIS in shapeless.text
+    assert crossed_again.status_code == 422
+    assert NOT_THIS in row_for(crossed_again.text, ESSAY_ID)
+    assert [item.operation for item in chains[0]] == ["checked"]
+    assert chains[1] == []
+
+
+@pytest.mark.parametrize("action", ["mark", "again", "report"])
+def test_a_commit_the_file_refuses_is_rolled_back_and_cannot_land_with_a_later_write(
+    tmp_path: pathlib.Path, action: str
+) -> None:
+    """A second connection holds a read open, so the writer is reserved and the event is
+    inserted, and then the commit itself is refused. The save is raised as not saved, no
+    transaction is left open, and the record reads as it did. With the reader gone, an
+    unrelated write lands alone: a fresh connection finds no trace of the event refused.
+    A new attempt then lands once. The same for her own report, which shares the helper."""
+    path = tmp_path / "blossom.sqlite3"
+    store = practice_store(path)
+    try:
+        store.record_status_reports(PRACTICE, [school_missing(date(2026, 9, 10))])
+        done = store.report_status(
+            PRACTICE, "done", None, expected_head=None, now=SAID_AT, today=SAID_ON
+        )
+        assert isinstance(done, Saved)
+        basis = status_of(store, PRACTICE).check_basis
+        assert basis is not None
+
+        def basis_now() -> str | None:
+            return status_of(store, PRACTICE).check_basis
+
+        marked = None
+        if action == "again":
+            marked = store.mark_checked(
+                PRACTICE,
+                basis,
+                None,
+                expected_check=None,
+                basis_now=basis_now,
+                now=SAID_AT,
+                today=SAID_ON,
+            )
+            assert isinstance(marked, Checked)
+
+        def attempt() -> object:
+            if action == "mark":
+                return store.mark_checked(
+                    PRACTICE,
+                    basis,
+                    "Seen.",
+                    expected_check=None,
+                    basis_now=basis_now,
+                    now=SAID_AT,
+                    today=SAID_ON,
+                )
+            if action == "again":
+                assert isinstance(marked, Checked)
+                return store.check_again(
+                    PRACTICE,
+                    marked.check.check_id,
+                    expected_basis=basis,
+                    basis_now=basis_now,
+                    now=SAID_AT,
+                    today=SAID_ON,
+                )
+            return store.report_status(
+                PRACTICE,
+                "done",
+                "Both parts.",
+                expected_head=done.report.report_id,
+                now=SAID_AT,
+                today=SAID_ON,
+            )
+
+        def on_record() -> tuple[list[str], list[str]]:
+            return (
+                [item.check_id for item in store.family_checks(PRACTICE)],
+                [item.report_id for item in store.student_reports(PRACTICE)],
+            )
+
+        before = on_record()
+        store._connection.execute("PRAGMA busy_timeout = 25")
+        reader = sqlite3.connect(path)
+        try:
+            reader.execute("BEGIN")
+            reader.execute("SELECT COUNT(*) FROM assignments").fetchone()
+            with pytest.raises(CouldNotSave):
+                attempt()
+            left_open = store._connection.in_transaction
+            seen_after = on_record()
+        finally:
+            reader.rollback()
+            reader.close()
+        store.record_status_reports(PRACTICE_LOG, [school_missing(date(2026, 9, 11))])
+        fresh = sqlite3.connect(path)
+        try:
+            durable = (
+                [str(row[0]) for row in fresh.execute("SELECT check_id FROM family_checks")],
+                [
+                    str(row[0])
+                    for row in fresh.execute(
+                        "SELECT report_id FROM student_reports WHERE assignment_id = ?",
+                        (PRACTICE,),
+                    )
+                ],
+            )
+        finally:
+            fresh.close()
+        landed = attempt()
+        after = on_record()
+    finally:
+        store.close()
+
+    assert not left_open
+    assert seen_after == before
+    assert durable == before
+    assert isinstance(landed, {"mark": Checked, "again": Reopened, "report": Saved}[action])
+    assert (len(after[0]) + len(after[1])) == (len(before[0]) + len(before[1])) + 1

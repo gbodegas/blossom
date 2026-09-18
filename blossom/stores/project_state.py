@@ -972,11 +972,16 @@ class ProjectStateStore:
         The writer is reserved with ``BEGIN IMMEDIATE`` before anything is
         read, so no other connection can write between the read and the
         write that follows from it; the transaction is committed when the
-        block ends and rolled back when it raises. The reservation and the
-        scope are one helper, so no caller can open the scope first and
-        reserve second, which would reserve nothing. Inside a transaction
-        already open, a first start's, the block joins it and leaves its end
-        to the opener.
+        block ends and rolled back when it raises. The commit is inside the
+        same scope: a commit the file refuses, another connection holding a
+        read open through it, leaves SQLite's transaction open with the
+        event in it, and the next write to commit would carry that event
+        along, so a refused commit is rolled back like any other failure
+        and nothing said to be unsaved can land afterward. The reservation
+        and the scope are one helper, so no caller can open the scope first
+        and reserve second, which would reserve nothing. Inside a
+        transaction already open, a first start's, the block joins it and
+        leaves its end to the opener.
         """
         if self._connection.in_transaction:
             yield
@@ -984,10 +989,10 @@ class ProjectStateStore:
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             yield
+            self._connection.commit()
         except BaseException:
             self._connection.rollback()
             raise
-        self._connection.commit()
 
     def _require_assignment_locked(self, assignment_id: str) -> None:
         row = self._connection.execute(

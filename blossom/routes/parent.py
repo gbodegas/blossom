@@ -900,6 +900,17 @@ def check_could_not(request: Request, state: ApplicationState, check: CheckState
         )
 
 
+def another_rows(basis: str, assignment_id: str) -> bool:
+    """Whether a basis names another assignment, or none at all.
+
+    A basis begins with its assignment, so one that begins otherwise was not
+    made for this row: a form put together wrong, refused as such, 422,
+    before anything is compared, and never taken for a page the facts moved
+    past, which is a 409.
+    """
+    return basis_parts(basis)[0] != assignment_id
+
+
 def back_to_the_row(said: str, assignment_id: str) -> str:
     """Where a check or a reopening sends a parent: the page, the row, and what happened."""
     return f"/parent?{said}={assignment_id}#update-{assignment_id}"
@@ -950,7 +961,12 @@ async def mark_checked_from_the_page(
 
     if not whole:
         return refused(BAD_CHECK_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
-    if not basis or len(basis) > BASIS_MAX_LENGTH or len(token) > TOKEN_MAX_LENGTH:
+    if (
+        not basis
+        or len(basis) > BASIS_MAX_LENGTH
+        or len(token) > TOKEN_MAX_LENGTH
+        or another_rows(basis, assignment_id)
+    ):
         return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if words is not None and len(words) > CHECK_NOTE_MAX_LENGTH:
         return refused(CHECK_NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
@@ -1025,7 +1041,12 @@ async def check_again_from_the_page(request: Request, assignment_id: str, state:
 
     if not whole:
         return refused(BAD_CHECK_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
-    if not token or len(token) > TOKEN_MAX_LENGTH or len(basis) > BASIS_MAX_LENGTH:
+    if (
+        not token
+        or len(token) > TOKEN_MAX_LENGTH
+        or len(basis) > BASIS_MAX_LENGTH
+        or (basis and another_rows(basis, assignment_id))
+    ):
         return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     store = state.project_state
     try:
