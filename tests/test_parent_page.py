@@ -742,3 +742,19 @@ def test_an_evening_with_nothing_left_to_do_is_refused_before_any_run() -> None:
     assert over_json.status_code == 409
     assert over_json.json()["detail"] == NOTHING_TO_SCHEDULE
     assert ended == []
+
+
+def test_an_evening_past_the_calendars_edge_is_refused_by_the_form_as_by_the_route() -> None:
+    """The last day the date type can hold has no week after it to read: the form says so
+    with 422, as the JSON route does, rather than fail on the way to reading the week."""
+    with browser() as client:
+        refused = client.post("/parent/actions/plan", data={"plan_date": "9999-12-31"})
+        over_json = client.post("/parent/plans", json={"plan_date": "9999-12-31"})
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        ended = state.drafts.runs_without_a_draft()
+
+    assert refused.status_code == 422
+    assert "The evening of 9999-12-31 is past the edge of the calendar." in refused.text
+    assert over_json.status_code == 422
+    assert over_json.json()["detail"].startswith("The evening of 9999-12-31 is past the edge")
+    assert ended == []

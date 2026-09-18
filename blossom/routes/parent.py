@@ -642,8 +642,9 @@ async def plan_from_the_page(
     A run that fails on the way for any reason other than a refusal is said on
     the page too, with the queue below unchanged; the run has already taken
     back what it left, and the failure goes to the process log. An evening that
-    has passed is refused before anything runs: a plan for it could reach no
-    page of hers.
+    has passed is refused before anything runs, since a plan for it could
+    reach no page of hers, and so is one past the edge of the calendar, whose
+    week cannot be read: the same two refusals the JSON route makes.
     """
     try:
         evening = date.fromisoformat(plan_date) if plan_date.strip() else state.clock.today()
@@ -659,6 +660,13 @@ async def plan_from_the_page(
             request,
             state,
             problem=passed(evening),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    if evening > date.max - CALENDAR_MARGIN:
+        return review_page(
+            request,
+            state,
+            problem=beyond(evening),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     try:
