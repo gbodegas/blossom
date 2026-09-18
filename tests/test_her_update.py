@@ -1434,3 +1434,43 @@ def test_a_not_yet_in_the_window_brings_the_plan_button_back_and_one_outside_doe
     assert ASSIGNMENTS_CHANGED in back
     assert "A new plan will leave it out." in back
     assert NOTHING_TO_SCHEDULE not in back
+
+
+def test_an_old_update_put_back_today_is_recent_by_its_correction_and_dated_as_it_is() -> None:
+    """A Not yet from the first of the month, then a Done the same day, and today the Done
+    taken back. Her latest event is today's correction, so the assignment is a recent
+    update, sorted ahead of a Done made earlier today, and it reads with the old update's
+    own day and the day it was restored. An old update left as it is stays out of the
+    fold, and reachable from its week."""
+    early = datetime(2026, 8, 1, 22, 0, tzinfo=UTC)
+    on = date(2026, 8, 1)
+    with browser() as client:
+        store = state_of(client).project_state
+        first = store.report_status(
+            ESSAY, "not_yet", "Two parts left.", expected_head=None, now=early, today=on
+        )
+        assert isinstance(first, Saved)
+        done = store.report_status(
+            ESSAY, "done", None, expected_head=first.report.report_id, now=early, today=on
+        )
+        assert isinstance(done, Saved)
+        left = store.report_status(QUIZ, "done", None, expected_head=None, now=early, today=on)
+        assert isinstance(left, Saved)
+        report(client, LOG, "done")
+        taken_back = client.post(
+            f"/student/actions/assignments/{ESSAY}/undo-report",
+            data={"report_id": done.report.report_id, "week": WEEK},
+        )
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+
+    assert taken_back.status_code == 303
+    section = family[family.index("<h2>Assignment updates</h2>") :]
+    section = section[: section.index("<h2>Waiting for your review</h2>")]
+    assert "<summary>Recent updates (2)</summary>" in section
+    fold = section[section.index("<summary>Recent updates (2)</summary>") :]
+    assert fold.index(ESSAY_TITLE) < fold.index("Reading log, week one")
+    assert (
+        "She reported it not yet done on August 1, restored August 19. "
+        "She wrote: <q>Two parts left.</q>"
+    ) in fold
+    assert "Vocabulary quiz, unit one" not in section

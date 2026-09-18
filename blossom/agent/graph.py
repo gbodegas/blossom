@@ -121,6 +121,7 @@ Outcome = Literal[
     "model_truncated",
     "model_refused",
     "model_unparseable",
+    "nothing_to_schedule",
 ]
 """Why the run stopped. The first two reached the gate; the rest did not.
 
@@ -128,7 +129,9 @@ Outcome = Literal[
 the checks passed and the critic did not agree, could not tell, or ran out of
 rounds: the plan went to the gate with the critique attached. ``checks_failed``
 means no plan within the bound passed tier one, so nothing was proposed. The
-three ``model_`` outcomes name how the model ended the run itself."""
+three ``model_`` outcomes name how the model ended the run itself.
+``nothing_to_schedule`` means the window held no work still to do when the run
+read it, so it ended at its first node with no model asked."""
 
 REACHED_THE_GATE: Final[frozenset[str]] = frozenset({"accepted", "unsettled"})
 

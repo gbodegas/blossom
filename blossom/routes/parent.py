@@ -512,8 +512,10 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
 
     Each assignment is in one group, the first that fits. Her "done" beside
     any school channel's current "missing" is worth checking together, and
-    comes first, open, however old. Of the rest, her standing updates of the
-    last fourteen household days follow, most recent first. Every other
+    comes first, open, however old. Of the rest, the assignments with a
+    standing update of hers and an event of hers, a correction included, in
+    the last fourteen household days follow, by that latest event, most
+    recent first, each showing the day of the update that stands. Every other
     assignment the school has a current statement about closes the section,
     in the record's order. Whichever group a row is in, it shows her update
     when she has one and what each school channel says now, every channel,
@@ -546,20 +548,24 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
     check = [view for view in views.values() if view.check]
     shown = {view.assignment_id for view in check}
 
-    def said_at(view: AssignmentUpdateView) -> datetime:
-        asserted = statuses[view.assignment_id].asserted
-        return datetime.min.replace(tzinfo=UTC) if asserted is None else asserted.reported_at
+    def latest_at(view: AssignmentUpdateView) -> datetime:
+        head = statuses[view.assignment_id].head
+        return datetime.min.replace(tzinfo=UTC) if head is None else head.reported_at
+
+    def lately(view: AssignmentUpdateView) -> bool:
+        """Whether her latest event under the assignment, a correction included, falls in
+        the window: an old update she puts back today is recent activity, dated as the
+        old update it is."""
+        head = statuses[view.assignment_id].head
+        return head is not None and head.reported_on > today - timedelta(days=RECENT_DAYS)
 
     recent = sorted(
         (
             view
             for view in views.values()
-            if view.assignment_id not in shown
-            and view.status is not None
-            and view.reported_on is not None
-            and view.reported_on > today - timedelta(days=RECENT_DAYS)
+            if view.assignment_id not in shown and view.status is not None and lately(view)
         ),
-        key=said_at,
+        key=latest_at,
         reverse=True,
     )
     shown |= {view.assignment_id for view in recent}
