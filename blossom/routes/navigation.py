@@ -54,16 +54,24 @@ def address(path: str, fragment: str = "", **query: str | None) -> str:
     return str(made.replace(fragment=fragment) if fragment else made)
 
 
-def details_href(assignment_id: str, **context: str | None) -> str:
+def details_href(assignment_id: str, *, fragment: str = "", **context: str | None) -> str:
     """The address of one assignment's details, with where the reader came from.
 
     ``context`` is the navigation data the details carry back: which page,
     which week, which plan, and what the page is to show. A value that is
-    ``None`` or blank is left out.
+    ``None`` or blank is left out. ``fragment`` is a place on the page to
+    land on, the result of a save for one.
     """
     given = {name: value for name, value in context.items() if value}
-    path = f"{DETAILS}/{segment(assignment_id)}"
-    return str(URL(path).include_query_params(**given)) if given else path
+    made = URL(f"{DETAILS}/{segment(assignment_id)}")
+    made = made.include_query_params(**given) if given else made
+    return str(made.replace(fragment=fragment) if fragment else made)
+
+
+def result_anchor(assignment_id: str) -> str:
+    """The id of the place on a page that says what a save or an undo did to one
+    assignment's update, which a redirect lands on."""
+    return f"update-result-{segment(assignment_id)}"
 
 
 @dataclass(frozen=True)

@@ -126,6 +126,60 @@ def test_details_show_the_current_record_with_its_facts_her_update_and_the_way_b
     assert len(checks) == 1
 
 
+def test_the_update_comes_before_the_long_evidence_and_every_fact_is_there_once() -> None:
+    """Sources that disagree, a school Missing, a long instruction from the teacher, and a
+    history of updates: the title, the date with its warning, and then her update come
+    first; the sources' claims, the school's word, and the note follow, each once; the
+    history closes the page. The warning points at the claims below it. On an ordinary
+    arrival at an assignment with no update the form is there with nothing chosen, the
+    note folded, and no field asking for the cursor."""
+    instruction = "Bring the annotated map and cite two of the readings. " * 40
+    with browser() as client:
+        store = state_of(client).project_state
+        store.record_status_reports(
+            ESSAY_ID, [school_said("missing", SourceChannel.EMAIL, PLAN_DATE)]
+        )
+        item = store.one_assignment(ESSAY_ID)
+        assert item is not None
+        store.put_on_record([item.model_copy(update={"note": instruction.strip()})], {})
+        report(client, ESSAY_ID, "not_yet", "Half of it.")
+        report(client, ESSAY_ID, "done")
+        page = client.get(f"{DETAILS}?return_to=week", headers=PAGE_HEADERS).text
+        untouched = client.get(f"/student/assignments/{QUIZ_ID}", headers=PAGE_HEADERS).text
+
+    in_order = [
+        "<h1>",
+        "Current assignment record.",
+        "<strong>Check this date.</strong>",
+        '<h2 class="update-heading">Your update</h2>',
+        '<span class="pill">Your update: Done</span>',
+        ">Change</button>",
+        '<section class="evidence" id="evidence" tabindex="-1">',
+        "What the sources say</h3>",
+        "<strong>The school reports this missing.</strong>",
+        "Bring the annotated map",
+        "<summary>Update history<span",
+    ]
+    places = [page.index(piece) for piece in in_order]
+    assert places == sorted(places)
+    for once in (
+        "<strong>Check this date.</strong>",
+        "What the sources say</h3>",
+        "<strong>The school reports this missing.</strong>",
+        instruction.strip(),
+        "<summary>Update history<span",
+        '<p class="due">',
+    ):
+        assert page.count(once) == 1, once
+    assert '<a href="#evidence">What the sources say is below.</a>' in page
+    assert "Half of it." in page[page.index("<summary>Update history<span") :]
+    assert "<legend>Your update<span" in untouched
+    assert "autofocus" not in untouched
+    assert "checked" not in untouched[untouched.index("<legend>") : untouched.index("</fieldset>")]
+    assert '<details class="steps note-fold">' in untouched
+    assert untouched.index("<legend>Your update<span") < untouched.index('id="evidence"')
+
+
 @pytest.mark.parametrize(
     "assignment_id",
     [ESSAY_ID, SYLLABUS_ID, QUIZ_ID, "assignment-reading-log", "assignment-science-fair-proposal"],
@@ -243,20 +297,31 @@ def test_she_saves_changes_and_undoes_on_the_details_and_comes_back_to_them() ->
         "plan_id": "",
     }
     assert saved.status_code == 303
-    assert saved.headers["location"] == f"{DETAILS}?said=saved&return_to=today"
-    assert UPDATE_SAVED in after
-    assert 'role="status"' in after
+    assert saved.headers["location"] == (
+        f"{DETAILS}?said=saved&return_to=today#update-result-{ESSAY_ID}"
+    )
+    assert (
+        f'<p class="note update-result" role="status" id="update-result-{ESSAY_ID}" '
+        f'tabindex="-1">{UPDATE_SAVED} <a href="/student/due-this-week?show_plan=1'
+        f'#{anchor_for(record.draft_id)}">Back to today&#39;s plan</a></p>'
+    ) in after
+    assert after.count("Back to today&#39;s plan</a>") == 2
     assert f"#{anchor_for(record.draft_id)}" in after
     assert "Back to today&#39;s plan" in after
     assert change == {"return_to": "today", "change": "1"}
     assert "<legend>Your update<span" in editor
     assert 'value="done" checked' in editor
     assert same.status_code == 303
-    assert same.headers["location"] == f"{DETAILS}?said=same&return_to=today"
+    assert same.headers["location"] == (
+        f"{DETAILS}?said=same&return_to=today#update-result-{ESSAY_ID}"
+    )
     assert "<legend>Your update<span" not in kept
     assert undone.status_code == 303
-    assert undone.headers["location"] == f"{DETAILS}?said=undone&return_to=today"
+    assert undone.headers["location"] == (
+        f"{DETAILS}?said=undone&return_to=today#update-result-{ESSAY_ID}"
+    )
     assert UPDATE_UNDONE in finally_
+    assert finally_.count("Back to today&#39;s plan</a>") == 2
     assert UPDATE_ALREADY_SAVED not in finally_
     assert [(item.operation, item.status) for item in events] == [
         ("report", "done"),
@@ -398,7 +463,8 @@ def test_her_week_cards_still_save_as_they_did_and_offer_the_details() -> None:
         after = client.get(where, headers=PAGE_HEADERS).text
 
     assert (
-        f'<a href="/student/assignments/{ESSAY_ID}?return_to=week&amp;week={FIXTURE_WEEK}" '
+        f'<a class="assignment-link" href="/student/assignments/{ESSAY_ID}'
+        f'?return_to=week&amp;week={FIXTURE_WEEK}" '
         f'aria-label="Details: {ESSAY_TITLE}, World History">Details</a>'
     ) in week
     assert week.count(">Details</a>") == after.count(">Details</a>") == 7

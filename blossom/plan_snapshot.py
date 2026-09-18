@@ -43,7 +43,9 @@ class SavedAssignment(BaseModel):
 
     title: str
     course: str
-    due_date: date | None = None
+    due_date: date | None
+    """Written every time, as a date or as null. A saved assignment with no such key is not
+    one this version wrote, and is never read as an assignment without a date."""
 
 
 class SavedClarification(BaseModel):
@@ -71,8 +73,8 @@ class SavedReview(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    intro: list[str] = []
-    findings: list[SavedFinding] = []
+    intro: list[str]
+    findings: list[SavedFinding]
 
 
 class PlanSnapshot(BaseModel):
@@ -82,8 +84,11 @@ class PlanSnapshot(BaseModel):
     The plan keeps its own order and every field. The metadata is keyed by
     assignment id and covers exactly the assignments the plan speaks about,
     worked on or put off, each once; a clarification names one of them. A
-    snapshot that says otherwise is not one this version wrote, and is
-    refused where it is made and where it is read.
+    block's times are wall times in the household's zone, as the plan
+    keeps them, so a time that carries an offset is not one this version
+    wrote, and the rows could not be put in order with it. A snapshot that
+    says otherwise on any of these is refused where it is made and where
+    it is read, and a page then shows the saved text.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -91,11 +96,13 @@ class PlanSnapshot(BaseModel):
     version: StrictInt
     plan: DailyPlan
     assignments: dict[str, SavedAssignment]
-    intro: list[str] = []
+    intro: list[str]
     """The sentences under the heading: a shorter evening, a review that did not settle."""
-    clarifications: list[SavedClarification] = []
-    review: SavedReview | None = None
-    """``None`` when no reviewer's notes were composed."""
+    clarifications: list[SavedClarification]
+    review: SavedReview | None
+    """``None`` when no reviewer's notes were composed. Like every part of the envelope it
+    is written each time, empty or null when there is nothing to say, so a key left out
+    is a snapshot cut short and never one with nothing to say."""
 
     @model_validator(mode="after")
     def _agrees_with_itself(self) -> Self:
@@ -110,6 +117,10 @@ class PlanSnapshot(BaseModel):
         if astray:
             msg = "a clarification names an assignment the plan does not speak about"
             raise ValueError(msg)
+        for block in self.plan.blocks:
+            if block.starts_at.utcoffset() is not None or block.ends_at.utcoffset() is not None:
+                msg = "snapshot block times must be household wall times"
+                raise ValueError(msg)
         return self
 
     @property

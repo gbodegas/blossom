@@ -222,7 +222,9 @@ class CheckState:
     note: str = ""
 
 
-def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
+def stale_reason(
+    state: ApplicationState, record: DraftRecord, *, today: date | None = None
+) -> str | None:
     """Why a waiting draft has stopped fitting the evening, or ``None`` while it fits.
 
     A draft is made for the evening as she had described it when the run
@@ -242,7 +244,8 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
     the pages refuse a past evening, and it reaches no page of hers, so there
     is nothing a fresh plan would put right.
     """
-    if not record.waiting or record.plan_date < state.clock.today():
+    today = state.clock.today() if today is None else today
+    if not record.waiting or record.plan_date < today:
         return None
     match staleness(state.workload_signals, record, state.project_state):
         case Staleness.SIGNALED_SINCE:
@@ -299,6 +302,7 @@ def read_a_plan(
     *,
     current: bool,
     on_record: frozenset[str] | None = None,
+    today: date | None = None,
 ) -> PlanRead:
     """A draft as the parent sees it, whether it still fits the evening, and its reading.
 
@@ -307,12 +311,14 @@ def read_a_plan(
     them at odds. Her updates are read only for today's working plan, in one
     batch for its distinct assignments; any other plan is history, read with
     no updates at all, and takes the ids on record from the caller, who
-    read them once for the page.
+    read them once for the page. ``today`` is the household day the caller's
+    page read, once, so which plan is current and whether a plan has passed
+    are about the same day.
     """
     with state.project_state.exclusively():
         updates = plan_updates(state.project_state, record) if current else None
         included = done_in(updates)
-        stale = stale_reason(state, record)
+        stale = stale_reason(state, record, today=today)
     marks = (
         {}
         if updates is None
@@ -343,7 +349,7 @@ def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
     """A draft as the parent sees it, with whether it still fits the evening."""
     today = state.clock.today()
     current = is_current(record, today, state.drafts.latest_for(today))
-    return read_a_plan(state, record, current=current).view
+    return read_a_plan(state, record, current=current, today=today).view
 
 
 def passed(evening: date) -> str:
@@ -629,27 +635,28 @@ def review_page(
     once. Every other plan is history and shows none of her updates.
     """
     about_a_row = check is not None and check.problem is not None and problem is None
-    # The household day and today's working plan are read once for the page,
-    # and so are the ids on record, which every plan shown as history shares.
+    # The household day is read once for the page. The drafts are read once
+    # too, in one reading of the table: what waits, what was decided, and
+    # which draft is today's working plan, so every list below is made from
+    # records in hand and the page agrees with itself whatever is published
+    # or decided while it is being built. The ids on record are read once as
+    # well, for every plan shown as history.
     today = state.clock.today()
-    latest = state.drafts.latest_for(today)
+    records = state.drafts.review_snapshot(today)
     on_record = frozenset(item.assignment_id for item in state.project_state.all_assignments())
     plans = {
         record.draft_id: read_a_plan(
-            state, record, current=is_current(record, today, latest), on_record=on_record
+            state,
+            record,
+            current=record.draft_id == records.current_id,
+            on_record=on_record,
+            today=today,
         )
-        for record in [*state.drafts.waiting(), *state.drafts.decided()]
+        for record in (*records.waiting, *records.decided)
     }
-    waiting = [plans[record.draft_id].view for record in state.drafts.waiting()]
-    every_decided = [plans[record.draft_id].view for record in state.drafts.decided()]
-    todays = next(
-        (
-            view
-            for view in every_decided
-            if latest is not None and view.draft_id == latest.draft_id and view.plan_date == today
-        ),
-        None,
-    )
+    waiting = [plans[record.draft_id].view for record in records.waiting]
+    every_decided = [plans[record.draft_id].view for record in records.decided]
+    todays = next((view for view in every_decided if view.draft_id == records.current_id), None)
     decided = [view for view in every_decided if view is not todays]
     return templates.TemplateResponse(
         request,
@@ -681,7 +688,7 @@ def review_page(
             "entry_open": entry_open or bool(paste) or bool(entry),
             "text_max_length": TEXT_MAX_LENGTH,
             "entry_note_max_length": ENTRY_NOTE_MAX_LENGTH,
-            "updates": assignment_updates(state),
+            "updates": assignment_updates(state, today),
             "check": check,
             "check_note_max_length": CHECK_NOTE_MAX_LENGTH,
         },
@@ -689,7 +696,7 @@ def review_page(
     )
 
 
-def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
+def assignment_updates(state: ApplicationState, today: date) -> AssignmentUpdatesView:
     """What she and the school have reported, in the family page's four groups.
 
     Each assignment is in one group, the first that fits. Her "done" beside
@@ -710,7 +717,6 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
     her page reads them, in a few batched reads whatever the number of
     rows.
     """
-    today = state.clock.today()
     with state.project_state.exclusively():
         rows = state.project_state.all_assignments()
         statuses = statuses_for(state.project_state, [item.assignment_id for item in rows])

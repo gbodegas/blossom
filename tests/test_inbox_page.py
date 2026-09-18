@@ -53,7 +53,7 @@ Spanish - Assigned: Binder, labeled dividers and lined paper check: (Due:09/11/2
 MOVED = "Homework for Wren\n- 09/10/2026 - Thursday\n08 Geometry - Due: Book Covers:\n"
 EMAIL = "Assignments:\n09/09 08 Geometry - A: Homework/Classwork: Book Covers Grade: Missing\n"
 SCHOOL_SAYS_MISSING = re.compile(
-    r'<strong><a href="/student/assignments/[^"]+\?return_to=family" '
+    r'<strong><a class="assignment-link" href="/student/assignments/[^"]+\?return_to=family" '
     r'aria-label="Book Covers, 08 Geometry">Book Covers</a>: '
     r"the school reports it missing\.</strong>"
 )

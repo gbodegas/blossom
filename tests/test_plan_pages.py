@@ -31,6 +31,8 @@ from tests.support import (
     browser,
     fixture_settings,
     fixture_week_plan,
+    plan_on,
+    planned,
     report,
     school_said,
     scripted_graphs,
@@ -49,27 +51,6 @@ HISTORY = "This is the saved plan. Assignment links open the current record."
 EARLIER_FORMAT = "This plan uses the earlier text format."
 UNAVAILABLE = "The saved text is shown because this plan's structured view is unavailable."
 WHEN_PLANNED = '<span class="plan-why-label">Reason when planned:</span>'
-
-
-def planned(client: TestClient) -> DraftRecord:
-    """Make today's plan from her page and return its record."""
-    made = client.post("/student/actions/plan")
-    assert made.status_code == 303, made.text[:300]
-    record = state_of(client).drafts.latest_for(PLAN_DATE)
-    assert record is not None
-    return record
-
-
-def plan_on(page: str, record: DraftRecord) -> str:
-    """One plan's container on a page, whole: from its anchor to the end of its original
-    text fold, or to the end of its text reading."""
-    start = page.index(f'id="{anchor_for(record.draft_id)}"')
-    ends = [
-        found
-        for found in (page.find(mark, start) for mark in ("</pre>", "</section>", "</article>"))
-        if found >= 0
-    ]
-    return page[start : min(ends)] if ends else page[start:]
 
 
 def rows(plan: str) -> list[str]:
@@ -106,7 +87,7 @@ def test_both_essay_blocks_are_marked_and_nothing_else_once_she_reports_the_essa
         before = client.get(f"{HER_PAGE}?show_plan=1", headers=PAGE_HEADERS).text
         facts = saved_facts(client, record)
         link = re.search(
-            rf'<a href="(/student/assignments/{ESSAY_ID}\?return_to=today)"',
+            rf'class="assignment-link" href="(/student/assignments/{ESSAY_ID}\?return_to=today)"',
             plan_on(before, record),
         )
         assert link is not None
@@ -149,7 +130,7 @@ def test_both_essay_blocks_are_marked_and_nothing_else_once_she_reports_the_essa
     assert HERS_BESIDE in plan_on(family, record)
     assert '<details class="plan" open>' in hers
     assert (
-        f'In it: <a href="/student/assignments/{ESSAY_ID}?return_to=today" '
+        f'In it: <a class="assignment-link" href="/student/assignments/{ESSAY_ID}?return_to=today" '
         f'aria-label="{ESSAY_TITLE}, World History, due August 21, 2026">{ESSAY_TITLE}</a> '
         "(World History, due August 21, 2026)."
     ) in hers

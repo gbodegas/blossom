@@ -294,7 +294,7 @@ def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
     assert text.blocks[0].span == "4:30 PM to 5:30 PM"
     assert '<p class="plan-when"><strong>4:30 PM to 5:30 PM</strong></p>' in page
     assert (
-        '<span class="plan-item">World History &middot; <a '
+        '<span class="plan-item">World History &middot; <a class="assignment-link" '
         'href="/student/assignments/assignment-canal-essay?return_to=today" '
         'aria-label="Canal Era comparison essay, World History">Canal Era comparison essay</a>'
     ) in page
@@ -349,21 +349,36 @@ def test_what_is_shared_points_inside_its_fold() -> None:
     assert 'href="#what-is-shared"' in page
 
 
-def test_the_plan_is_folded_on_a_visit_and_unfolded_right_after_it_is_made() -> None:
-    """The whole saved text is on the page either way; only the disclosure's state differs."""
+def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away() -> None:
+    """Right after it is made, on an ordinary visit, and on a refresh, the saved plan is on
+    the page unfolded, a plan read by its rows and one read as text alike, so her next step
+    takes no remembered action. It sits before everything about help, and a link beside
+    the controls goes to the help form, so a long plan never puts help out of reach. No
+    plan, no fold; and opening the page asks no model."""
     with browser() as client:
         before = client.get(PAGE).text
         planned = client.post("/student/actions/plan")
         shown = client.get(planned.headers["location"]).text
         revisit = client.get(PAGE).text
+        refreshed = client.get(PAGE, params={"refreshed": "1"}).text
         body = client.get("/student/plans/today").json()["body"]
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        state.drafts._connection.execute("UPDATE drafts SET plan_snapshot=NULL")
+        state.drafts._connection.commit()
+        as_text = client.get(PAGE).text
 
     assert '<details class="plan"' not in before
     assert "No plan for today yet." in before
-    assert '<details class="plan" open>' in shown
-    assert '<summary>View today\'s plan <span class="summary-meta">made at ' in shown
+    assert '<a class="to-help" href="#ask-for-help">Ask for help</a>' in before
+    for page in (shown, revisit, refreshed, as_text):
+        assert '<details class="plan" open>' in page
+        assert '<summary>Today\'s saved plan <span class="summary-meta">made at ' in page
+        assert page.index('<details class="plan" open>') < page.index('id="ask-for-help"')
+        assert page.index('href="#ask-for-help"') < page.index('<details class="plan" open>')
+        assert 'class="ask" id="ask-for-help" tabindex="-1"' in page
     assert whole(body, revisit), "the saved text, set out for reading, all of it"
-    assert '<details class="plan">' in revisit
+    assert "This plan uses the earlier text format." in as_text
+    assert "set aside for" in as_text
     assert "Looks ahead through Tuesday, August 25." in revisit
 
 

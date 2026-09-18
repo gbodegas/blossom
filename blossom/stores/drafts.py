@@ -70,6 +70,21 @@ class IncompatibleReplay(RuntimeError):
     Nothing is written, and the draft stands as it was."""
 
 
+class ReviewSnapshot(NamedTuple):
+    """The drafts a page of plans shows, from one reading of the table: what waits, what was
+    decided, and which draft is the household day's working plan. Read together, so no
+    draft is in two groups, none is named that was not read, and the plan called current is
+    one of the records in hand."""
+
+    waiting: tuple["DraftRecord", ...]
+    """Every published draft no person has decided about, oldest first."""
+    decided: tuple["DraftRecord", ...]
+    """Every draft a person has decided about, most recent decision first."""
+    current_id: str | None
+    """The last draft published for the day that no later one displaced, whatever was
+    decided about it; ``None`` when the day has none."""
+
+
 class AlreadyDecided(RuntimeError):
     """Raised when a different decision is recorded for a draft that has one.
 
@@ -716,6 +731,49 @@ class DraftsStore:
         """Every draft a person has decided about, most recent decision first."""
         return self._drafts(DECIDED_DRAFTS, ())
 
+    def review_snapshot(self, today: date) -> ReviewSnapshot:
+        """What waits, what was decided, and the day's working plan, from one read.
+
+        One statement reads every draft with its steps, under the store's
+        lock, and the three answers are worked out from those rows in
+        memory by the rules the separate reads follow: waiting is published
+        and undecided, oldest first; decided is most recent decision first;
+        the day's plan is the last in the published order for that day that
+        was not superseded. A publication or a decision from anywhere lands
+        wholly before this reading or wholly after it, so a page built from
+        it agrees with itself, which three reads one after another cannot
+        promise.
+        """
+        with self._lock:
+            rows = self._connection.execute(EVERY_DRAFT).fetchall()
+        grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
+        for row in rows:
+            _, steps = grouped.setdefault(str(row["draft_id"]), (row, []))
+            if row["node"] is not None:
+                steps.append(joined_step_from(row))
+        records = {name: record_from(row, steps) for name, (row, steps) in grouped.items()}
+        placed = {name: row["published_order"] for name, (row, _) in grouped.items()}
+        waiting = sorted(
+            (item for item in records.values() if item.published and item.decision is None),
+            key=lambda item: (item.created_at, item.draft_id),
+        )
+        decided = sorted(
+            (item for item in records.values() if item.decision is not None),
+            key=lambda item: item.draft_id,
+        )
+        decided.sort(key=lambda item: item.decided_at or item.created_at, reverse=True)
+        todays = [
+            item
+            for item in records.values()
+            if item.plan_date == today and item.published and item.decision != "superseded"
+        ]
+        latest = max(todays, key=lambda item: placed[item.draft_id] or 0, default=None)
+        return ReviewSnapshot(
+            waiting=tuple(waiting),
+            decided=tuple(decided),
+            current_id=None if latest is None else latest.draft_id,
+        )
+
     def latest_for(self, plan_date: date) -> DraftRecord | None:
         """The last draft published for one evening that no later one displaced; ``None`` when none.
 
@@ -762,6 +820,19 @@ DRAFTS_WITH_STEPS = """
     FROM drafts LEFT JOIN steps ON steps.thread_id = drafts.thread_id
 """
 """Every read of a draft starts here, so the steps come from the same snapshot."""
+
+EVERY_DRAFT = """
+    SELECT drafts.draft_id, drafts.thread_id, drafts.plan_date, drafts.status,
+           drafts.outcome, drafts.body, drafts.created_at, drafts.decided_at,
+           drafts.decision, drafts.reason, drafts.too_much, drafts.inputs_digest, drafts.published,
+           drafts.plan_assignment_ids, drafts.plan_snapshot, drafts.published_order,
+           steps.node, steps.round, steps.expected, steps.found,
+           steps.recorded_at AS step_recorded_at
+    FROM drafts LEFT JOIN steps ON steps.thread_id = drafts.thread_id
+    ORDER BY drafts.draft_id, steps.position
+"""
+"""Every draft with its steps and its place in the published order, in one statement, for
+a page that shows several groups of drafts and must not read them apart."""
 
 ONE_DRAFT = DRAFTS_WITH_STEPS + "WHERE drafts.draft_id=? ORDER BY steps.position"
 WAITING_DRAFTS = (

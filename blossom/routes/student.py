@@ -100,6 +100,7 @@ from blossom.routes.navigation import (
     address,
     details_href,
     read_return,
+    result_anchor,
     safe_default,
     segment,
     week_href,
@@ -393,7 +394,7 @@ def take_back_help(request_id: str, state: State) -> Response:
 
 
 def done_in(
-    state: ApplicationState, record: DraftRecord, found: ReportedDone | None
+    record: DraftRecord, found: ReportedDone | None, *, today: date
 ) -> tuple[str, list[NamedAssignmentView]] | None:
     """In her words, that a plan includes work she reports as done as things stand, and
     which work, or ``None`` while it includes none.
@@ -406,7 +407,7 @@ def done_in(
     a plan is being made. A plan from before plans carried their ids is told
     only that its window holds such work, and named nothing.
     """
-    if record.plan_date < state.clock.today() or found is None:
+    if record.plan_date < today or found is None:
         return None
     if not found.known:
         return PLAN_WINDOW_DONE, []
@@ -436,7 +437,12 @@ class PlanRead:
 
 
 def read_a_plan(
-    state: ApplicationState, record: DraftRecord, *, reader: Reader = "student", current: bool
+    state: ApplicationState,
+    record: DraftRecord,
+    *,
+    reader: Reader = "student",
+    current: bool,
+    today: date,
 ) -> PlanRead:
     """Her projection of a draft and its reading, from one reading of the record.
 
@@ -447,12 +453,14 @@ def read_a_plan(
     the plan, the marks beside its rows, and whether the week reads as it
     did all come from one hold of the store: read apart, a report landing
     between them could leave them at odds. ``current`` is the caller's word
-    that this is today's working plan, the one reading that shows marks.
+    that this is today's working plan, the one reading that shows marks, and
+    ``today`` is the household day the caller's page read, once, so a page
+    rendered across midnight is about one day from its heading to its plan.
     """
     stale = None
     with state.project_state.exclusively():
         updates = plan_updates(state.project_state, record)
-        included = done_in(state, record, updates.done)
+        included = done_in(record, updates.done, today=today)
         week = state.project_state if record.waiting else None
         found = staleness(state.workload_signals, record, week)
     match found:
@@ -491,20 +499,24 @@ def read_a_plan(
 
 def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
     """Her projection of a draft: the plan, a parent's review if any, and whether it still fits."""
-    return read_a_plan(state, record, current=False).view
+    return read_a_plan(state, record, current=False, today=state.clock.today()).view
 
 
-def todays_plan_read(state: ApplicationState, reader: Reader = "student") -> PlanRead | None:
-    """Today's latest plan, looked up once, with the reading that shows her updates beside
-    it; ``None`` when none has been made. Latest is by the published order, whatever a
-    parent decided and whenever it was made."""
-    record = state.drafts.latest_for(state.clock.today())
-    return None if record is None else read_a_plan(state, record, reader=reader, current=True)
+def todays_plan_read(
+    state: ApplicationState, reader: Reader = "student", *, today: date
+) -> PlanRead | None:
+    """The latest plan for ``today``, looked up once, with the reading that shows her
+    updates beside it; ``None`` when none has been made. Latest is by the published
+    order, whatever a parent decided and whenever it was made."""
+    record = state.drafts.latest_for(today)
+    if record is None:
+        return None
+    return read_a_plan(state, record, reader=reader, current=True, today=today)
 
 
 def todays_plan(state: ApplicationState) -> StudentPlanView | None:
     """Today's latest plan, or ``None`` when none has been made."""
-    found = todays_plan_read(state)
+    found = todays_plan_read(state, today=state.clock.today())
     return None if found is None else found.view
 
 
@@ -710,18 +722,20 @@ def build_student_due_this_week_view(
     viewer: str = "anyone",
     focus: str | None = None,
     plan: StudentPlanView | None | Unread = UNREAD,
+    today: date | None = None,
 ) -> StudentDueThisWeekView:
     """Assemble the student's weekly view from the stores ``ApplicationState``
     opened at startup; nothing is opened or seeded per request. ``week`` is any
     day in the school week to show; today's week when ``None``. ``plan`` is
     today's plan when the caller has read it already, so a page looks it up
-    once; left out, it is read here. ``viewer`` is
+    once; left out, it is read here. ``today`` is the household day the
+    caller read for its page; left out, it is read here, once. ``viewer`` is
     who is at the keyboard as the gate says. ``focus`` is the assignment a
     save, an undo, or a link named: when it is on record and in neither list
     of the week shown, its dates having changed meanwhile, it is built apart
     so the page can still show it.
     """
-    today = state.clock.today()
+    today = state.clock.today() if today is None else today
     frame = week_shown(today, week)
     on_record = state.project_state
     with on_record.exclusively():
@@ -835,28 +849,33 @@ def student_page(
     *,
     week: date | None = None,
     problem: str | None = None,
-    plan_open: bool = False,
     refreshed: bool = False,
     card: CardState | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
-    ``plan_open`` shows today's plan unfolded and ``refreshed`` says when the
-    page was last asked for; ``card`` is what one card shows beyond its
-    record. All three change how the page is presented and nothing else. A
+    ``refreshed`` says when the page was last asked for; ``card`` is what one
+    card shows beyond its record. Both change how the page is presented and
+    nothing else. Today's saved plan is unfolded on every visit, so finding
+    her next step takes no remembered action. The household day is read
+    once, here, and everything on the page is about that day: the heading,
+    the week, the planning window, which plan is today's, its notice, and
+    the marks beside its rows. A
     card's problem is said at the top too, with a link to the card, so it is
     met on a page that opens at its top; the card named is shown even when
     its dates have taken it out of the week.
     """
     viewer = viewer_of(request)
-    todays = todays_plan_read(state, "family" if viewer == "parent" else "student")
+    today = state.clock.today()
+    todays = todays_plan_read(state, "family" if viewer == "parent" else "student", today=today)
     view = build_student_due_this_week_view(
         state,
         week,
         viewer=viewer,
         focus=None if card is None else card.assignment_id,
         plan=None if todays is None else todays.view,
+        today=today,
     )
     about_a_card = card is not None and card.problem is not None and problem is None
     listed = [*view.assignments, *view.assigned_this_week, *([view.apart] if view.apart else [])]
@@ -871,7 +890,6 @@ def student_page(
             },
             "problem": card.problem if card is not None and about_a_card else problem,
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
-            "plan_open": plan_open,
             "plan_reading": None if todays is None else todays.reading,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
@@ -930,17 +948,18 @@ def due_this_week(
     ``week`` names. A value that is not a date, a blank one included, or a
     week at the edge of the calendar, is said at the top of today's week
     rather than answered with an error page. Only an absent ``week`` means
-    today's week without a word. ``show_plan`` unfolds the plan, as the page
-    does right after one is made; a GET never makes one. The rest name one
+    today's week without a word. ``show_plan`` changes nothing on the
+    page, which shows today's saved plan unfolded on every visit; links to
+    the plan carry it so that following one is a fresh page, with the fold
+    open again if she had closed it. A GET never makes a plan. The rest name one
     card: what a save or an undo just did to it, which the server chose and
     the address only carries, or that its form is to be open, or that it is
     to be in view, with the fold around it open.
     """
-    plan_open = show_plan == "1"
     was_refreshed = refreshed == "1"
     card = card_shown(saved, same, undone, change, show)
     if week is None:
-        return student_page(request, state, plan_open=plan_open, refreshed=was_refreshed, card=card)
+        return student_page(request, state, refreshed=was_refreshed, card=card)
     try:
         chosen = date.fromisoformat(week.strip())
     except ValueError:
@@ -948,7 +967,6 @@ def due_this_week(
             request,
             state,
             problem=NOT_A_WEEK,
-            plan_open=plan_open,
             card=card,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
@@ -957,11 +975,10 @@ def due_this_week(
             request,
             state,
             problem=BEYOND_THE_CALENDAR,
-            plan_open=plan_open,
             card=card,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    return student_page(request, state, week=chosen, plan_open=plan_open, card=card)
+    return student_page(request, state, week=chosen, card=card)
 
 
 def week_named(given: str) -> date | None:
@@ -1005,6 +1022,13 @@ class ReportContext:
     on the details with the way back from there."""
     with_year: bool = False
     """Whether days are said with their year, as a page with no week above it needs."""
+    back: "ReturnLink | None" = None
+    """The way back the page offers at its top, repeated beside what a save or an undo
+    did, so the result and the way on are found together. ``None`` on a card, which is
+    already where she was."""
+    history_apart: bool = False
+    """Whether the page shows the update history itself, below the longer evidence,
+    instead of under the component."""
 
 
 def report_actions(assignment_id: str) -> tuple[str, str]:
@@ -1028,9 +1052,16 @@ def week_context(assignment_id: str, week: date, viewer: str) -> ReportContext:
     )
 
 
-def detail_context(assignment_id: str, back: ReturnTo, viewer: str) -> ReportContext:
+def detail_context(
+    assignment_id: str, back: ReturnTo, viewer: str, link: "ReturnLink"
+) -> ReportContext:
     """The component on an assignment's details: results come back to the details, with the
-    way back from there carried along."""
+    way back from there carried along.
+
+    Change is a GET form, and a browser writes a GET form's fields over any
+    query in its action, so the way back rides in the form's hidden fields
+    beside the flag that opens the editor, and the action is the bare
+    address of the details."""
     report, undo = report_actions(assignment_id)
     carried = back.fields()
     return ReportContext(
@@ -1046,6 +1077,8 @@ def detail_context(assignment_id: str, back: ReturnTo, viewer: str) -> ReportCon
         cancel_href=details_href(assignment_id, **carried),
         post_fields=[("report_view", "detail"), *carried.items()],
         with_year=True,
+        back=link,
+        history_apart=True,
     )
 
 
@@ -1058,7 +1091,9 @@ class ReturnLink:
     note: str | None = None
 
 
-def way_back(state: ApplicationState, back: ReturnTo, assignment_id: str) -> ReturnLink:
+def way_back(
+    state: ApplicationState, back: ReturnTo, assignment_id: str, *, today: date
+) -> ReturnLink:
     """The link an assignment's details offer back to where their reader came from.
 
     Her week, with the card in view and its fold open. Today's plan, unfolded,
@@ -1073,7 +1108,7 @@ def way_back(state: ApplicationState, back: ReturnTo, assignment_id: str) -> Ret
             week_href(back.week, assignment_id, show=assignment_id), "Back to the week"
         )
     if back.target == "today":
-        latest = state.drafts.latest_for(state.clock.today())
+        latest = state.drafts.latest_for(today)
         if latest is None:
             return ReturnLink(address(WEEK_PAGE, fragment="today"), "Back to Today", NO_PLAN_NOW)
         return ReturnLink(
@@ -1101,6 +1136,7 @@ def gone_page(
     assignment_id: str,
     *,
     card: CardState | None = None,
+    today: date | None = None,
 ) -> HTMLResponse:
     """The small page for an assignment that is not on record: said plainly, 404, with a
     safe way back and, when a form brought her here, what she chose and wrote, so it can
@@ -1111,7 +1147,9 @@ def gone_page(
         {
             "problem": GONE,
             "card": card,
-            "back": way_back(state, back, assignment_id),
+            "back": way_back(
+                state, back, assignment_id, today=state.clock.today() if today is None else today
+            ),
             "sample": state.settings.sample,
         },
         status_code=status.HTTP_404_NOT_FOUND,
@@ -1145,20 +1183,21 @@ def detail_page(
     with on_record.exclusively():
         item = on_record.one_assignment(assignment_id)
         if item is None:
-            return gone_page(request, state, back, assignment_id, card=card)
+            return gone_page(request, state, back, assignment_id, card=card, today=today)
         records = on_record.deadline_records(assignment_id)
         found = statuses_for(on_record, [assignment_id])[assignment_id]
     noticed = notice_due_date(expect_due_date(item), records)
     view = assignment_view(
         item, records, noticed, found, in_planning_window=in_week(item, noticed, today)
     )
+    link = way_back(state, back, assignment_id, today=today)
     return templates.TemplateResponse(
         request,
         "student_assignment.html",
         {
             "assignment": view,
-            "ctx": detail_context(assignment_id, back, viewer),
-            "back": way_back(state, back, assignment_id),
+            "ctx": detail_context(assignment_id, back, viewer, link),
+            "back": link,
             "card": card,
             "problem": problem,
             "update_note_max_length": UPDATE_NOTE_MAX_LENGTH,
@@ -1218,18 +1257,25 @@ class Origin:
 
 def origin_of(request: Request, fields: Mapping[str, str]) -> Origin:
     """Read where a report form came from. A form that says nothing is a card on her week, as
-    it always was. One from an assignment's details says so and carries its way back."""
+    it always was. One from an assignment's details says so and carries its way back.
+
+    A card's week is blank, for her current week, or a day her week page can
+    show. Anything else, words that are no day or a day past either edge of
+    the calendar, is not a week her page made: the form is not valid, nothing
+    is written for it, and its refusal is shown on her current week."""
     viewer = viewer_of(request)
     shown = fields.get("report_view", "").strip()
     if shown == "detail":
         back, valid = read_return(fields, viewer=viewer, showable=showable)
         return Origin(detail=True, week=None, back=back, valid=valid)
     stray = any(fields.get(name, "").strip() for name in ("return_to", "plan_id"))
+    given = fields.get("week", "").strip()
+    week = week_named(given)
     return Origin(
         detail=False,
-        week=week_named(fields.get("week", "")),
+        week=week,
         back=safe_default(viewer),
-        valid=shown in ("", "week") and not stray,
+        valid=shown in ("", "week") and not stray and (week is not None or not given),
     )
 
 
@@ -1261,10 +1307,50 @@ def result_page(
 
 def after(origin: Origin, said: str, assignment_id: str) -> str:
     """Where a save or an undo sends her once it is committed: back to the page the form
-    was on, with what happened."""
+    was on, with what happened. On the details the address lands on the result itself,
+    where the way back is repeated, so neither is below a long page's first screen."""
     if origin.detail:
-        return details_href(assignment_id, said=said, **origin.back.fields())
+        return details_href(
+            assignment_id,
+            fragment=result_anchor(assignment_id),
+            said=said,
+            **origin.back.fields(),
+        )
     return back_to_the_card(origin.week, said, assignment_id)
+
+
+def plain_ways_back(origin: Origin, assignment_id: str) -> list[ReturnLink]:
+    """The ways back a failure page offers, made from checked values and nothing else.
+
+    No store is read, since this is the page for when the record cannot be:
+    a form from the details gets the assignment's details again, with the
+    way back they carried, and the page that way back names; a card gets
+    its week with the card in view. Today is the Today panel, whichever plan
+    is there when she arrives, and a plan on the family page is named to the
+    family page, which opens it or not as it finds it.
+    """
+    back = origin.back
+    if not origin.detail:
+        return [
+            ReturnLink(
+                week_href(origin.week, assignment_id, show=assignment_id), "Back to the week"
+            )
+        ]
+    details = ReturnLink(details_href(assignment_id, **back.fields()), "Back to the assignment")
+    if back.target == "week":
+        return [
+            details,
+            ReturnLink(week_href(back.week, assignment_id, show=assignment_id), "Back to the week"),
+        ]
+    if back.target == "today":
+        return [details, ReturnLink(address(WEEK_PAGE, fragment="today"), "Back to Today")]
+    if back.plan_id is None:
+        where = address(
+            FAMILY_PAGE, fragment=f"update-{segment(assignment_id)}", focus=assignment_id
+        )
+    else:
+        where = address(FAMILY_PAGE, fragment=anchor_for(back.plan_id), plan=back.plan_id)
+    return [details, ReturnLink(where, "Back to family review")]
 
 
 def could_not(
@@ -1276,7 +1362,7 @@ def could_not(
 ) -> HTMLResponse:
     """The page after a write the file refused: the component with what she typed, and no
     word of a save. When the page itself cannot be read back, a plain page with her words
-    instead, which reads no store."""
+    and the way back her form carried, which reads no store and tries nothing again."""
     try:
         return result_page(
             request,
@@ -1291,7 +1377,11 @@ def could_not(
         return templates.TemplateResponse(
             request,
             "student_update_recovery.html",
-            {"card": card, "sample": state.settings.sample},
+            {
+                "card": card,
+                "ways_back": plain_ways_back(origin, assignment_id),
+                "sample": state.settings.sample,
+            },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 

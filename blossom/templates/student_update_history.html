@@ -1,0 +1,43 @@
+{#
+  The history of one assignment's updates: hers and the school's, listed
+  apart. Under the update component on a card; on the assignment's details,
+  below the longer evidence, where the page puts it. ``ctx`` says whose words
+  the labels use and whether days carry their year.
+#}
+{% macro day(value) %}{{ value.strftime("%B") }} {{ value.day }}{% if ctx.with_year %}, {{ value.year }}{% endif %}{% endmacro %}
+  {#
+    History: her updates and corrections, oldest first, each with its day,
+    and what the school has reported, listed apart and labeled as the
+    school's. A correction says what it put back and that update's own day.
+    Shown once there is something the card does not already say.
+  #}
+  {% if assignment.update_history or assignment.school_history|length > 1 %}
+    <details class="steps history">
+      <summary>Update history<span class="visually-hidden"> for {{ assignment.title }}</span></summary>
+      {% if assignment.update_history %}
+        <p class="history-label">{% if ctx.viewer == "parent" %}Student updates{% else %}Your updates{% endif %}</p>
+        <ol>
+          {% for row in assignment.update_history %}
+            <li>
+              {{ day(row.reported_on) }}:
+              {% if row.operation == "report" %}
+                {% if row.status == "done" %}Done{% else %}Not yet{% endif %}.{% if row.note %} <q>{{ row.note }}</q>{% endif %}
+              {% elif row.status %}
+                Correction. The update before it was taken back, which restored {% if row.status == "done" %}Done{% else %}Not yet{% endif %}{% if row.restored_from %} from {{ day(row.restored_from) }}{% endif %}.{% if row.note %} <q>{{ row.note }}</q>{% endif %}
+              {% else %}
+                Correction. The update before it was taken back, which left no update.
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% endif %}
+      {% if assignment.school_history %}
+        <p class="history-label">From the school</p>
+        <ol>
+          {% for statement in assignment.school_history %}
+            <li>{{ day(statement.reported_on) }}: {{ statement.status|replace("_", " ")|capitalize }}. {{ statement.sentence }}</li>
+          {% endfor %}
+        </ol>
+      {% endif %}
+    </details>
+  {% endif %}

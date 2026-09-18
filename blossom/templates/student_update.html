@@ -29,8 +29,15 @@
 {% set at_note = here and card.field == "note" %}
 {% set key = assignment.assignment_id %}
 <div class="update">
+  {#
+    What a save or an undo did is said here, where she acted, in a place an
+    address can land on, with the way back the page offers at its top
+    repeated beside it, so the result and the way on are found together
+    however long the page is. The link is ordinary navigation; nothing goes
+    back on its own.
+  #}
   {% if here and card.said %}
-    <p class="note" role="status">{{ card.said }}</p>
+    <p class="note update-result" role="status" id="update-result-{{ key|urlencode }}" tabindex="-1">{{ card.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
   {% endif %}
   {% if here and card.problem %}
     <p class="problem" role="alert" id="update-problem-{{ key }}">{{ card.problem }}</p>
@@ -101,40 +108,5 @@
       </div>
     </form>
   {% endif %}
-  {#
-    History: her updates and corrections, oldest first, each with its day,
-    and what the school has reported, listed apart and labeled as the
-    school's. A correction says what it put back and that update's own day.
-    Shown once there is something the card does not already say.
-  #}
-  {% if assignment.update_history or assignment.school_history|length > 1 %}
-    <details class="steps history">
-      <summary>Update history<span class="visually-hidden"> for {{ assignment.title }}</span></summary>
-      {% if assignment.update_history %}
-        <p class="history-label">{% if ctx.viewer == "parent" %}Student updates{% else %}Your updates{% endif %}</p>
-        <ol>
-          {% for row in assignment.update_history %}
-            <li>
-              {{ day(row.reported_on) }}:
-              {% if row.operation == "report" %}
-                {% if row.status == "done" %}Done{% else %}Not yet{% endif %}.{% if row.note %} <q>{{ row.note }}</q>{% endif %}
-              {% elif row.status %}
-                Correction. The update before it was taken back, which restored {% if row.status == "done" %}Done{% else %}Not yet{% endif %}{% if row.restored_from %} from {{ day(row.restored_from) }}{% endif %}.{% if row.note %} <q>{{ row.note }}</q>{% endif %}
-              {% else %}
-                Correction. The update before it was taken back, which left no update.
-              {% endif %}
-            </li>
-          {% endfor %}
-        </ol>
-      {% endif %}
-      {% if assignment.school_history %}
-        <p class="history-label">From the school</p>
-        <ol>
-          {% for statement in assignment.school_history %}
-            <li>{{ day(statement.reported_on) }}: {{ statement.status|replace("_", " ")|capitalize }}. {{ statement.sentence }}</li>
-          {% endfor %}
-        </ol>
-      {% endif %}
-    </details>
-  {% endif %}
+  {% if not ctx.history_apart %}{% include "student_update_history.html" %}{% endif %}
 </div>

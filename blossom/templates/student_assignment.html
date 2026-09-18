@@ -2,13 +2,18 @@
 {% set page = "student" %}
 {% block title %}Blossom - {{ assignment.title }}{% endblock %}
 {#
-  One assignment's current record: the way back first, then what it is, what
-  is on record about its date and from the school, her update, and the
-  history of both. The facts and the update are the parts her week's cards
+  One assignment's current record, in the order she needs it: the way back,
+  what the assignment is, its date with where it came from and the warning
+  when it is in doubt, and then her update with its controls, before anything
+  long. The longer evidence follows, each source's claim, what each school
+  channel reports, and the teacher's or a parent's note, all of it, and the
+  history of her updates and the school's closes the page. Each fact is shown
+  once. The facts, the update, and the history are the parts her week's cards
   use; nothing here is a second form. Everything shown is the record as it
   stands now, whichever plan or page the reader came from, and the page says
-  so. A problem with the update is said at the top with a link to it, as well
-  as beside the field it is about.
+  so. What a save did is said at the update, where the address lands, with
+  the way back beside it. A problem with the update is said at the top with a
+  link to it, as well as beside the field it is about.
 #}
 {% block content %}
   <p class="return"><a href="{{ back.href }}">{{ back.label }}</a>{% if back.note %} <span class="note">{{ back.note }}</span>{% endif %}</p>
@@ -20,8 +25,13 @@
     <p class="course">{{ assignment.course }}</p>
     <h1>{{ assignment.title }}</h1>
     <p class="note">Current assignment record. Updates shown are the latest on record.</p>
-    {% with due_with_year = true, facts_level = 2 %}{% include "student_card_facts.html" %}{% endwith %}
+    {% with due_with_year = true, facts_level = 3, part = "date" %}{% include "student_card_facts.html" %}{% endwith %}
     <h2 class="update-heading">{% if ctx.viewer == "parent" %}Student update{% else %}Your update{% endif %}</h2>
     {% include "student_update.html" %}
+    <section class="evidence" id="evidence" tabindex="-1">
+      <h2 class="update-heading">What is on record</h2>
+      {% with due_with_year = true, facts_level = 3, part = "evidence" %}{% include "student_card_facts.html" %}{% endwith %}
+    </section>
+    {% include "student_update_history.html" %}
   </article>
 {% endblock %}

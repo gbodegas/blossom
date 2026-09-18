@@ -45,6 +45,7 @@ from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdi
 from blossom.intake import PASTE_DAY
 from blossom.noticing import Noticing, Verdict
 from blossom.plan_checks import check_plan
+from blossom.plan_reading import anchor_for
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.routes.runs import PlanGraphs, plan_graphs
@@ -57,7 +58,7 @@ from blossom.settings import (
     TIMEZONE_VARIABLE,
     Settings,
 )
-from blossom.stores.drafts import DraftsStore
+from blossom.stores.drafts import DraftRecord, DraftsStore
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -739,3 +740,24 @@ def walkthrough(client: TestClient) -> str:
         lambda: [walkthrough_plan(namesake)], lambda: [accepting()]
     )
     return namesake
+
+
+def planned(client: TestClient) -> DraftRecord:
+    """Make today's plan from her page and return its record."""
+    made = client.post("/student/actions/plan")
+    assert made.status_code == 303, made.text[:300]
+    record = state_of(client).drafts.latest_for(PLAN_DATE)
+    assert record is not None
+    return record
+
+
+def plan_on(page: str, record: DraftRecord) -> str:
+    """One plan's container on a page, whole: from its anchor to the end of its original
+    text fold, or to the end of its text reading."""
+    start = page.index(f'id="{anchor_for(record.draft_id)}"')
+    ends = [
+        found
+        for found in (page.find(mark, start) for mark in ("</pre>", "</section>", "</article>"))
+        if found >= 0
+    ]
+    return page[start : min(ends)] if ends else page[start:]

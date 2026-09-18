@@ -658,6 +658,45 @@ details.plan .body {
   font-size: 0.92rem;
 }
 
+/* A link to an assignment, from a row of a plan, a notice, a row of the
+   family page, or a card: the application's own action color, underlined,
+   wherever it sits, on a plain surface and on a tinted one. */
+a.assignment-link,
+a.assignment-link:visited {
+  color: var(--blue-action);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+a.assignment-link:hover,
+a.assignment-link:focus-visible {
+  color: var(--blue-action-hover);
+}
+
+/* The link from the Today controls to the help form below the plan: beside
+   the buttons and as tall as they are, so help is never a long plan away. */
+.to-help {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0 0.5rem;
+  color: var(--blue-action);
+  font-weight: 600;
+}
+
+.ask:focus,
+.update-result:focus,
+.evidence:focus {
+  outline: 2px solid var(--blue-action);
+  outline-offset: 4px;
+}
+
+.evidence {
+  margin-top: 1.25rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* An assignment's details: the card's own surface at the page's reading
    width, one heading for the page, and the link to it from a card kept
    small, since the card's own form stays the short way to save. */

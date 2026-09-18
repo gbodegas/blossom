@@ -114,24 +114,31 @@ in a nullable column, written in one transaction with the text, the ids, the
 fingerprint, and the run; once a draft is on the pages its bundle is the
 record, so the same composition saved again changes nothing and a different
 one is refused. `blossom/plan_reading.py` reads a draft one record at a time:
-a version-1 snapshot that agrees with its draft is shown by its rows, no
-snapshot is an earlier plan shown as its text, and a snapshot that cannot be
-used is shown as its text with a sentence saying so, the draft id logged with
-where it failed and nothing of what it says. Nothing reads the text to find
-an assignment, and nothing repairs a draft on a GET.
+a version-1 snapshot that is whole, every key it writes present and every
+block time a wall time, and that agrees with its draft is shown by its rows,
+no snapshot is an earlier plan shown as its text, and a snapshot that cannot
+be used is shown as its text with a sentence saying so, the draft id logged
+with where it failed and nothing of what it says. Nothing reads the text to
+find an assignment, and nothing repairs a draft on a GET.
 
 Which plan is current is decided apart from its review: the household day is
-read once for a page, and today's working plan is the last draft published
-for that day that no later one displaced, waiting, approved, or refused.
-That one reading shows, beside each row, that she reports its assignment as
-Done, from one batched read of her updates for the plan's distinct
-assignments, taken in the same hold of the store as the notice above the
-plan and the stale check, so the three agree and no row is read for on its
-own. The rule is only that the assignment's effective status is Done now;
-nothing is compared with when the plan was made, a parent's check, or the
-school's word. An earlier plan for today, a plan for another day, and the
-text as composed carry no marks. Showing a plan writes nothing, and a mark is
-never a new approval: the stale checks and their refusals are as they were.
+read once for a page and handed to everything on it, the heading, the week,
+the notice, the marks, and the stale check, so a page rendered across
+midnight is about one day. The family page reads its drafts once too, what
+waits, what was decided, and which draft is the day's, in one statement under
+the store's lock, so a plan published or decided while the page is being
+built cannot leave it naming a draft it did not read. Today's working plan is
+the last draft published for that day that no later one displaced, waiting,
+approved, or refused. That one reading shows, beside each row, that she
+reports its assignment as Done, from one batched read of her updates for the
+plan's distinct assignments, taken in the same hold of the store as the
+notice above the plan and the stale check, so the three agree and no row is
+read for on its own. The rule is only that the assignment's effective status
+is Done now; nothing is compared with when the plan was made, a parent's
+check, or the school's word. An earlier plan for today, a plan for another
+day, and the text as composed carry no marks. Showing a plan writes nothing,
+and a mark is never a new approval: the stale checks and their refusals are
+as they were.
 
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update

@@ -7,7 +7,17 @@
   with no week above it needs and a card inside a dated week does not;
   ``facts_level`` is the level of the headings inside, which depends on the
   heading the part sits under.
+
+  ``part`` is which of the facts to show. A card shows them all, in the order
+  it always has. The details show the short ones first, the date, where it
+  came from in a line, and the warning when it is in doubt, then her update,
+  and then the longer evidence: each source's claim, what each school channel
+  reports, and the note. Every condition is written once, here, and each
+  piece under it belongs to one part or the other, so the two readings cannot
+  come to disagree about a fact, and no fact is shown twice on one page.
 #}
+{% set show_date = part|default("all") != "evidence" %}
+{% set show_evidence = part|default("all") != "date" %}
       {#
         The due line carries the record's date and, when one label can say
         it, where that date came from: the channel that gave it, or the
@@ -16,6 +26,7 @@
         date the record does not match. A page that shouts about every date
         teaches her to skim past the shouting.
       #}
+      {% if show_date %}
       <p class="due">
         {% if assignment.due_date %}
           {% if assignment.contradiction or assignment.deadline_confidence == "SOURCES_DISAGREE" %}Recorded date{% else %}Due{% endif %} {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if due_with_year %}, {{ assignment.due_date.year }}{% endif %}
@@ -49,7 +60,8 @@
           {% if assignment.readable_channels|length == 1 %}has{% else %}have{% endif %} one.{% endif %}
         </p>
       {% endif %}
-      {% if assignment.unreadable %}
+      {% endif %}
+      {% if show_evidence and assignment.unreadable %}
         <p class="source">Not read as a date: {{ assignment.unreadable|join("; ") }}.</p>
       {% endif %}
 
@@ -57,11 +69,17 @@
         The two banners say the same thing first, "Check this date", and then
         which kind of doubt this is. The recorded date stays on the card and
         the sources' dates are listed under the banner; nothing is chosen.
+        Where the claims are further down the page, the banner points at
+        them.
       #}
       {% if assignment.deadline_confidence == "SOURCES_DISAGREE" %}
+        {% if show_date %}
         <p class="confidence disagree">
           <strong>Check this date.</strong> Sources disagree about it, and nothing has been chosen for you.
+          {% if not show_evidence %}<a href="#evidence">What the sources say is below.</a>{% endif %}
         </p>
+        {% endif %}
+        {% if show_evidence %}
         <div class="claims">
           <h{{ facts_level }}>What the sources say</h{{ facts_level }}>
           <ul>
@@ -70,6 +88,7 @@
             {% endfor %}
           </ul>
         </div>
+        {% endif %}
       {% endif %}
 
       {#
@@ -83,10 +102,14 @@
         say the same thing twice.
       #}
       {% if assignment.school_contradicts and assignment.deadline_confidence != "SOURCES_DISAGREE" %}
+        {% if show_date %}
         <p class="confidence disagree">
           <strong>Check this date.</strong> The school says otherwise.
           {% if assignment.due_date %}It gives a different date from the one recorded.{% else %}It gives a date where none is recorded.{% endif %}
+          {% if not show_evidence %}<a href="#evidence">What the sources say is below.</a>{% endif %}
         </p>
+        {% endif %}
+        {% if show_evidence %}
         <div class="claims">
           <h{{ facts_level }}>What the sources say</h{{ facts_level }}>
           <ul>
@@ -95,7 +118,8 @@
             {% endfor %}
           </ul>
         </div>
-      {% elif assignment.contradiction and assignment.deadline_confidence != "SOURCES_DISAGREE" %}
+        {% endif %}
+      {% elif show_evidence and assignment.contradiction and assignment.deadline_confidence != "SOURCES_DISAGREE" %}
         <p class="source">What they gave: {{ assignment.contradiction|join("; ") }}.</p>
       {% endif %}
 
@@ -109,6 +133,7 @@
         a check of her "done" against a "missing" rests on a channel's own
         latest word, and the card shows each report it could rest on.
       #}
+      {% if show_evidence %}
       {% for statement in assignment.school_statements %}
         <p class="confidence disagree" role="status">
           <strong>The school reports this {{ statement.status|replace("_", " ") }}.</strong>
@@ -125,4 +150,5 @@
         <p class="status">
           <span class="pill">Reported status: {{ assignment.submission_status|replace("_", " ") }}</span>
         </p>
+      {% endif %}
       {% endif %}

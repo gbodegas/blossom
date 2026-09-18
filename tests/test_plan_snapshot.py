@@ -203,7 +203,10 @@ def test_a_snapshot_that_does_not_agree_with_itself_is_not_one() -> None:
     fewer = {k: v for k, v in whole["assignments"].items() if k != SYLLABUS.assignment_id}
     with pytest.raises(ValidationError, match="not the ones the plan speaks about"):
         PlanSnapshot.model_validate(broken(assignments=fewer))
-    more = {**whole["assignments"], "assignment-extra": {"title": "x", "course": "y"}}
+    more = {
+        **whole["assignments"],
+        "assignment-extra": {"title": "x", "course": "y", "due_date": None},
+    }
     with pytest.raises(ValidationError, match="not the ones the plan speaks about"):
         PlanSnapshot.model_validate(broken(assignments=more))
     with pytest.raises(ValidationError, match="does not speak about"):

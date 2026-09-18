@@ -2,12 +2,14 @@
 {% set page = "student" %}
 {% block title %}Blossom - Update not saved{% endblock %}
 {#
-  The page for a save the file refused when her week cannot be read back
-  either: what happened, in a sentence, and what she typed, so nothing of
-  hers is lost with the failure. Nothing here reads the record.
+  The page for a save the file refused when the page it came from cannot be
+  read back either: what happened, in a sentence, what she chose and typed,
+  so nothing of hers is lost with the failure, and the ways back her form
+  carried, made on the server from checked values. Nothing here reads the
+  record, tries the save again, or says anything was saved.
 #}
 {% block content %}
-  <h1>My week</h1>
+  <h1>Update not saved</h1>
   <p class="problem" role="alert">{{ card.problem }}</p>
   {% if card.status %}
     <p>Your choice: {% if card.status == "done" %}Done{% else %}Not yet{% endif %}.</p>
@@ -16,5 +18,7 @@
     <label for="kept-note">Your note, as typed</label>
     <textarea id="kept-note" rows="4" readonly>{{ card.note }}</textarea>
   {% endif %}
-  <p class="return"><a href="/student/due-this-week">Return to your week</a></p>
+  {% for link in ways_back %}
+    <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
+  {% endfor %}
 {% endblock %}

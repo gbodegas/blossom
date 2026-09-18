@@ -19,7 +19,7 @@
 {% set level = plan_level|default(3) %}
 {% set hers = reading.reader == "student" %}
 {% macro named(work) %}
-  <span class="plan-item">{{ work.course }} &middot; {% if work.href %}<a href="{{ work.href }}" aria-label="{{ work.link_name }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %}</span>{% if work.reference %} <span class="plan-ref">{{ work.reference }}</span>{% endif %}
+  <span class="plan-item">{{ work.course }} &middot; {% if work.href %}<a class="assignment-link" href="{{ work.href }}" aria-label="{{ work.link_name }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %}</span>{% if work.reference %} <span class="plan-ref">{{ work.reference }}</span>{% endif %}
 {% endmacro %}
 {% macro due(work) %}
   <p class="plan-due">{% if work.due_date %}Due {{ work.due_date|long_date }}{% else %}No due date on record{% endif %}{% if work.unavailable %}. Current assignment record unavailable.{% endif %}</p>

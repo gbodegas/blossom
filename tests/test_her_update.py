@@ -405,11 +405,13 @@ def test_a_plan_that_speaks_about_work_she_has_since_finished_says_so_on_both_pa
     assert PLAN_INCLUDES_DONE == "This plan includes work you now report as Done."
     assert PLAN_INCLUDES_DONE in hers
     assert (
-        f'In it: <a href="/student/assignments/{ESSAY}?return_to=today" '
+        f'In it: <a class="assignment-link" href="/student/assignments/{ESSAY}?return_to=today" '
         f'aria-label="{ESSAY_TITLE}, World History">{ESSAY_TITLE}</a> (World History).'
     ) in hers
     assert "A new plan will leave it out." in hers
-    assert f"<strong>Student updates.</strong> {SHE_REPORTS} In it: <a href=" in family
+    assert (
+        f'<strong>Student updates.</strong> {SHE_REPORTS} In it: <a class="assignment-link" href='
+    ) in family
     assert NAMED_BY_ITS_ROW in family
     assert f"({ESSAY})" not in hers
     assert over_json["reported_done"] == PLAN_INCLUDES_DONE
