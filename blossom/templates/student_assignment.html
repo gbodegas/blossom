@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% set page = "student" %}
+{% block title %}Blossom - {{ assignment.title }}{% endblock %}
+{#
+  One assignment's current record: the way back first, then what it is, what
+  is on record about its date and from the school, her update, and the
+  history of both. The facts and the update are the parts her week's cards
+  use; nothing here is a second form. Everything shown is the record as it
+  stands now, whichever plan or page the reader came from, and the page says
+  so. A problem with the update is said at the top with a link to it, as well
+  as beside the field it is about.
+#}
+{% block content %}
+  <p class="return"><a href="{{ back.href }}">{{ back.label }}</a>{% if back.note %} <span class="note">{{ back.note }}</span>{% endif %}</p>
+  {% set trouble = problem or (card.problem if card else none) %}
+  {% if trouble %}
+    <p class="problem" role="alert">{{ trouble }}{% if card and card.problem %} <a href="#update-problem-{{ assignment.assignment_id }}">Go to the update.</a>{% endif %}</p>
+  {% endif %}
+  <article class="assignment detail confidence-{{ assignment.deadline_confidence|lower }}" id="assignment-{{ assignment.assignment_id }}">
+    <p class="course">{{ assignment.course }}</p>
+    <h1>{{ assignment.title }}</h1>
+    <p class="note">Current assignment record. Updates shown are the latest on record.</p>
+    {% with due_with_year = true, facts_level = 2 %}{% include "student_card_facts.html" %}{% endwith %}
+    <h2 class="update-heading">{% if ctx.viewer == "parent" %}Student update{% else %}Your update{% endif %}</h2>
+    {% include "student_update.html" %}
+  </article>
+{% endblock %}

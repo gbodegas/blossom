@@ -680,3 +680,62 @@ def composed_plan(plan: DailyPlan | None = None, **over: object) -> Composition:
     }
     given.update(over)
     return compose(**given)  # type: ignore[arg-type]
+
+
+# ------------------------------------------------------------- a plan to follow through the pages
+
+NAMESAKE_COURSE = "English"
+
+
+def walkthrough_plan(namesake_id: str) -> DailyPlan:
+    """The fixture week's plan with the essay in two sittings and its namesake, another
+    course's assignment of the same title, put off: two rows for one id, a row for a
+    neighbor with the same words, and work put off beside them."""
+    whole = fixture_week_plan()
+    return whole.model_copy(
+        update={
+            "blocks": [
+                PlanBlock(
+                    assignment_id=ESSAY_ID,
+                    starts_at=time(16, 30),
+                    ends_at=time(17, 0),
+                    rationale="the outline first, while she is fresh",
+                ),
+                PlanBlock(
+                    assignment_id="assignment-science-fair-proposal",
+                    starts_at=time(17, 0),
+                    ends_at=time(17, 30),
+                    rationale="nobody has confirmed this date, so it gets done tonight",
+                ),
+                PlanBlock(
+                    assignment_id=ESSAY_ID,
+                    starts_at=time(18, 0),
+                    ends_at=time(18, 30),
+                    rationale="the first two paragraphs after a break",
+                ),
+            ],
+            "deferred": [
+                *whole.deferred,
+                Deferral(assignment_id=namesake_id, reason="the other essay comes first"),
+            ],
+        }
+    )
+
+
+def walkthrough(client: TestClient) -> str:
+    """Put the namesake on record, script the walkthrough plan for the next run, and return
+    the namesake's id. Nothing is planned yet, and the shared fixtures are left as they are."""
+    entered = client.post(
+        "/parent/inbox/keep",
+        data={"course": NAMESAKE_COURSE, "title": ESSAY_TITLE, "due_date": "2026-08-21"},
+    )
+    assert entered.status_code == 303, entered.text[:300]
+    namesake = next(
+        item.assignment_id
+        for item in state_of(client).project_state.all_assignments()
+        if item.title == ESSAY_TITLE and item.course == NAMESAKE_COURSE
+    )
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [walkthrough_plan(namesake)], lambda: [accepting()]
+    )
+    return namesake

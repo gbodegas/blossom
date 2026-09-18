@@ -52,6 +52,13 @@ Spanish - Assigned: Binder, labeled dividers and lined paper check: (Due:09/11/2
 """
 MOVED = "Homework for Wren\n- 09/10/2026 - Thursday\n08 Geometry - Due: Book Covers:\n"
 EMAIL = "Assignments:\n09/09 08 Geometry - A: Homework/Classwork: Book Covers Grade: Missing\n"
+SCHOOL_SAYS_MISSING = re.compile(
+    r'<strong><a href="/student/assignments/[^"]+\?return_to=family" '
+    r'aria-label="Book Covers, 08 Geometry">Book Covers</a>: '
+    r"the school reports it missing\.</strong>"
+)
+"""The family page's line for the school's report, its title the link to the
+assignment's details."""
 WEEKLY = "Homework for Wren\n- 09/07/2026 - Monday\nMath - Due: Weekly practice:\n"
 WEEKLY_AGAIN = "Homework for Wren\n- 09/14/2026 - Monday\nMath - Due: Weekly practice:\n"
 ENTRY = {
@@ -946,7 +953,7 @@ def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
     assert "<h2>Assignment updates</h2>" in family
     assert "<h3>School reports</h3>" in family
     assert "Worth checking together" not in family
-    assert "<strong>Book Covers: the school reports it missing.</strong>" in family
+    assert SCHOOL_SAYS_MISSING.search(family)
     assert "From the school email, pasted Monday, September 7, 2026." in family
     assert "<strong>The school reports this missing.</strong>" in hers
     assert "From the school email, pasted Monday, September 7, 2026." in hers
@@ -1055,7 +1062,7 @@ def test_the_family_page_reads_the_schools_reports_as_one_snapshot(
 
     assert reading in still_waiting
     assert page.status_code == 200
-    assert "<strong>Book Covers: the school reports it missing.</strong>" in page.text
+    assert SCHOOL_SAYS_MISSING.search(page.text)
 
 
 def test_a_review_that_spans_midnight_saves_the_day_the_page_said(

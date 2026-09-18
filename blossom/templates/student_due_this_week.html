@@ -29,7 +29,7 @@
   {% endif %}
 
   {% if view.week.current %}
-  <section class="panel today">
+  <section class="panel today" id="today" tabindex="-1">
     <h2>Today, {{ view.today.strftime("%A, %B") }} {{ view.today.day }}</h2>
     {% if refreshed_at %}
       <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
@@ -59,10 +59,20 @@
     {% if view.plan and view.plan.reported_done %}
       <p class="confidence disagree" role="status">
         <strong>Your updates.</strong> {{ view.plan.reported_done }}
-        {% if view.plan.reported_done_work %}
+        {#
+          A plan read by its rows names the work as its rows do, by the saved
+          title and course, each a link to the assignment's details; a plan
+          read as text names it by title and id. Either way the plan is one
+          link away, unfolded, with her updates beside its rows.
+        #}
+        {% if plan_reading and plan_reading.structured and plan_reading.done_work %}
+          In it: {% for work in plan_reading.done_work %}{% if work.href %}<a href="{{ work.href }}" aria-label="{{ work.link_name }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %} ({{ work.course }}{% if work.needs_date %}, {% if work.due_date %}due {{ work.due_date|long_date }}{% else %}no due date{% endif %}{% endif %}){% if work.reference %} <span class="plan-ref">{{ work.reference }}</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}.
+          {% if not view.nothing_to_plan %}A new plan will leave it out.{% endif %}
+        {% elif view.plan.reported_done_work %}
           In it: {% for work in view.plan.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}.
           {% if not view.nothing_to_plan %}A new plan will leave it out.{% endif %}
         {% endif %}
+        {% if plan_reading %}<a href="/student/due-this-week?show_plan=1#{{ plan_reading.anchor }}">View today's plan</a>{% endif %}
       </p>
     {% endif %}
     {% if view.plan and view.plan.decision in ("approved", "rejected") %}
@@ -283,7 +293,8 @@
             <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
             Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
             {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
-            {% include "student_update.html" %}
+            <a class="details-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
+            {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
           </li>
         {% endfor %}
       </ul>
@@ -297,7 +308,8 @@
                 <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
                 Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
                 {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
-                {% include "student_update.html" %}
+                <a class="details-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
+                {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
               </li>
             {% endfor %}
           </ul>

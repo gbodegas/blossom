@@ -18,6 +18,18 @@
     </details>
   {% endif %}
 {% endmacro %}
+{#
+  That today's plan includes work she now reports as Done. A plan read by its
+  rows names that work as its rows do, by the saved title and course, with
+  the due date or the id only when two would read the same, each a link to
+  the assignment's current details. A plan read as text names it by title
+  and id, as it always did.
+#}
+{% macro done_notice(draft) %}
+  {% set reading = readings[draft.draft_id] %}
+  <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if reading.structured and reading.done_work %} In it: {% for work in reading.done_work %}{% if work.href %}<a href="{{ work.href }}" aria-label="{{ work.link_name }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %} ({{ work.course }}{% if work.needs_date %}, {% if work.due_date %}due {{ work.due_date|long_date }}{% else %}no due date{% endif %}{% endif %}){% if work.reference %} <span class="plan-ref">{{ work.reference }}</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% elif draft.reported_done_work %} In it: {% for work in draft.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% endif %}</p>
+{% endmacro %}
+{% macro row_title(item) %}<a href="{{ details_href(item.assignment_id, return_to="family") }}" aria-label="{{ item.title }}, {{ item.course }}">{{ item.title }}</a>{% endmacro %}
 {% macro local(moment) %}{% set when = moment.astimezone(zone) %}{{ when.strftime("%B") }} {{ when.day }}, {{ when.year }}, {{ when|clock }} {{ when.strftime("%Z") }}{% endmacro %}
 {% block content %}
   <h1>Family review</h1>
@@ -131,8 +143,17 @@
     {% if item.checked %}{{ checked_line(item) }}{% elif item.checked_before_on %}{{ checked_before(item) }}{{ again_form(item) }}{% endif %}
   {% endmacro %}
   {% if updates.check or updates.checked or updates.recent or updates.school %}
-    <section class="assignment-updates">
+    <section class="assignment-updates" id="assignment-updates">
       <h2>Assignment updates</h2>
+      {#
+        A link back from an assignment's details names its row. When the row
+        is in none of the groups now, the link lands here, on the section,
+        and no row is made for it.
+      #}
+      {% set listed = (updates.check + updates.checked + updates.recent + updates.school)|map(attribute="assignment_id")|list %}
+      {% if check and not check.said and not check.problem and check.assignment_id not in listed %}
+        <span id="update-{{ check.assignment_id }}" tabindex="-1"></span>
+      {% endif %}
       {% if updates.check %}
         <h3>Worth checking together</h3>
         {% for item in updates.check %}
@@ -140,7 +161,7 @@
           {% set at_note = here and check.field == "note" %}
           <article class="draft needs-review" id="update-{{ item.assignment_id }}" tabindex="-1">
             <p class="course">{{ item.course }}</p>
-            <p class="decision-line"><strong>{{ item.title }}</strong></p>
+            <p class="decision-line"><strong>{{ row_title(item) }}</strong></p>
             {{ check_words(item) }}
             <p>{{ her_update(item) }}</p>
             {% for statement in item.school_statements %}
@@ -173,7 +194,7 @@
           <ul>
             {% for item in updates.checked %}
               <li id="update-{{ item.assignment_id }}" tabindex="-1">
-                <strong>{{ item.title }}</strong> &middot; {{ item.course }}:
+                <strong>{{ row_title(item) }}</strong> &middot; {{ item.course }}:
                 {{ check_words(item) }}
                 {{ her_update(item) }}
                 {% for statement in item.school_statements %}
@@ -193,7 +214,7 @@
           <ul>
             {% for item in updates.recent %}
               <li id="update-{{ item.assignment_id }}" tabindex="-1">
-                <strong>{{ item.title }}</strong> &middot; {{ item.course }}:
+                <strong>{{ row_title(item) }}</strong> &middot; {{ item.course }}:
                 {{ check_words(item) }}
                 {{ her_update(item) }}
                 {% for statement in item.school_statements %}
@@ -214,7 +235,7 @@
             {{ check_words(item) }}
             {% for statement in item.school_statements %}
               <p class="decision-line">
-                <strong>{{ item.title }}: the school reports it {{ statement.status|replace("_", " ") }}.</strong>
+                <strong>{% if loop.first %}{{ row_title(item) }}{% else %}{{ item.title }}{% endif %}: the school reports it {{ statement.status|replace("_", " ") }}.</strong>
                 {{ statement.sentence }}
               </p>
             {% endfor %}
@@ -253,7 +274,7 @@
           <p class="confidence disagree" role="alert"><strong>Plan again.</strong> {{ draft.stale }}</p>
         {% endif %}
         {% if draft.reported_done %}
-          <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if draft.reported_done_work %} In it: {% for work in draft.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% endif %}</p>
+          {{ done_notice(draft) }}
         {% endif %}
         {#
           Each button names the draft it decides, so several waiting drafts
@@ -291,6 +312,39 @@
       </article>
     {% endfor %}
   </section>
+
+  {#
+    Today's working plan once it has been decided: the one plan her page
+    shows as today's, with the decision, its reason, and when, and her
+    updates beside its rows, since a parent's review is about the plan as
+    it was and her updates are about her work as it stands. It is left out
+    of the earlier plans below while it is shown here.
+  #}
+  {% if todays_decided %}
+    {% set draft = todays_decided %}
+    <section>
+      <h2>{% if draft.decision in ("approved", "rejected") %}Today's reviewed plan{% else %}Today's saved plan{% endif %}</h2>
+      <article class="draft decided-{{ draft.decision }}">
+        <p class="course">Evening of {{ draft.plan_date }}</p>
+        <p class="decision-line">
+          {% if draft.decision == "approved" %}
+            <strong>Looks good.</strong>
+          {% elif draft.decision == "rejected" %}
+            <strong>Change asked.</strong> The plan stays as it was until she plans again.
+          {% else %}
+            <strong>Expired.</strong> The evening passed without a review.
+          {% endif %}
+          {% if draft.reason and draft.decision in ("approved", "rejected") %}Reason: {{ draft.reason }}.{% endif %}
+          <span class="when">{% if draft.decision in ("approved", "rejected") %}Reviewed{% else %}Closed{% endif %} {{ local(draft.decided_at) }}.</span>
+        </p>
+        {% if draft.reported_done %}
+          {{ done_notice(draft) }}
+        {% endif %}
+        {% with reading = readings[draft.draft_id], review_open = true, plan_level = 3 %}{% include "plan_reading.html" %}{% endwith %}
+        {{ steps_list(draft.steps, "How this plan was made") }}
+      </article>
+    </section>
+  {% endif %}
 
   {#
     The way in for assignments: the school's own text, pasted whole, or one
@@ -396,7 +450,8 @@ Cover both books with paper.</pre>
     </section>
   </details>
 
-  <details class="steps panel-fold">
+  {% set earlier_open = open_plan and (decided|selectattr("draft_id", "equalto", open_plan)|list) %}
+  <details class="steps panel-fold"{% if earlier_open %} open{% endif %}>
     <summary>Earlier plans</summary>
     <section>
       {% if not decided %}
@@ -419,9 +474,9 @@ Cover both books with paper.</pre>
             <span class="when">{% if draft.decision in ("approved", "rejected") %}Reviewed{% else %}Closed{% endif %} {{ local(draft.decided_at) }}.</span>
           </p>
           {% if draft.reported_done %}
-            <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if draft.reported_done_work %} In it: {% for work in draft.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% endif %}</p>
+            {{ done_notice(draft) }}
           {% endif %}
-          <details>
+          <details{% if open_plan == draft.draft_id %} open{% endif %}>
             <summary>{% if draft.decision in ("approved", "rejected") %}The plan as it was reviewed{% else %}The plan as it was{% endif %}</summary>
             {% with reading = readings[draft.draft_id], review_open = true, plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
           </details>

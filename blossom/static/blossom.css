@@ -658,6 +658,29 @@ details.plan .body {
   font-size: 0.92rem;
 }
 
+/* An assignment's details: the card's own surface at the page's reading
+   width, one heading for the page, and the link to it from a card kept
+   small, since the card's own form stays the short way to save. */
+.assignment.detail h1 {
+  margin: 0.15rem 0 0.35rem;
+  overflow-wrap: anywhere;
+}
+
+.update-heading {
+  margin: 1.25rem 0 0;
+  font-size: 1.05rem;
+}
+
+.details-link {
+  margin: 0.5rem 0 0;
+  font-size: 0.92rem;
+}
+
+a.details-link {
+  display: inline-block;
+  margin: 0.25rem 0;
+}
+
 .plan-heading {
   margin: 1.25rem 0 0.25rem;
   font-size: 1rem;

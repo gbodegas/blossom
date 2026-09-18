@@ -66,6 +66,9 @@ class NamedWork:
     link_name: str
     """What a reader who hears the page is told the link is: the title and the course, and
     the due date or the id too when other links in the plan would read the same."""
+    needs_date: bool = False
+    """Whether another assignment in the plan has the same title, so a line that names
+    this one by title says its course and its due date."""
 
 
 @dataclass(frozen=True)
@@ -247,17 +250,18 @@ def named_work(
     reader sees is the frozen title with its course and due date; when two
     in one plan agree on all three, each also shows its id. What a reader
     hears for a link is the title and course, with the due date added when
-    another link would read the same, and the id when that is not enough.
+    another assignment in the plan has the same title, and the id when the
+    course and the date are the same too.
     """
     saved = snapshot.assignments
     same_label = Counter((item.title, item.course, item.due_date) for item in saved.values())
-    same_name = Counter((item.title, item.course) for item in saved.values())
+    same_title = Counter(item.title for item in saved.values())
     names: dict[str, NamedWork] = {}
     for assignment_id, item in saved.items():
         title, course = plain(item.title), plain(item.course)
         collides = same_label[(item.title, item.course, item.due_date)] > 1
         heard = f"{title}, {course}"
-        if same_name[(item.title, item.course)] > 1:
+        if same_title[item.title] > 1:
             when = "no due date" if item.due_date is None else f"due {long_date(item.due_date)}"
             heard = f"{heard}, {when}"
         if collides:
@@ -272,5 +276,6 @@ def named_work(
             href=link_for(assignment_id) if link_for is not None and not gone else None,
             unavailable=gone,
             link_name=heard,
+            needs_date=same_title[item.title] > 1,
         )
     return names

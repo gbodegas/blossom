@@ -604,6 +604,7 @@ def review_page(
     entry: Mapping[str, str] | None = None,
     entry_open: bool = False,
     check: CheckState | None = None,
+    open_plan: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to add assignments,
@@ -617,6 +618,15 @@ def review_page(
     one row of the assignment updates shows beyond the record, a check made
     or a problem with one; a row's problem is said at the top too, with a
     link to the row, so it is met on a page that opens at its top.
+    ``open_plan`` is a plan a link came back to, whose folds are opened.
+
+    The household day is read once, and today's working plan with it: the
+    last draft published for today that no later one displaced. That one
+    plan is read as current, with her updates beside its rows, whatever was
+    decided about it. While it waits it stays in the review queue; once it
+    is decided it is shown under a heading of its own after the queue, and
+    left out of the earlier plans for that render, so it is on the page
+    once. Every other plan is history and shows none of her updates.
     """
     about_a_row = check is not None and check.problem is not None and problem is None
     # The household day and today's working plan are read once for the page,
@@ -631,7 +641,16 @@ def review_page(
         for record in [*state.drafts.waiting(), *state.drafts.decided()]
     }
     waiting = [plans[record.draft_id].view for record in state.drafts.waiting()]
-    decided = [plans[record.draft_id].view for record in state.drafts.decided()]
+    every_decided = [plans[record.draft_id].view for record in state.drafts.decided()]
+    todays = next(
+        (
+            view
+            for view in every_decided
+            if latest is not None and view.draft_id == latest.draft_id and view.plan_date == today
+        ),
+        None,
+    )
+    decided = [view for view in every_decided if view is not todays]
     return templates.TemplateResponse(
         request,
         "parent_review.html",
@@ -640,6 +659,8 @@ def review_page(
             "model_available": model_configured(state.settings),
             "waiting": waiting,
             "decided": decided,
+            "todays_decided": todays,
+            "open_plan": open_plan if open_plan in plans else None,
             "readings": {name: found.reading for name, found in plans.items()},
             "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
             "problem": check.problem if about_a_row and check is not None else problem,
@@ -825,6 +846,12 @@ def review(
     reopened: Annotated[
         str | None, Query(description="the assignment whose check was just reopened")
     ] = None,
+    focus: Annotated[
+        str | None, Query(description="the assignment whose row to bring into view; a note")
+    ] = None,
+    plan: Annotated[
+        str | None, Query(description="the plan whose folds to open; changes nothing")
+    ] = None,
 ) -> HTMLResponse:
     """The parent's page: what she asked for, what is waiting, and the folds below."""
     said = [
@@ -843,7 +870,10 @@ def review(
         added=a_count(added),
         updated=a_count(updated),
         unchanged=a_count(unchanged),
-        check=CheckState(said[0][1], said=said[0][0]) if said else None,
+        check=CheckState(said[0][1], said=said[0][0])
+        if said
+        else (CheckState(focus) if focus else None),
+        open_plan=plan,
     )
 
 

@@ -127,7 +127,8 @@ def test_two_assignments_with_one_title_are_two_rows_told_apart_by_more_than_the
         "Canal Era comparison essay, World History, due August 21, 2026, assignment-canal-essay"
     )
     assert second.link_name.endswith(", assignment-canal-essay-second")
-    assert namesake.link_name == "Canal Era comparison essay, English"
+    assert namesake.link_name == "Canal Era comparison essay, English, due August 21, 2026"
+    assert all(work.needs_date for work in (first, second, namesake))
     assert len({first.href, second.href, namesake.href}) == 3
 
 
