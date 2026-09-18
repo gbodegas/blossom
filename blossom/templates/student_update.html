@@ -35,7 +35,7 @@
       <p class="from-teacher">{% if view.viewer == "parent" %}She wrote{% else %}You wrote{% endif %}: <q>{{ assignment.update_note }}</q></p>
     {% endif %}
     <p class="effect">
-      {% if assignment.update_status == "done" %}This is out of work to plan. Your school record is separate.
+      {% if assignment.update_status == "done" %}This is out of work to plan. {% if view.viewer == "parent" %}Her{% else %}Your{% endif %} school record is separate.
       {% elif assignment.in_planning_window %}This stays in work to plan when it is in the planning window.
       {% else %}Saved as Not yet. This assignment is outside today's planning window.{% endif %}
     </p>

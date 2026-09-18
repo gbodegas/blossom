@@ -209,11 +209,17 @@ def done_in(
 
 
 def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
-    """A draft as the parent sees it, with whether it still fits the evening."""
-    included = done_in(state, record)
+    """A draft as the parent sees it, with whether it still fits the evening.
+
+    The notice and the stale state are read from one reading of her reports,
+    so a report landing between the two cannot leave them at odds.
+    """
+    with state.project_state.exclusively():
+        included = done_in(state, record)
+        stale = stale_reason(state, record)
     return ApprovalView.from_record(
         record,
-        stale=stale_reason(state, record),
+        stale=stale,
         reported_done=None if included is None else included[0],
         reported_done_work=[] if included is None else included[1],
     )

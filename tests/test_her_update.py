@@ -418,6 +418,8 @@ def test_a_parent_signed_in_reads_her_update_and_cannot_make_one(tmp_path: pathl
     assert '<span class="pill">Your update: Done</span>' in card_for(saved, ESSAY)
     assert '<span class="pill">Student update: Done</span>' in parent_after
     assert "She wrote: <q>On paper.</q>" in parent_after
+    assert "This is out of work to plan. Her school record is separate." in parent_after
+    assert "This is out of work to plan. Your school record is separate." in card_for(saved, ESSAY)
     assert "Sign in as the student to update." in parent_after
     assert ">Change</button>" not in parent_after
     assert "undo-report" not in parent_after

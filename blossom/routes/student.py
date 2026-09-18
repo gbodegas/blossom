@@ -389,9 +389,14 @@ def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
     since reported done is said whatever a parent decided.
     """
     stale = None
-    included = done_in(state, record)
-    week = state.project_state if record.waiting else None
-    match staleness(state.workload_signals, record, week):
+    # One reading of her reports for both: what the plan includes that she
+    # reports as done, and whether the week reads as it did. Read apart, a
+    # report landing between the two could leave the two lines at odds.
+    with state.project_state.exclusively():
+        included = done_in(state, record)
+        week = state.project_state if record.waiting else None
+        found = staleness(state.workload_signals, record, week)
+    match found:
         case Staleness.SIGNALED_SINCE:
             stale = SIGNALED_SINCE
         case Staleness.SIGNAL_ENDED:
