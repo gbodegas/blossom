@@ -34,7 +34,7 @@ from blossom.household import (
 )
 from blossom.principals import Principal
 from blossom.settings import PARENT_PASSPHRASE_VARIABLE, STUDENT_PASSPHRASE_VARIABLE, Settings
-from tests.support import fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings
 
 HERS = "quiet mornings and loud music"
 THEIRS = "the kitchen table at seven"
@@ -82,7 +82,9 @@ def test_a_passphrase_missing_alike_or_short_is_refused_by_name() -> None:
 def test_without_a_sign_in_a_browser_is_sent_to_sign_in_and_a_call_is_told_401(
     tmp_path: pathlib.Path,
 ) -> None:
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         page = client.get("/student/due-this-week", headers=PAGE)
         call = client.get("/student/plans/today")
         form = client.post("/student/help-requests", data={"note": "hi"}, headers=PAGE)
@@ -107,7 +109,9 @@ def test_without_a_sign_in_a_browser_is_sent_to_sign_in_and_a_call_is_told_401(
 
 
 def test_her_passphrase_opens_her_week_and_not_the_family_review(tmp_path: pathlib.Path) -> None:
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         came_in = client.post(
             "/sign-in", data={"passphrase": HERS, "next": "/student/due-this-week"}
         )
@@ -136,7 +140,9 @@ def test_her_passphrase_opens_her_week_and_not_the_family_review(tmp_path: pathl
 
 
 def test_a_parents_passphrase_opens_both_pages(tmp_path: pathlib.Path) -> None:
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         came_in = client.post("/sign-in", data={"passphrase": THEIRS})
         theirs = client.get("/parent", headers=PAGE)
         hers = client.get("/student/due-this-week", headers=PAGE)
@@ -154,7 +160,9 @@ def test_a_parents_passphrase_opens_both_pages(tmp_path: pathlib.Path) -> None:
 
 
 def test_the_wrong_passphrase_is_said_and_nothing_is_remembered(tmp_path: pathlib.Path) -> None:
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         wrong = client.post("/sign-in", data={"passphrase": "open sesame"})
         still_out = client.get("/student/due-this-week", headers=PAGE)
 
@@ -166,7 +174,9 @@ def test_the_wrong_passphrase_is_said_and_nothing_is_remembered(tmp_path: pathli
 
 
 def test_signing_out_forgets_this_device(tmp_path: pathlib.Path) -> None:
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         client.post("/sign-in", data={"passphrase": THEIRS})
         out = client.post("/sign-out")
         after = client.get("/parent", headers=PAGE)
@@ -182,7 +192,7 @@ def test_a_cookie_made_elsewhere_aged_out_or_dated_ahead_is_refused(
 ) -> None:
     now = datetime.now(UTC)
     app = create_app(household(tmp_path))
-    with TestClient(app, follow_redirects=False) as client:
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         keys: dict[Principal, bytes] = app.state.household_keys
         theirs = keys[Principal.PARENT]
         forged = issue(Principal.PARENT, b"someone else's secret", now)
@@ -223,11 +233,13 @@ def test_changing_a_passphrase_signs_that_person_out_and_not_the_other(
     person's devices are signed out, the other person's stay signed in, the old
     passphrase is refused, and the new one works."""
     renewed = "the porch light at nine"
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         hers = client.post("/sign-in", data={"passphrase": HERS}).cookies[COOKIE]
         theirs = client.post("/sign-in", data={"passphrase": THEIRS}).cookies[COOKIE]
     after = household(tmp_path, BLOSSOM_PARENT_PASSPHRASE=renewed)
-    with TestClient(create_app(after), follow_redirects=False) as client:
+    with TestClient(create_app(after), follow_redirects=False, headers=SAME_ORIGIN) as client:
         client.cookies.set(COOKIE, theirs)
         old_parent = client.get("/parent", headers=PAGE)
         with_old_phrase = client.post("/sign-in", data={"passphrase": THEIRS})
@@ -247,7 +259,9 @@ def test_ten_wrong_passphrases_from_a_device_are_answered_with_a_wait(
 ) -> None:
     """Past the limit the device is told to wait, in the page and in the answer's headers,
     and a right passphrase is not read until then. The sign-in page itself still shows."""
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         answers = [
             client.post("/sign-in", data={"passphrase": "open sesame"}).status_code
             for _ in range(ATTEMPT_LIMIT)
@@ -369,7 +383,9 @@ def test_a_right_passphrase_between_wrong_ones_leaves_the_count_standing(
     """Nine wrong, a right sign-in, a tenth wrong: the count reaches the limit all the same,
     the next try is told to wait with no cookie, and the device signed in still opens
     its page."""
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         nine = [
             client.post("/sign-in", data={"passphrase": "open sesame"}).status_code
             for _ in range(ATTEMPT_LIMIT - 1)
@@ -415,7 +431,9 @@ def test_tries_arriving_together_are_bounded_as_tries_one_at_a_time() -> None:
 def test_wrong_passphrases_sent_together_are_bounded_through_the_sign_in(
     tmp_path: pathlib.Path,
 ) -> None:
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
 
         def guess(_: int) -> int:
             return client.post("/sign-in", data={"passphrase": "open sesame"}).status_code
@@ -429,10 +447,10 @@ def test_wrong_passphrases_sent_together_are_bounded_through_the_sign_in(
 
 def test_a_restart_keeps_everyone_signed_in(tmp_path: pathlib.Path) -> None:
     settings = household(tmp_path)
-    with TestClient(create_app(settings), follow_redirects=False) as client:
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         came_in = client.post("/sign-in", data={"passphrase": THEIRS})
         token = came_in.cookies[COOKIE]
-    with TestClient(create_app(settings), follow_redirects=False) as client:
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         client.cookies.set(COOKIE, token)
         after = client.get("/parent", headers=PAGE)
 
@@ -447,7 +465,7 @@ def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.P
     settings = household(tmp_path)
     leftover = tmp_path / f"{SECRET_NAME}.part"
     leftover.write_text("left by a start cut short", encoding="utf-8")
-    with TestClient(create_app(settings)):
+    with TestClient(create_app(settings), headers=SAME_ORIGIN):
         pass
     written = (tmp_path / SECRET_NAME).read_text(encoding="utf-8")
 
@@ -471,7 +489,7 @@ def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.P
             (tmp_path / SECRET_NAME).write_text(spoiled, encoding="utf-8")
         with (
             pytest.raises(UnreadableHouseholdSecret, match=SECRET_NAME),
-            TestClient(create_app(settings)),
+            TestClient(create_app(settings), headers=SAME_ORIGIN),
         ):
             pass
 
@@ -494,7 +512,9 @@ def test_the_secret_file_is_whole_or_the_start_stops_by_name(tmp_path: pathlib.P
 def test_the_next_path_must_be_on_this_site(tmp_path: pathlib.Path, elsewhere: str) -> None:
     """A return address is read the way a browser reads it: anything that could leave
     the site, break the response, or trip the parser is dropped for her own page."""
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         came_in = client.post("/sign-in", data={"passphrase": HERS, "next": elsewhere})
 
     assert came_in.headers["location"] == "/student/due-this-week"
@@ -506,7 +526,9 @@ def test_a_return_address_the_parser_cannot_read_leaves_the_sign_in_whole(
 ) -> None:
     """The sign-in page, the wrong-passphrase answer, and the way in all stand: a return
     address that trips the parser is dropped, not raised, and never echoed into the form."""
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         asked = client.get("/sign-in", params={"next": unreadable}, headers=PAGE)
         wrong = client.post("/sign-in", data={"passphrase": "open sesame", "next": unreadable})
         came_in = client.post("/sign-in", data={"passphrase": THEIRS, "next": unreadable})
@@ -524,7 +546,9 @@ def test_the_sign_in_brings_the_browser_back_to_the_whole_address(
     tmp_path: pathlib.Path,
 ) -> None:
     wanted = "/student/due-this-week?week=2026-08-24&show_plan=1"
-    with TestClient(create_app(household(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         sent = client.get(wanted, headers=PAGE)
         asked = client.get(sent.headers["location"], headers=PAGE)
         came_in = client.post("/sign-in", data={"passphrase": HERS, "next": wanted})
@@ -545,7 +569,9 @@ def test_with_no_passphrases_nothing_asks(tmp_path: pathlib.Path) -> None:
         BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
         BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
     )
-    with TestClient(create_app(open_settings), follow_redirects=False) as client:
+    with TestClient(
+        create_app(open_settings), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         hers = client.get("/student/due-this-week", headers=PAGE)
         theirs = client.get("/parent", headers=PAGE)
         sign_in = client.get("/sign-in", headers=PAGE)

@@ -51,7 +51,7 @@ from blossom.plan_checks import PlanCheck, PlanVerification
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceConfidence
 from blossom.stores.paths import refuse_unsafe_path
-from blossom.stores.project_state import Assignment, AssignmentKind
+from blossom.stores.project_state import Assignment, AssignmentKind, StudentReport
 from blossom.verification import CheckOutcome
 
 BUSY_TIMEOUT_SECONDS: Final = 5.0
@@ -60,6 +60,7 @@ BUSY_TIMEOUT_SECONDS: Final = 5.0
 STATE_TYPES: Final[tuple[type, ...]] = (
     Assignment,
     AssignmentKind,
+    StudentReport,
     SourceConfidence,
     Noticing,
     Verdict,

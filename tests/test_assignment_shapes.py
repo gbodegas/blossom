@@ -27,7 +27,7 @@ from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import Reconciler, SourceChannel, SourceConfidence, SourceRecord
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from blossom.views import StudentAssignmentView
-from tests.support import FIXTURE_TIMEZONE, fixture_clock, fixture_settings
+from tests.support import FIXTURE_TIMEZONE, SAME_ORIGIN, fixture_clock, fixture_settings
 
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
 PLAN_DATE = date(2026, 8, 19)
@@ -426,7 +426,7 @@ def test_the_page_shows_an_undated_task_and_a_self_disagreeing_source(
         BLOSSOM_TODAY=PLAN_DATE.isoformat(), BLOSSOM_FIXTURE_PATH=str(tmp_path)
     )
 
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         page = client.get("/student/due-this-week").text
 
     assert "Syllabus, signed" in page

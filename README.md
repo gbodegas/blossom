@@ -88,6 +88,19 @@ as text that needs review. Nothing is written until "Save" is pressed,
 pasting the same week twice adds nothing twice, and a plan waiting for
 review says so when the week it was made from changes.
 
+**Her own update.** On each card she can say Done, meaning she has finished
+her part, or Not yet, with a note if she wants one. Done takes the assignment
+out of the work to plan and folds its card under the active ones; it does not
+turn work in, and the school's record stays separate. She can change or undo
+an update, a fold under the card keeps the history of her updates and
+corrections with their days, and a save from a page that another device has
+moved past is shown the newer update first. Her updates and notes are visible
+on the family page, and a Not yet on work being planned goes to the planner
+with her note. A plan that includes work she reports as Done says so on both
+pages, and where her Done stands beside a school report of Missing, from any
+one of the school's channels, the family page lists it as worth checking
+together, with what each channel says and the day it said it.
+
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device
 stays signed in for a month or until "Sign out". The sign-in is a cookie
@@ -138,11 +151,15 @@ example file. Keep the sample file last to continue using synthetic data:
 uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
 
-Press "Plan today" on her page. Requests include assignments and date sources,
-household rules, the planner's notes about earlier plans, and whether she has
-said the evening is too much. Later calls also include the proposed plan and
-feedback on it. A run makes one to six model calls. Approving a plan makes
-no additional model request.
+Press "Plan today" on her page. Requests include the assignments still to
+do and their date sources, her Not yet updates on that work with any note she
+wrote, household rules, the planner's notes about earlier plans, and whether
+she has said the evening is too much; work she has reported done is left out.
+Later calls also include the proposed plan and feedback on it. A run that
+reaches the planner makes one to six model calls. A run that finds nothing
+left to schedule when it reads the week, everything in its window reported
+done, makes none, and the pages refuse such an evening before a run starts
+whenever they can. Approving a plan makes no additional model request.
 
 Local traces retain complete prompts and answers. The
 [development guide](docs/development.md) explains storage, retention, and

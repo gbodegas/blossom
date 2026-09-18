@@ -24,6 +24,7 @@ from blossom.settings import (
     Settings,
     resolve_configured_path,
 )
+from tests.support import SAME_ORIGIN
 
 
 def test_defaults_are_absolute_and_point_at_real_package_assets() -> None:
@@ -127,7 +128,7 @@ def test_application_serves_a_page_when_started_from_another_directory(
     """The app starts from a working directory outside the repository."""
     monkeypatch.chdir(tmp_path)
 
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(), headers=SAME_ORIGIN) as client:
         response = client.get("/student/due-this-week")
 
     assert response.status_code == 200

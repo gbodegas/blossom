@@ -20,7 +20,7 @@ from blossom.settings import REPOSITORY_ROOT
 from blossom.sources import FixtureSource
 from blossom.stores.project_state import AssignmentKind
 from blossom.stores.reflections import ReflectionSubject
-from tests.support import fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings
 
 FIXTURES = REPOSITORY_ROOT / "data" / "synthetic"
 
@@ -144,7 +144,7 @@ def test_the_fixtures_span_two_school_weeks_with_every_state_named() -> None:
     and the reading log are due the Monday and Tuesday after."""
     settings = fixture_settings(BLOSSOM_TODAY="2026-08-19")
 
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         this_week = client.get("/student/due-this-week").text
         next_week = client.get("/student/due-this-week", params={"week": "2026-08-24"}).text
 
@@ -182,7 +182,7 @@ def test_the_page_says_what_the_planner_looks_at() -> None:
     assert horizon.noticings["assignment-vocabulary-quiz"].contradicted
     assert "assignment-algebra-set" in planned
 
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         page = client.get("/student/due-this-week").text
     assert "whichever week that falls in" not in page
     assert "Vocabulary quiz, unit one" in page

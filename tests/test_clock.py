@@ -33,7 +33,7 @@ from blossom.stores.project_state import (
 )
 from blossom.stores.reflections import Reflection, ReflectionSubject
 from blossom.stores.support_rules import SupportRule
-from tests.support import FIXTURE_TIMEZONE, NAIVE_INSTANTS, fixture_settings
+from tests.support import FIXTURE_TIMEZONE, NAIVE_INSTANTS, SAME_ORIGIN, fixture_settings
 
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
 
@@ -273,7 +273,7 @@ def test_pinning_the_clock_changes_what_the_student_page_shows() -> None:
     """End to end: the environment variable reaches the rendered page."""
     late = fixture_settings(**{TODAY_VARIABLE: "2026-09-30"})
 
-    with TestClient(create_app(late)) as client:
+    with TestClient(create_app(late), headers=SAME_ORIGIN) as client:
         response = client.get("/student/due-this-week")
 
     assert response.status_code == 200
@@ -289,6 +289,6 @@ def test_the_application_refuses_to_start_without_a_zone(
 
     with (
         pytest.raises(TimeZoneUnavailable, match=TIMEZONE_VARIABLE),
-        TestClient(create_app(settings)),
+        TestClient(create_app(settings), headers=SAME_ORIGIN),
     ):
         pass

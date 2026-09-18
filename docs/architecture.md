@@ -23,7 +23,12 @@ the database and that person's passphrase, so nothing here needs a library
 or a service, a cookie made elsewhere is refused, and a changed passphrase
 signs that person out. Wrong passphrases are counted per device and answered
 with a wait past ten. With neither passphrase set the gate stands open, which
-the tests and the sample rely on.
+the tests and the sample rely on. Open or not, the gate turns away any request
+that would change something and does not name this server as where it came
+from, read from the browser's Origin header or, failing that, its Referer,
+against the address the request was sent to: a page elsewhere cannot make a
+signed-in browser send a form here. That check comes before the sign-in and
+the open routes, and the tests' client sends the header with every request.
 
 Beside the gate, `blossom/intake.py` is the way in for assignments: a reader
 for the school portal's own text, its homework page, its weekly summary, and
@@ -54,6 +59,37 @@ the reported status included, and a waiting plan whose week reads
 differently is stale on both pages and refused at approval; a decided plan
 is history. Saving and deciding share the decision lock, so a decision is
 checked against a week that holds still until it lands.
+
+Her own word about her work is the third account, beside the school's and
+the record's dates, and `blossom/assignment_status.py` reads them apart. A
+report is Done, meaning she has finished her part, or Not yet, with a note if
+she wants one; the store keeps each as an event in a chain per assignment,
+with the status and note that stand after it, the day it was made, and the
+event before it, so what stands now is the chain's head and an undo is one
+more event that restores what stood before. The report whose words stand is
+found by walking back from the head through every undo, however many, so a
+restored report keeps its own day; and the store refuses an event that is not
+whole, an undo that is first, takes back anything but the report at the head,
+or restores something other than what stood before it, the sample's seed
+included. A save carries the head the page
+showed, and the form is read whole first: its own fields, each once, and an
+update it names must be one of that assignment's events, or nothing is
+compared or written. Then the same update as the one standing is already
+saved and writes nothing, a page whose head has moved on is refused with the
+newer update shown, and anything else is appended, one operation under the
+decision lock and the store's. A write the file refuses is rolled back whole,
+and the page comes back with her words and no word of a save. The pages read
+her events and the school's reports in two batched reads whatever the number
+of cards: each card shows what every school channel says now, not one latest
+report, and folds her history under it, her updates and corrections with
+their days and the school's reports apart. Her Done decides one thing, whether the assignment is still
+work to plan: the planner, the critic, and the checks see only the work that
+is left, a check of its own fails a plan that speaks about finished work, and
+a window with nothing left ends a run before any model is asked. A Done
+beside a school report of Missing is something for the family to check, said
+on both pages and decided by neither. The form is a form alone, a parent
+signed in reads her update and cannot make one, and nothing writes her
+account but her own device.
 
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and
@@ -274,7 +310,7 @@ still answers the structured side for one that would.
 
 | Store | Contents | State |
 |---|---|---|
-| `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status; every channel's claim about a due date | Wired and tested; a file at `BLOSSOM_DATABASE_PATH`, read from a fixture only when the start creates the file |
+| `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status; every channel's claim about a due date; what the school reports about a status; her own updates, a chain of events per assignment | Wired and tested; a file at `BLOSSOM_DATABASE_PATH`, read from a fixture only when the start creates the file |
 | `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Seeded from the fixtures; read whole by the plan graph |
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
@@ -387,7 +423,25 @@ every route it can take is written in one file.
 Eight nodes. `retrieve` reads every assignment on record,
 states each one's due date before it reads the sources, sets the two against
 each other, and then selects the week: undated work, and dated work that the
-record or any source puts in the window. `plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
+record or any source puts in the window. It reads her updates with the rows
+and leaves out what she has reported done, so the planner, the critic, and
+the checks see the work still to do, each assignment with its dependencies
+as the record has them, while the ids left out are kept on the server for
+the check that fails a plan speaking about them. That reading is the run's
+input from there on: both models, the checks, and every revision work from
+it, and the draft carries its fingerprint. The models are asked without the
+decision lock, so her page can save an update while one is answering; the
+update is not swapped in half way and no second plan is paid for on its
+account. The draft reads as stale on both pages the moment it is published,
+its notice names work she reports as done, and approval is refused until a
+new plan is asked for, the same whichever model was being asked when the
+update landed. The run's record keeps every
+finding in full; what goes back to the planner leaves out every finding that
+names work she has reported done, whichever check it tripped, and says only
+to use the work listed; a window with nothing left when it is read ends the run
+there, with its record and no model asked, as the routes refuse such an
+evening before the run.
+`plan` asks the planner. `verify` runs the tier-one checks, and a plan that fails goes
 back to `plan` with the findings before any critic sees it, because a
 judgment about a plan that is already wrong is a wasted call. `critique` asks
 the critic; fault sends the plan back with the critique, doubt sends it

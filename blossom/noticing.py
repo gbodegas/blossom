@@ -21,16 +21,23 @@ No model takes part. The rules fit in one function, and
 ``tests/noticing_cases.py`` holds them to a labeled table.
 """
 
+import json
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import StrEnum
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict
 
-from blossom.reconciliation import Reconciler, ReconciliationResult, SourceRecord
+from blossom.assignment_status import AssignmentStatus, statuses_for
+from blossom.reconciliation import (
+    Reconciler,
+    ReconciliationResult,
+    SourceChannel,
+    SourceRecord,
+)
 from blossom.sources import DateClaims
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, ProjectStateStore
 
@@ -181,6 +188,26 @@ class Week:
     """Every source's claims about each assignment in the week, by id."""
     noticings: dict[str, Noticing]
     """The record set against those claims, by id."""
+    statuses: dict[str, AssignmentStatus] = field(default_factory=dict)
+    """What stands about each assignment's work, hers and the school's, by id, read with
+    the rows so a card and her update agree. An id with no entry is unreported."""
+
+    def needs_homework(self, assignment_id: str) -> bool:
+        """Whether an assignment is still work to plan: everything but a "done" of hers."""
+        status = self.statuses.get(assignment_id)
+        return status is None or status.needs_homework
+
+    def active(self) -> list[Assignment]:
+        """The week's work still to plan, in the week's order."""
+        return [item for item in self.assignments if self.needs_homework(item.assignment_id)]
+
+    def done_ids(self) -> list[str]:
+        """The week's assignments she has reported done, in the week's order."""
+        return [
+            item.assignment_id
+            for item in self.assignments
+            if not self.needs_homework(item.assignment_id)
+        ]
 
 
 def monday_of(day: date) -> date:
@@ -188,41 +215,65 @@ def monday_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-PLANNING_DIGEST: Final = uuid.UUID("c4a2b3d1-6e5f-4a7b-8c9d-0e1f2a3b4c5d")
-"""The namespace a week's fingerprint is drawn from."""
+PLANNING_DIGEST: Final = uuid.UUID("3b9c1f52-8a47-4d06-b1e3-5c7a9d2f4e68")
+"""The namespace a week's fingerprint is drawn from. A namespace of its own for each
+shape the fingerprint has had, so a draft fingerprinted under an earlier one reads as
+stale rather than as unchanged."""
+
+
+def canonical_active_input(week: Week) -> list[dict[str, object]]:
+    """What a plan is made from, as plain values in a fixed order: the one account of it
+    that the fingerprint is drawn from.
+
+    For each assignment she has not reported done, by id: its course, title,
+    due and assigned dates, kind, note and whether a parent wrote it, which
+    the planner is told, and reported status; whether she has said "not yet"
+    and what she wrote with it; and each claim about its date, channel,
+    value, and where it was read, sorted. Left out: when a claim or a report
+    was made, which report it was, how sure a claim was, her history, and
+    anything about work reported done, which is out of what a plan is built
+    on.
+    """
+    rows: list[dict[str, object]] = []
+    for item in sorted(week.active(), key=lambda item: item.assignment_id):
+        said = week.statuses.get(item.assignment_id)
+        rows.append(
+            {
+                "id": item.assignment_id,
+                "course": item.course,
+                "title": item.title,
+                "due": None if item.due_date is None else item.due_date.isoformat(),
+                "assigned": None if item.assigned_on is None else item.assigned_on.isoformat(),
+                "kind": item.kind.value,
+                "note": item.note,
+                "note_by_a_parent": bool(item.note)
+                and item.origins.get("note") == SourceChannel.PARENT_ENTRY,
+                "reported_status": item.reported_submission_status,
+                "student_status": None if said is None else said.status,
+                "student_note": None if said is None else said.note,
+                "claims": sorted(
+                    [record.channel.value, record.asserted_value, record.seen_in or ""]
+                    for record in week.records.get(item.assignment_id, [])
+                ),
+            }
+        )
+    return rows
 
 
 def planning_digest(week: Week) -> str:
-    """A fingerprint of what a plan is made from: the week's assignments and what is said
-    about them, in a fixed order, so the same week reads the same and any change reads
-    differently.
+    """A fingerprint of what a plan is made from, so the same week reads the same and any
+    change reads differently.
 
-    Covered: each assignment's id, due date, assigned date, kind, note, and
-    reported status, and each claim about its date, channel, value, and where
-    it was read. Not covered: when a claim was made or how sure it was, which
-    change nothing a plan is built on.
+    Drawn from ``canonical_active_input`` written as JSON with sorted keys:
+    every value sits in a field of its own, so words in a note can never
+    read as another field or another claim, whatever they hold. An undo that
+    restores the week's input restores its fingerprint, and a report that
+    changes nothing a plan reads changes nothing here.
     """
-    lines = []
-    for item in sorted(week.assignments, key=lambda item: item.assignment_id):
-        lines.append(
-            "\t".join(
-                [
-                    item.assignment_id,
-                    "" if item.due_date is None else item.due_date.isoformat(),
-                    "" if item.assigned_on is None else item.assigned_on.isoformat(),
-                    item.kind.value,
-                    item.note or "",
-                    item.reported_submission_status,
-                ]
-            )
-        )
-        for record in week.records.get(item.assignment_id, []):
-            lines.append(
-                "\t".join(
-                    ["claim", record.channel.value, record.asserted_value, record.seen_in or ""]
-                )
-            )
-    return uuid.uuid5(PLANNING_DIGEST, "\n".join(lines)).hex
+    serialized = json.dumps(
+        canonical_active_input(week), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return uuid.uuid5(PLANNING_DIGEST, serialized).hex
 
 
 def read_week(project_state: ProjectStateStore, source: DateClaims, start: date) -> Week:
@@ -234,15 +285,18 @@ def read_week(project_state: ProjectStateStore, source: DateClaims, start: date)
     looking at, the planner on the evening being planned, so a plan looks at
     the seven days ahead and her page says so. Every assignment on record is
     considered, because the sources decide the window along with the record.
-    The rows and the claims are read while the store is held, one snapshot,
-    so a saving landing between two reads cannot give a week whose rows and
-    claims disagree, nor a plan's fingerprint that misses a change just made.
+    The rows, the claims, and what she and the school have reported are read
+    while the store is held, one snapshot, so a saving landing between two
+    reads cannot give a week whose rows and claims disagree, nor a plan's
+    fingerprint that misses a change just made, nor a card whose update is
+    another card's.
     """
     with project_state.exclusively():
         everything = project_state.all_assignments()
         records = {
             item.assignment_id: source.deadline_records(item.assignment_id) for item in everything
         }
+        statuses = statuses_for(project_state, [item.assignment_id for item in everything])
     expectations = [expect_due_date(item) for item in everything]
     noticed = {
         expectation.assignment_id: notice_due_date(expectation, records[expectation.assignment_id])
@@ -253,4 +307,5 @@ def read_week(project_state: ProjectStateStore, source: DateClaims, start: date)
         assignments=assignments,
         records={item.assignment_id: records[item.assignment_id] for item in assignments},
         noticings={item.assignment_id: noticed[item.assignment_id] for item in assignments},
+        statuses={item.assignment_id: statuses[item.assignment_id] for item in assignments},
     )

@@ -87,21 +87,68 @@
   </section>
 
   {#
-    What the school reports is a fact of its own, shown here as on her page:
-    who reported it and when, never the family's judgment.
+    What she reports about her part and what the school reports are two
+    accounts, shown side by side with their days and sources, and the page
+    decides nothing between them. Her "done" beside a school "missing" is
+    worth checking together and comes first, open; her recent updates fold;
+    the rest of the school's reports close the section, as before.
   #}
-  {% if reported %}
-    <section>
-      <h2>Reported by the school</h2>
-      {% for item in reported %}
-        <article class="draft">
-          <p class="course">{{ item.course }}</p>
-          <p class="decision-line">
-            <strong>{{ item.title }}: the school reports it {{ item.status|replace("_", " ") }}.</strong>
-            {{ item.sentence }}
-          </p>
-        </article>
-      {% endfor %}
+  {% macro her_update(item) %}
+    {% if item.cleared_on %}She took back her update on {{ item.cleared_on.strftime("%B") }} {{ item.cleared_on.day }}; no update stands.{% else %}She reported it {% if item.status == "done" %}done{% else %}not yet done{% endif %}{% if item.reported_on %} on {{ item.reported_on.strftime("%B") }} {{ item.reported_on.day }}{% if item.restored_on %}, restored {{ item.restored_on.strftime("%B") }} {{ item.restored_on.day }}{% endif %}{% endif %}.{% if item.note %} She wrote: <q>{{ item.note }}</q>{% endif %}{% endif %}
+  {% endmacro %}
+  {% if updates.check or updates.recent or updates.school %}
+    <section class="assignment-updates">
+      <h2>Assignment updates</h2>
+      {% if updates.check %}
+        <h3>Worth checking together</h3>
+        {% for item in updates.check %}
+          <article class="draft needs-review" id="update-{{ item.assignment_id }}">
+            <p class="course">{{ item.course }}</p>
+            <p class="decision-line"><strong>{{ item.title }}</strong></p>
+            <p>{{ her_update(item) }}</p>
+            {% for statement in item.school_statements %}
+              <p>The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}</p>
+            {% endfor %}
+            <p class="confidence disagree">
+              <strong>Check the school record.</strong>
+              Check whether it was turned in and whether the school record needs updating.
+              Blossom is not scheduling more homework for this assignment.
+            </p>
+          </article>
+        {% endfor %}
+      {% endif %}
+      {% if updates.recent %}
+        <details class="steps">
+          <summary>Recent updates ({{ updates.recent|length }})</summary>
+          <ul>
+            {% for item in updates.recent %}
+              <li>
+                <strong>{{ item.title }}</strong> &middot; {{ item.course }}:
+                {{ her_update(item) }}
+                {% for statement in item.school_statements %}
+                  The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}
+                {% endfor %}
+              </li>
+            {% endfor %}
+          </ul>
+          <p class="note">Her updates of the last two weeks, most recent first. Done means she has finished her part; it does not turn work in.</p>
+        </details>
+      {% endif %}
+      {% if updates.school %}
+        <h3>School reports</h3>
+        {% for item in updates.school %}
+          <article class="draft">
+            <p class="course">{{ item.course }}</p>
+            {% for statement in item.school_statements %}
+              <p class="decision-line">
+                <strong>{{ item.title }}: the school reports it {{ statement.status|replace("_", " ") }}.</strong>
+                {{ statement.sentence }}
+              </p>
+            {% endfor %}
+            {% if item.status or item.cleared_on %}<p class="note">{{ her_update(item) }}</p>{% endif %}
+          </article>
+        {% endfor %}
+      {% endif %}
     </section>
   {% endif %}
 
@@ -130,6 +177,9 @@
         {{ steps_list(draft.steps, "How this plan was made") }}
         {% if draft.stale %}
           <p class="confidence disagree" role="alert"><strong>Plan again.</strong> {{ draft.stale }}</p>
+        {% endif %}
+        {% if draft.reported_done %}
+          <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if draft.reported_done_work %} In it: {% for work in draft.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% endif %}</p>
         {% endif %}
         {#
           Each button names the draft it decides, so several waiting drafts
@@ -294,6 +344,9 @@ Cover both books with paper.</pre>
             {% if draft.reason and draft.decision in ("approved", "rejected") %}Reason: {{ draft.reason }}.{% endif %}
             <span class="when">{% if draft.decision in ("approved", "rejected") %}Reviewed{% else %}Closed{% endif %} {{ local(draft.decided_at) }}.</span>
           </p>
+          {% if draft.reported_done %}
+            <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if draft.reported_done_work %} In it: {% for work in draft.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% endif %}</p>
+          {% endif %}
           <details>
             <summary>{% if draft.decision in ("approved", "rejected") %}The plan as it was reviewed{% else %}The plan as it was{% endif %}</summary>
             {% with body = draft.body, review_open = true %}{% include "plan_body.html" %}{% endwith %}

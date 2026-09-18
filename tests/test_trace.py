@@ -37,6 +37,7 @@ from tests.support import (
     FIXTURE_TIMEZONE,
     OBSERVED_AT,
     PLAN_DATE,
+    SAME_ORIGIN,
     Scripted,
     accepting,
     fixture_clock,
@@ -245,7 +246,7 @@ def test_the_application_traces_the_runs_its_routes_start(tmp_path: pathlib.Path
         lambda: [fixture_week_plan()], lambda: [accepting()]
     )
 
-    with TestClient(app) as running:
+    with TestClient(app, headers=SAME_ORIGIN) as running:
         started = running.post("/parent/plans", json={}).json()
         state: ApplicationState = getattr(app.state, STATE_ATTRIBUTE)
         rows = state.traces.runs_for_thread(started["thread_id"])

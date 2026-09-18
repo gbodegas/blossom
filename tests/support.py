@@ -47,7 +47,12 @@ from blossom.settings import (
     Settings,
 )
 from blossom.stores.drafts import DraftsStore
-from blossom.stores.project_state import Assignment, ProjectStateStore
+from blossom.stores.project_state import (
+    Assignment,
+    ProjectStateStore,
+    Saved,
+    StudentStatus,
+)
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.stores.support_rules import SupportRule, SupportRulesStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
@@ -56,6 +61,12 @@ FIXTURE_TIMEZONE = "America/New_York"
 """The zone the synthetic fixtures are written in. A fictional household's."""
 FIXTURES = REPOSITORY_ROOT / "data" / "synthetic"
 """The synthetic set the suite runs against; the household's default is no fixture."""
+ORIGIN = "http://testserver"
+"""Where the test client's requests come from, as the app reads them: its own address."""
+SAME_ORIGIN = {"Origin": ORIGIN}
+"""The header every test client sends with every request, as a browser sends it with a
+form or a script call: a request that would change something is refused without one
+naming this server, so a client without it stands for a request made from elsewhere."""
 
 
 class OffsetlessTimeZone(tzinfo):
@@ -273,8 +284,21 @@ def graph_with(
     signals: WorkloadSignalsStore | None = None,
     evening_minutes: int = DEFAULT_EVENING_MINUTES,
     too_much_minutes: int = DEFAULT_TOO_MUCH_MINUTES,
+    reports: Sequence[tuple[str, StudentStatus, str | None]] = (),
+    on_record: ProjectStateStore | None = None,
 ) -> CompiledPlanGraph:
+    """The graph over in-memory stores. ``reports`` are what she has said about her part
+    of each assignment named, status and note, saved before the run reads the week.
+    ``on_record`` is a store the test made itself, from ``stores``, so it can change the
+    record while a run is on its way."""
     project_state, support_rules, reflections = stores(assignments)
+    if on_record is not None:
+        project_state = on_record
+    for assignment_id, status, note in reports:
+        saved = project_state.report_status(
+            assignment_id, status, note, expected_head=None, now=OBSERVED, today=PLAN_DATE
+        )
+        assert isinstance(saved, Saved)
     for index, rule in enumerate(rules):
         support_rules.add_rule(
             SupportRule(rule_id=f"rule-{index}", instruction=rule, asserted_at=OBSERVED)

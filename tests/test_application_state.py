@@ -40,7 +40,7 @@ from blossom.stores.drafts import DraftsStore
 from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment, ProjectStateStore
 from blossom.stores.workload_signals import SIGNAL_RETENTION_DAYS, WorkloadSignalsStore
-from tests.support import OBSERVED_AT, PLAN_DATE, fixture_clock, fixture_settings
+from tests.support import OBSERVED_AT, PLAN_DATE, SAME_ORIGIN, fixture_clock, fixture_settings
 
 
 def test_stores_are_built_once_and_shared_across_requests() -> None:
@@ -48,7 +48,7 @@ def test_stores_are_built_once_and_shared_across_requests() -> None:
     observed: list[ApplicationState] = []
     app = create_app()
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=SAME_ORIGIN) as client:
         for _ in range(2):
             response = client.get("/student/due-this-week")
             assert response.status_code == 200
@@ -60,7 +60,7 @@ def test_stores_are_built_once_and_shared_across_requests() -> None:
 def test_state_is_closed_when_the_application_shuts_down() -> None:
     app = create_app()
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=SAME_ORIGIN) as client:
         client.get("/student/due-this-week")
         state: ApplicationState = getattr(app.state, STATE_ATTRIBUTE)
 
@@ -70,7 +70,7 @@ def test_state_is_closed_when_the_application_shuts_down() -> None:
 
 def test_using_the_app_without_its_lifespan_fails_with_a_useful_message() -> None:
     """``TestClient(app)`` without ``with`` skips startup, which is easy to do by accident."""
-    client = TestClient(create_app())
+    client = TestClient(create_app(), headers=SAME_ORIGIN)
 
     with pytest.raises(RuntimeError, match="lifespan"):
         client.get("/student/due-this-week")
@@ -147,7 +147,7 @@ def test_dependency_can_be_overridden_to_substitute_stores() -> None:
     app.dependency_overrides[get_application_state] = lambda: substitute_with_empty_store
 
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=SAME_ORIGIN) as client:
             response = client.get("/student/due-this-week")
     finally:
         app.dependency_overrides.clear()
@@ -201,7 +201,10 @@ def test_a_startup_whose_sweep_fails_still_closes_the_stores(
     monkeypatch.setattr(DraftsStore, "open", staticmethod(remembering_open))
     monkeypatch.setattr(dependencies, "sweep_saved_state", failing_sweep)
 
-    with pytest.raises(RuntimeError, match="could not be read"), TestClient(create_app()):
+    with (
+        pytest.raises(RuntimeError, match="could not be read"),
+        TestClient(create_app(), headers=SAME_ORIGIN),
+    ):
         pass
 
     assert len(opened) == 1
@@ -282,7 +285,7 @@ def test_a_running_process_sweeps_on_its_own(
     settings = fixture_settings(**file_settings(tmp_path))
     app = create_app(settings)
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=SAME_ORIGIN) as client:
         client.get("/student/due-this-week")
         age_a_signal_into(settings.database_path)
         held_by_the_page = client.get("/student/workload-signals").json()

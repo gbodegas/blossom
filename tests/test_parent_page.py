@@ -21,12 +21,14 @@ from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_applicat
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.intake import identity
+from blossom.noticing import read_week
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
-from blossom.routes.runs import PlanGraphs, plan_graphs
+from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
-from tests.support import FIXTURE_TIMEZONE, Scripted, fixture_settings, ok
+from blossom.stores.project_state import Saved, Undone
+from tests.support import FIXTURE_TIMEZONE, SAME_ORIGIN, Scripted, fixture_settings, ok
 
 PLAN_DATE = date(2026, 8, 19)
 CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
@@ -115,7 +117,7 @@ def browser(
     with_key = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"}
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **with_key))
     app.dependency_overrides[plan_graphs] = scripted_graphs(verdict, plans)
-    return TestClient(app, follow_redirects=False)
+    return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
 
 
 def waiting_draft_id(client: TestClient) -> str:
@@ -353,7 +355,7 @@ def test_each_decision_button_says_which_draft_it_decides() -> None:
     """One waiting draft is named by its evening; two evenings waiting get a position each."""
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     app.dependency_overrides[plan_graphs] = scripted_graphs()
-    with TestClient(app, follow_redirects=False) as client:
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         one_waiting = client.get("/parent").text
         app.dependency_overrides[plan_graphs] = scripted_graphs(plans=lambda: [tomorrows_plan()])
@@ -440,7 +442,7 @@ def test_a_failure_on_the_way_is_said_on_the_page_and_the_queue_stays() -> None:
     """A planner that raises is not a refusal; the page still says so and keeps its queue."""
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     app.dependency_overrides[plan_graphs] = scripted_graphs()
-    with TestClient(app, follow_redirects=False) as client:
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         draft_id = waiting_draft_id(client)
         app.dependency_overrides[plan_graphs] = scripted_graphs(plans=list)
         response = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
@@ -459,7 +461,7 @@ def test_a_waiting_draft_can_be_decided_from_the_page_without_a_key() -> None:
     """The page says deciding needs no key, so it must not."""
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     app.dependency_overrides[plan_graphs] = scripted_graphs()
-    with TestClient(app, follow_redirects=False) as client:
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         draft_id = waiting_draft_id(client)
         app.dependency_overrides.clear()
 
@@ -501,7 +503,7 @@ def test_without_a_key_the_page_reads_and_the_plan_form_says_why_not() -> None:
     settings = fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat())
     assert settings.anthropic_api_key is None
 
-    with TestClient(create_app(settings), follow_redirects=False) as client:
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         page = client.get("/parent")
         posted = client.post("/parent/actions/plan", data={"plan_date": ""})
 
@@ -534,7 +536,7 @@ def test_the_page_shows_how_a_waiting_plan_was_made() -> None:
     assert "How this plan was made" in page
     assert '<span class="step-node">retrieve</span>' in page
     assert "Expected: the record&#39;s due dates hold against the school&#39;s sources." in page
-    assert "Found: all 6 checks passed." in page
+    assert "Found: all 7 checks passed." in page
     assert "Found: accepted on every criterion." in page
     assert "Ended without a plan" not in page
 
@@ -564,7 +566,7 @@ def test_a_run_that_ended_without_a_plan_is_on_the_page_with_its_steps() -> None
     assert "The plan failed its checks after every revision." in page
     assert "How this run went" in page
     assert page.count('<span class="step-node">plan</span>') == 3
-    assert "Found: 1 of 6 checks failed:" in page
+    assert "Found: 1 of 7 checks failed:" in page
     assert "No plans need your review." in page
 
 
@@ -685,3 +687,74 @@ def test_a_decided_plan_is_history_and_is_not_measured_against_the_week_again() 
     assert HER_ASSIGNMENTS_CHANGED not in hers
     assert "Looks good." in hers
     assert record["decision"] == "approved"
+
+
+def test_her_report_that_work_is_done_makes_the_waiting_plan_stale_and_an_undo_unmakes_it() -> None:
+    """What she reports about her part is part of what a plan is made from; taking the
+    report back restores the week the plan was made from, and the plan stands again."""
+    with browser() as client:
+        draft_id = waiting_draft_id(client)
+        state: ApplicationState = getattr(
+            client.app.state,  # type: ignore[attr-defined]
+            STATE_ATTRIBUTE,
+        )
+        saved = state.project_state.report_status(
+            "assignment-canal-essay", "done", None, expected_head=None, now=CREATED, today=PLAN_DATE
+        )
+        assert isinstance(saved, Saved)
+        page = client.get("/parent").text
+        record = client.get(f"/parent/approvals/{draft_id}").json()
+        undone = state.project_state.undo_report(
+            "assignment-canal-essay", saved.report.report_id, now=CREATED, today=PLAN_DATE
+        )
+        fresh = client.get("/parent").text
+        fresh_record = client.get(f"/parent/approvals/{draft_id}").json()
+
+    assert ASSIGNMENTS_CHANGED in page
+    assert 'value="approve"' not in page
+    assert record["stale"] is not None
+    assert isinstance(undone, Undone)
+    assert ASSIGNMENTS_CHANGED not in fresh
+    assert 'value="approve"' in fresh
+    assert fresh_record["stale"] is None
+
+
+def test_an_evening_with_nothing_left_to_do_is_refused_before_any_run() -> None:
+    """Every assignment in the window reported done: the form and the JSON route answer
+    409 with the one sentence, and no run is written."""
+    with browser() as client:
+        state: ApplicationState = getattr(
+            client.app.state,  # type: ignore[attr-defined]
+            STATE_ATTRIBUTE,
+        )
+        window = read_week(state.project_state, state.project_state, PLAN_DATE)
+        for item in window.assignments:
+            state.project_state.report_status(
+                item.assignment_id, "done", None, expected_head=None, now=CREATED, today=PLAN_DATE
+            )
+        posted = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        over_json = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        ended = state.drafts.runs_without_a_draft()
+
+    assert len(window.assignments) == 7
+    assert posted.status_code == 409
+    assert NOTHING_TO_SCHEDULE in posted.text
+    assert over_json.status_code == 409
+    assert over_json.json()["detail"] == NOTHING_TO_SCHEDULE
+    assert ended == []
+
+
+def test_an_evening_past_the_calendars_edge_is_refused_by_the_form_as_by_the_route() -> None:
+    """The last day the date type can hold has no week after it to read: the form says so
+    with 422, as the JSON route does, rather than fail on the way to reading the week."""
+    with browser() as client:
+        refused = client.post("/parent/actions/plan", data={"plan_date": "9999-12-31"})
+        over_json = client.post("/parent/plans", json={"plan_date": "9999-12-31"})
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        ended = state.drafts.runs_without_a_draft()
+
+    assert refused.status_code == 422
+    assert "The evening of 9999-12-31 is past the edge of the calendar." in refused.text
+    assert over_json.status_code == 422
+    assert over_json.json()["detail"].startswith("The evening of 9999-12-31 is past the edge")
+    assert ended == []

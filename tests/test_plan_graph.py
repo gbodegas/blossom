@@ -9,11 +9,12 @@ because where a title sits in the message is a security property.
 
 import asyncio
 import pathlib
+from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -25,6 +26,7 @@ from blossom.agent.graph import (
     PlanState,
     plan_graph_for,
 )
+from blossom.agent.prompts import assignments_block
 from blossom.agent.runs import DURABILITY, RECURSION_LIMIT, run_config
 from blossom.agent.steps import StepRecord
 from blossom.anthropic_client import ModelUnavailable
@@ -36,14 +38,23 @@ from blossom.heuristic_relevance import (
     CriticVerdict,
     Judgment,
 )
-from blossom.noticing import Verdict
+from blossom.noticing import Verdict, planning_digest, read_week
+from blossom.plan_checks import ONLY_WHAT_IS_LISTED, PlanCheck
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
-from blossom.stores.project_state import Assignment, AssignmentKind
+from blossom.stores.project_state import (
+    Assignment,
+    AssignmentKind,
+    ProjectStateStore,
+    Saved,
+    StudentReport,
+    Undone,
+)
 from tests.support import (
     ESSAY,
+    OBSERVED,
     PLAN_DATE,
     PROBLEM_SET,
     Scripted,
@@ -58,6 +69,7 @@ from tests.support import (
     graph_with,
     human_text,
     ok,
+    stores,
 )
 
 # ------------------------------------------------------------------ scripting
@@ -753,7 +765,7 @@ def test_every_node_leaves_a_step_saying_what_it_expected_and_found() -> None:
     assert steps[1].expected == "a plan that accounts for every assignment inside 150 minutes"
     assert steps[1].found == "1 block and 1 deferral asking 60 minutes"
     assert steps[2].expected == "every tier-one check passes"
-    assert steps[2].found == "all 6 checks passed"
+    assert steps[2].found == "all 7 checks passed"
     assert steps[3].expected == "the reviewer passes every criterion"
     assert steps[3].found == "accepted on every criterion"
     assert all(item.recorded_at == fixture_clock().now() for item in steps)
@@ -798,7 +810,7 @@ def test_a_run_that_fails_its_checks_records_every_attempt() -> None:
         "verify",
     ]
     assert steps[2].found == (
-        "1 of 6 checks failed: assignment-algebra-set is due in this window and the plan "
+        "1 of 7 checks failed: assignment-algebra-set is due in this window and the plan "
         "does not mention it"
     )
     assert steps[3].expected == "a revised plan that answers 1 finding"
@@ -885,3 +897,450 @@ def test_a_model_that_stops_still_leaves_the_runs_record() -> None:
     ended = drafts.runs_without_a_draft()
     assert [item.outcome for item in ended] == ["model_refused"]
     assert [item.node for item in ended[0].steps] == ["retrieve", "plan"]
+
+
+# ------------------------------------------------------------- what she has reported
+
+
+def test_work_she_reports_done_is_left_out_of_what_the_planner_and_critic_see() -> None:
+    """The essay is reported done, with a note: the planner is briefed on the problem set
+    alone, with no word of the essay or her note, the checks hold the plan to that, the
+    critic sees the same, and the record says what was left out."""
+    planner = Scripted(
+        ok(
+            DailyPlan(
+                plan_date=PLAN_DATE, blocks=[block("assignment-algebra-set", "16:30", "17:15")]
+            )
+        )
+    )
+    critic = Scripted(ok(accepting()))
+
+    result = run(
+        graph_with(
+            planner, critic, reports=[("assignment-canal-essay", "done", "Handed in Tuesday.")]
+        )
+    )
+
+    brief = human_text(planner.briefs[0])
+    assert 'id="assignment-algebra-set"' in brief
+    assert "assignment-canal-essay" not in brief
+    assert "Canal Era" not in brief
+    assert "Handed in Tuesday." not in brief
+    assert "assignment-canal-essay" not in human_text(critic.briefs[0])
+    assert [item.assignment_id for item in result["assignments"]] == ["assignment-algebra-set"]
+    assert result["done_ids"] == ["assignment-canal-essay"]
+    assert result["verification"].passed
+    assert result["steps"][0].found.startswith(
+        "1 assignment in the week, 1 reported done and left out: "
+    )
+    assert "__interrupt__" in result
+    assert "Canal Era" not in result["draft"].body
+
+
+def test_her_not_yet_and_her_words_reach_the_planner_as_hers() -> None:
+    planner = Scripted(ok(good_plan()))
+
+    run(
+        graph_with(
+            planner,
+            Scripted(ok(accepting())),
+            reports=[("assignment-canal-essay", "not_yet", "Two paragraphs <left>.")],
+        )
+    )
+
+    brief = human_text(planner.briefs[0])
+    assert 'student_says="not yet"' in brief
+    assert 'student_wrote="Two paragraphs &lt;left&gt;."' in brief
+    assert (
+        "student_says"
+        not in brief.split('id="assignment-algebra-set"')[1].split("</assignment>")[0]
+    )
+
+
+def test_a_plan_that_speaks_about_work_reported_done_fails_its_checks() -> None:
+    """The plan was given the problem set alone and speaks about the essay too: the essay
+    is outside its window, the check made for finished work fails by name in the record,
+    and every brief the planner is sent, the revisions included, carries neither the
+    essay's id nor its title nor a word that it is done, only to use the work listed."""
+    planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
+    critic: Scripted[CriticVerdict] = Scripted()
+
+    result = run(graph_with(planner, critic, reports=[("assignment-canal-essay", "done", None)]))
+
+    verification = result["verification"]
+    assert result["outcome"] == "checks_failed"
+    assert critic.calls == 0
+    assert verification.failed_checks == (
+        PlanCheck.ASSIGNMENTS_EXIST,
+        PlanCheck.NO_REPORTED_DONE_WORK,
+    )
+    assert (
+        "assignment-canal-essay is reported done and the plan still speaks about it"
+        in verification.as_findings()
+    )
+    assert "reported done" in result["steps"][-1].found
+    assert "assignment-canal-essay is not an assignment in this window" in result["steps"][-1].found
+    for brief in planner.briefs:
+        sent_back = human_text(brief)
+        assert "assignment-canal-essay" not in sent_back
+        assert "reported done" not in sent_back
+        assert "Canal Era" not in sent_back
+    assert ONLY_WHAT_IS_LISTED in human_text(planner.briefs[1])
+    assert ONLY_WHAT_IS_LISTED in human_text(planner.briefs[2])
+
+
+def test_a_window_with_nothing_left_to_do_ends_the_run_before_any_model_is_asked() -> None:
+    """Both assignments reported done: the run ends at the first node with its record, no
+    model is asked, no draft is made, and nothing waits for review."""
+    drafts = drafts_in_memory()
+    planner: Scripted[DailyPlan] = Scripted()
+    critic: Scripted[CriticVerdict] = Scripted()
+
+    result = run(
+        graph_with(
+            planner,
+            critic,
+            drafts=drafts,
+            reports=[
+                ("assignment-canal-essay", "done", None),
+                ("assignment-algebra-set", "done", None),
+            ],
+        )
+    )
+
+    ended = drafts.runs_without_a_draft()
+    assert result["outcome"] == "nothing_to_schedule"
+    assert (planner.calls, critic.calls) == (0, 0)
+    assert "draft" not in result
+    assert "__interrupt__" not in result
+    assert [item.node for item in result["steps"]] == ["retrieve"]
+    assert result["steps"][0].found.startswith(
+        "0 assignments in the week, 2 reported done and left out: "
+    )
+    assert [(item.outcome, [step.node for step in item.steps]) for item in ended] == [
+        ("nothing_to_schedule", ["retrieve"])
+    ]
+    assert drafts.waiting() == []
+
+
+def test_the_draft_names_every_assignment_its_plan_speaks_about_once() -> None:
+    drafts = drafts_in_memory()
+
+    result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())), drafts=drafts))
+
+    record = drafts.get(result["draft"].draft_id)
+    assert record is not None
+    assert record.plan_assignment_ids == ["assignment-algebra-set", "assignment-canal-essay"]
+
+
+def test_work_still_to_do_keeps_its_dependency_on_finished_work_and_no_brief_names_it() -> None:
+    """The problem set depends on the essay, and the essay is reported done. The run's
+    assignment keeps the dependency as the record has it, the essay itself stays out of
+    the plan set, and neither brief carries the essay's id, its title, or the dependency."""
+    depends = PROBLEM_SET.model_copy(update={"dependencies": [ESSAY.assignment_id]})
+    planner = Scripted(
+        ok(
+            DailyPlan(
+                plan_date=PLAN_DATE, blocks=[block("assignment-algebra-set", "16:30", "17:15")]
+            )
+        )
+    )
+    critic = Scripted(ok(accepting()))
+
+    result = run(
+        graph_with(
+            planner,
+            critic,
+            assignments=(ESSAY, depends),
+            reports=[("assignment-canal-essay", "done", None)],
+        )
+    )
+
+    assert [(item.assignment_id, item.dependencies) for item in result["assignments"]] == [
+        ("assignment-algebra-set", ["assignment-canal-essay"])
+    ]
+    assert result["done_ids"] == ["assignment-canal-essay"]
+    assert result["verification"].passed
+    for brief in (planner.briefs[0], critic.briefs[0]):
+        assert "assignment-canal-essay" not in human_text(brief)
+        assert "Canal Era" not in human_text(brief)
+
+
+# ------------------------------------------------- a save that lands while a model is asked
+
+
+class ChangesTheRecord:
+    """A planner that answers only after the record has changed, as a save of hers does that
+    lands while the call is pending. The change is made once, before the first answer."""
+
+    def __init__(self, change: Callable[[], None], *plans: DailyPlan) -> None:
+        self.change = change
+        self.plans = list(plans)
+        self.briefs: list[list[BaseMessage]] = []
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[DailyPlan]:
+        self.briefs.append(list(messages))
+        if len(self.briefs) == 1:
+            self.change()
+        return ok(self.plans.pop(0))
+
+    @property
+    def calls(self) -> int:
+        return len(self.briefs)
+
+
+def problem_set_alone() -> DailyPlan:
+    return DailyPlan(
+        plan_date=PLAN_DATE, blocks=[block("assignment-algebra-set", "16:30", "17:15")]
+    )
+
+
+def as_it_stands(on_record: ProjectStateStore) -> str:
+    return planning_digest(read_week(on_record, TwoChannelSource(), PLAN_DATE))
+
+
+def work_listed(brief: Sequence[BaseMessage]) -> str:
+    """The assignments a brief lists, whole: what the model was given to plan or review."""
+    text = human_text(brief)
+    return text[text.index("<assignments>") : text.index("</assignments>")]
+
+
+def she_finishes(on_record: ProjectStateStore, *assignments: Assignment) -> Callable[[], None]:
+    def change() -> None:
+        for item in assignments:
+            saved = on_record.report_status(
+                item.assignment_id, "done", None, expected_head=None, now=OBSERVED, today=PLAN_DATE
+            )
+            assert isinstance(saved, Saved)
+
+    return change
+
+
+def test_a_done_saved_while_the_planner_is_asked_leaves_the_run_on_what_it_read() -> None:
+    """She reports the essay done while the plan is being made, and the plan comes back
+    with the essay in it. The run works from what it read: the plan passes, the planner is
+    asked once, the reviewer is given the same work, and the draft keeps that reading's
+    fingerprint and ids, which the pages read as stale."""
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+    as_first_read = as_it_stands(on_record)
+    planner = ChangesTheRecord(she_finishes(on_record, ESSAY), good_plan())
+    critic = Scripted(ok(accepting()))
+
+    result = run(graph_with(planner, critic, drafts=drafts, on_record=on_record))
+
+    record = drafts.get(result["draft"].draft_id)
+    assert (planner.calls, critic.calls) == (1, 1)
+    assert [item.found for item in result["steps"] if item.node == "verify"] == [
+        "all 7 checks passed"
+    ]
+    assert 'id="assignment-canal-essay"' in work_listed(planner.briefs[0])
+    assert work_listed(critic.briefs[0]) == work_listed(planner.briefs[0])
+    assert sorted(item.assignment_id for item in result["assignments"]) == [
+        "assignment-algebra-set",
+        "assignment-canal-essay",
+    ]
+    assert result["done_ids"] == []
+    assert record is not None
+    assert record.inputs_digest == as_first_read != as_it_stands(on_record)
+    assert record.plan_assignment_ids == ["assignment-algebra-set", "assignment-canal-essay"]
+
+
+def test_an_undo_while_the_planner_is_asked_adds_no_work_to_the_run() -> None:
+    """The essay was reported done when the run read the week, and she takes that back
+    while the plan is being made. The run's work is still the problem set alone, for both
+    models and the checks, and the change shows in the fingerprint instead."""
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+    first = on_record.report_status(
+        ESSAY.assignment_id, "done", None, expected_head=None, now=OBSERVED, today=PLAN_DATE
+    )
+    assert isinstance(first, Saved)
+
+    def she_takes_it_back() -> None:
+        undone = on_record.undo_report(
+            ESSAY.assignment_id, first.report.report_id, now=OBSERVED, today=PLAN_DATE
+        )
+        assert isinstance(undone, Undone)
+
+    as_first_read = as_it_stands(on_record)
+    planner = ChangesTheRecord(she_takes_it_back, problem_set_alone())
+    critic = Scripted(ok(accepting()))
+
+    result = run(graph_with(planner, critic, drafts=drafts, on_record=on_record))
+
+    record = drafts.get(result["draft"].draft_id)
+    assert (planner.calls, critic.calls) == (1, 1)
+    assert result["verification"].passed
+    for brief in (planner.briefs[0], critic.briefs[0]):
+        assert "assignment-canal-essay" not in human_text(brief)
+    assert [item.assignment_id for item in result["assignments"]] == ["assignment-algebra-set"]
+    assert result["done_ids"] == ["assignment-canal-essay"]
+    assert record is not None
+    assert record.inputs_digest == as_first_read != as_it_stands(on_record)
+
+
+def test_a_week_finished_while_the_planner_is_asked_still_ends_in_its_plan() -> None:
+    """Everything is reported done after the planner was asked. The answer paid for is
+    checked, reviewed, and saved as the run's draft, stale as it is; nothing left to do
+    ends a run only when that is what it read."""
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+    as_first_read = as_it_stands(on_record)
+    planner = ChangesTheRecord(she_finishes(on_record, ESSAY, PROBLEM_SET), good_plan())
+    critic = Scripted(ok(accepting()))
+
+    result = run(graph_with(planner, critic, drafts=drafts, on_record=on_record))
+
+    record = drafts.get(result["draft"].draft_id)
+    assert result["outcome"] == "accepted"
+    assert (planner.calls, critic.calls) == (1, 1)
+    assert "__interrupt__" in result
+    assert drafts.runs_without_a_draft() == []
+    assert record is not None
+    assert record.inputs_digest == as_first_read != as_it_stands(on_record)
+
+
+def test_a_revision_the_checks_ask_for_is_made_from_the_same_reading() -> None:
+    """The essay is done when the run reads the week; while the planner is first asked she
+    adds a Not yet with a note on the problem set. The first plan speaks about the essay
+    and fails; the second is asked for from the same work, with no word of the note that
+    landed since, of the essay, or that anything is done."""
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+    first = on_record.report_status(
+        ESSAY.assignment_id, "done", "Handed in.", expected_head=None, now=OBSERVED, today=PLAN_DATE
+    )
+    assert isinstance(first, Saved)
+
+    def she_says_not_yet() -> None:
+        saved = on_record.report_status(
+            PROBLEM_SET.assignment_id,
+            "not_yet",
+            "Stuck on question four.",
+            expected_head=None,
+            now=OBSERVED,
+            today=PLAN_DATE,
+        )
+        assert isinstance(saved, Saved)
+
+    as_first_read = as_it_stands(on_record)
+    planner = ChangesTheRecord(she_says_not_yet, good_plan(), problem_set_alone())
+
+    result = run(graph_with(planner, Scripted(ok(accepting())), drafts=drafts, on_record=on_record))
+
+    record = drafts.get(result["draft"].draft_id)
+    assert planner.calls == 2
+    assert work_listed(planner.briefs[1]) == work_listed(planner.briefs[0])
+    assert ONLY_WHAT_IS_LISTED in human_text(planner.briefs[1])
+    for brief in planner.briefs:
+        text = human_text(brief)
+        assert "assignment-canal-essay" not in text
+        assert "Handed in." not in text
+        assert "Stuck on question four." not in text
+        assert "student_says" not in text
+    assert result["done_ids"] == ["assignment-canal-essay"]
+    assert record is not None
+    assert record.inputs_digest == as_first_read != as_it_stands(on_record)
+
+
+def test_a_revision_the_reviewer_asks_for_is_made_from_the_same_reading() -> None:
+    """She reports the essay done while the planner is first asked, and the reviewer then
+    faults the plan. The planner is asked again, and the reviewer again, each time with
+    the work the run read, the essay in it."""
+    on_record, _, _ = stores()
+    drafts = drafts_in_memory()
+    as_first_read = as_it_stands(on_record)
+    planner = ChangesTheRecord(she_finishes(on_record, ESSAY), good_plan(), good_plan())
+    critic = Scripted(ok(faulting()), ok(accepting()))
+
+    result = run(graph_with(planner, critic, drafts=drafts, on_record=on_record))
+
+    record = drafts.get(result["draft"].draft_id)
+    listed = [work_listed(brief) for brief in (*planner.briefs, *critic.briefs)]
+    assert (planner.calls, critic.calls) == (2, 2)
+    assert 'id="assignment-canal-essay"' in listed[0]
+    assert listed == [listed[0]] * 4
+    assert result["done_ids"] == []
+    assert record is not None
+    assert record.inputs_digest == as_first_read != as_it_stands(on_record)
+    assert record.plan_assignment_ids == ["assignment-algebra-set", "assignment-canal-essay"]
+
+
+def test_finished_work_put_off_or_in_both_places_never_reaches_a_revision_either() -> None:
+    """The plan puts the finished essay off, and the next works on it and puts it off: each
+    revision the planner is sent is held to the same rule as the first brief."""
+    put_off = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-algebra-set", "16:30", "17:15")],
+        deferred=[Deferral(assignment_id="assignment-canal-essay", reason="it can wait")],
+    )
+    both = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            block("assignment-algebra-set", "16:30", "17:15"),
+            block("assignment-canal-essay", "17:30", "18:00"),
+        ],
+        deferred=[Deferral(assignment_id="assignment-canal-essay", reason="and later")],
+    )
+    planner = Scripted(ok(put_off), ok(both), ok(problem_set_alone()))
+
+    result = run(
+        graph_with(
+            planner,
+            Scripted(ok(accepting())),
+            reports=[("assignment-canal-essay", "done", "Handed in Tuesday.")],
+        )
+    )
+
+    checks = [item.found for item in result["steps"] if item.node == "verify"]
+    assert planner.calls == 3
+    assert "assignment-canal-essay is reported done" in checks[0]
+    assert "assignment-canal-essay is both worked on and put off" in checks[1]
+    assert checks[2] == "all 7 checks passed"
+    for brief in planner.briefs:
+        text = human_text(brief)
+        assert "assignment-canal-essay" not in text
+        assert "Canal Era" not in text
+        assert "Handed in Tuesday." not in text
+        assert "reported done" not in text
+    assert ONLY_WHAT_IS_LISTED in human_text(planner.briefs[1])
+    assert ONLY_WHAT_IS_LISTED in human_text(planner.briefs[2])
+
+
+def test_her_report_comes_back_from_the_saved_state_as_itself(tmp_path: pathlib.Path) -> None:
+    """Two event loops stand in for two processes, through the real SQLite saver: the
+    standing report the run carries is a report again on the other side, and the brief
+    can still be written from it."""
+    path = tmp_path / "checkpoints.sqlite3"
+    config = run_config("plan:reports")
+
+    async def first_process() -> None:
+        async with open_checkpointer(path) as saver:
+            graph = graph_with(
+                Scripted(ok(good_plan())),
+                Scripted(ok(undecided())),
+                checkpointer=saver,
+                reports=[("assignment-canal-essay", "not_yet", "Two paragraphs left.")],
+            )
+            paused = await graph.ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
+            )
+            assert len(paused["__interrupt__"]) == 1
+
+    async def second_process() -> dict[str, Any]:
+        async with open_checkpointer(path) as saver:
+            graph = graph_with(Scripted(), Scripted(), checkpointer=saver)
+            waiting = await graph.aget_state(config)
+            return dict(waiting.values)
+
+    asyncio.run(first_process())
+    values = asyncio.run(second_process())
+
+    said = values["student_reports"]["assignment-canal-essay"]
+    assert isinstance(said, StudentReport)
+    assert (said.status, said.note) == ("not_yet", "Two paragraphs left.")
+    brief = assignments_block(
+        values["assignments"], values["confidence"], values["student_reports"]
+    )
+    assert 'student_says="not yet"' in brief

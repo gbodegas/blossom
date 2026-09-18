@@ -1181,3 +1181,138 @@ main.wide {
     top: 1rem;
   }
 }
+
+/* ------------------------------------------------------------- her update */
+
+/* Her update sits last on a card, under a rule, and takes the review page's
+   fieldset for its two choices; the note is a short field, two rows, that
+   she can pull taller. The controls keep the 44 pixels every button has. */
+.update {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--edge);
+}
+
+.update .choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.5rem;
+}
+
+.update .choice label {
+  display: flex;
+}
+
+.update .choice input[type="radio"] {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+}
+
+.update textarea {
+  min-height: 3.6rem;
+}
+
+.update .note-fold label {
+  display: block;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.update .actions {
+  margin-top: 0.6rem;
+  align-items: center;
+}
+
+.update .actions form {
+  margin: 0;
+}
+
+.update .actions .cancel {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0 0.5rem;
+}
+
+.update-summary {
+  margin: 0 0 0.35rem;
+}
+
+.update-summary .pill {
+  margin-right: 0.5rem;
+}
+
+.update .effect {
+  margin: 0.35rem 0;
+}
+
+/* Work she has reported done folds under the active cards; the cards inside
+   keep their shape. */
+details.reported-done {
+  margin-top: 1.25rem;
+}
+
+details.reported-done > summary {
+  font-size: 1.05rem;
+}
+
+.assigned .update {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+}
+
+.assignment-updates h3 {
+  margin: 1.25rem 0 0.25rem;
+}
+
+/* Her words are hers to break as she likes: a long address or an unbroken
+   run of letters wraps rather than widening the page, and the line breaks
+   she typed are kept, on her card and on the family page alike. */
+.assignment-updates,
+.update {
+  overflow-wrap: anywhere;
+}
+
+.assignment-updates q,
+.update q {
+  white-space: pre-line;
+}
+
+/* Words for a reader who hears the page and does not see it: which
+   assignment a repeated control or field belongs to. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.update .history {
+  margin-top: 0.5rem;
+}
+
+.update .history ol {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.25rem;
+}
+
+.update .history li {
+  margin: 0.35rem 0;
+}
+
+.history-label {
+  margin: 0.5rem 0 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.panel.apart article {
+  margin-bottom: 0;
+}

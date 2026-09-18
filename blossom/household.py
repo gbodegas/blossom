@@ -27,7 +27,9 @@ for the tests, the sample, and a machine only the family touches.
 """
 
 import hmac
+import ipaddress
 import os
+import re
 import secrets
 import threading
 import time
@@ -35,10 +37,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
@@ -69,6 +71,17 @@ COOLDOWN_SECONDS: Final = 60
 """How long that device waits; its count starts over afterward."""
 ATTEMPT_ADDRESSES: Final = 64
 """How many devices are counted at once; past that the oldest count is forgotten."""
+SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
+"""The methods that change nothing, which the origin check leaves alone."""
+DEFAULT_PORTS: Final = {"http": 80, "https": 443}
+"""The port an address means when it names none, by scheme; no other scheme is an origin."""
+HOST_LABEL: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+"""One label of a host name: letters, digits, and hyphens inside, up to 63 long. A
+computer's name on the home network, ``localhost``, a dotted address, and a name with a
+domain are all labels joined by dots; anything else in a host is not a host."""
+ELSEWHERE: Final = "This request must come from the same origin."
+"""The refusal for a request that would change something and does not name this server as
+where it came from."""
 
 templates = page_templates()
 
@@ -323,6 +336,140 @@ def may_open(role: Principal, path: str) -> bool:
     return role is Principal.PARENT
 
 
+def read_authority(text: str, scheme: str) -> tuple[str, int] | None:
+    """A Host header or a URL's authority as hostname and port, or ``None`` when unreadable.
+
+    The hostname is folded to lowercase, a port left out is the scheme's own,
+    and an IPv6 address keeps its brackets, so the same server named two ways
+    reads the same. A host is a host name, labels of letters, digits, and
+    hyphens joined by dots, or an IPv6 address in brackets; anything else in
+    the text, a path, a user, a space, a mark that no name holds, a second
+    colon outside brackets, a port that is not a number in range, makes it
+    unreadable, and unreadable is refused rather than guessed at, since two
+    unreadable values that happen to match prove nothing.
+    """
+    if not text or not text.isprintable():
+        return None
+    if text.startswith("["):
+        close = text.find("]")
+        if close < 2 or not an_ipv6_address(text[1:close]):
+            return None
+        host, rest = text[: close + 1], text[close + 1 :]
+    elif text.count(":") > 1:
+        return None
+    else:
+        host, separator, digits = text.partition(":")
+        rest = f"{separator}{digits}"
+        if not a_host_name(host):
+            return None
+        host = without_final_dot(host)
+    if rest == "":
+        port = DEFAULT_PORTS.get(scheme)
+        return None if port is None else (host.lower(), port)
+    if not rest.startswith(":"):
+        return None
+    digits = rest[1:]
+    if not digits or not digits.isascii() or not digits.isdigit():
+        return None
+    # Judged as text before it is a number: leading zeros aside, a port has at
+    # most five digits, and one a thousand digits long is refused here
+    # rather than handed to a conversion that raises on it.
+    significant = digits.lstrip("0") or "0"
+    if len(significant) > 5 or not 1 <= int(significant) <= 65535:
+        return None
+    return host.lower(), int(significant)
+
+
+def a_host_name(host: str) -> bool:
+    """Whether ``host`` is a name a server can be reached by: labels joined by dots, each of
+    letters, digits, and hyphens inside, with at most one dot at the end."""
+    return bool(host) and all(
+        HOST_LABEL.fullmatch(label) for label in without_final_dot(host).split(".")
+    )
+
+
+def without_final_dot(host: str) -> str:
+    """A host name without the dot a fully written name ends in: the same name either way."""
+    return host[:-1] if host.endswith(".") else host
+
+
+def an_ipv6_address(inside: str) -> bool:
+    """Whether the text between brackets is an IPv6 address, as the standard library reads
+    one; a name, a mark, or an empty pair of brackets is not."""
+    # A zone name after the address, "%eth0" or its encoded "%25eth0", names
+    # an interface of one computer, and no browser writes one in an address
+    # bar; refused by its mark, before the address is read, rather than
+    # compared.
+    if "%" in inside:
+        return False
+    try:
+        ipaddress.IPv6Address(inside)
+    except ValueError:
+        return False
+    return True
+
+
+def read_origin(value: str, *, whole_address: bool) -> tuple[str, str, int] | None:
+    """An Origin header, or a Referer's origin, as scheme, hostname, and port.
+
+    An Origin is a scheme and an authority and nothing more: a path, a query,
+    or a fragment after it makes it unreadable, as does "null", an empty
+    value, or a scheme other than http and https. A Referer is a whole
+    address, so its path is expected and only its origin is read.
+    """
+    if not value or not value.isprintable() or " " in value:
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
+    if parts.scheme not in DEFAULT_PORTS or not parts.netloc:
+        return None
+    if not whole_address and value[len(parts.scheme) :] != f"://{parts.netloc}":
+        return None
+    authority = read_authority(parts.netloc, parts.scheme)
+    if authority is None:
+        return None
+    return parts.scheme, *authority
+
+
+def from_this_origin(request: Request) -> bool:
+    """Whether a request that would change something names this server as where it came from.
+
+    The reference is the address the request was sent to: its scheme, with
+    the one Host header, read as an authority; no Host header, two, or one
+    that cannot be read is refused. The Origin header is the browser's own
+    word for where a form or a script call came from and is judged first,
+    alone: one value, an http or https origin with nothing after the
+    authority, naming the reference. "null", an empty value, several values,
+    an unreadable one, or another origin is refused outright, with no second
+    look at the Referer. Only a request with no Origin header at all is
+    judged by its one Referer, whose origin must name the reference. A
+    request carrying neither is refused: a browser sends one or the other
+    with every form and every script call, so the only requests without both
+    are made by hand, and the guide says what to send with those.
+
+    The scheme is the one this server was reached by. Nothing in front of
+    it is trusted to say otherwise: the household runs it over plain HTTP on
+    the home network with nothing in front, as the guide says, and a proxy
+    that ended TLS ahead of it would make every form read as from elsewhere
+    rather than open a way to claim a scheme from a header.
+    """
+    hosts = request.headers.getlist("host")
+    if len(hosts) != 1:
+        return False
+    scheme = request.url.scheme
+    reference = read_authority(hosts[0], scheme)
+    if reference is None:
+        return False
+    expected = (scheme, *reference)
+    origins = request.headers.getlist("origin")
+    if origins:
+        return len(origins) == 1 and read_origin(origins[0], whole_address=False) == expected
+    referers = request.headers.getlist("referer")
+    return len(referers) == 1 and read_origin(referers[0], whole_address=True) == expected
+
+
 def wants_a_page(request: Request) -> bool:
     """Whether the request comes from a browser, which is answered with a page, not JSON.
 
@@ -342,6 +489,14 @@ class HouseholdGate(BaseHTTPMiddleware):
     Every answer but a static file is marked not to be stored: pages, calls,
     the sign-in and its redirects, and the gate's own refusals, so a shared
     browser or anything on the way keeps no copy to show after a sign-out.
+
+    Before any of that, and whether or not the sign-in is on, a request that
+    would change something must come from this server's own pages: a page on
+    another site that a signed-in browser opens can make that browser send a
+    form here, cookie and all, and the browser's Origin or Referer header is
+    what gives such a form away. One that names another origin, or none, is
+    answered 403 in plain text, for every method but GET, HEAD, and OPTIONS,
+    the sign-in and sign-out forms and the static files included.
     """
 
     def __init__(self, app: ASGIApp, settings: Settings) -> None:
@@ -351,6 +506,10 @@ class HouseholdGate(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
+        if request.method not in SAFE_METHODS and not from_this_origin(request):
+            return PlainTextResponse(
+                ELSEWHERE, status_code=403, headers={"Cache-Control": "no-store"}
+            )
         if not self.settings.household_sign_in:
             return await call_next(request)
         if request.url.path.startswith(STATIC_PREFIX):

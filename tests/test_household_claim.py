@@ -13,7 +13,7 @@ from blossom.stores.household_claim import (
     lock_path_for,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
-from tests.support import PLAN_DATE, fixture_settings
+from tests.support import PLAN_DATE, SAME_ORIGIN, fixture_settings
 
 
 def test_the_lock_file_sits_beside_the_state_file_as_it_really_is(tmp_path: pathlib.Path) -> None:
@@ -78,9 +78,12 @@ def test_a_second_application_over_the_same_files_does_not_start(tmp_path: pathl
             TRACE_PATH_VARIABLE: str(tmp_path / "traces.sqlite3"),
         },
     )
-    with TestClient(create_app(settings)) as running:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as running:
         assert running.get("/student/due-this-week").status_code == 200
-        with pytest.raises(AnotherProcessHasTheHousehold), TestClient(create_app(settings)):
+        with (
+            pytest.raises(AnotherProcessHasTheHousehold),
+            TestClient(create_app(settings), headers=SAME_ORIGIN),
+        ):
             pass
-    with TestClient(create_app(settings)) as after:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as after:
         assert after.get("/student/due-this-week").status_code == 200

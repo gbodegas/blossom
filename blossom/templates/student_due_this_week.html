@@ -19,8 +19,13 @@
     </nav>
   </div>
 
+  {#
+    A problem with one card is said here as well as on the card, with a link
+    to it: a page that comes back from a form opens at its top, and the card
+    may be far below.
+  #}
   {% if problem %}
-    <p class="problem" role="alert">{{ problem }}</p>
+    <p class="problem" role="alert">{{ problem }}{% if problem_target %} <a href="#assignment-{{ problem_target }}">Go to the assignment.</a>{% endif %}</p>
   {% endif %}
 
   {% if view.week.current %}
@@ -35,19 +40,52 @@
       hers from the moment it is made, and what a parent says about it is
       one more thing she can see.
     #}
-    <p class="standing">{% if view.plan %}A plan is ready.{% else %}No plan for today yet.{% endif %}</p>
+    <p class="standing">
+      {% if view.plan %}
+        {% if view.nothing_to_plan %}Your saved plan is below.{% else %}A plan is ready.{% endif %}
+      {% else %}
+        No plan for today yet.
+      {% endif %}
+    </p>
+    {% if view.nothing_to_plan %}
+      <p class="note" role="status">Nothing to schedule from the work in this planning window.</p>
+    {% endif %}
+    {#
+      Work the plan includes that she reports as done is said here,
+      whatever a parent decided about the plan: the plan is hers, and so is
+      knowing which of it is finished. With nothing left to plan the panel
+      only informs: no line in it points her at a plan she cannot ask for.
+    #}
+    {% if view.plan and view.plan.reported_done %}
+      <p class="confidence disagree" role="status">
+        <strong>Your updates.</strong> {{ view.plan.reported_done }}
+        {% if view.plan.reported_done_work %}
+          In it: {% for work in view.plan.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}.
+          {% if not view.nothing_to_plan %}A new plan will leave it out.{% endif %}
+        {% endif %}
+      </p>
+    {% endif %}
     {% if view.plan and view.plan.decision in ("approved", "rejected") %}
       <div class="from-parents {{ view.plan.decision }}">
         <p class="from-heading">From your parents</p>
         <p class="from-text">
-          {% if view.plan.decision == "approved" %}Looks good.{% else %}A change is asked for; plan again when you are ready.{% endif %}
+          {% if view.plan.decision == "approved" %}
+            Looks good.
+          {% elif view.nothing_to_plan %}
+            A change was asked for on this saved plan.
+          {% else %}
+            A change is asked for; plan again when you are ready.
+          {% endif %}
           {% if view.plan.reason %}<q>{{ view.plan.reason }}</q>{% endif %}
         </p>
       </div>
     {% elif view.plan and view.plan.decision == "expired" %}
       <p class="note">Nobody reviewed this plan.</p>
     {% elif view.plan %}
-      <p class="note">A parent has not reviewed it yet. You can start anyway.</p>
+      <p class="note">
+        A parent has not reviewed it yet.
+        {% if not view.nothing_to_plan %}You can start anyway.{% endif %}
+      </p>
     {% endif %}
     {#
       What the plan button offers follows the evening as it stands: a plan
@@ -58,7 +96,14 @@
     {% set smaller_wanted = view.too_much and not (view.plan and view.plan.too_much) %}
     {% set plan_label = "Make a smaller plan" if smaller_wanted else ("Plan again" if view.plan else "Plan today") %}
     {% if view.plan and view.plan.stale %}
-      <p class="confidence disagree" role="status"><strong>{{ plan_label }}.</strong> {{ view.plan.stale }}</p>
+      {% if view.nothing_to_plan %}
+        <p class="confidence disagree" role="status">
+          <strong>Saved plan.</strong>
+          The work or updates on record differ from what this plan used.
+        </p>
+      {% else %}
+        <p class="confidence disagree" role="status"><strong>{{ plan_label }}.</strong> {{ view.plan.stale }}</p>
+      {% endif %}
     {% elif view.plan and view.plan.too_much and view.too_much %}
       <p class="note">This plan already uses the smaller budget, {{ view.budget_minutes }} minutes.</p>
     {% endif %}
@@ -76,13 +121,13 @@
       <p class="confidence disagree">
         <strong>You said it was too much</strong> at {{ view.too_much.given_local|clock }}.
         Your next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
-        {% if not view.plan %}Nothing has been planned yet; the plan you make will be the shorter one.{% endif %}
+        {% if not view.plan and not view.nothing_to_plan %}Nothing has been planned yet; the plan you make will be the shorter one.{% endif %}
         {% if view.too_much.detail %}You added <q>{{ view.too_much.detail }}</q>.{% endif %}
       </p>
     {% endif %}
 
     <div class="actions">
-      {% if view.can_plan %}
+      {% if view.can_plan and not view.nothing_to_plan %}
         <form method="post" action="/student/actions/plan" class="action"
               data-pending="Making your plan"
               data-pending-later="Still working. The planner reads your week and writes the plan, which takes a minute or two"
@@ -100,7 +145,8 @@
         </form>
       {% endif %}
     </div>
-    {% if view.can_plan %}
+    {% if view.nothing_to_plan %}
+    {% elif view.can_plan %}
       <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
     {% else %}
       <p class="notice">
@@ -174,149 +220,89 @@
     <p class="return"><a href="/student/due-this-week">Return to this week and today's plan</a></p>
   {% endif %}
 
+  {#
+    The card a save, an undo, or a link named, when its dates have taken it
+    out of the week shown: apart, so the result and anything she typed are
+    never lost to a week the card has left.
+  #}
+  {% if view.apart %}
+    <section class="panel apart">
+      <h2>Outside the week shown</h2>
+      <p class="note">The dates of this assignment put it outside the week shown here, so it is shown apart with its update.</p>
+      {% with assignment = view.apart %}{% include "student_card.html" %}{% endwith %}
+    </section>
+  {% endif %}
+
   <h2 class="list-heading">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
 
   {% if not view.assignments %}
     <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.</p>
   {% endif %}
 
-  {% for assignment in view.assignments %}
-    <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}">
-      <p class="course">{{ assignment.course }}</p>
-      <h2>{{ assignment.title }}</h2>
-      {#
-        The due line carries the record's date and, when one label can say
-        it, where that date came from: the channel that gave it, or the
-        family. The other states are said in a line of their own below, and
-        only two are made prominent: sources that disagree, and a school
-        date the record does not match. A page that shouts about every date
-        teaches her to skim past the shouting.
-      #}
-      {#
-        The range carries the year, so a card repeats it only when its date is
-        in a year the range does not cover: an item a source puts in this
-        week while the record puts it in another year.
-      #}
-      <p class="due">
-        {% if assignment.due_date %}
-          {% if assignment.contradiction or assignment.deadline_confidence == "SOURCES_DISAGREE" %}Recorded date{% else %}Due{% endif %} {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year not in (view.week.start.year, view.week.end.year) %}, {{ assignment.due_date.year }}{% endif %}
-        {% else %}
-          Due date not recorded
-        {% endif %}
-        {% if assignment.source_label %}<span class="source">{{ assignment.source_label }}</span>{% endif %}
-      </p>
-
-      {#
-        A source is named as the origin of the date shown only when it gave
-        a date that reads as the record's. A claim that cannot be read as a
-        date is listed apart and neither confirms nor contradicts anything.
-      #}
-      {% if assignment.source_label %}
-      {% elif assignment.deadline_confidence == "UNVERIFIED" %}
-        <p class="source">
-          {% if assignment.due_date %}Date from the family's record;{% else %}No date on the family's record;{% endif %}
-          a value from {{ assignment.unreadable_sources }} could not be read as a date.
-        </p>
-      {% elif assignment.deadline_confidence == "SOURCES_DISAGREE" %}
-        <p class="source">
-          {% if assignment.due_date %}Date from the family's record;{% else %}No date on the family's record;{% endif %}
-          the sources below give different ones.
-        </p>
-      {% elif assignment.contradiction %}
-        <p class="source">
-          {% if assignment.due_date %}Date from the family's record; {{ assignment.readable_sources }}
-          {% if assignment.readable_channels|length == 1 %}has{% else %}have{% endif %} a different one.
-          {% else %}No date on the family's record; {{ assignment.readable_sources }}
-          {% if assignment.readable_channels|length == 1 %}has{% else %}have{% endif %} one.{% endif %}
-        </p>
-      {% endif %}
-      {% if assignment.unreadable %}
-        <p class="source">Not read as a date: {{ assignment.unreadable|join("; ") }}.</p>
-      {% endif %}
-
-      {#
-        The two banners say the same thing first, "Check this date", and then
-        which kind of doubt this is. The recorded date stays on the card and
-        the sources' dates are listed under the banner; nothing is chosen.
-      #}
-      {% if assignment.deadline_confidence == "SOURCES_DISAGREE" %}
-        <p class="confidence disagree">
-          <strong>Check this date.</strong> Sources disagree about it, and nothing has been chosen for you.
-        </p>
-        <div class="claims">
-          <h3>What the sources say</h3>
-          <ul>
-            {% for claim in assignment.disagreement %}
-              <li>{{ claim }}</li>
-            {% endfor %}
-          </ul>
-        </div>
-      {% endif %}
-
-      {#
-        The banner is for the school's date. A parent's entry or her own
-        report that differs from the record is said in the quiet line above,
-        and what they gave is listed just as quietly.
-      #}
-      {#
-        When the sources disagree among themselves, the banner above already
-        lists every claim, the school's included, so a second banner would
-        say the same thing twice.
-      #}
-      {% if assignment.school_contradicts and assignment.deadline_confidence != "SOURCES_DISAGREE" %}
-        <p class="confidence disagree">
-          <strong>Check this date.</strong> The school says otherwise.
-          {% if assignment.due_date %}It gives a different date from the one recorded.{% else %}It gives a date where none is recorded.{% endif %}
-        </p>
-        <div class="claims">
-          <h3>What the sources say</h3>
-          <ul>
-            {% for claim in assignment.contradiction %}
-              <li>{{ claim }}</li>
-            {% endfor %}
-          </ul>
-        </div>
-      {% elif assignment.contradiction and assignment.deadline_confidence != "SOURCES_DISAGREE" %}
-        <p class="source">What they gave: {{ assignment.contradiction|join("; ") }}.</p>
-      {% endif %}
-
-      {#
-        What the school reports is a fact of its own, said with who reported
-        it and when, so that it is never taken for the family's judgment or
-        for the record's date.
-      #}
-      {% if assignment.school_report %}
-        <p class="confidence disagree" role="status">
-          <strong>The school reports this {{ assignment.submission_status|replace("_", " ") }}.</strong>
-          {{ assignment.school_report }}
-        </p>
-      {% endif %}
-      {% if assignment.note %}
-        <p class="from-teacher">{% if assignment.note_by_a_parent %}A parent wrote{% else %}From the teacher{% endif %}: <q>{{ assignment.note }}</q></p>
-      {% endif %}
-      {% if assignment.entered_by_a_parent %}
-        <p class="source">Entered by a parent.</p>
-      {% endif %}
-      {% if assignment.submission_status != "unknown" %}
-        <p class="status">
-          <span class="pill">Reported status: {{ assignment.submission_status|replace("_", " ") }}</span>
-        </p>
-      {% endif %}
-    </article>
+  {#
+    Work she has reported done stays in the week, under the active cards and
+    folded, with its count, so the week still reads whole and the cards that
+    need her come first. The fold opens when the card the address names is
+    inside it, so a save on such a card lands in view. The same card template
+    renders both groups.
+  #}
+  {% set active_cards = view.assignments|rejectattr("update_status", "equalto", "done")|list %}
+  {% set done_cards = view.assignments|selectattr("update_status", "equalto", "done")|list %}
+  {% set to_check = (view.assignments + view.assigned_this_week)|selectattr("check_school")|list %}
+  {% if not view.week.current and (view.assignments or view.assigned_this_week) %}
+    <p class="note">Updates shown are the latest on record.</p>
+  {% endif %}
+  {% if to_check %}
+    <p class="confidence disagree" role="status">
+      <strong>{{ to_check|length }} finished assignment{% if to_check|length != 1 %}s{% endif %}
+      {% if to_check|length == 1 %}has a school report{% else %}have school reports{% endif %} to check:</strong>
+      {% for item in to_check %}<a href="/student/due-this-week?week={{ view.week.start.isoformat() }}&amp;show={{ item.assignment_id|urlencode }}#assignment-{{ item.assignment_id }}">{{ item.title }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.
+    </p>
+  {% endif %}
+  {% for assignment in active_cards %}
+    {% include "student_card.html" %}
   {% endfor %}
+  {% if done_cards %}
+    {% set done_open = card and (card.assignment_id in done_cards|map(attribute="assignment_id")|list) %}
+    <details class="steps reported-done"{% if done_open %} open{% endif %}>
+      <summary>Reported done ({{ done_cards|length }})</summary>
+      {% for assignment in done_cards %}
+        {% include "student_card.html" %}
+      {% endfor %}
+    </details>
+  {% endif %}
 
   {% if view.assigned_this_week %}
     <section class="panel assigned">
       <h2>Assigned this week, due later</h2>
+      {% set later_active = view.assigned_this_week|rejectattr("update_status", "equalto", "done")|list %}
+      {% set later_done = view.assigned_this_week|selectattr("update_status", "equalto", "done")|list %}
       <ul>
-        {% for assignment in view.assigned_this_week %}
-          <li>
+        {% for assignment in later_active %}
+          <li id="assignment-{{ assignment.assignment_id }}" tabindex="-1">
             <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
             Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
-            {% if assignment.school_report %}<br><span class="pill">The school reports this {{ assignment.submission_status|replace("_", " ") }}</span> {{ assignment.school_report }}{% endif %}
+            {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
+            {% include "student_update.html" %}
           </li>
         {% endfor %}
       </ul>
+      {% if later_done %}
+        {% set later_done_open = card and (card.assignment_id in later_done|map(attribute="assignment_id")|list) %}
+        <details class="steps reported-done"{% if later_done_open %} open{% endif %}>
+          <summary>Reported done ({{ later_done|length }})</summary>
+          <ul>
+            {% for assignment in later_done %}
+              <li id="assignment-{{ assignment.assignment_id }}" tabindex="-1">
+                <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
+                Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
+                {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
+                {% include "student_update.html" %}
+              </li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
     </section>
   {% endif %}
 
@@ -330,9 +316,16 @@
       #}
       <p id="what-is-shared">
         Planning takes a minute or two. It sends your week, the household's rules, the
-        planner's notes about its past plans, and, when you have said today is too much, that
-        you said so, to the model provider; when the first plan needs another try, the plan it
-        made and what was wrong with it go too. Nothing else leaves.
+        planner's notes about its past plans, your updates of Not yet on that work with any
+        note you wrote, and, when you have said today is too much, that you said so, to the
+        model provider; when the first plan needs another try, the plan it made and what was
+        wrong with it go too. Work you report as Done is left out, note and all. Nothing else
+        leaves.
+      </p>
+      <p>
+        Your updates and notes are kept in the family's own file. Your parents can read them
+        on the family page. Done means you have finished your part; it does not turn work in,
+        and your school record is separate.
       </p>
       <p>"Too much right now" takes one press, no rating, no reason, and you can take it back.</p>
     </details>

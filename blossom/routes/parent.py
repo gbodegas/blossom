@@ -47,7 +47,7 @@ Without that, the visibility policy is stated but not observable.
 
 import logging
 from collections.abc import Mapping
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response, status
@@ -57,12 +57,21 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.anthropic_client import model_configured
+from blossom.assignment_status import statuses_for
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
-from blossom.evening import Staleness, staleness
+from blossom.evening import Staleness, reported_done, staleness
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
-from blossom.intake import TEXT_MAX_LENGTH, spoken_report
-from blossom.routes.runs import Graphs, PlanGraphBuilder, require_model, run_plan, tidy_thread
+from blossom.intake import TEXT_MAX_LENGTH
+from blossom.routes.runs import (
+    Graphs,
+    PlanGraphBuilder,
+    refuse_an_empty_run,
+    require_model,
+    require_work,
+    run_plan,
+    tidy_thread,
+)
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
@@ -70,13 +79,16 @@ from blossom.templating import page_templates
 from blossom.views import (
     ApprovalQueueView,
     ApprovalView,
+    AssignmentUpdatesView,
+    AssignmentUpdateView,
     DecisionView,
     HelpRequestView,
+    NamedAssignmentView,
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
     RunView,
-    SchoolReportView,
+    SchoolStatementView,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,11 +137,15 @@ SIGNAL_ENDED: Final = (
     "was kept short for it. Plan again for the full evening."
 )
 ASSIGNMENTS_CHANGED: Final = (
-    "Assignments changed after this plan was made: work was added or taken away in its "
-    "window, or a date, a type, a note, a status the school reports, or what a source "
-    "says about a date changed. The plan does not cover the week as it stands. Plan again "
-    "before approving."
+    "The assignments or her updates differ from the work this plan used: the work in its "
+    "window, a date, a type, a note, a status the school reports, what she reports about "
+    "her part, or what a source says about a date. The plan does not cover the week as it "
+    "stands. Plan again before approving."
 )
+PLAN_INCLUDES_DONE: Final = "This plan includes work she now reports as Done."
+PLAN_WINDOW_DONE: Final = "Some work in this plan's window is now reported Done."
+RECENT_DAYS: Final = 14
+"""How many household days an update of hers stays under "Recent updates"."""
 
 
 def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
@@ -165,9 +181,48 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
             return None
 
 
+def done_in(
+    state: ApplicationState, record: DraftRecord
+) -> tuple[str, list[NamedAssignmentView]] | None:
+    """That today's plan includes work she reports as done as things stand, and which work.
+
+    Said only for the plan her page shows as today's, whatever was decided
+    about it: earlier plans are history and get no notice from an update
+    made today, and a plan a later one took the place of is one of those.
+    What is compared is the plan's ids and her updates as they stand, never
+    the time of either.
+    """
+    today = state.clock.today()
+    if record.plan_date != today:
+        return None
+    current = state.drafts.latest_for(today)
+    if current is None or current.draft_id != record.draft_id:
+        return None
+    found = reported_done(state.project_state, record)
+    if found is None:
+        return None
+    if not found.known:
+        return PLAN_WINDOW_DONE, []
+    return PLAN_INCLUDES_DONE, [
+        NamedAssignmentView(assignment_id=name, title=title) for name, title in found.named
+    ]
+
+
 def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
-    """A draft as the parent sees it, with whether it still fits the evening."""
-    return ApprovalView.from_record(record, stale=stale_reason(state, record))
+    """A draft as the parent sees it, with whether it still fits the evening.
+
+    The notice and the stale state are read from one reading of her reports,
+    so a report landing between the two cannot leave them at odds.
+    """
+    with state.project_state.exclusively():
+        included = done_in(state, record)
+        stale = stale_reason(state, record)
+    return ApprovalView.from_record(
+        record,
+        stale=stale,
+        reported_done=None if included is None else included[0],
+        reported_done_work=[] if included is None else included[1],
+    )
 
 
 def passed(evening: date) -> str:
@@ -190,19 +245,26 @@ async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> Plan
     """Run the plan graph for one evening, up to the gate or to the reason it stopped.
 
     An evening that has passed, or one past the edge of the calendar, is
-    refused with 422 before anything runs.
+    refused with 422 before anything runs, and so is an evening with nothing
+    left to plan, before and after the run: a report of hers can land between
+    the question and the run's reading, and such a run made no plan. A run
+    that reached a model and ended without a plan is answered with its
+    record, since the page lists those.
     """
     evening = request.plan_date or state.clock.today()
     if evening < state.clock.today():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=passed(evening))
     if evening > date.max - CALENDAR_MARGIN:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=beyond(evening))
+    require_work(state, evening)
     require_model(graphs)
-    return await run_plan(
+    run = await run_plan(
         graphs.build(),
         evening,
         state,
     )
+    refuse_an_empty_run(run)
+    return run
 
 
 @router.get("/approvals", response_model=ApprovalQueueView)
@@ -457,33 +519,77 @@ def review_page(
             "entry_open": entry_open or bool(paste) or bool(entry),
             "text_max_length": TEXT_MAX_LENGTH,
             "entry_note_max_length": ENTRY_NOTE_MAX_LENGTH,
-            "reported": reported_by_the_school(state),
+            "updates": assignment_updates(state),
         },
         status_code=status_code,
     )
 
 
-def reported_by_the_school(state: ApplicationState) -> list[SchoolReportView]:
-    """Every assignment the school has reported on, with its latest report, by due date.
+def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
+    """What she and the school have reported, in the family page's three groups.
 
-    The reports and the rows are read while the store is held, one
-    snapshot, as her page reads them: a saving landing between the two
-    reads could otherwise pair new rows with old reports.
+    Each assignment is in one group, the first that fits. Her "done" beside
+    any school channel's current "missing" is worth checking together, and
+    comes first, open, however old. Of the rest, the assignments with a
+    event of hers in the last fourteen household days, a correction included,
+    follow, by that latest event, most recent first, each showing the day of
+    the update that stands, or that none does. Every other
+    assignment the school has a current statement about closes the section,
+    in the record's order. Whichever group a row is in, it shows her update
+    when she has one and what each school channel says now, every channel,
+    so a row never leaves out a fact it was grouped by. The rows, her events,
+    and the school's reports are read while the store is held, one snapshot,
+    as her page reads them, in a few batched reads whatever the number of
+    rows.
     """
+    today = state.clock.today()
     with state.project_state.exclusively():
-        latest = state.project_state.latest_status_reports()
-        rows = [
-            item for item in state.project_state.all_assignments() if item.assignment_id in latest
-        ]
-    return [
-        SchoolReportView(
+        rows = state.project_state.all_assignments()
+        statuses = statuses_for(state.project_state, [item.assignment_id for item in rows])
+    views = {
+        item.assignment_id: AssignmentUpdateView(
+            assignment_id=item.assignment_id,
             course=item.course,
             title=item.title,
-            status=latest[item.assignment_id].status,
-            sentence=spoken_report(latest[item.assignment_id]),
+            status=statuses[item.assignment_id].status,
+            reported_on=statuses[item.assignment_id].reported_on,
+            restored_on=statuses[item.assignment_id].restored_on,
+            cleared_on=statuses[item.assignment_id].cleared_on,
+            note=statuses[item.assignment_id].note,
+            school_statements=[
+                SchoolStatementView.from_report(report)
+                for report in statuses[item.assignment_id].school_statements
+            ],
+            check=statuses[item.assignment_id].check_the_school_record,
         )
         for item in rows
+    }
+    check = [view for view in views.values() if view.check]
+    shown = {view.assignment_id for view in check}
+
+    def latest_at(view: AssignmentUpdateView) -> datetime:
+        head = statuses[view.assignment_id].head
+        return datetime.min.replace(tzinfo=UTC) if head is None else head.reported_at
+
+    def lately(view: AssignmentUpdateView) -> bool:
+        """Whether her latest event under the assignment, a correction included, falls in
+        the window: an old update she puts back today is recent activity, dated as the
+        old update it is, and so is taking back her only update, which leaves none."""
+        head = statuses[view.assignment_id].head
+        return head is not None and head.reported_on > today - timedelta(days=RECENT_DAYS)
+
+    recent = sorted(
+        (view for view in views.values() if view.assignment_id not in shown and lately(view)),
+        key=latest_at,
+        reverse=True,
+    )
+    shown |= {view.assignment_id for view in recent}
+    school = [
+        view
+        for view in views.values()
+        if view.assignment_id not in shown and view.school_statements
     ]
+    return AssignmentUpdatesView(check=check, recent=recent, school=school)
 
 
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
@@ -536,8 +642,9 @@ async def plan_from_the_page(
     A run that fails on the way for any reason other than a refusal is said on
     the page too, with the queue below unchanged; the run has already taken
     back what it left, and the failure goes to the process log. An evening that
-    has passed is refused before anything runs: a plan for it could reach no
-    page of hers.
+    has passed is refused before anything runs, since a plan for it could
+    reach no page of hers, and so is one past the edge of the calendar, whose
+    week cannot be read: the same two refusals the JSON route makes.
     """
     try:
         evening = date.fromisoformat(plan_date) if plan_date.strip() else state.clock.today()
@@ -555,13 +662,22 @@ async def plan_from_the_page(
             problem=passed(evening),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
+    if evening > date.max - CALENDAR_MARGIN:
+        return review_page(
+            request,
+            state,
+            problem=beyond(evening),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
     try:
+        require_work(state, evening)
         require_model(graphs)
-        await run_plan(
+        run = await run_plan(
             graphs.build(),
             evening,
             state,
         )
+        refuse_an_empty_run(run)
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     except Exception:

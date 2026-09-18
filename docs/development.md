@@ -36,7 +36,10 @@ With the app running as the README describes:
   parent's review under it once there is one; then the school week, Monday
   to Sunday, every assignment saying where its due date came from, and the
   work assigned that week and due after it. `?week=` with any date shows the
-  week that holds it.
+  week that holds it. Each card takes her update, Done or Not yet with an
+  optional note, through a form alone, and offers to change or undo it; work
+  she has reported done folds under the active cards. There is no JSON route
+  for her updates.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
   to `/student/plans` makes one.
 - <http://127.0.0.1:8000/student/help-requests> lists her requests for help
@@ -68,6 +71,14 @@ With neither passphrase set, nothing here has a login: the views are separate
 pages, and anyone who can reach the server can open all of them. That is the
 shape for a machine only the family touches. For the household's own use, see
 "Running for the household" below.
+
+Whether or not the passphrases are set, a request that changes something, any
+POST or DELETE, must say it came from this server: browsers send an Origin
+header with every form and script call, and one naming another site, or none,
+is answered 403 in plain text. For curl requests that change state through
+the JSON routes, send an Origin header matching the URL's scheme, host, and
+port, for example `-H 'Origin: http://localhost:8000'` when calling
+`http://localhost:8000`. The interactive API page sends it on its own.
 
 ## Configuration
 
@@ -106,7 +117,10 @@ Three files under `.local/` outlive a restart:
 - `blossom.sqlite3` holds the assignments and every channel's claim about
   their dates, read from a fixture only when `BLOSSOM_FIXTURE_PATH` names one
   and the start creates the file, and otherwise only what the family puts
-  there.
+  there. It holds her own updates on each assignment too, Done or Not yet with
+  any note, as a chain of events she can take back, kept apart from what the
+  school reports. A file from before her updates gains their table on the
+  first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
@@ -182,6 +196,11 @@ to wait a minute before trying again; a right passphrase in between does
 not start the count over, other devices are not affected, and nothing typed
 is kept.
 
+If her sign-in expires before she saves an update, Blossom sends her to
+sign in. The update is not saved, and the note she typed is not kept through
+the sign-in; after signing in, she enters the update again. A parent signed
+in sees her updates on her page and cannot make one in her name.
+
 If a passphrase may have been seen, change it in `.env` and restart: every
 device signed in with it is signed out, the other person's devices stay
 signed in, and the new passphrase works at once. Each person's cookies are
@@ -212,7 +231,10 @@ the home network. Bookmark it.
 The connection is plain HTTP, which is fine on the home network and nowhere
 else: never forward the port through the router or put the server on the
 internet. The sign-in tells the two people apart on the family's own network;
-it is not a defense against the internet.
+it is not a defense against the internet. Nothing goes in front of the
+server either: the origin check compares the scheme and address the server
+itself was reached by, and a proxy that ended TLS ahead of it would make
+every form read as from elsewhere.
 
 ## Adding assignments
 
@@ -301,7 +323,9 @@ email writes beside an assignment is kept as the text it is, "The email
 writes 09/09 beside it, which it does not explain", and is never a due date.
 Her page shows the report as a banner on the card, "The school reports this
 missing", with the source and the day; the family page lists the same under
-"Reported by the school".
+"Assignment updates", beside her own word about the work, and puts a "done"
+of hers that stands beside a school "missing" first, as worth checking
+together.
 
 The second way in is one assignment by hand: a course as the portal names
 it and a title are required; a due date, an assigned date, the type, and a
@@ -374,10 +398,15 @@ that folder's file too, read from `data/sample/` when the launch creates it,
 so a change to the set shows once the folder is deleted, and a sample folder
 from before the record lived in its file has no assignments until it is.
 
-Her page shows three items due that week, each saying its date is from the
-school portal, and the reading log, assigned that Monday and due the next,
-under "Assigned this week, due later"; the following week shows the same
-reading log as due. A plan made for that evening lists no dates to clarify,
+Her page shows two items due that week as active cards, each saying its
+date is from the school portal, the signed syllabus folded under "Reported
+done (1)" as her own update, and the reading log, assigned that Monday and
+due the next, under "Assigned this week, due later"; the following week shows
+the same reading log as due. The syllabus update is the one report the set
+carries, in `data/sample/student_reports.json`, seeded with the assignments
+when the sample's file is created; the main fixtures carry none. Deleting the
+sample folder starts it again with that one update and nothing she has done
+since. A plan made for that evening lists no dates to clarify,
 because nothing is missing or contested. "Previous week" shows an empty week,
 and the main fixtures under `data/synthetic/` keep the disagreement, the
 contradiction, and the undated form for when those are the point.

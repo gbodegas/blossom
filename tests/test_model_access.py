@@ -37,7 +37,7 @@ from blossom.settings import (
     Settings,
     enforce_local_only_tracing,
 )
-from tests.support import hosted_tracer_attached
+from tests.support import SAME_ORIGIN, hosted_tracer_attached
 
 # Variables the model library or the HTTP client beneath it reads to pick an
 # endpoint, a proxy, or a certificate store. Each alone changes a client built
@@ -230,7 +230,7 @@ def test_app_startup_forces_hosted_tracing_off(
     assert langsmith_utils.tracing_is_enabled() is True
     assert hosted_tracer_attached() is True
 
-    with TestClient(create_app()):
+    with TestClient(create_app(), headers=SAME_ORIGIN):
         pass
 
     assert all(os.environ[name] == "false" for name in HOSTED_TRACING_VARIABLES)
@@ -246,7 +246,7 @@ def test_legacy_tracing_variable_does_not_break_callback_setup(
     monkeypatch.setenv("LANGCHAIN_TRACING", "true")
     clear_tracing_cache()
 
-    with TestClient(create_app()):
+    with TestClient(create_app(), headers=SAME_ORIGIN):
         pass
 
     assert CallbackManager.configure().handlers == []
@@ -265,5 +265,5 @@ def test_construction_leaves_the_environment_alone_until_startup(
     app = create_app()
 
     assert os.environ["LANGSMITH_TRACING"] == "true"
-    with TestClient(app):
+    with TestClient(app, headers=SAME_ORIGIN):
         assert os.environ["LANGSMITH_TRACING"] == "false"

@@ -29,7 +29,7 @@ from blossom.reconciliation import (
     classify_confidence,
 )
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN
-from tests.support import fixture_settings, record
+from tests.support import SAME_ORIGIN, fixture_settings, record
 
 PINNED_TODAY = "2026-08-19"
 
@@ -46,7 +46,7 @@ def student_page(fixture_root: pathlib.Path | None = None, week: str | None = No
         environment["BLOSSOM_TRACE_PATH"] = str(state / "traces.sqlite3")
     settings = fixture_settings(**environment)
     params = {} if week is None else {"week": week}
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         response = client.get("/student/due-this-week", params=params)
     assert response.status_code == 200
     return response.text

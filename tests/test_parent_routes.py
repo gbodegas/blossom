@@ -25,6 +25,7 @@ from blossom.routes.runs import plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.views import DecisionView
 from tests.support import (
+    SAME_ORIGIN,
     Scripted,
     accepting,
     fixture_settings,
@@ -43,7 +44,7 @@ def app_with(
 ) -> TestClient:
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     app.dependency_overrides[plan_graphs] = scripted_graphs(planner, critic)
-    return TestClient(app)
+    return TestClient(app, headers=SAME_ORIGIN)
 
 
 # -------------------------------------------------------------- starting a run
@@ -320,7 +321,7 @@ def test_the_queue_reads_without_a_model_and_a_run_says_why_it_cannot_start() ->
     settings = fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat())
     assert settings.anthropic_api_key is None, ANTHROPIC_API_KEY_VARIABLE
 
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         queue = client.get("/parent/approvals")
         started = client.post("/parent/plans", json={})
 

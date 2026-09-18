@@ -1,0 +1,13 @@
+[
+  {
+    "report_id": "report-sample-syllabus-done",
+    "assignment_id": "sample-syllabus-signed",
+    "operation": "report",
+    "status": "done",
+    "note": "Signed and in my folder.",
+    "reported_at": "2026-09-06T23:15:00+00:00",
+    "reported_on": "2026-09-06",
+    "previous_report_id": null,
+    "undoes_report_id": null
+  }
+]

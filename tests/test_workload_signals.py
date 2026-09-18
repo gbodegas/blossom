@@ -37,6 +37,7 @@ from tests.support import (
     FIXTURE_TIMEZONE,
     OBSERVED_AT,
     PLAN_DATE,
+    SAME_ORIGIN,
     Scripted,
     accepting,
     fixture_clock,
@@ -264,7 +265,7 @@ def browser() -> TestClient:
     app.dependency_overrides[plan_graphs] = scripted_graphs(
         lambda: [light_fixture_plan()], lambda: [accepting()]
     )
-    return TestClient(app, follow_redirects=False)
+    return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
 
 
 def test_a_press_is_answered_with_what_it_changed() -> None:

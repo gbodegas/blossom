@@ -50,6 +50,7 @@ from blossom.stores.drafts import Displaced, DraftRecord, DraftsStore
 from tests.support import (
     FIXTURE_TIMEZONE,
     OBSERVED_AT,
+    SAME_ORIGIN,
     Scripted,
     accepting,
     fixture_settings,
@@ -312,13 +313,13 @@ def test_a_restart_expires_a_stale_draft_and_the_page_says_so(tmp_path: pathlib.
     first.dependency_overrides[plan_graphs] = scripted_graphs(
         lambda: [fixture_week_plan()], lambda: [accepting()]
     )
-    with TestClient(first) as client:
+    with TestClient(first, headers=SAME_ORIGIN) as client:
         started = client.post("/parent/plans", json={}).json()
         assert started["waiting"] is True
 
     later = PLAN_DATE + timedelta(days=PAUSED_RETENTION_DAYS + 1)
     second = create_app(fixture_settings(BLOSSOM_TODAY=later.isoformat(), **files))
-    with TestClient(second) as client:
+    with TestClient(second, headers=SAME_ORIGIN) as client:
         page = client.get("/parent").text
         queue = client.get("/parent/approvals").json()
 

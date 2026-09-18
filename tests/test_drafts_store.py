@@ -40,6 +40,7 @@ def save_and_publish(
     outcome: Outcome,
     steps: Sequence[StepRecord] = (),
     too_much: bool = False,
+    plan_assignment_ids: Sequence[str] | None = None,
 ) -> None:
     """Save a draft and publish it at once, as a run that pauses without incident does."""
     store.record_waiting(
@@ -49,6 +50,7 @@ def save_and_publish(
         outcome=outcome,
         steps=steps,
         too_much=too_much,
+        plan_assignment_ids=plan_assignment_ids,
     )
     store.publish(draft.draft_id)
 
@@ -307,7 +309,7 @@ def step(node: str, round_number: int, found: str = "as expected") -> StepRecord
 
 def test_a_runs_record_is_saved_with_its_steps_and_read_back_in_order() -> None:
     store = store_in_memory()
-    steps = [step("retrieve", 0), step("plan", 1), step("verify", 1, "1 of 6 checks failed")]
+    steps = [step("retrieve", 0), step("plan", 1), step("verify", 1, "1 of 7 checks failed")]
 
     store.record_run(
         thread_id="plan:2026-08-19:x", plan_date=PLAN_DATE, outcome="checks_failed", steps=steps
@@ -939,3 +941,56 @@ def test_a_file_from_before_publication_has_every_draft_published() -> None:
     assert waiting == ["draft:old"]
     assert latest is not None
     assert latest.draft_id == "draft:old"
+
+
+def test_a_draft_names_the_work_its_plan_speaks_about_and_an_older_file_names_none() -> None:
+    """The ids come back as saved, in order; a plan that speaks about nothing names an
+    empty list; a draft from a file written before drafts carried them names none, which
+    is told from the empty list."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        """
+        CREATE TABLE drafts (
+            draft_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, plan_date TEXT NOT NULL,
+            status TEXT NOT NULL, outcome TEXT NOT NULL, body TEXT NOT NULL,
+            created_at TEXT NOT NULL, decided_at TEXT, decision TEXT, reason TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO drafts VALUES (
+            'draft:old', 'plan:old', '2026-08-19', 'DRAFT', 'accepted', 'Plan',
+            '2026-08-19T22:00:00+00:00', NULL, NULL, NULL
+        )
+        """
+    )
+    connection.commit()
+
+    store = DraftsStore(connection, fixture_clock())
+    old = store.get("draft:old")
+    save_and_publish(
+        store,
+        draft(),
+        thread_id="plan:new",
+        plan_date=PLAN_DATE,
+        outcome="accepted",
+        plan_assignment_ids=["assignment-b", "assignment-a"],
+    )
+    named = store.get(draft().draft_id)
+    save_and_publish(
+        store,
+        Draft(draft_id="draft:empty", body="Nothing", created_at=CREATED),
+        thread_id="plan:empty",
+        plan_date=PLAN_DATE,
+        outcome="accepted",
+        plan_assignment_ids=[],
+    )
+    empty = store.get("draft:empty")
+
+    assert old is not None
+    assert old.plan_assignment_ids is None
+    assert named is not None
+    assert named.plan_assignment_ids == ["assignment-b", "assignment-a"]
+    assert empty is not None
+    assert empty.plan_assignment_ids == []

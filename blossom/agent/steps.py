@@ -12,6 +12,7 @@ decide what happens next; the graph's edges do that from the typed values.
 """
 
 from collections.abc import Sequence
+from typing import Final
 from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
@@ -55,7 +56,11 @@ OUTCOMES = {
     "interrupted": (
         "The run stopped before its plan could wait for review, so the plan was set aside."
     ),
+    "nothing_to_schedule": "The run ended because nothing was left to schedule.",
 }
+NOTHING_TO_SCHEDULE: Final = "nothing_to_schedule"
+"""The outcome of a run whose window held no work still to plan when it was read: it
+ends before any model is asked, with a record and no draft."""
 
 
 def count(number: int, noun: str) -> str:
@@ -86,8 +91,14 @@ def describe_week(
     notes: int,
     budget: int,
     too_much: bool,
+    done: int = 0,
 ) -> str:
-    """The week in one line: how much there is, how much is in doubt, and tonight's budget."""
+    """The week in one line: how much there is, how much is in doubt, and tonight's budget.
+
+    ``done`` is how much of the week she has reported done, which is left out
+    of ``assignments`` and said apart, so the record shows the work the plan
+    was made from and the work it was not.
+    """
     contradicted = sum(item.contradicted for item in noticings)
     uncertain = sum(
         label is not SourceConfidence.CORROBORATED
@@ -100,8 +111,10 @@ def describe_week(
         if too_much
         else f"budget {budget} minutes"
     )
+    left_out = f", {done} reported done and left out" if done else ""
     return (
-        f"{count(len(assignments), 'assignment')} in the week: {contradicted} contradicted, "
+        f"{count(len(assignments), 'assignment')} in the week{left_out}: "
+        f"{contradicted} contradicted, "
         f"{uncertain} uncertain, {undated} undated; {count(rules, 'rule')} and "
         f"{count(notes, 'note')} to follow; {evening}"
     )

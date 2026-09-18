@@ -9,7 +9,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException, status
@@ -17,8 +17,10 @@ from fastapi import Depends, HTTPException, status
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread, finish_held_reviews
 from blossom.agent.runs import DURABILITY, draft_id_for, run_config
+from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
 from blossom.anthropic_client import MISSING_KEY, ModelUnavailable, model_configured
 from blossom.dependencies import ApplicationState, get_application_state
+from blossom.noticing import read_week
 from blossom.views import PlanRunView
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,49 @@ def require_model(graphs: PlanGraphs) -> None:
     """Refuse to start a run without a model, before any thread is written."""
     if not graphs.may_start:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=MISSING_KEY)
+
+
+NOTHING_TO_SCHEDULE: Final = "Nothing to schedule from the work in this planning window."
+"""What every planning route answers, 409, for an evening whose window holds no work
+still to do: nothing has been planned, no run has been written, and no model asked."""
+
+
+def require_work(state: ApplicationState, plan_date: date) -> None:
+    """Refuse to start a run for an evening with nothing left to plan, before any thread is
+    written and before the model is asked for.
+
+    The window is read as the graph reads it. The graph reads it again when it
+    runs, since a report of hers can land in between, and ends the same way.
+    """
+    if not read_week(state.project_state, state.project_state, plan_date).active():
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=NOTHING_TO_SCHEDULE)
+
+
+def no_plan_made(outcome: str) -> str:
+    """Why a run that ended without a plan is answered 409: the one outcome with a sentence
+    of its own, or the outcome named."""
+    if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
+        return NOTHING_TO_SCHEDULE
+    return f"no plan was made: the run ended with {outcome}"
+
+
+def refuse_an_empty_run(run: PlanRunView) -> None:
+    """Refuse, 409, a run that ended at its first node with nothing left to schedule.
+
+    The route asked whether there was work before the run, and a report of
+    hers landed between that question and the run's reading. Such a run made
+    no plan and asked no model, so it is answered as the guard would have
+    answered, not as a plan made; the run's own record stays in the ledger.
+    """
+    if run.draft_id is None and run.outcome == NOTHING_TO_SCHEDULE_OUTCOME:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=NOTHING_TO_SCHEDULE)
+
+
+def ended_without_a_plan(outcome: str) -> str:
+    """The same, as her page says it."""
+    if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
+        return NOTHING_TO_SCHEDULE
+    return f"No plan was made this time: the run ended with {outcome}."
 
 
 Graphs = Annotated[PlanGraphs, Depends(plan_graphs)]

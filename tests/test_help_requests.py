@@ -16,7 +16,7 @@ from blossom.stores.help_requests import (
     HelpRequestsStore,
     RequestClosed,
 )
-from tests.support import OBSERVED_AT, PLAN_DATE, ZONE, fixture_clock, fixture_settings
+from tests.support import OBSERVED_AT, PLAN_DATE, SAME_ORIGIN, ZONE, fixture_clock, fixture_settings
 
 PAGE = "/student/due-this-week"
 
@@ -29,7 +29,7 @@ def store_in_memory(clock: FrozenClock | None = None) -> HelpRequestsStore:
 
 def browser() -> TestClient:
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
-    return TestClient(app, follow_redirects=False)
+    return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
 
 
 # ------------------------------------------------------------------ the store

@@ -36,7 +36,7 @@ from blossom.routes.inbox import (
 )
 from blossom.settings import Settings
 from blossom.stores.project_state import Assignment, AssignmentKind
-from tests.support import fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings
 
 PAGE = {"Accept": "text/html"}
 HERS = "quiet mornings and loud music"
@@ -107,7 +107,7 @@ def review_form(page: str) -> dict[str, str]:
 
 
 def test_the_family_page_offers_the_paste_box_and_the_entry_form(tmp_path: pathlib.Path) -> None:
-    with TestClient(create_app(settings_in(tmp_path))) as client:
+    with TestClient(create_app(settings_in(tmp_path)), headers=SAME_ORIGIN) as client:
         page = client.get("/parent", headers=PAGE).text
 
     assert '<a class="skip" href="#main">Skip to main content</a>' in page
@@ -133,7 +133,9 @@ def test_the_family_page_offers_the_paste_box_and_the_entry_form(tmp_path: pathl
 def test_a_paste_is_reviewed_week_by_week_and_saved_only_when_asked(
     tmp_path: pathlib.Path,
 ) -> None:
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         shown = client.post("/parent/inbox/read", data={"text": SUMMARY})
         nothing_yet = client.get("/student/due-this-week", headers=PAGE).text
         kept = client.post("/parent/inbox/keep", data={"text": SUMMARY})
@@ -189,7 +191,9 @@ def test_an_entry_by_hand_is_reviewed_then_saved_as_the_familys_own(
     tmp_path: pathlib.Path,
 ) -> None:
     undated = {**ENTRY, "title": "Song lyrics, memorized", "due_date": "", "note": ""}
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         shown = client.post("/parent/inbox/enter", data=ENTRY)
         kept = client.post("/parent/inbox/keep", data=ENTRY)
         family = client.get(kept.headers["location"], headers=PAGE).text
@@ -228,7 +232,9 @@ def test_an_entry_by_hand_is_reviewed_then_saved_as_the_familys_own(
 def test_a_form_that_fails_comes_back_filled_with_the_field_named(
     tmp_path: pathlib.Path,
 ) -> None:
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         empty = client.post("/parent/inbox/read", data={"text": "   "})
         long_text = client.post("/parent/inbox/read", data={"text": "x" * (TEXT_MAX_LENGTH + 1)})
         no_title = client.post(
@@ -289,7 +295,9 @@ def test_text_that_cannot_be_read_is_listed_by_line_and_can_be_edited(
     tmp_path: pathlib.Path,
 ) -> None:
     text = "A stray line nobody expected\nMath - Assigned: Worksheet: (Due:TBD)\n"
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         stray = client.post("/parent/inbox/read", data={"text": text})
         back = client.post("/parent/inbox/edit", data={"text": text})
         back_to_entry = client.post("/parent/inbox/edit", data=ENTRY)
@@ -314,7 +322,9 @@ def test_text_that_cannot_be_read_is_listed_by_line_and_can_be_edited(
 def test_a_later_date_for_a_saved_assignment_is_shown_beside_it_and_saved_as_evidence(
     tmp_path: pathlib.Path,
 ) -> None:
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         client.post("/parent/inbox/keep", data={"text": SUMMARY})
         shown = client.post("/parent/inbox/read", data={"text": MOVED}).text
         kept = client.post("/parent/inbox/keep", data={"text": MOVED})
@@ -344,7 +354,9 @@ def test_a_later_date_for_a_saved_assignment_is_shown_beside_it_and_saved_as_evi
 def test_repeated_work_is_a_question_on_the_page_and_the_answer_replayed_changes_nothing(
     tmp_path: pathlib.Path,
 ) -> None:
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         client.post("/parent/inbox/keep", data={"text": WEEKLY})
         asked = client.post("/parent/inbox/read", data={"text": WEEKLY_AGAIN}).text
         unanswered = client.post("/parent/inbox/keep", data={"text": WEEKLY_AGAIN})
@@ -380,7 +392,9 @@ def test_the_type_is_the_parents_to_correct_on_the_page_and_on_the_entry_form(
     """A type chosen on a card is kept as the parent's; a saved row's card still offers the
     choice; and the type typed with an entry corrects a saved row."""
     retyped = {**ENTRY, "kind": "TASK"}
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         corrected = client.post(
             "/parent/inbox/keep", data={"text": SUMMARY, "kind-0": "HOMEWORK", "kind-1": "TASK"}
         )
@@ -435,7 +449,9 @@ def test_a_type_chosen_on_a_folded_card_is_saved_and_shown_the_next_time(
         "kind-1": "TASK",
         "suggested-1": "HOMEWORK",
     }
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         kept = client.post("/parent/inbox/keep", data=form)
         rows = state_of(client).project_state.all_assignments()
         later = client.post(
@@ -482,7 +498,9 @@ def test_a_type_chosen_on_one_card_about_a_saved_row_is_not_undone_by_the_other(
         "page": as_the_page_sends_it,
         "second": on_the_second,
     }.items():
-        with TestClient(create_app(settings_in(tmp_path / name)), follow_redirects=False) as client:
+        with TestClient(
+            create_app(settings_in(tmp_path / name)), follow_redirects=False, headers=SAME_ORIGIN
+        ) as client:
             client.post("/parent/inbox/keep", data={"text": SAVED_WEEK})
             kept = client.post("/parent/inbox/keep", data=form)
             rows = state_of(client).project_state.all_assignments()
@@ -511,7 +529,7 @@ def test_a_choice_survives_a_page_returned_for_an_unanswered_question(
     choice; answering the question then saves a task, the next preview shows Task, the
     same form sent again changes nothing, and the row is a task after a restart."""
     settings = settings_in(tmp_path)
-    with TestClient(create_app(settings), follow_redirects=False) as client:
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         preview = client.post("/parent/inbox/read", data={"text": TWO_WEEKS_OF_PRACTICE}).text
         form = {**review_form(preview), "kind-0": "TASK"}
         returned = client.post("/parent/inbox/keep", data=form)
@@ -523,7 +541,7 @@ def test_a_choice_survives_a_page_returned_for_an_unanswered_question(
             "/parent/inbox/read", data={"text": TWO_WEEKS_OF_PRACTICE.split("\n\n")[1]}
         ).text
         replayed = client.post("/parent/inbox/keep", data=answered)
-    with TestClient(create_app(settings)) as restarted:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as restarted:
         after_restart = state_of(restarted).project_state.all_assignments()
 
     assert review_form(preview)["suggested-0"] == "HOMEWORK"
@@ -552,7 +570,9 @@ def test_a_folded_cards_answers_travel_with_a_returned_page(tmp_path: pathlib.Pa
     it; the third's question is left open. The returned page carries the fold and the
     choice as hidden fields, and answering the third saves one task with both dates and
     one new row, nothing lost."""
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
         first = {**review_form(preview), "occurrence-1": "update", "kind-1": "TASK"}
         returned = client.post("/parent/inbox/keep", data=first)
@@ -585,7 +605,9 @@ def test_a_folded_cards_answers_travel_with_a_returned_page(tmp_path: pathlib.Pa
 
 
 def test_a_change_back_to_the_suggested_type_is_a_choice_too(tmp_path: pathlib.Path) -> None:
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         client.post(
             "/parent/inbox/keep",
             data={"text": SAVED_WEEK, "kind-0": "TASK", "suggested-0": "HOMEWORK"},
@@ -608,7 +630,9 @@ def test_a_question_the_record_raised_since_the_page_is_said_apart(
     """A page with no question is made; another saving puts the week before on record; the
     page sent back now meets a question it never put, and says the record changed."""
     later_week = TWO_WEEKS_OF_PRACTICE.split("\n\n")[1]
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         preview = client.post("/parent/inbox/read", data={"text": later_week}).text
         client.post("/parent/inbox/keep", data={"text": SAVED_WEEK})
         returned = client.post("/parent/inbox/keep", data=review_form(preview))
@@ -623,7 +647,9 @@ def test_a_select_left_as_the_page_showed_it_is_no_answer(tmp_path: pathlib.Path
     """A page is made; the row is corrected from elsewhere; the page's form, sent back with
     its select untouched, changes nothing, and the correction stands. The notice for cards
     choosing different types is the page's own words."""
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         client.post("/parent/inbox/keep", data={"text": SAVED_WEEK})
         stale_page = client.post("/parent/inbox/read", data={"text": SAVED_WEEK}).text
         client.post(
@@ -654,7 +680,7 @@ def test_an_edit_to_the_card_shown_stands_over_a_folded_cards_choice(
     choice; the next preview shows Homework; the same form sent again changes nothing; and
     a restart finds the same rows and claims."""
     settings = settings_in(tmp_path)
-    with TestClient(create_app(settings), follow_redirects=False) as client:
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
         first = {**review_form(preview), "occurrence-1": "update", "kind-1": "TASK"}
         returned = client.post("/parent/inbox/keep", data=first)
@@ -668,7 +694,7 @@ def test_an_edit_to_the_card_shown_stands_over_a_folded_cards_choice(
             "/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE.split("\n\n")[1]}
         ).text
         replayed = client.post("/parent/inbox/keep", data=revised)
-    with TestClient(create_app(settings)) as restarted:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as restarted:
         after_restart = by_due(state_of(restarted).project_state.all_assignments())
 
     for page in (returned, again):
@@ -709,7 +735,7 @@ def test_a_change_back_to_the_suggestion_stays_the_parents_through_another_retur
     be had the answer come with the change; the second return costs nothing. A card left as
     suggested through the same returns stays the school's."""
     settings = settings_in(tmp_path)
-    with TestClient(create_app(settings), follow_redirects=False) as client:
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
         first = {**review_form(preview), "occurrence-1": "update", "kind-1": "TASK"}
         returned = client.post("/parent/inbox/keep", data=first)
@@ -719,10 +745,10 @@ def test_a_change_back_to_the_suggestion_stays_the_parents_through_another_retur
         carried = review_form(reverted.text)
         saved = client.post("/parent/inbox/keep", data={**carried, "occurrence-2": "new"})
         rows = by_due(state_of(client).project_state.all_assignments())
-    with TestClient(create_app(settings)) as restarted:
+    with TestClient(create_app(settings), headers=SAME_ORIGIN) as restarted:
         after_restart = by_due(state_of(restarted).project_state.all_assignments())
     untouched = settings_in(tmp_path / "untouched")
-    with TestClient(create_app(untouched), follow_redirects=False) as client:
+    with TestClient(create_app(untouched), follow_redirects=False, headers=SAME_ORIGIN) as client:
         preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
         once = client.post(
             "/parent/inbox/keep", data={**review_form(preview), "occurrence-1": "update"}
@@ -759,7 +785,9 @@ def test_the_card_shown_can_be_set_after_a_fold_left_it_as_suggested(
 ) -> None:
     """The second card is folded with its type left as suggested; the page comes back for
     the third card's question; the parent sets the merged card to Task. The row is a task."""
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE}).text
         returned = client.post(
             "/parent/inbox/keep", data={**review_form(preview), "occurrence-1": "update"}
@@ -782,7 +810,9 @@ def test_two_folded_cards_cannot_override_the_card_shown(tmp_path: pathlib.Path)
     the first, and the fourth's question is left open. The page comes back with the merged
     card as a task and both folded cards' answers hidden; the parent sets the merged card
     back to Homework and answers. Homework it is, with every date."""
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         preview = client.post("/parent/inbox/read", data={"text": FOUR_WEEKS_OF_PRACTICE}).text
         first = {
             **review_form(preview),
@@ -819,7 +849,9 @@ def test_an_entry_that_leaves_the_type_as_it_is_keeps_a_saved_task_a_task(
     """The entry form promises that only the course and title are required: an entry that
     adds a note to a saved task, its type left as it is, leaves the task a task."""
     entry = {"course": "Religion", "title": "Syllabus", "note": "Bring it Monday."}
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         family = client.get("/parent", headers=PAGE).text
         client.post(
             "/parent/inbox/keep", data={"text": "Tuesday 9/8/2026\nReligion\nDue: Syllabus:\n"}
@@ -847,7 +879,9 @@ def test_a_question_answered_rides_along_on_a_page_returned_for_another(
     field, so answering the second saves both as the parent said."""
     saved = "Tuesday 9/1/2026\nMath\nDue: Weekly practice:\nMath\nDue: Reading log:\n"
     again = "Tuesday 9/8/2026\nMath\nDue: Weekly practice:\nMath\nDue: Reading log:\n"
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         client.post("/parent/inbox/keep", data={"text": saved})
         preview = client.post("/parent/inbox/read", data={"text": again}).text
         one_answered = {**review_form(preview), "occurrence-0": "update"}
@@ -873,7 +907,9 @@ def test_a_question_answered_rides_along_on_a_page_returned_for_another(
 
 def test_an_entered_date_beside_a_saved_one_is_called_entered(tmp_path: pathlib.Path) -> None:
     entry = {"course": "Math", "title": "Weekly practice", "due_date": "2026-09-03"}
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         client.post("/parent/inbox/keep", data={"text": SAVED_WEEK})
         shown = client.post("/parent/inbox/enter", data=entry).text
 
@@ -888,7 +924,9 @@ def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
 ) -> None:
     """The email's "Missing" is kept as a report with the day and the email's own date text,
     shown on both pages as a fact the school reported, and never as a due date."""
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         client.post("/parent/inbox/keep", data={"text": SUMMARY})
         shown = client.post("/parent/inbox/read", data={"text": EMAIL}).text
         kept = client.post("/parent/inbox/keep", data={"text": EMAIL})
@@ -905,7 +943,9 @@ def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
     )
     assert "What the school reports is saved with the day." in shown
     assert kept.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
-    assert "<h2>Reported by the school</h2>" in family
+    assert "<h2>Assignment updates</h2>" in family
+    assert "<h3>School reports</h3>" in family
+    assert "Worth checking together" not in family
     assert "<strong>Book Covers: the school reports it missing.</strong>" in family
     assert "From the school email, pasted Monday, September 7, 2026." in family
     assert "<strong>The school reports this missing.</strong>" in hers
@@ -924,7 +964,9 @@ def test_a_text_with_the_email_and_the_page_keeps_the_teachers_words_as_the_teac
         "Assignments:\n09/09 Math - A: Homework: Practice Grade: Missing\n\n"
         "Tuesday 9/8/2026\nMath\nAssigned: Practice: (Due:09/10/2026)\nBring the packet.\n"
     )
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         kept = client.post("/parent/inbox/keep", data={"text": mixed})
         hers = client.get("/student/due-this-week", headers=PAGE).text
 
@@ -941,7 +983,9 @@ def test_a_saving_waits_while_a_decision_is_being_recorded(tmp_path: pathlib.Pat
     """A decision is checked against the week the plan was made from, which holds still
     until the decision lands; a saving during a decision waits the moment it takes."""
     with (
-        TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client,
+        TestClient(
+            create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+        ) as client,
         ThreadPoolExecutor(max_workers=1) as pool,
     ):
         state = state_of(client)
@@ -967,7 +1011,9 @@ def test_her_page_is_read_as_one_snapshot_of_the_record(tmp_path: pathlib.Path) 
     so a saving cannot land between two of its reads: while the store is held elsewhere,
     her page waits, and comes once it is let go."""
     with (
-        TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client,
+        TestClient(
+            create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+        ) as client,
         ThreadPoolExecutor(max_workers=1) as pool,
     ):
         client.post("/parent/inbox/keep", data={"text": SUMMARY})
@@ -991,7 +1037,9 @@ def test_the_family_page_reads_the_schools_reports_as_one_snapshot(
     """The family page reads the reports and the rows while it holds the store, as her page
     does: while the store is held elsewhere, the page waits, and comes once it is let go."""
     with (
-        TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client,
+        TestClient(
+            create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+        ) as client,
         ThreadPoolExecutor(max_workers=1) as pool,
     ):
         client.post("/parent/inbox/keep", data={"text": SUMMARY})
@@ -1016,7 +1064,9 @@ def test_a_review_that_spans_midnight_saves_the_day_the_page_said(
     """The report's day is the day the email was pasted, as the review page says; a save
     after midnight keeps that day, because the page carries the moment it was first read.
     A form without that moment is read as of now."""
-    with TestClient(create_app(settings_in(tmp_path)), follow_redirects=False) as client:
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
         client.post("/parent/inbox/keep", data={"text": SUMMARY})
         preview = client.post("/parent/inbox/read", data={"text": EMAIL}).text
         carried = review_form(preview)
@@ -1048,7 +1098,7 @@ def test_the_way_in_is_a_parents(tmp_path: pathlib.Path) -> None:
         BLOSSOM_STUDENT_PASSPHRASE=HERS,
         BLOSSOM_PARENT_PASSPHRASE=THEIRS,
     )
-    with TestClient(create_app(settings), follow_redirects=False) as client:
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         came_in = client.post("/sign-in", data={"passphrase": HERS})
         hers = client.post("/parent/inbox/read", data={"text": SUMMARY}, headers=PAGE)
         her_keep = client.post("/parent/inbox/keep", data={"text": SUMMARY})

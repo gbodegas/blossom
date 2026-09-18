@@ -60,6 +60,7 @@ from blossom.agent.steps import (
     EXPECT_ACCEPTANCE,
     EXPECT_ALL_CHECKS,
     EXPECT_RECORD_HOLDS,
+    NOTHING_TO_SCHEDULE,
     StepRecord,
     describe_failure,
     describe_plan,
@@ -80,7 +81,7 @@ from blossom.clock import Clock
 from blossom.dependencies import ApplicationState
 from blossom.drafts import Decision, Draft
 from blossom.heuristic_relevance import CriticVerdict
-from blossom.noticing import Noticing, planning_digest, read_week, reconcile_dates
+from blossom.noticing import Noticing, Week, planning_digest, read_week, reconcile_dates
 from blossom.plan_checks import (
     PlanVerification,
     check_plan,
@@ -90,7 +91,7 @@ from blossom.reconciliation import SourceConfidence, classify_confidence
 from blossom.settings import DEFAULT_EVENING_MINUTES, DEFAULT_TOO_MUCH_MINUTES, Settings
 from blossom.sources import DateClaims
 from blossom.stores.drafts import DraftsStore
-from blossom.stores.project_state import Assignment, ProjectStateStore
+from blossom.stores.project_state import Assignment, ProjectStateStore, StudentReport
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
@@ -120,6 +121,7 @@ Outcome = Literal[
     "model_truncated",
     "model_refused",
     "model_unparseable",
+    "nothing_to_schedule",
 ]
 """Why the run stopped. The first two reached the gate; the rest did not.
 
@@ -127,7 +129,9 @@ Outcome = Literal[
 the checks passed and the critic did not agree, could not tell, or ran out of
 rounds: the plan went to the gate with the critique attached. ``checks_failed``
 means no plan within the bound passed tier one, so nothing was proposed. The
-three ``model_`` outcomes name how the model ended the run itself."""
+three ``model_`` outcomes name how the model ended the run itself.
+``nothing_to_schedule`` means the window held no work still to do when the run
+read it, so it ended at its first node with no model asked."""
 
 REACHED_THE_GATE: Final[frozenset[str]] = frozenset({"accepted", "unsettled"})
 
@@ -194,6 +198,12 @@ class PlanState(TypedDict):
     rounds: Annotated[int, operator.add]
     steps: NotRequired[Annotated[list[StepRecord], operator.add]]
     assignments: NotRequired[list[Assignment]]
+    """The window's work still to plan: what the planner, the critic, and the checks see."""
+    done_ids: NotRequired[list[str]]
+    """The window's work she had reported done when the run read it, kept out of
+    ``assignments`` and held against the plan by the checks."""
+    student_reports: NotRequired[dict[str, StudentReport]]
+    """Her standing report on each assignment in ``assignments`` that has one."""
     confidence: NotRequired[dict[str, SourceConfidence]]
     noticings: NotRequired[list[Noticing]]
     too_much: NotRequired[bool]
@@ -254,8 +264,35 @@ def build_plan_graph(
             "assignments": state.get("assignments", []),
             "confidence": state.get("confidence", {}),
             "noticings": state.get("noticings", []),
+            "student_reports": state.get("student_reports", {}),
             "support_rules": state.get("support_rules", []),
             "reflections": state.get("reflections", []),
+        }
+
+    def reading(week: Week) -> dict[str, Any]:
+        """The run's input from one reading of the week: the work still to do, what is said
+        of it, the ids of what she has reported done, and the reading's fingerprint."""
+        done = week.done_ids()
+        left_out = set(done)
+        active = week.active()
+        return {
+            "assignments": active,
+            "done_ids": done,
+            "student_reports": {
+                item.assignment_id: status.asserted
+                for item in active
+                if (status := week.statuses.get(item.assignment_id)) is not None
+                and status.asserted is not None
+            },
+            "confidence": {
+                name: classify_confidence(reconcile_dates(found))
+                for name, found in week.records.items()
+                if name not in left_out
+            },
+            "noticings": [week.noticings[item.assignment_id] for item in active],
+            # Taken as the week is read, so a change between a reading and
+            # the draft reads as a change too.
+            "inputs_digest": planning_digest(week),
         }
 
     def retrieve(state: PlanState) -> dict[str, Any]:
@@ -268,34 +305,53 @@ def build_plan_graph(
         the evening's budget here, before the planner is asked, so it is a
         constraint the checks enforce rather than an argument the planner may
         answer.
+
+        Work she has reported done is read here too, and left out: the
+        planner, the critic, and the checks see only the work still to do,
+        while the ids of what was left out are kept on the server so the
+        checks can hold the plan to it. An assignment still to do keeps its
+        dependencies as the record has them, finished work among them; no
+        brief renders a dependency, so no id of finished work reaches a
+        model that way, and a test holds the briefs to that. A window with
+        nothing left to do ends the run here, with its record and no model
+        asked; the route asks the same question before the run, and asks it
+        here again because a report can land in between.
+
+        What is read here is the run's input from here on, her reports
+        included: both models, the checks, and every revision work from this
+        one reading, and the fingerprint saved with the draft is this
+        reading's. The models are asked without the decision lock, so a report
+        of hers can land while one is answering; it is not swapped in half
+        way, and no second plan is paid for on its account. The draft reads
+        as stale on both pages the moment it is published, its notice names
+        work she reports as done, and approving it is refused until a new
+        plan is asked for. Nothing left to do ends a run only here, before
+        any model is asked.
         """
-        week = read_week(project_state, source, state["plan_date"])
-        confidence = {
-            name: classify_confidence(reconcile_dates(found))
-            for name, found in week.records.items()
-        }
-        noticings = [week.noticings[item.assignment_id] for item in week.assignments]
+        read = reading(read_week(project_state, source, state["plan_date"]))
         rules = [rule.instruction for rule in support_rules.list_all()]
         notes = [note.observation for note in reflections.list_all()]
         too_much = bool(signals.for_evening(state["plan_date"]))
         budget = too_much_minutes if too_much else evening_minutes
         found = describe_week(
-            week.assignments,
-            noticings,
-            confidence,
+            read["assignments"],
+            read["noticings"],
+            read["confidence"],
             rules=len(rules),
             notes=len(notes),
             budget=budget,
             too_much=too_much,
+            done=len(read["done_ids"]),
         )
+        if not read["assignments"]:
+            return {
+                "done_ids": read["done_ids"],
+                "outcome": NOTHING_TO_SCHEDULE,
+                "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found)],
+            }
         return {
-            "assignments": week.assignments,
-            "confidence": confidence,
-            "noticings": noticings,
+            **read,
             "too_much": too_much,
-            # Taken here, as the week is read, so a change between the reading
-            # and the draft reads as a change too.
-            "inputs_digest": planning_digest(week),
             "budget_minutes": budget,
             "support_rules": rules,
             "reflections": notes,
@@ -329,7 +385,14 @@ def build_plan_graph(
         }
 
     def verify(state: PlanState) -> dict[str, Any]:
-        """Tier one. A failing plan becomes feedback, or the end when rounds are spent."""
+        """Tier one, against the reading both models were given. A failing plan becomes
+        feedback, or the end when rounds are spent.
+
+        The plan is held to what ``retrieve`` read: the work still to do then,
+        and the ids of what she had reported done then. A report that lands
+        after that reading is not this step's to catch; the draft's
+        fingerprint is, on the pages and at approval.
+        """
         verification = check_plan(
             state["plan"],
             due_in_window=state.get("assignments", []),
@@ -337,6 +400,7 @@ def build_plan_graph(
             confidence=state.get("confidence", {}),
             noticings=state.get("noticings", []),
             daily_minutes=state.get("budget_minutes", evening_minutes),
+            reported_done=state.get("done_ids", []),
         )
         record = step(
             "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
@@ -345,7 +409,7 @@ def build_plan_graph(
             return {"verification": verification, "feedback": [], "steps": [record]}
         update: dict[str, Any] = {
             "verification": verification,
-            "feedback": list(verification.as_findings()),
+            "feedback": list(verification.as_feedback()),
             "steps": [record],
         }
         if state["rounds"] > MAX_REVISIONS:
@@ -410,6 +474,7 @@ def build_plan_graph(
             steps=state.get("steps", []),
             too_much=state.get("too_much", False),
             inputs_digest=state.get("inputs_digest"),
+            plan_assignment_ids=sorted(set(state["plan"].assignment_ids)),
         )
         return {"draft": draft}
 
@@ -444,6 +509,9 @@ def build_plan_graph(
         )
         return {}
 
+    def after_retrieve(state: PlanState) -> str:
+        return "record_run" if "outcome" in state else "plan"
+
     def after_plan(state: PlanState) -> str:
         return "record_run" if "outcome" in state else "verify"
 
@@ -468,7 +536,9 @@ def build_plan_graph(
     graph.add_node("record_decision", record_decision)
     graph.add_node("record_run", record_run)
     graph.add_edge(START, "retrieve")
-    graph.add_edge("retrieve", "plan")
+    graph.add_conditional_edges(
+        "retrieve", after_retrieve, {"plan": "plan", "record_run": "record_run"}
+    )
     graph.add_conditional_edges(
         "plan", after_plan, {"verify": "verify", "record_run": "record_run"}
     )

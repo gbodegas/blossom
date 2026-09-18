@@ -5,10 +5,12 @@ from blossom.agent.steps import (
     describe_failure,
     describe_outcome,
     describe_verdict,
+    describe_week,
     expect_plan,
     tokens_note,
 )
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
+from tests.support import ESSAY
 
 
 def finding(
@@ -82,3 +84,23 @@ def test_an_outcome_reads_as_one_sentence_for_the_page() -> None:
         "The run stopped before its plan could wait for review, so the plan was set aside."
     )
     assert describe_outcome("something_new") == "The run ended with something_new."
+
+
+def test_a_run_with_nothing_to_schedule_reads_as_one_sentence() -> None:
+    assert describe_outcome("nothing_to_schedule") == (
+        "The run ended because nothing was left to schedule."
+    )
+
+
+def test_the_week_says_what_was_left_out_as_reported_done_only_when_something_was() -> None:
+    whole = describe_week([ESSAY], [], {}, rules=0, notes=0, budget=150, too_much=False)
+    less = describe_week([ESSAY], [], {}, rules=0, notes=0, budget=150, too_much=False, done=2)
+
+    assert whole == (
+        "1 assignment in the week: 0 contradicted, 0 uncertain, 0 undated; "
+        "0 rules and 0 notes to follow; budget 150 minutes"
+    )
+    assert less == (
+        "1 assignment in the week, 2 reported done and left out: 0 contradicted, 0 uncertain, "
+        "0 undated; 0 rules and 0 notes to follow; budget 150 minutes"
+    )
