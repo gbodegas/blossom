@@ -47,6 +47,7 @@ Without that, the visibility policy is stated but not observable.
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Final
 
@@ -57,12 +58,13 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.anthropic_client import model_configured
-from blossom.assignment_status import statuses_for
+from blossom.assignment_status import AssignmentStatus, basis_parts, statuses_for
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import Staleness, reported_done, staleness
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
 from blossom.intake import TEXT_MAX_LENGTH
+from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.runs import (
     Graphs,
     PlanGraphBuilder,
@@ -75,6 +77,20 @@ from blossom.routes.runs import (
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
+from blossom.stores.project_state import (
+    CHECKED,
+    AlreadyChecked,
+    Assignment,
+    CheckConflict,
+    Checked,
+    CouldNotSave,
+    NoteTooLong,
+    Reopened,
+    UnknownAssignment,
+    UnknownCheck,
+    normalize_note,
+)
+from blossom.stores.project_state import NOTE_MAX_LENGTH as CHECK_NOTE_MAX_LENGTH
 from blossom.templating import page_templates
 from blossom.views import (
     ApprovalQueueView,
@@ -145,7 +161,58 @@ ASSIGNMENTS_CHANGED: Final = (
 PLAN_INCLUDES_DONE: Final = "This plan includes work she now reports as Done."
 PLAN_WINDOW_DONE: Final = "Some work in this plan's window is now reported Done."
 RECENT_DAYS: Final = 14
-"""How many household days an update of hers stays under "Recent updates"."""
+"""How many household days an update of hers stays under "Recent updates", and a check of
+the family's under "Checked recently"."""
+CHECK_FIELDS: Final = frozenset({"basis", "expected_check_id", "note"})
+AGAIN_FIELDS: Final = frozenset({"check_id"})
+"""The fields each check form sends, each once. Anything else, or anything twice, is refused."""
+BASIS_MAX_LENGTH: Final = 500
+"""Longer than any basis the page makes: an assignment id, a report id, and a statement or two."""
+CHECK_RECORDED: Final = (
+    "Marked checked. This records the check here; her update and the school's report are "
+    "as they were."
+)
+CHECK_ALREADY: Final = (
+    "Already marked checked, from this device or another, so nothing was written. The note "
+    "on record is the one shown."
+)
+CHECK_REOPENED: Final = "Open to check again. The earlier check stays in the record."
+CHECK_MOVED_ON: Final = (
+    "This row was marked checked or reopened from another device since this page was made. "
+    "Nothing was written; the row shows what stands now."
+)
+CHECK_FACTS_CHANGED: Final = (
+    "What this row rests on has changed since this page was made: her update, or the "
+    "school's report. Nothing was written; the row shows what stands now."
+)
+CHECK_NOTE_TOO_LONG: Final = f"A note is at most {CHECK_NOTE_MAX_LENGTH} characters."
+BAD_CHECK_FORM: Final = "The form did not arrive whole. Nothing was written."
+NOT_THIS_ROWS: Final = (
+    "The form does not fit this row: it names a check, or a basis, that is not this "
+    "assignment's as shown. Nothing was written."
+)
+NOT_ON_RECORD: Final = "No assignment with that id is on record. Nothing was written."
+CHECK_NOT_SAVED: Final = "The check could not be saved. Nothing was written."
+CHECK_NOT_REOPENED: Final = "The check could not be reopened. Nothing was written."
+CHECK_CONFIRMATIONS: Final[dict[str, str]] = {
+    "checked": CHECK_RECORDED,
+    "checked_already": CHECK_ALREADY,
+    "reopened": CHECK_REOPENED,
+}
+"""What the address says happened to a row's check, and the sentence the row shows for it:
+the server chooses which, the address only carries the choice."""
+
+
+@dataclass(frozen=True)
+class CheckState:
+    """What one row of the assignment updates shows beyond the record: what a check form did,
+    a problem with it, which field the problem is about, and the note typed, kept."""
+
+    assignment_id: str
+    said: str | None = None
+    problem: str | None = None
+    field: str | None = None
+    note: str = ""
 
 
 def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
@@ -482,6 +549,7 @@ def review_page(
     paste: str | None = None,
     entry: Mapping[str, str] | None = None,
     entry_open: bool = False,
+    check: CheckState | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to add assignments,
@@ -491,8 +559,12 @@ def review_page(
     the status the JSON route would have answered, so the page tells the truth
     the API tells; ``problem_field`` names the entry field it is about, so the
     page can mark it and put the cursor there. ``paste`` and ``entry`` are a
-    draft to show again, as it was, with the section open.
+    draft to show again, as it was, with the section open. ``check`` is what
+    one row of the assignment updates shows beyond the record, a check made
+    or a problem with one; a row's problem is said at the top too, with a
+    link to the row, so it is met on a page that opens at its top.
     """
+    about_a_row = check is not None and check.problem is not None and problem is None
     return templates.TemplateResponse(
         request,
         "parent_review.html",
@@ -502,7 +574,8 @@ def review_page(
             "waiting": [approval_view(state, record) for record in state.drafts.waiting()],
             "decided": [approval_view(state, record) for record in state.drafts.decided()],
             "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
-            "problem": problem,
+            "problem": check.problem if about_a_row and check is not None else problem,
+            "problem_target": check.assignment_id if about_a_row and check is not None else None,
             "reason_max_length": REASON_MAX_LENGTH,
             "help_open": [help_view(state, r) for r in state.help_requests.open_requests()],
             "help_resolved": [help_view(state, r) for r in state.help_requests.recently_resolved()],
@@ -520,52 +593,58 @@ def review_page(
             "text_max_length": TEXT_MAX_LENGTH,
             "entry_note_max_length": ENTRY_NOTE_MAX_LENGTH,
             "updates": assignment_updates(state),
+            "check": check,
+            "check_note_max_length": CHECK_NOTE_MAX_LENGTH,
         },
         status_code=status_code,
     )
 
 
 def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
-    """What she and the school have reported, in the family page's three groups.
+    """What she and the school have reported, in the family page's four groups.
 
     Each assignment is in one group, the first that fits. Her "done" beside
-    any school channel's current "missing" is worth checking together, and
-    comes first, open, however old. Of the rest, the assignments with a
-    event of hers in the last fourteen household days, a correction included,
-    follow, by that latest event, most recent first, each showing the day of
-    the update that stands, or that none does. Every other
-    assignment the school has a current statement about closes the section,
-    in the record's order. Whichever group a row is in, it shows her update
-    when she has one and what each school channel says now, every channel,
-    so a row never leaves out a fact it was grouped by. The rows, her events,
-    and the school's reports are read while the store is held, one snapshot,
-    as her page reads them, in a few batched reads whatever the number of
+    any school channel's current "missing", with no check of the family's
+    standing against it, is worth checking together, and comes first, open,
+    however old. Next, folded, the rows a parent marked checked in the last
+    fourteen household days, by the check's day, the latest check first,
+    while the check stands against the facts as they are. Of the rest, the
+    assignments with an event of hers in the last fourteen household days,
+    a correction included, follow, by that latest event, most recent first,
+    each showing the day of the update that stands, or that none does.
+    Every other assignment the school has a current statement about closes
+    the section, in the record's order. Whichever group a row is in, it
+    shows her update when she has one, what each school channel says now,
+    every channel, and the check that stands, so a row never leaves out a
+    fact it was grouped by. The rows, her events, the school's reports, and
+    the family's checks are read while the store is held, one snapshot, as
+    her page reads them, in a few batched reads whatever the number of
     rows.
     """
     today = state.clock.today()
     with state.project_state.exclusively():
         rows = state.project_state.all_assignments()
         statuses = statuses_for(state.project_state, [item.assignment_id for item in rows])
-    views = {
-        item.assignment_id: AssignmentUpdateView(
-            assignment_id=item.assignment_id,
-            course=item.course,
-            title=item.title,
-            status=statuses[item.assignment_id].status,
-            reported_on=statuses[item.assignment_id].reported_on,
-            restored_on=statuses[item.assignment_id].restored_on,
-            cleared_on=statuses[item.assignment_id].cleared_on,
-            note=statuses[item.assignment_id].note,
-            school_statements=[
-                SchoolStatementView.from_report(report)
-                for report in statuses[item.assignment_id].school_statements
-            ],
-            check=statuses[item.assignment_id].check_the_school_record,
-        )
-        for item in rows
-    }
-    check = [view for view in views.values() if view.check]
+    views = {item.assignment_id: update_view(item, statuses[item.assignment_id]) for item in rows}
+    check = [view for view in views.values() if statuses[view.assignment_id].needs_a_check]
     shown = {view.assignment_id for view in check}
+
+    def check_made_at(view: AssignmentUpdateView) -> datetime:
+        standing = statuses[view.assignment_id].check
+        return datetime.min.replace(tzinfo=UTC) if standing is None else standing.checked_at
+
+    checked = sorted(
+        (
+            view
+            for view in views.values()
+            if view.assignment_id not in shown
+            and view.checked_on is not None
+            and view.checked_on > today - timedelta(days=RECENT_DAYS)
+        ),
+        key=check_made_at,
+        reverse=True,
+    )
+    shown |= {view.assignment_id for view in checked}
 
     def latest_at(view: AssignmentUpdateView) -> datetime:
         head = statuses[view.assignment_id].head
@@ -589,7 +668,48 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
         for view in views.values()
         if view.assignment_id not in shown and view.school_statements
     ]
-    return AssignmentUpdatesView(check=check, recent=recent, school=school)
+    return AssignmentUpdatesView(check=check, checked=checked, recent=recent, school=school)
+
+
+def update_view(item: Assignment, status: AssignmentStatus) -> AssignmentUpdateView:
+    """One row of the section: her account, the school's, and the family's check, read apart.
+
+    A check that stands in the record against facts that differ now, a
+    check event at the head that marks checked something other than what
+    there is to check, is said with what differs, her Done or the school's
+    statements, and the row says what makes it worth checking again.
+    """
+    standing = status.check
+    before = status.check_head if status.needs_a_check else None
+    before = before if before is not None and before.operation == CHECKED else None
+    new_done = new_missing = False
+    if before is not None and status.check_basis is not None:
+        then, now = basis_parts(before.basis), basis_parts(status.check_basis)
+        new_done = then[1] != now[1]
+        new_missing = then[2] != now[2]
+    return AssignmentUpdateView(
+        assignment_id=item.assignment_id,
+        course=item.course,
+        title=item.title,
+        status=status.status,
+        reported_on=status.reported_on,
+        restored_on=status.restored_on,
+        cleared_on=status.cleared_on,
+        note=status.note,
+        school_statements=[
+            SchoolStatementView.from_report(report) for report in status.school_statements
+        ],
+        check=status.check_the_school_record,
+        basis=status.check_basis,
+        check_head_id=status.check_head_id,
+        checked=standing is not None,
+        checked_on=None if standing is None else standing.checked_on,
+        check_note=None if standing is None else standing.note,
+        check_id=None if standing is None else standing.check_id,
+        checked_before_on=None if before is None else before.checked_on,
+        new_done=new_done,
+        new_missing=new_missing,
+    )
 
 
 @router.get("", response_class=HTMLResponse, include_in_schema=False)
@@ -608,8 +728,26 @@ def review(
     unchanged: Annotated[
         str | None, Query(description="how many the last save left as they were; a note")
     ] = None,
+    checked: Annotated[
+        str | None, Query(description="the assignment whose row a check was just made on")
+    ] = None,
+    checked_already: Annotated[
+        str | None, Query(description="the assignment whose row was checked already")
+    ] = None,
+    reopened: Annotated[
+        str | None, Query(description="the assignment whose check was just reopened")
+    ] = None,
 ) -> HTMLResponse:
     """The parent's page: what she asked for, what is waiting, and the folds below."""
+    said = [
+        (CHECK_CONFIRMATIONS[name], value)
+        for name, value in (
+            ("checked", checked),
+            ("checked_already", checked_already),
+            ("reopened", reopened),
+        )
+        if value
+    ]
     return review_page(
         request,
         state,
@@ -617,6 +755,7 @@ def review(
         added=a_count(added),
         updated=a_count(updated),
         unchanged=a_count(unchanged),
+        check=CheckState(said[0][1], said=said[0][0]) if said else None,
     )
 
 
@@ -716,6 +855,147 @@ def help_from_the_page(
     except HTTPException as error:
         return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def back_to_the_row(said: str, assignment_id: str) -> str:
+    """Where a check or a reopening sends a parent: the page, the row, and what happened."""
+    return f"/parent?{said}={assignment_id}#update-{assignment_id}"
+
+
+@router.post(
+    "/actions/checks/{assignment_id}/mark", response_class=HTMLResponse, include_in_schema=False
+)
+async def mark_checked_from_the_page(
+    request: Request, assignment_id: str, state: State
+) -> Response:
+    """Mark checked: a parent records that the discrepancy on one assignment was checked
+    with her, and nothing else.
+
+    The form is read whole before anything else: its three fields, each
+    once, and nothing more. It carries the basis the row was made against,
+    the assignment, the report that began her Done, and each school
+    statement of missing, and the last check event the row showed. Under
+    the decision lock and the store's, in one transaction that reserves the
+    writer before it reads, the basis is worked out again from her events
+    and the school's reports as they stand and compared with the form's,
+    and the check event with the head: the same check standing already is
+    already made, with no write and no new day; a basis that differs, or a
+    record that moved on, is answered 409 with the row as it stands now and
+    the note typed kept; otherwise the check is appended. A write the file
+    refuses is answered with the page and the note, and never with a word
+    of a check. The gate admits only a parent's device to this path, so her
+    device is answered 403 before this runs; with the sign-in off, whoever
+    is at the keyboard is the family. Her events, the school's reports, the
+    plans, and the digest are untouched by any answer here.
+    """
+    fields, whole = await fields_of(request, CHECK_FIELDS)
+    basis = fields.get("basis", "").strip()
+    token = fields.get("expected_check_id", "").strip()
+    note = fields.get("note", "")
+    words = normalize_note(note)
+
+    def refused(problem: str, code: int, *, field: str | None = None) -> Response:
+        return review_page(
+            request,
+            state,
+            check=CheckState(
+                assignment_id, problem=problem, field=field, note=note if whole else ""
+            ),
+            status_code=code,
+        )
+
+    if not whole:
+        return refused(BAD_CHECK_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    if not basis or len(basis) > BASIS_MAX_LENGTH or len(token) > TOKEN_MAX_LENGTH:
+        return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    if words is not None and len(words) > CHECK_NOTE_MAX_LENGTH:
+        return refused(CHECK_NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
+    store = state.project_state
+    try:
+        async with state.decision_lock:
+            result = store.mark_checked(
+                assignment_id,
+                basis,
+                words,
+                expected_check=token or None,
+                basis_now=lambda: statuses_for(store, [assignment_id])[assignment_id].check_basis,
+                now=state.clock.now(),
+                today=state.clock.today(),
+            )
+    except UnknownAssignment:
+        return review_page(
+            request, state, problem=NOT_ON_RECORD, status_code=status.HTTP_404_NOT_FOUND
+        )
+    except UnknownCheck:
+        return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    except NoteTooLong:
+        return refused(CHECK_NOTE_TOO_LONG, status.HTTP_422_UNPROCESSABLE_CONTENT, field="note")
+    except CouldNotSave:
+        logger.exception("the check on %s could not be saved", assignment_id)
+        return refused(CHECK_NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    match result:
+        case Checked():
+            return RedirectResponse(
+                back_to_the_row("checked", assignment_id), status_code=status.HTTP_303_SEE_OTHER
+            )
+        case AlreadyChecked():
+            return RedirectResponse(
+                back_to_the_row("checked_already", assignment_id),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        case CheckConflict(head=head):
+            moved = (None if head is None else head.check_id) != (token or None)
+            return refused(
+                CHECK_MOVED_ON if moved else CHECK_FACTS_CHANGED, status.HTTP_409_CONFLICT
+            )
+
+
+@router.post(
+    "/actions/checks/{assignment_id}/again", response_class=HTMLResponse, include_in_schema=False
+)
+async def check_again_from_the_page(request: Request, assignment_id: str, state: State) -> Response:
+    """Check again: a parent reopens the family's check on one assignment, and nothing else.
+
+    The form carries the check it reopens, which must be this assignment's
+    and at the head of its record, or the record moved on since the page
+    was made and the answer is 409 with the row as it stands. The check
+    reopened stays in the record; her update and the school's report are
+    untouched, and the row is worth checking together again while her Done
+    stands beside a Missing. The gate admits only a parent's device here.
+    """
+    fields, whole = await fields_of(request, AGAIN_FIELDS)
+    token = fields.get("check_id", "").strip()
+
+    def refused(problem: str, code: int) -> Response:
+        return review_page(
+            request, state, check=CheckState(assignment_id, problem=problem), status_code=code
+        )
+
+    if not whole:
+        return refused(BAD_CHECK_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    if not token or len(token) > TOKEN_MAX_LENGTH:
+        return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    try:
+        async with state.decision_lock:
+            result = state.project_state.check_again(
+                assignment_id, token, now=state.clock.now(), today=state.clock.today()
+            )
+    except UnknownAssignment:
+        return review_page(
+            request, state, problem=NOT_ON_RECORD, status_code=status.HTTP_404_NOT_FOUND
+        )
+    except UnknownCheck:
+        return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    except CouldNotSave:
+        logger.exception("the check on %s could not be reopened", assignment_id)
+        return refused(CHECK_NOT_REOPENED, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    match result:
+        case Reopened():
+            return RedirectResponse(
+                back_to_the_row("reopened", assignment_id), status_code=status.HTTP_303_SEE_OTHER
+            )
+        case CheckConflict():
+            return refused(CHECK_MOVED_ON, status.HTTP_409_CONFLICT)
 
 
 @router.post("/actions/decide/{draft_id}", response_class=HTMLResponse, include_in_schema=False)

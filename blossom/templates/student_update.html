@@ -9,7 +9,10 @@
   for a reader who hears the page. A problem with a field marks the field,
   is tied to it, and takes the cursor. Her history folds under the rest, her
   events and the school's reports listed apart. A parent signed in reads
-  the summary and the history, and is told the update is hers to make.
+  the summary and the history, and is told the update is hers to make. A
+  check a parent marked on the family page shows under the summary while
+  it stands, with its day and any note: the family's own record, which
+  changes nothing here.
 #}
 {% set here = card and card.assignment_id == assignment.assignment_id %}
 {% set standing = assignment.update_status is not none %}
@@ -39,6 +42,9 @@
       {% elif assignment.in_planning_window %}This stays in work to plan when it is in the planning window.
       {% else %}Saved as Not yet. This assignment is outside today's planning window.{% endif %}
     </p>
+    {% if assignment.checked_on %}
+      <p class="checked-line">A parent marked this checked with {% if view.viewer == "parent" %}her{% else %}you{% endif %} on {{ assignment.checked_on.strftime("%B") }} {{ assignment.checked_on.day }}.{% if assignment.check_note %} The note with it: <q>{{ assignment.check_note }}</q>{% endif %}</p>
+    {% endif %}
     {% if view.can_update and not form_open %}
       <div class="actions">
         <form method="get" action="/student/due-this-week#assignment-{{ key }}" class="action">

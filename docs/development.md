@@ -53,7 +53,10 @@ With the app running as the README describes:
   change. A parent can also start an evening's plan for her there. A run that
   ended without a plan is listed with its steps too. Planning needs an API
   key; reading and reviewing do not, so without one either page says a plan
-  cannot start and everything else works.
+  cannot start and everything else works. Where her Done stands beside a
+  school report of Missing, the page offers Mark checked, with a note for
+  her card, and Check again once marked; both are forms alone that write
+  the family's own record and nothing of hers or the school's.
 - <http://127.0.0.1:8000/parent/approvals> is the review queue as JSON.
 - <http://127.0.0.1:8000/parent/checkpoint> is the parent's checkpoint, a
   summary of status and conflicts rather than a live feed. A placeholder,
@@ -119,8 +122,9 @@ Three files under `.local/` outlive a restart:
   and the start creates the file, and otherwise only what the family puts
   there. It holds her own updates on each assignment too, Done or Not yet with
   any note, as a chain of events she can take back, kept apart from what the
-  school reports. A file from before her updates gains their table on the
-  first start.
+  school reports, and the family's checks of her Done beside a school
+  Missing, a chain of events per assignment in a table of its own. A file
+  from before either gains the tables on the first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   Kept for the school year. A draft nobody decides within two weeks of its
@@ -199,7 +203,8 @@ is kept.
 If her sign-in expires before she saves an update, Blossom sends her to
 sign in. The update is not saved, and the note she typed is not kept through
 the sign-in; after signing in, she enters the update again. A parent signed
-in sees her updates on her page and cannot make one in her name.
+in sees her updates on her page and cannot make one in her name. Her device
+cannot mark a check: the gate answers it 403 on the family page's paths.
 
 If a passphrase may have been seen, change it in `.env` and restart: every
 device signed in with it is signed out, the other person's devices stay

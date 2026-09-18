@@ -160,6 +160,11 @@ class StudentAssignmentView(BaseModel):
     check_school: bool = False
     """Whether her "done" stands beside a school report of missing: something for the
     family to check, said on both pages and decided by neither."""
+    checked_on: date | None = None
+    """The day a parent marked that check as made with her, while the check stands against
+    the facts as they are; ``None`` otherwise. The family's own record, changing nothing."""
+    check_note: str | None = None
+    """A parent's words with that check, if any."""
 
 
 class AssignmentUpdateView(BaseModel):
@@ -188,15 +193,39 @@ class AssignmentUpdateView(BaseModel):
     ones that say missing, and every one is shown."""
     check: bool = False
     """Whether her "done" stands beside a school "missing"."""
+    basis: str | None = None
+    """What a check of the row is made against, carried by the form so a check lands on the
+    facts the page showed; ``None`` while there is nothing to check."""
+    check_head_id: str | None = None
+    """The last check event under the assignment, carried by the form so a check lands on
+    the record the page showed; ``None`` when there is none."""
+    checked: bool = False
+    """Whether a check stands against the facts as they are."""
+    checked_on: date | None = None
+    check_note: str | None = None
+    check_id: str | None = None
+    """The check that stands, which Check again reopens."""
+    checked_before_on: date | None = None
+    """The day of a check that stands in the record against facts that differ now, when the
+    row is worth checking again: said with what differs, so the page explains itself."""
+    new_done: bool = False
+    """Whether the Done standing is a new one since that check: a Not yet stood between."""
+    new_missing: bool = False
+    """Whether the school's statements of missing are not the ones that check was made
+    against: a report the school had not made then, or a day from a fresh paste."""
 
 
 class AssignmentUpdatesView(BaseModel):
-    """The family page's section on assignment updates, in its three groups."""
+    """The family page's section on assignment updates, in its four groups."""
 
     model_config = ConfigDict(extra="forbid")
 
     check: list[AssignmentUpdateView] = []
-    """Her "done" beside a school "missing": worth checking together, shown open."""
+    """Her "done" beside a school "missing" with no check standing: worth checking
+    together, shown open, with the form to mark it checked."""
+    checked: list[AssignmentUpdateView] = []
+    """The rows a parent marked checked in the last fourteen household days, the latest
+    check first, while the check stands; folded, each with Check again."""
     recent: list[AssignmentUpdateView] = []
     """Her standing reports of the last fourteen household days, most recent first."""
     school: list[AssignmentUpdateView] = []

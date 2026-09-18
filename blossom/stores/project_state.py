@@ -56,7 +56,10 @@ NOT_YET: Final = "not_yet"
 REPORT: Final = "report"
 UNDO: Final = "undo"
 NOTE_MAX_LENGTH: Final = 500
-"""How long her note may be, in code points, once its edges and line endings are normalized."""
+"""How long her note may be, in code points, once its edges and line endings are normalized.
+A parent's note with a check is held to the same length."""
+CHECKED: Final = "checked"
+REOPENED: Final = "reopened"
 
 
 def normalize_note(text: str | None) -> str | None:
@@ -139,6 +142,21 @@ class StatusReport(BaseModel):
     email, kept as text: what it means is not established, so it is shown, not read."""
 
 
+def kept_note(note: str | None) -> str | None:
+    """A note as every event holds it: normalized, and within the limit, or a ``ValueError``.
+
+    An event made from a form, by a caller of the store, or from a seed file
+    holds the same note for the same words, so the comparison that finds an
+    update already saved never turns on a line ending, and nothing longer
+    than the limit is ever kept, whoever made the event.
+    """
+    kept = normalize_note(note)
+    if kept is not None and len(kept) > NOTE_MAX_LENGTH:
+        msg = f"a note is at most {NOTE_MAX_LENGTH} characters; this one is {len(kept)}"
+        raise ValueError(msg)
+    return kept
+
+
 class StudentReport(BaseModel):
     """One thing she said about an assignment, as of a moment: an event in a chain.
 
@@ -169,18 +187,8 @@ class StudentReport(BaseModel):
     @field_validator("note")
     @classmethod
     def _is_kept_as_it_is_compared(cls, note: str | None) -> str | None:
-        """The note as every event holds it: normalized, and within the limit.
-
-        An event made from a form, by a caller of the store, or from a seed
-        file holds the same note for the same words, so the comparison that
-        finds an update already saved never turns on a line ending, and
-        nothing longer than the limit is ever kept, whoever made the event.
-        """
-        kept = normalize_note(note)
-        if kept is not None and len(kept) > NOTE_MAX_LENGTH:
-            msg = f"a note is at most {NOTE_MAX_LENGTH} characters; this one is {len(kept)}"
-            raise ValueError(msg)
-        return kept
+        """The note as every event holds it: normalized, and within the limit."""
+        return kept_note(note)
 
     @model_validator(mode="after")
     def _is_a_whole_event(self) -> Self:
@@ -209,6 +217,63 @@ class StudentReport(BaseModel):
         return self
 
 
+class FamilyCheck(BaseModel):
+    """One event of the family's about a discrepancy on an assignment: that a parent checked
+    it with her, or that it is open to check again.
+
+    A check is the household's own record, kept apart from her reports and
+    the school's: it changes neither account and sets no status. Each check
+    names what it was made against by its basis, the assignment, the report
+    that began her Done, and each school statement of missing then current,
+    so a row is checked only while those are the facts, and open again when
+    they are not. The chain runs through ``previous_check_id``; a reopening
+    follows the check it reopens and carries its basis. The day is the
+    household's day the event was accepted.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    check_id: str
+    assignment_id: str
+    operation: Literal["checked", "reopened"]
+    basis: str
+    """What the check was made against, as the page carried it: the assignment id, the id of
+    the report that began the Done standing, and each current statement of missing, sorted."""
+    note: str | None = None
+    """A parent's words with the check, which her card shows; none with a reopening."""
+    checked_at: AwareDatetime
+    checked_on: date
+    previous_check_id: str | None = None
+    """The check event before this one under the same assignment; ``None`` for the first."""
+
+    @field_validator("note")
+    @classmethod
+    def _is_kept_as_it_is_shown(cls, note: str | None) -> str | None:
+        """The note as every event holds it: normalized, and within the limit."""
+        return kept_note(note)
+
+    @model_validator(mode="after")
+    def _is_a_whole_check(self) -> Self:
+        """A check event has one of two shapes, and anything else is refused where it is read.
+
+        Both name a basis. A check may carry a note. A reopening carries
+        none and follows the check it reopens, so it is never first. What
+        the chain adds, that the event followed is the head and that a
+        reopening reopens a check, is the store's to check as it writes.
+        """
+        if not self.basis.strip():
+            msg = f"check {self.check_id!r} names no basis"
+            raise ValueError(msg)
+        if self.operation == REOPENED:
+            if self.note is not None:
+                msg = f"reopening {self.check_id!r} carries a note, as only a check does"
+                raise ValueError(msg)
+            if self.previous_check_id is None:
+                msg = f"reopening {self.check_id!r} must follow the check it reopens"
+                raise ValueError(msg)
+        return self
+
+
 class Seed(NamedTuple):
     """What a blank file is seeded with: assignments, the claims about each one's date, and
     any reports she is taken to have made, which only the sample supplies."""
@@ -224,8 +289,14 @@ class UnknownReport(LookupError):
     from, so it is refused before anything is compared or written."""
 
 
+class UnknownCheck(LookupError):
+    """A form named a check that is not one of the assignment's: no such event, or an event
+    under another assignment. Such a name proves nothing about the page it came from, so
+    it is refused before anything is compared or written."""
+
+
 class NoteTooLong(ValueError):
-    """A note past the limit reached the store. Her page says so before it gets this far;
+    """A note past the limit reached the store. The pages say so before it gets this far;
     this is the same rule for every other caller, and nothing is written."""
 
     def __init__(self, length: int) -> None:
@@ -233,14 +304,17 @@ class NoteTooLong(ValueError):
 
 
 class CouldNotSave(RuntimeError):
-    """The file refused a write of hers, or the chain failed its checks while writing.
+    """The file refused a write, hers or the family's, or the chain failed its checks while
+    writing.
 
-    Whatever was begun was rolled back with it, so nothing of the update is
-    kept; the page that catches this says so and keeps her words.
+    Whatever was begun was rolled back with it, so nothing of the event is
+    kept; the page that catches this says so and keeps the words typed.
     """
 
-    def __init__(self, assignment_id: str, cause: BaseException) -> None:
-        super().__init__(f"the update on {assignment_id!r} could not be saved: {cause}")
+    def __init__(
+        self, assignment_id: str, cause: BaseException, *, what: str = "the update"
+    ) -> None:
+        super().__init__(f"{what} on {assignment_id!r} could not be saved: {cause}")
 
 
 class UnknownAssignment(LookupError):
@@ -273,6 +347,36 @@ class Undone:
     """An undo was appended, restoring what stood before the report it takes back."""
 
     report: StudentReport
+
+
+@dataclass(frozen=True)
+class Checked:
+    """A check was appended: a parent checked the discrepancy with her."""
+
+    check: FamilyCheck
+
+
+@dataclass(frozen=True)
+class AlreadyChecked:
+    """The same check stands already, against the facts as they are; nothing was written."""
+
+    check: FamilyCheck
+
+
+@dataclass(frozen=True)
+class CheckConflict:
+    """What the page rested on moved since it was made, the facts or the family's own record;
+    nothing was written."""
+
+    head: FamilyCheck | None
+    """The last check event now, or ``None`` when there is none."""
+
+
+@dataclass(frozen=True)
+class Reopened:
+    """A reopening was appended; the check it reopens stays in the record."""
+
+    check: FamilyCheck
 
 
 class ProjectStateStore:
@@ -375,6 +479,26 @@ class ProjectStateStore:
             """
             CREATE INDEX IF NOT EXISTS student_reports_by_assignment
             ON student_reports (assignment_id)
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS family_checks (
+                check_id TEXT PRIMARY KEY,
+                assignment_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                basis TEXT NOT NULL,
+                note TEXT,
+                checked_at TEXT NOT NULL,
+                checked_on TEXT NOT NULL,
+                previous_check_id TEXT
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS family_checks_by_assignment
+            ON family_checks (assignment_id)
             """
         )
         self._upgrade()
@@ -688,6 +812,40 @@ class ProjectStateStore:
                 chains.setdefault(str(row[1]), []).append(student_report_from(row))
         return chains
 
+    def family_check_chains(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> dict[str, list[FamilyCheck]]:
+        """Every check event under each assignment named, in stored order, in one read.
+
+        Read as her chains are: with no names, or more names than a query
+        takes comfortably, the whole table, sorted out here.
+        """
+        wanted = None if assignment_ids is None else set(assignment_ids)
+        if wanted is not None and not wanted:
+            return {}
+        columns = (
+            "SELECT check_id, assignment_id, operation, basis, note, checked_at, checked_on, "
+            "previous_check_id FROM family_checks "
+        )
+        with self._lock:
+            if wanted is None or len(wanted) > MANY_NAMES:
+                rows = self._connection.execute(columns + "ORDER BY rowid").fetchall()
+            else:
+                marks = ", ".join("?" for _ in wanted)
+                rows = self._connection.execute(
+                    columns + f"WHERE assignment_id IN ({marks}) ORDER BY rowid",
+                    sorted(wanted),
+                ).fetchall()
+        chains: dict[str, list[FamilyCheck]] = {}
+        for row in rows:
+            if wanted is None or str(row[1]) in wanted:
+                chains.setdefault(str(row[1]), []).append(family_check_from(row))
+        return chains
+
+    def family_checks(self, assignment_id: str) -> list[FamilyCheck]:
+        """Every check event under one assignment, in the order accepted."""
+        return self.family_check_chains([assignment_id]).get(assignment_id, [])
+
     def report_status(
         self,
         assignment_id: str,
@@ -917,6 +1075,181 @@ class ProjectStateStore:
             msg = f"the chain of {report.assignment_id!r} forked while writing {report.report_id!r}"
             raise RuntimeError(msg)
 
+    def mark_checked(
+        self,
+        assignment_id: str,
+        basis: str,
+        note: str | None,
+        *,
+        expected_check: str | None,
+        basis_now: Callable[[], str | None],
+        now: datetime,
+        today: date,
+    ) -> Checked | AlreadyChecked | CheckConflict:
+        """Record that a parent checked the discrepancy on an assignment with her, once, as of now.
+
+        Under the store's lock and one transaction that reserves the writer
+        before it reads, in this order. A check the form names must be one
+        of this assignment's events, or the form proves nothing and is
+        refused, ``UnknownCheck``. Then the basis the page was made against
+        is compared with ``basis_now``, worked out inside the transaction
+        from her events and the school's reports as they stand, and with
+        the last check event: a check of that basis standing already, while
+        it is the basis now, is already made, whatever note was typed
+        since, and nothing is written. Otherwise the basis must be the one
+        now and the check the page showed must be the head now, or what the
+        page rested on moved since and nothing is written. Otherwise the
+        check is appended. A write the file refuses is rolled back whole and
+        raised as ``CouldNotSave``. The note is normalized here, and one
+        past the limit is ``NoteTooLong``, with nothing read or written.
+        Nothing here writes her events or the school's reports.
+        """
+        note = normalize_note(note)
+        if note is not None and len(note) > NOTE_MAX_LENGTH:
+            raise NoteTooLong(len(note))
+        try:
+            with self._lock, self._writing():
+                self._require_assignment_locked(assignment_id)
+                if expected_check is not None:
+                    self._require_check_locked(assignment_id, expected_check)
+                head = self._check_head_locked(assignment_id)
+                current = basis_now()
+                if (
+                    head is not None
+                    and head.operation == CHECKED
+                    and head.basis == basis == current
+                ):
+                    return AlreadyChecked(head)
+                head_id = None if head is None else head.check_id
+                if current != basis or head_id != expected_check:
+                    return CheckConflict(head)
+                check = FamilyCheck(
+                    check_id=new_check_id(),
+                    assignment_id=assignment_id,
+                    operation=CHECKED,
+                    basis=basis,
+                    note=note,
+                    checked_at=now,
+                    checked_on=today,
+                    previous_check_id=head_id,
+                )
+                self._append_family_check_locked(check)
+                return Checked(check)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CouldNotSave(assignment_id, error, what="the check") from error
+
+    def check_again(
+        self, assignment_id: str, check_id: str, *, now: datetime, today: date
+    ) -> Reopened | CheckConflict:
+        """Reopen the family's check on an assignment, and nothing else.
+
+        The check the button names must be one of this assignment's events,
+        or it is refused, ``UnknownCheck``. Only the head can be reopened,
+        and only when it marks the row checked: a button that names any
+        other event finds the chain moved on. The reopening carries the
+        basis of the check it reopens, and that check stays in the record.
+        A refused write is rolled back whole and raised as ``CouldNotSave``.
+        """
+        try:
+            with self._lock, self._writing():
+                self._require_assignment_locked(assignment_id)
+                self._require_check_locked(assignment_id, check_id)
+                head = self._check_head_locked(assignment_id)
+                if head is None or head.check_id != check_id or head.operation != CHECKED:
+                    return CheckConflict(head)
+                reopened = FamilyCheck(
+                    check_id=new_check_id(),
+                    assignment_id=assignment_id,
+                    operation=REOPENED,
+                    basis=head.basis,
+                    checked_at=now,
+                    checked_on=today,
+                    previous_check_id=head.check_id,
+                )
+                self._append_family_check_locked(reopened)
+                return Reopened(reopened)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CouldNotSave(assignment_id, error, what="the check") from error
+
+    def _require_check_locked(self, assignment_id: str, check_id: str) -> None:
+        """Refuse a name that is not one of this assignment's check events."""
+        named = self._check_locked(check_id) if check_id else None
+        if named is None or named.assignment_id != assignment_id:
+            raise UnknownCheck(check_id)
+
+    def _check_head_locked(self, assignment_id: str) -> FamilyCheck | None:
+        row = self._connection.execute(
+            """
+            SELECT check_id, assignment_id, operation, basis, note, checked_at, checked_on,
+                previous_check_id
+            FROM family_checks
+            WHERE assignment_id = ? ORDER BY rowid DESC LIMIT 1
+            """,
+            (assignment_id,),
+        ).fetchone()
+        return None if row is None else family_check_from(row)
+
+    def _check_locked(self, check_id: str) -> FamilyCheck | None:
+        row = self._connection.execute(
+            """
+            SELECT check_id, assignment_id, operation, basis, note, checked_at, checked_on,
+                previous_check_id
+            FROM family_checks
+            WHERE check_id = ?
+            """,
+            (check_id,),
+        ).fetchone()
+        return None if row is None else family_check_from(row)
+
+    def _append_family_check_locked(self, check: FamilyCheck) -> None:
+        """Append one check event after the head, checking the chain as it is written.
+
+        The event's predecessor must be the head now. A reopening must
+        follow a check that marks the row checked and carry its basis. A
+        chain that would fork is refused, so a write that gets this far and
+        still fails leaves nothing, the transaction rolling the event back
+        with it.
+        """
+        self._require_assignment_locked(check.assignment_id)
+        head = self._check_head_locked(check.assignment_id)
+        head_id = None if head is None else head.check_id
+        if check.previous_check_id != head_id:
+            msg = (
+                f"check {check.check_id!r} does not follow the last check on "
+                f"{check.assignment_id!r}"
+            )
+            raise ValueError(msg)
+        if check.operation == REOPENED and (
+            head is None or head.operation != CHECKED or head.basis != check.basis
+        ):
+            msg = (
+                f"reopening {check.check_id!r} does not reopen a check standing on "
+                f"{check.assignment_id!r}"
+            )
+            raise ValueError(msg)
+        self._connection.execute(
+            """
+            INSERT INTO family_checks (
+                check_id, assignment_id, operation, basis, note, checked_at, checked_on,
+                previous_check_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                check.check_id,
+                check.assignment_id,
+                check.operation,
+                check.basis,
+                check.note,
+                check.checked_at.isoformat(),
+                check.checked_on.isoformat(),
+                check.previous_check_id,
+            ),
+        )
+        written = self._check_head_locked(check.assignment_id)
+        if written is None or written.check_id != check.check_id:
+            msg = f"the checks on {check.assignment_id!r} forked while writing {check.check_id!r}"
+            raise RuntimeError(msg)
+
     def latest_status_reports(self) -> dict[str, StatusReport]:
         """The latest report per assignment, by the day reported and then the order kept."""
         with self._lock:
@@ -1133,6 +1466,25 @@ def assignment_from(row: tuple[object, ...]) -> Assignment:
 def new_report_id() -> str:
     """A stable id for one event, drawn once and never reused."""
     return f"report-{uuid.uuid4().hex[:12]}"
+
+
+def new_check_id() -> str:
+    """A stable id for one check event, drawn once and never reused."""
+    return f"check-{uuid.uuid4().hex[:12]}"
+
+
+def family_check_from(row: tuple[object, ...]) -> FamilyCheck:
+    """Build one check event from a row in the columns' order."""
+    return FamilyCheck(
+        check_id=str(row[0]),
+        assignment_id=str(row[1]),
+        operation=cast(Literal["checked", "reopened"], str(row[2])),
+        basis=str(row[3]),
+        note=None if row[4] is None else str(row[4]),
+        checked_at=datetime.fromisoformat(str(row[5])),
+        checked_on=date.fromisoformat(str(row[6])),
+        previous_check_id=None if row[7] is None else str(row[7]),
+    )
 
 
 def student_report_from(row: tuple[object, ...]) -> StudentReport:

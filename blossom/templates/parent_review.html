@@ -24,7 +24,7 @@
   <p class="lead-action"><a href="#add-assignments">Add assignments</a></p>
 
   {% if problem %}
-    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% endif %}</p>
+    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% endif %}</p>
   {% endif %}
   {% if refreshed_at %}
     <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
@@ -90,21 +90,42 @@
     What she reports about her part and what the school reports are two
     accounts, shown side by side with their days and sources, and the page
     decides nothing between them. Her "done" beside a school "missing" is
-    worth checking together and comes first, open; her recent updates fold;
-    the rest of the school's reports close the section, as before.
+    worth checking together and comes first, open, with a form to record
+    that a parent checked it with her; the rows checked lately fold next,
+    each with a way to check again; her recent updates fold; the rest of
+    the school's reports close the section. A check is the family's own
+    record: it changes neither account, sets no status, and sends nothing.
+    Every row has an id, so a word about it can point at it, and takes
+    focus when pointed at.
   #}
   {% macro her_update(item) %}
     {% if item.cleared_on %}She took back her update on {{ item.cleared_on.strftime("%B") }} {{ item.cleared_on.day }}; no update stands.{% else %}She reported it {% if item.status == "done" %}done{% else %}not yet done{% endif %}{% if item.reported_on %} on {{ item.reported_on.strftime("%B") }} {{ item.reported_on.day }}{% if item.restored_on %}, restored {{ item.restored_on.strftime("%B") }} {{ item.restored_on.day }}{% endif %}{% endif %}.{% if item.note %} She wrote: <q>{{ item.note }}</q>{% endif %}{% endif %}
   {% endmacro %}
-  {% if updates.check or updates.recent or updates.school %}
+  {% macro check_words(item) %}
+    {% if check and check.assignment_id == item.assignment_id %}
+      {% if check.said %}<p class="note" role="status">{{ check.said }}</p>{% endif %}
+      {% if check.problem %}<p class="problem" role="alert" id="check-problem-{{ item.assignment_id }}">{{ check.problem }}{% if check.note and (item.checked or not item.basis) %} The note typed with it was not saved: <q>{{ check.note }}</q>{% endif %}</p>{% endif %}
+    {% endif %}
+  {% endmacro %}
+  {% macro checked_line(item) %}
+    <p class="checked-line">A parent marked this checked with her on {{ item.checked_on.strftime("%B") }} {{ item.checked_on.day }}.{% if item.check_note %} The note with it: <q>{{ item.check_note }}</q>{% endif %}</p>
+    <form method="post" action="/parent/actions/checks/{{ item.assignment_id }}/again" class="check-again">
+      <input type="hidden" name="check_id" value="{{ item.check_id }}">
+      <button type="submit" class="secondary" aria-label="Check again: {{ item.title }}">Check again</button>
+    </form>
+  {% endmacro %}
+  {% if updates.check or updates.checked or updates.recent or updates.school %}
     <section class="assignment-updates">
       <h2>Assignment updates</h2>
       {% if updates.check %}
         <h3>Worth checking together</h3>
         {% for item in updates.check %}
-          <article class="draft needs-review" id="update-{{ item.assignment_id }}">
+          {% set here = check and check.assignment_id == item.assignment_id %}
+          {% set at_note = here and check.field == "note" %}
+          <article class="draft needs-review" id="update-{{ item.assignment_id }}" tabindex="-1">
             <p class="course">{{ item.course }}</p>
             <p class="decision-line"><strong>{{ item.title }}</strong></p>
+            {{ check_words(item) }}
             <p>{{ her_update(item) }}</p>
             {% for statement in item.school_statements %}
               <p>The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}</p>
@@ -114,20 +135,57 @@
               Check whether it was turned in and whether the school record needs updating.
               Blossom is not scheduling more homework for this assignment.
             </p>
+            {% if item.checked_before_on %}
+              <p class="note">A parent marked this checked on {{ item.checked_before_on.strftime("%B") }} {{ item.checked_before_on.day }}, and what it rests on differs now:{% if item.new_done %} her Done is a new one{% if item.new_missing %}, and{% endif %}{% endif %}{% if item.new_missing %} the school's report listed is not the one checked then. A report dated by the day it was pasted carries that day, which is not proof of a new warning from the school{% endif %}.</p>
+            {% endif %}
+            <form method="post" action="/parent/actions/checks/{{ item.assignment_id }}/mark" class="decision check">
+              <label for="check-note-{{ item.assignment_id }}">Note for her card (optional)</label>
+              <textarea id="check-note-{{ item.assignment_id }}" name="note" rows="2" aria-describedby="{% if at_note %}check-problem-{{ item.assignment_id }} {% endif %}check-hint-{{ item.assignment_id }}"{% if at_note %} aria-invalid="true" autofocus{% endif %}>{{ check.note if here else "" }}</textarea>
+              <p class="note" id="check-hint-{{ item.assignment_id }}">Up to {{ check_note_max_length }} characters. She reads this on her card.</p>
+              <input type="hidden" name="basis" value="{{ item.basis }}">
+              <input type="hidden" name="expected_check_id" value="{{ item.check_head_id or '' }}">
+              <div class="actions">
+                <button type="submit" class="primary" aria-label="Mark checked: {{ item.title }}">Mark checked</button>
+              </div>
+              <p class="note">This records your check here. It does not change her update or the school's report.</p>
+            </form>
           </article>
         {% endfor %}
       {% endif %}
-      {% if updates.recent %}
-        <details class="steps">
-          <summary>Recent updates ({{ updates.recent|length }})</summary>
+      {% if updates.checked %}
+        {% set inside = check and (updates.checked|selectattr("assignment_id", "equalto", check.assignment_id)|list) %}
+        <details class="steps checked-recently"{% if inside %} open{% endif %}>
+          <summary>Checked recently ({{ updates.checked|length }})</summary>
           <ul>
-            {% for item in updates.recent %}
-              <li>
+            {% for item in updates.checked %}
+              <li id="update-{{ item.assignment_id }}" tabindex="-1">
                 <strong>{{ item.title }}</strong> &middot; {{ item.course }}:
+                {{ check_words(item) }}
                 {{ her_update(item) }}
                 {% for statement in item.school_statements %}
                   The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}
                 {% endfor %}
+                {{ checked_line(item) }}
+              </li>
+            {% endfor %}
+          </ul>
+          <p class="note">Checks of the last two weeks, the latest first. A check is the family's own record; it changes neither her update nor the school's report. Check again reopens it here.</p>
+        </details>
+      {% endif %}
+      {% if updates.recent %}
+        {% set inside = check and (updates.recent|selectattr("assignment_id", "equalto", check.assignment_id)|list) %}
+        <details class="steps"{% if inside %} open{% endif %}>
+          <summary>Recent updates ({{ updates.recent|length }})</summary>
+          <ul>
+            {% for item in updates.recent %}
+              <li id="update-{{ item.assignment_id }}" tabindex="-1">
+                <strong>{{ item.title }}</strong> &middot; {{ item.course }}:
+                {{ check_words(item) }}
+                {{ her_update(item) }}
+                {% for statement in item.school_statements %}
+                  The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}
+                {% endfor %}
+                {% if item.checked %}{{ checked_line(item) }}{% endif %}
               </li>
             {% endfor %}
           </ul>
@@ -137,8 +195,9 @@
       {% if updates.school %}
         <h3>School reports</h3>
         {% for item in updates.school %}
-          <article class="draft">
+          <article class="draft" id="update-{{ item.assignment_id }}" tabindex="-1">
             <p class="course">{{ item.course }}</p>
+            {{ check_words(item) }}
             {% for statement in item.school_statements %}
               <p class="decision-line">
                 <strong>{{ item.title }}: the school reports it {{ statement.status|replace("_", " ") }}.</strong>
@@ -146,6 +205,7 @@
               </p>
             {% endfor %}
             {% if item.status or item.cleared_on %}<p class="note">{{ her_update(item) }}</p>{% endif %}
+            {% if item.checked %}{{ checked_line(item) }}{% endif %}
           </article>
         {% endfor %}
       {% endif %}

@@ -89,7 +89,15 @@ a window with nothing left ends a run before any model is asked. A Done
 beside a school report of Missing is something for the family to check, said
 on both pages and decided by neither. The form is a form alone, a parent
 signed in reads her update and cannot make one, and nothing writes her
-account but her own device.
+account but her own device. Where her Done stands beside a Missing, a parent
+can mark the pair checked on the family page, with a note her card shows.
+The check is a chain of the family's own events in a table of its own, made
+against a basis worked out from her events and the school's reports, the
+report that began her Done and each current statement of Missing, and
+compared again under the decision lock and the store's, the writer reserved
+first, before it is written; a row whose facts or record moved is refused
+with what stands now. Check again reopens it. A check changes neither
+account, no plan, and no digest.
 
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and
@@ -310,7 +318,7 @@ still answers the structured side for one that would.
 
 | Store | Contents | State |
 |---|---|---|
-| `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status; every channel's claim about a due date; what the school reports about a status; her own updates, a chain of events per assignment | Wired and tested; a file at `BLOSSOM_DATABASE_PATH`, read from a fixture only when the start creates the file |
+| `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status; every channel's claim about a due date; what the school reports about a status; her own updates, a chain of events per assignment; the family's checks of a Done beside a Missing, a chain of events per assignment | Wired and tested; a file at `BLOSSOM_DATABASE_PATH`, read from a fixture only when the start creates the file |
 | `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Seeded from the fixtures; read whole by the plan graph |
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
 | `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |

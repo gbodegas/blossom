@@ -577,7 +577,7 @@ def test_reading_the_statuses_takes_the_same_few_reads_whatever_the_number_of_ro
     few, many = reads(2), reads(40)
 
     assert few == many
-    assert many == 2
+    assert many == 3
     assert isinstance(sqlite3.connect(":memory:"), sqlite3.Connection)
 
 
