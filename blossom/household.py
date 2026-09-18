@@ -396,13 +396,17 @@ def without_final_dot(host: str) -> str:
 def an_ipv6_address(inside: str) -> bool:
     """Whether the text between brackets is an IPv6 address, as the standard library reads
     one; a name, a mark, or an empty pair of brackets is not."""
+    # A zone name after the address, "%eth0" or its encoded "%25eth0", names
+    # an interface of one computer, and no browser writes one in an address
+    # bar; refused by its mark, before the address is read, rather than
+    # compared.
+    if "%" in inside:
+        return False
     try:
-        address = ipaddress.IPv6Address(inside)
+        ipaddress.IPv6Address(inside)
     except ValueError:
         return False
-    # A zone name after the address names an interface of one computer, and
-    # no browser writes one in an address bar; refused rather than compared.
-    return address.scope_id is None
+    return True
 
 
 def read_origin(value: str, *, whole_address: bool) -> tuple[str, str, int] | None:
@@ -444,6 +448,12 @@ def from_this_origin(request: Request) -> bool:
     request carrying neither is refused: a browser sends one or the other
     with every form and every script call, so the only requests without both
     are made by hand, and the guide says what to send with those.
+
+    The scheme is the one this server was reached by. Nothing in front of
+    it is trusted to say otherwise: the household runs it over plain HTTP on
+    the home network with nothing in front, as the guide says, and a proxy
+    that ended TLS ahead of it would make every form read as from elsewhere
+    rather than open a way to claim a scheme from a header.
     """
     hosts = request.headers.getlist("host")
     if len(hosts) != 1:

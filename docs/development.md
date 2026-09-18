@@ -231,7 +231,10 @@ the home network. Bookmark it.
 The connection is plain HTTP, which is fine on the home network and nowhere
 else: never forward the port through the router or put the server on the
 internet. The sign-in tells the two people apart on the family's own network;
-it is not a defense against the internet.
+it is not a defense against the internet. Nothing goes in front of the
+server either: the origin check compares the scheme and address the server
+itself was reached by, and a proxy that ended TLS ahead of it would make
+every form read as from elsewhere.
 
 ## Adding assignments
 

@@ -27,8 +27,8 @@ import json
 import sqlite3
 import threading
 import uuid
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
@@ -707,10 +707,11 @@ class ProjectStateStore:
         and note is already saved, whatever page of hers it came from.
         Otherwise the head her page showed must be the head now, or the
         chain moved on since and nothing is written. Otherwise the report is
-        appended after the head. The writer is reserved before the read, so
-        another connection cannot slip a write between the comparison and
-        the append. A write the file refuses, or a chain that fails its
-        checks, is rolled back whole and raised as ``CouldNotSave``. The note
+        appended after the head. The writer is reserved before the read, in
+        the one helper that also scopes the transaction, so another
+        connection cannot slip a write between the comparison and the
+        append. A write the file refuses, or a chain that fails its checks,
+        is rolled back whole and raised as ``CouldNotSave``. The note
         is normalized here, whatever the caller did with it, so what is
         compared is what is kept; one past the limit is ``NoteTooLong``, with
         nothing read or written.
@@ -719,8 +720,7 @@ class ProjectStateStore:
         if note is not None and len(note) > NOTE_MAX_LENGTH:
             raise NoteTooLong(len(note))
         try:
-            with self._lock, self._connection:
-                self._reserve_locked()
+            with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
                 if expected_head is not None:
                     self._require_report_locked(assignment_id, expected_head)
@@ -760,8 +760,7 @@ class ProjectStateStore:
         ``CouldNotSave``.
         """
         try:
-            with self._lock, self._connection:
-                self._reserve_locked()
+            with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
                 self._require_report_locked(assignment_id, report_id)
                 head = self._head_locked(assignment_id)
@@ -795,11 +794,29 @@ class ProjectStateStore:
         if named is None or named.assignment_id != assignment_id:
             raise UnknownReport(report_id)
 
-    def _reserve_locked(self) -> None:
-        """Reserve the writer before a read that a write depends on, unless a transaction
-        is open already, as a first start's is."""
-        if not self._connection.in_transaction:
-            self._connection.execute("BEGIN IMMEDIATE")
+    @contextmanager
+    def _writing(self) -> Iterator[None]:
+        """One transaction that reserves the writer first, for a write that depends on a read.
+
+        The writer is reserved with ``BEGIN IMMEDIATE`` before anything is
+        read, so no other connection can write between the read and the
+        write that follows from it; the transaction is committed when the
+        block ends and rolled back when it raises. The reservation and the
+        scope are one helper, so no caller can open the scope first and
+        reserve second, which would reserve nothing. Inside a transaction
+        already open, a first start's, the block joins it and leaves its end
+        to the opener.
+        """
+        if self._connection.in_transaction:
+            yield
+            return
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self._connection.rollback()
+            raise
+        self._connection.commit()
 
     def _require_assignment_locked(self, assignment_id: str) -> None:
         row = self._connection.execute(

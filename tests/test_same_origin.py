@@ -373,6 +373,7 @@ def test_the_names_a_home_server_goes_by_are_read_as_hosts(headers: Headers) -> 
         ("a" * 64, None),
         ("[not-an-address]", None),
         ("[::1%25eth0]", None),
+        ("[fe80::1%eth0]", None),
         ("[1.2.3.4]", None),
         ("localhost.", ("localhost", 80)),
         ("Pakal-Laptop.local", ("pakal-laptop.local", 80)),

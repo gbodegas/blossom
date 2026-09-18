@@ -8,6 +8,7 @@ stood before, and read back as what stands now.
 import json
 import pathlib
 import sqlite3
+import threading
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 
@@ -1049,3 +1050,53 @@ def test_a_seed_files_note_is_held_to_the_same_rule(tmp_path: pathlib.Path) -> N
     assert [item.note for item in seeded.student_reports] == ["Signed.\nIn my folder."]
     with pytest.raises(ValidationError, match="at most 500"):
         read_whole(a_set("refused", "x" * 501))
+
+
+def test_the_writer_is_reserved_before_the_read_a_save_depends_on(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save is held between reading the head and appending, and a second connection tries
+    to reserve the writer meanwhile: it cannot, because the save reserved it before
+    reading. Let go, the save lands whole, and the second connection may write."""
+    path = tmp_path / "blossom.sqlite3"
+    store = a_store(path)
+    read_the_head = threading.Event()
+    let_go = threading.Event()
+    whole_head = store._head_locked
+
+    def head_then_wait(assignment_id: str) -> StudentReport | None:
+        head = whole_head(assignment_id)
+        read_the_head.set()
+        assert let_go.wait(5)
+        return head
+
+    monkeypatch.setattr(store, "_head_locked", head_then_wait)
+    outcome: list[object] = []
+
+    def save() -> None:
+        outcome.append(
+            store.report_status(PRACTICE, "done", None, expected_head=None, now=NOW, today=TODAY)
+        )
+
+    saver = threading.Thread(target=save)
+    other = sqlite3.connect(path, timeout=0.2)
+    try:
+        saver.start()
+        assert read_the_head.wait(5)
+        assert store._connection.in_transaction
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            other.execute("BEGIN IMMEDIATE")
+        let_go.set()
+        saver.join(5)
+        other.execute("BEGIN IMMEDIATE")
+        other.rollback()
+        kept = store.student_reports(PRACTICE)
+    finally:
+        let_go.set()
+        other.close()
+        store.close()
+
+    assert not saver.is_alive()
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], Saved)
+    assert [item.status for item in kept] == ["done"]
