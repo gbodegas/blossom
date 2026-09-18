@@ -101,6 +101,24 @@ pages, and where her Done stands beside a school report of Missing, from any
 one of the school's channels, the family page lists it as worth checking
 together, with what each channel says and the day it said it.
 
+**Mark checked.** Where her Done stands beside a school report of Missing,
+the family page offers Mark checked, with a note for her card if a parent
+wants one. It records that a parent checked that discrepancy with her, here
+and nowhere else: it does not turn work in, change her update, or change the
+school's report, and it sends nothing to the school. The row folds under
+Checked recently with the day, her card shows the day and the note, and if
+the work turns out unfinished she changes her update to Not yet. Check again
+reopens the check, and the earlier one stays in the record. A check is made
+against what the row showed: her Done, the report that began it, and each
+school statement of Missing. A Done after a Not yet, or a Missing the school
+had not reported before, puts the row back among those worth checking and
+says what differs; the same report pasted again does not, nor does a change
+to her note alone. A check whose facts moved stays on its row as the check
+that was made, with its day, its note, and what differs now. Two devices
+acting on one row get one record and one refusal that shows what stands now,
+the note on record and the note typed both; Check again is refused the same
+way when her update or the school's report moved after its page was made.
+
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device
 stays signed in for a month or until "Sign out". The sign-in is a cookie

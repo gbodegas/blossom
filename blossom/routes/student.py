@@ -89,6 +89,7 @@ from blossom.reconciliation import (
     SourceRecord,
     classify_confidence,
 )
+from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.runs import (
     Graphs,
     ended_without_a_plan,
@@ -189,9 +190,11 @@ NOT_SAVED: Final = "Your update could not be saved. Your words are still here. T
 NOT_UNDONE: Final = "Your update could not be undone, and nothing was changed. Try again."
 REPORT_FIELDS: Final = frozenset({"status", "note", "expected_report_id", "week"})
 UNDO_FIELDS: Final = frozenset({"report_id", "week"})
-"""The fields each form sends, each once. Anything else, or anything twice, is refused."""
-TOKEN_MAX_LENGTH: Final = 200
-"""Longer than any id the store makes or a seed carries; a longer one is not looked up."""
+"""The fields each form sends, each once. Anything else, anything twice, or a form with one
+of them left out, is refused."""
+NOTHING_CHOSEN: Final = frozenset({"status"})
+"""The field her browser leaves out when neither Done nor Not yet is chosen: two radio
+buttons with none checked send nothing. The card then asks her to choose one."""
 CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": UPDATE_SAVED,
     "same": UPDATE_ALREADY_SAVED,
@@ -579,6 +582,8 @@ def assignment_view(
         else status.head.report_id,
         in_planning_window=in_planning_window,
         check_school=status is not None and status.check_the_school_record,
+        checked_on=None if status is None or status.check is None else status.check.checked_on,
+        check_note=None if status is None or status.check is None else status.check.note,
     )
 
 
@@ -884,26 +889,6 @@ def back_to_the_card(week: date | None, said: str, assignment_id: str) -> str:
     return f"{PAGE}?{where}{said}={assignment_id}#assignment-{assignment_id}"
 
 
-async def fields_of(request: Request, allowed: frozenset[str]) -> tuple[dict[str, str], bool]:
-    """The form's fields, and whether the form was whole.
-
-    Whole means every field is one this form sends, comes once, and is text:
-    a field sent twice, a field of another form's, a channel among them, or
-    an uploaded file makes it not whole, and nothing is written for such a
-    form. The first text value of each allowed field is still handed back,
-    so the page that refuses can keep what she typed.
-    """
-    form = await request.form()
-    fields: dict[str, str] = {}
-    whole = True
-    for name, value in form.multi_items():
-        if name not in allowed or name in fields or not isinstance(value, str):
-            whole = False
-            continue
-        fields[name] = value
-    return fields, whole
-
-
 def could_not(
     request: Request,
     state: ApplicationState,
@@ -950,7 +935,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     the card and her words, and never with a word of a save. A parent signed
     in is told the update is hers to make, 403, and nothing is written.
     """
-    fields, whole = await fields_of(request, REPORT_FIELDS)
+    fields, whole = await fields_of(request, REPORT_FIELDS, may_be_absent=NOTHING_CHOSEN)
     frame = week_named(fields.get("week", ""))
     if viewer_of(request) == "parent":
         return student_page(

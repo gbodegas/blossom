@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% block title %}Blossom - Check not saved{% endblock %}
+{#
+  The page for a check or a reopening the file refused when the family page
+  cannot be read back either: what happened, in a sentence, and the note a
+  parent typed, so nothing typed is lost with the failure. Nothing here reads
+  the record, and nothing here says a check was made.
+#}
+{% block content %}
+  <h1>Family review</h1>
+  <p class="problem" role="alert">{{ check.problem }}</p>
+  {% if check.note %}
+    <label for="kept-note">Your note, as typed</label>
+    <textarea id="kept-note" rows="4" readonly>{{ check.note }}</textarea>
+  {% endif %}
+  <p class="return"><a href="/parent">Return to Family review</a></p>
+{% endblock %}

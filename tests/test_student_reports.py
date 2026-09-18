@@ -19,7 +19,6 @@ from blossom import assignment_status
 from blossom.assignment_status import (
     AssignmentStatus,
     standing_report,
-    statuses_for,
 )
 from blossom.noticing import planning_digest, read_week
 from blossom.reconciliation import SourceChannel
@@ -27,60 +26,24 @@ from blossom.sources import FixtureSource, read_whole
 from blossom.stores.project_state import (
     NOTE_MAX_LENGTH,
     AlreadySaved,
-    Assignment,
-    AssignmentKind,
     Conflict,
     CouldNotSave,
     NoteTooLong,
     ProjectStateStore,
     Saved,
     Seed,
-    StatusReport,
     StudentReport,
     Undone,
     UnknownAssignment,
     UnknownReport,
     normalize_note,
 )
-from tests.support import FIXTURES, fixture_clock
-
-NOW = datetime(2026, 9, 16, 23, 30, tzinfo=UTC)
-TODAY = date(2026, 9, 16)
-"""Half past four in the afternoon in the fixtures' zone, on the day the report is made."""
-PRACTICE = "assignment-practice"
-LOG = "assignment-log"
-
-
-def a_row(assignment_id: str, title: str) -> Assignment:
-    return Assignment(
-        assignment_id=assignment_id,
-        course="Math",
-        title=title,
-        due_date=date(2026, 9, 18),
-        dependencies=[],
-        reported_submission_status="not_started",
-        kind=AssignmentKind.HOMEWORK,
-    )
-
-
-def a_store(path: pathlib.Path) -> ProjectStateStore:
-    store = ProjectStateStore.open(path, fixture_clock())
-    store.put_on_record([a_row(PRACTICE, "Weekly practice"), a_row(LOG, "Reading log")], {})
-    return store
-
-
-def missing(day: date) -> StatusReport:
-    return StatusReport(
-        status="missing",
-        channel=SourceChannel.EMAIL,
-        reported_on=day,
-        dated_by="the day it was pasted",
-        observed_at=NOW,
-    )
-
-
-def status_of(store: ProjectStateStore, assignment_id: str) -> AssignmentStatus:
-    return statuses_for(store, [assignment_id])[assignment_id]
+from tests.support import FIXTURES, PRACTICE, a_row, fixture_clock, status_of
+from tests.support import PRACTICE_LOG as LOG
+from tests.support import SAID_AT as NOW
+from tests.support import SAID_ON as TODAY
+from tests.support import practice_store as a_store
+from tests.support import school_missing as missing
 
 
 def test_a_first_report_is_one_event_with_its_day_and_changes_nothing_else(

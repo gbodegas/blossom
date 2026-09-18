@@ -1265,6 +1265,32 @@ details.reported-done > summary {
   margin: 1.25rem 0 0.25rem;
 }
 
+/* A parent's check on a row worth checking together: a note for her card
+   and one button; where a check stands, the line that says so and the
+   button to check again under it. The controls keep the 44 pixels every
+   button has, and a row takes focus when a link points at it. */
+.check label {
+  display: block;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.check textarea {
+  min-height: 3.6rem;
+}
+
+.checked-line {
+  margin: 0.35rem 0;
+}
+
+.check-again {
+  margin: 0.25rem 0 0.5rem;
+}
+
+.assignment-updates [tabindex="-1"]:focus {
+  outline: 2px solid var(--blue-action);
+  outline-offset: 2px;
+}
+
 /* Her words are hers to break as she likes: a long address or an unbroken
    run of letters wraps rather than widening the page, and the line breaks
    she typed are kept, on her card and on the family page alike. */
