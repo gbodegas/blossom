@@ -72,7 +72,7 @@
           In it: {% for work in view.plan.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}.
           {% if not view.nothing_to_plan %}A new plan will leave it out.{% endif %}
         {% endif %}
-        {% if plan_reading %}<a href="/student/due-this-week?show_plan=1#{{ plan_reading.anchor }}">View today's plan</a>{% endif %}
+        {% if plan_reading %}<a href="{{ todays_plan_href() }}">View today's plan</a>{% endif %}
       </p>
     {% endif %}
     {% if view.plan and view.plan.decision in ("approved", "rejected") %}
@@ -176,9 +176,15 @@
       notices and the controls and before everything about help, which stays
       one link away from the controls however long the plan is. The text is
       the record as saved; nothing is cut or rewritten here.
+
+      The fold has an id of its own, the same whichever plan it holds, and
+      that is where her links to today's plan land: a way back written under
+      one plan is followed later, when another may have taken its place. The
+      plan inside keeps the id made from its draft. When a link asks for the
+      plan on a day that has none, the place is still there and says so.
     #}
     {% if view.plan %}
-      <details class="plan" open>
+      <details class="plan" open id="{{ todays_plan_id }}" tabindex="-1">
         <summary>Today's saved plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
         <p class="note">
           {% if view.plan.too_much %}Kept to a shorter evening because you said today was too much.{% endif %}
@@ -186,6 +192,8 @@
         </p>
         {% with reading = plan_reading, review_open = false %}{% include "plan_reading.html" %}{% endwith %}
       </details>
+    {% elif plan_asked %}
+      <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
     {% endif %}
 
     <form method="post" action="/student/actions/ask-for-help" class="ask" id="ask-for-help" tabindex="-1">

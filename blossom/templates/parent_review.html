@@ -334,7 +334,7 @@
           {% else %}
             <strong>Expired.</strong> The evening passed without a review.
           {% endif %}
-          {% if draft.reason and draft.decision in ("approved", "rejected") %}Reason: {{ draft.reason }}.{% endif %}
+          {% if draft.reason and draft.decision in ("approved", "rejected") %}Reason: {{ draft.reason|ended }}{% endif %}
           <span class="when">{% if draft.decision in ("approved", "rejected") %}Reviewed{% else %}Closed{% endif %} {{ local(draft.decided_at) }}.</span>
         </p>
         {% if draft.reported_done %}
@@ -470,7 +470,7 @@ Cover both books with paper.</pre>
             {% else %}
               <strong>Expired.</strong> The evening passed without a review.
             {% endif %}
-            {% if draft.reason and draft.decision in ("approved", "rejected") %}Reason: {{ draft.reason }}.{% endif %}
+            {% if draft.reason and draft.decision in ("approved", "rejected") %}Reason: {{ draft.reason|ended }}{% endif %}
             <span class="when">{% if draft.decision in ("approved", "rejected") %}Reviewed{% else %}Closed{% endif %} {{ local(draft.decided_at) }}.</span>
           </p>
           {% if draft.reported_done %}

@@ -322,7 +322,7 @@ def test_a_page_reads_the_household_day_once_and_uses_it_throughout(path: str) -
         assert page.text.count("She can skip this block.") == 2
         assert "She can skip this block." not in following.text
     else:
-        assert f"#{anchor_for(record.draft_id)}" in page.text
+        assert "show_plan=1#todays-plan" in page.text
         assert "No plan is saved for today now." in following.text
 
 

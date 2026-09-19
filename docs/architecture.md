@@ -118,8 +118,12 @@ a version-1 snapshot that is whole, every key it writes present and every
 block time a wall time, and that agrees with its draft is shown by its rows,
 no snapshot is an earlier plan shown as its text, and a snapshot that cannot
 be used is shown as its text with a sentence saying so, the draft id logged
-with where it failed and nothing of what it says. Nothing reads the text to
-find an assignment, and nothing repairs a draft on a GET.
+with which part of the envelope failed and nothing of what it says, no
+assignment's id among it. The snapshot is decoded and checked in one step by
+the model's own JSON reader, so text no page could send, half of a surrogate
+pair written as an escape, makes that one snapshot unavailable and never an
+error while a page is being sent. Nothing reads the text to find an
+assignment, and nothing repairs a draft on a GET.
 
 Which plan is current is decided apart from its review: the household day is
 read once for a page and handed to everything on it, the heading, the week,
@@ -130,24 +134,35 @@ the store's lock, so a plan published or decided while the page is being
 built cannot leave it naming a draft it did not read. Today's working plan is
 the last draft published for that day that no later one displaced, waiting,
 approved, or refused. That one reading shows, beside each row, that she
-reports its assignment as Done, from one batched read of her updates for the
-plan's distinct assignments, taken in the same hold of the store as the
-notice above the plan and the stale check, so the three agree and no row is
-read for on its own. The rule is only that the assignment's effective status
-is Done now; nothing is compared with when the plan was made, a parent's
-check, or the school's word. An earlier plan for today, a plan for another
-day, and the text as composed carry no marks. Showing a plan writes nothing,
-and a mark is never a new approval: the stale checks and their refusals are
-as they were.
+reports its assignment as Done, from the page's one reading of the record.
+`read_everything` in `blossom/noticing.py` reads every assignment, the claims
+about each, and what she, the school, and the family have said, in one hold
+of the store, with today's plan's assignments named to it; the week, the
+planning window, the notice above the plan, the marks beside its rows,
+whether a waiting plan still fits the week, and the family page's assignment
+updates all come out of that reading, so they agree and her reports are read
+once for a page, however many plans it shows. The rule is only that the
+assignment's effective status is Done now; nothing is compared with when the
+plan was made, a parent's check, or the school's word. An earlier plan for
+today, a plan for another day, and the text as composed carry no marks.
+Showing a plan writes nothing, and a mark is never a new approval: the stale
+checks and their refusals are as they were.
 
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update
 component, handed a context object that says who may update and where its
-forms and links go. The two report routes serve cards and details alike; a
-form says which it came from, and that decides only where its result is
-shown. The way back is data, three checked fields, and every address is made
-on the server from values escaped where they go, so no page sends a reader
-to an address a request handed in.
+forms and links go. The details' evidence lists every claim a source has made
+about the date, the ones that agree included, where a card lists claims only
+when the date is in doubt. The two report routes serve cards and details
+alike; a form says which it came from, and that decides only where its result
+is shown. The way back is data, three checked fields, and every address is
+made on the server from values escaped where they go, so no page sends a
+reader to an address a request handed in. Her links to today's plan land on a
+place with an id of its own, the same whichever plan it holds, since a link
+is followed later than it is written: another plan may have taken that one's
+place, and on a day with no plan the place is still there and says so. A
+saved plan keeps the id made from its draft, which the family page and its
+history link to.
 
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and

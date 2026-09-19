@@ -128,13 +128,13 @@ def test_both_essay_blocks_are_marked_and_nothing_else_once_she_reports_the_essa
     assert "Reported done" not in namesake_row
     assert YOURS_BESIDE in hers
     assert HERS_BESIDE in plan_on(family, record)
-    assert '<details class="plan" open>' in hers
+    assert '<details class="plan" open id="todays-plan" tabindex="-1">' in hers
     assert (
         f'In it: <a class="assignment-link" href="/student/assignments/{ESSAY_ID}?return_to=today" '
         f'aria-label="{ESSAY_TITLE}, World History, due August 21, 2026">{ESSAY_TITLE}</a> '
         "(World History, due August 21, 2026)."
     ) in hers
-    assert f'<a href="/student/due-this-week?show_plan=1#{anchor_for(record.draft_id)}">' in hers
+    assert '<a href="/student/due-this-week?show_plan=1#todays-plan">' in hers
     assert "Both parts." not in plan_on(hers, record)
     assert after == facts
 
@@ -276,7 +276,8 @@ def test_todays_latest_plan_is_marked_on_both_pages_whatever_was_decided(decisio
         assert anchor_for(record.draft_id) not in queue
         assert anchor_for(record.draft_id) in rest
         assert anchor_for(record.draft_id) not in earlier
-        assert "Reason: Start with the outline.." in rest
+        assert "Reason: Start with the outline." in rest
+        assert "Reason: Start with the outline.." not in rest
         assert "No earlier plans yet." in earlier
 
 

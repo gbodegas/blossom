@@ -72,14 +72,16 @@ from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
 from blossom.noticing import (
+    Everything,
     Noticing,
     expect_due_date,
     in_week,
     monday_of,
     notice_due_date,
     read_date,
-    read_week,
+    read_everything,
     reconcile_dates,
+    week_from,
 )
 from blossom.plan_reading import DoneMark, PlanReading, Reader, anchor_for, read_plan
 from blossom.principals import Principal
@@ -103,6 +105,7 @@ from blossom.routes.navigation import (
     result_anchor,
     safe_default,
     segment,
+    todays_plan_href,
     week_href,
 )
 from blossom.routes.runs import (
@@ -443,26 +446,33 @@ def read_a_plan(
     reader: Reader = "student",
     current: bool,
     today: date,
+    everything: Everything | None = None,
 ) -> PlanRead:
     """Her projection of a draft and its reading, from one reading of the record.
 
-    A decided plan is history: it is measured against her signal, as it
-    always was, but not against the week, which may well change after a
-    parent has said the plan looks good. Work it speaks about that she has
-    since reported done is said whatever a parent decided. The notice above
-    the plan, the marks beside its rows, and whether the week reads as it
-    did all come from one hold of the store: read apart, a report landing
-    between them could leave them at odds. ``current`` is the caller's word
-    that this is today's working plan, the one reading that shows marks, and
-    ``today`` is the household day the caller's page read, once, so a page
-    rendered across midnight is about one day from its heading to its plan.
+    A decided plan is history: it is measured against her signal, as it always
+    was, but not against the week, which may well change after a parent has said
+    the plan looks good. Work it speaks about that she has since reported done
+    is said whatever a parent decided. The notice above the plan, the marks
+    beside its rows, and whether the week reads as it did all come from one
+    reading of the record, ``everything``, the page's own when it has one and
+    read here otherwise: read apart, a report landing between them could leave
+    them at odds, and her reports would be read once for each. ``current`` is
+    the caller's word that this is today's working plan, the one reading that
+    shows marks, and ``today`` is the household day the caller's page read,
+    once, so a page rendered across midnight is about one day from its heading
+    to its plan.
     """
     stale = None
-    with state.project_state.exclusively():
-        updates = plan_updates(state.project_state, record)
+    store = state.project_state
+    with store.exclusively():
+        if everything is None:
+            everything = read_everything(store, store, also=record.plan_assignment_ids or ())
+        updates = plan_updates(store, record, everything=everything)
         included = done_in(record, updates.done, today=today)
-        week = state.project_state if record.waiting else None
-        found = staleness(state.workload_signals, record, week)
+        found = staleness(
+            state.workload_signals, record, everything=everything if record.waiting else None
+        )
     match found:
         case Staleness.SIGNALED_SINCE:
             stale = SIGNALED_SINCE
@@ -598,7 +608,8 @@ def assignment_view(
     anything. ``status`` is what she and the school have reported, read with
     the rows: her update goes on the card as hers, and what each school
     channel says now goes on it as the school's, every channel, so a check of
-    her "done" against a "missing" always shows the report it rests on.
+    her "done" against a "missing" always shows the report it rests on. Every
+    claim is carried too, as it was given, for the details to list whole.
     """
     said = status.asserted if status is not None else None
     readable = [record for record in records if read_date(record.asserted_value) is not None]
@@ -642,6 +653,7 @@ def assignment_view(
         readable_sources=channels_in_words(readable_channels),
         unreadable=[record.spoken() for record in unreadable],
         unreadable_sources=channels_in_words(unreadable_channels),
+        source_claims=list(dict.fromkeys(record.spoken() for record in records)),
         disagreement=disagreement,
         contradiction=[record.spoken() for record in readable] if noticed.contradicted else [],
         school_contradicts=noticed.contradicted
@@ -723,53 +735,54 @@ def build_student_due_this_week_view(
     focus: str | None = None,
     plan: StudentPlanView | None | Unread = UNREAD,
     today: date | None = None,
+    everything: Everything | None = None,
 ) -> StudentDueThisWeekView:
     """Assemble the student's weekly view from the stores ``ApplicationState``
     opened at startup; nothing is opened or seeded per request. ``week`` is any
     day in the school week to show; today's week when ``None``. ``plan`` is
     today's plan when the caller has read it already, so a page looks it up
     once; left out, it is read here. ``today`` is the household day the
-    caller read for its page; left out, it is read here, once. ``viewer`` is
-    who is at the keyboard as the gate says. ``focus`` is the assignment a
-    save, an undo, or a link named: when it is on record and in neither list
-    of the week shown, its dates having changed meanwhile, it is built apart
-    so the page can still show it.
+    caller read for its page; left out, it is read here, once. ``everything``
+    is the record as the caller read it for its page; left out, it is read
+    here, once, and the week shown, the planning window, and the cards
+    beside them all come out of that one reading. ``viewer`` is who is at
+    the keyboard as the gate says. ``focus`` is the assignment a save, an
+    undo, or a link named: when it is on record and in neither list of the
+    week shown, its dates having changed meanwhile, it is built apart so the
+    page can still show it.
     """
     today = state.clock.today() if today is None else today
     frame = week_shown(today, week)
-    on_record = state.project_state
-    with on_record.exclusively():
-        # One snapshot: a saving landing between two reads could otherwise
-        # show a card whose status, report, and update disagree.
-        shown = read_week(on_record, on_record, frame.start)
-        window = read_week(on_record, on_record, today)
-        everything = on_record.all_assignments()
-        in_frame = {item.assignment_id for item in shown.assignments}
-        later = [
-            item
-            for item in everything
-            if item.assignment_id not in in_frame and assigned_for_later(item, frame)
-        ]
-        listed = in_frame | {item.assignment_id for item in later}
-        elsewhere = [
-            item
-            for item in everything
-            if focus is not None and item.assignment_id == focus and focus not in listed
-        ]
-        beside = [*later, *elsewhere]
-        beside_records = {
-            item.assignment_id: on_record.deadline_records(item.assignment_id) for item in beside
-        }
-        beside_statuses = statuses_for(on_record, [item.assignment_id for item in beside])
+    # One snapshot: a saving landing between two reads could otherwise
+    # show a card whose status, report, and update disagree.
+    found = (
+        read_everything(state.project_state, state.project_state)
+        if everything is None
+        else everything
+    )
+    shown = week_from(found, frame.start)
+    window = week_from(found, today)
+    in_frame = {item.assignment_id for item in shown.assignments}
+    later = [
+        item
+        for item in found.assignments
+        if item.assignment_id not in in_frame and assigned_for_later(item, frame)
+    ]
+    listed = in_frame | {item.assignment_id for item in later}
+    elsewhere = [
+        item
+        for item in found.assignments
+        if focus is not None and item.assignment_id == focus and focus not in listed
+    ]
     in_window = {item.assignment_id for item in window.assignments}
 
     def beside_view(item: Assignment) -> StudentAssignmentView:
-        records = beside_records[item.assignment_id]
+        records = found.records[item.assignment_id]
         return assignment_view(
             item,
             records,
             notice_due_date(expect_due_date(item), records),
-            beside_statuses.get(item.assignment_id),
+            found.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
         )
 
@@ -851,24 +864,48 @@ def student_page(
     problem: str | None = None,
     refreshed: bool = False,
     card: CardState | None = None,
+    plan_asked: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
     ``refreshed`` says when the page was last asked for; ``card`` is what one
     card shows beyond its record. Both change how the page is presented and
-    nothing else. Today's saved plan is unfolded on every visit, so finding
-    her next step takes no remembered action. The household day is read
-    once, here, and everything on the page is about that day: the heading,
-    the week, the planning window, which plan is today's, its notice, and
-    the marks beside its rows. A
-    card's problem is said at the top too, with a link to the card, so it is
-    met on a page that opens at its top; the card named is shown even when
-    its dates have taken it out of the week.
+    nothing else. ``plan_asked`` says the address asked for today's plan, as a
+    way back to it does: when the day has no plan, the place the plan would be
+    is still there to land on, and says so, which an ordinary visit to a day
+    with no plan has no need of. Today's saved plan is unfolded on every visit,
+    so finding her next step takes no remembered action. The household day is
+    read once, here, and everything on the page is about that day: the heading,
+    the week, the planning window, which plan is today's, its notice, and the
+    marks beside its rows. The record is read once too, and all of those are
+    about that one reading. A card's problem is said at the top too, with a link
+    to the card, so it is met on a page that opens at its top; the card named is
+    shown even when its dates have taken it out of the week.
     """
     viewer = viewer_of(request)
     today = state.clock.today()
-    todays = todays_plan_read(state, "family" if viewer == "parent" else "student", today=today)
+    # The record is read once for the page, with today's plan's assignments
+    # named to it: the week, the planning window, the plan's notice and
+    # marks, and whether the plan still fits all come out of that reading.
+    record = state.drafts.latest_for(today)
+    everything = read_everything(
+        state.project_state,
+        state.project_state,
+        also=() if record is None else record.plan_assignment_ids or (),
+    )
+    todays = (
+        None
+        if record is None
+        else read_a_plan(
+            state,
+            record,
+            reader="family" if viewer == "parent" else "student",
+            current=True,
+            today=today,
+            everything=everything,
+        )
+    )
     view = build_student_due_this_week_view(
         state,
         week,
@@ -876,6 +913,7 @@ def student_page(
         focus=None if card is None else card.assignment_id,
         plan=None if todays is None else todays.view,
         today=today,
+        everything=everything,
     )
     about_a_card = card is not None and card.problem is not None and problem is None
     listed = [*view.assignments, *view.assigned_this_week, *([view.apart] if view.apart else [])]
@@ -891,6 +929,8 @@ def student_page(
             "problem": card.problem if card is not None and about_a_card else problem,
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "plan_reading": None if todays is None else todays.reading,
+            "plan_asked": plan_asked,
+            "no_plan_now": NO_PLAN_NOW,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
             "update_note_max_length": UPDATE_NOTE_MAX_LENGTH,
@@ -945,21 +985,23 @@ def due_this_week(
     """Render her week and today's plan.
 
     The week is the school week that holds today, or the one holding the day
-    ``week`` names. A value that is not a date, a blank one included, or a
-    week at the edge of the calendar, is said at the top of today's week
-    rather than answered with an error page. Only an absent ``week`` means
-    today's week without a word. ``show_plan`` changes nothing on the
-    page, which shows today's saved plan unfolded on every visit; links to
-    the plan carry it so that following one is a fresh page, with the fold
-    open again if she had closed it. A GET never makes a plan. The rest name one
-    card: what a save or an undo just did to it, which the server chose and
-    the address only carries, or that its form is to be open, or that it is
-    to be in view, with the fold around it open.
+    ``week`` names. A value that is not a date, a blank one included, or a week
+    at the edge of the calendar, is said at the top of today's week rather than
+    answered with an error page. Only an absent ``week`` means today's week
+    without a word. ``show_plan`` changes nothing about a plan, which the page
+    shows unfolded on every visit; links to the plan carry it so that following
+    one is a fresh page, with the fold open again if she had closed it, and so
+    that a day with no plan still has the place the link lands on, saying that
+    no plan is saved. A GET never makes a plan. The rest name one card: what a
+    save or an undo just did to it, which the server chose and the address only
+    carries, or that its form is to be open, or that it is to be in view, with
+    the fold around it open.
     """
     was_refreshed = refreshed == "1"
+    asked = show_plan == "1"
     card = card_shown(saved, same, undone, change, show)
     if week is None:
-        return student_page(request, state, refreshed=was_refreshed, card=card)
+        return student_page(request, state, refreshed=was_refreshed, card=card, plan_asked=asked)
     try:
         chosen = date.fromisoformat(week.strip())
     except ValueError:
@@ -978,7 +1020,7 @@ def due_this_week(
             card=card,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    return student_page(request, state, week=chosen, card=card)
+    return student_page(request, state, week=chosen, card=card, plan_asked=asked)
 
 
 def week_named(given: str) -> date | None:
@@ -1096,12 +1138,14 @@ def way_back(
 ) -> ReturnLink:
     """The link an assignment's details offer back to where their reader came from.
 
-    Her week, with the card in view and its fold open. Today's plan, unfolded,
-    which is whatever plan is today's latest now, never the one that was
-    followed if a newer one took its place, and Today itself with a word when
-    no plan is left. The family page at this assignment's row, or at the plan
-    that was being read when it is still on the pages; a plan that is not
-    sends the reader to the family page and nothing more.
+    Her week, with the card in view and its fold open. Today's plan, by the
+    place on her week that holds it and never by the plan that was followed: the
+    link is followed later than it is written, and another plan may have taken
+    that one's place by then, or the day may have moved on, and the place is
+    there either way. Today itself, with a word, when no plan is left as the
+    link is written. The family page at this assignment's row, or at the plan
+    that was being read when it is still on the pages; a plan that is not sends
+    the reader to the family page and nothing more.
     """
     if back.target == "week":
         return ReturnLink(
@@ -1111,10 +1155,7 @@ def way_back(
         latest = state.drafts.latest_for(today)
         if latest is None:
             return ReturnLink(address(WEEK_PAGE, fragment="today"), "Back to Today", NO_PLAN_NOW)
-        return ReturnLink(
-            address(WEEK_PAGE, fragment=anchor_for(latest.draft_id), show_plan="1"),
-            "Back to today's plan",
-        )
+        return ReturnLink(todays_plan_href(), "Back to today's plan")
     if back.plan_id is None:
         return ReturnLink(
             address(FAMILY_PAGE, fragment=f"update-{segment(assignment_id)}", focus=assignment_id),

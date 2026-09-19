@@ -371,10 +371,14 @@ def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away(
     assert "No plan for today yet." in before
     assert '<a class="to-help" href="#ask-for-help">Ask for help</a>' in before
     for page in (shown, revisit, refreshed, as_text):
-        assert '<details class="plan" open>' in page
+        assert '<details class="plan" open id="todays-plan" tabindex="-1">' in page
         assert '<summary>Today\'s saved plan <span class="summary-meta">made at ' in page
-        assert page.index('<details class="plan" open>') < page.index('id="ask-for-help"')
-        assert page.index('href="#ask-for-help"') < page.index('<details class="plan" open>')
+        assert page.index(
+            '<details class="plan" open id="todays-plan" tabindex="-1">'
+        ) < page.index('id="ask-for-help"')
+        assert page.index('href="#ask-for-help"') < page.index(
+            '<details class="plan" open id="todays-plan" tabindex="-1">'
+        )
         assert 'class="ask" id="ask-for-help" tabindex="-1"' in page
     assert whole(body, revisit), "the saved text, set out for reading, all of it"
     assert "This plan uses the earlier text format." in as_text
@@ -389,7 +393,7 @@ def test_the_plan_unfolds_on_todays_week_however_the_week_was_named() -> None:
         named = client.get(PAGE, params={"week": PLAN_DATE.isoformat(), "show_plan": "1"}).text
         other = client.get(PAGE, params={"week": "2026-08-24", "show_plan": "1"}).text
 
-    assert '<details class="plan" open>' in named
+    assert '<details class="plan" open id="todays-plan" tabindex="-1">' in named
     assert '<details class="plan"' not in other, "another week has no today panel"
 
 
@@ -401,9 +405,9 @@ def test_the_plan_stays_unfolded_when_the_week_asked_for_cannot_be_shown() -> No
         edge = client.get(PAGE, params={"week": "0001-01-01", "show_plan": "1"})
 
     assert bad.status_code == 422
-    assert '<details class="plan" open>' in bad.text
+    assert '<details class="plan" open id="todays-plan" tabindex="-1">' in bad.text
     assert edge.status_code == 422
-    assert '<details class="plan" open>' in edge.text
+    assert '<details class="plan" open id="todays-plan" tabindex="-1">' in edge.text
 
 
 def test_asking_for_the_plan_unfolded_makes_no_plan() -> None:

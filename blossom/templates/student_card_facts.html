@@ -15,9 +15,17 @@
   reports, and the note. Every condition is written once, here, and each
   piece under it belongs to one part or the other, so the two readings cannot
   come to disagree about a fact, and no fact is shown twice on one page.
+
+  The claims about the date are the one piece the two readings size apart. A
+  card lists them only when the date is in doubt, sources that disagree or a
+  date the record does not match, and says apart what could not be read. The
+  details' evidence lists every claim, whatever it says, in one list, so a
+  date two channels agree on shows what each of them gave.
 #}
 {% set show_date = part|default("all") != "evidence" %}
 {% set show_evidence = part|default("all") != "date" %}
+{% set every_claim = part|default("all") == "evidence" %}
+{% set doubted_claims = show_evidence and not every_claim %}
       {#
         The due line carries the record's date and, when one label can say
         it, where that date came from: the channel that gave it, or the
@@ -61,7 +69,7 @@
         </p>
       {% endif %}
       {% endif %}
-      {% if show_evidence and assignment.unreadable %}
+      {% if doubted_claims and assignment.unreadable %}
         <p class="source">Not read as a date: {{ assignment.unreadable|join("; ") }}.</p>
       {% endif %}
 
@@ -79,7 +87,7 @@
           {% if not show_evidence %}<a href="#evidence">What the sources say is below.</a>{% endif %}
         </p>
         {% endif %}
-        {% if show_evidence %}
+        {% if doubted_claims %}
         <div class="claims">
           <h{{ facts_level }}>What the sources say</h{{ facts_level }}>
           <ul>
@@ -109,7 +117,7 @@
           {% if not show_evidence %}<a href="#evidence">What the sources say is below.</a>{% endif %}
         </p>
         {% endif %}
-        {% if show_evidence %}
+        {% if doubted_claims %}
         <div class="claims">
           <h{{ facts_level }}>What the sources say</h{{ facts_level }}>
           <ul>
@@ -119,7 +127,7 @@
           </ul>
         </div>
         {% endif %}
-      {% elif show_evidence and assignment.contradiction and assignment.deadline_confidence != "SOURCES_DISAGREE" %}
+      {% elif doubted_claims and assignment.contradiction and assignment.deadline_confidence != "SOURCES_DISAGREE" %}
         <p class="source">What they gave: {{ assignment.contradiction|join("; ") }}.</p>
       {% endif %}
 
@@ -133,6 +141,21 @@
         a check of her "done" against a "missing" rests on a channel's own
         latest word, and the card shows each report it could rest on.
       #}
+      {#
+        The details' evidence: every claim a source has made about the date,
+        as it was given and in the order heard, each once. A claim that could
+        not be read as a date is in the list with the rest and says so.
+      #}
+      {% if every_claim and assignment.source_claims %}
+        <div class="claims">
+          <h{{ facts_level }}>What the sources say</h{{ facts_level }}>
+          <ul>
+            {% for claim in assignment.source_claims %}
+              <li>{{ claim }}{% if claim in assignment.unreadable %} <span class="source">Not read as a date.</span>{% endif %}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
       {% if show_evidence %}
       {% for statement in assignment.school_statements %}
         <p class="confidence disagree" role="status">

@@ -1267,8 +1267,8 @@ def test_her_words_wrap_and_keep_their_lines_on_both_pages() -> None:
     the page, and the line breaks she typed are kept, in her card and the family's rows."""
     css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
 
-    assert ".assignment-updates,\n.update {\n  overflow-wrap: anywhere;\n}" in css
-    assert ".assignment-updates q,\n.update q {\n  white-space: pre-line;\n}" in css
+    assert ".assignment-updates,\n.update,\n.history {\n  overflow-wrap: anywhere;\n}" in css
+    assert ".assignment-updates q,\n.update q,\n.history q {\n  white-space: pre-line;\n}" in css
     assert ".visually-hidden {" in css
 
 

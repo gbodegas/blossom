@@ -135,9 +135,11 @@ as it was saved, with the text as composed kept in a fold. A plan made before
 plans were saved as data reads as its saved text, without links or marks. An
 assignment's details show its record as it stands now: what it is and its
 date first, then her update through the same form her cards use, then the
-longer evidence and the history. What a save did is said at the update, with
-a way back to the week, the plan, or the family page she came from; a parent
-reads them and cannot report in her name.
+longer evidence, with every claim a source has made about its date, and the
+history. What a save did is said at the update, with a way back to the week,
+the plan, or the family page she came from, and the way back to today's plan
+lands on whichever plan is today's when it is followed; a parent reads them
+and cannot report in her name.
 
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device

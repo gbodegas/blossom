@@ -17,7 +17,6 @@ guesses, or writes, and the frozen values are what the plan said when it was
 made, never the assignment's record as it stands.
 """
 
-import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -140,6 +139,15 @@ class SnapshotReading:
     one, which is an earlier plan and no failure."""
 
 
+def part_of(where: Sequence[int | str]) -> str:
+    """The part of the envelope a fault sits under, for the log: one of the envelope's own
+    field names, or the envelope itself. Never a place inside a part, since the saved
+    assignments are keyed by ids made from their titles, and never a key the file brought
+    with it."""
+    inside = where[0] if where else None
+    return inside if isinstance(inside, str) and inside in PlanSnapshot.model_fields else "envelope"
+
+
 def read_snapshot(
     draft_id: str,
     saved: str | None,
@@ -154,21 +162,26 @@ def read_snapshot(
     the draft it sits beside. Anything else, text that is not JSON, another
     version, a missing or stray field, metadata that does not match, another
     evening's date, another list of assignments, is unavailable: the page
-    shows the saved text whole, and the draft id is logged with where the
-    snapshot failed, not with what it says.
+    shows the saved text whole, and the draft id is logged with which part
+    of the envelope failed and how, not with what it says.
+
+    The text is decoded and validated in one step by the model's own JSON
+    reader, which refuses what a page could not send, half of a surrogate
+    pair written as an escape among it, so such a snapshot is unavailable
+    here and never an error while a page is being sent.
     """
     if saved is None:
         return SnapshotReading(None)
     try:
-        snapshot = PlanSnapshot.model_validate(json.loads(saved))
+        snapshot = PlanSnapshot.model_validate_json(saved)
     except ValidationError as error:
         places = ", ".join(
-            f"{'.'.join(str(part) for part in found['loc'])}: {found['type']}"
+            f"{part_of(found['loc'])}: {found['type']}"
             for found in error.errors(include_input=False, include_url=False)[:5]
         )
         return unavailable(draft_id, f"not a version {SNAPSHOT_VERSION} snapshot ({places})")
     except (ValueError, TypeError, RecursionError) as error:
-        return unavailable(draft_id, f"not readable as JSON ({type(error).__name__})")
+        return unavailable(draft_id, f"not readable ({type(error).__name__})")
     if snapshot.plan.plan_date != plan_date:
         return unavailable(draft_id, "its plan is for another evening than its draft")
     if plan_assignment_ids is None or list(plan_assignment_ids) != snapshot.assignment_ids:

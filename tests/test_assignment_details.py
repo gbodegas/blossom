@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.noticing import read_week
+from blossom.noticing import week_from
 from blossom.plan_reading import anchor_for
 from blossom.reconciliation import SourceChannel
 from blossom.routes import student as student_routes
@@ -195,9 +195,9 @@ def test_details_open_for_any_assignment_on_record_whatever_week_it_is_in(
 
         def counted(*given: object, **named: object) -> object:
             read_weeks.append(given)
-            return read_week(*given, **named)  # type: ignore[arg-type]
+            return week_from(*given, **named)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(student_routes, "read_week", counted)
+        monkeypatch.setattr(student_routes, "week_from", counted)
         page = client.get(f"/student/assignments/{assignment_id}", headers=PAGE_HEADERS)
         monkeypatch.undo()
         item = state_of(client).project_state.one_assignment(assignment_id)
@@ -303,10 +303,10 @@ def test_she_saves_changes_and_undoes_on_the_details_and_comes_back_to_them() ->
     assert (
         f'<p class="note update-result" role="status" id="update-result-{ESSAY_ID}" '
         f'tabindex="-1">{UPDATE_SAVED} <a href="/student/due-this-week?show_plan=1'
-        f'#{anchor_for(record.draft_id)}">Back to today&#39;s plan</a></p>'
+        '#todays-plan">Back to today&#39;s plan</a></p>'
     ) in after
     assert after.count("Back to today&#39;s plan</a>") == 2
-    assert f"#{anchor_for(record.draft_id)}" in after
+    assert anchor_for(record.draft_id) not in after
     assert "Back to today&#39;s plan" in after
     assert change == {"return_to": "today", "change": "1"}
     assert "<legend>Your update<span" in editor
@@ -617,7 +617,7 @@ def test_every_way_back_lands_where_it_says_and_opens_what_encloses_it() -> None
 
     assert NO_PLAN_NOW in none_yet
     assert 'href="/student/due-this-week#today">Back to Today</a>' in none_yet
-    assert f"show_plan=1#{anchor_for(second.draft_id)}" in to_today
+    assert "show_plan=1#todays-plan" in to_today
     assert anchor_for(first.draft_id) not in to_today
     assert '<details class="steps reported-done" open>' in week
     assert (

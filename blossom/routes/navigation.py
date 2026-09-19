@@ -68,6 +68,19 @@ def details_href(assignment_id: str, *, fragment: str = "", **context: str | Non
     return str(made.replace(fragment=fragment) if fragment else made)
 
 
+TODAYS_PLAN: Final = "todays-plan"
+"""The id of the place on her week that holds today's plan, whichever plan that is. A saved
+plan keeps an id of its own, made from its draft, which the family page and its history
+link to; her side links to this place instead, so a link written under one plan still
+lands when another has taken its place, and on a day with no plan the place says so."""
+
+
+def todays_plan_href() -> str:
+    """The address of today's plan on her week: the place, and the word that the plan was
+    asked for, so the place is there to land on even when no plan is."""
+    return address(WEEK_PAGE, fragment=TODAYS_PLAN, show_plan="1")
+
+
 def result_anchor(assignment_id: str) -> str:
     """The id of the place on a page that says what a save or an undo did to one
     assignment's update, which a redirect lands on."""

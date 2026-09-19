@@ -1422,14 +1422,19 @@ details.reported-done > summary {
 
 /* Her words are hers to break as she likes: a long address or an unbroken
    run of letters wraps rather than widening the page, and the line breaks
-   she typed are kept, on her card and on the family page alike. */
+   she typed are kept, on her card and on the family page alike. The
+   history of her updates carries the same rules itself, since it sits
+   under her update on a card and below the evidence on an assignment's
+   details. */
 .assignment-updates,
-.update {
+.update,
+.history {
   overflow-wrap: anywhere;
 }
 
 .assignment-updates q,
-.update q {
+.update q,
+.history q {
   white-space: pre-line;
 }
 
@@ -1448,16 +1453,16 @@ details.reported-done > summary {
   white-space: nowrap;
 }
 
-.update .history {
+.history {
   margin-top: 0.5rem;
 }
 
-.update .history ol {
+.history ol {
   margin: 0.25rem 0 0.5rem;
   padding-left: 1.25rem;
 }
 
-.update .history li {
+.history li {
   margin: 0.35rem 0;
 }
 
