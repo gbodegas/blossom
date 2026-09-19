@@ -149,6 +149,32 @@ def test_each_destination_is_checked_before_a_start_creates_anything(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    "variable", [DATABASE_PATH_VARIABLE, CHECKPOINT_PATH_VARIABLE, TRACE_PATH_VARIABLE]
+)
+def test_a_protected_destination_the_application_refuses_keeps_the_applications_error(
+    variable: str, tmp_path: pathlib.Path, state_guard: StateGuard, touches: Touches
+) -> None:
+    """A household folder inside a synced one: the start says what the application says.
+
+    The check of all three destinations runs the application's own path guard
+    first, as every other refusal here does, so a test of a refused path reads
+    the same error whether or not the path is also protected.
+    """
+    household = tmp_path / "OneDrive" / "household"
+    settings = fixture_settings(**{variable: str(household / "state.sqlite3")})
+    touches.watch(tmp_path)
+
+    with state_guard.also_protecting(household):
+        with pytest.raises(UnsafeCheckpointPath, match="synced folder"):
+            start(settings)
+        with pytest.raises(UnsafeCheckpointPath, match="synced folder"):
+            claim_household(household / "state.sqlite3")
+
+    assert touches.seen == []
+    assert list(tmp_path.iterdir()) == []
+
+
 def open_the_saved_state(path: pathlib.Path) -> None:
     async def opened() -> None:
         async with open_checkpointer(path):

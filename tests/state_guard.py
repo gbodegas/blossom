@@ -20,8 +20,10 @@ claim's lock, and the sign-in secret go through ``refuse_unsafe_path`` before a
 folder is made or a file opened, so a path that guard accepts is checked here
 next; one it refuses keeps its own error, which the path tests read. And a
 start checks all three of its destinations before the first of them is
-claimed. Both are put in place for the run and taken out after it. Nothing in
-the application knows any of this exists.
+claimed, through that same pair of guards in that same order, so a
+destination that is both protected and refused by the application keeps the
+application's error there too. Both are put in place for the run and taken
+out after it. Nothing in the application knows any of this exists.
 
 ``blossom.app.app`` is built as the application is imported, before any of
 this, so its start has no check of all three first. It needs none: its
@@ -132,11 +134,6 @@ class StateGuard:
                 msg = f"a test may not open {path}: it is inside {folder}, {reason}"
                 raise HouseholdStateProtected(msg)
 
-    def refuse_settings(self, settings: Settings) -> None:
-        """Check every file a start would create, before it creates the first."""
-        for path in (settings.database_path, settings.checkpoint_path, settings.trace_path):
-            self.refuse(path)
-
     @contextmanager
     def also_protecting(self, folder: Path) -> Iterator[None]:
         """Treat ``folder`` as a household's for one test, so none has to name a real one."""
@@ -163,7 +160,11 @@ class StateGuard:
 
             @asynccontextmanager
             async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-                self.refuse_settings(settings)
+                # Every file a start would create, before it creates the first,
+                # each through the application's guard and then this one, in
+                # the order a start reaches them.
+                for path in (settings.database_path, settings.checkpoint_path, settings.trace_path):
+                    refuse_unsafe_path(path)
                 async with starts(app):
                     yield
 
