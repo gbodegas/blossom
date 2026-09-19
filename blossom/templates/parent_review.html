@@ -152,7 +152,8 @@
     visit with nothing listed shows no section.
   #}
   {% set listed = (updates.check + updates.checked + updates.recent + updates.school)|map(attribute="assignment_id")|list %}
-  {% set pointed_at = check and not check.said and not check.problem and check.assignment_id not in listed %}
+  {% set hand_in_listed = updates.turning_in|map(attribute="assignment_id")|list %}
+  {% set pointed_at = check and not check.said and not check.problem and check.assignment_id not in listed and check.assignment_id not in hand_in_listed %}
   {% if listed or pointed_at %}
     <section class="assignment-updates" id="assignment-updates">
       <h2>Assignment updates</h2>
@@ -270,7 +271,13 @@
       <h2>Turning work in</h2>
       <p class="note">Her own reports, with the day Blossom took each. Done means she finished her part; this says what she reports about handing it over. Nothing here is sent to the school.</p>
       {% for row in updates.turning_in %}
-        <article class="draft" id="hand-in-{{ row.assignment_id }}" tabindex="-1">
+        {#
+          The way back from an assignment's details names the assignment's row.
+          When this is the only row it has on the page, it answers to that name;
+          when Assignment updates has one too, that row keeps the name and this
+          one keeps its own, so no id is on the page twice.
+        #}
+        <article class="draft" id="{% if row.assignment_id in listed %}hand-in{% else %}update{% endif %}-{{ row.assignment_id }}" tabindex="-1">
           <p class="course">{{ row.course }}</p>
           <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to="family") }}" aria-label="Turning it in: {{ row.title }}, {{ row.course }}">{{ row.title }}</a></strong></p>
           <p>{{ turned_in_words(row.hand_in) }}</p>

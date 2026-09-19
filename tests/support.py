@@ -12,6 +12,7 @@ This is a plain module rather than `conftest.py`: importing from a conftest
 makes the same file reachable under two module names, which mypy rejects.
 """
 
+import dataclasses
 import pathlib
 import re
 import sqlite3
@@ -525,6 +526,12 @@ def signed_in_household(tmp_path: pathlib.Path) -> Settings:
 def state_of(client: TestClient) -> ApplicationState:
     state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
     return state
+
+
+def with_clock(client: TestClient, clock: Clock) -> None:
+    """Give a running application another clock, as a day turning over does."""
+    state = state_of(client)
+    setattr(client.app.state, STATE_ATTRIBUTE, dataclasses.replace(state, clock=clock))  # type: ignore[attr-defined]
 
 
 class SetClock:

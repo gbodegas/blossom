@@ -32,7 +32,7 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict
 
 from blossom.assignment_status import AssignmentStatus, statuses_for
-from blossom.hand_in import HandInProjection, read_chains
+from blossom.hand_in import HandInProjection
 from blossom.reconciliation import (
     Reconciler,
     ReconciliationResult,
@@ -339,14 +339,13 @@ def read_everything(
         claimed = source.deadline_records_by_assignment(on_record)
         records = {name: list(claimed.get(name, [])) for name in on_record}
         statuses = statuses_for(project_state, [*on_record, *also])
-        chains = project_state.hand_in_chains(on_record)
-    hand_ins, unavailable = read_chains(chains, on_record)
+        turned_in = project_state.hand_in_readings(on_record)
     return Everything(
         assignments=everything,
         records=records,
         statuses=statuses,
-        hand_ins=hand_ins,
-        hand_ins_unavailable=unavailable,
+        hand_ins=turned_in.readable,
+        hand_ins_unavailable=turned_in.unreadable,
     )
 
 

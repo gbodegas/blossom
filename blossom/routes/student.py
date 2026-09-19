@@ -71,12 +71,7 @@ from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
-from blossom.hand_in import (
-    HAND_IN_NOTE_MAX_LENGTH,
-    NEXT_ACTION_MAX_LENGTH,
-    BrokenChain,
-    project,
-)
+from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEXT_ACTION_MAX_LENGTH
 from blossom.noticing import (
     Everything,
     Noticing,
@@ -1295,16 +1290,12 @@ def detail_page(
         item = on_record.one_assignment(assignment_id)
         records = [] if item is None else on_record.deadline_records(assignment_id)
         found = None if item is None else statuses_for(on_record, [assignment_id])
-        chains = {} if item is None else on_record.hand_in_chains([assignment_id])
-    if item is None or found is None:
+        turned_in = None if item is None else on_record.hand_in_readings([assignment_id])
+    if item is None or found is None or turned_in is None:
         return gone_page(
             request, state, back, assignment_id, card=card, hand_in=hand_in, today=today
         )
-    try:
-        turning_in = HandInView.of(project(assignment_id, chains.get(assignment_id, [])))
-    except BrokenChain:
-        logger.exception("the hand-in record of %s cannot be read", assignment_id)
-        turning_in = HandInView.of(None)
+    turning_in = HandInView.of(turned_in.readable.get(assignment_id))
     noticed = notice_due_date(expect_due_date(item), records)
     view = assignment_view(
         item,

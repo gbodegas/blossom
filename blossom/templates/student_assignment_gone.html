@@ -19,16 +19,6 @@
     <textarea id="kept-note" rows="4" readonly>{{ card.note }}</textarea>
   {% endif %}
   {% if hand_in_card %}
-    {% if hand_in_card.state %}
-      <p>Your choice for turning it in: {% if hand_in_card.state == "needs_hand_in" %}Still to turn in{% elif hand_in_card.state == "turned_in" %}Turned in{% elif hand_in_card.state == "not_required" %}Nothing to turn in{% else %}Not sure{% endif %}. It was not saved.</p>
-    {% endif %}
-    {% if hand_in_card.next_action %}
-      <label for="kept-next-action">Your next step, as typed</label>
-      <textarea id="kept-next-action" rows="2" readonly>{{ hand_in_card.next_action }}</textarea>
-    {% endif %}
-    {% if hand_in_card.note %}
-      <label for="kept-hand-in-note">Your note, as typed</label>
-      <textarea id="kept-hand-in-note" rows="4" readonly>{{ hand_in_card.note }}</textarea>
-    {% endif %}
+    {% with kept = hand_in_card %}{% include "student_hand_in_kept.html" %}{% endwith %}
   {% endif %}
 {% endblock %}

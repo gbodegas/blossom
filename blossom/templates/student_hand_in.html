@@ -41,10 +41,19 @@
       <p class="note update-result" role="status" id="hand-in-result-{{ key|urlencode }}" tabindex="-1">{{ hc.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
     {% endif %}
     {% if hc and hc.problem %}
-      <p class="problem" role="alert" id="hand-in-problem-{{ key }}">{{ hc.problem }}</p>
+      <p class="problem" role="alert" id="hand-in-problem-{{ key }}" tabindex="-1">{{ hc.problem }}</p>
     {% endif %}
     {% if hi.unavailable %}
       <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record for this assignment cannot be read right now, so it is not shown. Nothing was changed, and nothing can be saved here until it can be read.</p>
+      {#
+        A save refused over such a record has no form to come back to, so what
+        she chose and wrote is shown as she sent it, read-only, never what is
+        stored, and with nothing to press: the save is not tried again.
+      #}
+      {% if hc and (hc.state or hc.next_action or hc.note) %}
+        <h3 class="update-heading">Your unsaved hand-in update</h3>
+        {% with kept = hc %}{% include "student_hand_in_kept.html" %}{% endwith %}
+      {% endif %}
     {% else %}
       {% if hi.state is none %}
         <p class="update-summary">Hand-in status not recorded.</p>
@@ -93,7 +102,7 @@
           <fieldset class="choice"{% if at_state %} aria-describedby="hand-in-problem-{{ key }}"{% endif %}>
             <legend>Turning it in<span class="visually-hidden"> for {{ assignment.title }}, {{ assignment.course }}</span></legend>
             {% for value in ("needs_hand_in", "turned_in", "not_required", "unknown") %}
-            <label><input type="radio" name="state" value="{{ value }}"{% if chosen == value %} checked{% endif %}{% if at_state and loop.first %} autofocus{% endif %}> {{ named(value) }}</label>
+            <label><input{% if loop.first %} id="hand-in-state-{{ key }}"{% endif %} type="radio" name="state" value="{{ value }}"{% if chosen == value %} checked{% endif %}{% if at_state and loop.first %} autofocus{% endif %}> {{ named(value) }}</label>
             {% endfor %}
           </fieldset>
           <p class="note">Done means you have finished your part. It does not turn work in.</p>
@@ -110,7 +119,7 @@
           <input type="hidden" name="{{ name }}" value="{{ value }}">
           {% endfor %}
           <div class="actions">
-            <button type="submit" class="primary" aria-label="Save hand-in update for {{ assignment.title }}, {{ assignment.course }}">Save hand-in update</button>
+            <button type="submit" class="primary" aria-label="{% if hc.unsaved %}Save again: your hand-in update{% else %}Save hand-in update{% endif %} for {{ assignment.title }}, {{ assignment.course }}">{% if hc.unsaved %}Save again{% else %}Save hand-in update{% endif %}</button>
             <a class="cancel" href="{{ hand_in_links.keep }}" aria-label="Leave the hand-in status for {{ assignment.title }} as it is">{% if hi.state is none %}Not now{% else %}Keep it as it is{% endif %}</a>
           </div>
         </form>

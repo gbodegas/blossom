@@ -7,6 +7,8 @@ Nothing here needs a script in the browser, and no model is asked.
 
 import pathlib
 import re
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -62,6 +64,7 @@ from tests.support import (
     scripted_graphs,
     signed_in_household,
     state_of,
+    with_clock,
 )
 
 DETAILS = f"/student/assignments/{ESSAY_ID}"
@@ -438,8 +441,12 @@ def test_a_device_with_no_sign_in_and_a_request_from_elsewhere_write_nothing(
     data = {"state": TURNED_IN, "next_action": "", "note": "", "expected_hand_in_id": ""}
     with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as anonymous:
         unsigned = anonymous.post(f"{ACTIONS}/hand-in", data=data, headers=PAGE_HEADERS)
-        assert unsigned.status_code == 303
-        assert unsigned.headers["location"].startswith("/sign-in")
+        unsigned_undo = anonymous.post(
+            f"{ACTIONS}/undo-hand-in", data={"hand_in_id": "hand-in-any"}, headers=PAGE_HEADERS
+        )
+        for answer in (unsigned, unsigned_undo):
+            assert answer.status_code == 303
+            assert answer.headers["location"].startswith("/sign-in")
         assert state_of(anonymous).project_state.hand_in_chains() == {}
     with TestClient(app, follow_redirects=False) as elsewhere:
         refused = elsewhere.post(
@@ -556,3 +563,346 @@ def test_the_existing_undo_of_her_work_update_says_when_it_was_already_undone() 
         assert later.status_code == 409
         assert escape(CANNOT_UNDO) in later.text
         assert escape(ALREADY_UNDONE) not in later.text
+
+
+# ------------------------------------------- a record that cannot be read, and her words
+
+QUIZ_ID = "assignment-vocabulary-quiz"
+MALFORMED = {
+    "a state that is none of the four": ("state", "invalid-state"),
+    "a day that is no day": ("reported_on", "not-a-day"),
+    "a note past the limit": ("note", "x" * 501),
+}
+
+
+def damage(client: TestClient, column: str, value: str) -> list[tuple[object, ...]]:
+    """Spoil the essay's one stored event with plain SQL, and hand back the table as it is."""
+    store = state_of(client).project_state
+    store._connection.execute(
+        f"UPDATE hand_in_events SET {column} = ? WHERE assignment_id = ?",  # noqa: S608
+        (value, ESSAY_ID),
+    )
+    store._connection.commit()
+    return store._connection.execute("SELECT * FROM hand_in_events ORDER BY sequence").fetchall()
+
+
+def rows(client: TestClient) -> list[tuple[object, ...]]:
+    connection = state_of(client).project_state._connection
+    return connection.execute("SELECT * FROM hand_in_events ORDER BY sequence").fetchall()
+
+
+@pytest.mark.parametrize("where", [DETAILS, f"{HER_PAGE}?week={FIXTURE_WEEK}", FAMILY])
+@pytest.mark.parametrize("spoiled", MALFORMED.values(), ids=MALFORMED.keys())
+def test_a_row_that_cannot_be_decoded_makes_that_record_unreadable_and_breaks_no_page(
+    spoiled: tuple[str, str], where: str
+) -> None:
+    with browser() as client:
+        landed(client, save(client, opened(client), TURNED_IN, note="kept as written"))
+        before = damage(client, *spoiled)
+
+        shown = client.get(where)
+
+        assert shown.status_code == 200
+        assert "cannot be read" in shown.text
+        if where == DETAILS:
+            turning = section(shown.text)
+            assert NOT_RECORDED not in turning
+            assert f"{ACTIONS}/hand-in" not in turning
+            assert "undo-hand-in" not in turning
+        assert rows(client) == before
+
+
+def test_beside_an_unreadable_record_another_assignment_reads_and_saves_as_usual() -> None:
+    quiz = f"/student/assignments/{QUIZ_ID}"
+    with browser() as client:
+        landed(client, save(client, opened(client), TURNED_IN))
+        damage(client, "state", "invalid-state")
+
+        page = client.get(quiz, params={"hand_in": "change"}).text
+        fields = form_fields(page, f"/student/actions/assignments/{QUIZ_ID}/hand-in")
+        answer = client.post(
+            f"/student/actions/assignments/{QUIZ_ID}/hand-in",
+            data={**fields, "state": NEEDS_HAND_IN, "next_action": "", "note": ""},
+            headers=PAGE_HEADERS,
+        )
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+
+        assert NOT_RECORDED in section(page)
+        assert answer.status_code == 303
+        assert "Still to turn in" in card_for(week, QUIZ_ID)
+        assert "cannot be read" in card_for(week, ESSAY_ID)
+
+
+@pytest.mark.parametrize("spoiled", MALFORMED.values(), ids=MALFORMED.keys())
+def test_nothing_is_saved_or_undone_on_a_record_that_cannot_be_decoded(
+    spoiled: tuple[str, str],
+) -> None:
+    with browser() as client:
+        page = opened(client)
+        first = landed(client, save(client, page, TURNED_IN))
+        undo = form_fields(section(first), f"{ACTIONS}/undo-hand-in")
+        behind = opened(client)
+        before = damage(client, *spoiled)
+
+        saved_over = save(client, behind, NEEDS_HAND_IN, note="mine")
+        undone = client.post(f"{ACTIONS}/undo-hand-in", data=undo, headers=PAGE_HEADERS)
+
+        assert (saved_over.status_code, undone.status_code) == (500, 500)
+        assert HAND_IN_SAVED not in saved_over.text
+        assert HAND_IN_UNDONE not in undone.text
+        assert rows(client) == before
+
+
+def test_a_plan_is_still_made_beside_a_record_that_cannot_be_decoded() -> None:
+    planners: list[Scripted[DailyPlan]] = []
+    with browser(key=True) as client:
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [fixture_week_plan()], lambda: [accepting()], planners=planners
+        )
+        landed(client, save(client, opened(client), TURNED_IN, note="ZEBRA-NOTE"))
+        damage(client, "reported_on", "not-a-day")
+
+        made = client.post("/student/actions/plan")
+
+    assert made.status_code == 303
+    sent = " ".join(str(message.content) for brief in planners[0].briefs for message in brief)
+    assert "ZEBRA" not in sent
+    assert ESSAY_TITLE in sent
+
+
+TYPED_STEP = "MY <b>UNSAVED</b> STEP \U0001f642"
+TYPED_NOTE = "MY UNSAVED WORDS\nsecond line <script>alert(1)</script> \U0001f642"
+
+
+@pytest.mark.parametrize(
+    "spoiled",
+    [("previous_event_id", "no-such-event"), ("state", "invalid-state")],
+    ids=["a link that leads nowhere", "a row that cannot be decoded"],
+)
+def test_a_save_refused_over_an_unreadable_record_still_shows_every_word_she_sent(
+    spoiled: tuple[str, str],
+) -> None:
+    """The reread succeeds and finds the record unreadable, so no form is there to hold them."""
+    with browser() as client:
+        landed(client, save(client, opened(client), TURNED_IN))
+        behind = opened(client)
+        before = damage(client, *spoiled)
+
+        answer = save(client, behind, NEEDS_HAND_IN, action=TYPED_STEP, note=TYPED_NOTE)
+
+        assert answer.status_code == 500
+        turning = section(answer.text)
+        assert escape(HAND_IN_NOT_SAVED) in answer.text
+        assert "cannot be read" in turning
+        assert "Your unsaved hand-in update" in turning
+        assert "Still to turn in" in turning
+        assert str(escape(TYPED_STEP)) in turning
+        assert str(escape(TYPED_NOTE)) in turning
+        assert "<script>alert(1)</script>" not in answer.text
+        assert "readonly" in turning
+        assert f"{ACTIONS}/hand-in" not in turning
+        assert "undo-hand-in" not in turning
+        assert rows(client) == before
+
+
+# ------------------------------------------------ a form refused for something else
+
+
+def malformed(client: TestClient, page: str, how: str) -> Answer:
+    fields = form_fields(page, f"{ACTIONS}/hand-in")
+    sent = {**fields, "state": TURNED_IN, "next_action": "kept step", "note": "first note"}
+    url = f"{ACTIONS}/hand-in"
+    if how == "a note sent twice":
+        body = "&".join(f"{name}={value}" for name, value in sent.items()) + "&note=second+note"
+        return client.post(
+            url,
+            content=body.replace(" ", "+"),
+            headers={**PAGE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+    if how == "a field this page does not send":
+        return client.post(url, data={**sent, "role": "parent"}, headers=PAGE_HEADERS)
+    if how == "a hidden field left out":
+        del sent["expected_hand_in_id"]
+        return client.post(url, data=sent, headers=PAGE_HEADERS)
+    del sent["note"]
+    return client.post(
+        url, data=sent, files={"note": ("note.txt", b"uploaded words")}, headers=PAGE_HEADERS
+    )
+
+
+@pytest.mark.parametrize(
+    "how",
+    [
+        "a note sent twice",
+        "a field this page does not send",
+        "a hidden field left out",
+        "a note sent as a file",
+    ],
+)
+def test_a_form_refused_for_another_field_keeps_the_choice_she_made(how: str) -> None:
+    """Showing what was readable is not accepting the form: nothing is written for it."""
+    with browser() as client:
+        answer = malformed(client, opened(client), how)
+
+        assert answer.status_code == 422
+        turning = section(answer.text)
+        assert escape(BAD_FORM) in answer.text
+        assert 'value="turned_in" checked' in turning
+        assert "kept step" in turning
+        if how != "a note sent as a file":
+            assert "first note" in turning
+            assert "second note" not in turning
+        assert chain(client) == []
+
+
+def test_a_state_that_is_none_of_the_four_leaves_every_choice_open() -> None:
+    with browser() as client:
+        answer = save(client, opened(client), "handed_over", note="kept words")
+
+        assert answer.status_code == 422
+        assert " checked" not in section(answer.text)
+        assert "kept words" in section(answer.text)
+
+
+# ------------------------------------------------------ the moment and its day
+
+
+class TickingClock:
+    """A clock that moves on two seconds every time it is read, in a zone of its own."""
+
+    def __init__(self, start: datetime, zone: ZoneInfo) -> None:
+        self.at = start
+        self._zone = zone
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return self._zone
+
+    def now(self) -> datetime:
+        read, self.at = self.at, self.at + timedelta(seconds=2)
+        return read
+
+    def today(self) -> date:
+        return self.now().astimezone(self._zone).date()
+
+
+@pytest.mark.parametrize(
+    ("start", "zone"),
+    [
+        (datetime(2026, 8, 20, 3, 59, 59, tzinfo=UTC), "America/New_York"),
+        (datetime(2026, 11, 1, 5, 59, 59, tzinfo=UTC), "America/New_York"),
+        (datetime(2026, 8, 20, 6, 59, 59, tzinfo=UTC), "America/Los_Angeles"),
+    ],
+    ids=["midnight in New York", "the hour that repeats", "midnight in another zone"],
+)
+def test_the_day_an_event_is_kept_under_is_the_day_of_its_own_moment(
+    start: datetime, zone: str
+) -> None:
+    """One read of the clock for a save and one for an undo, the day drawn from each."""
+    with browser() as client:
+        where = ZoneInfo(zone)
+        page = opened(client)
+        with_clock(client, TickingClock(start, where))
+        first = landed(client, save(client, page, TURNED_IN))
+        undo = form_fields(section(first), f"{ACTIONS}/undo-hand-in")
+        client.post(f"{ACTIONS}/undo-hand-in", data=undo, headers=PAGE_HEADERS)
+        again = save(client, opened(client), TURNED_IN)
+        events = state_of(client).project_state.hand_in_chains([ESSAY_ID])[ESSAY_ID]
+
+    assert again.status_code == 303
+    assert len(events) == 3
+    for event in events:
+        assert event.reported_on == event.reported_at.astimezone(where).date()
+
+
+def test_the_pinned_clock_keeps_its_day() -> None:
+    with browser() as client:
+        landed(client, save(client, opened(client), TURNED_IN))
+        event = state_of(client).project_state.hand_in_chains([ESSAY_ID])[ESSAY_ID][0]
+
+    assert event.reported_on == PLAN_DATE
+
+
+# ------------------------------------------------- finding a refusal, and the way back
+
+
+def summary(page: str) -> str:
+    """The leading problem summary of a details page, tag and all."""
+    start = page.index('id="problem-summary"')
+    begin = page.rindex("<p", 0, start)
+    return page[begin : page.index("</p>", start)]
+
+
+def test_a_refusal_about_no_one_field_is_said_first_and_takes_the_focus() -> None:
+    with browser() as client:
+        behind = opened(client)
+        landed(client, save(client, behind, TURNED_IN, note="from the other device"))
+        conflict = save(client, behind, NEEDS_HAND_IN, note="my words").text
+        turned_in = landed(client, save(client, opened(client), "not_required"))
+        undo = form_fields(section(turned_in), f"{ACTIONS}/undo-hand-in")
+        landed(client, save(client, opened(client), "unknown"))
+        stale_undo = client.post(f"{ACTIONS}/undo-hand-in", data=undo, headers=PAGE_HEADERS).text
+        elsewhere = save(client, opened(client), TURNED_IN, return_to="https://example.test/").text
+
+    for page, problem in (
+        (conflict, HAND_IN_CHANGED),
+        (stale_undo, HAND_IN_CANNOT_UNDO),
+        (elsewhere, BAD_RETURN),
+    ):
+        first = summary(page)
+        assert escape(problem) in first
+        assert 'tabindex="-1"' in first
+        assert " autofocus" in first
+        assert f'href="#hand-in-problem-{ESSAY_ID}"' in first
+        assert page.count(" autofocus") == 1
+        assert page.index('id="problem-summary"') < page.index('id="turning-it-in"')
+        assert f'id="hand-in-problem-{ESSAY_ID}" tabindex="-1"' in page
+    assert "Save again" in section(conflict)
+    assert "Save hand-in update" not in section(conflict)
+    assert "Save again" not in section(elsewhere)
+
+
+def test_a_refusal_about_one_field_is_said_first_with_a_link_to_that_field() -> None:
+    with browser() as client:
+        long_note = save(client, opened(client), TURNED_IN, note="x" * 501).text
+        two_lines = save(client, opened(client), NEEDS_HAND_IN, action="one\ntwo").text
+        nothing = save(client, opened(client), None).text
+
+    for page, target in (
+        (long_note, f"hand-in-note-{ESSAY_ID}"),
+        (two_lines, f"next-action-{ESSAY_ID}"),
+        (nothing, f"hand-in-state-{ESSAY_ID}"),
+    ):
+        first = summary(page)
+        assert f'href="#{target}"' in first
+        assert " autofocus" not in first
+        assert page.count(" autofocus") == 1
+        assert f'id="{target}"' in section(page)
+
+
+def test_a_way_back_from_a_hand_in_row_lands_on_that_row_and_not_on_an_empty_section() -> None:
+    with browser() as client:
+        landed(client, save(client, opened(client), NEEDS_HAND_IN, action="Put it in my folder"))
+        details = client.get(DETAILS, params={"return_to": "family"}).text
+        found = re.search(r'<a href="([^"]+)">Back to family review</a>', details)
+        assert found is not None
+        family = client.get(found.group(1).replace("&amp;", "&")).text
+
+        assert found.group(1).endswith(f"#update-{ESSAY_ID}")
+        assert family.count(f'id="update-{ESSAY_ID}"') == 1
+        start = family.index(f'id="update-{ESSAY_ID}"')
+        assert "Put it in my folder" in family[start : family.index("</article>", start)]
+        assert "No assignment updates to show." not in family
+
+
+def test_a_row_in_both_sections_keeps_one_of_each_id_and_an_absent_one_keeps_its_fallback() -> None:
+    with browser() as client:
+        report(client, ESSAY_ID, "not_yet")
+        landed(client, save(client, opened(client), NEEDS_HAND_IN))
+        both = client.get(FAMILY, params={"focus": ESSAY_ID}).text
+        absent = client.get(FAMILY, params={"focus": QUIZ_ID}).text
+
+    assert both.count(f'id="update-{ESSAY_ID}"') == 1
+    assert both.count(f'id="hand-in-{ESSAY_ID}"') == 1
+    assert absent.count(f'id="update-{QUIZ_ID}"') == 1
+    assert f'<span id="update-{QUIZ_ID}"' in absent

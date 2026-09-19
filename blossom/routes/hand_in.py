@@ -14,6 +14,7 @@ anything, and a plan never reads what is saved here.
 """
 
 import logging
+from datetime import date, datetime
 from typing import Final, cast
 
 from fastapi import APIRouter, Request, Response, status
@@ -101,6 +102,16 @@ def after(assignment_id: str, said: str, back: ReturnTo) -> str:
     )
 
 
+def accepted_at(state: ApplicationState) -> tuple[datetime, date]:
+    """The moment a hand-in event is accepted and the household day of that same moment.
+
+    The clock is read once. Reading it again for the day would let the
+    household's midnight fall between the two, and keep an event stamped
+    on one day under the next."""
+    now = state.clock.now()
+    return now, now.astimezone(state.clock.zone).date()
+
+
 def words_refused(refusal: TextRefused, *, next_action: bool) -> str:
     """The sentence for words the record will not keep, by the rule they met."""
     if refusal.reason == "too_long":
@@ -184,7 +195,8 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     action = fields.get("next_action", "")
     note = fields.get("note", "")
     token = fields.get("expected_hand_in_id", "").strip()
-    chosen = said if said in STATES and whole else None
+    # A recoverable choice is not permission to accept the malformed form.
+    chosen = said if said in STATES else None
 
     def refused(problem: str, code: int, *, field: str | None = None) -> Response:
         return detail_page(
@@ -231,14 +243,15 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
         return refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     try:
         async with state.decision_lock:
+            now, today = accepted_at(state)
             result = state.project_state.record_hand_in(
                 assignment_id,
                 cast(HandInState, said),
                 action,
                 note,
                 expected_head=token or None,
-                now=state.clock.now(),
-                today=state.clock.today(),
+                now=now,
+                today=today,
             )
     except UnknownAssignment:
         return gone_page(
@@ -324,9 +337,8 @@ async def undo_hand_in_from_the_page(
         return refused(NOT_A_HAND_IN_OF_THIS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     try:
         async with state.decision_lock:
-            result = state.project_state.undo_hand_in(
-                assignment_id, named, now=state.clock.now(), today=state.clock.today()
-            )
+            now, today = accepted_at(state)
+            result = state.project_state.undo_hand_in(assignment_id, named, now=now, today=today)
     except UnknownAssignment:
         return gone_page(request, state, back, assignment_id)
     except UnknownHandIn:

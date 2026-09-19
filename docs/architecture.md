@@ -114,8 +114,17 @@ the same. Her week's cards show one line and a link, the family page lists
 what is still to turn in, however old, then what else she said in the last
 fourteen days, with no form, and a row worth checking together carries it as
 context that decides nothing. A page's one reading holds every chain, read
-once, and names apart the assignments whose chain does not hold, which a
-page says cannot be read and never shows as nothing recorded.
+once through `hand_in_readings`, which takes the rows one assignment at a
+time: a row that cannot be decoded, or a chain that does not hold, makes
+that assignment's record unreadable, named apart, said on the page as one
+that cannot be read and never shown as nothing recorded, while every other
+assignment reads as usual and no page fails for it. The writers do not come
+that way: they read one chain strictly and write nothing on a bad one. A save
+refused over such a record has no form to return to, so what she chose and
+wrote is shown as sent, read-only. A refusal about no one field is said
+first on the details and takes the focus there, with a link down to the
+section; a save and an undo read the clock once and draw the day from that
+moment.
 `blossom/hand_in.py` has the
 event and the reading of a chain, and the store keeps the chain in
 `hand_in_events` the way it keeps her work reports: the writer reserved
