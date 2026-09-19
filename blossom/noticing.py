@@ -305,24 +305,30 @@ class Everything:
 def read_everything(
     project_state: ProjectStateStore, source: DateClaims, *, also: Iterable[str] = ()
 ) -> Everything:
-    """Read the whole record while the store is held: one snapshot.
+    """Read the whole record in one read transaction while the store is held: one snapshot.
 
     The rows, the claims, and what she, the school, and the family have
     reported are read together, so a saving landing between two reads
     cannot give a week whose rows and claims disagree, nor a plan's
     fingerprint that misses a change just made, nor a card whose update is
-    another card's. ``also`` names assignments the reader speaks about
-    whether or not they are on record, a saved plan's, so what stands about
-    them comes from the same batch.
+    another card's. That holds for a saving through this store and for one
+    through another connection to the same file. ``also`` names assignments
+    the reader speaks about whether or not they are on record, a saved
+    plan's, so what stands about them comes from the same batch.
+
+    The cost is at most five reads however much the record holds, the claims
+    among them asked for once and not once per assignment. It is fewer for a
+    record that holds nothing, since a reader asked about no assignments runs
+    no statement. What comes back is plain lists and mappings with nothing
+    left open, so the transaction is over before anything is rendered or a
+    model is asked.
     """
-    with project_state.exclusively():
+    with project_state.reading():
         everything = project_state.all_assignments()
-        records = {
-            item.assignment_id: source.deadline_records(item.assignment_id) for item in everything
-        }
-        statuses = statuses_for(
-            project_state, [*(item.assignment_id for item in everything), *also]
-        )
+        on_record = [item.assignment_id for item in everything]
+        claimed = source.deadline_records_by_assignment(on_record)
+        records = {name: list(claimed.get(name, [])) for name in on_record}
+        statuses = statuses_for(project_state, [*on_record, *also])
     return Everything(assignments=everything, records=records, statuses=statuses)
 
 

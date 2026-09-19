@@ -17,7 +17,7 @@ access (an approved sender list or a dedicated folder), not after it.
 """
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -40,6 +40,17 @@ class DateClaims(Protocol):
 
         An empty list is a valid answer and means nothing corroborates the
         date. Callers must handle it; it is not an error.
+        """
+        ...
+
+    def deadline_records_by_assignment(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> Mapping[str, Sequence[SourceRecord]]:
+        """Return the claims about each assignment named, or about all with none named.
+
+        One answer for the whole page, in the order the single read gives
+        for each, so a reader never asks once per assignment. An assignment
+        nothing was claimed about may have no entry; that is the empty list.
         """
         ...
 
@@ -117,6 +128,23 @@ class FixtureSource:
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
         """The claims about one assignment's date, from the whole file read and checked."""
         return list(self.claims_by_assignment().get(assignment_id, []))
+
+    def deadline_records_by_assignment(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> dict[str, list[SourceRecord]]:
+        """The claims about each assignment named, from the whole file read and checked once.
+
+        Asked about no assignments, the answer is nothing and the file is not
+        read, as the record runs no statement for the same question.
+        """
+        wanted = None if assignment_ids is None else set(assignment_ids)
+        if wanted is not None and not wanted:
+            return {}
+        return {
+            assignment_id: list(claims)
+            for assignment_id, claims in self.claims_by_assignment().items()
+            if claims and (wanted is None or assignment_id in wanted)
+        }
 
     def claims_by_assignment(self) -> dict[str, list[SourceRecord]]:
         """Every claim in ``deadline_sources.json``, checked, grouped by the assignment it
@@ -197,6 +225,12 @@ class LMSSource:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
 
+    def deadline_records_by_assignment(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> dict[str, list[SourceRecord]]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
     def claims_by_assignment(self) -> dict[str, list[SourceRecord]]:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
@@ -222,6 +256,12 @@ class EmailSource:
         raise NotImplementedError
 
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
+    def deadline_records_by_assignment(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> dict[str, list[SourceRecord]]:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
 
