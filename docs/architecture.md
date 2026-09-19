@@ -101,6 +101,29 @@ with what stands now. A check another parent made with other words is refused
 the same way, both notes shown. Check again reopens it, held to the basis its
 page showed. A check changes neither account, no plan, and no digest.
 
+What she says about turning work in is a fourth account, and the record can
+hold it though no page reads or writes it yet. `blossom/hand_in.py` has the
+event and the reading of a chain, and the store keeps the chain in
+`hand_in_events` the way it keeps her work reports: the writer reserved
+before the head is read, the same words already saved whatever head the page
+held, a moved head refused with the head as that transaction read it, and an
+undo that restores what the chain says stood before, a repeat refused like
+any other. Still to turn in, turned in, nothing to turn in, and not sure are
+the states; not sure is a report, and nothing said is the absence of one. One
+next action is kept only with still to turn in. Three things are read from a
+chain and kept apart: the head a save is compared with, the event that began
+the state standing now, whose day a page will say and which an edit inside
+the state does not move, and the event the words came from, so a note changed
+on a later day carries that day. Events are ordered by a number the file
+gives and named by an id. The words in these fields go through
+`blossom/authored_text.py`: a control character or half a character is
+refused where it sits, a joiner inside an emoji and the replacement character
+are kept, one line holds no break, length is counted in code points, and
+nothing is ever taken out of what a person wrote. The notes her updates and
+the family's checks already keep are read by their own rule. Her work
+reports, the school's reports, the family's checks, and the plan fingerprint
+never read this account, and it never changes them.
+
 A plan is saved twice over from one composition: the text both readers see,
 and a snapshot beside it, `blossom/plan_snapshot.py`, one versioned JSON
 document with the plan as the planner returned it, the title, course, and due
