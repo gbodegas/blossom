@@ -874,6 +874,16 @@ main a {
   color: var(--blue-action);
 }
 
+/* On a tint, a problem's rose, a warning's amber or slate, a parent's sage,
+   the action color falls under 4.5 to 1 against the panel, where it clears it
+   on the paper and on a card. A link there with no class of its own takes the
+   darker action color, which clears 4.5 to 1 on every tint. */
+main .problem a:not([class]),
+main .confidence a:not([class]),
+main .from-parents a:not([class]) {
+  color: var(--blue-action-hover);
+}
+
 /* Focus is the action blue at full strength, so it reads on the paper and on
    a card, and never only by a change of color inside the control. */
 input:focus-visible,

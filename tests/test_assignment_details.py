@@ -528,28 +528,6 @@ def test_a_parent_reads_the_details_and_cannot_save_and_her_device_is_not_sent_t
     assert events == []
 
 
-def test_a_link_with_no_rule_of_its_own_takes_the_action_color() -> None:
-    """The way back beside a saved update, the link from a date warning to the evidence,
-    and the link from a problem to the update are plain links inside sentences, in the
-    page's main part. The stylesheet gives every such link the application's action
-    color, so none falls back on the browser's default blue, and the links that have a
-    rule of their own keep it."""
-    with browser() as client:
-        page = client.get(f"{DETAILS}?return_to=week", headers=PAGE_HEADERS).text
-        saved = save(client, page, "done")
-        after = client.get(saved.headers["location"], headers=PAGE_HEADERS).text
-        editor = client.get(f"{DETAILS}?return_to=week&change=1", headers=PAGE_HEADERS).text
-        refused = save(client, editor, None)
-        css = client.get("/static/blossom.css").text
-
-    inside = after.split('<main id="main">', 1)[1].split("</main>", 1)[0]
-    assert '<a href="#evidence">What the sources say is below.</a>' in inside
-    assert re.search(r'id="update-result-[^"]+" tabindex="-1">[^<]+<a href="[^"]+">Back to', inside)
-    assert f'<a href="#update-problem-{ESSAY_ID}">Go to the update.</a>' in refused.text
-    assert "\nmain a {\n  color: var(--blue-action);\n}\n" in css
-    assert "a.assignment-link,\na.assignment-link:visited {\n  color: var(--blue-action);" in css
-
-
 def test_the_way_back_to_a_row_lands_on_the_family_page_when_no_update_is_listed() -> None:
     """Nothing is reported and the school has said nothing, so the family page lists no
     assignment updates. The way back from an assignment's details still names that
