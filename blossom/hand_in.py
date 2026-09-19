@@ -22,7 +22,7 @@ no clock; the record's store keeps the events and checks a chain as it is
 written.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Final, Literal, NamedTuple, Self
@@ -343,3 +343,24 @@ def project(assignment_id: str, chain: Sequence[HandInEvent]) -> HandInProjectio
         note_on=standing.note_on,
         history=tuple(history),
     )
+
+
+def read_chains(
+    chains: Mapping[str, Sequence[HandInEvent]], assignment_ids: Iterable[str]
+) -> tuple[dict[str, HandInProjection], frozenset[str]]:
+    """What stands about each assignment named, and the ones whose chain does not hold.
+
+    A page reads every chain in one go and cannot stop at the first that is
+    broken, so the broken ones are handed back by name, apart. They are not
+    in the first answer and must never be shown as having said nothing: an
+    assignment with no events has a reading that says nothing, and one named
+    in the second answer has a record that cannot be read.
+    """
+    readable: dict[str, HandInProjection] = {}
+    unavailable: set[str] = set()
+    for assignment_id in assignment_ids:
+        try:
+            readable[assignment_id] = project(assignment_id, chains.get(assignment_id, ()))
+        except BrokenChain:
+            unavailable.add(assignment_id)
+    return readable, frozenset(unavailable)

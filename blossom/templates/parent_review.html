@@ -30,6 +30,7 @@
   <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if reading.structured and reading.done_work %} In it: {% for work in reading.done_work %}{% if work.href %}<a class="assignment-link" href="{{ work.href }}" aria-label="{{ work.link_name }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %} ({{ work.course }}{% if work.needs_date %}, {% if work.due_date %}due {{ work.due_date|long_date }}{% else %}no due date{% endif %}{% endif %}){% if work.reference %} <span class="plan-ref">{{ work.reference }}</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% elif draft.reported_done_work %} In it: {% for work in draft.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% endif %}</p>
 {% endmacro %}
 {% macro row_title(item) %}<a class="assignment-link" href="{{ details_href(item.assignment_id, return_to="family") }}" aria-label="{{ item.title }}, {{ item.course }}">{{ item.title }}</a>{% endmacro %}
+{% macro turned_in_words(hi) %}{% if hi.unavailable %}Her hand-in record for this assignment cannot be read right now, so it is not shown.{% elif hi.state == "needs_hand_in" %}She reported Still to turn in on {{ hi.reported_on|long_date }}. Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}{% elif hi.state == "turned_in" %}She reported it turned in on {{ hi.reported_on|long_date }}.{% elif hi.state == "not_required" %}She reported nothing to turn in on {{ hi.reported_on|long_date }}.{% else %}Hand-in status: Not sure. She reported this on {{ hi.reported_on|long_date }}.{% endif %}{% if hi.note %} She wrote: <q class="authored-text">{{ hi.note }}</q>{% if hi.note_updated_on %} Note updated {{ hi.note_updated_on|long_date }}.{% endif %}{% endif %}{% endmacro %}
 {% macro local(moment) %}{% set when = moment.astimezone(zone) %}{{ when.strftime("%B") }} {{ when.day }}, {{ when.year }}, {{ when|clock }} {{ when.strftime("%Z") }}{% endmacro %}
 {% block content %}
   <h1>Family review</h1>
@@ -174,6 +175,9 @@
             {% for statement in item.school_statements %}
               <p>The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}</p>
             {% endfor %}
+            {% if item.hand_in %}
+              <p class="note">Turning it in: {{ turned_in_words(item.hand_in) }} Her own report, which decides nothing here.</p>
+            {% endif %}
             <p class="confidence disagree">
               <strong>Check the school record.</strong>
               Check whether it was turned in and whether the school record needs updating.
@@ -251,6 +255,27 @@
           </article>
         {% endfor %}
       {% endif %}
+    </section>
+  {% endif %}
+
+  {#
+    Turning work in: what she has said about delivery, read only. Everything
+    still to turn in, however old, then what else she said lately. Each title
+    goes to the assignment's details, where her section is; there is no form
+    here, since what she turned in is hers to say, and reading this records
+    nothing and sends no reminder.
+  #}
+  {% if updates.turning_in %}
+    <section class="assignment-updates" id="turning-work-in" tabindex="-1">
+      <h2>Turning work in</h2>
+      <p class="note">Her own reports, with the day Blossom took each. Done means she finished her part; this says what she reports about handing it over. Nothing here is sent to the school.</p>
+      {% for row in updates.turning_in %}
+        <article class="draft" id="hand-in-{{ row.assignment_id }}" tabindex="-1">
+          <p class="course">{{ row.course }}</p>
+          <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to="family") }}" aria-label="Turning it in: {{ row.title }}, {{ row.course }}">{{ row.title }}</a></strong></p>
+          <p>{{ turned_in_words(row.hand_in) }}</p>
+        </article>
+      {% endfor %}
     </section>
   {% endif %}
 

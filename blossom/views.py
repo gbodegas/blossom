@@ -19,6 +19,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from blossom.agent.steps import StepRecord, describe_outcome
 from blossom.assignment_status import HistoryRow
 from blossom.drafts import Decision, DraftStatus
+from blossom.hand_in import HandInProjection
 from blossom.intake import spoken_report
 from blossom.reconciliation import CHANNEL_NAMES, SourceConfidence
 from blossom.stores.drafts import DraftRecord, RunRecord
@@ -77,6 +78,83 @@ class UpdateHistoryRowView(BaseModel):
             reported_on=row.event.reported_on,
             restored_from=None if row.restored is None else row.restored.reported_on,
         )
+
+
+class HandInEventView(BaseModel):
+    """One event of her hand-in account, for the history fold."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    on: date
+    undo: bool
+    """Whether the event took the one before it back; ``state`` is then what it restored."""
+    state: str | None
+    next_action: str | None = None
+    note: str | None = None
+
+
+class HandInView(BaseModel):
+    """What she has said about turning one assignment in, as a page shows it.
+
+    Her own account of delivery, read apart from her account of the work, the
+    school's reports, and the family's checks. ``state`` is ``None`` while she
+    has said nothing, which is not the same as her saying she is not sure;
+    ``unavailable`` means the record of it cannot be read, which is neither.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    unavailable: bool = False
+    state: str | None = None
+    reported_on: date | None = None
+    """The day she entered the state standing now; an edit inside it does not move it."""
+    next_action: str | None = None
+    """The one next step she chose, as kept; ``None`` when she chose none."""
+    note: str | None = None
+    note_updated_on: date | None = None
+    """The day the note shown was written, when that is not the day the state began."""
+    head_id: str | None = None
+    """The last event in the chain, carried by the form so a save lands on the chain the
+    page showed. Never the event that began the state."""
+    undo_event_id: str | None = None
+    """The report she can take back, when the head is one she made."""
+    history: list[HandInEventView] = []
+
+    @classmethod
+    def of(cls, reading: HandInProjection | None) -> "HandInView":
+        """The view of one reading; ``None`` is a record that cannot be read."""
+        if reading is None:
+            return cls(unavailable=True)
+        return cls(
+            state=reading.state,
+            reported_on=reading.reported_on,
+            next_action=reading.next_action,
+            note=reading.note,
+            note_updated_on=reading.note_updated_on,
+            head_id=reading.head_id,
+            undo_event_id=reading.undo_event_id,
+            history=[
+                HandInEventView(
+                    on=row.event.reported_on,
+                    undo=row.event.operation == "undo",
+                    state=row.event.state,
+                    next_action=row.event.next_action,
+                    note=row.event.note,
+                )
+                for row in reading.history
+            ],
+        )
+
+
+class HandInRowView(BaseModel):
+    """One assignment in the family page's section on turning work in."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignment_id: str
+    course: str
+    title: str
+    hand_in: HandInView
 
 
 class StudentAssignmentView(BaseModel):
@@ -159,6 +237,9 @@ class StudentAssignmentView(BaseModel):
     page showed; ``None`` when she has said nothing yet."""
     undo_report_id: str | None = None
     """The report she can take back, when the head is one she made."""
+    hand_in: HandInView = HandInView()
+    """What she has said about turning it in: a second account of hers, which changes
+    nothing about her update and is changed by nothing here."""
     in_planning_window: bool = False
     """Whether the assignment is in today's planning window, which is what a "not yet"
     means for the next plan."""
@@ -222,6 +303,9 @@ class AssignmentUpdateView(BaseModel):
     new_missing: bool = False
     """Whether the school's statements of missing are not the ones that check was made
     against: a report the school had not made then, or a day from a fresh paste."""
+    hand_in: HandInView | None = None
+    """What she has said about turning it in, shown as context on a row worth checking
+    together; ``None`` on every other row. It decides nothing about the check."""
 
 
 class AssignmentUpdatesView(BaseModel):
@@ -239,6 +323,11 @@ class AssignmentUpdatesView(BaseModel):
     """Her standing reports of the last fourteen household days, most recent first."""
     school: list[AssignmentUpdateView] = []
     """Every other assignment the school has reported on, with its latest report."""
+    turning_in: list[HandInRowView] = []
+    """Turning work in: everything she reports as still to turn in, the longest
+    standing first and however old, then whatever else she has said about delivery
+    in the last fourteen household days, and any assignment whose hand-in record
+    cannot be read. A section of its own, with no form in it."""
 
 
 class WorkloadSignalView(BaseModel):

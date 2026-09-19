@@ -4,10 +4,11 @@
 {#
   One assignment's current record, in the order she needs it: the way back,
   what the assignment is, its date with where it came from and the warning
-  when it is in doubt, and then her update with its controls, before anything
-  long. The longer evidence follows, each source's claim, what each school
-  channel reports, and the teacher's or a parent's note, all of it, and the
-  history of her updates and the school's closes the page. Each fact is shown
+  when it is in doubt, and then her update with its controls, and what she
+  says about turning it in, before anything long. The longer evidence
+  follows, each source's claim, what each school channel reports, and the
+  teacher's or a parent's note, all of it, and the history of her updates
+  and the school's closes the page. Each fact is shown
   once. The facts, the update, and the history are the parts her week's cards
   use; nothing here is a second form. Everything shown is the record as it
   stands now, whichever plan or page the reader came from, and the page says
@@ -28,6 +29,7 @@
     {% with due_with_year = true, facts_level = 3, part = "date" %}{% include "student_card_facts.html" %}{% endwith %}
     <h2 class="update-heading">{% if ctx.viewer == "parent" %}Student update{% else %}Your update{% endif %}</h2>
     {% include "student_update.html" %}
+    {% include "student_hand_in.html" %}
     <section class="evidence" id="evidence" tabindex="-1">
       <h2 class="update-heading">What is on record</h2>
       {% with due_with_year = true, facts_level = 3, part = "evidence" %}{% include "student_card_facts.html" %}{% endwith %}

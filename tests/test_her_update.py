@@ -33,6 +33,7 @@ from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANG
 from blossom.routes.parent import PLAN_INCLUDES_DONE as SHE_REPORTS
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import (
+    ALREADY_UNDONE,
     ASSIGNMENTS_CHANGED,
     BAD_FORM,
     CANNOT_UNDO,
@@ -306,7 +307,7 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
     assert 'name="report_id"' not in restored
     assert ">Change</button>" in restored
     assert stale.status_code == 409
-    assert CANNOT_UNDO in card_for(stale.text, ESSAY)
+    assert ALREADY_UNDONE in card_for(stale.text, ESSAY)
     assert f'href="#assignment-{ESSAY}"' in stale.text
     assert to_nothing.status_code == 303
     assert UPDATE_UNDONE in blank_again

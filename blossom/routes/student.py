@@ -71,6 +71,12 @@ from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
+from blossom.hand_in import (
+    HAND_IN_NOTE_MAX_LENGTH,
+    NEXT_ACTION_MAX_LENGTH,
+    BrokenChain,
+    project,
+)
 from blossom.noticing import (
     Everything,
     Noticing,
@@ -123,6 +129,7 @@ from blossom.stores.project_state import (
     DONE,
     DUE_THIS_WEEK_SPAN,
     NOT_YET,
+    UNDO,
     AlreadySaved,
     Assignment,
     Conflict,
@@ -139,6 +146,7 @@ from blossom.stores.project_state import NOTE_MAX_LENGTH as UPDATE_NOTE_MAX_LENG
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.templating import page_templates
 from blossom.views import (
+    HandInView,
     HelpRequestView,
     NamedAssignmentView,
     SchoolStatementView,
@@ -204,6 +212,10 @@ BAD_FORM: Final = (
 CANNOT_UNDO: Final = (
     "Your update has changed, so it cannot be undone from that page. The card shows what stands."
 )
+ALREADY_UNDONE: Final = "That update was already undone. The card shows what stands now."
+"""Said for an Undo of the very update that the latest event already took back: a repeat,
+refused like any other stale Undo and writing nothing, told apart from a change by the
+head the refusing save read and never by comparing words."""
 NOT_SAVED: Final = "Your update could not be saved. Your words are still here. Try again."
 NOT_UNDONE: Final = "Your update could not be undone, and nothing was changed. Try again."
 FROM_DETAILS: Final = frozenset({"report_view", "return_to", "plan_id"})
@@ -222,6 +234,18 @@ BAD_RETURN: Final = (
 )
 GONE: Final = "This assignment is not on record now."
 NO_PLAN_NOW: Final = "No plan is saved for today now."
+TURNING_IT_IN: Final = "turning-it-in"
+"""The id of the section on an assignment's details that holds her hand-in account."""
+HAND_IN_SAVED: Final = "Your hand-in update is saved."
+HAND_IN_ALREADY_SAVED: Final = "Already saved."
+HAND_IN_UNDONE: Final = "Your hand-in update is undone."
+HAND_IN_CONFIRMATIONS: Final[dict[str, str]] = {
+    "saved": HAND_IN_SAVED,
+    "same": HAND_IN_ALREADY_SAVED,
+    "undone": HAND_IN_UNDONE,
+}
+"""What the address says a hand-in save or undo did, chosen by the server as her
+update's are; what stands is shown beside it, with its day."""
 CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": UPDATE_SAVED,
     "same": UPDATE_ALREADY_SAVED,
@@ -597,6 +621,7 @@ def assignment_view(
     status: AssignmentStatus | None = None,
     *,
     in_planning_window: bool = False,
+    hand_in: HandInView | None = None,
 ) -> StudentAssignmentView:
     """One assignment as she sees it, with where its date came from said once per channel.
 
@@ -682,11 +707,23 @@ def assignment_view(
         undo_report_id=None
         if status is None or status.head is None or status.head.operation != "report"
         else status.head.report_id,
+        hand_in=HandInView() if hand_in is None else hand_in,
         in_planning_window=in_planning_window,
         check_school=status is not None and status.check_the_school_record,
         checked_on=None if status is None or status.check is None else status.check.checked_on,
         check_note=None if status is None or status.check is None else status.check.note,
     )
+
+
+def hand_in_of(everything: Everything, assignment_id: str) -> HandInView:
+    """What one reading of the record says she has said about turning an assignment in.
+
+    A chain that does not hold is a record that cannot be read, and is shown
+    as that, never as nothing recorded."""
+    if assignment_id in everything.hand_ins_unavailable:
+        return HandInView.of(None)
+    reading = everything.hand_ins.get(assignment_id)
+    return HandInView() if reading is None else HandInView.of(reading)
 
 
 def showable(day: date) -> bool:
@@ -784,6 +821,7 @@ def build_student_due_this_week_view(
             notice_due_date(expect_due_date(item), records),
             found.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            hand_in=hand_in_of(found, item.assignment_id),
         )
 
     # Never filter here; see the module docstring.
@@ -794,6 +832,7 @@ def build_student_due_this_week_view(
             shown.noticings[item.assignment_id],
             shown.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            hand_in=hand_in_of(found, item.assignment_id),
         )
         for item in shown.assignments
     ]
@@ -854,6 +893,28 @@ class CardState:
     status: str | None = None
     note: str | None = None
     saved_elsewhere: bool = False
+
+
+@dataclass(frozen=True)
+class HandInCard:
+    """What the hand-in section shows beyond its record, as ``CardState`` is for her update.
+
+    ``said`` is the sentence a save or an undo left; ``change`` opens the
+    form, with ``state``, ``next_action``, and ``note`` as she had them, so
+    nothing she chose or typed is lost to a refusal; ``problem`` is what the
+    save could not do, and ``field`` the field it is about. ``unsaved`` marks
+    the refusal that shows what stands now above a form still holding what
+    she meant to save.
+    """
+
+    said: str | None = None
+    change: bool = False
+    problem: str | None = None
+    field: str | None = None
+    state: str | None = None
+    next_action: str | None = None
+    note: str | None = None
+    unsaved: bool = False
 
 
 def student_page(
@@ -1073,6 +1134,12 @@ class ReportContext:
     instead of under the component."""
 
 
+def hand_in_actions(assignment_id: str) -> tuple[str, str]:
+    """The two routes every hand-in update goes through."""
+    base = f"/student/actions/assignments/{segment(assignment_id)}"
+    return f"{base}/hand-in", f"{base}/undo-hand-in"
+
+
 def report_actions(assignment_id: str) -> tuple[str, str]:
     """The two routes every update goes through, wherever its form is shown."""
     base = f"/student/actions/assignments/{segment(assignment_id)}"
@@ -1177,6 +1244,7 @@ def gone_page(
     assignment_id: str,
     *,
     card: CardState | None = None,
+    hand_in: HandInCard | None = None,
     today: date | None = None,
 ) -> HTMLResponse:
     """The small page for an assignment that is not on record: said plainly, 404, with a
@@ -1188,6 +1256,7 @@ def gone_page(
         {
             "problem": GONE,
             "card": card,
+            "hand_in_card": hand_in,
             "back": way_back(
                 state, back, assignment_id, today=state.clock.today() if today is None else today
             ),
@@ -1204,6 +1273,7 @@ def detail_page(
     back: ReturnTo,
     *,
     card: CardState | None = None,
+    hand_in: HandInCard | None = None,
     problem: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -1221,15 +1291,28 @@ def detail_page(
     viewer = viewer_of(request)
     today = state.clock.today()
     on_record = state.project_state
-    with on_record.exclusively():
+    with on_record.reading():
         item = on_record.one_assignment(assignment_id)
-        if item is None:
-            return gone_page(request, state, back, assignment_id, card=card, today=today)
-        records = on_record.deadline_records(assignment_id)
-        found = statuses_for(on_record, [assignment_id])[assignment_id]
+        records = [] if item is None else on_record.deadline_records(assignment_id)
+        found = None if item is None else statuses_for(on_record, [assignment_id])
+        chains = {} if item is None else on_record.hand_in_chains([assignment_id])
+    if item is None or found is None:
+        return gone_page(
+            request, state, back, assignment_id, card=card, hand_in=hand_in, today=today
+        )
+    try:
+        turning_in = HandInView.of(project(assignment_id, chains.get(assignment_id, [])))
+    except BrokenChain:
+        logger.exception("the hand-in record of %s cannot be read", assignment_id)
+        turning_in = HandInView.of(None)
     noticed = notice_due_date(expect_due_date(item), records)
     view = assignment_view(
-        item, records, noticed, found, in_planning_window=in_week(item, noticed, today)
+        item,
+        records,
+        noticed,
+        found[assignment_id],
+        in_planning_window=in_week(item, noticed, today),
+        hand_in=turning_in,
     )
     link = way_back(state, back, assignment_id, today=today)
     return templates.TemplateResponse(
@@ -1240,6 +1323,22 @@ def detail_page(
             "ctx": detail_context(assignment_id, back, viewer, link),
             "back": link,
             "card": card,
+            "hand_in_card": hand_in,
+            "hand_in_actions": hand_in_actions(assignment_id),
+            "hand_in_fields": [(name, value) for name, value in back.fields().items() if value],
+            "hand_in_links": {
+                "change": details_href(
+                    assignment_id, fragment=TURNING_IT_IN, hand_in="change", **back.fields()
+                ),
+                "keep": details_href(assignment_id, fragment=TURNING_IT_IN, **back.fields()),
+                "open": details_href(assignment_id, fragment=TURNING_IT_IN),
+            },
+            "hand_in_change_fields": [
+                *[(name, value) for name, value in back.fields().items() if value],
+                ("hand_in", "change"),
+            ],
+            "next_action_max_length": NEXT_ACTION_MAX_LENGTH,
+            "hand_in_note_max_length": HAND_IN_NOTE_MAX_LENGTH,
             "problem": problem,
             "update_note_max_length": UPDATE_NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
@@ -1262,6 +1361,9 @@ def assignment_details(
     said: Annotated[
         str | None, Query(description="what a save or an undo just did; a note")
     ] = None,
+    hand_in: Annotated[
+        str | None, Query(description="change to open the hand-in form, or what a save did")
+    ] = None,
 ) -> HTMLResponse:
     """One assignment's details, for her, a parent, or whoever is there with the sign-in off.
 
@@ -1281,7 +1383,12 @@ def assignment_details(
         card = CardState(assignment_id, said=CONFIRMATIONS[said])
     elif change == "1":
         card = CardState(assignment_id, change=True)
-    return detail_page(request, state, assignment_id, back, card=card)
+    turning_in = None
+    if hand_in in HAND_IN_CONFIRMATIONS:
+        turning_in = HandInCard(said=HAND_IN_CONFIRMATIONS[hand_in])
+    elif hand_in == "change":
+        turning_in = HandInCard(change=True)
+    return detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
 
 
 @dataclass(frozen=True)
@@ -1633,8 +1740,13 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
             return RedirectResponse(
                 after(origin, "undone", assignment_id), status_code=status.HTTP_303_SEE_OTHER
             )
-        case Conflict():
-            return refused(CANNOT_UNDO, status.HTTP_409_CONFLICT, saved_elsewhere=True)
+        case Conflict(head=head):
+            repeat = head is not None and head.operation == UNDO and head.undoes_report_id == named
+            return refused(
+                ALREADY_UNDONE if repeat else CANNOT_UNDO,
+                status.HTTP_409_CONFLICT,
+                saved_elsewhere=True,
+            )
 
 
 @router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)

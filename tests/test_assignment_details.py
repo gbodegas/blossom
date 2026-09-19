@@ -46,6 +46,7 @@ from tests.support import (
     THEIRS,
     Answer,
     browser,
+    form_fields,
     hidden,
     report,
     school_said,
@@ -57,13 +58,6 @@ from tests.support import (
 DETAILS = f"/student/assignments/{ESSAY_ID}"
 SYLLABUS_ID = "assignment-signed-syllabus"
 QUIZ_ID = "assignment-vocabulary-quiz"
-
-
-def form_fields(html: str, action: str) -> dict[str, str]:
-    """The hidden fields of the form with this action, as the page wrote them."""
-    start = html.index(f'action="{action}"')
-    form = html[start : html.index("</form>", start)]
-    return dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form))
 
 
 def save(client: TestClient, page: str, status: str | None, note: str = "", **over: str) -> Answer:

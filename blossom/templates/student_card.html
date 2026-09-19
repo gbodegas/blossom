@@ -14,5 +14,11 @@
       #}
       {% with due_with_year = assignment.due_date and assignment.due_date.year not in (view.week.start.year, view.week.end.year), facts_level = 3 %}{% include "student_card_facts.html" %}{% endwith %}
       <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a></p>
+      {#
+        One quiet line on what she has said about turning it in, and the way to
+        the section that holds its form. No form here: a card has one already.
+      #}
+      {% set hi = assignment.hand_in %}
+      <p class="note hand-in-line">{% if hi.unavailable %}The hand-in record cannot be read right now.{% elif hi.state is none %}Hand-in status not recorded.{% elif hi.state == "needs_hand_in" %}Still to turn in. Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}{% elif hi.state == "turned_in" %}Reported turned in.{% elif hi.state == "not_required" %}Reported nothing to turn in.{% else %}Hand-in status: Not sure.{% endif %} <a class="assignment-link" href="{{ details_href(assignment.assignment_id, fragment="turning-it-in", return_to="week", week=view.week.start.isoformat()) }}" aria-label="Turning it in: {{ assignment.title }}, {{ assignment.course }}">Turning it in</a></p>
       {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
     </article>

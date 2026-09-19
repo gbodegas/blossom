@@ -62,6 +62,7 @@ from blossom.assignment_status import AssignmentStatus, basis_parts, statuses_fo
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, Staleness, plan_updates, staleness
+from blossom.hand_in import NEEDS_HAND_IN
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.noticing import Everything, read_everything
@@ -101,6 +102,8 @@ from blossom.views import (
     AssignmentUpdatesView,
     AssignmentUpdateView,
     DecisionView,
+    HandInRowView,
+    HandInView,
     HelpRequestView,
     NamedAssignmentView,
     ParentCheckpointAssignmentView,
@@ -785,7 +788,67 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
         for view in views.values()
         if view.assignment_id not in shown and view.school_statements
     ]
-    return AssignmentUpdatesView(check=check, checked=checked, recent=recent, school=school)
+    # What she has said about turning work in rides along on a row worth checking
+    # together, as context, and decides nothing about the check.
+    check = [
+        view.model_copy(update={"hand_in": hand_in_shown(everything, view.assignment_id)})
+        for view in check
+    ]
+    return AssignmentUpdatesView(
+        check=check,
+        checked=checked,
+        recent=recent,
+        school=school,
+        turning_in=turning_in(everything, today),
+    )
+
+
+def hand_in_shown(everything: Everything, assignment_id: str) -> HandInView | None:
+    """What she has said about turning one assignment in, when there is anything to show:
+    a statement of hers, or a record that cannot be read. ``None`` while she has said
+    nothing, which a family row has no need to say."""
+    if assignment_id in everything.hand_ins_unavailable:
+        return HandInView.of(None)
+    reading = everything.hand_ins.get(assignment_id)
+    return None if reading is None or reading.state is None else HandInView.of(reading)
+
+
+def turning_in(everything: Everything, today: date) -> list[HandInRowView]:
+    """The family page's section on turning work in, from the page's one reading.
+
+    Everything she reports as still to turn in comes first, the longest
+    standing first and however old, since nothing unresolved drops out of
+    sight with age. Whatever else she has said about delivery follows while
+    her latest word on it is within the last fourteen household days, the
+    latest first, and then any assignment whose hand-in record cannot be
+    read. The order of events is the order the file gave them, never the
+    clock's. There is no form here: what she turned in is hers to say.
+    """
+    waiting: list[tuple[int, HandInRowView]] = []
+    lately: list[tuple[int, HandInRowView]] = []
+    unreadable: list[HandInRowView] = []
+    for item in everything.assignments:
+        shown = hand_in_shown(everything, item.assignment_id)
+        if shown is None:
+            continue
+        row = HandInRowView(
+            assignment_id=item.assignment_id, course=item.course, title=item.title, hand_in=shown
+        )
+        if shown.unavailable:
+            unreadable.append(row)
+            continue
+        reading = everything.hand_ins[item.assignment_id]
+        head = reading.head
+        entered = reading.entered
+        if reading.state == NEEDS_HAND_IN and entered is not None:
+            waiting.append((entered.sequence or 0, row))
+        elif head is not None and head.reported_on > today - timedelta(days=RECENT_DAYS):
+            lately.append((head.sequence or 0, row))
+    return [
+        *(row for _, row in sorted(waiting, key=lambda pair: pair[0])),
+        *(row for _, row in sorted(lately, key=lambda pair: pair[0], reverse=True)),
+        *unreadable,
+    ]
 
 
 def update_view(item: Assignment, status: AssignmentStatus) -> AssignmentUpdateView:

@@ -589,6 +589,13 @@ def hidden(html: str, name: str) -> str:
     return match.group(1)
 
 
+def form_fields(html: str, action: str) -> dict[str, str]:
+    """The hidden fields of the form with this action, as the page wrote them."""
+    start = html.index(f'action="{action}"')
+    form = html[start : html.index("</form>", start)]
+    return dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form))
+
+
 def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:
     """Send her update from the card as it stands and return the address it goes back to."""
     page = client.get(
