@@ -80,18 +80,31 @@ DATE_CLAIMS_NAMED: Final = """
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY rowid
 """
-HAND_IN_COLUMNS: Final = """
-    event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
-    reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
+EVERY_HAND_IN_EVENT: Final = """
+    SELECT event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
+        reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
+    FROM hand_in_events
+    ORDER BY sequence
 """
-# The two statements are written whole from a constant of this module; nothing a
-# person typed is ever part of their text.
-EVERY_HAND_IN_EVENT: Final = f"SELECT {HAND_IN_COLUMNS} FROM hand_in_events ORDER BY sequence"  # noqa: S608
-HAND_IN_EVENTS_NAMED: Final = f"""
-    SELECT {HAND_IN_COLUMNS} FROM hand_in_events
+HAND_IN_EVENTS_NAMED: Final = """
+    SELECT event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
+        reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
+    FROM hand_in_events
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY sequence
-"""  # noqa: S608
+"""
+HAND_IN_HEAD: Final = """
+    SELECT event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
+        reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
+    FROM hand_in_events
+    WHERE assignment_id = ? ORDER BY sequence DESC LIMIT 1
+"""
+HAND_IN_EVENT_NAMED: Final = """
+    SELECT event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
+        reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
+    FROM hand_in_events
+    WHERE event_id = ?
+"""
 EVERY_FAMILY_CHECK: Final = """
     SELECT check_id, assignment_id, operation, basis, note, checked_at, checked_on,
         previous_check_id
@@ -1242,6 +1255,11 @@ class ProjectStateStore:
         must be the head now, a blank one meaning no event at all, or nothing
         is written and the head as read here is handed back; otherwise the
         report is appended. Her work reports are not read and not touched.
+
+        A save says nothing about a calendar cue, so a cue is no part of the
+        comparison and a save never removes one by saying nothing: an edit
+        that stays in still to turn in carries the head's cue along, and any
+        other state keeps none, as that state never does.
         """
         next_action = (
             single_line(next_action, NEXT_ACTION_MAX_LENGTH) if state == NEEDS_HAND_IN else None
@@ -1253,10 +1271,13 @@ class ProjectStateStore:
                 if expected_head is not None:
                     self._require_hand_in_locked(assignment_id, expected_head)
                 head = self._hand_in_head_locked(assignment_id)
-                if head is not None and head.words == (state, next_action, note, None):
+                standing = None if head is None else (head.state, head.next_action, head.note)
+                if head is not None and standing == (state, next_action, note):
                     return HandInAlreadySaved(head)
                 if (None if head is None else head.event_id) != expected_head:
                     return HandInConflict(head)
+                still_to_turn_in = head is not None and head.state == state == NEEDS_HAND_IN
+                cue = head.cue_at_utc if head is not None and still_to_turn_in else None
                 report = HandInEvent(
                     event_id=new_hand_in_id(),
                     assignment_id=assignment_id,
@@ -1264,6 +1285,7 @@ class ProjectStateStore:
                     state=state,
                     next_action=next_action,
                     note=note,
+                    cue_at_utc=cue,
                     reported_at=now,
                     reported_on=today,
                     previous_event_id=None if head is None else head.event_id,
@@ -1320,20 +1342,11 @@ class ProjectStateStore:
             raise UnknownHandIn(event_id)
 
     def _hand_in_head_locked(self, assignment_id: str) -> HandInEvent | None:
-        row = self._connection.execute(
-            f"""
-            SELECT {HAND_IN_COLUMNS} FROM hand_in_events
-            WHERE assignment_id = ? ORDER BY sequence DESC LIMIT 1
-            """,  # noqa: S608  (the columns are a constant of this module)
-            (assignment_id,),
-        ).fetchone()
+        row = self._connection.execute(HAND_IN_HEAD, (assignment_id,)).fetchone()
         return None if row is None else hand_in_event_from(row)
 
     def _hand_in_event_locked(self, event_id: str) -> HandInEvent | None:
-        row = self._connection.execute(
-            f"SELECT {HAND_IN_COLUMNS} FROM hand_in_events WHERE event_id = ?",  # noqa: S608
-            (event_id,),
-        ).fetchone()
+        row = self._connection.execute(HAND_IN_EVENT_NAMED, (event_id,)).fetchone()
         return None if row is None else hand_in_event_from(row)
 
     def _append_hand_in_locked(self, event: HandInEvent) -> HandInEvent:
@@ -1858,7 +1871,7 @@ def new_hand_in_id() -> str:
 
 
 def hand_in_event_from(row: tuple[object, ...]) -> HandInEvent:
-    """Build one hand-in event from a row in the order of ``HAND_IN_COLUMNS``."""
+    """Build one hand-in event from a row in the order the hand-in statements select."""
     return HandInEvent(
         event_id=str(row[0]),
         assignment_id=str(row[1]),

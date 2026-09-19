@@ -318,6 +318,47 @@ def test_an_action_left_in_the_form_is_not_kept_with_another_state(
     assert isinstance(repeat, HandInAlreadySaved)
 
 
+def with_a_cue(store: ProjectStateStore) -> HandInEvent:
+    """A report that carries a cue, written the way a seed or a later writer would."""
+    cued = HandInEvent(
+        event_id="hand-in-cued",
+        assignment_id=PRACTICE,
+        operation="report",
+        state=NEEDS_HAND_IN,
+        next_action="Put it in my folder",
+        note="mine",
+        cue_at_utc=AT + timedelta(days=1),
+        reported_at=AT,
+        reported_on=MONDAY,
+    )
+    with store.exclusively(), store._writing():
+        return store._append_hand_in_locked(cued)
+
+
+def test_a_cue_on_the_head_does_not_make_the_same_words_new_and_is_not_cleared_by_an_edit(
+    store: ProjectStateStore,
+) -> None:
+    """No page sets a cue yet, and a save that says nothing about one must not remove it."""
+    cued = with_a_cue(store)
+
+    repeat = said(
+        store, NEEDS_HAND_IN, head=cued.event_id, action="Put it in my folder", note="mine"
+    )
+    edited = saved(
+        said(store, NEEDS_HAND_IN, head=cued.event_id, action="Hand it to her", note="mine")
+    )
+    turned_in = saved(said(store, TURNED_IN, head=edited.event_id, on=1))
+    undone = store.undo_hand_in(PRACTICE, turned_in.event_id, now=AT, today=day(2))
+
+    assert isinstance(repeat, HandInAlreadySaved)
+    assert repeat.head == cued
+    assert edited.cue_at_utc == cued.cue_at_utc
+    assert turned_in.cue_at_utc is None
+    assert isinstance(undone, HandInUndone)
+    assert undone.event.cue_at_utc == cued.cue_at_utc
+    assert len(store.hand_in_chains([PRACTICE])[PRACTICE]) == 4
+
+
 def test_a_page_whose_head_has_moved_on_is_refused_with_what_stands(
     store: ProjectStateStore,
 ) -> None:
