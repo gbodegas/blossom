@@ -11,6 +11,7 @@ import pathlib
 import pytest
 from fastapi.testclient import TestClient
 
+from blossom import app as app_module
 from blossom.app import create_app
 from blossom.settings import get_settings
 from tests.state_guard import RUNTIME_PATH_VARIABLES, HouseholdStateProtected, StateGuard
@@ -35,3 +36,16 @@ def test_the_inherited_folder_is_refused(state_guard: StateGuard) -> None:
     for folder in state_guard.inherited.values():
         with pytest.raises(HouseholdStateProtected, match="pointed when the run began"):
             state_guard.refuse(folder / "blossom.sqlite3")
+
+
+def test_the_application_built_at_import_names_the_inherited_file_and_is_refused(
+    state_guard: StateGuard,
+) -> None:
+    """Built before the variables were removed, so it is the one thing still pointing there."""
+    folder = state_guard.inherited[RUNTIME_PATH_VARIABLES[0]]
+
+    refused = pytest.raises(HouseholdStateProtected, match="pointed when the run began")
+    with refused, TestClient(app_module.app):
+        pass
+
+    assert not folder.exists()

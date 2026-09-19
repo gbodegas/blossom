@@ -22,6 +22,12 @@ next; one it refuses keeps its own error, which the path tests read. And a
 start checks all three of its destinations before the first of them is
 claimed. Both are put in place for the run and taken out after it. Nothing in
 the application knows any of this exists.
+
+``blossom.app.app`` is built as the application is imported, before any of
+this, so its start has no check of all three first. It needs none: its
+settings were read at import, its database is the default or the one the
+shell named, both protected, and claiming that file is the first thing a
+start does.
 """
 
 import os

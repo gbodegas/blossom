@@ -18,6 +18,7 @@ from collections.abc import Callable
 import pytest
 from fastapi.testclient import TestClient
 
+from blossom import app as app_module
 from blossom import settings as settings_module
 from blossom.app import create_app
 from blossom.household import secret_beside
@@ -332,8 +333,27 @@ def test_a_run_that_inherits_a_household_path_never_opens_it(tmp_path: pathlib.P
     )
 
     assert run.returncode == 0, run.stdout + run.stderr
-    assert "3 passed" in run.stdout
+    assert "4 passed" in run.stdout
     assert not household.exists()
+
+
+def test_the_application_built_at_import_is_refused_at_its_claim(
+    state_guard: StateGuard, touches: Touches
+) -> None:
+    """``blossom.app.app`` exists before the guard does, on settings read at import.
+
+    Its start is the application's own, with no check of all three destinations
+    first. Its database is the default or the one the shell named, a protected
+    folder either way, and the claim on it is the first thing a start does.
+    """
+    touches.watch(CHECKOUT_STATE)
+    for folder in state_guard.inherited.values():
+        touches.watch(folder)
+
+    with pytest.raises(HouseholdStateProtected), TestClient(app_module.app):
+        pass
+
+    assert touches.seen == []
 
 
 def test_settings_cached_from_the_environment_are_refused_like_any_other(
