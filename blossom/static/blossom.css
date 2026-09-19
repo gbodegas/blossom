@@ -865,6 +865,15 @@ input::placeholder {
   opacity: 1;
 }
 
+/* A link inside a sentence that has no rule of its own, the way back beside a
+   saved update, the link from a date warning to the evidence below it, the
+   link from a problem to the field it is about, takes the application's
+   action color, visited or not, and never the browser's own blue and purple.
+   Every link with a class or a named place keeps the rule written for it. */
+main a {
+  color: var(--blue-action);
+}
+
 /* Focus is the action blue at full strength, so it reads on the paper and on
    a card, and never only by a change of color inside the control. */
 input:focus-visible,
