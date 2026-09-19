@@ -11,7 +11,7 @@ import html
 import json
 import logging
 import re
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -33,6 +33,7 @@ from tests.support import (
     HER_PAGE,
     PAGE_HEADERS,
     PLAN_DATE,
+    SetClock,
     browser,
     card_for,
     composed_plan,
@@ -352,25 +353,6 @@ def test_an_old_note_is_in_the_history_as_she_wrote_it_on_a_card_and_on_the_deta
 
 
 # ------------------------------------------------------------- a way back that is always there
-
-
-class SetClock:
-    """A clock whose household day is whatever the test last set."""
-
-    def __init__(self, day: date, at: datetime) -> None:
-        self.day = day
-        self.at = at
-        self._zone = ZoneInfo(FIXTURE_TIMEZONE)
-
-    @property
-    def zone(self) -> ZoneInfo:
-        return self._zone
-
-    def now(self) -> datetime:
-        return self.at
-
-    def today(self) -> date:
-        return self.day
 
 
 def with_clock(client: TestClient, clock: SetClock) -> None:

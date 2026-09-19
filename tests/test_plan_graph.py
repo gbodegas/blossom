@@ -71,6 +71,7 @@ from tests.support import (
     human_text,
     ok,
     stores,
+    work_listed,
 )
 
 # ------------------------------------------------------------------ scripting
@@ -766,7 +767,7 @@ def test_every_node_leaves_a_step_saying_what_it_expected_and_found() -> None:
     assert steps[1].expected == "a plan that accounts for every assignment inside 150 minutes"
     assert steps[1].found == "1 block and 1 deferral asking 60 minutes"
     assert steps[2].expected == "every tier-one check passes"
-    assert steps[2].found == "all 7 checks passed"
+    assert steps[2].found == "all 8 checks passed"
     assert steps[3].expected == "the reviewer passes every criterion"
     assert steps[3].found == "accepted on every criterion"
     assert all(item.recorded_at == fixture_clock().now() for item in steps)
@@ -811,7 +812,7 @@ def test_a_run_that_fails_its_checks_records_every_attempt() -> None:
         "verify",
     ]
     assert steps[2].found == (
-        "1 of 7 checks failed: assignment-algebra-set is due in this window and the plan "
+        "1 of 8 checks failed: assignment-algebra-set is due in this window and the plan "
         "does not mention it"
     )
     assert steps[3].expected == "a revised plan that answers 1 finding"
@@ -1100,12 +1101,6 @@ def as_it_stands(on_record: ProjectStateStore) -> str:
     return planning_digest(read_week(on_record, TwoChannelSource(), PLAN_DATE))
 
 
-def work_listed(brief: Sequence[BaseMessage]) -> str:
-    """The assignments a brief lists, whole: what the model was given to plan or review."""
-    text = human_text(brief)
-    return text[text.index("<assignments>") : text.index("</assignments>")]
-
-
 def she_finishes(on_record: ProjectStateStore, *assignments: Assignment) -> Callable[[], None]:
     def change() -> None:
         for item in assignments:
@@ -1133,7 +1128,7 @@ def test_a_done_saved_while_the_planner_is_asked_leaves_the_run_on_what_it_read(
     record = drafts.get(result["draft"].draft_id)
     assert (planner.calls, critic.calls) == (1, 1)
     assert [item.found for item in result["steps"] if item.node == "verify"] == [
-        "all 7 checks passed"
+        "all 8 checks passed"
     ]
     assert 'id="assignment-canal-essay"' in work_listed(planner.briefs[0])
     assert work_listed(critic.briefs[0]) == work_listed(planner.briefs[0])
@@ -1364,7 +1359,7 @@ def test_finished_work_put_off_or_in_both_places_never_reaches_a_revision_either
     assert planner.calls == 3
     assert "assignment-canal-essay is reported done" in checks[0]
     assert "assignment-canal-essay is both worked on and put off" in checks[1]
-    assert checks[2] == "all 7 checks passed"
+    assert checks[2] == "all 8 checks passed"
     for brief in planner.briefs:
         text = human_text(brief)
         assert "assignment-canal-essay" not in text

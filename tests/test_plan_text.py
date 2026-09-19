@@ -37,7 +37,9 @@ def composed() -> str:
         draft_id="draft:test",
         plan=plan,
         assignments=[ESSAY, PROBLEM_SET],
-        verification=check_plan(plan, due_in_window=[ESSAY, PROBLEM_SET], zone=ZONE),
+        verification=check_plan(
+            plan, due_in_window=[ESSAY, PROBLEM_SET], zone=ZONE, requested_evening=PLAN_DATE
+        ),
         verdict=verdict,
         settled=False,
     ).body
@@ -158,7 +160,9 @@ def test_the_composer_keeps_each_value_on_one_line() -> None:
         draft_id="draft:test",
         plan=plan,
         assignments=[ESSAY, PROBLEM_SET],
-        verification=check_plan(plan, due_in_window=[ESSAY, PROBLEM_SET], zone=ZONE),
+        verification=check_plan(
+            plan, due_in_window=[ESSAY, PROBLEM_SET], zone=ZONE, requested_evening=PLAN_DATE
+        ),
         verdict=verdict,
         settled=False,
     ).body
@@ -204,7 +208,9 @@ def test_an_escape_sequence_in_the_text_reads_as_its_character() -> None:
         draft_id="draft:test",
         plan=plan,
         assignments=[ESSAY],
-        verification=check_plan(plan, due_in_window=[ESSAY], zone=ZONE),
+        verification=check_plan(
+            plan, due_in_window=[ESSAY], zone=ZONE, requested_evening=PLAN_DATE
+        ),
         verdict=CriticVerdict(findings=[]),
         settled=True,
     ).body

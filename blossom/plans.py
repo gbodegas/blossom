@@ -111,9 +111,13 @@ class DailyPlan(BaseModel):
             + [item.assignment_id for item in self.deferred]
         )
 
-    def total_minutes(self, zone: ZoneInfo) -> int:
-        """Minutes of work the plan asks for, across every block."""
-        return sum(block.minutes(self.plan_date, zone) for block in self.blocks)
+    def total_minutes(self, zone: ZoneInfo, on: date | None = None) -> int:
+        """Minutes of work the plan asks for, across every block, measured on ``on``, or on
+        the plan's own date when none is given. A caller that knows which evening is being
+        planned names it: the length of a block depends on the day only on the two nights
+        the clocks move, and a date a planner made up can sit at the edge of the calendar,
+        where a clock time cannot be carried into another zone at all."""
+        return sum(block.minutes(on or self.plan_date, zone) for block in self.blocks)
 
     def overlapping_pairs(self) -> list[tuple[PlanBlock, PlanBlock]]:
         """Every pair of blocks that claim the same minute, in plan order."""

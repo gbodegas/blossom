@@ -158,7 +158,9 @@ def test_an_undated_assignment_must_still_be_accounted_for() -> None:
         plan_date=PLAN_DATE, blocks=[block("assignment-canal-essay", "16:30", "17:30")]
     )
 
-    result = check_plan(forgotten, due_in_window=[ESSAY, SYLLABUS], zone=ZONE)
+    result = check_plan(
+        forgotten, due_in_window=[ESSAY, SYLLABUS], zone=ZONE, requested_evening=PLAN_DATE
+    )
 
     assert result.failed_checks == (PlanCheck.NOTHING_OMITTED,)
     assert "assignment-signed-syllabus" in result.as_findings()[0]
@@ -173,7 +175,9 @@ def test_a_block_on_an_undated_assignment_has_no_deadline_to_miss_and_is_flagged
         ],
     )
 
-    result = check_plan(plan, due_in_window=[ESSAY, SYLLABUS], zone=ZONE)
+    result = check_plan(
+        plan, due_in_window=[ESSAY, SYLLABUS], zone=ZONE, requested_evening=PLAN_DATE
+    )
 
     assert result.passed
     assert result.undated == ("assignment-signed-syllabus",)
@@ -219,7 +223,9 @@ def test_the_critic_is_told_which_assignments_have_no_date() -> None:
         blocks=[block("assignment-canal-essay", "16:30", "17:30")],
         deferred=[Deferral(assignment_id="assignment-signed-syllabus", reason="ask for the date")],
     )
-    verification = check_plan(plan, due_in_window=[ESSAY, SYLLABUS], zone=ZONE)
+    verification = check_plan(
+        plan, due_in_window=[ESSAY, SYLLABUS], zone=ZONE, requested_evening=PLAN_DATE
+    )
 
     brief = critic_brief(
         plan_date=PLAN_DATE,
@@ -245,7 +251,9 @@ def test_the_draft_says_when_there_is_no_due_date() -> None:
         blocks=[block("assignment-canal-essay", "16:30", "17:30")],
         deferred=[Deferral(assignment_id="assignment-signed-syllabus", reason="ask for the date")],
     )
-    verification = check_plan(plan, due_in_window=[ESSAY, SYLLABUS], zone=ZONE)
+    verification = check_plan(
+        plan, due_in_window=[ESSAY, SYLLABUS], zone=ZONE, requested_evening=PLAN_DATE
+    )
 
     draft = compose_draft(
         draft_id="draft:test",
@@ -287,6 +295,7 @@ def test_a_date_one_channel_gives_and_nothing_disputes_is_no_task_for_anyone() -
         plan,
         due_in_window=[ESSAY],
         zone=ZONE,
+        requested_evening=PLAN_DATE,
         confidence={"assignment-canal-essay": SourceConfidence.SINGLE_SOURCE},
     )
     assert verification.uncertain_due_dates == ("assignment-canal-essay",)
@@ -326,6 +335,7 @@ def test_a_date_only_the_record_has_is_not_a_task_either(claims: list[tuple[str,
         plan,
         due_in_window=[ESSAY],
         zone=ZONE,
+        requested_evening=PLAN_DATE,
         confidence={"assignment-canal-essay": SourceConfidence.UNVERIFIED},
     )
     assert verification.uncertain_due_dates == ("assignment-canal-essay",)
@@ -359,7 +369,9 @@ def test_sources_that_disagree_put_the_item_once_among_the_dates_to_clarify() ->
         draft_id="draft:test",
         plan=plan,
         assignments=[ESSAY],
-        verification=check_plan(plan, due_in_window=[ESSAY], zone=ZONE),
+        verification=check_plan(
+            plan, due_in_window=[ESSAY], zone=ZONE, requested_evening=PLAN_DATE
+        ),
         verdict=CriticVerdict(findings=[]),
         settled=True,
         noticings=[notice_due_date(expect_due_date(ESSAY), claims)],

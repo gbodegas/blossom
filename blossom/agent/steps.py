@@ -12,6 +12,7 @@ decide what happens next; the graph's edges do that from the typed values.
 """
 
 from collections.abc import Sequence
+from datetime import date
 from typing import Final
 from zoneinfo import ZoneInfo
 
@@ -120,11 +121,12 @@ def describe_week(
     )
 
 
-def describe_plan(plan: DailyPlan, zone: ZoneInfo, tokens: str) -> str:
-    """The shape of a plan: how many blocks and deferrals, and how long it asks for."""
+def describe_plan(plan: DailyPlan, zone: ZoneInfo, tokens: str, *, evening: date) -> str:
+    """The shape of a plan: how many blocks and deferrals, and how long it asks for, measured
+    on the evening the run plans, whatever date the plan came back with."""
     return (
         f"{count(len(plan.blocks), 'block')} and {count(len(plan.deferred), 'deferral')} "
-        f"asking {plan.total_minutes(zone)} minutes{tokens}"
+        f"asking {plan.total_minutes(zone, on=evening)} minutes{tokens}"
     )
 
 

@@ -536,7 +536,7 @@ def test_the_page_shows_how_a_waiting_plan_was_made() -> None:
     assert "How this plan was made" in page
     assert '<span class="step-node">retrieve</span>' in page
     assert "Expected: the record&#39;s due dates hold against the school&#39;s sources." in page
-    assert "Found: all 7 checks passed." in page
+    assert "Found: all 8 checks passed." in page
     assert "Found: accepted on every criterion." in page
     assert "Ended without a plan" not in page
 
@@ -566,7 +566,7 @@ def test_a_run_that_ended_without_a_plan_is_on_the_page_with_its_steps() -> None
     assert "The plan failed its checks after every revision." in page
     assert "How this run went" in page
     assert page.count('<span class="step-node">plan</span>') == 3
-    assert "Found: 1 of 7 checks failed:" in page
+    assert "Found: 1 of 8 checks failed:" in page
     assert "No plans need your review." in page
 
 

@@ -168,7 +168,9 @@ def test_a_plan_reports_every_overlapping_pair_not_just_the_first() -> None:
 
 
 def test_a_workable_plan_passes_every_check() -> None:
-    result = check_plan(workable_plan(), due_in_window=WINDOW, zone=ZONE)
+    result = check_plan(
+        workable_plan(), due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE
+    )
 
     assert result.passed
     assert result.failed_checks == ()
@@ -186,7 +188,7 @@ def test_a_plan_naming_an_assignment_nobody_has_fails_and_says_which() -> None:
         ],
     )
 
-    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE)
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE)
 
     assert not result.passed
     assert result.failed_checks == (PlanCheck.ASSIGNMENTS_EXIST,)
@@ -199,7 +201,7 @@ def test_leaving_work_out_without_saying_so_fails() -> None:
         plan_date=PLAN_DATE, blocks=[block("assignment-canal-essay", "16:30", "17:30")]
     )
 
-    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE)
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE)
 
     assert result.failed_checks == (PlanCheck.NOTHING_OMITTED,)
     assert "assignment-algebra-set" in result.as_findings()[0]
@@ -212,7 +214,7 @@ def test_deferring_work_with_a_reason_is_not_leaving_it_out() -> None:
         deferred=[Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday")],
     )
 
-    assert check_plan(plan, due_in_window=WINDOW, zone=ZONE).passed
+    assert check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE).passed
 
 
 def test_a_block_scheduled_after_its_deadline_fails() -> None:
@@ -222,7 +224,7 @@ def test_a_block_scheduled_after_its_deadline_fails() -> None:
         deferred=[Deferral(assignment_id="assignment-algebra-set", reason="tomorrow")],
     )
 
-    result = check_plan(late, due_in_window=WINDOW, zone=ZONE)
+    result = check_plan(late, due_in_window=WINDOW, zone=ZONE, requested_evening=date(2026, 8, 22))
 
     assert result.failed_checks == (PlanCheck.BLOCKS_MEET_DEADLINES,)
     assert "after it" in result.as_findings()[0]
@@ -237,7 +239,7 @@ def test_two_blocks_at_once_fails() -> None:
         ],
     )
 
-    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE)
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE)
 
     assert result.failed_checks == (PlanCheck.BLOCKS_DO_NOT_OVERLAP,)
 
@@ -251,7 +253,9 @@ def test_an_evening_longer_than_the_budget_fails_and_names_both_numbers() -> Non
         ],
     )
 
-    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE, daily_minutes=60)
+    result = check_plan(
+        plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE, daily_minutes=60
+    )
 
     assert result.failed_checks == (PlanCheck.WITHIN_TIME_BUDGET,)
     assert "300 minutes" in result.as_findings()[0]
@@ -269,6 +273,7 @@ def test_an_uncertain_due_date_is_flagged_and_does_not_fail_the_plan() -> None:
         workable_plan(),
         due_in_window=WINDOW,
         zone=ZONE,
+        requested_evening=PLAN_DATE,
         confidence={
             "assignment-canal-essay": SourceConfidence.SOURCES_DISAGREE,
             "assignment-algebra-set": SourceConfidence.CORROBORATED,
@@ -295,6 +300,7 @@ def test_every_kind_of_doubt_is_flagged(label: SourceConfidence) -> None:
         workable_plan(),
         due_in_window=WINDOW,
         zone=ZONE,
+        requested_evening=PLAN_DATE,
         confidence={"assignment-canal-essay": label},
     )
 
@@ -306,6 +312,7 @@ def test_a_corroborated_date_is_not_flagged() -> None:
         workable_plan(),
         due_in_window=WINDOW,
         zone=ZONE,
+        requested_evening=PLAN_DATE,
         confidence=dict.fromkeys(workable_plan().assignment_ids, SourceConfidence.CORROBORATED),
     )
 
@@ -315,7 +322,12 @@ def test_a_corroborated_date_is_not_flagged() -> None:
 def test_an_assignment_with_no_label_is_not_flagged() -> None:
     """A plan can be checked before reconciliation has run, and silence about a
     date is not the same as doubt about it."""
-    assert check_plan(workable_plan(), due_in_window=WINDOW, zone=ZONE).uncertain_due_dates == ()
+    assert (
+        check_plan(
+            workable_plan(), due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE
+        ).uncertain_due_dates
+        == ()
+    )
 
 
 # ------------------------------------------------- one decision per assignment
@@ -332,7 +344,7 @@ def test_work_may_be_split_across_two_sittings() -> None:
         deferred=[Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday")],
     )
 
-    assert check_plan(plan, due_in_window=WINDOW, zone=ZONE).passed
+    assert check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE).passed
 
 
 def test_an_assignment_cannot_be_both_worked_on_and_put_off() -> None:
@@ -347,7 +359,7 @@ def test_an_assignment_cannot_be_both_worked_on_and_put_off() -> None:
         deferred=[Deferral(assignment_id="assignment-canal-essay", reason="not tonight after all")],
     )
 
-    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE)
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE)
 
     assert result.failed_checks == (PlanCheck.ONE_DECISION_PER_ASSIGNMENT,)
     assert "both worked on and put off" in result.as_findings()[0]
@@ -363,7 +375,7 @@ def test_an_assignment_cannot_be_put_off_twice() -> None:
         ],
     )
 
-    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE)
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE)
 
     assert result.failed_checks == (PlanCheck.ONE_DECISION_PER_ASSIGNMENT,)
     assert "put off 2 times" in result.as_findings()[0]
@@ -402,7 +414,7 @@ def test_several_failures_are_all_reported() -> None:
         ],
     )
 
-    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE)
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE)
 
     assert set(result.failed_checks) == {
         PlanCheck.ASSIGNMENTS_EXIST,
@@ -528,7 +540,11 @@ def test_a_contradicted_record_is_measured_against_the_earlier_school_date() -> 
     school_says_yesterday = noticed(ESSAY.due_date, date(2026, 8, 18), verdict=Verdict.CONTRADICTED)
 
     result = check_plan(
-        workable_plan(), due_in_window=WINDOW, zone=ZONE, noticings=[school_says_yesterday]
+        workable_plan(),
+        due_in_window=WINDOW,
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        noticings=[school_says_yesterday],
     )
 
     assert result.failed_checks == (PlanCheck.BLOCKS_MEET_DEADLINES,)
@@ -543,7 +559,11 @@ def test_a_contradicted_record_keeps_its_own_date_when_the_school_says_later() -
     school_says_later = noticed(ESSAY.due_date, date(2026, 8, 22), verdict=Verdict.CONTRADICTED)
 
     result = check_plan(
-        workable_plan(), due_in_window=WINDOW, zone=ZONE, noticings=[school_says_later]
+        workable_plan(),
+        due_in_window=WINDOW,
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        noticings=[school_says_later],
     )
 
     assert result.passed
@@ -558,6 +578,7 @@ def test_a_record_with_no_date_takes_the_school_date_once_contradicted() -> None
         workable_plan(),
         due_in_window=[undated_essay, PROBLEM_SET],
         zone=ZONE,
+        requested_evening=PLAN_DATE,
         noticings=[school_gives_one],
     )
 
@@ -572,6 +593,7 @@ def test_only_a_contradiction_changes_the_deadline(verdict: Verdict) -> None:
         workable_plan(),
         due_in_window=WINDOW,
         zone=ZONE,
+        requested_evening=PLAN_DATE,
         noticings=[noticed(ESSAY.due_date, date(2026, 8, 18), verdict=verdict)],
     )
 
@@ -584,7 +606,13 @@ def test_a_contradiction_about_an_assignment_outside_the_window_is_not_reported(
         update={"assignment_id": "assignment-elsewhere"}
     )
 
-    result = check_plan(workable_plan(), due_in_window=WINDOW, zone=ZONE, noticings=[stray])
+    result = check_plan(
+        workable_plan(),
+        due_in_window=WINDOW,
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        noticings=[stray],
+    )
 
     assert result.passed
     assert result.contradicted == ()
@@ -606,6 +634,7 @@ def test_putting_off_work_due_by_the_plan_date_fails_the_deadline_check() -> Non
         deferring("assignment-canal-essay", "assignment-algebra-set"),
         due_in_window=[due_tonight, PROBLEM_SET],
         zone=ZONE,
+        requested_evening=PLAN_DATE,
     )
 
     assert result.failed_checks == (PlanCheck.BLOCKS_MEET_DEADLINES,)
@@ -621,6 +650,7 @@ def test_putting_off_work_due_tomorrow_passes() -> None:
         deferring("assignment-canal-essay", "assignment-algebra-set"),
         due_in_window=[due_tomorrow, PROBLEM_SET],
         zone=ZONE,
+        requested_evening=PLAN_DATE,
     )
 
     assert result.passed
@@ -634,6 +664,7 @@ def test_putting_off_a_contradicted_record_is_measured_against_the_school_date()
         deferring("assignment-canal-essay", "assignment-algebra-set"),
         due_in_window=WINDOW,
         zone=ZONE,
+        requested_evening=PLAN_DATE,
         noticings=[school_says_tonight],
     )
 
@@ -656,12 +687,19 @@ def test_speaking_about_work_reported_done_fails_by_name_and_as_outside_the_wind
     )
 
     result = check_plan(
-        plan, due_in_window=[ESSAY], zone=ZONE, reported_done=["assignment-algebra-set"]
+        plan,
+        due_in_window=[ESSAY],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        reported_done=["assignment-algebra-set"],
     )
-    without_the_word = check_plan(plan, due_in_window=[ESSAY], zone=ZONE)
+    without_the_word = check_plan(
+        plan, due_in_window=[ESSAY], zone=ZONE, requested_evening=PLAN_DATE
+    )
 
     assert PlanCheck.NO_REPORTED_DONE_WORK in ORDERED_PLAN_CHECKS
-    assert len(ORDERED_PLAN_CHECKS) == 7
+    assert len(ORDERED_PLAN_CHECKS) == 8
+    assert ORDERED_PLAN_CHECKS[0] is PlanCheck.PLAN_DATE_MATCHES_REQUEST
     assert result.failed_checks == (
         PlanCheck.ASSIGNMENTS_EXIST,
         PlanCheck.NO_REPORTED_DONE_WORK,
@@ -694,7 +732,11 @@ def test_no_finding_that_names_finished_work_goes_back_to_the_planner() -> None:
     )
 
     result = check_plan(
-        plan, due_in_window=[ESSAY], zone=ZONE, reported_done=["assignment-algebra-set"]
+        plan,
+        due_in_window=[ESSAY],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        reported_done=["assignment-algebra-set"],
     )
 
     record = " | ".join(result.as_findings())

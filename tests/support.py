@@ -39,7 +39,7 @@ from blossom.agent.graph import (
 )
 from blossom.app import create_app
 from blossom.assignment_status import AssignmentStatus, statuses_for
-from blossom.clock import FrozenClock
+from blossom.clock import Clock, FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.intake import PASTE_DAY
@@ -300,6 +300,7 @@ def graph_with(
     too_much_minutes: int = DEFAULT_TOO_MUCH_MINUTES,
     reports: Sequence[tuple[str, StudentStatus, str | None]] = (),
     on_record: ProjectStateStore | None = None,
+    clock: Clock | None = None,
 ) -> CompiledPlanGraph:
     """The graph over in-memory stores. ``reports`` are what she has said about her part
     of each assignment named, status and note, saved before the run reads the week.
@@ -332,7 +333,7 @@ def graph_with(
         reflections=reflections,
         drafts=drafts or drafts_in_memory(),
         signals=signals or signals_in_memory(),
-        clock=fixture_clock(),
+        clock=clock or fixture_clock(),
         planner=planner,
         critic=critic,
         checkpointer=checkpointer or InMemorySaver(),
@@ -416,27 +417,41 @@ def forgetful_fixture_plan() -> DailyPlan:
 
 
 def scripted_graphs(
-    planner: Callable[[], list[DailyPlan]], critic: Callable[[], list[CriticVerdict]]
+    planner: Callable[[], list[DailyPlan]],
+    critic: Callable[[], list[CriticVerdict]],
+    *,
+    planners: list[Scripted[DailyPlan]] | None = None,
 ) -> Callable[..., PlanGraphs]:
     """A replacement for the route's graphs dependency, over the app's own stores.
 
     Scripted models, and permission to start, so a run can be driven in an
-    application that has no key; the models are never asked for one.
+    application that has no key; the models are never asked for one. Each
+    planner built is added to ``planners`` when a test hands a list in, so
+    it can read how often a run asked and what it was sent.
     """
 
     def override(
         state: Annotated[ApplicationState, Depends(get_application_state)],
     ) -> PlanGraphs:
-        return PlanGraphs(
-            build=lambda: plan_graph_for(
+        def build() -> CompiledPlanGraph:
+            asked = Scripted(*[ok(plan) for plan in planner()])
+            if planners is not None:
+                planners.append(asked)
+            return plan_graph_for(
                 state,
-                planner=Scripted(*[ok(plan) for plan in planner()]),
+                planner=asked,
                 critic=Scripted(*[ok(verdict) for verdict in critic()]),
-            ),
-            may_start=True,
-        )
+            )
+
+        return PlanGraphs(build=build, may_start=True)
 
     return override
+
+
+def work_listed(brief: Sequence[BaseMessage]) -> str:
+    """The assignments a brief lists, whole: what the model was given to plan or review."""
+    text = human_text(brief)
+    return text[text.index("<assignments>") : text.index("</assignments>")]
 
 
 def human_text(brief: Sequence[BaseMessage]) -> str:
@@ -499,6 +514,54 @@ def signed_in_household(tmp_path: pathlib.Path) -> Settings:
 def state_of(client: TestClient) -> ApplicationState:
     state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
     return state
+
+
+class SetClock:
+    """A clock whose household day is whatever the test last set."""
+
+    def __init__(self, day: date, at: datetime) -> None:
+        self.day = day
+        self.at = at
+        self._zone = ZoneInfo(FIXTURE_TIMEZONE)
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return self._zone
+
+    def now(self) -> datetime:
+        return self.at
+
+    def today(self) -> date:
+        return self.day
+
+
+class ReportsWhileAsked[T: BaseModel]:
+    """A model callable whose first answer comes only after her Done has landed, as a save
+    does that arrives while the call is pending. It takes the decision lock for the save,
+    as her page's route does, so a run that held the lock through the call would never
+    answer."""
+
+    def __init__(self, state: ApplicationState, *answers: T) -> None:
+        self.state = state
+        self.answers = list(answers)
+        self.briefs: list[list[BaseMessage]] = []
+        self.lock_was_free = False
+        self.saved: object = None
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[T]:
+        self.briefs.append(list(messages))
+        if self.saved is None:
+            self.lock_was_free = not self.state.decision_lock.locked()
+            async with self.state.decision_lock:
+                self.saved = self.state.project_state.report_status(
+                    ESSAY_ID,
+                    "done",
+                    None,
+                    expected_head=None,
+                    now=self.state.clock.now(),
+                    today=self.state.clock.today(),
+                )
+        return ok(self.answers.pop(0))
 
 
 def card_for(page: str, assignment_id: str) -> str:
@@ -671,7 +734,9 @@ def composed_plan(plan: DailyPlan | None = None, **over: object) -> Composition:
         "draft_id": "draft:plan:2026-08-19:abc12345",
         "plan": plan,
         "assignments": SITTINGS_WINDOW,
-        "verification": check_plan(plan, due_in_window=SITTINGS_WINDOW, zone=ZONE),
+        "verification": check_plan(
+            plan, due_in_window=SITTINGS_WINDOW, zone=ZONE, requested_evening=PLAN_DATE
+        ),
         "verdict": dissent(),
         "settled": False,
         "noticings": contested(),

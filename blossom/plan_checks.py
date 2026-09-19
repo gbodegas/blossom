@@ -43,6 +43,14 @@ whatever its reasoning."""
 class PlanCheck(StrEnum):
     """The tier-one checks a plan must pass. Every one of them is decidable."""
 
+    PLAN_DATE_MATCHES_REQUEST = "PLAN_DATE_MATCHES_REQUEST"
+    """The plan is for the evening the run was asked to plan, the same calendar day, neither
+    earlier nor later. The evening is the run's own, fixed when it started and handed to
+    the check; it is never read from the plan, which is the thing being checked, nor from
+    a clock, since a parent can ask for another evening and a run can cross midnight. It
+    comes first because every other check reads the plan's date: a deadline is met or
+    missed by it."""
+
     ASSIGNMENTS_EXIST = "ASSIGNMENTS_EXIST"
     """Every assignment the plan names is one the store knows."""
 
@@ -78,6 +86,7 @@ ONLY_WHAT_IS_LISTED = "use only the assignments supplied in the list of work to 
 of every finding that names that work."""
 
 ORDERED_PLAN_CHECKS: tuple[PlanCheck, ...] = (
+    PlanCheck.PLAN_DATE_MATCHES_REQUEST,
     PlanCheck.ASSIGNMENTS_EXIST,
     PlanCheck.NOTHING_OMITTED,
     PlanCheck.NO_REPORTED_DONE_WORK,
@@ -158,6 +167,7 @@ def check_plan(
     *,
     due_in_window: list[Assignment],
     zone: ZoneInfo,
+    requested_evening: date,
     confidence: dict[str, SourceConfidence] | None = None,
     noticings: Sequence[Noticing] = (),
     daily_minutes: int = DEFAULT_EVENING_MINUTES,
@@ -166,7 +176,10 @@ def check_plan(
     """Run every tier-one check over ``plan`` and report what failed and why.
 
     ``due_in_window`` is what the store says is due and still to do; the plan
-    is measured against it rather than against itself. ``confidence`` is
+    is measured against it rather than against itself. ``requested_evening``
+    is the evening the caller was asked to plan, which the plan's own date
+    has to equal; it has no default, so nothing can stand in for it, and a
+    plan for another day is reported and never redated here. ``confidence`` is
     optional because a plan can be checked before reconciliation has run, and
     an absent label is simply not flagged. ``noticings`` are the record's due
     dates set against the sources; where the sources contradict the record,
@@ -186,6 +199,12 @@ def check_plan(
         work can be kept from the planner."""
         noted[check].append((text, frozenset(about)))
 
+    if plan.plan_date != requested_evening:
+        found(
+            PlanCheck.PLAN_DATE_MATCHES_REQUEST,
+            f"the plan is for {plan.plan_date}, not the evening asked for, {requested_evening}: "
+            f"make it for {requested_evening}",
+        )
     for name in sorted({name for name in plan.assignment_ids if name not in known}):
         found(PlanCheck.ASSIGNMENTS_EXIST, f"{name} is not an assignment in this window", name)
     for name in sorted(done.intersection(plan.assignment_ids)):
@@ -255,7 +274,9 @@ def check_plan(
             later.assignment_id,
         )
 
-    total = plan.total_minutes(zone)
+    # Measured on the evening asked for, which is the evening the budget belongs to,
+    # and which is a day the calendar can carry whatever date the plan came back with.
+    total = plan.total_minutes(zone, on=requested_evening)
     if total > daily_minutes:
         found(
             PlanCheck.WITHIN_TIME_BUDGET,
