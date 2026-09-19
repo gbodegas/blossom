@@ -18,7 +18,7 @@ made, never the assignment's record as it stands.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Final, Self
@@ -30,6 +30,10 @@ from blossom.plans import DailyPlan
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_VERSION: Final = 1
+PLAN_KEYS: Final = frozenset(DailyPlan.model_fields)
+"""The plan's own keys, each written every time: its evening, its blocks, and what it put
+off. The plan's type gives the two lists a default, which is right for a planner's answer
+and wrong for a saved record, where a list left out is a record cut short."""
 DIAGNOSTIC_LIMIT: Final = 300
 """How much is logged about a snapshot that cannot be used: where it failed and how, and
 never what it says, which is text about her."""
@@ -85,9 +89,14 @@ class PlanSnapshot(BaseModel):
     worked on or put off, each once; a clarification names one of them. A
     block's times are wall times in the household's zone, as the plan
     keeps them, so a time that carries an offset is not one this version
-    wrote, and the rows could not be put in order with it. A snapshot that
-    says otherwise on any of these is refused where it is made and where
-    it is read, and a page then shows the saved text.
+    wrote, and the rows could not be put in order with it. The plan is
+    written whole like the envelope around it, its evening, its blocks, and
+    what it put off, an empty list where there is none: a saved plan with a
+    key left out is never read as a plan with nothing there, which would
+    show an evening with nothing scheduled, or nothing put off, in place of
+    the plan that was saved. A snapshot that says otherwise on any of these
+    is refused where it is made and where it is read, and a page then shows
+    the saved text.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -102,6 +111,17 @@ class PlanSnapshot(BaseModel):
     """``None`` when no reviewer's notes were composed. Like every part of the envelope it
     is written each time, empty or null when there is nothing to say, so a key left out
     is a snapshot cut short and never one with nothing to say."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _holds_a_whole_plan(cls, given: object) -> object:
+        """Refuse a saved plan that leaves out one of its own keys. A plan handed over as
+        the planner returned it is whole already, and is written with every key."""
+        plan = given.get("plan") if isinstance(given, Mapping) else None
+        if isinstance(plan, Mapping) and not plan.keys() >= PLAN_KEYS:
+            msg = "the saved plan leaves out one of its own fields"
+            raise ValueError(msg)
+        return given
 
     @model_validator(mode="after")
     def _agrees_with_itself(self) -> Self:

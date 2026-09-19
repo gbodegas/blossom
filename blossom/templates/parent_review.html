@@ -142,17 +142,24 @@
   {% macro check_on_record(item) %}
     {% if item.checked %}{{ checked_line(item) }}{% elif item.checked_before_on %}{{ checked_before(item) }}{{ again_form(item) }}{% endif %}
   {% endmacro %}
-  {% if updates.check or updates.checked or updates.recent or updates.school %}
+  {#
+    A link back from an assignment's details names its row. When the row is
+    in none of the groups now, the link lands on the section, at a place
+    with the row's id, and no row is made for it. That holds when no group
+    has a row at all, the last update having aged out: the section is there
+    for the link to land on and says that nothing is listed. An ordinary
+    visit with nothing listed shows no section.
+  #}
+  {% set listed = (updates.check + updates.checked + updates.recent + updates.school)|map(attribute="assignment_id")|list %}
+  {% set pointed_at = check and not check.said and not check.problem and check.assignment_id not in listed %}
+  {% if listed or pointed_at %}
     <section class="assignment-updates" id="assignment-updates">
       <h2>Assignment updates</h2>
-      {#
-        A link back from an assignment's details names its row. When the row
-        is in none of the groups now, the link lands here, on the section,
-        and no row is made for it.
-      #}
-      {% set listed = (updates.check + updates.checked + updates.recent + updates.school)|map(attribute="assignment_id")|list %}
-      {% if check and not check.said and not check.problem and check.assignment_id not in listed %}
+      {% if pointed_at %}
         <span id="update-{{ check.assignment_id }}" tabindex="-1"></span>
+      {% endif %}
+      {% if not listed %}
+        <p class="empty quiet">No assignment updates to show.</p>
       {% endif %}
       {% if updates.check %}
         <h3>Worth checking together</h3>

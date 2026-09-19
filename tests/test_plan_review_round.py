@@ -18,11 +18,14 @@ import pytest
 from markupsafe import escape
 from pydantic import ValidationError
 
+from blossom.agent.compose import Composition
 from blossom.dependencies import STATE_ATTRIBUTE
 from blossom.drafts import Draft, DraftStatus
 from blossom.plan_reading import anchor_for
-from blossom.plan_snapshot import PlanSnapshot, read_snapshot
+from blossom.plan_snapshot import PlanSnapshot, SnapshotReading, read_snapshot
+from blossom.plans import DailyPlan, Deferral
 from blossom.routes import student as student_routes
+from blossom.routes.runs import plan_graphs
 from blossom.routes.student import BAD_RETURN, NOT_SAVED, NOT_UNDONE
 from blossom.stores.drafts import DraftsStore
 from tests.support import (
@@ -32,13 +35,18 @@ from tests.support import (
     HER_PAGE,
     PAGE_HEADERS,
     PLAN_DATE,
+    SITTINGS_WINDOW,
+    accepting,
     browser,
     composed_plan,
     fixture_clock,
+    fixture_week_plan,
     plan_on,
     planned,
     report,
+    scripted_graphs,
     state_of,
+    two_sittings,
     walkthrough,
 )
 
@@ -225,6 +233,103 @@ def test_version_one_is_every_key_it_writes_and_wall_clock_times() -> None:
             plan_assignment_ids=made.snapshot.assignment_ids,
         )
         assert (reading.snapshot, reading.unavailable) == (None, True)
+
+
+def test_the_plan_inside_a_snapshot_is_written_whole_too() -> None:
+    """The plan carries its evening, its blocks, and what it put off, every time, an empty
+    list where there is none. A plan of blocks alone with no ``deferred`` key, and a plan
+    of deferrals alone with no ``blocks`` key, agree with their drafts by every other
+    rule, and still are not version 1: a key left out is a plan cut short, never a plan
+    with nothing there. A list that held rows and is gone is caught by the ids as well.
+    A plan the planner returned without naming an empty list still composes, and is
+    written whole."""
+    sittings = two_sittings()
+
+    def made_from(plan: DailyPlan) -> Composition:
+        """Composed over the assignments the plan speaks about, with no date in doubt."""
+        spoken = [item for item in SITTINGS_WINDOW if item.assignment_id in plan.assignment_ids]
+        return composed_plan(plan, assignments=spoken, noticings=[], confidence={})
+
+    blocks_alone = made_from(sittings.model_copy(update={"deferred": []}))
+    deferrals_alone = made_from(DailyPlan(plan_date=PLAN_DATE, deferred=list(sittings.deferred)))
+    unnamed = made_from(DailyPlan(plan_date=PLAN_DATE, blocks=list(sittings.blocks)))
+
+    def read(made: Composition, saved: dict[str, object]) -> SnapshotReading:
+        return read_snapshot(
+            "draft:whole",
+            json.dumps(saved),
+            plan_date=PLAN_DATE,
+            plan_assignment_ids=made.snapshot.assignment_ids,
+        )
+
+    for made, left_out in (
+        (blocks_alone, "deferred"),
+        (deferrals_alone, "blocks"),
+        (blocks_alone, "plan_date"),
+    ):
+        whole = made.snapshot.model_dump(mode="json")
+        assert set(whole["plan"]) == {"plan_date", "blocks", "deferred"}
+        assert read(made, whole).snapshot == made.snapshot
+        cut = json.loads(json.dumps(whole))
+        del cut["plan"][left_out]
+        with pytest.raises(ValidationError):
+            PlanSnapshot.model_validate(cut)
+        with pytest.raises(ValidationError):
+            PlanSnapshot.model_validate_json(json.dumps(cut))
+        reading = read(made, cut)
+        assert (reading.snapshot, reading.unavailable) == (None, True), left_out
+    rows_gone = composed_plan().snapshot.model_dump(mode="json")
+    del rows_gone["plan"]["blocks"]
+    assert read(composed_plan(), rows_gone).unavailable
+    assert "deferred" not in unnamed.snapshot.plan.model_fields_set
+    written = json.loads(unnamed.snapshot.model_dump_json())
+    assert written["plan"]["deferred"] == []
+    assert read(unnamed, written).snapshot == unnamed.snapshot
+
+
+def test_a_plan_cut_short_inside_its_snapshot_falls_back_to_the_saved_text() -> None:
+    """Today's plan puts everything off, and its saved snapshot has lost the ``blocks`` key.
+    Both pages answer 200 with the saved text and the sentence that says why, and never
+    with rows read from a plan that is not whole; nothing is written."""
+    with browser(key=True) as client:
+        whole = fixture_week_plan()
+        put_off = DailyPlan(
+            plan_date=PLAN_DATE,
+            deferred=[
+                *whole.deferred,
+                *(
+                    Deferral(assignment_id=name, reason="tonight is for rest")
+                    for name in dict.fromkeys(whole.blocked_ids)
+                ),
+            ],
+        )
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [put_off], lambda: [accepting()]
+        )
+        record = planned(client)
+        drafts = state_of(client).drafts
+        assert record.plan_snapshot is not None
+        saved = json.loads(record.plan_snapshot)
+        assert saved["plan"]["blocks"] == []
+        del saved["plan"]["blocks"]
+        drafts._connection.execute(
+            "UPDATE drafts SET plan_snapshot=? WHERE draft_id=?",
+            (json.dumps(saved), record.draft_id),
+        )
+        drafts._connection.commit()
+        before = drafts.get(record.draft_id)
+        hers = client.get(HER_PAGE, headers=PAGE_HEADERS)
+        family = client.get("/parent", headers=PAGE_HEADERS)
+        after = drafts.get(record.draft_id)
+
+    assert (hers.status_code, family.status_code) == (200, 200)
+    for page in (hers.text, family.text):
+        text = plan_on(page, record)
+        assert UNAVAILABLE in text
+        assert "tonight is for rest" in text
+        assert 'class="plan-deferral' not in text
+        assert "assignment-link" not in text
+    assert after == before
 
 
 @pytest.mark.parametrize("fault", ["mixed times", "every time aware", "a due date left out"])

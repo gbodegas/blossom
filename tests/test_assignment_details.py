@@ -528,6 +528,31 @@ def test_a_parent_reads_the_details_and_cannot_save_and_her_device_is_not_sent_t
     assert events == []
 
 
+def test_the_way_back_to_a_row_lands_on_the_family_page_when_no_update_is_listed() -> None:
+    """Nothing is reported and the school has said nothing, so the family page lists no
+    assignment updates. The way back from an assignment's details still names that
+    assignment's row, and the page still has a place with that id to land on, once, in the
+    section, which says that nothing is listed. An ordinary visit shows no such section."""
+    with browser() as client:
+        details = client.get(f"{DETAILS}?return_to=family", headers=PAGE_HEADERS).text
+        link = re.search(r'<p class="return"><a href="([^"]+)"', details)
+        assert link is not None
+        href = link.group(1).replace("&amp;", "&")
+        landed = client.get(href, headers=PAGE_HEADERS)
+        ordinary = client.get("/parent", headers=PAGE_HEADERS).text
+
+    assert href == f"/parent?focus={ESSAY_ID}#update-{ESSAY_ID}"
+    assert landed.status_code == 200
+    assert landed.text.count(f'id="update-{ESSAY_ID}"') == 1
+    section = landed.text[landed.text.index('id="assignment-updates"') :]
+    section = section[: section.index("</section>")]
+    assert f'<span id="update-{ESSAY_ID}" tabindex="-1"></span>' in section
+    assert "No assignment updates to show." in section
+    assert "<h3>" not in section
+    assert 'id="assignment-updates"' not in ordinary
+    assert "No assignment updates to show." not in ordinary
+
+
 @pytest.mark.parametrize("plan_id", ["", "draft:plan:2026-08-19:abc12345"])
 @pytest.mark.parametrize("action", ["report", "undo-report"])
 def test_her_device_cannot_send_a_details_form_that_names_the_family_page(
