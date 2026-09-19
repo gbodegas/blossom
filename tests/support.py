@@ -15,7 +15,7 @@ makes the same file reachable under two module names, which mypy rejects.
 import pathlib
 import re
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import Annotated, Any, Protocol
 from zoneinfo import ZoneInfo
@@ -256,6 +256,17 @@ class TwoChannelSource:
                 self.record(SourceChannel.PARENT_ENTRY, "2026-08-25"),
             ]
         return []
+
+    def deadline_records_by_assignment(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> dict[str, list[SourceRecord]]:
+        """The same answers asked for together, so a subclass changes one method."""
+        named = (
+            [item.assignment_id for item in self.assignments()]
+            if assignment_ids is None
+            else assignment_ids
+        )
+        return {name: claims for name in named if (claims := self.deadline_records(name))}
 
     def support_rules(self) -> list[SupportRule]:
         """The graph tests seed rules through the store, not the source."""

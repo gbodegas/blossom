@@ -57,6 +57,17 @@ STUDENT_REPORTS_NAMED: Final = """
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY rowid
 """
+EVERY_DATE_CLAIM: Final = """
+    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in
+    FROM date_claims
+    ORDER BY rowid
+"""
+DATE_CLAIMS_NAMED: Final = """
+    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in
+    FROM date_claims
+    WHERE assignment_id IN (SELECT value FROM json_each(?))
+    ORDER BY rowid
+"""
 EVERY_FAMILY_CHECK: Final = """
     SELECT check_id, assignment_id, operation, basis, note, checked_at, checked_on,
         previous_check_id
@@ -661,6 +672,36 @@ class ProjectStateStore:
         its comparison and its write.
         """
         return self._lock
+
+    @contextmanager
+    def reading(self) -> Iterator[None]:
+        """Hold the store and read one snapshot of the file, however many reads it takes.
+
+        The lock keeps this process's other callers out, but the drafts, her
+        signals, and her requests write the same file through connections of
+        their own, and the lock is nothing to them. A read transaction is:
+        from the first read inside the block until its end, SQLite holds the
+        file as it was, and another connection's commit waits.
+
+        A transaction is begun only when none is active, and only the one begun
+        here is ended here, committed when the block succeeds and rolled back
+        when it fails. Inside a caller's own transaction the block joins it and
+        ends nothing, since committing or rolling back there would decide the
+        caller's writes for it. Keep the block to the reads themselves and
+        finish before rendering, a model call, or another store: a writer
+        elsewhere waits for as long as this is held.
+        """
+        with self._lock:
+            if self._connection.in_transaction:
+                yield
+                return
+            self._connection.execute("BEGIN DEFERRED")
+            try:
+                yield
+            except BaseException:
+                self._connection.rollback()
+                raise
+            self._connection.commit()
 
     def discard_if_new(self) -> None:
         """Close, and remove the file if it was blank when this start opened it, so a
@@ -1393,16 +1434,31 @@ class ProjectStateStore:
                 """,
                 (assignment_id,),
             ).fetchall()
-        return [
-            SourceRecord(
-                channel=SourceChannel(str(row[0])),
-                asserted_value=str(row[1]),
-                observed_at=datetime.fromisoformat(str(row[2])),
-                confidence=float(row[3]),
-                seen_in=None if row[4] is None else str(row[4]),
-            )
-            for row in rows
-        ]
+        return [source_record_from(row) for row in rows]
+
+    def deadline_records_by_assignment(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> dict[str, list[SourceRecord]]:
+        """Every channel's claims under each assignment named, in the order made, in one read.
+
+        Read as her chains are: with no names given, the whole table, and
+        the names bound as one value. An assignment nothing was claimed about
+        has no entry, which says what an empty list says from the single read.
+        """
+        wanted = None if assignment_ids is None else set(assignment_ids)
+        if wanted is not None and not wanted:
+            return {}
+        with self._lock:
+            if wanted is None:
+                rows = self._connection.execute(EVERY_DATE_CLAIM).fetchall()
+            else:
+                rows = self._connection.execute(
+                    DATE_CLAIMS_NAMED, (json.dumps(sorted(wanted)),)
+                ).fetchall()
+        claims: dict[str, list[SourceRecord]] = {}
+        for row in rows:
+            claims.setdefault(str(row[0]), []).append(source_record_from(row[1:]))
+        return claims
 
     def due_between(self, start: date, end: date) -> list[Assignment]:
         """Return assignments due in ``[start, end]``, ordered by date then course.
@@ -1542,6 +1598,17 @@ def family_check_from(row: tuple[object, ...]) -> FamilyCheck:
         checked_at=datetime.fromisoformat(str(row[5])),
         checked_on=date.fromisoformat(str(row[6])),
         previous_check_id=None if row[7] is None else str(row[7]),
+    )
+
+
+def source_record_from(row: tuple[object, ...]) -> SourceRecord:
+    """Build one claim about a due date from a row in the columns' order."""
+    return SourceRecord(
+        channel=SourceChannel(str(row[0])),
+        asserted_value=str(row[1]),
+        observed_at=datetime.fromisoformat(str(row[2])),
+        confidence=float(cast(float, row[3])),
+        seen_in=None if row[4] is None else str(row[4]),
     )
 
 
