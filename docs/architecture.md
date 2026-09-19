@@ -145,11 +145,14 @@ once for a page, however many plans it shows. The hold is the store's lock
 and, inside it, one read transaction, `ProjectStateStore.reading()`: the lock
 keeps this process's other callers out, and the transaction keeps the file as
 it was at the first read, since the drafts, her signals, and her requests
-write the same file through connections of their own. The reading is five
-statements whatever the record holds, the claims asked for once and not once
-per assignment, and it ends before anything is rendered; while it lasts,
-another connection's commit waits, a few reads long. The file stays in
-rollback-journal mode with the default wait. The rule is only that the
+write the same file through connections of their own. The reading is at most
+five read statements however much the record holds, between the statement
+that begins the transaction and the one that ends it: the claims are asked
+for once and not once per assignment, and a reader asked about no
+assignments runs none, so an empty record costs two. It ends before
+anything is rendered; while it lasts, another connection's commit waits, a
+few reads long. The file stays in rollback-journal mode with the default
+wait. The rule is only that the
 assignment's effective status is Done now; nothing is compared with when the
 plan was made, a parent's check, or the school's word. An earlier plan for
 today, a plan for another day, and the text as composed carry no marks.

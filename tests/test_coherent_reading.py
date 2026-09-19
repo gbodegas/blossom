@@ -1,4 +1,5 @@
-"""One reading of the record costs a fixed number of statements and is one snapshot.
+"""One reading of the record costs at most five reads, however much it holds, and is one
+snapshot.
 
 The snapshot cases use two connections to one file, as the application's
 stores do. A second connection that cannot commit gives up after a fraction of
@@ -88,6 +89,32 @@ def test_a_reading_costs_the_same_statements_whatever_the_record_holds(
     assert seen[-1] == "COMMIT"
     assert len(seen) == 7, seen
     assert sum("FROM date_claims" in statement for statement in seen) == 1
+
+
+def test_a_record_that_holds_nothing_costs_fewer_reads_and_never_more(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Five is the most. A reader asked about no assignments runs no statement, so with
+    nothing on record only the assignments and the school's reports are read; naming a
+    saved plan's assignment brings her events and the family's checks back."""
+    store = store_of(tmp_path / "record.sqlite3", 0)
+
+    with statements_of(store) as nothing_named:
+        everything = read_everything(store, store)
+    with statements_of(store) as one_named:
+        read_everything(store, store, also=["math-000"])
+
+    assert everything.assignments == []
+    assert everything.records == {}
+    assert [statement.split()[0] for statement in nothing_named] == [
+        "BEGIN",
+        "SELECT",
+        "SELECT",
+        "COMMIT",
+    ]
+    assert not any("FROM date_claims" in statement for statement in nothing_named)
+    assert len(one_named) == 6
+    assert not any("FROM date_claims" in statement for statement in one_named)
 
 
 @pytest.mark.parametrize("page", ["/student/due-this-week", "/parent"])

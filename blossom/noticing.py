@@ -316,10 +316,12 @@ def read_everything(
     the reader speaks about whether or not they are on record, a saved
     plan's, so what stands about them comes from the same batch.
 
-    The cost is five reads whatever the record holds, the claims among them
-    asked for once and not once per assignment. What comes back is plain
-    lists and mappings with nothing left open, so the transaction is over
-    before anything is rendered or a model is asked.
+    The cost is at most five reads however much the record holds, the claims
+    among them asked for once and not once per assignment. It is fewer for a
+    record that holds nothing, since a reader asked about no assignments runs
+    no statement. What comes back is plain lists and mappings with nothing
+    left open, so the transaction is over before anything is rendered or a
+    model is asked.
     """
     with project_state.reading():
         everything = project_state.all_assignments()
