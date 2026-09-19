@@ -108,7 +108,17 @@ event and the reading of a chain, and the store keeps the chain in
 before the head is read, the same words already saved whatever head the page
 held, a moved head refused with the head as that transaction read it, and an
 undo that restores what the chain says stood before, a repeat refused like
-any other. Still to turn in, turned in, nothing to turn in, and not sure are
+any other. A head that looks whole proves nothing about what is behind it,
+so every save and undo first reads that assignment's whole chain, inside the
+transaction that writes, and holds it to the chain's rules by the same pass
+every reader uses: each event follows the one before it and is that
+assignment's, no id comes twice, and an undo takes back the report just
+before it and carries exactly what stood before that. A chain that does not
+hold is unavailable, which is not the same as saying nothing: nothing is
+called already saved, stale, or new on it, nothing is written or repaired,
+and a reader is to say the record cannot be read, never that she has
+reported nothing. The table and its index are made in one transaction, so a
+file from before gains both or neither. Still to turn in, turned in, nothing to turn in, and not sure are
 the states; not sure is a report, and nothing said is the absence of one. One
 next action is kept only with still to turn in. Three things are read from a
 chain and kept apart: the head a save is compared with, the event that began

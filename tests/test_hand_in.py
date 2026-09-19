@@ -247,6 +247,109 @@ def test_a_chain_whose_links_do_not_follow_its_order_is_not_read_as_anything() -
             project(PRACTICE, chain)
 
 
+CUE = AT + timedelta(days=1)
+
+
+def a_report_taken_back(**carried: object) -> list[HandInEvent]:
+    """Still to turn in with every field set, then turned in, then an undo of that.
+
+    The undo carries what stood before unless ``carried`` says otherwise, so a
+    case names the one thing it gets wrong.
+    """
+    first = event("r1", NEEDS_HAND_IN, action="Put it in my folder", note="Algebra original")
+    first = first.model_copy(update={"cue_at_utc": CUE})
+    second = event("r2", TURNED_IN, on=1, after="r1")
+    restores = {
+        "state": NEEDS_HAND_IN,
+        "next_action": "Put it in my folder",
+        "note": "Algebra original",
+        "cue_at_utc": CUE,
+        **carried,
+    }
+    undo = HandInEvent(
+        event_id="u1",
+        assignment_id=PRACTICE,
+        operation="undo",
+        reported_at=AT + timedelta(days=2),
+        reported_on=day(2),
+        previous_event_id="r2",
+        undone_event_id="r2",
+        **restores,  # type: ignore[arg-type]
+    )
+    return [first, second, undo]
+
+
+def test_an_undo_that_carries_what_stood_before_is_read() -> None:
+    restored = project(PRACTICE, a_report_taken_back())
+
+    assert (restored.state, restored.note, restored.reported_on) == (
+        NEEDS_HAND_IN,
+        "Algebra original",
+        day(0),
+    )
+    assert restored.head is not None
+    assert restored.head.words == restored.source.words  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    "carried",
+    [
+        pytest.param({"state": UNKNOWN, "next_action": None, "cue_at_utc": None}, id="state"),
+        pytest.param({"note": "invented restored text"}, id="note"),
+        pytest.param({"next_action": "Something she never chose"}, id="action"),
+        pytest.param({"cue_at_utc": None}, id="cue"),
+    ],
+)
+def test_an_undo_that_carries_anything_but_what_stood_before_makes_the_chain_unavailable(
+    carried: dict[str, object],
+) -> None:
+    """The head and the reading would otherwise give two accounts of one record."""
+    with pytest.raises(BrokenChain, match="does not carry the state it restores"):
+        project(PRACTICE, a_report_taken_back(**carried))
+
+
+def test_an_undo_takes_back_only_the_report_immediately_before_it() -> None:
+    chain = a_report_taken_back()
+    of_an_undo = event("u2", TURNED_IN, on=3, after="u1", undoes="u1")
+    first_of_all = event("u0", None, after="r0", undoes="r0")
+
+    with pytest.raises(BrokenChain, match="immediately before it"):
+        project(PRACTICE, [*chain, of_an_undo])
+    with pytest.raises(BrokenChain):
+        project(PRACTICE, [first_of_all])
+
+
+def test_an_event_id_met_twice_makes_the_chain_unavailable() -> None:
+    chain = [
+        event("a", NEEDS_HAND_IN),
+        event("b", TURNED_IN, after="a"),
+        event("a", NOT_REQUIRED, after="b"),
+    ]
+
+    with pytest.raises(BrokenChain, match="repeats an event id"):
+        project(PRACTICE, chain)
+
+
+def test_report_undo_report_undo_ends_where_it_began() -> None:
+    chain = [
+        event("a", NEEDS_HAND_IN, on=0, note="first"),
+        event("b", TURNED_IN, on=1, after="a"),
+        event("c", NEEDS_HAND_IN, on=2, after="b", undoes="b", note="first"),
+        event("d", NOT_REQUIRED, on=3, after="c"),
+        event("e", NEEDS_HAND_IN, on=4, after="d", undoes="d", note="first"),
+    ]
+
+    ended = project(PRACTICE, chain)
+
+    assert (ended.state, ended.note, ended.reported_on, ended.entered_by) == (
+        NEEDS_HAND_IN,
+        "first",
+        day(0),
+        "a",
+    )
+    assert (ended.head_id, ended.undo_event_id) == ("e", None)
+
+
 # -------------------------------------------------------------------- the store
 
 
@@ -431,6 +534,151 @@ def test_a_repeat_after_something_else_was_said_is_only_a_change(store: ProjectS
 
     assert isinstance(replay, HandInConflict)
     assert not already_undone(replay, first.event_id)
+
+
+def rows_of(path: pathlib.Path) -> list[tuple[object, ...]]:
+    connection = sqlite3.connect(path)
+    try:
+        return connection.execute("SELECT * FROM hand_in_events ORDER BY sequence").fetchall()
+    finally:
+        connection.close()
+
+
+def schema_of(path: pathlib.Path) -> set[str]:
+    connection = sqlite3.connect(path)
+    try:
+        return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master")}
+    finally:
+        connection.close()
+
+
+DAMAGE = {
+    "a predecessor that is no event": "no-such-event",
+    "a predecessor under another assignment": "the other assignment's event",
+    "a predecessor that is the event itself": "the event itself",
+}
+
+
+@pytest.mark.parametrize("behind_the_head", [False, True], ids=["the head", "an earlier event"])
+@pytest.mark.parametrize("damage", DAMAGE.values(), ids=DAMAGE.keys())
+@pytest.mark.parametrize("action", ["the same words", "other words", "undo"])
+def test_nothing_is_decided_or_written_on_a_chain_that_does_not_hold(
+    action: str, damage: str, behind_the_head: bool, tmp_path: pathlib.Path
+) -> None:
+    """A head that looks whole proves nothing about what is behind it.
+
+    The damage is made with plain SQL, the only way a chain like this comes
+    to be. No save is already saved, appended, or called stale on it, and no
+    undo restores from it, another assignment's words least of all.
+    """
+    path = tmp_path / "record.sqlite3"
+    store = practice_store(path)
+    other = saved(
+        said(store, NOT_REQUIRED, head=None, note="Biology words", assignment_id=PRACTICE_LOG)
+    )
+    first = saved(said(store, NEEDS_HAND_IN, head=None, note="Algebra original"))
+    second = saved(said(store, TURNED_IN, head=first.event_id, on=1))
+    head = saved(said(store, NEEDS_HAND_IN, head=second.event_id, on=2, note="Algebra again"))
+    damaged = second if behind_the_head else head
+    points_at = {
+        "no-such-event": "no-such-event",
+        "the other assignment's event": other.event_id,
+        "the event itself": damaged.event_id,
+    }[damage]
+    store._connection.execute(
+        "UPDATE hand_in_events SET previous_event_id = ? WHERE event_id = ?",
+        (points_at, damaged.event_id),
+    )
+    store._connection.commit()
+    before = rows_of(path)
+
+    def attempt() -> object:
+        if action == "undo":
+            return store.undo_hand_in(PRACTICE, head.event_id, now=AT, today=day(3))
+        if action == "the same words":
+            return said(store, NEEDS_HAND_IN, head=head.event_id, on=3, note="Algebra again")
+        return said(store, TURNED_IN, head=head.event_id, on=3)
+
+    with pytest.raises(CouldNotSave) as refusal:
+        attempt()
+
+    assert isinstance(refusal.value.__cause__, BrokenChain)
+    assert rows_of(path) == before
+    assert not store._connection.in_transaction
+
+
+def test_a_direct_writer_is_held_to_the_whole_chain_too(store: ProjectStateStore) -> None:
+    """What a seed would call: the event it hands over is read with the history it joins."""
+    first = saved(said(store, NEEDS_HAND_IN, head=None, note="mine"))
+    second = saved(said(store, TURNED_IN, head=first.event_id, on=1))
+    wrong_words = event("u-wrong", NEEDS_HAND_IN, after=second.event_id, undoes=second.event_id)
+    does_not_follow = event("r-fork", NOT_REQUIRED, after=first.event_id)
+
+    for refused in (wrong_words, does_not_follow):
+        with pytest.raises(BrokenChain), store.exclusively(), store._writing():
+            store._append_hand_in_locked(refused)
+
+    assert len(store.hand_in_chains([PRACTICE])[PRACTICE]) == 2
+    assert not store._connection.in_transaction
+
+
+def test_the_table_and_its_index_arrive_together_or_not_at_all(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A start that is refused the index leaves a file from before exactly as it was."""
+    path = tmp_path / "record.sqlite3"
+    before = practice_store(path)
+    before.report_status(PRACTICE, DONE, "all of it", expected_head=None, now=AT, today=MONDAY)
+    before._connection.execute("DROP TABLE hand_in_events")
+    before._connection.commit()
+    before.close()
+    assert not {"hand_in_events", "hand_in_events_by_assignment"} & schema_of(path)
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+
+    def no_index(action: int, first: str | None, *rest: object) -> int:
+        refused = action == sqlite3.SQLITE_CREATE_INDEX and first == "hand_in_events_by_assignment"
+        return sqlite3.SQLITE_DENY if refused else sqlite3.SQLITE_OK
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = real_connect(*args, **kwargs)  # type: ignore[call-overload]
+        connection.set_authorizer(no_index)
+        opened.append(connection)
+        return connection  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    with pytest.raises(sqlite3.DatabaseError):
+        ProjectStateStore.open(path, fixture_clock())
+    for connection in opened:
+        connection.close()
+    monkeypatch.undo()
+
+    assert not {"hand_in_events", "hand_in_events_by_assignment"} & schema_of(path)
+    store = ProjectStateStore.open(path, fixture_clock())
+    assert {"hand_in_events", "hand_in_events_by_assignment"} <= schema_of(path)
+    assert {item.assignment_id for item in store.all_assignments()} == {PRACTICE, PRACTICE_LOG}
+    assert len(store.student_reports(PRACTICE)) == 1
+    assert store.hand_in_chains() == {}
+    saved(said(store, TURNED_IN, head=None))
+
+
+def test_making_the_tables_inside_a_callers_transaction_leaves_its_end_to_the_caller(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "record.sqlite3"
+    store = practice_store(path)
+    store._connection.execute("DROP TABLE hand_in_events")
+    store._connection.commit()
+
+    store._connection.execute("BEGIN")
+    store._connection.execute("UPDATE assignments SET title = 'pending'")
+    store._create_tables()
+
+    assert store._connection.in_transaction
+    assert "hand_in_events" not in schema_of(path)
+    store._connection.rollback()
+    assert "hand_in_events" not in schema_of(path)
+    assert "pending" not in {item.title for item in store.all_assignments()}
 
 
 def test_a_write_the_file_refuses_leaves_nothing_and_says_so(

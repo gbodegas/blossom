@@ -43,9 +43,17 @@ UNDO: Final = "undo"
 NEXT_ACTION_MAX_LENGTH: Final = 200
 HAND_IN_NOTE_MAX_LENGTH: Final = 500
 
+Words = tuple[HandInState | None, str | None, str | None, AwareDatetime | None]
+"""Everything an event leaves standing: state, next action, note, and cue."""
+NO_WORDS: Final[Words] = (None, None, None, None)
+
 
 class BrokenChain(ValueError):
-    """Raised for a chain whose links do not follow its stored order, which is read as nothing."""
+    """Raised for a chain that does not hold together: what it says is unavailable.
+
+    Not the same as a chain that says nothing. A reader shows that her
+    hand-in record cannot be read, and never that she has reported nothing;
+    a writer writes nothing on top of it."""
 
 
 class HandInEvent(BaseModel):
@@ -114,8 +122,13 @@ class HandInEvent(BaseModel):
         return self
 
     @property
-    def words(self) -> tuple[HandInState | None, str | None, str | None, AwareDatetime | None]:
-        """What this event leaves standing, as a save is compared: state, action, note, cue."""
+    def words(self) -> Words:
+        """Everything this event leaves standing: state, next action, note, and cue.
+
+        The whole of it, cue included, is what an undo must carry to restore
+        what stood before. It is not what a save is compared with: a save
+        says nothing about a cue, so the store compares the first three.
+        """
         return (self.state, self.next_action, self.note, self.cue_at_utc)
 
 
@@ -173,8 +186,20 @@ class HandInHistoryRow:
     """One event, with what stood after it."""
 
     event: HandInEvent
-    state: HandInState | None
-    reported_on: date | None
+    source: HandInEvent | None
+    """The event whose words stood after this one; ``None`` when nothing did."""
+    entered: HandInEvent | None
+    """The event that began the state standing after this one."""
+
+    @property
+    def state(self) -> HandInState | None:
+        """The state that stood after this event."""
+        return None if self.source is None else self.source.state
+
+    @property
+    def reported_on(self) -> date | None:
+        """The day the state standing after this event was entered."""
+        return None if self.entered is None else self.entered.reported_on
 
 
 @dataclass(frozen=True)
@@ -229,6 +254,17 @@ class HandInProjection:
         return None if self.head is None else self.head.event_id
 
     @property
+    def words(self) -> Words:
+        """Everything that stands now: state, next action, note, and cue."""
+        return NO_WORDS if self.source is None else self.source.words
+
+    @property
+    def words_before_head(self) -> Words:
+        """What stood before the head, which is what an undo of the head restores."""
+        source = self.history[-2].source if len(self.history) > 1 else None
+        return NO_WORDS if source is None else source.words
+
+    @property
     def undo_event_id(self) -> str | None:
         """The event an Undo would take back: the head, when the head is a report."""
         head = self.head
@@ -236,23 +272,33 @@ class HandInProjection:
 
 
 def project(assignment_id: str, chain: Sequence[HandInEvent]) -> HandInProjection:
-    """Read one assignment's chain, in stored order, in one pass.
+    """Read one assignment's chain, in stored order, in one pass, or refuse it whole.
 
     After a report in the state already standing, the period and its day
     stay and the words are the new event's; the note's day moves only when
     the note's words do. After a report in another state, a period begins.
-    An undo restores what stood before the event it takes back, as worked
-    out when the pass went by it. A chain whose links do not follow its
-    order, or that holds another assignment's event, is ``BrokenChain``: the
-    store refuses to write one, so one that is read was made some other way
-    and is not evidence of anything.
+    An undo takes back the report immediately before it and nothing else,
+    and restores what stood before that report, as worked out when the pass
+    went by it.
+
+    An event that is whole by itself is not thereby whole in its chain, so
+    the chain is held to what the store holds a write to. Every event is
+    this assignment's and follows the one before it; no id is met twice; an
+    undo names the report just before it, never an undo and never something
+    further back; and an undo carries exactly what it restores, cue
+    included, since the head and this reading would otherwise give two
+    accounts of one record. Anything else is ``BrokenChain``, and what the
+    chain says is unavailable: the store never writes such a chain, so one
+    that is read was made some other way and is evidence of nothing.
     """
-    met: dict[str, HandInEvent] = {}
     stood: dict[str, _Standing] = {}
     history: list[HandInHistoryRow] = []
     standing = _NOTHING
     before: HandInEvent | None = None
     for event in chain:
+        if event.event_id in stood:
+            msg = f"the hand-in chain of {assignment_id!r} repeats an event id, {event.event_id!r}"
+            raise BrokenChain(msg)
         follows = None if before is None else before.event_id
         if event.assignment_id != assignment_id or event.previous_event_id != follows:
             msg = f"hand-in event {event.event_id!r} does not follow the chain of {assignment_id!r}"
@@ -268,18 +314,26 @@ def project(assignment_id: str, chain: Sequence[HandInEvent]) -> HandInProjectio
             else:
                 standing = _Standing(event, event, event.reported_on)
         else:
-            taken_back = met.get(event.undone_event_id or "")
-            restored = None if taken_back is None else taken_back.previous_event_id
-            standing = _NOTHING if restored is None else stood.get(restored, _NOTHING)
-        met[event.event_id] = event
-        stood[event.event_id] = standing
-        history.append(
-            HandInHistoryRow(
-                event,
-                None if standing.source is None else standing.source.state,
-                None if standing.entered is None else standing.entered.reported_on,
+            if (
+                before is None
+                or before.operation != REPORT
+                or event.undone_event_id != before.event_id
+            ):
+                msg = (
+                    f"hand-in undo {event.event_id!r} must take back the report immediately "
+                    "before it"
+                )
+                raise BrokenChain(msg)
+            restored = (
+                _NOTHING if before.previous_event_id is None else stood[before.previous_event_id]
             )
-        )
+            expected = NO_WORDS if restored.source is None else restored.source.words
+            if event.words != expected:
+                msg = f"hand-in undo {event.event_id!r} does not carry the state it restores"
+                raise BrokenChain(msg)
+            standing = restored
+        stood[event.event_id] = standing
+        history.append(HandInHistoryRow(event, standing.source, standing.entered))
         before = event
     return HandInProjection(
         assignment_id=assignment_id,

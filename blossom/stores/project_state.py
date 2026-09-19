@@ -46,9 +46,11 @@ from blossom.hand_in import (
     HandInAlreadySaved,
     HandInConflict,
     HandInEvent,
+    HandInProjection,
     HandInSaved,
     HandInState,
     HandInUndone,
+    project,
 )
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.retrieval import RetrievalResult
@@ -92,6 +94,12 @@ HAND_IN_EVENTS_NAMED: Final = """
     FROM hand_in_events
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY sequence
+"""
+HAND_IN_CHAIN: Final = """
+    SELECT event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
+        reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
+    FROM hand_in_events
+    WHERE assignment_id = ? ORDER BY sequence
 """
 HAND_IN_HEAD: Final = """
     SELECT event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
@@ -581,11 +589,22 @@ class ProjectStateStore:
             ON family_checks (assignment_id)
             """
         )
-        # Her account of turning work in. The order of events is the order
-        # the file gave them, a number of its own that is never reused, and
-        # an event is named by its id, never by that number. That each event
-        # belongs to an assignment on record, and follows the head of that
-        # assignment's chain, is checked in the transaction that writes it.
+        # Her account of turning work in arrives whole or not at all: on a file
+        # from before, a start that is refused the index leaves no table behind
+        # it. Inside a first start's transaction this joins it and ends nothing.
+        with self._writing():
+            self._create_hand_in_tables()
+        self._upgrade()
+
+    def _create_hand_in_tables(self) -> None:
+        """The hand-in table and its index, in that order, in the caller's transaction.
+
+        The order of events is the order the file gave them, a number of its
+        own that is never reused, and an event is named by its id, never by
+        that number. That each event belongs to an assignment on record, and
+        follows the head of that assignment's chain, is checked in the
+        transaction that writes it; the file has no rule of its own for it.
+        """
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS hand_in_events (
@@ -610,7 +629,6 @@ class ProjectStateStore:
             ON hand_in_events (assignment_id, sequence)
             """
         )
-        self._upgrade()
 
     def _upgrade(self) -> None:
         """Bring a file from before up to this schema, by adding, and keep what it holds.
@@ -1249,17 +1267,24 @@ class ProjectStateStore:
         with nothing read or written. Then, under the store's lock and one
         transaction that reserves the writer before it reads: the assignment
         must be on record; an event the form names must be one of this
-        assignment's, or ``UnknownHandIn``; the same state, action, and note
-        as what stands is already saved, whatever head the page held, a
-        response lost on the way included; otherwise the head the page showed
-        must be the head now, a blank one meaning no event at all, or nothing
-        is written and the head as read here is handed back; otherwise the
+        assignment's, or ``UnknownHandIn``; the assignment's whole chain is
+        read and must hold together, since a head that looks whole proves
+        nothing about what is behind it; the same state, action, and note as
+        what stands is already saved, whatever head the page held, a response
+        lost on the way included; otherwise the head the page showed must be
+        the head now, a blank one meaning no event at all, or nothing is
+        written and the head as read here is handed back; otherwise the
         report is appended. Her work reports are not read and not touched.
+
+        A chain that does not hold is ``BrokenChain``, raised as
+        ``CouldNotSave`` like any other refused write: nothing is called
+        already saved, stale, or new on it, nothing is written, and nothing
+        in it is repaired.
 
         A save says nothing about a calendar cue, so a cue is no part of the
         comparison and a save never removes one by saying nothing: an edit
-        that stays in still to turn in carries the head's cue along, and any
-        other state keeps none, as that state never does.
+        that stays in still to turn in carries the standing cue along, and
+        any other state keeps none, as that state never does.
         """
         next_action = (
             single_line(next_action, NEXT_ACTION_MAX_LENGTH) if state == NEEDS_HAND_IN else None
@@ -1270,14 +1295,14 @@ class ProjectStateStore:
                 self._require_assignment_locked(assignment_id)
                 if expected_head is not None:
                     self._require_hand_in_locked(assignment_id, expected_head)
-                head = self._hand_in_head_locked(assignment_id)
-                standing = None if head is None else (head.state, head.next_action, head.note)
+                reading = self._hand_in_reading_locked(assignment_id)
+                head = reading.head
+                standing = (reading.state, reading.next_action, reading.note)
                 if head is not None and standing == (state, next_action, note):
                     return HandInAlreadySaved(head)
-                if (None if head is None else head.event_id) != expected_head:
+                if reading.head_id != expected_head:
                     return HandInConflict(head)
-                still_to_turn_in = head is not None and head.state == state == NEEDS_HAND_IN
-                cue = head.cue_at_utc if head is not None and still_to_turn_in else None
+                stays = reading.source is not None and reading.state == state == NEEDS_HAND_IN
                 report = HandInEvent(
                     event_id=new_hand_in_id(),
                     assignment_id=assignment_id,
@@ -1285,12 +1310,12 @@ class ProjectStateStore:
                     state=state,
                     next_action=next_action,
                     note=note,
-                    cue_at_utc=cue,
+                    cue_at_utc=reading.words[3] if stays else None,
                     reported_at=now,
                     reported_on=today,
-                    previous_event_id=None if head is None else head.event_id,
+                    previous_event_id=reading.head_id,
                 )
-                return HandInSaved(self._append_hand_in_locked(report))
+                return HandInSaved(self._append_hand_in_locked(report, reading))
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             raise CouldNotSave(assignment_id, error) from error
 
@@ -1300,38 +1325,40 @@ class ProjectStateStore:
         """Take back her current hand-in report, restoring what stood before it.
 
         The event the button names must be one of this assignment's, or
-        ``UnknownHandIn``. Only the head can be undone, and only when it is a
-        report; any other event of hers finds the chain moved on, and a
-        repeat is refused like any other, with the head as this transaction
-        read it, which is how a page tells an event already taken back from
-        a change. What is restored is read from the chain, never the page.
+        ``UnknownHandIn``, and the whole chain must hold together before
+        anything is decided on it, or ``CouldNotSave``. Only the head can be
+        undone, and only when it is a report; any other event of hers finds
+        the chain moved on, and a repeat is refused like any other, with the
+        head as this transaction read it, which is how a page tells an event
+        already taken back from a change. What is restored is what the chain
+        says stood before the head, worked out from the events before it,
+        never looked up by a link alone and never taken from the page.
         """
         try:
             with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
                 self._require_hand_in_locked(assignment_id, event_id)
-                head = self._hand_in_head_locked(assignment_id)
+                reading = self._hand_in_reading_locked(assignment_id)
+                head = reading.head
                 if head is None or head.event_id != event_id or head.operation != REPORT:
                     return HandInConflict(head)
-                before = (
-                    None
-                    if head.previous_event_id is None
-                    else self._hand_in_event_locked(head.previous_event_id)
+                restored_state, restored_action, restored_note, restored_cue = (
+                    reading.words_before_head
                 )
                 undo = HandInEvent(
                     event_id=new_hand_in_id(),
                     assignment_id=assignment_id,
                     operation=UNDO,
-                    state=None if before is None else before.state,
-                    next_action=None if before is None else before.next_action,
-                    note=None if before is None else before.note,
-                    cue_at_utc=None if before is None else before.cue_at_utc,
+                    state=restored_state,
+                    next_action=restored_action,
+                    note=restored_note,
+                    cue_at_utc=restored_cue,
                     reported_at=now,
                     reported_on=today,
                     previous_event_id=head.event_id,
                     undone_event_id=head.event_id,
                 )
-                return HandInUndone(self._append_hand_in_locked(undo))
+                return HandInUndone(self._append_hand_in_locked(undo, reading))
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             raise CouldNotSave(assignment_id, error) from error
 
@@ -1341,6 +1368,12 @@ class ProjectStateStore:
         if named is None or named.assignment_id != assignment_id:
             raise UnknownHandIn(event_id)
 
+    def _hand_in_reading_locked(self, assignment_id: str) -> HandInProjection:
+        """One assignment's whole chain, read through this connection and held to the
+        chain's rules, or ``BrokenChain``. For use inside the transaction that writes."""
+        rows = self._connection.execute(HAND_IN_CHAIN, (assignment_id,)).fetchall()
+        return project(assignment_id, [hand_in_event_from(row) for row in rows])
+
     def _hand_in_head_locked(self, assignment_id: str) -> HandInEvent | None:
         row = self._connection.execute(HAND_IN_HEAD, (assignment_id,)).fetchone()
         return None if row is None else hand_in_event_from(row)
@@ -1349,45 +1382,24 @@ class ProjectStateStore:
         row = self._connection.execute(HAND_IN_EVENT_NAMED, (event_id,)).fetchone()
         return None if row is None else hand_in_event_from(row)
 
-    def _append_hand_in_locked(self, event: HandInEvent) -> HandInEvent:
-        """Append one hand-in event after the head, checking the chain as it is written.
+    def _append_hand_in_locked(
+        self, event: HandInEvent, reading: HandInProjection | None = None
+    ) -> HandInEvent:
+        """Append one hand-in event, held to the chain's rules together with its history.
 
-        The assignment must be on record and the event must follow the head
-        of its chain. An undo must take back that head, the head must be a
-        report, and what the undo carries must be what stood before that
-        report, read from the chain. Whatever calls this, a save, an undo, or
-        a seed, is held to the same, and a write that fails here leaves
-        nothing, the transaction rolling it back. The event comes back with
-        the place the file gave it.
+        The assignment must be on record. The history the event joins is
+        ``reading`` when the caller has read it in this transaction, and is
+        read here otherwise; the event is then read as the next of that
+        chain, by the same pass every reader uses, so it follows the head,
+        an undo takes back the report just before it and carries what stood
+        before that, and the history behind it holds too. Whatever calls
+        this, a save, an undo, or a seed, is held to the same, and a write
+        that fails here leaves nothing, the transaction rolling it back. The
+        event comes back with the place the file gave it.
         """
         self._require_assignment_locked(event.assignment_id)
-        head = self._hand_in_head_locked(event.assignment_id)
-        head_id = None if head is None else head.event_id
-        if event.previous_event_id != head_id:
-            msg = (
-                f"hand-in event {event.event_id!r} does not follow the head of "
-                f"{event.assignment_id!r}"
-            )
-            raise ValueError(msg)
-        if event.operation == UNDO:
-            if head is None or head.operation != REPORT or event.undone_event_id != head_id:
-                msg = (
-                    f"hand-in undo {event.event_id!r} does not take back a report at the head of "
-                    f"{event.assignment_id!r}"
-                )
-                raise ValueError(msg)
-            before = (
-                None
-                if head.previous_event_id is None
-                else self._hand_in_event_locked(head.previous_event_id)
-            )
-            stood = (None, None, None, None) if before is None else before.words
-            if event.words != stood:
-                msg = (
-                    f"hand-in undo {event.event_id!r} does not restore what stood before "
-                    f"{head.event_id!r}"
-                )
-                raise ValueError(msg)
+        joined = reading or self._hand_in_reading_locked(event.assignment_id)
+        project(event.assignment_id, [*(row.event for row in joined.history), event])
         self._connection.execute(
             """
             INSERT INTO hand_in_events (
