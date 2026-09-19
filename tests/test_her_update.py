@@ -10,18 +10,15 @@ import json
 import pathlib
 import re
 import sqlite3
-from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Annotated
 
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
-from langchain_core.messages import BaseMessage
 from markupsafe import escape
-from pydantic import BaseModel
 
-from blossom.agent.graph import ModelAnswer, plan_graph_for
+from blossom.agent.graph import plan_graph_for
 from blossom.app import create_app
 from blossom.assignment_status import statuses_for
 from blossom.dependencies import ApplicationState, get_application_state
@@ -70,6 +67,7 @@ from tests.support import (
     SAME_ORIGIN,
     THEIRS,
     Answer,
+    ReportsWhileAsked,
     Scripted,
     accepting,
     browser,
@@ -540,35 +538,6 @@ def test_reading_the_statuses_takes_the_same_few_reads_whatever_the_number_of_ro
     assert few == many
     assert many == 3
     assert isinstance(sqlite3.connect(":memory:"), sqlite3.Connection)
-
-
-class ReportsWhileAsked[T: BaseModel]:
-    """A model callable whose first answer comes only after her Done has landed, as a save
-    does that arrives while the call is pending. It takes the decision lock for the save,
-    as her page's route does, so a run that held the lock through the call would never
-    answer."""
-
-    def __init__(self, state: ApplicationState, *answers: T) -> None:
-        self.state = state
-        self.answers = list(answers)
-        self.briefs: list[list[BaseMessage]] = []
-        self.lock_was_free = False
-        self.saved: object = None
-
-    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[T]:
-        self.briefs.append(list(messages))
-        if self.saved is None:
-            self.lock_was_free = not self.state.decision_lock.locked()
-            async with self.state.decision_lock:
-                self.saved = self.state.project_state.report_status(
-                    ESSAY,
-                    "done",
-                    None,
-                    expected_head=None,
-                    now=self.state.clock.now(),
-                    today=self.state.clock.today(),
-                )
-        return ok(self.answers.pop(0))
 
 
 @pytest.mark.parametrize("during", ["the planner", "the reviewer"])

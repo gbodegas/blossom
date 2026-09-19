@@ -391,12 +391,17 @@ def build_plan_graph(
         The plan is held to what ``retrieve`` read: the work still to do then,
         and the ids of what she had reported done then. A report that lands
         after that reading is not this step's to catch; the draft's
-        fingerprint is, on the pages and at approval.
+        fingerprint is, on the pages and at approval. It is held to the
+        evening the run was started for as well, the state's own
+        ``plan_date``, whatever day the household's clock has reached by now:
+        a plan dated otherwise goes back to the planner like any failing
+        plan, told both dates, and never on to the reviewer or the store.
         """
         verification = check_plan(
             state["plan"],
             due_in_window=state.get("assignments", []),
             zone=zone,
+            requested_evening=state["plan_date"],
             confidence=state.get("confidence", {}),
             noticings=state.get("noticings", []),
             daily_minutes=state.get("budget_minutes", evening_minutes),

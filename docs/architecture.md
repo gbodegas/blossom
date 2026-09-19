@@ -455,17 +455,24 @@ both ends to UTC, because Python subtracts two aware datetimes that share a
 zone in wall-clock terms; on the two nights a year when a day is not
 twenty-four hours long, the local reading is wrong by an hour.
 
-`blossom/plan_checks.py` runs the tier-one checks over a proposed plan: every
-assignment it names exists, nothing due in the window is unmentioned, each
-assignment is worked on or put off rather than both, no block is scheduled
-after its deadline, no two blocks claim the same minute, and the evening is
-inside the household's budget. Several blocks for one assignment are fine,
-because splitting an essay over two sittings is good planning; being both
-planned and deferred is the plan contradicting itself. A block's rationale and
-a deferral's reason cannot be blank, so putting work off always comes with an
-account of itself. Each failure is reported in words,
-so a critic and a person are told what is wrong rather than left to work it
-out. `PlanVerification.passed` is derived, as tier one's always is.
+`blossom/plan_checks.py` runs the tier-one checks over a proposed plan: the
+plan is for the evening the run was asked to plan, every assignment it names
+exists, nothing due in the window is unmentioned, each assignment is worked
+on or put off rather than both, no block is scheduled after its deadline, no
+two blocks claim the same minute, and the evening is inside the household's
+budget. Several blocks for one assignment are fine, because splitting an
+essay over two sittings is good planning; being both planned and deferred is
+the plan contradicting itself. A block's rationale and a deferral's reason
+cannot be blank, so putting work off always comes with an account of itself.
+Each failure is reported in words, so a critic and a person are told what is
+wrong rather than left to work it out. `PlanVerification.passed` is derived,
+as tier one's always is. The evening is handed to the checks by the caller
+and has no default: the graph passes the `plan_date` its run was started
+with, never the plan's own date and never the clock, since a parent can ask
+for another evening and a run can cross midnight. A plan dated a day early or
+late is sent back with both dates like any failing plan, before the reviewer
+is asked, and is never redated; the drafts store still refuses a bundle whose
+snapshot and draft name different evenings, whatever the checks said.
 
 A due date that is anything short of corroborated does not fail a plan. It is
 carried on the result as a flag, because a plan cannot be more certain than the
@@ -816,12 +823,17 @@ its own storage format. `blossom/agent/runs.py` therefore stamps
 `GRAPH_VERSION` into every run's metadata and refuses to resume a thread
 written under another version. Four rules keep the version steady across
 changes: graph state grows only by optional keys or keys with a reducer; a
-value carried in state gains fields only with defaults and is never renamed or
-moved between modules; the names and order of nodes ahead of a gate are part of
-the contract; and every node performs at most one side effect, written so that
-running it twice has the same result as once. Any change that breaks a rule
-bumps the version, and paused threads are then drained, with whatever they held
-re-queued, rather than resumed.
+value carried in state gains fields only with defaults and is never renamed
+or moved between modules; the names and order of nodes ahead of a gate are
+part of the contract; and every node performs at most one side effect,
+written so that running it twice has the same result as once. Any change that
+breaks a rule bumps the version, and paused threads are then drained, with
+whatever they held re-queued, rather than resumed. A check added to tier one
+breaks none of them: the state gains no key and `PlanVerification` no field,
+a run paused at the gate is past `verify` and nothing after the gate reads
+its verification again, and a run's record keeps the words it was written
+with, so a plan that passed seven checks still says so. The version stayed
+put when the evening check arrived.
 
 Every run also carries an explicit recursion limit, because the framework's
 default is ten thousand and seven supersteps, itself read from the

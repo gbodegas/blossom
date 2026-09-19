@@ -105,7 +105,9 @@ def test_the_text_is_the_text_it_always_was_and_says_what_the_snapshot_keeps() -
         draft_id=made.draft.draft_id,
         plan=plan,
         assignments=SITTINGS_WINDOW,
-        verification=check_plan(plan, due_in_window=SITTINGS_WINDOW, zone=ZONE),
+        verification=check_plan(
+            plan, due_in_window=SITTINGS_WINDOW, zone=ZONE, requested_evening=PLAN_DATE
+        ),
         verdict=dissent(),
         settled=False,
         noticings=contested(),
@@ -146,7 +148,9 @@ def test_an_evening_with_nothing_scheduled_and_no_review_is_a_snapshot_too() -> 
         draft_id="draft:quiet",
         plan=plan,
         assignments=[ESSAY, PROBLEM_SET],
-        verification=check_plan(plan, due_in_window=[ESSAY, PROBLEM_SET], zone=ZONE),
+        verification=check_plan(
+            plan, due_in_window=[ESSAY, PROBLEM_SET], zone=ZONE, requested_evening=PLAN_DATE
+        ),
         verdict=None,
         settled=True,
     )
@@ -167,7 +171,7 @@ def test_a_plan_that_names_work_the_run_did_not_read_composes_nothing() -> None:
     plan = DailyPlan(
         plan_date=PLAN_DATE, blocks=[plan_block("assignment-nowhere", "16:30", "17:00")]
     )
-    checked = check_plan(plan, due_in_window=[ESSAY], zone=ZONE)
+    checked = check_plan(plan, due_in_window=[ESSAY], zone=ZONE, requested_evening=PLAN_DATE)
 
     with pytest.raises(MissingPlanMetadata, match="assignment-nowhere"):
         compose(
