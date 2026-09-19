@@ -52,6 +52,7 @@ from tests.support import (
     Scripted,
     SetClock,
     accepting,
+    block,
     browser,
     composed_plan,
     drafts_in_memory,
@@ -171,6 +172,42 @@ def test_a_wrong_evening_is_sent_back_once_and_the_corrected_plan_is_published()
     assert record.plan_snapshot is not None
     assert json.loads(record.plan_snapshot)["plan"]["plan_date"] == PLAN_DATE.isoformat()
     assert result["plan"].plan_date == PLAN_DATE
+
+
+@pytest.mark.parametrize("edge", [date.max, date.min])
+def test_a_plan_dated_at_the_edge_of_the_calendar_is_sent_back_like_any_other(edge: date) -> None:
+    """A date is valid to the type at both ends of the calendar, where a clock time cannot
+    be carried into another zone. A plan dated there is still only a plan for the wrong
+    evening: its minutes are measured on the evening the run plans, the run's record says
+    what it asked for, the date check fails with both dates, and the corrected plan is the
+    one saved. Nothing overflows on the way. The block is a late one, whose end on the
+    calendar's last day falls, in universal time, on a day that does not exist."""
+    late = good_plan().model_copy(
+        update={"blocks": [block("assignment-canal-essay", "20:00", "21:00")]}
+    )
+    wrong = check_plan(
+        dated(late, edge),
+        due_in_window=[ESSAY, PROBLEM_SET],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+    )
+    drafts = drafts_in_memory()
+    planner = Scripted(ok(dated(late, edge)), ok(good_plan()))
+    critic = Scripted(ok(accepting()))
+
+    result = run_for(graph_with(planner, critic, drafts=drafts))
+
+    assert wrong.failed_checks[0] is PlanCheck.PLAN_DATE_MATCHES_REQUEST
+    assert PlanCheck.WITHIN_TIME_BUDGET not in wrong.failed_checks
+    assert wrong_evening(edge) in wrong.as_feedback()
+    assert (planner.calls, critic.calls) == (2, 1)
+    assert result["outcome"] == "accepted"
+    asked = next(item.found for item in result["steps"] if item.node == "plan")
+    assert asked.startswith("1 block and 1 deferral asking 60 minutes")
+    assert wrong_evening(edge) in verify_lines(result)[0]
+    record = drafts.get(result["draft"].draft_id)
+    assert record is not None
+    assert record.plan_date == PLAN_DATE
 
 
 def test_a_planner_that_never_names_the_evening_asked_for_ends_as_checks_failed() -> None:

@@ -377,7 +377,7 @@ def build_plan_graph(
                 "outcome": outcome,
                 "steps": [step("plan", round_number, expected, found)],
             }
-        found = describe_plan(answer.parsed, zone, tokens)
+        found = describe_plan(answer.parsed, zone, tokens, evening=state["plan_date"])
         return {
             "rounds": 1,
             "plan": answer.parsed,

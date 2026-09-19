@@ -274,7 +274,9 @@ def check_plan(
             later.assignment_id,
         )
 
-    total = plan.total_minutes(zone)
+    # Measured on the evening asked for, which is the evening the budget belongs to,
+    # and which is a day the calendar can carry whatever date the plan came back with.
+    total = plan.total_minutes(zone, on=requested_evening)
     if total > daily_minutes:
         found(
             PlanCheck.WITHIN_TIME_BUDGET,
