@@ -37,7 +37,19 @@ from typing import Final, Literal, NamedTuple, Self, cast
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator, model_validator
 
+from blossom.authored_text import multiline, single_line
 from blossom.clock import Clock
+from blossom.hand_in import (
+    HAND_IN_NOTE_MAX_LENGTH,
+    NEEDS_HAND_IN,
+    NEXT_ACTION_MAX_LENGTH,
+    HandInAlreadySaved,
+    HandInConflict,
+    HandInEvent,
+    HandInSaved,
+    HandInState,
+    HandInUndone,
+)
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.retrieval import RetrievalResult
 from blossom.stores.paths import refuse_unsafe_path
@@ -68,6 +80,18 @@ DATE_CLAIMS_NAMED: Final = """
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY rowid
 """
+HAND_IN_COLUMNS: Final = """
+    event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
+    reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
+"""
+# The two statements are written whole from a constant of this module; nothing a
+# person typed is ever part of their text.
+EVERY_HAND_IN_EVENT: Final = f"SELECT {HAND_IN_COLUMNS} FROM hand_in_events ORDER BY sequence"  # noqa: S608
+HAND_IN_EVENTS_NAMED: Final = f"""
+    SELECT {HAND_IN_COLUMNS} FROM hand_in_events
+    WHERE assignment_id IN (SELECT value FROM json_each(?))
+    ORDER BY sequence
+"""  # noqa: S608
 EVERY_FAMILY_CHECK: Final = """
     SELECT check_id, assignment_id, operation, basis, note, checked_at, checked_on,
         previous_check_id
@@ -326,6 +350,12 @@ class UnknownReport(LookupError):
     from, so it is refused before anything is compared or written."""
 
 
+class UnknownHandIn(LookupError):
+    """A form named a hand-in event that is not one of the assignment's: no such event, or
+    one under another assignment. Such a name proves nothing about the page it came
+    from, so it is refused before anything is compared or written."""
+
+
 class UnknownCheck(LookupError):
     """A form named a check that is not one of the assignment's: no such event, or an event
     under another assignment. Such a name proves nothing about the page it came from, so
@@ -536,6 +566,35 @@ class ProjectStateStore:
             """
             CREATE INDEX IF NOT EXISTS family_checks_by_assignment
             ON family_checks (assignment_id)
+            """
+        )
+        # Her account of turning work in. The order of events is the order
+        # the file gave them, a number of its own that is never reused, and
+        # an event is named by its id, never by that number. That each event
+        # belongs to an assignment on record, and follows the head of that
+        # assignment's chain, is checked in the transaction that writes it.
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hand_in_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT UNIQUE NOT NULL,
+                assignment_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                state TEXT,
+                next_action TEXT,
+                note TEXT,
+                cue_at_utc TEXT,
+                reported_at_utc TEXT NOT NULL,
+                reported_on TEXT NOT NULL,
+                previous_event_id TEXT,
+                undone_event_id TEXT
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS hand_in_events_by_assignment
+            ON hand_in_events (assignment_id, sequence)
             """
         )
         self._upgrade()
@@ -1134,6 +1193,222 @@ class ProjectStateStore:
             msg = f"the chain of {report.assignment_id!r} forked while writing {report.report_id!r}"
             raise RuntimeError(msg)
 
+    def hand_in_chains(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> dict[str, list[HandInEvent]]:
+        """Every hand-in event under each assignment named, in stored order, in one read.
+
+        Read as her work reports are: with no names given, the whole table,
+        and the names bound as one value. An assignment she has said nothing
+        about has no entry.
+        """
+        wanted = None if assignment_ids is None else set(assignment_ids)
+        if wanted is not None and not wanted:
+            return {}
+        with self._lock:
+            if wanted is None:
+                rows = self._connection.execute(EVERY_HAND_IN_EVENT).fetchall()
+            else:
+                rows = self._connection.execute(
+                    HAND_IN_EVENTS_NAMED, (json.dumps(sorted(wanted)),)
+                ).fetchall()
+        chains: dict[str, list[HandInEvent]] = {}
+        for row in rows:
+            chains.setdefault(str(row[1]), []).append(hand_in_event_from(row))
+        return chains
+
+    def record_hand_in(
+        self,
+        assignment_id: str,
+        state: HandInState,
+        next_action: str | None,
+        note: str | None,
+        *,
+        expected_head: str | None,
+        now: datetime,
+        today: date,
+    ) -> HandInSaved | HandInAlreadySaved | HandInConflict:
+        """Keep what she says about turning an assignment in, once, as of now.
+
+        The order is her work report's. The words are made what is kept
+        first, a next action only with still to turn in and dropped with any
+        other state, and words the record will not keep are ``TextRefused``
+        with nothing read or written. Then, under the store's lock and one
+        transaction that reserves the writer before it reads: the assignment
+        must be on record; an event the form names must be one of this
+        assignment's, or ``UnknownHandIn``; the same state, action, and note
+        as what stands is already saved, whatever head the page held, a
+        response lost on the way included; otherwise the head the page showed
+        must be the head now, a blank one meaning no event at all, or nothing
+        is written and the head as read here is handed back; otherwise the
+        report is appended. Her work reports are not read and not touched.
+        """
+        next_action = (
+            single_line(next_action, NEXT_ACTION_MAX_LENGTH) if state == NEEDS_HAND_IN else None
+        )
+        note = multiline(note, HAND_IN_NOTE_MAX_LENGTH)
+        try:
+            with self._lock, self._writing():
+                self._require_assignment_locked(assignment_id)
+                if expected_head is not None:
+                    self._require_hand_in_locked(assignment_id, expected_head)
+                head = self._hand_in_head_locked(assignment_id)
+                if head is not None and head.words == (state, next_action, note, None):
+                    return HandInAlreadySaved(head)
+                if (None if head is None else head.event_id) != expected_head:
+                    return HandInConflict(head)
+                report = HandInEvent(
+                    event_id=new_hand_in_id(),
+                    assignment_id=assignment_id,
+                    operation=REPORT,
+                    state=state,
+                    next_action=next_action,
+                    note=note,
+                    reported_at=now,
+                    reported_on=today,
+                    previous_event_id=None if head is None else head.event_id,
+                )
+                return HandInSaved(self._append_hand_in_locked(report))
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CouldNotSave(assignment_id, error) from error
+
+    def undo_hand_in(
+        self, assignment_id: str, event_id: str, *, now: datetime, today: date
+    ) -> HandInUndone | HandInConflict:
+        """Take back her current hand-in report, restoring what stood before it.
+
+        The event the button names must be one of this assignment's, or
+        ``UnknownHandIn``. Only the head can be undone, and only when it is a
+        report; any other event of hers finds the chain moved on, and a
+        repeat is refused like any other, with the head as this transaction
+        read it, which is how a page tells an event already taken back from
+        a change. What is restored is read from the chain, never the page.
+        """
+        try:
+            with self._lock, self._writing():
+                self._require_assignment_locked(assignment_id)
+                self._require_hand_in_locked(assignment_id, event_id)
+                head = self._hand_in_head_locked(assignment_id)
+                if head is None or head.event_id != event_id or head.operation != REPORT:
+                    return HandInConflict(head)
+                before = (
+                    None
+                    if head.previous_event_id is None
+                    else self._hand_in_event_locked(head.previous_event_id)
+                )
+                undo = HandInEvent(
+                    event_id=new_hand_in_id(),
+                    assignment_id=assignment_id,
+                    operation=UNDO,
+                    state=None if before is None else before.state,
+                    next_action=None if before is None else before.next_action,
+                    note=None if before is None else before.note,
+                    cue_at_utc=None if before is None else before.cue_at_utc,
+                    reported_at=now,
+                    reported_on=today,
+                    previous_event_id=head.event_id,
+                    undone_event_id=head.event_id,
+                )
+                return HandInUndone(self._append_hand_in_locked(undo))
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CouldNotSave(assignment_id, error) from error
+
+    def _require_hand_in_locked(self, assignment_id: str, event_id: str) -> None:
+        """Refuse a name that is not one of this assignment's hand-in events."""
+        named = self._hand_in_event_locked(event_id) if event_id else None
+        if named is None or named.assignment_id != assignment_id:
+            raise UnknownHandIn(event_id)
+
+    def _hand_in_head_locked(self, assignment_id: str) -> HandInEvent | None:
+        row = self._connection.execute(
+            f"""
+            SELECT {HAND_IN_COLUMNS} FROM hand_in_events
+            WHERE assignment_id = ? ORDER BY sequence DESC LIMIT 1
+            """,  # noqa: S608  (the columns are a constant of this module)
+            (assignment_id,),
+        ).fetchone()
+        return None if row is None else hand_in_event_from(row)
+
+    def _hand_in_event_locked(self, event_id: str) -> HandInEvent | None:
+        row = self._connection.execute(
+            f"SELECT {HAND_IN_COLUMNS} FROM hand_in_events WHERE event_id = ?",  # noqa: S608
+            (event_id,),
+        ).fetchone()
+        return None if row is None else hand_in_event_from(row)
+
+    def _append_hand_in_locked(self, event: HandInEvent) -> HandInEvent:
+        """Append one hand-in event after the head, checking the chain as it is written.
+
+        The assignment must be on record and the event must follow the head
+        of its chain. An undo must take back that head, the head must be a
+        report, and what the undo carries must be what stood before that
+        report, read from the chain. Whatever calls this, a save, an undo, or
+        a seed, is held to the same, and a write that fails here leaves
+        nothing, the transaction rolling it back. The event comes back with
+        the place the file gave it.
+        """
+        self._require_assignment_locked(event.assignment_id)
+        head = self._hand_in_head_locked(event.assignment_id)
+        head_id = None if head is None else head.event_id
+        if event.previous_event_id != head_id:
+            msg = (
+                f"hand-in event {event.event_id!r} does not follow the head of "
+                f"{event.assignment_id!r}"
+            )
+            raise ValueError(msg)
+        if event.operation == UNDO:
+            if head is None or head.operation != REPORT or event.undone_event_id != head_id:
+                msg = (
+                    f"hand-in undo {event.event_id!r} does not take back a report at the head of "
+                    f"{event.assignment_id!r}"
+                )
+                raise ValueError(msg)
+            before = (
+                None
+                if head.previous_event_id is None
+                else self._hand_in_event_locked(head.previous_event_id)
+            )
+            stood = (None, None, None, None) if before is None else before.words
+            if event.words != stood:
+                msg = (
+                    f"hand-in undo {event.event_id!r} does not restore what stood before "
+                    f"{head.event_id!r}"
+                )
+                raise ValueError(msg)
+        self._connection.execute(
+            """
+            INSERT INTO hand_in_events (
+                event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
+                reported_at_utc, reported_on, previous_event_id, undone_event_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.event_id,
+                event.assignment_id,
+                event.operation,
+                event.state,
+                event.next_action,
+                event.note,
+                None if event.cue_at_utc is None else event.cue_at_utc.isoformat(),
+                event.reported_at.isoformat(),
+                event.reported_on.isoformat(),
+                event.previous_event_id,
+                event.undone_event_id,
+            ),
+        )
+        return self._confirm_hand_in_head_locked(event)
+
+    def _confirm_hand_in_head_locked(self, event: HandInEvent) -> HandInEvent:
+        """Read the head back: the event just written, or the write is refused whole."""
+        head = self._hand_in_head_locked(event.assignment_id)
+        if head is None or head.event_id != event.event_id:
+            msg = (
+                f"the hand-in chain of {event.assignment_id!r} forked while writing "
+                f"{event.event_id!r}"
+            )
+            raise RuntimeError(msg)
+        return head
+
     def mark_checked(
         self,
         assignment_id: str,
@@ -1574,6 +1849,29 @@ def assignment_from(row: tuple[object, ...]) -> Assignment:
             str(field): SourceChannel(str(value))
             for field, value in json.loads(str(row[9])).items()
         },
+    )
+
+
+def new_hand_in_id() -> str:
+    """A stable id for one hand-in event, drawn once and never reused."""
+    return f"hand-in-{uuid.uuid4().hex[:12]}"
+
+
+def hand_in_event_from(row: tuple[object, ...]) -> HandInEvent:
+    """Build one hand-in event from a row in the order of ``HAND_IN_COLUMNS``."""
+    return HandInEvent(
+        event_id=str(row[0]),
+        assignment_id=str(row[1]),
+        operation=cast(Literal["report", "undo"], str(row[2])),
+        state=cast(HandInState | None, None if row[3] is None else str(row[3])),
+        next_action=None if row[4] is None else str(row[4]),
+        note=None if row[5] is None else str(row[5]),
+        cue_at_utc=None if row[6] is None else datetime.fromisoformat(str(row[6])),
+        reported_at=datetime.fromisoformat(str(row[7])),
+        reported_on=date.fromisoformat(str(row[8])),
+        previous_event_id=None if row[9] is None else str(row[9]),
+        undone_event_id=None if row[10] is None else str(row[10]),
+        sequence=int(cast(int, row[11])),
     )
 
 

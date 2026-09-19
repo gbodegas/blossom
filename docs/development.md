@@ -132,8 +132,10 @@ Three files under `.local/` outlive a restart:
   there. It holds her own updates on each assignment too, Done or Not yet with
   any note, as a chain of events she can take back, kept apart from what the
   school reports, and the family's checks of her Done beside a school
-  Missing, a chain of events per assignment in a table of its own. A file
-  from before either gains the tables on the first start.
+  Missing, a chain of events per assignment in a table of its own. A third
+  table, `hand_in_events`, is made for what she says about turning work in;
+  no page reads or writes it yet, so it stays empty. A file from before any
+  of them gains the tables on the first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   A draft is its text and, in a nullable `plan_snapshot` column, the plan as

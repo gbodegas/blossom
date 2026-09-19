@@ -81,6 +81,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "threading": "standard library; serializes the shared connection and the sign-in count",
     "time": "standard library; the forward-only clock behind the sign-in wait",
     "typing": "standard library",
+    "unicodedata": "standard library; the category of a character, to refuse a control",
     "uuid": "standard library",
     "zoneinfo": "standard library; resolves the household zone, backed by tzdata",
 }
