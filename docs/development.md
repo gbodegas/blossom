@@ -164,6 +164,14 @@ Three files under `.local/` outlive a restart:
 Deleting the three files resets the demo, and with it every saved draft,
 decision, run, and trace.
 
+The test suite never opens them. Each test keeps its state in a temporary
+folder. A `BLOSSOM_DATABASE_PATH`, `BLOSSOM_CHECKPOINT_PATH`, or
+`BLOSSOM_TRACE_PATH` the shell hands the run is set aside until it ends, and
+a test that reaches for `.local/`, or for the folder one of those variables
+named, is refused before a folder is made or a file opened there, however
+the path is spelled. `tests/state_guard.py` holds the rule and
+`tests/test_state_guard.py` holds it to account.
+
 ## Running the planner for real
 
 Copy `.env.example` to `.env`, put an Anthropic API key in
