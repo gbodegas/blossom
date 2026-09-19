@@ -132,8 +132,14 @@ class FixtureSource:
     def deadline_records_by_assignment(
         self, assignment_ids: Iterable[str] | None = None
     ) -> dict[str, list[SourceRecord]]:
-        """The claims about each assignment named, from the whole file read and checked once."""
+        """The claims about each assignment named, from the whole file read and checked once.
+
+        Asked about no assignments, the answer is nothing and the file is not
+        read, as the record runs no statement for the same question.
+        """
         wanted = None if assignment_ids is None else set(assignment_ids)
+        if wanted is not None and not wanted:
+            return {}
         return {
             assignment_id: list(claims)
             for assignment_id, claims in self.claims_by_assignment().items()

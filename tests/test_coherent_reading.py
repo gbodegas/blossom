@@ -170,6 +170,15 @@ def test_a_fixture_answers_in_bulk_as_it_answers_one_at_a_time() -> None:
         assert list(together.get(assignment_id, [])) == fixture.deadline_records(assignment_id)
 
 
+def test_a_fixture_asked_about_no_assignments_reads_no_file(tmp_path: pathlib.Path) -> None:
+    """As the store runs no statement: a folder with no claims file still answers, with nothing."""
+    fixture = FixtureSource(tmp_path)
+
+    assert fixture.deadline_records_by_assignment([]) == {}
+    with pytest.raises(FileNotFoundError):
+        fixture.deadline_records_by_assignment(["math-000"])
+
+
 def test_a_writer_cannot_commit_into_a_reading_and_the_reading_stays_one_snapshot(
     tmp_path: pathlib.Path,
 ) -> None:
