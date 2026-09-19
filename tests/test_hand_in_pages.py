@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
+from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.noticing import planning_digest, read_everything, week_from
 from blossom.plans import DailyPlan
 from blossom.routes.hand_in import (
@@ -54,6 +54,7 @@ from tests.support import (
     THEIRS,
     Answer,
     Scripted,
+    a_row,
     accepting,
     browser,
     card_for,
@@ -496,6 +497,60 @@ def test_the_family_page_lists_what_she_said_and_offers_no_way_to_say_it_for_her
         assert not [
             action for action in re.findall(r'action="([^"]+)"', family) if "hand-in" in action
         ]
+
+
+def test_the_family_list_keeps_its_order_its_window_and_its_unreadable_rows_last() -> None:
+    """Six assignments, said about on chosen days, read on the pinned day, August 19.
+
+    Still to turn in comes first, the longest standing first, however old, and
+    an edit inside that state does not move a row down. Whatever else she said
+    follows while her latest word is inside fourteen days, the latest first by
+    the order the file kept and never by the clock: August 6 is inside and
+    August 5 is not. A record that cannot be read comes last.
+    """
+    names = ["old-wait", "new-wait", "edge-in", "recent", "edge-out", "broken"]
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = state_of(client).project_state
+        store.put_on_record([a_row(name, f"Work {name}") for name in names], {})
+
+        def said(name: str, state: HandInState, on: date, head: str | None = None) -> str:
+            at = datetime(on.year, on.month, on.day, 21, 0, tzinfo=UTC)
+            kept = store.record_hand_in(
+                name, state, None, None, expected_head=head, now=at, today=on
+            )
+            assert isinstance(kept, HandInSaved)
+            return kept.event.event_id
+
+        first = said("old-wait", NEEDS_HAND_IN, date(2026, 7, 1))
+        said("edge-out", TURNED_IN, date(2026, 8, 5))
+        said("recent", "not_required", date(2026, 8, 18))
+        said("edge-in", TURNED_IN, date(2026, 8, 6))
+        said("new-wait", NEEDS_HAND_IN, date(2026, 8, 17))
+        said("broken", TURNED_IN, date(2026, 8, 19))
+        kept = store.record_hand_in(
+            "old-wait",
+            NEEDS_HAND_IN,
+            "Put it in my folder",
+            None,
+            expected_head=first,
+            now=datetime(2026, 8, 19, 21, 0, tzinfo=UTC),
+            today=date(2026, 8, 19),
+        )
+        assert isinstance(kept, HandInSaved)
+        store._connection.execute(
+            "UPDATE hand_in_events SET state = 'invalid-state' WHERE assignment_id = 'broken'"
+        )
+        store._connection.commit()
+
+        family = client.get(FAMILY).text
+
+    start = family.index('id="turning-work-in"')
+    listed = family[start : family.index("</section>", start)]
+    order = re.findall(r'<article class="draft" id="(?:update|hand-in)-([^"]+)"', listed)
+    assert order == ["old-wait", "new-wait", "edge-in", "recent", "broken"]
+    assert "edge-out" not in listed
+    assert "She reported Still to turn in on July 1, 2026." in listed
+    assert "cannot be read" in listed[listed.index("-broken") :]
 
 
 def test_her_two_accounts_stay_apart_on_the_page_and_a_plan_is_not_made_stale() -> None:
