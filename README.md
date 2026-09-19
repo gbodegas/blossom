@@ -53,8 +53,10 @@ review concerns. A parent can review it without blocking her from using it.
   <img src="docs/assets/student-week.png" alt="Blossom's student view with planning and help controls above the first assignment" width="640">
 </p>
 
-*A synthetic sample week with a prepared plan. Open "View today's plan" to
-read the time set aside for the evening.*
+*A synthetic sample week with a prepared plan, pictured in an earlier release
+that kept the plan folded under "View today's plan". Her page now shows
+today's saved plan open on arrival, ahead of the help form, and "View today's
+plan", in the notice above it, jumps to it.*
 
 **Too much right now.** One press, with no rating or explanation required.
 It sets the shorter budget for the next plan and offers "Make a smaller
