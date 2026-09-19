@@ -33,7 +33,6 @@ from tests.support import (
 
 DETAILS = f"/student/assignments/{ESSAY_ID}"
 ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
-TINTED = ("problem", "confidence", "from-parents")
 STATES = ("link", "visited")
 NEVER_ON = {"hover", "focus", "focus-visible", "focus-within", "active"}
 
@@ -265,6 +264,8 @@ def one_query_holds(query: str, view: View) -> bool:
         elif name == "max-width":
             result = result and view.width <= length_px(value)
         elif name == "prefers-reduced-motion":
+            if value not in ("reduce", "no-preference"):
+                raise UnreadMedia(query)
             result = result and (value == "reduce") == view.reduced_motion
         else:
             raise UnreadMedia(query)
@@ -277,6 +278,8 @@ class Sheet:
     colors: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
     """Each rule that sets a color: its selector, the value, its place in the source, and
     the media condition it sits under, ``None`` for a rule that holds everywhere."""
+    backgrounds: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    """The same for each rule that sets a background, by either property's name."""
 
 
 def blocks(css: str) -> list[tuple[str, str]]:
@@ -331,20 +334,28 @@ def read_sheet(css: str) -> Sheet:
                         msg = f"--{name[2:]} is set inside {media}"
                         raise UnreadMedia(msg)
                     sheet.tokens[name[2:]] = value
-            if "color" in declared:
-                for head in before.split(","):
+            for head in before.split(","):
+                if "color" in declared:
                     sheet.colors.append((selector(head), declared["color"], order, media))
+                for name in ("background", "background-color"):
+                    if name in declared:
+                        sheet.backgrounds.append((selector(head), declared[name], order, media))
 
     read(plain, None)
     return sheet
 
 
-def color_of(sheet: Sheet, element: Element, state: str, view: View) -> str | None:
-    """The color the sheet gives ``element`` in ``state`` on ``view``, its custom property
-    resolved, or ``None`` when no rule that holds there reaches it and the browser's own
-    color would show."""
+Rules = list[tuple[Selector, str, int, str | None]]
+Paint = tuple[float, float, float, float]
+PLAIN_SURFACES = ("canvas", "surface", "surface-strong")
+"""The paper and the two card surfaces: what a link sits on when it is on no tint."""
+
+
+def winning(rules: Rules, sheet: Sheet, element: Element, state: str, view: View) -> str | None:
+    """The value the cascade settles on for ``element`` among ``rules``, its custom property
+    resolved, or ``None`` when no rule that holds on ``view`` reaches it."""
     winner: tuple[tuple[int, int, int], int, str] | None = None
-    for chosen, value, order, media in sheet.colors:
+    for chosen, value, order, media in rules:
         if holds(media, view) and chosen.matches(element, state):
             rank = (chosen.specificity, order, value)
             if winner is None or rank[:2] > winner[:2]:
@@ -355,8 +366,58 @@ def color_of(sheet: Sheet, element: Element, state: str, view: View) -> str | No
     return sheet.tokens[named.group(1)] if named else winner[2]
 
 
-def on_a_tint(element: Element) -> bool:
-    return any(above.classes & set(TINTED) for above in element.ancestors())
+def color_of(sheet: Sheet, element: Element, state: str, view: View) -> str | None:
+    """The color the sheet gives ``element`` in ``state`` on ``view``, or ``None`` when no
+    rule that holds there reaches it and the browser's own color would show."""
+    return winning(sheet.colors, sheet, element, state, view)
+
+
+def paint(value: str | None) -> Paint | None:
+    """A flat color as red, green, blue, and how opaque it is, or ``None`` for a value that
+    paints nothing flat: none at all, transparent, the text's own color, or a gradient."""
+    if value is None:
+        return None
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        red, green, blue = (int(value[i : i + 2], 16) for i in (1, 3, 5))
+        return (red, green, blue, 1.0)
+    found = re.fullmatch(r"rgba?\(([^)]*)\)", value)
+    if found is None:
+        return None
+    parts = [float(part) for part in re.findall(r"[\d.]+", found.group(1))]
+    return (parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else 1.0)
+
+
+def over(top: Paint, under: tuple[float, float, float]) -> tuple[float, float, float]:
+    alpha = top[3]
+    return (
+        top[0] * alpha + under[0] * (1 - alpha),
+        top[1] * alpha + under[1] * (1 - alpha),
+        top[2] * alpha + under[2] * (1 - alpha),
+    )
+
+
+def tint_under(sheet: Sheet, link: Element, view: View) -> Paint | None:
+    """The tint ``link`` sits on, as the stylesheet paints it: the background of the nearest
+    element above it that has a flat one, unless that is the paper or a card, which is
+    no tint. Found from the stylesheet's own rules, so a panel tinted tomorrow is held to
+    the same contrast with no word added here."""
+    plain = {paint(sheet.tokens[name]) for name in PLAIN_SURFACES}
+    for above in link.ancestors():
+        painted = paint(winning(sheet.backgrounds, sheet, above, "link", view))
+        if painted is not None:
+            return None if painted in plain else painted
+    return None
+
+
+def readable_on(sheet: Sheet, ink: str, tint: Paint) -> float:
+    """The least contrast ``ink`` has against ``tint`` wherever a tinted panel is laid: over
+    the paper, and over each card surface on the paper."""
+    written = paint(ink)
+    assert written is not None, ink
+    return min(
+        contrast(written[:3], over(tint, drawn(sheet, *under)))
+        for under in (("canvas",), ("canvas", "surface-strong"), ("canvas", "surface"))
+    )
 
 
 def stylesheet() -> str:
@@ -458,6 +519,11 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
     assert color_of(sheet, child, "link", View(1151)) == "#777777"
     assert color_of(sheet, child, "link", View(1152)) == "#999999"
     assert color_of(sheet, named, "link", View(820, reduced_motion=True)) == "#aaaaaa"
+    still = read_sheet(
+        "@media (prefers-reduced-motion: no-preference) { main a { color: #bbbbbb; } }"
+    )
+    assert color_of(still, plain, "link", tablet) == "#bbbbbb"
+    assert color_of(still, plain, "link", View(820, reduced_motion=True)) is None
     assert color_of(sheet, plain, "link", desktop) == "#222222"
     for unread in (
         "@media (hover: hover) { a { color: red; } }",
@@ -465,6 +531,8 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
         "@media not screen { a { color: red; } }",
         "@supports (display: grid) { a { color: red; } }",
         "@media (max-width: 30rem) { :root { --ink: red; } }",
+        "@media (prefers-reduced-motion: reduced) { a { color: red; } }",
+        "@media (prefers-reduced-motion) { a { color: red; } }",
     ):
         with pytest.raises(UnreadMedia):
             color_of(read_sheet(unread), plain, "link", tablet)
@@ -478,14 +546,16 @@ def test_every_link_in_a_page_gets_its_color_from_the_stylesheet(
     """On her week, the family page, an assignment's details, and a refused save, at each
     width the pages are held to and whether or not the reader asks for less motion, no
     link in the page's main part is left to the browser's blue or purple, visited or not.
-    A link with no class of its own takes the darker action color on a tint, every one of
-    them; the way back beside a saved update takes the action color, from the plain rule;
-    and a link to an assignment keeps the action color its own rule gives it, which wins
-    over the plain rule either way."""
+    Every link that sits on a tint, whatever its class, has at least 4.5 to 1 against that
+    tint, over the paper and over a card; which panels are tinted is read from the
+    stylesheet's backgrounds. By name: on a tint, the plain links and the links to
+    assignments alike take the darker action color, in a notice and in a plan row she
+    reports done; on a plain surface the way back beside a saved update and a link to an
+    assignment take the action color."""
     sheet = read_sheet(stylesheet())
     action, darker = sheet.tokens["blue-action"], sheet.tokens["blue-action-hover"]
     for view in (View(width), View(width, reduced_motion=True)):
-        seen: dict[str, str] = {}
+        seen: dict[tuple[str, str, str], str] = {}
         for name, page in rendered.items():
             found = links_in(page)
             assert found, name
@@ -493,17 +563,29 @@ def test_every_link_in_a_page_gets_its_color_from_the_stylesheet(
                 color = color_of(sheet, link, state, view)
                 where = (name, link.text.strip(), sorted(link.classes), view)
                 assert color is not None, where
-                if not link.classes:
-                    kind = "tint" if on_a_tint(link) else "plain"
-                    seen[f"{kind}: {link.text.strip()}"] = color
-                    if kind == "tint":
-                        assert color == darker, where
-                elif "assignment-link" in link.classes:
-                    assert color == action, where
-        assert seen["plain: Back to today's plan"] == action
-        assert seen["tint: What the sources say is below."] == darker
-        assert seen["tint: Go to the update."] == darker
-        assert seen["tint: View today's plan"] == darker
+                tint = tint_under(sheet, link, view)
+                if tint is not None:
+                    assert readable_on(sheet, color, tint) >= 4.5, where
+                placed = "tint" if tint is not None else "plain"
+                inside = next(
+                    (
+                        mark
+                        for above in link.ancestors()
+                        for mark in ("reported-done", "confidence", "problem", "update-result")
+                        if mark in above.classes and above.tag != "details"
+                    ),
+                    "",
+                )
+                key = (placed, inside, link.text.strip())
+                assert seen.setdefault(key, color) == color, where
+        essay, proposal = "Canal Era comparison essay", "Science fair topic proposal"
+        assert seen["plain", "update-result", "Back to today's plan"] == action
+        assert seen["tint", "confidence", "What the sources say is below."] == darker
+        assert seen["tint", "problem", "Go to the update."] == darker
+        assert seen["tint", "confidence", "View today's plan"] == darker
+        assert seen["tint", "confidence", essay] == darker
+        assert seen["tint", "reported-done", essay] == darker
+        assert seen["plain", "", proposal] == action
 
 
 PLAIN_RULE = "main a {\n  color: var(--blue-action);\n}"
@@ -523,6 +605,22 @@ ONLY_ON_A_PHONE = "@media (max-width: 30rem) {\n  main a {\n    color: var(--blu
             "blue-action",
         ),
         (PLAIN_RULE, ONLY_ON_A_PHONE, "Back to today's plan", "update-result", 480, None),
+        (
+            "main .confidence a.assignment-link,",
+            "main .confidence b.assignment-link,",
+            "Canal Era comparison essay",
+            "confidence",
+            0,
+            "blue-action",
+        ),
+        (
+            "main .plan-rows .reported-done a.assignment-link {",
+            "main .plan-rows .reported-done b.assignment-link {",
+            "Canal Era comparison essay",
+            "plan-block",
+            0,
+            "blue-action",
+        ),
     ],
 )
 def test_the_check_fails_when_a_rule_stops_reaching_its_links(
@@ -537,8 +635,10 @@ def test_the_check_fails_when_a_rule_stops_reaching_its_links(
     """The same pages against a stylesheet whose rule is still there in words and does not
     do its work. With the plain rule's selector broken, the way back beside a saved update
     has no color of the page's at any width, visited or not, which is the browser's blue
-    and purple. With the tint rule broken, a problem's link falls back to the action color
-    that is too light for its tint. With the plain rule moved inside a query for narrow
+    and purple. With a tint rule broken, for a problem's plain link, for a link to an
+    assignment in a notice, or for one in a plan row she reports done, the link falls back
+    to the action color that is too light for its tint.
+    With the plain rule moved inside a query for narrow
     screens, the link is colored on a phone and left to the browser on every wider
     screen. Each time the check above would fail, so it is the cascade on each screen it
     holds, and not the words of the stylesheet."""
@@ -550,7 +650,9 @@ def test_the_check_fails_when_a_rule_stops_reaching_its_links(
         link
         for page in rendered.values()
         for link in links_in(page)
-        if link.text.strip() == words and any(inside in above.classes for above in link.ancestors())
+        if link.text.strip() == words
+        and any(inside in above.classes for above in link.ancestors())
+        and (inside != "plan-block" or tint_under(sheet, link, View(820)) is not None)
     ]
 
     assert found
@@ -569,22 +671,14 @@ def drawn(sheet: Sheet, *layers: str) -> tuple[float, float, float]:
     """The color a reader sees where the sheet's tokens are laid one over another, the last
     on top, starting from an opaque one."""
 
-    def token(name: str) -> tuple[float, float, float, float]:
-        value = sheet.tokens[name]
-        if value.startswith("#"):
-            red, green, blue = (int(value[i : i + 2], 16) for i in (1, 3, 5))
-            return (red, green, blue, 1.0)
-        parts = [float(part) for part in re.findall(r"[\d.]+", value)]
-        return (parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else 1.0)
+    def token(name: str) -> Paint:
+        painted = paint(sheet.tokens[name])
+        assert painted is not None, name
+        return painted
 
     under: tuple[float, float, float] = token(layers[0])[:3]
     for name in layers[1:]:
-        red, green, blue, alpha = token(name)
-        under = (
-            red * alpha + under[0] * (1 - alpha),
-            green * alpha + under[1] * (1 - alpha),
-            blue * alpha + under[2] * (1 - alpha),
-        )
+        under = over(token(name), under)
     return under
 
 
