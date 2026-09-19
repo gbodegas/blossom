@@ -8,6 +8,10 @@ below closes that path before the first test; the function fixture checks after
 every test that no hosted tracer is attached, so a leak is pinned to the test
 that caused it rather than to whichever test ran last.
 
+The run is kept off a household's files the same way: a session fixture puts
+the guard in ``tests/state_guard.py`` in place before the first test, and the
+function fixture gives each test a temporary folder to keep its state in.
+
 Only fixtures live here. Helpers are in ``tests/support.py``: importing from a
 conftest makes the same file reachable under two module names, which mypy
 rejects.
@@ -21,6 +25,7 @@ import pytest
 
 from blossom import settings as settings_module
 from blossom.settings import enforce_local_only_tracing, get_settings
+from tests.state_guard import RUNTIME_PATH_VARIABLES, StateGuard
 from tests.support import FIXTURE_TIMEZONE, FIXTURES, hosted_tracer_attached
 
 
@@ -37,6 +42,27 @@ def local_only_tracing() -> None:
     assert not hosted_tracer_attached(), "a hosted tracer was attached before the suite began"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def state_guard() -> Iterator[StateGuard]:
+    """Keep the whole run away from the checkout's state folder and a household's files.
+
+    A shell that ran Blossom can hand the suite its ``BLOSSOM_DATABASE_PATH``,
+    and the application reads it into settings as it is imported. The guard
+    notes where each runtime-path variable pointed, the variables are removed
+    for the run, and those folders and the checkout's own ``.local`` are
+    refused from then on, before anything is made or opened in them. Session
+    scope puts this ahead of any fixture wider than one test, which would
+    otherwise start the application before the per-test fixture below has
+    moved the defaults.
+    """
+    guard = StateGuard()
+    with pytest.MonkeyPatch.context() as patch:
+        for variable in RUNTIME_PATH_VARIABLES:
+            patch.delenv(variable, raising=False)
+        with guard.installed():
+            yield guard
+
+
 @pytest.fixture(autouse=True)
 def saved_state_in_a_temporary_file(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -48,7 +74,9 @@ def saved_state_in_a_temporary_file(
     where the repository happens to sit and on this machine's sync-client
     variables. Moving the constant covers tests that build settings from an
     explicit mapping as well as those that read the environment. The tests that
-    exercise the path guard name their own paths and are unaffected.
+    exercise the path guard name their own paths and are unaffected. The move
+    lasts for one test, and a fixture wider than that runs before it, so the
+    session's guard refuses the checkout's own folder outright.
 
     The zone has no default in the application, so a test that starts it has to
     supply one. It is set here rather than in each test because almost nothing
