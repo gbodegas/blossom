@@ -596,10 +596,14 @@ details.plan .body {
    row whose assignment she now reports as Done keeps its place and its
    words, with a quiet tinted edge, a small label, and the day of the
    report; nothing is struck out or faded, and the link stays a link. Long
-   titles and reasons wrap inside the row, and the text as composed is kept
-   in a fold, wrapped, never scrolled sideways. */
+   words wrap wherever the plan shows them, a title or a reason in a row,
+   an assignment named in a date to clarify, a line of the reviewer's
+   notes, so the rule sits on the container and everything in it inherits
+   it; nothing is cut, hidden, or scrolled sideways. The text as composed
+   is kept in a fold with its own lines, wrapped the same way. */
 .plan-reading {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .plan-reading:focus {

@@ -14,11 +14,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from blossom.app import create_app
+from blossom.heuristic_relevance import Criterion, CriticVerdict, Judgment
 from blossom.noticing import planning_digest, read_week
 from blossom.plan_reading import anchor_for
+from blossom.plans import Deferral
 from blossom.reconciliation import SourceChannel
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, plan_graphs
+from blossom.settings import REPOSITORY_ROOT
 from blossom.stores.drafts import DraftRecord
 from tests.support import (
     ESSAY_ID,
@@ -29,6 +32,7 @@ from tests.support import (
     SAME_ORIGIN,
     accepting,
     browser,
+    finding,
     fixture_settings,
     fixture_week_plan,
     plan_on,
@@ -238,6 +242,70 @@ def walkthrough_without_the_essay(client: TestClient) -> bool:
         lambda: [without], lambda: [accepting()]
     )
     return True
+
+
+# ------------------------------------------------------------- long words around the rows
+
+
+def test_long_words_around_a_plans_rows_are_whole_inside_the_container_that_wraps_them() -> None:
+    """A plan composed and saved the ordinary way, whose reviewer wrote a long address in a
+    finding and whose window holds an undated assignment with a long unbroken title, which
+    the plan lists as a date to clarify. Both pages show every such word whole, inside the
+    plan's own container, the family page with the review notes open on arrival and her page
+    with them folded; and the container's rule wraps whatever it holds, the rows, the
+    lists, and the notes alike, while the text as composed keeps its own lines."""
+    address = "https://example.test/" + "q" * 300
+    long_title = "Fieldwork" + "w" * 180
+    critique = f"Check the instructions at {address}"
+    with browser(key=True) as client:
+        entered = client.post(
+            "/parent/inbox/keep", data={"course": "Science", "title": long_title, "due_date": ""}
+        )
+        assert entered.status_code == 303, entered.text[:300]
+        undated = next(
+            item.assignment_id
+            for item in state_of(client).project_state.all_assignments()
+            if item.title == long_title
+        )
+        whole = fixture_week_plan()
+        plan = whole.model_copy(
+            update={"deferred": [*whole.deferred, Deferral(assignment_id=undated, reason="later")]}
+        )
+        verdict = CriticVerdict(
+            findings=[
+                finding(Judgment.PASSES, criterion, critique if index == 0 else "reads well")
+                for index, criterion in enumerate(Criterion)
+            ]
+        )
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [plan], lambda: [verdict]
+        )
+        record = planned(client)
+        hers = client.get(HER_PAGE, headers=PAGE_HEADERS).text
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
+
+    assert record.plan_snapshot is not None
+    for page, folded in ((hers, True), (family, False)):
+        container = plan_on(page, record)
+        assert container.startswith(f'id="{anchor_for(record.draft_id)}" tabindex="-1">')
+        assert 'class="plan-reading"' in page[: page.index(container)][-40:]
+        notes = container[container.index('<details class="steps plan-review"') :]
+        assert notes.startswith(
+            '<details class="steps plan-review">'
+            if folded
+            else '<details class="steps plan-review" open>'
+        )
+        assert notes[: notes.index("</details>")].count(address) == 1
+        clarify = container[container.index("Dates needing clarification") :]
+        assert long_title in clarify[: clarify.index("</ul>")]
+        assert container.count("<pre") == 1
+        assert address in container[container.index("<pre") :]
+    assert ".plan-reading {\n  min-width: 0;\n  overflow-wrap: anywhere;\n}" in css
+    original = css[css.index(".plan-original-text {") :]
+    assert "white-space: pre-wrap;" in original[: original.index("}")]
+    for cut in ("text-overflow", "overflow-x: auto", "overflow-x: scroll"):
+        assert cut not in css[css.index(".plan-reading {") : css.index(".plan-original-text {")]
 
 
 # ------------------------------------------------------------- current, and history

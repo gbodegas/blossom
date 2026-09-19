@@ -124,8 +124,11 @@ def read_return(
     that comes with another page, and a plan that comes with anything but
     the family page or is too long to be one, are not valid: a link falls
     back to the safe default, and a form is refused. A family page asked for
-    by her own signed-in device is not hers to open, so it becomes her safe
-    default without a word, as any other link she cannot follow would.
+    by her own signed-in device is not hers to open, and no page of hers
+    writes a link or a form that names it, so it is not valid either: a
+    link becomes her safe default without a word, as any other link she
+    cannot follow would, and a form that names it is refused like any other
+    form these pages did not make.
     """
     target = given.get("return_to", "").strip()
     week = given.get("week", "").strip()
@@ -148,7 +151,7 @@ def read_return(
         if not showable(chosen):
             return fallback, False
     if target == "family" and viewer == "student":
-        return fallback, True
+        return fallback, False
     return ReturnTo(cast(Target, target), week=chosen, plan_id=plan_id or None), True
 
 

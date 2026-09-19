@@ -528,6 +528,47 @@ def test_a_parent_reads_the_details_and_cannot_save_and_her_device_is_not_sent_t
     assert events == []
 
 
+@pytest.mark.parametrize("plan_id", ["", "draft:plan:2026-08-19:abc12345"])
+@pytest.mark.parametrize("action", ["report", "undo-report"])
+def test_her_device_cannot_send_a_details_form_that_names_the_family_page(
+    tmp_path: pathlib.Path, action: str, plan_id: str
+) -> None:
+    """The family page is not hers to go back to, so no page of hers writes a form that
+    names it. A link that does falls back to her week without a word; a save or an Undo
+    that does is refused, 422, on the details with her words kept, and nothing is
+    written."""
+    settings = signed_in_household(tmp_path)
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        page = client.get(f"{DETAILS}?return_to=family", headers=PAGE_HEADERS)
+        written = form_fields(page.text, f"{DETAILS_ACTIONS}/report")
+        if action == "undo-report":
+            assert save(client, page.text, "not_yet", "Mine to undo.").status_code == 303
+            standing = client.get(DETAILS, headers=PAGE_HEADERS).text
+            fields = form_fields(standing, f"{DETAILS_ACTIONS}/undo-report")
+        else:
+            fields = {**written, "status": "done", "note": "kept words"}
+        before = state_of(client).project_state.student_reports(ESSAY_ID)
+        forged = client.post(
+            f"{DETAILS_ACTIONS}/{action}",
+            data={**fields, "return_to": "family", "week": "", "plan_id": plan_id},
+            headers=PAGE_HEADERS,
+        )
+        after = state_of(client).project_state.student_reports(ESSAY_ID)
+
+    assert page.status_code == 200
+    assert "Back to the week" in page.text
+    assert written["return_to"] == "week"
+    assert forged.status_code == 422
+    assert BAD_RETURN in forged.text
+    assert f"<h1>{ESSAY_TITLE}</h1>" in forged.text
+    assert "/parent" not in forged.text.split('<main id="main">', 1)[1].split("</main>", 1)[0]
+    if action == "report":
+        assert "kept words</textarea>" in forged.text
+    assert after == before
+    assert len(after) == (1 if action == "undo-report" else 0)
+
+
 def test_a_form_from_the_details_is_held_to_this_origin_like_any_other() -> None:
     """The details' forms go through the routes her cards use, so a save or an undo sent from
     another origin, or from none, is refused before anything is read, whatever it says
