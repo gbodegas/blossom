@@ -61,10 +61,13 @@ from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, basis_parts, statuses_for
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
-from blossom.evening import Staleness, reported_done, staleness
+from blossom.evening import PlanUpdates, Staleness, plan_updates, staleness
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
 from blossom.intake import TEXT_MAX_LENGTH
+from blossom.noticing import Everything, read_everything
+from blossom.plan_reading import DoneMark, PlanReading, read_plan
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
+from blossom.routes.navigation import details_href
 from blossom.routes.runs import (
     Graphs,
     PlanGraphBuilder,
@@ -220,7 +223,13 @@ class CheckState:
     note: str = ""
 
 
-def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
+def stale_reason(
+    state: ApplicationState,
+    record: DraftRecord,
+    *,
+    today: date | None = None,
+    everything: Everything | None = None,
+) -> str | None:
     """Why a waiting draft has stopped fitting the evening, or ``None`` while it fits.
 
     A draft is made for the evening as she had described it when the run
@@ -238,11 +247,14 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
     putting an action on her that she may not have taken. A draft for an
     evening that has passed is never stale: it cannot be planned again, since
     the pages refuse a past evening, and it reaches no page of hers, so there
-    is nothing a fresh plan would put right.
+    is nothing a fresh plan would put right. ``everything`` is the record as
+    the caller's page read it, which the week is measured from; left out,
+    the record is read when the week is reached.
     """
-    if not record.waiting or record.plan_date < state.clock.today():
+    today = state.clock.today() if today is None else today
+    if not record.waiting or record.plan_date < today:
         return None
-    match staleness(state.workload_signals, record, state.project_state):
+    match staleness(state.workload_signals, record, state.project_state, everything=everything):
         case Staleness.SIGNALED_SINCE:
             return SIGNALED_SINCE
         case Staleness.SIGNAL_ENDED:
@@ -253,48 +265,104 @@ def stale_reason(state: ApplicationState, record: DraftRecord) -> str | None:
             return None
 
 
+def is_current(record: DraftRecord, today: date, latest: DraftRecord | None) -> bool:
+    """Whether ``record`` is today's working plan: the last draft published for today that
+    no later one displaced, whatever was decided about it. Never the newest by a clock,
+    a decision, or a title; an earlier plan for today is history, and so is every plan
+    for another day."""
+    return latest is not None and record.plan_date == today and latest.draft_id == record.draft_id
+
+
 def done_in(
-    state: ApplicationState, record: DraftRecord
+    found: PlanUpdates | None,
 ) -> tuple[str, list[NamedAssignmentView]] | None:
     """That today's plan includes work she reports as done as things stand, and which work.
 
     Said only for the plan her page shows as today's, whatever was decided
     about it: earlier plans are history and get no notice from an update
-    made today, and a plan a later one took the place of is one of those.
-    What is compared is the plan's ids and her updates as they stand, never
-    the time of either.
+    made today, and a plan a later one took the place of is one of those;
+    for those nothing was read and ``found`` is ``None``. What is compared
+    is the plan's ids and her updates as they stand, never the time of
+    either.
     """
-    today = state.clock.today()
-    if record.plan_date != today:
+    if found is None or found.done is None:
         return None
-    current = state.drafts.latest_for(today)
-    if current is None or current.draft_id != record.draft_id:
-        return None
-    found = reported_done(state.project_state, record)
-    if found is None:
-        return None
-    if not found.known:
+    if not found.done.known:
         return PLAN_WINDOW_DONE, []
     return PLAN_INCLUDES_DONE, [
-        NamedAssignmentView(assignment_id=name, title=title) for name, title in found.named
+        NamedAssignmentView(assignment_id=name, title=title) for name, title in found.done.named
     ]
 
 
-def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
-    """A draft as the parent sees it, with whether it still fits the evening.
+@dataclass(frozen=True)
+class PlanRead:
+    """One plan read once for the family page: the parent's view of it, and how the page
+    shows it."""
 
-    The notice and the stale state are read from one reading of her reports,
-    so a report landing between the two cannot leave them at odds.
+    view: ApprovalView
+    reading: PlanReading
+
+
+def read_a_plan(
+    state: ApplicationState,
+    record: DraftRecord,
+    *,
+    current: bool,
+    everything: Everything | None = None,
+    today: date | None = None,
+) -> PlanRead:
+    """A draft as the parent sees it, whether it still fits the evening, and its reading.
+
+    The notice, the stale state, and the marks beside the rows come from
+    one reading of the record, ``everything``, so a report landing between
+    them cannot leave them at odds and her reports are read once for all
+    three. The family page reads it once for every plan it shows and for
+    the assignment updates below them; a caller with one plan leaves it out,
+    and the record is read here when today's working plan or a waiting one
+    needs it. Her updates are shown only for today's working plan; any
+    other plan is history, read with no updates at all, and takes from the
+    reading only which ids are on record. ``today`` is the household day
+    the caller's page read, once, so which plan is current and whether a
+    plan has passed are about the same day.
     """
-    with state.project_state.exclusively():
-        included = done_in(state, record)
-        stale = stale_reason(state, record)
-    return ApprovalView.from_record(
+    store = state.project_state
+    with store.exclusively():
+        if everything is None and (current or record.waiting):
+            everything = read_everything(store, store, also=record.plan_assignment_ids or ())
+        updates = plan_updates(store, record, everything=everything) if current else None
+        included = done_in(updates)
+        stale = stale_reason(state, record, today=today, everything=everything)
+    marks = (
+        {}
+        if updates is None
+        else {
+            name: DoneMark(reported_on=found.reported_on, restored_on=found.restored_on)
+            for name, found in updates.statuses.items()
+            if not found.needs_homework and found.reported_on is not None
+        }
+    )
+    view = ApprovalView.from_record(
         record,
         stale=stale,
         reported_done=None if included is None else included[0],
         reported_done_work=[] if included is None else included[1],
     )
+    reading = read_plan(
+        record,
+        reader="family",
+        current=current,
+        link_for=lambda name: details_href(name, return_to="family", plan_id=record.draft_id),
+        on_record=None if everything is None else everything.ids,
+        done=marks,
+    )
+    return PlanRead(view=view, reading=reading)
+
+
+def approval_view(state: ApplicationState, record: DraftRecord) -> ApprovalView:
+    """A draft as the parent sees it, with whether it still fits the evening."""
+    today = state.clock.today()
+    current = is_current(record, today, state.drafts.latest_for(today))
+    return read_a_plan(state, record, current=current, today=today).view
 
 
 def passed(evening: date) -> str:
@@ -555,6 +623,7 @@ def review_page(
     entry: Mapping[str, str] | None = None,
     entry_open: bool = False,
     check: CheckState | None = None,
+    open_plan: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to add assignments,
@@ -568,16 +637,60 @@ def review_page(
     one row of the assignment updates shows beyond the record, a check made
     or a problem with one; a row's problem is said at the top too, with a
     link to the row, so it is met on a page that opens at its top.
+    ``open_plan`` is a plan a link came back to, whose folds are opened.
+
+    The household day is read once, and today's working plan with it: the
+    last draft published for today that no later one displaced. That one
+    plan is read as current, with her updates beside its rows, whatever was
+    decided about it. While it waits it stays in the review queue; once it
+    is decided it is shown under a heading of its own after the queue, and
+    left out of the earlier plans for that render, so it is on the page
+    once. Every other plan is history and shows none of her updates.
     """
     about_a_row = check is not None and check.problem is not None and problem is None
+    # The household day is read once for the page. The drafts are read once
+    # too, in one reading of the table: what waits, what was decided, and
+    # which draft is today's working plan, so every list below is made from
+    # records in hand and the page agrees with itself whatever is published
+    # or decided while it is being built. The record is read once as well,
+    # with today's working plan's assignments named to it: her updates
+    # beside that plan, whether each waiting plan still fits the week, which
+    # ids are on record for the plans shown as history, and the assignment
+    # updates below them all come out of that reading.
+    today = state.clock.today()
+    records = state.drafts.review_snapshot(today)
+    shown = (*records.waiting, *records.decided)
+    working = next((record for record in shown if record.draft_id == records.current_id), None)
+    everything = read_everything(
+        state.project_state,
+        state.project_state,
+        also=() if working is None else working.plan_assignment_ids or (),
+    )
+    plans = {
+        record.draft_id: read_a_plan(
+            state,
+            record,
+            current=record.draft_id == records.current_id,
+            everything=everything,
+            today=today,
+        )
+        for record in shown
+    }
+    waiting = [plans[record.draft_id].view for record in records.waiting]
+    every_decided = [plans[record.draft_id].view for record in records.decided]
+    todays = next((view for view in every_decided if view.draft_id == records.current_id), None)
+    decided = [view for view in every_decided if view is not todays]
     return templates.TemplateResponse(
         request,
         "parent_review.html",
         {
-            "today": state.clock.today(),
+            "today": today,
             "model_available": model_configured(state.settings),
-            "waiting": [approval_view(state, record) for record in state.drafts.waiting()],
-            "decided": [approval_view(state, record) for record in state.drafts.decided()],
+            "waiting": waiting,
+            "decided": decided,
+            "todays_decided": todays,
+            "open_plan": open_plan if open_plan in plans else None,
+            "readings": {name: found.reading for name, found in plans.items()},
             "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
             "problem": check.problem if about_a_row and check is not None else problem,
             "problem_target": check.assignment_id if about_a_row and check is not None else None,
@@ -597,7 +710,7 @@ def review_page(
             "entry_open": entry_open or bool(paste) or bool(entry),
             "text_max_length": TEXT_MAX_LENGTH,
             "entry_note_max_length": ENTRY_NOTE_MAX_LENGTH,
-            "updates": assignment_updates(state),
+            "updates": assignment_updates(everything, today),
             "check": check,
             "check_note_max_length": CHECK_NOTE_MAX_LENGTH,
         },
@@ -605,7 +718,7 @@ def review_page(
     )
 
 
-def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
+def assignment_updates(everything: Everything, today: date) -> AssignmentUpdatesView:
     """What she and the school have reported, in the family page's four groups.
 
     Each assignment is in one group, the first that fits. Her "done" beside
@@ -622,14 +735,13 @@ def assignment_updates(state: ApplicationState) -> AssignmentUpdatesView:
     shows her update when she has one, what each school channel says now,
     every channel, and the check that stands, so a row never leaves out a
     fact it was grouped by. The rows, her events, the school's reports, and
-    the family's checks are read while the store is held, one snapshot, as
-    her page reads them, in a few batched reads whatever the number of
-    rows.
+    the family's checks are the ones the page read, once, for everything it
+    says about the record, ``everything``: one snapshot, as her page reads
+    them, in a few batched reads whatever the number of rows, so a row here
+    and a mark beside a plan's row never disagree.
     """
-    today = state.clock.today()
-    with state.project_state.exclusively():
-        rows = state.project_state.all_assignments()
-        statuses = statuses_for(state.project_state, [item.assignment_id for item in rows])
+    rows = everything.assignments
+    statuses = everything.statuses
     views = {item.assignment_id: update_view(item, statuses[item.assignment_id]) for item in rows}
     check = [view for view in views.values() if statuses[view.assignment_id].needs_a_check]
     shown = {view.assignment_id for view in check}
@@ -762,6 +874,12 @@ def review(
     reopened: Annotated[
         str | None, Query(description="the assignment whose check was just reopened")
     ] = None,
+    focus: Annotated[
+        str | None, Query(description="the assignment whose row to bring into view; a note")
+    ] = None,
+    plan: Annotated[
+        str | None, Query(description="the plan whose folds to open; changes nothing")
+    ] = None,
 ) -> HTMLResponse:
     """The parent's page: what she asked for, what is waiting, and the folds below."""
     said = [
@@ -780,7 +898,10 @@ def review(
         added=a_count(added),
         updated=a_count(updated),
         unchanged=a_count(unchanged),
-        check=CheckState(said[0][1], said=said[0][0]) if said else None,
+        check=CheckState(said[0][1], said=said[0][0])
+        if said
+        else (CheckState(focus) if focus else None),
+        open_plan=plan,
     )
 
 

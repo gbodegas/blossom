@@ -1446,6 +1446,21 @@ class ProjectStateStore:
             ).fetchall()
         return [assignment_from(row) for row in rows]
 
+    def one_assignment(self, assignment_id: str) -> Assignment | None:
+        """The assignment with this id, or ``None`` when none is on record. Read by id and
+        nothing else, so a page about one assignment never reads a week to find it."""
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT assignment_id, course, title, due_date, dependencies,
+                       reported_submission_status, assigned_on, kind, note, origins
+                FROM assignments
+                WHERE assignment_id = ?
+                """,
+                (assignment_id,),
+            ).fetchone()
+        return None if row is None else assignment_from(row)
+
     def undated(self) -> list[Assignment]:
         """Return every assignment with no due date on record, by course then title."""
         with self._lock:

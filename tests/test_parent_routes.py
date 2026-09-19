@@ -64,7 +64,14 @@ def test_a_run_pauses_at_the_gate_and_reports_the_draft() -> None:
 
 
 def test_the_evening_defaults_to_today_in_the_household_zone_and_can_be_named() -> None:
-    with app_with() as client:
+    """Each run is answered with a plan for the evening it was asked about: a draft and the
+    plan saved beside it are for one evening, and a plan for another composes nothing."""
+    evenings = iter([PLAN_DATE, date(2026, 8, 20)])
+
+    def plan_for_the_evening_asked() -> list[DailyPlan]:
+        return [fixture_week_plan().model_copy(update={"plan_date": next(evenings)})]
+
+    with app_with(planner=plan_for_the_evening_asked) as client:
         today = client.post("/parent/plans", json={}).json()
         named = client.post("/parent/plans", json={"plan_date": "2026-08-20"}).json()
 

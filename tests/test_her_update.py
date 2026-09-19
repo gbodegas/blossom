@@ -90,6 +90,9 @@ from tests.support import HER_PAGE as PAGE
 
 LOG = "assignment-reading-log"
 QUIZ = "assignment-vocabulary-quiz"
+NAMED_BY_ITS_ROW = f'aria-label="{ESSAY_TITLE}, World History">{ESSAY_TITLE}</a> (World History).'
+"""How a notice names the essay on a plan read by its rows: the saved title, a link to the
+assignment's details, and the course; never the id."""
 
 
 def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -> None:
@@ -401,11 +404,16 @@ def test_a_plan_that_speaks_about_work_she_has_since_finished_says_so_on_both_pa
     assert "<strong>Your updates.</strong>" not in quiet
     assert PLAN_INCLUDES_DONE == "This plan includes work you now report as Done."
     assert PLAN_INCLUDES_DONE in hers
-    assert f"In it: {ESSAY_TITLE} ({ESSAY})." in hers
+    assert (
+        f'In it: <a class="assignment-link" href="/student/assignments/{ESSAY}?return_to=today" '
+        f'aria-label="{ESSAY_TITLE}, World History">{ESSAY_TITLE}</a> (World History).'
+    ) in hers
     assert "A new plan will leave it out." in hers
     assert (
-        f"<strong>Student updates.</strong> {SHE_REPORTS} In it: {ESSAY_TITLE} ({ESSAY})." in family
-    )
+        f'<strong>Student updates.</strong> {SHE_REPORTS} In it: <a class="assignment-link" href='
+    ) in family
+    assert NAMED_BY_ITS_ROW in family
+    assert f"({ESSAY})" not in hers
     assert over_json["reported_done"] == PLAN_INCLUDES_DONE
     assert over_json["reported_done_work"] == [{"assignment_id": ESSAY, "title": ESSAY_TITLE}]
     assert "Reported done since" not in hers + family
@@ -620,10 +628,10 @@ def test_a_done_saved_while_a_model_is_asked_leaves_the_plan_stale_and_named(dur
     assert ESSAY in record.plan_assignment_ids
     assert ASSIGNMENTS_CHANGED in hers
     assert PLAN_INCLUDES_DONE in hers
-    assert f"In it: {ESSAY_TITLE} ({ESSAY})." in hers
+    assert NAMED_BY_ITS_ROW in hers
     assert THEIR_ASSIGNMENTS_CHANGED in family
     assert SHE_REPORTS in family
-    assert f"In it: {ESSAY_TITLE} ({ESSAY})." in family
+    assert NAMED_BY_ITS_ROW in family
     assert 'value="approve"' not in family
     assert refused.status_code == 409
     assert after is not None
@@ -1259,8 +1267,8 @@ def test_her_words_wrap_and_keep_their_lines_on_both_pages() -> None:
     the page, and the line breaks she typed are kept, in her card and the family's rows."""
     css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
 
-    assert ".assignment-updates,\n.update {\n  overflow-wrap: anywhere;\n}" in css
-    assert ".assignment-updates q,\n.update q {\n  white-space: pre-line;\n}" in css
+    assert ".assignment-updates,\n.update,\n.history {\n  overflow-wrap: anywhere;\n}" in css
+    assert ".assignment-updates q,\n.update q,\n.history q {\n  white-space: pre-line;\n}" in css
     assert ".visually-hidden {" in css
 
 
@@ -1268,7 +1276,7 @@ def test_her_words_wrap_and_keep_their_lines_on_both_pages() -> None:
 
 
 def today_panel(page: str) -> str:
-    start = page.index('<section class="panel today">')
+    start = page.index('<section class="panel today" id="today"')
     return page[start : page.index('<h2 class="list-heading">')]
 
 
@@ -1319,7 +1327,7 @@ def test_with_everything_done_the_today_panel_informs_and_asks_for_nothing(decis
     assert NOTHING_TO_SCHEDULE in panel
     assert PLAN_INCLUDES_DONE in panel
     assert "In it: " in panel
-    assert f"{ESSAY_TITLE} ({ESSAY})," in panel
+    assert f"{ESSAY_TITLE}</a> (World History)," in panel
     assert "View today's plan" in panel
     assert 'action="/parent/actions/plan"' in family
     if decision == "waiting":

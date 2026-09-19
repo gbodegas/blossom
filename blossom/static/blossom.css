@@ -591,6 +591,139 @@ details.plan .body {
   color: var(--text-soft);
 }
 
+/* A saved plan read by its rows: one column in time order on every screen,
+   each row with its time, its assignment, its due date, and its reason. A
+   row whose assignment she now reports as Done keeps its place and its
+   words, with a quiet tinted edge, a small label, and the day of the
+   report; nothing is struck out or faded, and the link stays a link. Long
+   words wrap wherever the plan shows them, a title or a reason in a row,
+   an assignment named in a date to clarify, a line of the reviewer's
+   notes, so the rule sits on the container and everything in it inherits
+   it; nothing is cut, hidden, or scrolled sideways. The text as composed
+   is kept in a fold with its own lines, wrapped the same way. */
+.plan-reading {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plan-reading:focus {
+  outline: 2px solid var(--blue-action);
+  outline-offset: 4px;
+}
+
+.plan-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.plan-rows li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plan-deferral {
+  margin: 0.75rem 0;
+}
+
+.plan-what,
+.plan-due,
+.plan-mark,
+.plan-mark-words {
+  margin: 0.15rem 0;
+}
+
+.plan-due,
+.plan-ref {
+  color: var(--text-soft);
+  font-size: 0.92rem;
+}
+
+.plan-rows .reported-done {
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--blue-action);
+  background: var(--slate-bg);
+  border-radius: 0 var(--radius-small) var(--radius-small) 0;
+}
+
+.plan-mark .pill {
+  margin-right: 0.5rem;
+}
+
+.plan-why-label {
+  font-weight: 600;
+}
+
+.plan-original-text {
+  margin: 0.5rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 0.92rem;
+}
+
+/* A link to an assignment, from a row of a plan, a notice, a row of the
+   family page, or a card: the application's own action color, underlined,
+   wherever it sits, on a plain surface and on a tinted one. */
+a.assignment-link,
+a.assignment-link:visited {
+  color: var(--blue-action);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+a.assignment-link:hover,
+a.assignment-link:focus-visible {
+  color: var(--blue-action-hover);
+}
+
+/* The link from the Today controls to the help form below the plan: beside
+   the buttons and as tall as they are, so help is never a long plan away. */
+.to-help {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0 0.5rem;
+  color: var(--blue-action);
+  font-weight: 600;
+}
+
+.ask:focus,
+.update-result:focus,
+.evidence:focus {
+  outline: 2px solid var(--blue-action);
+  outline-offset: 4px;
+}
+
+.evidence {
+  margin-top: 1.25rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* An assignment's details: the card's own surface at the page's reading
+   width, one heading for the page, and the link to it from a card kept
+   small, since the card's own form stays the short way to save. */
+.assignment.detail h1 {
+  margin: 0.15rem 0 0.35rem;
+  overflow-wrap: anywhere;
+}
+
+.update-heading {
+  margin: 1.25rem 0 0;
+  font-size: 1.05rem;
+}
+
+.details-link {
+  margin: 0.5rem 0 0;
+  font-size: 0.92rem;
+}
+
+a.details-link {
+  display: inline-block;
+  margin: 0.25rem 0;
+}
+
 .plan-heading {
   margin: 1.25rem 0 0.25rem;
   font-size: 1rem;
@@ -1293,14 +1426,19 @@ details.reported-done > summary {
 
 /* Her words are hers to break as she likes: a long address or an unbroken
    run of letters wraps rather than widening the page, and the line breaks
-   she typed are kept, on her card and on the family page alike. */
+   she typed are kept, on her card and on the family page alike. The
+   history of her updates carries the same rules itself, since it sits
+   under her update on a card and below the evidence on an assignment's
+   details. */
 .assignment-updates,
-.update {
+.update,
+.history {
   overflow-wrap: anywhere;
 }
 
 .assignment-updates q,
-.update q {
+.update q,
+.history q {
   white-space: pre-line;
 }
 
@@ -1319,16 +1457,16 @@ details.reported-done > summary {
   white-space: nowrap;
 }
 
-.update .history {
+.history {
   margin-top: 0.5rem;
 }
 
-.update .history ol {
+.history ol {
   margin: 0.25rem 0 0.5rem;
   padding-left: 1.25rem;
 }
 
-.update .history li {
+.history li {
   margin: 0.35rem 0;
 }
 

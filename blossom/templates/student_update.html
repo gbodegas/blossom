@@ -13,61 +13,77 @@
   check a parent marked on the family page shows under the summary while
   it stands, with its day and any note: the family's own record, which
   changes nothing here.
+
+  ``ctx`` is everything the component needs beyond the assignment: who may
+  update, where the forms and links go, what rides along with them, and
+  whether days are said with their year. A card on her week and the
+  assignment's details hand in one each, so this is the one form there is.
 #}
+{% macro day(value) %}{{ value.strftime("%B") }} {{ value.day }}{% if ctx.with_year %}, {{ value.year }}{% endif %}{% endmacro %}
 {% set here = card and card.assignment_id == assignment.assignment_id %}
 {% set standing = assignment.update_status is not none %}
-{% set form_open = view.can_update and (not standing or (here and card.change)) %}
+{% set form_open = ctx.can_update and (not standing or (here and card.change)) %}
 {% set chosen = card.status if (here and card.status) else (assignment.update_status if (standing and here and card.change and not card.problem) else none) %}
 {% set typed = card.note if (here and card.note is not none) else ((assignment.update_note or "") if (standing and here and card.change) else "") %}
 {% set at_status = here and card.field == "status" %}
 {% set at_note = here and card.field == "note" %}
 {% set key = assignment.assignment_id %}
 <div class="update">
+  {#
+    What a save or an undo did is said here, where she acted, in a place an
+    address can land on, with the way back the page offers at its top
+    repeated beside it, so the result and the way on are found together
+    however long the page is. The link is ordinary navigation; nothing goes
+    back on its own.
+  #}
   {% if here and card.said %}
-    <p class="note" role="status">{{ card.said }}</p>
+    <p class="note update-result" role="status" id="update-result-{{ key|urlencode }}" tabindex="-1">{{ card.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
   {% endif %}
   {% if here and card.problem %}
     <p class="problem" role="alert" id="update-problem-{{ key }}">{{ card.problem }}</p>
   {% endif %}
   {% if standing %}
     <p class="update-summary">
-      <span class="pill">{% if view.viewer == "parent" %}Student update{% else %}Your update{% endif %}: {% if assignment.update_status == "done" %}Done{% else %}Not yet{% endif %}</span>
-      {% if assignment.update_reported_on %}Reported {{ assignment.update_reported_on.strftime("%B") }} {{ assignment.update_reported_on.day }}{% if assignment.update_restored_on %}, restored {{ assignment.update_restored_on.strftime("%B") }} {{ assignment.update_restored_on.day }}{% endif %}{% endif %}
+      <span class="pill">{% if ctx.viewer == "parent" %}Student update{% else %}Your update{% endif %}: {% if assignment.update_status == "done" %}Done{% else %}Not yet{% endif %}</span>
+      {% if assignment.update_reported_on %}Reported {{ day(assignment.update_reported_on) }}{% if assignment.update_restored_on %}, restored {{ day(assignment.update_restored_on) }}{% endif %}{% endif %}
     </p>
     {% if assignment.update_note %}
-      <p class="from-teacher">{% if view.viewer == "parent" %}She wrote{% else %}You wrote{% endif %}: <q>{{ assignment.update_note }}</q></p>
+      <p class="from-teacher">{% if ctx.viewer == "parent" %}She wrote{% else %}You wrote{% endif %}: <q>{{ assignment.update_note }}</q></p>
     {% endif %}
     <p class="effect">
-      {% if assignment.update_status == "done" %}This is out of work to plan. {% if view.viewer == "parent" %}Her{% else %}Your{% endif %} school record is separate.
+      {% if assignment.update_status == "done" %}This is out of work to plan. {% if ctx.viewer == "parent" %}Her{% else %}Your{% endif %} school record is separate.
       {% elif assignment.in_planning_window %}This stays in work to plan when it is in the planning window.
       {% else %}Saved as Not yet. This assignment is outside today's planning window.{% endif %}
     </p>
     {% if assignment.checked_on %}
-      <p class="checked-line">A parent marked this checked with {% if view.viewer == "parent" %}her{% else %}you{% endif %} on {{ assignment.checked_on.strftime("%B") }} {{ assignment.checked_on.day }}.{% if assignment.check_note %} The note with it: <q>{{ assignment.check_note }}</q>{% endif %}</p>
+      <p class="checked-line">A parent marked this checked with {% if ctx.viewer == "parent" %}her{% else %}you{% endif %} on {{ day(assignment.checked_on) }}.{% if assignment.check_note %} The note with it: <q>{{ assignment.check_note }}</q>{% endif %}</p>
     {% endif %}
-    {% if view.can_update and not form_open %}
+    {% if ctx.can_update and not form_open %}
       <div class="actions">
-        <form method="get" action="/student/due-this-week#assignment-{{ key }}" class="action">
-          <input type="hidden" name="week" value="{{ view.week.start.isoformat() }}">
-          <input type="hidden" name="change" value="{{ key }}">
+        <form method="get" action="{{ ctx.change_action }}" class="action">
+          {% for name, value in ctx.change_fields %}
+          <input type="hidden" name="{{ name }}" value="{{ value }}">
+          {% endfor %}
           <button type="submit" class="secondary" aria-label="Change your update on {{ assignment.title }}">Change</button>
         </form>
         {% if assignment.undo_report_id %}
-          <form method="post" action="/student/actions/assignments/{{ key }}/undo-report" class="action">
+          <form method="post" action="{{ ctx.undo_action }}" class="action">
             <input type="hidden" name="report_id" value="{{ assignment.undo_report_id }}">
-            <input type="hidden" name="week" value="{{ view.week.start.isoformat() }}">
+            {% for name, value in ctx.post_fields %}
+            <input type="hidden" name="{{ name }}" value="{{ value }}">
+            {% endfor %}
             <button type="submit" class="secondary" aria-label="Undo your update on {{ assignment.title }}">Undo</button>
           </form>
         {% endif %}
       </div>
-    {% elif view.viewer == "parent" %}
+    {% elif ctx.viewer == "parent" %}
       <p class="note">Sign in as the student to update.</p>
     {% endif %}
-  {% elif view.viewer == "parent" %}
+  {% elif ctx.viewer == "parent" %}
     <p class="note">No student update yet. Sign in as the student to update.</p>
   {% endif %}
   {% if form_open %}
-    <form method="post" action="/student/actions/assignments/{{ key }}/report" class="report">
+    <form method="post" action="{{ ctx.report_action }}" class="report">
       <fieldset class="choice"{% if at_status %} aria-describedby="update-problem-{{ key }}"{% endif %}>
         <legend>Your update<span class="visually-hidden"> on {{ assignment.title }}</span></legend>
         <label><input type="radio" name="status" value="done"{% if chosen == "done" %} checked{% endif %}{% if at_status %} autofocus{% endif %}> Done</label>
@@ -81,49 +97,16 @@
         <p class="note" id="update-hint-{{ key }}">Up to {{ update_note_max_length }} characters. Your parents can read this. Notes on work being planned are shared with the planning model.</p>
       </details>
       <input type="hidden" name="expected_report_id" value="{{ assignment.update_head_id or '' }}">
-      <input type="hidden" name="week" value="{{ view.week.start.isoformat() }}">
+      {% for name, value in ctx.post_fields %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endfor %}
       <div class="actions">
         <button type="submit" class="primary" aria-label="Save your update on {{ assignment.title }}">Save update</button>
         {% if standing %}
-          <a class="cancel" href="/student/due-this-week?week={{ view.week.start.isoformat() }}&amp;show={{ key|urlencode }}#assignment-{{ key }}" aria-label="Keep your update on {{ assignment.title }} as it is">Keep it as it is</a>
+          <a class="cancel" href="{{ ctx.cancel_href }}" aria-label="Keep your update on {{ assignment.title }} as it is">Keep it as it is</a>
         {% endif %}
       </div>
     </form>
   {% endif %}
-  {#
-    History: her updates and corrections, oldest first, each with its day,
-    and what the school has reported, listed apart and labeled as the
-    school's. A correction says what it put back and that update's own day.
-    Shown once there is something the card does not already say.
-  #}
-  {% if assignment.update_history or assignment.school_history|length > 1 %}
-    <details class="steps history">
-      <summary>Update history<span class="visually-hidden"> for {{ assignment.title }}</span></summary>
-      {% if assignment.update_history %}
-        <p class="history-label">{% if view.viewer == "parent" %}Student updates{% else %}Your updates{% endif %}</p>
-        <ol>
-          {% for row in assignment.update_history %}
-            <li>
-              {{ row.reported_on.strftime("%B") }} {{ row.reported_on.day }}:
-              {% if row.operation == "report" %}
-                {% if row.status == "done" %}Done{% else %}Not yet{% endif %}.{% if row.note %} <q>{{ row.note }}</q>{% endif %}
-              {% elif row.status %}
-                Correction. The update before it was taken back, which restored {% if row.status == "done" %}Done{% else %}Not yet{% endif %}{% if row.restored_from %} from {{ row.restored_from.strftime("%B") }} {{ row.restored_from.day }}{% endif %}.{% if row.note %} <q>{{ row.note }}</q>{% endif %}
-              {% else %}
-                Correction. The update before it was taken back, which left no update.
-              {% endif %}
-            </li>
-          {% endfor %}
-        </ol>
-      {% endif %}
-      {% if assignment.school_history %}
-        <p class="history-label">From the school</p>
-        <ol>
-          {% for statement in assignment.school_history %}
-            <li>{{ statement.reported_on.strftime("%B") }} {{ statement.reported_on.day }}: {{ statement.status|replace("_", " ")|capitalize }}. {{ statement.sentence }}</li>
-          {% endfor %}
-        </ol>
-      {% endif %}
-    </details>
-  {% endif %}
+  {% if not ctx.history_apart %}{% include "student_update_history.html" %}{% endif %}
 </div>

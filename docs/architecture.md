@@ -101,6 +101,69 @@ with what stands now. A check another parent made with other words is refused
 the same way, both notes shown. Check again reopens it, held to the basis its
 page showed. A check changes neither account, no plan, and no digest.
 
+A plan is saved twice over from one composition: the text both readers see,
+and a snapshot beside it, `blossom/plan_snapshot.py`, one versioned JSON
+document with the plan as the planner returned it, the title, course, and due
+date of each assignment it speaks about as the run read them, and the
+sentences composed around it. `compose` words each sentence once and derives
+both from that wording, inside the node that already saved the draft, so the
+snapshot adds no key to the graph's state, no type to the checkpoint
+allowlist, and no graph version: a run paused before this resumes as it
+always did and keeps its text-only draft. The drafts table keeps the snapshot
+in a nullable column, written in one transaction with the text, the ids, the
+fingerprint, and the run; once a draft is on the pages its bundle is the
+record, so the same composition saved again changes nothing and a different
+one is refused. `blossom/plan_reading.py` reads a draft one record at a time:
+a version-1 snapshot that is whole, every key it writes present and every
+block time a wall time, and that agrees with its draft is shown by its rows,
+no snapshot is an earlier plan shown as its text, and a snapshot that cannot
+be used is shown as its text with a sentence saying so, the draft id logged
+with which part of the envelope failed and nothing of what it says, no
+assignment's id among it. The snapshot is decoded and checked in one step by
+the model's own JSON reader, so text no page could send, half of a surrogate
+pair written as an escape, makes that one snapshot unavailable and never an
+error while a page is being sent. Nothing reads the text to find an
+assignment, and nothing repairs a draft on a GET.
+
+Which plan is current is decided apart from its review: the household day is
+read once for a page and handed to everything on it, the heading, the week,
+the notice, the marks, and the stale check, so a page rendered across
+midnight is about one day. The family page reads its drafts once too, what
+waits, what was decided, and which draft is the day's, in one statement under
+the store's lock, so a plan published or decided while the page is being
+built cannot leave it naming a draft it did not read. Today's working plan is
+the last draft published for that day that no later one displaced, waiting,
+approved, or refused. That one reading shows, beside each row, that she
+reports its assignment as Done, from the page's one reading of the record.
+`read_everything` in `blossom/noticing.py` reads every assignment, the claims
+about each, and what she, the school, and the family have said, in one hold
+of the store, with today's plan's assignments named to it; the week, the
+planning window, the notice above the plan, the marks beside its rows,
+whether a waiting plan still fits the week, and the family page's assignment
+updates all come out of that reading, so they agree and her reports are read
+once for a page, however many plans it shows. The rule is only that the
+assignment's effective status is Done now; nothing is compared with when the
+plan was made, a parent's check, or the school's word. An earlier plan for
+today, a plan for another day, and the text as composed carry no marks.
+Showing a plan writes nothing, and a mark is never a new approval: the stale
+checks and their refusals are as they were.
+
+An assignment's details, `/student/assignments/{id}`, read the assignment by
+id, never through her week, and show the card's own facts and the one update
+component, handed a context object that says who may update and where its
+forms and links go. The details' evidence lists every claim a source has made
+about the date, the ones that agree included, where a card lists claims only
+when the date is in doubt. The two report routes serve cards and details
+alike; a form says which it came from, and that decides only where its result
+is shown. The way back is data, three checked fields, and every address is
+made on the server from values escaped where they go, so no page sends a
+reader to an address a request handed in. Her links to today's plan land on a
+place with an id of its own, the same whichever plan it holds, since a link
+is followed later than it is written: another plan may have taken that one's
+place, and on a day with no plan the place is still there and says so. A
+saved plan keeps the id made from its draft, which the family page and its
+history link to.
+
 **Not built:** the design calls for a visibility policy sitting between the
 shared state and both agents, such that neither can read a store directly and
 each receives only what the policy permits. What exists is the gate at the
@@ -323,7 +386,7 @@ still answers the structured side for one that would.
 | `ProjectStateStore` | Assignments: due and assigned dates, either possibly absent, kind, dependencies, reported submission status; every channel's claim about a due date; what the school reports about a status; her own updates, a chain of events per assignment; the family's checks of a Done beside a Missing, a chain of events per assignment | Wired and tested; a file at `BLOSSOM_DATABASE_PATH`, read from a fixture only when the start creates the file |
 | `SupportRulesStore` | Operational rules derived from her accommodations, one per chunk | Seeded from the fixtures; read whole by the plan graph |
 | `ReflectionsStore` | The agent's notes about its own performance | Seeded from the fixtures; read whole by the plan graph |
-| `DraftsStore` | Every draft that reached the gate, every decision about it, and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
+| `DraftsStore` | Every draft that reached the gate, as its text and, in a nullable versioned column, the plan as data; every decision about it; and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
 | `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her |
 | `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, and the parent's word back | Wired and tested; in the drafts file, kept until resolved and swept two weeks after |

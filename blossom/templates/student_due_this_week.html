@@ -29,7 +29,7 @@
   {% endif %}
 
   {% if view.week.current %}
-  <section class="panel today">
+  <section class="panel today" id="today" tabindex="-1">
     <h2>Today, {{ view.today.strftime("%A, %B") }} {{ view.today.day }}</h2>
     {% if refreshed_at %}
       <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
@@ -59,10 +59,20 @@
     {% if view.plan and view.plan.reported_done %}
       <p class="confidence disagree" role="status">
         <strong>Your updates.</strong> {{ view.plan.reported_done }}
-        {% if view.plan.reported_done_work %}
+        {#
+          A plan read by its rows names the work as its rows do, by the saved
+          title and course, each a link to the assignment's details; a plan
+          read as text names it by title and id. Either way the plan is one
+          link away, unfolded, with her updates beside its rows.
+        #}
+        {% if plan_reading and plan_reading.structured and plan_reading.done_work %}
+          In it: {% for work in plan_reading.done_work %}{% if work.href %}<a class="assignment-link" href="{{ work.href }}" aria-label="{{ work.link_name }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %} ({{ work.course }}{% if work.needs_date %}, {% if work.due_date %}due {{ work.due_date|long_date }}{% else %}no due date{% endif %}{% endif %}){% if work.reference %} <span class="plan-ref">{{ work.reference }}</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}.
+          {% if not view.nothing_to_plan %}A new plan will leave it out.{% endif %}
+        {% elif view.plan.reported_done_work %}
           In it: {% for work in view.plan.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}.
           {% if not view.nothing_to_plan %}A new plan will leave it out.{% endif %}
         {% endif %}
+        {% if plan_reading %}<a href="{{ todays_plan_href() }}">View today's plan</a>{% endif %}
       </p>
     {% endif %}
     {% if view.plan and view.plan.decision in ("approved", "rejected") %}
@@ -144,6 +154,7 @@
           <button type="submit" class="secondary">Too much right now</button>
         </form>
       {% endif %}
+      <a class="to-help" href="#ask-for-help">Ask for help</a>
     </div>
     {% if view.nothing_to_plan %}
     {% elif view.can_plan %}
@@ -155,7 +166,37 @@
       </p>
     {% endif %}
 
-    <form method="post" action="/student/actions/ask-for-help" class="ask">
+    {#
+      Today's saved plan, unfolded on every visit, so her next step is on the
+      page without a remembered action: after planning, on a refresh, on the
+      way back from an assignment, and on an ordinary arrival alike, for a
+      plan read by its rows and one read as text, whatever a parent decided
+      and whether or not its work is done. It is a native fold she can close
+      on the page, and nothing remembers that she did. It sits after the
+      notices and the controls and before everything about help, which stays
+      one link away from the controls however long the plan is. The text is
+      the record as saved; nothing is cut or rewritten here.
+
+      The fold has an id of its own, the same whichever plan it holds, and
+      that is where her links to today's plan land: a way back written under
+      one plan is followed later, when another may have taken its place. The
+      plan inside keeps the id made from its draft. When a link asks for the
+      plan on a day that has none, the place is still there and says so.
+    #}
+    {% if view.plan %}
+      <details class="plan" open id="{{ todays_plan_id }}" tabindex="-1">
+        <summary>Today's saved plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
+        <p class="note">
+          {% if view.plan.too_much %}Kept to a shorter evening because you said today was too much.{% endif %}
+          Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
+        </p>
+        {% with reading = plan_reading, review_open = false %}{% include "plan_reading.html" %}{% endwith %}
+      </details>
+    {% elif plan_asked %}
+      <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
+    {% endif %}
+
+    <form method="post" action="/student/actions/ask-for-help" class="ask" id="ask-for-help" tabindex="-1">
       <label for="help-note">A note for your parents (optional)</label>
       <input id="help-note" type="text" name="note" maxlength="{{ note_max_length }}" placeholder="A short note">
       <button type="submit" class="secondary">Ask for help</button>
@@ -200,21 +241,6 @@
       </details>
     {% endif %}
 
-    {#
-      The whole saved plan, behind a disclosure that starts closed on an
-      ordinary visit and open right after a plan is made. The text is the
-      record as saved; nothing is cut or rewritten here.
-    #}
-    {% if view.plan %}
-      <details class="plan"{% if plan_open %} open{% endif %}>
-        <summary>View today's plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
-        <p class="note">
-          {% if view.plan.too_much %}Kept to a shorter evening because you said today was too much.{% endif %}
-          Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
-        </p>
-        {% with body = view.plan.body, review_open = false %}{% include "plan_body.html" %}{% endwith %}
-      </details>
-    {% endif %}
   </section>
   {% else %}
     <p class="return"><a href="/student/due-this-week">Return to this week and today's plan</a></p>
@@ -283,7 +309,8 @@
             <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
             Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
             {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
-            {% include "student_update.html" %}
+            <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
+            {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
           </li>
         {% endfor %}
       </ul>
@@ -297,7 +324,8 @@
                 <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
                 Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
                 {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
-                {% include "student_update.html" %}
+                <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
+                {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
               </li>
             {% endfor %}
           </ul>

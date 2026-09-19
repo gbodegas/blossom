@@ -119,6 +119,11 @@ class StudentAssignmentView(BaseModel):
     source_label: str = ""
     """Where the date shown came from, when one short label can say it: the channels
     that gave it, or the family. Empty in the states that need a sentence."""
+    source_claims: list[str] = []
+    """Every claim a source has made about the date, as ``SourceRecord.spoken`` renders
+    it, in the order heard and each once, whether it agrees with the record, differs, or
+    cannot be read as a date. An assignment's details list them all as the evidence; a
+    card lists claims only when the date is in doubt, from the fields below."""
     disagreement: list[str]
     """Each claim when the sources give different dates, as ``SourceRecord.spoken``
     renders it; empty otherwise."""

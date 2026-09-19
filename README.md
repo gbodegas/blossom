@@ -119,6 +119,28 @@ acting on one row get one record and one refusal that shows what stands now,
 the note on record and the note typed both; Check again is refused the same
 way when her update or the school's report moved after its page was made.
 
+**A saved plan she can still follow.** A plan is saved as the text she reads
+and, beside it, as data: the plan itself with the title, course, and due date
+of each assignment as the run read them. Today's saved plan is unfolded on
+her page on every visit, ahead of everything about help, which stays one link
+away from the controls. Both pages read a plan by its rows, each naming its
+assignment by id and linking to that assignment's details. When she reports
+an assignment Done, every block for it on today's plan says she can skip it,
+with the day of her report, and an item that was put off says it is out of
+work to plan. The times, the reasons, and a parent's review stay as they
+were: nothing is rescheduled, no model is asked, and no new plan is made. A
+change back to Not yet takes the marks away. Only today's latest plan shows
+her updates, whatever a parent decided; every other plan is history and reads
+as it was saved, with the text as composed kept in a fold. A plan made before
+plans were saved as data reads as its saved text, without links or marks. An
+assignment's details show its record as it stands now: what it is and its
+date first, then her update through the same form her cards use, then the
+longer evidence, with every claim a source has made about its date, and the
+history. What a save did is said at the update, with a way back to the week,
+the plan, or the family page she came from, and the way back to today's plan
+lands on whichever plan is today's when it is followed; a parent reads them
+and cannot report in her name.
+
 **Household sign-in.** Two passphrases in `.env`, hers and a parent's, guard
 the pages: hers opens her week, a parent's opens both pages, and a device
 stays signed in for a month or until "Sign out". The sign-in is a cookie

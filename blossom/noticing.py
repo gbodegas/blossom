@@ -23,7 +23,7 @@ No model takes part. The rules fit in one function, and
 
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import StrEnum
@@ -276,36 +276,90 @@ def planning_digest(week: Week) -> str:
     return uuid.uuid5(PLANNING_DIGEST, serialized).hex
 
 
-def read_week(project_state: ProjectStateStore, source: DateClaims, start: date) -> Week:
-    """Read the week from ``start``: state each record's date, read the sources, then select.
+@dataclass(frozen=True, kw_only=True)
+class Everything:
+    """The whole record at one reading: every assignment, every source's claims about each,
+    and what she, the school, and the family have said about each.
 
-    The student's page and the plan graph both read this, the same way, so
-    they never differ about whether an item is in a week. They start it on
-    different days: her page starts on the Monday of the school week she is
-    looking at, the planner on the evening being planned, so a plan looks at
-    the seven days ahead and her page says so. Every assignment on record is
-    considered, because the sources decide the window along with the record.
-    The rows, the claims, and what she and the school have reported are read
-    while the store is held, one snapshot, so a saving landing between two
-    reads cannot give a week whose rows and claims disagree, nor a plan's
+    A page says several things about the record: a week, the planning
+    window, what a saved plan includes that she now reports done, the marks
+    beside its rows, and whether it still fits the work as it stands. Each
+    is drawn from one of these, so they cannot disagree, and her reports
+    are read once however many things the page says.
+    """
+
+    assignments: list[Assignment]
+    """Every assignment on record, in the record's order."""
+    records: dict[str, list[SourceRecord]]
+    """Every source's claims about each of them, by id."""
+    statuses: dict[str, AssignmentStatus]
+    """What stands about each of them, by id, and about any other id the reader named as
+    well: a saved plan can speak about work that has left the record."""
+
+    @property
+    def ids(self) -> frozenset[str]:
+        """The id of every assignment on record at this reading."""
+        return frozenset(item.assignment_id for item in self.assignments)
+
+
+def read_everything(
+    project_state: ProjectStateStore, source: DateClaims, *, also: Iterable[str] = ()
+) -> Everything:
+    """Read the whole record while the store is held: one snapshot.
+
+    The rows, the claims, and what she, the school, and the family have
+    reported are read together, so a saving landing between two reads
+    cannot give a week whose rows and claims disagree, nor a plan's
     fingerprint that misses a change just made, nor a card whose update is
-    another card's.
+    another card's. ``also`` names assignments the reader speaks about
+    whether or not they are on record, a saved plan's, so what stands about
+    them comes from the same batch.
     """
     with project_state.exclusively():
         everything = project_state.all_assignments()
         records = {
             item.assignment_id: source.deadline_records(item.assignment_id) for item in everything
         }
-        statuses = statuses_for(project_state, [item.assignment_id for item in everything])
-    expectations = [expect_due_date(item) for item in everything]
+        statuses = statuses_for(
+            project_state, [*(item.assignment_id for item in everything), *also]
+        )
+    return Everything(assignments=everything, records=records, statuses=statuses)
+
+
+def week_from(everything: Everything, start: date) -> Week:
+    """The week from ``start`` out of one reading: state each record's date, set the
+    sources against it, then select. Every assignment on record is considered, because
+    the sources decide the window along with the record."""
     noticed = {
-        expectation.assignment_id: notice_due_date(expectation, records[expectation.assignment_id])
-        for expectation in expectations
+        item.assignment_id: notice_due_date(
+            expect_due_date(item), everything.records[item.assignment_id]
+        )
+        for item in everything.assignments
     }
-    assignments = [item for item in everything if in_week(item, noticed[item.assignment_id], start)]
+    assignments = [
+        item for item in everything.assignments if in_week(item, noticed[item.assignment_id], start)
+    ]
     return Week(
         assignments=assignments,
-        records={item.assignment_id: records[item.assignment_id] for item in assignments},
+        records={
+            item.assignment_id: everything.records[item.assignment_id] for item in assignments
+        },
         noticings={item.assignment_id: noticed[item.assignment_id] for item in assignments},
-        statuses={item.assignment_id: statuses[item.assignment_id] for item in assignments},
+        statuses={
+            item.assignment_id: everything.statuses[item.assignment_id] for item in assignments
+        },
     )
+
+
+def read_week(project_state: ProjectStateStore, source: DateClaims, start: date) -> Week:
+    """Read the week from ``start``: one reading of the record, and the week out of it.
+
+    The student's page and the plan graph both read a week this way, so they
+    never differ about whether an item is in a week. They start it on
+    different days: her page starts on the Monday of the school week she is
+    looking at, the planner on the evening being planned, so a plan looks at
+    the seven days ahead and her page says so. A reader that needs more than
+    one week, or a week and a saved plan's updates, reads everything once
+    and takes each from it.
+    """
+    return week_from(read_everything(project_state, source), start)

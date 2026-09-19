@@ -281,8 +281,9 @@ def test_a_change_asked_for_is_said_in_her_words() -> None:
 
 
 def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
-    """The time range and the item in bold, the reason under it, the lists under
-    headings, the reviewer's notes behind a fold; every part of the saved text."""
+    """The time range in bold, the assignment under it as a link to its details by id, its
+    due date, the reason, the work put off under a heading, the reviewer's notes behind a
+    fold, and the text as composed in a fold of its own; every part of the saved text."""
     with browser() as client:
         client.post("/student/actions/plan")
         body = client.get("/student/plans/today").json()["body"]
@@ -291,9 +292,19 @@ def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
 
     text = present_plan(body)
     assert text.blocks[0].span == "4:30 PM to 5:30 PM"
-    assert '<strong>4:30 PM to 5:30 PM</strong>, set aside for <span class="plan-item">' in page
+    assert '<p class="plan-when"><strong>4:30 PM to 5:30 PM</strong></p>' in page
+    assert (
+        '<span class="plan-item">World History &middot; <a class="assignment-link" '
+        'href="/student/assignments/assignment-canal-essay?return_to=today" '
+        'aria-label="Canal Era comparison essay, World History">Canal Era comparison essay</a>'
+    ) in page
+    assert '<p class="plan-due">Due August 21, 2026</p>' in page
+    assert "return_to=family&amp;plan_id=draft%3Aplan%3A2026-08-19%3A" in theirs
     assert '<p class="plan-why">' in page
-    assert '<h3 class="plan-heading">Waiting for another day</h3>' in page
+    assert '<h3 class="plan-heading">Saved for another day</h3>' in page
+    assert '<h4 class="plan-heading">Saved for another day</h4>' in theirs
+    assert "<summary>Original saved text</summary>" in page
+    assert "<summary>Original saved text</summary>" in theirs
     assert "<summary>Blossom's review notes</summary>" in page
     assert '<details class="steps plan-review">' in page, "folded on her page"
     assert '<details class="steps plan-review" open>' in theirs, "open on the parent's"
@@ -338,21 +349,40 @@ def test_what_is_shared_points_inside_its_fold() -> None:
     assert 'href="#what-is-shared"' in page
 
 
-def test_the_plan_is_folded_on_a_visit_and_unfolded_right_after_it_is_made() -> None:
-    """The whole saved text is on the page either way; only the disclosure's state differs."""
+def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away() -> None:
+    """Right after it is made, on an ordinary visit, and on a refresh, the saved plan is on
+    the page unfolded, a plan read by its rows and one read as text alike, so her next step
+    takes no remembered action. It sits before everything about help, and a link beside
+    the controls goes to the help form, so a long plan never puts help out of reach. No
+    plan, no fold; and opening the page asks no model."""
     with browser() as client:
         before = client.get(PAGE).text
         planned = client.post("/student/actions/plan")
         shown = client.get(planned.headers["location"]).text
         revisit = client.get(PAGE).text
+        refreshed = client.get(PAGE, params={"refreshed": "1"}).text
         body = client.get("/student/plans/today").json()["body"]
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        state.drafts._connection.execute("UPDATE drafts SET plan_snapshot=NULL")
+        state.drafts._connection.commit()
+        as_text = client.get(PAGE).text
 
     assert '<details class="plan"' not in before
     assert "No plan for today yet." in before
-    assert '<details class="plan" open>' in shown
-    assert '<summary>View today\'s plan <span class="summary-meta">made at ' in shown
+    assert '<a class="to-help" href="#ask-for-help">Ask for help</a>' in before
+    for page in (shown, revisit, refreshed, as_text):
+        assert '<details class="plan" open id="todays-plan" tabindex="-1">' in page
+        assert '<summary>Today\'s saved plan <span class="summary-meta">made at ' in page
+        assert page.index(
+            '<details class="plan" open id="todays-plan" tabindex="-1">'
+        ) < page.index('id="ask-for-help"')
+        assert page.index('href="#ask-for-help"') < page.index(
+            '<details class="plan" open id="todays-plan" tabindex="-1">'
+        )
+        assert 'class="ask" id="ask-for-help" tabindex="-1"' in page
     assert whole(body, revisit), "the saved text, set out for reading, all of it"
-    assert '<details class="plan">' in revisit
+    assert "This plan uses the earlier text format." in as_text
+    assert "set aside for" in as_text
     assert "Looks ahead through Tuesday, August 25." in revisit
 
 
@@ -363,7 +393,7 @@ def test_the_plan_unfolds_on_todays_week_however_the_week_was_named() -> None:
         named = client.get(PAGE, params={"week": PLAN_DATE.isoformat(), "show_plan": "1"}).text
         other = client.get(PAGE, params={"week": "2026-08-24", "show_plan": "1"}).text
 
-    assert '<details class="plan" open>' in named
+    assert '<details class="plan" open id="todays-plan" tabindex="-1">' in named
     assert '<details class="plan"' not in other, "another week has no today panel"
 
 
@@ -375,9 +405,9 @@ def test_the_plan_stays_unfolded_when_the_week_asked_for_cannot_be_shown() -> No
         edge = client.get(PAGE, params={"week": "0001-01-01", "show_plan": "1"})
 
     assert bad.status_code == 422
-    assert '<details class="plan" open>' in bad.text
+    assert '<details class="plan" open id="todays-plan" tabindex="-1">' in bad.text
     assert edge.status_code == 422
-    assert '<details class="plan" open>' in edge.text
+    assert '<details class="plan" open id="todays-plan" tabindex="-1">' in edge.text
 
 
 def test_asking_for_the_plan_unfolded_makes_no_plan() -> None:

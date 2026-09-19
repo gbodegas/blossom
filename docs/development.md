@@ -40,6 +40,15 @@ With the app running as the README describes:
   optional note, through a form alone, and offers to change or undo it; work
   she has reported done folds under the active cards. There is no JSON route
   for her updates.
+- <http://127.0.0.1:8000/student/assignments/ASSIGNMENT-ID> is one
+  assignment's details: its current record, her update through the same form
+  and the same two routes as her cards, and a link back to where the reader
+  came from. Cards, the rows of a saved plan, and the family page's rows link
+  to it by id. The way back is three query fields, `return_to` (`week`,
+  `today`, or `family`), `week`, and `plan_id`, checked on the server; nothing
+  else is read as an address, and a value these pages do not make falls back
+  to her week, or to the family page for a parent who is signed in. A parent
+  reads the details and cannot save from them. There is no JSON route for it.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
   to `/student/plans` makes one.
 - <http://127.0.0.1:8000/student/help-requests> lists her requests for help
@@ -127,6 +136,12 @@ Three files under `.local/` outlive a restart:
   from before either gains the tables on the first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
+  A draft is its text and, in a nullable `plan_snapshot` column, the plan as
+  data: one JSON document with a version, the plan, and the title, course,
+  and due date of each assignment as the run read them. A file from before
+  the column gains it on the first start and its drafts keep none: they are
+  read as text, never rebuilt from it, and no plan needs making again to be
+  read.
   Kept for the school year. A draft nobody decides within two weeks of its
   evening is closed as expired, and one a later plan for the same evening is
   published over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
@@ -204,7 +219,9 @@ If her sign-in expires before she saves an update, Blossom sends her to
 sign in. The update is not saved, and the note she typed is not kept through
 the sign-in; after signing in, she enters the update again. A parent signed
 in sees her updates on her page and cannot make one in her name. Her device
-cannot mark a check: the gate answers it 403 on the family page's paths.
+cannot mark a check: the gate answers it 403 on the family page's paths. An
+update saved from an assignment's details meets an expired sign-in the same
+way as one saved from a card.
 
 If a passphrase may have been seen, change it in `.env` and restart: every
 device signed in with it is signed out, the other person's devices stay

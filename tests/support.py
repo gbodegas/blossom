@@ -29,6 +29,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
+from blossom.agent.compose import Composition, compose
 from blossom.agent.graph import (
     Ask,
     CompiledPlanGraph,
@@ -42,8 +43,11 @@ from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.intake import PASTE_DAY
+from blossom.noticing import Noticing, Verdict
+from blossom.plan_checks import check_plan
+from blossom.plan_reading import anchor_for
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.reconciliation import SourceChannel, SourceRecord
+from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
@@ -54,7 +58,7 @@ from blossom.settings import (
     TIMEZONE_VARIABLE,
     Settings,
 )
-from blossom.stores.drafts import DraftsStore
+from blossom.stores.drafts import DraftRecord, DraftsStore
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -587,3 +591,173 @@ def school_missing(day: date) -> StatusReport:
 
 def status_of(store: ProjectStateStore, assignment_id: str) -> AssignmentStatus:
     return statuses_for(store, [assignment_id])[assignment_id]
+
+
+# ------------------------------------------------------------- a composition with every shape
+
+SYLLABUS = Assignment(
+    assignment_id="assignment-signed-syllabus",
+    course="Geometry",
+    title="Syllabus, signed",
+    due_date=None,
+    dependencies=[],
+    reported_submission_status="not_started",
+)
+NAMESAKE_ESSAY = Assignment(
+    assignment_id="assignment-canal-essay-english",
+    course="English",
+    title="Canal Era comparison essay",
+    due_date=date(2026, 8, 21),
+    dependencies=[],
+    reported_submission_status="not_started",
+)
+
+
+def plan_block(
+    assignment_id: str, start: str, end: str, why: str = "while it is fresh"
+) -> PlanBlock:
+    return PlanBlock(
+        assignment_id=assignment_id,
+        starts_at=time.fromisoformat(start),
+        ends_at=time.fromisoformat(end),
+        rationale=why,
+    )
+
+
+def two_sittings() -> DailyPlan:
+    """The essay in two sittings, its namesake in one, the problem set put off, and the
+    undated syllabus put off too."""
+    return DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            plan_block(ESSAY.assignment_id, "18:00", "18:30", "the second half\nafter a break"),
+            plan_block(ESSAY.assignment_id, "16:30", "17:00", "the outline first"),
+            plan_block(NAMESAKE_ESSAY.assignment_id, "17:15", "17:45"),
+        ],
+        deferred=[
+            Deferral(assignment_id=PROBLEM_SET.assignment_id, reason="not due until Monday"),
+            Deferral(assignment_id=SYLLABUS.assignment_id, reason="ask what the date is"),
+        ],
+    )
+
+
+SITTINGS_WINDOW = [ESSAY, NAMESAKE_ESSAY, PROBLEM_SET, SYLLABUS]
+
+
+def contested() -> list[Noticing]:
+    """The portal gives the problem set another date than the record's."""
+    return [
+        Noticing(
+            assignment_id=PROBLEM_SET.assignment_id,
+            expected=PROBLEM_SET.due_date,
+            observed=("LMS says 2026-08-26",),
+            spoken=("the school portal says August 26",),
+            observed_dates=(date(2026, 8, 26),),
+            verdict=Verdict.CONTRADICTED,
+        )
+    ]
+
+
+def dissent() -> CriticVerdict:
+    """One criterion judged and failed, the rest not considered."""
+    return CriticVerdict(
+        findings=[finding(Judgment.FAILS, Criterion.ORDER, "the hard one\tcomes  late")]
+    )
+
+
+def composed_plan(plan: DailyPlan | None = None, **over: object) -> Composition:
+    plan = plan or two_sittings()
+    given: dict[str, object] = {
+        "draft_id": "draft:plan:2026-08-19:abc12345",
+        "plan": plan,
+        "assignments": SITTINGS_WINDOW,
+        "verification": check_plan(plan, due_in_window=SITTINGS_WINDOW, zone=ZONE),
+        "verdict": dissent(),
+        "settled": False,
+        "noticings": contested(),
+        "confidence": {ESSAY.assignment_id: SourceConfidence.SOURCES_DISAGREE},
+        "too_much": True,
+        "budget_minutes": 45,
+    }
+    given.update(over)
+    return compose(**given)  # type: ignore[arg-type]
+
+
+# ------------------------------------------------------------- a plan to follow through the pages
+
+NAMESAKE_COURSE = "English"
+
+
+def walkthrough_plan(namesake_id: str) -> DailyPlan:
+    """The fixture week's plan with the essay in two sittings and its namesake, another
+    course's assignment of the same title, put off: two rows for one id, a row for a
+    neighbor with the same words, and work put off beside them."""
+    whole = fixture_week_plan()
+    return whole.model_copy(
+        update={
+            "blocks": [
+                PlanBlock(
+                    assignment_id=ESSAY_ID,
+                    starts_at=time(16, 30),
+                    ends_at=time(17, 0),
+                    rationale="the outline first, while she is fresh",
+                ),
+                PlanBlock(
+                    assignment_id="assignment-science-fair-proposal",
+                    starts_at=time(17, 0),
+                    ends_at=time(17, 30),
+                    rationale="nobody has confirmed this date, so it gets done tonight",
+                ),
+                PlanBlock(
+                    assignment_id=ESSAY_ID,
+                    starts_at=time(18, 0),
+                    ends_at=time(18, 30),
+                    rationale="the first two paragraphs after a break",
+                ),
+            ],
+            "deferred": [
+                *whole.deferred,
+                Deferral(assignment_id=namesake_id, reason="the other essay comes first"),
+            ],
+        }
+    )
+
+
+def walkthrough(client: TestClient) -> str:
+    """Put the namesake on record, script the walkthrough plan for the next run, and return
+    the namesake's id. Nothing is planned yet, and the shared fixtures are left as they are."""
+    entered = client.post(
+        "/parent/inbox/keep",
+        data={"course": NAMESAKE_COURSE, "title": ESSAY_TITLE, "due_date": "2026-08-21"},
+    )
+    assert entered.status_code == 303, entered.text[:300]
+    namesake = next(
+        item.assignment_id
+        for item in state_of(client).project_state.all_assignments()
+        if item.title == ESSAY_TITLE and item.course == NAMESAKE_COURSE
+    )
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [walkthrough_plan(namesake)], lambda: [accepting()]
+    )
+    return namesake
+
+
+def planned(client: TestClient) -> DraftRecord:
+    """Make today's plan from her page and return its record."""
+    made = client.post("/student/actions/plan")
+    assert made.status_code == 303, made.text[:300]
+    record = state_of(client).drafts.latest_for(PLAN_DATE)
+    assert record is not None
+    return record
+
+
+def plan_on(page: str, record: DraftRecord) -> str:
+    """One plan's container on a page, whole: from its anchor to the end of its original
+    text fold, or to the end of its text reading."""
+    start = page.index(f'id="{anchor_for(record.draft_id)}"')
+    ends = [
+        found
+        for found in (page.find(mark, start) for mark in ("</pre>", "</section>", "</article>"))
+        if found >= 0
+    ]
+    return page[start : min(ends)] if ends else page[start:]

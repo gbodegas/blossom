@@ -22,6 +22,7 @@ from blossom.stores.drafts import (
     SUPERSEDED_REASON,
     AlreadyDecided,
     DraftsStore,
+    IncompatibleReplay,
     Outcome,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
@@ -88,11 +89,13 @@ def test_a_saved_draft_is_waiting_until_somebody_decides() -> None:
 
 
 def test_saving_the_same_draft_again_leaves_one_row_with_the_first_created_at() -> None:
-    """A node that runs twice, as a resumed or crashed node does, must not queue twice."""
+    """A node that runs twice before its run pauses, as a crashed node does, must not queue
+    twice: the later composition takes the place of the earlier one, whole, and the draft
+    keeps the time it was first made."""
     store = store_in_memory()
     try:
-        save_and_publish(
-            store, draft("first rendering"), thread_id="t", plan_date=PLAN_DATE, outcome="accepted"
+        store.record_waiting(
+            draft("first rendering"), thread_id="t", plan_date=PLAN_DATE, outcome="accepted"
         )
         later = draft("second rendering").model_copy(
             update={"created_at": CREATED.replace(hour=23)}
@@ -777,27 +780,53 @@ def test_the_current_plan_is_the_last_published_whatever_order_the_drafts_were_s
 
 
 def test_a_replayed_save_of_a_published_draft_keeps_its_place_and_displaces_nothing() -> None:
+    """The same composition saved again for a draft on the pages changes nothing, made at a
+    later moment or not: not its decision, its place, nor the steps recorded since. A
+    different composition is refused, and the draft reads as it did."""
     store = store_in_memory()
     try:
         first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
         second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
-        save_and_publish(store, first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+        save_and_publish(
+            store,
+            first,
+            thread_id="ta",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+            steps=[step("plan", 1)],
+        )
         save_and_publish(store, second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+        before = store.get("draft:a")
         store.record_waiting(
-            first.model_copy(update={"body": "a, again"}),
+            first.model_copy(update={"created_at": CREATED.replace(hour=23)}),
             thread_id="ta",
             plan_date=PLAN_DATE,
             outcome="accepted",
         )
+        the_same = store.get("draft:a")
+        with pytest.raises(IncompatibleReplay, match="on the pages"):
+            store.record_waiting(
+                first.model_copy(update={"body": "a, again"}),
+                thread_id="ta",
+                plan_date=PLAN_DATE,
+                outcome="accepted",
+            )
+        with pytest.raises(IncompatibleReplay, match="on the pages"):
+            store.record_waiting(
+                first, thread_id="ta", plan_date=PLAN_DATE, outcome="unsettled", too_much=True
+            )
         replayed = store.get("draft:a")
         waiting = [record.draft_id for record in store.waiting()]
     finally:
         store.close()
 
-    assert replayed is not None
+    assert before is not None
+    assert the_same == before
+    assert replayed == before
     assert replayed.published is True
     assert replayed.decision == "superseded"
-    assert replayed.body == "a, again"
+    assert replayed.body == "a"
+    assert [item.node for item in replayed.steps] == ["plan"]
     assert waiting == ["draft:b"]
 
 
