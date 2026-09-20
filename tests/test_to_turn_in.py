@@ -422,11 +422,17 @@ def test_a_record_that_cannot_be_read_is_said_under_the_list_and_never_dropped()
         store._connection.commit()
 
         page = client.get(TO_TURN_IN_PAGE)
+        week = client.get(HER_PAGE)
 
-    assert page.status_code == 200
-    assert listed(page.text) == [ESSAY_ID]
-    assert "cannot be read" in page.text
-    assert "Vocabulary quiz" in page.text[page.text.index("cannot be read") - 400 :]
+    assert (page.status_code, week.status_code) == (200, 200)
+    for shown in (page.text, section(week.text)):
+        assert listed(shown) == [ESSAY_ID]
+        named = re.search(r'<p class="problem">Your hand-in record cannot be read.*?</p>', shown)
+        assert named is not None
+        assert "Vocabulary quiz" in named.group()
+        assert f"/student/assignments/{QUIZ_ID}" in named.group()
+        assert "It may belong on this list." in named.group()
+    assert "To turn in (1)" in week.text
 
 
 def test_a_parent_reads_the_list_and_cannot_press(tmp_path: pathlib.Path) -> None:
