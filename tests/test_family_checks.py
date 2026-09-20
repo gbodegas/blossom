@@ -8,7 +8,9 @@ not, and that none of it touches her account, the school's, a plan, or the
 digest.
 """
 
+import html
 import pathlib
+import re
 import sqlite3
 import threading
 from datetime import date
@@ -76,12 +78,14 @@ from tests.support import (
     SAME_ORIGIN,
     THEIRS,
     Answer,
+    a_row,
     accepting,
     browser,
     card_for,
     fixture_clock,
     fixture_week_plan,
     hidden,
+    lands_on,
     practice_store,
     report,
     school_missing,
@@ -581,11 +585,18 @@ def a_discrepancy(client: TestClient) -> None:
     report(client, ESSAY_ID, "done", "Handed in Tuesday.")
 
 
+def action_of(row: str, ending: str) -> str:
+    """The address one of a row's two check forms is sent to, as the page wrote it."""
+    found = re.search(rf'<form method="post" action="([^"]*/{ending})"', row)
+    assert found is not None, ending
+    return html.unescape(found.group(1))
+
+
 def mark(client: TestClient, assignment_id: str, note: str = "") -> Answer:
     """Mark the row checked from the family page as it stands, with the fields it carries."""
     row = row_for(family_page(client), assignment_id)
     return client.post(
-        f"/parent/actions/checks/{assignment_id}/mark",
+        action_of(row, "mark"),
         data={
             "basis": hidden(row, "basis"),
             "expected_check_id": hidden(row, "expected_check_id"),
@@ -599,7 +610,7 @@ def check_again(client: TestClient, assignment_id: str) -> Answer:
     """Reopen the check from the family page as it stands."""
     row = row_for(family_page(client), assignment_id)
     return client.post(
-        f"/parent/actions/checks/{assignment_id}/again",
+        action_of(row, "again"),
         data={"check_id": hidden(row, "check_id"), "basis": hidden(row, "basis")},
         headers=PAGE_HEADERS,
     )
@@ -676,6 +687,83 @@ def test_the_family_page_offers_mark_checked_and_a_check_shows_on_both_pages() -
     assert [(item.operation, item.note) for item in chain] == [
         ("checked", "Teacher has it on paper.\nSaid so Tuesday.")
     ]
+
+
+@pytest.mark.parametrize(
+    ("name", "in_path", "in_query"),
+    [
+        ("unit/3 part?b#c", "unit%2F3%20part%3Fb%23c", "unit%2F3+part%3Fb%23c"),
+        ("../..", "..%2F..", "..%2F.."),
+    ],
+    ids=["marks", "dots"],
+)
+def test_both_checks_reach_an_assignment_whose_id_holds_a_slash(
+    name: str, in_path: str, in_query: str
+) -> None:
+    """Each form is sent to the address the family page wrote for it, and each answer is
+    followed to where it sends a parent. An id that holds a slash, a space, a question
+    mark, and a hash, or one made of dots and slashes, is one value to both routes and to
+    the page that comes back, which says what happened on the row it lands on. An id with
+    none of them is written into the address as it is."""
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        store.put_on_record(
+            [a_row(name, "Slashed set")],
+            {},
+            {name: [school_said("missing", SourceChannel.EMAIL, PLAN_DATE)]},
+        )
+        done = store.report_status(
+            name,
+            "done",
+            None,
+            expected_head=None,
+            now=state.clock.now(),
+            today=state.clock.today(),
+        )
+        a_discrepancy(client)
+        before = family_page(client)
+        row = row_for(before, name)
+        mark_at = action_of(row, "mark")
+        fields = {
+            "basis": hidden(row, "basis"),
+            "expected_check_id": hidden(row, "expected_check_id"),
+            "note": "Seen on paper.",
+        }
+        marked = client.post(mark_at, data=fields, headers=PAGE_HEADERS)
+        after_marked = client.get(marked.headers["location"], headers=PAGE_HEADERS).text
+        same = client.post(mark_at, data=fields, headers=PAGE_HEADERS)
+        after_same = client.get(same.headers["location"], headers=PAGE_HEADERS).text
+        after_mark = [item.operation for item in store.family_checks(name)]
+        again_at = action_of(row_for(family_page(client), name), "again")
+        reopened = check_again(client, name)
+        after_reopened = client.get(reopened.headers["location"], headers=PAGE_HEADERS).text
+        chain = store.family_checks(name)
+        the_essays = store.family_checks(ESSAY_ID)
+
+    assert isinstance(done, Saved)
+    assert where(before, name) == "Worth checking together"
+    assert mark_at == f"/parent/actions/checks/{in_path}/mark"
+    assert again_at == f"/parent/actions/checks/{in_path}/again"
+    assert action_of(row_for(before, ESSAY_ID), "mark") == (
+        f"/parent/actions/checks/{ESSAY_ID}/mark"
+    )
+    for answer, page, said, words in (
+        (marked, after_marked, "checked", CHECK_RECORDED),
+        (same, after_same, "checked_already", CHECK_ALREADY),
+        (reopened, after_reopened, "reopened", CHECK_REOPENED),
+    ):
+        assert answer.status_code == 303, answer.text[:300]
+        assert answer.headers["location"] == f"/parent?{said}={in_query}#update-{in_path}"
+        assert str(escape(words)) in row_for(page, name), said
+        assert f'id="update-{name}"' in lands_on(page, answer.headers["location"]), said
+    assert after_mark == ["checked"]
+    assert [(item.operation, item.note) for item in chain] == [
+        ("checked", "Seen on paper."),
+        ("reopened", None),
+    ]
+    assert chain[0].basis.startswith(f"{name}|{done.report.report_id}|")
+    assert the_essays == []
 
 
 def test_only_a_parents_device_marks_a_check_and_the_check_holds_through_a_restart(

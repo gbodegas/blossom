@@ -68,7 +68,7 @@ from blossom.intake import TEXT_MAX_LENGTH
 from blossom.noticing import Everything, read_everything
 from blossom.plan_reading import DoneMark, PlanReading, read_plan
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
-from blossom.routes.navigation import details_href
+from blossom.routes.navigation import FAMILY_PAGE, address, details_href, segment
 from blossom.routes.runs import (
     Graphs,
     PlanGraphBuilder,
@@ -716,6 +716,7 @@ def review_page(
             "updates": assignment_updates(everything, today),
             "check": check,
             "check_note_max_length": CHECK_NOTE_MAX_LENGTH,
+            "check_routes": check_actions,
         },
         status_code=status_code,
     )
@@ -1096,12 +1097,26 @@ def another_rows(basis: str, assignment_id: str) -> bool:
 
 
 def back_to_the_row(said: str, assignment_id: str) -> str:
-    """Where a check or a reopening sends a parent: the page, the row, and what happened."""
-    return f"/parent?{said}={assignment_id}#update-{assignment_id}"
+    """Where a check or a reopening sends a parent: the page, the row, and what happened.
+    The id is escaped in the query, and in the fragment too, which a browser undoes to
+    find the row, so an id that holds a hash names its row in both."""
+    return address(
+        FAMILY_PAGE, fragment=f"update-{segment(assignment_id)}", **{said: assignment_id}
+    )
+
+
+def check_actions(assignment_id: str) -> tuple[str, str]:
+    """The two routes a check goes through, mark checked and check again, with the id as
+    one escaped segment. The server undoes the escaping before it matches, so both routes
+    take the id as the rest of the path up to their own ending."""
+    base = f"/parent/actions/checks/{segment(assignment_id)}"
+    return f"{base}/mark", f"{base}/again"
 
 
 @router.post(
-    "/actions/checks/{assignment_id}/mark", response_class=HTMLResponse, include_in_schema=False
+    "/actions/checks/{assignment_id:path}/mark",
+    response_class=HTMLResponse,
+    include_in_schema=False,
 )
 async def mark_checked_from_the_page(
     request: Request, assignment_id: str, state: State
@@ -1198,7 +1213,9 @@ async def mark_checked_from_the_page(
 
 
 @router.post(
-    "/actions/checks/{assignment_id}/again", response_class=HTMLResponse, include_in_schema=False
+    "/actions/checks/{assignment_id:path}/again",
+    response_class=HTMLResponse,
+    include_in_schema=False,
 )
 async def check_again_from_the_page(request: Request, assignment_id: str, state: State) -> Response:
     """Check again: a parent reopens the family's check on one assignment, and nothing else.

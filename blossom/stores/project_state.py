@@ -205,6 +205,17 @@ class Assignment(BaseModel):
     supplied them. A parent's entry keeps its origin through a later paste, and a
     parent's correction of a type or a note is told from the school's text."""
 
+    @field_validator("assignment_id")
+    @classmethod
+    def _can_be_named_in_an_address(cls, assignment_id: str) -> str:
+        """An id of one dot or two is refused. A browser reads either as a step in a path
+        and resolves it before it sends the address, escaped or not, so no page could link
+        to the assignment or send a form about it. Any other id is kept as it is."""
+        if assignment_id in {".", ".."}:
+            msg = f"the id {assignment_id!r} reads as a step in a path, so no address can name it"
+            raise ValueError(msg)
+        return assignment_id
+
 
 class StatusReport(BaseModel):
     """What a school channel reported about an assignment's status, as of a day.

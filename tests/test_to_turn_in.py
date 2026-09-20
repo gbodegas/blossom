@@ -10,7 +10,7 @@ import html
 import pathlib
 import re
 from datetime import UTC, date, datetime
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -71,6 +71,7 @@ from tests.support import (
     card_for,
     fixture_clock,
     form_fields,
+    lands_on,
     report,
     school_said,
     signed_in_household,
@@ -1455,18 +1456,6 @@ def test_a_result_says_what_stands_with_the_day_she_said_it_whatever_day_it_is_r
 
 SLASHED = "unit/3 part?b#c"
 SLASHED_UNICODE = "unit/" + chr(0xE9) + "/\U0001f469" + chr(0x200D) + "\U0001f52c"
-
-
-def lands_on(page: str, address: str) -> str:
-    """The opening tag of the element a browser lands on for an address: the element whose
-    id is the fragment as written, or failing that the fragment with its escapes undone,
-    which is the order a browser tries them in. Empty when the fragment names nothing."""
-    fragment = urlsplit(address).fragment
-    tags = {
-        html.unescape(found.group(1)): found.group(0)
-        for found in re.finditer(r'<\w+\b[^>]*?\sid="([^"]*)"[^>]*>', page)
-    }
-    return tags.get(fragment) or tags.get(unquote(fragment)) or ""
 
 
 def special_record(client: TestClient, name: str) -> ProjectStateStore:
