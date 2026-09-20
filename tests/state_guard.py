@@ -30,6 +30,15 @@ this, so its start has no check of all three first. It needs none: its
 settings were read at import, its database is the default or the one the
 shell named, both protected, and claiming that file is the first thing a
 start does.
+
+The shared helpers that prepare settings, open a record, or build the
+application are for a run this stands behind, and ask ``protecting`` before
+they do anything. Outside one, a script that imports them would build an
+application on the defaults, the checkout's own record, with no fixture to
+move them. What they ask is whether the path guard and the start every
+module holds are the ones put in place here. Nothing else counts: not that
+pytest is imported, and not a variable in the environment, either of which a
+script can have with no guard anywhere.
 """
 
 import os
@@ -73,8 +82,65 @@ CHECKOUT_REASON: Final = (
 )
 
 
+_APPLICATION: Final = (paths.refuse_unsafe_path, dependencies.create_lifespan)
+"""The application's own path guard and start, as they were before any guard here stood
+behind them: what no module of the application may be left holding while a run is called
+protected. Kept in a tuple, since ``rebind`` replaces every module attribute that is one
+of them, this module's included."""
+
+
+def application_guard() -> Callable[..., Any]:
+    """The application's own path guard, with no guard of this module behind it."""
+    return _APPLICATION[0]
+
+
 class HouseholdStateProtected(RuntimeError):
     """Raised when a test reaches for a folder that may hold a household's files."""
+
+
+class OutsideTheSuite(RuntimeError):
+    """Raised when a shared test helper is used where no guard stands behind the application."""
+
+
+_STANDING: list[tuple[Callable[..., Any], Callable[..., Any]]] = []
+"""The path guard and the start each guard now in place put there, innermost last."""
+
+
+def protecting() -> bool:
+    """True while a guard stands behind the application in this process.
+
+    Read from what is really bound: the path guard the stores call and the
+    start the application is built with must be a pair one guard put in
+    place and has not yet taken out. A flag would only say that someone
+    meant to protect the run. The stores import the path guard by name, so
+    each holds its own: one of them handed the application's own function
+    back would open a protected file with every other binding in order, so
+    no module of the application may hold either of the two as they were."""
+    standing = any(
+        paths.refuse_unsafe_path is guard and dependencies.create_lifespan is start
+        for guard, start in _STANDING
+    )
+    return standing and not any(
+        value is unguarded
+        for name, module in list(sys.modules.items())
+        if name == "blossom" or name.startswith("blossom.")
+        for value in list(getattr(module, "__dict__", {}).values())
+        for unguarded in _APPLICATION
+    )
+
+
+def require_protection(helper: str) -> None:
+    """Refuse a shared helper outside a protected run, before it builds or opens anything."""
+    if protecting():
+        return
+    variables = ", ".join(RUNTIME_PATH_VARIABLES)
+    msg = (
+        f"tests.support.{helper} is for a test the state guard stands behind, and none does "
+        "here, so what it builds would open the checkout's own record. Write this as a test, "
+        f"or run the application itself with {variables} each naming a file in a folder made "
+        "to be thrown away."
+    )
+    raise OutsideTheSuite(msg)
 
 
 def landed(path: Path) -> str:
@@ -172,8 +238,11 @@ class StateGuard:
 
         rebind(accepts, refuse_unsafe_path)
         rebind(lifespan_for, create_lifespan)
+        standing = (refuse_unsafe_path, create_lifespan)
+        _STANDING.append(standing)
         try:
             yield
         finally:
+            _STANDING.remove(standing)
             rebind(refuse_unsafe_path, accepts)
             rebind(create_lifespan, lifespan_for)

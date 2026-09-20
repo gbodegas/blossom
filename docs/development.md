@@ -175,6 +175,21 @@ named, is refused before a folder is made or a file opened there, however
 the path is spelled. `tests/state_guard.py` holds the rule and
 `tests/test_state_guard.py` holds it to account.
 
+The helpers the tests share for preparing settings, opening a record, or
+building the application, in `tests/support.py`, work only in such a run.
+Anywhere else they refuse before they build or open anything: a script that
+imported them would build the application on the defaults, which is the
+checkout's own `.local/`, with no fixture there to move them. They ask
+whether the guard is really in place behind the application. That pytest is
+imported, or what the environment says, is not that.
+
+To look at the application by hand, run the application itself with all three
+variables naming files in one folder made to be thrown away. The claim's two
+lock files and the sign-in secret are made beside the files those variables
+name, so they land in that folder as well, and nothing else is written. A
+second checkout is not that: its defaults are a `.local/` of its own, and a
+variable left in the shell still names whatever it named.
+
 ## Running the planner for real
 
 Copy `.env.example` to `.env`, put an Anthropic API key in
