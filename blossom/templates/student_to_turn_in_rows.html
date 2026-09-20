@@ -1,41 +1,87 @@
 {#
   The rows of her To turn in list, for the page of its own and for the section
   on her week, which shows the first few and points at the rest. What a press
-  or an undo just did is said first, at a place that is on the page whether or
-  not the row still is, with Undo beside it while there is a report of hers to
-  take back. A refusal is said there too and takes the focus as the page
-  arrives, with no script.
+  or an undo did is said first, at a place that is on the page whether or not
+  the row still is. That result belongs to the event the press made: Undo is
+  beside it only while that event is the report that stands, and names that
+  event and no other. Once something newer follows it, the result is said as
+  something done earlier, beside the assignment as it stands now, with no
+  Undo. A refusal is said there too and takes the focus as the page arrives,
+  with no script, and beside it is the assignment it was about as it stands
+  now, on the list or off it, with the way to its details and, while it is
+  still to turn in, the press again on the head shown here. Nothing is tried
+  again for her.
 
   Each row is the course, the title as a link to the section on the
   assignment's details, her one next step or the fixed one, her report with
-  the day she took it on, her note, and what the school says now when it says
-  missing, beside her report and never in place of it. The one press is a form
-  that sends an explicit change with the head the row showed; it is not a
-  link. A parent signed in reads the rows and is told the update is hers.
+  the day she took it on, her note with its own day when that is a later one,
+  and what the school says now when it says missing, beside her report and
+  never in place of it. The one press is a form that sends an explicit change
+  with the head the row showed; it is not a link. A parent signed in reads the
+  rows and is told the update is hers.
 
   ``rows`` and ``unreadable`` are the list, ``shown`` how many rows to show,
-  ``origin`` where the press was made, which is where its result is shown, and
-  ``list_card`` what this visit adds.
+  ``origin`` where the press was made, which is where its result is shown,
+  ``list_card`` what this visit adds, and ``hand_in_routes`` the two routes of
+  an assignment, its id escaped as one segment of the path.
 #}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% set mine = viewer != "parent" %}
+{% set who = "You" if mine else "She" %}
+{% set back = "to_turn_in" if origin == "list" else "week" %}
+{% macro stands_now(hi) %}{% if hi.unavailable %}{% if mine %}Your{% else %}Her{% endif %} hand-in record for this assignment cannot be read right now.{% elif hi.state is none %}Hand-in status not recorded.{% elif hi.state == "unknown" %}Hand-in status: Not sure. {{ who }} reported this on {{ on(hi.reported_on) }}.{% elif hi.state == "needs_hand_in" %}{{ who }} reported Still to turn in on {{ on(hi.reported_on) }}. Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}{% elif hi.state == "turned_in" %}{{ who }} reported it turned in on {{ on(hi.reported_on) }}.{% else %}{{ who }} reported nothing to turn in on {{ on(hi.reported_on) }}.{% endif %}{% endmacro %}
+{#
+  The assignment a result or a refusal is about, as it stands now. It is no
+  row: it is outside the list and its count, and is there when the assignment
+  has left the list or is past the rows her week shows.
+#}
+{% macro about_it(about, refusal) %}
+  {% if about.hand_in is not none %}
+    <div class="to-turn-in-about" id="to-turn-in-about">
+      <p class="course">{{ about.course }}</p>
+      <p class="decision-line"><strong>{{ about.title }}</strong></p>
+      {% if refusal and refusal.target and mine %}
+        <p class="note">{{ who }} asked to undo: {% if refusal.target.undo %}an undo{% elif refusal.target.state == "needs_hand_in" %}Still to turn in{% elif refusal.target.state == "turned_in" %}Turned in{% elif refusal.target.state == "not_required" %}Nothing to turn in{% else %}Not sure{% endif %}, from {{ on(refusal.target.on) }}.</p>
+      {% endif %}
+      <p class="note">What stands now: {{ stands_now(about.hand_in) }}</p>
+      {% if about.hand_in.note %}
+        <p class="note">{{ who }} wrote: <q class="authored-text">{{ about.hand_in.note }}</q>{% if about.hand_in.note_updated_on %} <span class="note">Note updated {{ on(about.hand_in.note_updated_on) }}.</span>{% endif %}</p>
+      {% endif %}
+      {% if refusal and refusal.retry and mine %}
+        <p class="note">It is still to turn in. If you turned it in, say so again from here.</p>
+        <form method="post" action="{{ hand_in_routes(about.assignment_id)[0] }}" class="action">
+          <input type="hidden" name="state" value="turned_in">
+          <input type="hidden" name="next_action" value="">
+          <input type="hidden" name="note" value="">
+          <input type="hidden" name="expected_hand_in_id" value="{{ about.hand_in.head_id or '' }}">
+          <input type="hidden" name="hand_in_view" value="{{ origin }}">
+          <button type="submit" class="secondary" aria-label="I turned it in: {{ about.title }}, {{ about.course }}">I turned it in</button>
+        </form>
+      {% endif %}
+      {% set review = mine and refusal and refusal.operation == "turn_in" and not refusal.retry and not about.hand_in.unavailable %}
+      <p class="note"><a class="assignment-link" href="{{ details_href(about.assignment_id, fragment="turning-it-in", return_to=back, hand_in=("change" if review else none)) }}" aria-label="Turning it in: {{ about.title }}, {{ about.course }}">{% if review %}Review and update in Turning it in{% else %}Open Turning it in{% endif %}</a></p>
+    </div>
+  {% endif %}
+{% endmacro %}
 {% if list_card and list_card.result %}
   {% set done = list_card.result %}
   <div class="update">
-    <p class="note update-result" role="status" id="to-turn-in-result" tabindex="-1">{{ done.said }}{% if done.title %} <strong>{{ done.title }}</strong> ({{ done.course }}).{% endif %}</p>
-    {% if done.undo_event_id and mine %}
+    <p class="note update-result" role="status" id="to-turn-in-result" tabindex="-1">{{ done.said }}{% if done.stands and done.about.title %} <strong>{{ done.about.title }}</strong> ({{ done.about.course }}).{% endif %}</p>
+    {% if done.stands and done.undo_event_id and mine %}
       <div class="actions">
-        <form method="post" action="/student/actions/assignments/{{ done.assignment_id|urlencode }}/undo-hand-in" class="action">
+        <form method="post" action="{{ hand_in_routes(done.about.assignment_id)[1] }}" class="action">
           <input type="hidden" name="hand_in_id" value="{{ done.undo_event_id }}">
           <input type="hidden" name="hand_in_view" value="{{ origin }}">
-          <button type="submit" class="secondary" aria-label="Undo: {{ done.title }}, {{ done.course }} was turned in">Undo</button>
+          <button type="submit" class="secondary" aria-label="Undo: {{ done.about.title }}, {{ done.about.course }} was turned in">Undo</button>
         </form>
       </div>
     {% endif %}
   </div>
+  {% if not done.stands %}{{ about_it(done.about, none) }}{% endif %}
 {% endif %}
 {% if list_card and list_card.problem %}
   <p class="problem" role="alert" id="to-turn-in-problem" tabindex="-1" autofocus>{{ list_card.problem }}</p>
+  {% if list_card.refusal %}{{ about_it(list_card.refusal.about, list_card.refusal) }}{% endif %}
 {% endif %}
 {% if rows %}
   <ul class="to-turn-in-rows">
@@ -43,14 +89,21 @@
       {% set hi = row.hand_in %}
       <li class="to-turn-in-row" id="to-turn-in-{{ row.assignment_id }}" tabindex="-1">
         <p class="course">{{ row.course }}</p>
-        <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=("to_turn_in" if origin == "list" else "week")) }}" aria-label="Turning it in: {{ row.title }}, {{ row.course }}">{{ row.title }}</a></strong></p>
+        <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=back) }}" aria-label="Turning it in: {{ row.title }}, {{ row.course }}">{{ row.title }}</a></strong></p>
         <p class="effect">Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}</p>
-        <p class="note">{% if mine %}You{% else %}She{% endif %} reported Still to turn in on {{ on(hi.reported_on) }}.{% if hi.note %} {% if mine %}You{% else %}She{% endif %} wrote: <q class="authored-text">{{ hi.note }}</q>{% endif %}</p>
+        <p class="note">
+          {% if mine %}You{% else %}She{% endif %} reported Still to turn in on {{ on(hi.reported_on) }}.
+          {% if hi.note %}
+            {% if mine %}You{% else %}She{% endif %} wrote:
+            <q class="authored-text">{{ hi.note }}</q>
+            {% if hi.note_updated_on %}<span class="note">Note updated {{ on(hi.note_updated_on) }}.</span>{% endif %}
+          {% endif %}
+        </p>
         {% for statement in row.missing %}
           <p class="note"><span class="pill">The school reports this missing</span> {{ statement.sentence }}</p>
         {% endfor %}
         {% if mine %}
-          <form method="post" action="/student/actions/assignments/{{ row.assignment_id|urlencode }}/hand-in" class="action">
+          <form method="post" action="{{ hand_in_routes(row.assignment_id)[0] }}" class="action">
             <input type="hidden" name="state" value="turned_in">
             <input type="hidden" name="next_action" value="">
             <input type="hidden" name="note" value="">
@@ -67,5 +120,5 @@
   <p class="note">Sign in as the student to update.</p>
 {% endif %}
 {% if unreadable %}
-  <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record cannot be read right now for: {% for row in unreadable %}<a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=("to_turn_in" if origin == "list" else "week")) }}" aria-label="Turning it in: {{ row.title }}, {{ row.course }}">{{ row.title }}</a> ({{ row.course }}){% if not loop.last %}, {% endif %}{% endfor %}. It may belong on this list. Nothing was changed.</p>
+  <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record cannot be read right now for: {% for row in unreadable %}<a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=back) }}" aria-label="Turning it in: {{ row.title }}, {{ row.course }}">{{ row.title }}</a> ({{ row.course }}){% if not loop.last %}, {% endif %}{% endfor %}. It may belong on this list. Nothing was changed.</p>
 {% endif %}

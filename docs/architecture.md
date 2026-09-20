@@ -122,8 +122,20 @@ controls that carries a count only when there is one, and its first rows
 are on her week after Today. A row's one press is the same save as the
 details' form, turned in with the head the row showed and no words, and a
 checked field says where its result is shown: on the list or on her week,
-at a place that is there whether or not the row still is, with Undo beside
-it. The way back from the details gains a fourth place, the list. Help
+at a place that is there whether or not the row still is. A form that says
+it is the list's is held to the list's own shape, every field, no other, no
+way back, and for the press that one state with no words; anything else is
+refused whole. The redirect names the event the save accepted, and the page
+that answers looks it up in that assignment's history in its one reading:
+while that event is the latest the result is what stands, with an Undo for
+that event and no other; once something newer follows, it is said as
+something done earlier beside what stands now, with no Undo; an id the
+history does not hold says nothing. A refusal carries what was tried and on
+which assignment, and the page shows that assignment as it stands now beside
+the refusal, on the list or off it, with the press again only while it is
+still to turn in. A write the file refuses, when the list cannot be read
+back either, is answered by the plain page that reads no store. The way back
+from the details gains a fourth place, the list. Help
 remembering is a GET that opens the form with Still to turn in chosen and
 writes nothing. Her week's rows show one line and a link, the family page lists
 what is still to turn in, however old, then what else she said in the last

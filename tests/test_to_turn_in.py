@@ -19,11 +19,15 @@ from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.reconciliation import SourceChannel
 from blossom.routes.hand_in import (
     GONE_FROM_THE_LIST,
+    HAND_IN_CANNOT_UNDO,
+    HAND_IN_NOT_UNDONE,
     LIST_ALREADY_UNDONE,
     LIST_BAD_FORM,
     LIST_CHANGED,
     LIST_NOT_A_HAND_IN_OF_THIS,
     LIST_NOT_SAVED,
+    LIST_TURN_IN_FAILED,
+    LIST_UNDO_FAILED,
 )
 from blossom.routes.navigation import TO_TURN_IN_PAGE
 from blossom.routes.runs import NOTHING_TO_SCHEDULE
@@ -32,9 +36,15 @@ from blossom.routes.student import (
     HAND_IN_ALREADY_SAVED,
     HAND_IN_UNDONE,
     NOT_HERS_TO_UPDATE,
+    hand_in_actions,
 )
 from blossom.stores.project_state import ProjectStateStore
-from blossom.to_turn_in import TURNED_IN_FROM_THE_LIST
+from blossom.to_turn_in import (
+    RESULT_UNREADABLE,
+    TURNED_IN_EARLIER,
+    TURNED_IN_FROM_THE_LIST,
+    UNDONE_EARLIER,
+)
 from tests.support import (
     ESSAY_ID,
     ESSAY_TITLE,
@@ -59,6 +69,7 @@ QUIZ_ID = "assignment-vocabulary-quiz"
 ALGEBRA_ID = "assignment-algebra-set"
 EMPTY = "Nothing is on your To turn in list."
 PRESS = "I turned it in"
+PLAIN = {"hand-in": LIST_TURN_IN_FAILED, "undo-hand-in": LIST_UNDO_FAILED}
 
 
 def said(
@@ -548,3 +559,592 @@ def test_a_long_list_costs_no_more_reads_than_a_short_one(
         costs.append(len(seen))
 
     assert costs == [8, 8, 8]
+
+
+# ------------------------------------------- a result belongs to the event that made it
+
+
+def result_of(page: str) -> str:
+    """The place that says what a press did, through to the end of what it holds."""
+    start = page.index('id="to-turn-in-result"')
+    rows = page.find('<ul class="to-turn-in-rows">', start)
+    return page[start : rows if rows != -1 else page.index("</section>", start)]
+
+
+def undo_of(store: ProjectStateStore, name: str, event_id: str) -> None:
+    store.undo_hand_in(
+        name, event_id, now=datetime(2026, 8, 19, 22, 0, tzinfo=UTC), today=date(2026, 8, 19)
+    )
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+@pytest.mark.parametrize("between", ["a note", "back on the list", "an undo"])
+def test_a_result_read_after_the_record_moved_on_says_what_stands_and_offers_no_undo(
+    origin: str, between: str
+) -> None:
+    """Another device writes between her press and the page that answers it. The result is
+    about the event her press made, never about whatever is newest."""
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 18), action="In my folder", note="mine")
+        answer = press(client, client.get(where).text, ESSAY_ID)
+        held = answer.headers["location"]
+        accepted = store.hand_in_chains([ESSAY_ID])[ESSAY_ID][-1].event_id
+        if between == "a note":
+            said(store, ESSAY_ID, TURNED_IN, date(2026, 8, 19), head=accepted, note="at the office")
+        elif between == "back on the list":
+            said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19), head=accepted, action="Ask her")
+        else:
+            undo_of(store, ESSAY_ID, accepted)
+        rows = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+
+        first = client.get(held).text
+        reloaded = client.get(held).text
+        kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+
+    assert f"hand_in_event={accepted}" in held
+    for page in (first, reloaded):
+        result = result_of(page)
+        assert escape(TURNED_IN_EARLIER) in result
+        assert escape(TURNED_IN_FROM_THE_LIST) not in page
+        assert 'name="hand_in_id"' not in page
+        assert ESSAY_TITLE in result
+        assert "World History" in result
+        assert f"/student/assignments/{ESSAY_ID}" in result
+        if between == "a note":
+            assert "You reported it turned in on August 19, 2026." in result
+            assert "at the office" in result
+            assert listed(page) == []
+        elif between == "back on the list":
+            assert "You reported Still to turn in on August 19, 2026." in result
+            assert "Ask her" in result
+            assert listed(page) == [ESSAY_ID]
+        else:
+            assert "You reported Still to turn in on August 18, 2026." in result
+            assert "In my folder" in result
+            assert listed(page) == [ESSAY_ID]
+    assert kept == rows
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_an_undo_result_read_after_the_record_moved_on_is_said_as_something_earlier(
+    origin: str,
+) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    undo = f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in"
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 18))
+        after = follow(client, press(client, client.get(where).text, ESSAY_ID))
+        undone = client.post(undo, data=form_fields(after, undo), headers=PAGE_HEADERS)
+        held = undone.headers["location"]
+        head = store.hand_in_chains([ESSAY_ID])[ESSAY_ID][-1]
+        said(store, ESSAY_ID, "not_required", date(2026, 8, 19), head=head.event_id, note="online")
+
+        page = client.get(held).text
+
+    assert head.operation == "undo"
+    assert f"hand_in_event={head.event_id}" in held
+    assert escape(UNDONE_EARLIER) in result_of(page)
+    assert escape(HAND_IN_UNDONE) not in page
+    assert "You reported nothing to turn in on August 19, 2026." in result_of(page)
+    assert "online" in result_of(page)
+    assert 'name="hand_in_id"' not in page
+
+
+@pytest.mark.parametrize("where", [TO_TURN_IN_PAGE, HER_PAGE])
+def test_an_address_cannot_make_up_a_result_or_an_undo(where: str) -> None:
+    """The event named must be one of that assignment's, of the kind the address says."""
+    with browser() as client:
+        store = state_of(client).project_state
+        waiting = said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        said(store, QUIZ_ID, NEEDS_HAND_IN, date(2026, 8, 18))
+        quiz = store.hand_in_chains([QUIZ_ID])[QUIZ_ID][-1].event_id
+        turned = said(store, QUIZ_ID, TURNED_IN, date(2026, 8, 19), head=quiz)
+        made_up = [
+            {"hand_in_said": "turned_in", "about": ESSAY_ID, "hand_in_event": turned},
+            {"hand_in_said": "turned_in", "about": ESSAY_ID, "hand_in_event": waiting},
+            {"hand_in_said": "undone", "about": QUIZ_ID, "hand_in_event": turned},
+            {"hand_in_said": "turned_in", "about": ESSAY_ID, "hand_in_event": "no-such-event"},
+            {"hand_in_said": "turned_in", "about": ESSAY_ID, "hand_in_event": "x" * 201},
+            {"hand_in_said": "turned_in", "about": ESSAY_ID},
+            {"hand_in_said": "turned_in", "hand_in_event": turned},
+            {"hand_in_said": "everything", "about": QUIZ_ID, "hand_in_event": turned},
+        ]
+        pages = [client.get(where, params=params) for params in made_up]
+        real = client.get(
+            where, params={"hand_in_said": "turned_in", "about": QUIZ_ID, "hand_in_event": turned}
+        ).text
+        rows = store._connection.execute("SELECT COUNT(*) FROM hand_in_events").fetchone()[0]
+
+    for page in pages:
+        assert page.status_code == 200
+        assert escape(TURNED_IN_FROM_THE_LIST) not in page.text
+        assert escape(HAND_IN_UNDONE) not in page.text
+        assert escape(TURNED_IN_EARLIER) not in page.text
+        assert 'name="hand_in_id"' not in page.text
+        assert listed(page.text) == [ESSAY_ID]
+    assert escape(TURNED_IN_FROM_THE_LIST) in real
+    assert f'name="hand_in_id" value="{turned}"' in real
+    assert rows == 3
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_a_result_whose_record_cannot_be_read_now_keeps_its_place_and_says_so(origin: str) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        held = press(client, client.get(where).text, ESSAY_ID).headers["location"]
+        store._connection.execute("UPDATE hand_in_events SET state = 'invalid-state'")
+        store._connection.commit()
+
+        page = client.get(held)
+
+    assert page.status_code == 200
+    assert escape(RESULT_UNREADABLE) in result_of(page.text)
+    assert ESSAY_TITLE in result_of(page.text)
+    assert escape(TURNED_IN_FROM_THE_LIST) not in page.text
+    assert 'name="hand_in_id"' not in page.text
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_an_undo_shown_with_a_result_is_refused_once_the_record_moves_on(origin: str) -> None:
+    """The Undo beside a result names the event the press made. When something newer stands
+    it is answered 409, says which update it was about, and is aimed at nothing else."""
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    undo = f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in"
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 18))
+        after = follow(client, press(client, client.get(where).text, ESSAY_ID))
+        fields = form_fields(after, undo)
+        said(store, ESSAY_ID, TURNED_IN, date(2026, 8, 19), head=fields["hand_in_id"], note="desk")
+
+        refused = client.post(undo, data=fields, headers=PAGE_HEADERS)
+        kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+
+    assert refused.status_code == 409
+    assert said_first(refused.text, HAND_IN_CANNOT_UNDO)
+    about = about_of(refused.text)
+    assert ESSAY_TITLE in about
+    assert "You asked to undo: Turned in, from August 19, 2026." in about
+    assert "You reported it turned in on August 19, 2026." in about
+    assert "desk" in about
+    assert 'name="hand_in_id"' not in refused.text
+    assert escape(HAND_IN_UNDONE) not in refused.text
+    assert kept == 3
+
+
+# ------------------------------------------------ the one press sends one thing only
+
+
+def about_of(page: str) -> str:
+    """What a refusal says about the assignment it was about, beside the refusal."""
+    start = page.index('id="to-turn-in-about"')
+    return page[start : page.index("</div>", start)]
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"state": "unknown"},
+        {"state": "needs_hand_in"},
+        {"state": "not_required"},
+        {"note": "said by hand"},
+        {"next_action": "said by hand"},
+        {"return_to": "week"},
+        {"week": FIXTURE_WEEK},
+    ],
+    ids=["not sure", "still to turn in", "nothing to turn in", "a note", "a step", "a way", "week"],
+)
+def test_a_press_that_is_not_the_one_the_row_makes_is_refused_and_writes_nothing(
+    origin: str, changed: dict[str, str]
+) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19), note="mine")
+        page = client.get(where).text
+
+        refused = press(client, page, ESSAY_ID, **changed)
+        kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+        worked = press(client, page, ESSAY_ID)
+        again = press(client, page, ESSAY_ID)
+        rows = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+
+    assert refused.status_code == 422
+    assert said_first(refused.text, LIST_BAD_FORM)
+    assert escape(TURNED_IN_FROM_THE_LIST) not in refused.text
+    assert "said by hand" not in refused.text
+    assert kept == 1
+    assert (worked.status_code, again.status_code) == (303, 303)
+    assert "hand_in_said=turned_in" in worked.headers["location"]
+    assert "hand_in_said=same" in again.headers["location"]
+    assert rows == 2
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_a_press_with_a_file_or_a_field_twice_writes_nothing(origin: str) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    action = f"/student/actions/assignments/{ESSAY_ID}/hand-in"
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        fields = form_fields(section(client.get(where).text), action)
+        without_note = {name: value for name, value in fields.items() if name != "note"}
+
+        filed = client.post(
+            action,
+            data=without_note,
+            files={"note": ("note.txt", b"said by hand", "text/plain")},
+            headers=PAGE_HEADERS,
+        )
+        twice = client.post(
+            action,
+            content="&".join(
+                ["state=turned_in", *(f"{name}={value}" for name, value in fields.items())]
+            ),
+            headers={**PAGE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+
+    assert (filed.status_code, twice.status_code) == (422, 422)
+    assert said_first(filed.text, LIST_BAD_FORM)
+    assert said_first(twice.text, LIST_BAD_FORM)
+    assert kept == 1
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+@pytest.mark.parametrize("extra", ["return_to", "week", "plan_id"])
+def test_an_undo_from_the_list_sends_its_two_fields_and_nothing_else(
+    origin: str, extra: str
+) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    undo = f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in"
+    sent = {"return_to": "week", "week": FIXTURE_WEEK, "plan_id": "draft:plan:2026-08-19:x"}
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        after = follow(client, press(client, client.get(where).text, ESSAY_ID))
+        fields = form_fields(after, undo)
+
+        refused = client.post(undo, data={**fields, extra: sent[extra]}, headers=PAGE_HEADERS)
+        kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+        worked = client.post(undo, data=fields, headers=PAGE_HEADERS)
+
+    assert set(fields) == {"hand_in_id", "hand_in_view"}
+    assert refused.status_code == 422
+    assert said_first(refused.text, LIST_BAD_FORM)
+    assert kept == 2
+    assert worked.status_code == 303
+
+
+# -------------------------------------- a refusal names what it was about, as it stands
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+@pytest.mark.parametrize(
+    ("state", "sentence"),
+    [
+        ("unknown", "Hand-in status: Not sure. You reported this on August 19, 2026."),
+        ("not_required", "You reported nothing to turn in on August 19, 2026."),
+        (TURNED_IN, "You reported it turned in on August 19, 2026."),
+    ],
+)
+def test_a_press_on_something_that_left_the_list_is_refused_with_what_stands_beside_it(
+    origin: str, state: HandInState, sentence: str
+) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    with browser() as client:
+        store = state_of(client).project_state
+        first = said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 18))
+        page = client.get(where).text
+        said(store, ESSAY_ID, state, date(2026, 8, 19), head=first, note="said on the other one")
+
+        refused = press(client, page, ESSAY_ID)
+        kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+
+    assert refused.status_code == 409
+    assert said_first(refused.text, LIST_CHANGED)
+    about = about_of(refused.text)
+    assert ESSAY_TITLE in about
+    assert "World History" in about
+    assert sentence in about
+    assert "said on the other one" in about
+    back = "to_turn_in" if origin == "list" else "week"
+    assert f"/student/assignments/{ESSAY_ID}?" in about
+    assert f"return_to={back}" in about
+    assert "hand_in=change" in about
+    assert "Review and update in Turning it in" in about
+    assert 'name="expected_hand_in_id"' not in about
+    assert listed(refused.text) == []
+    assert "To turn in (" not in refused.text
+    assert escape(TURNED_IN_FROM_THE_LIST) not in refused.text
+    assert kept == 2
+
+
+def test_a_row_pushed_past_her_weeks_three_is_still_named_and_can_be_said_again() -> None:
+    """Her page showed it third. An Undo elsewhere put another ahead of it and its next step
+    was edited, so the press is behind and the row is past the three her week shows."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = state_of(client).project_state
+        names = ["first", "second", "third", "fourth"]
+        store.put_on_record(
+            [
+                a_row(name, f"Work {name}").model_copy(update={"due_date": date(2026, 8, 20)})
+                for name in names
+            ],
+            {},
+        )
+        heads = {name: said(store, name, NEEDS_HAND_IN, date(2026, 8, 10)) for name in names}
+        left = said(store, "second", TURNED_IN, date(2026, 8, 11), head=heads["second"])
+        week = client.get(HER_PAGE).text
+        undo_of(store, "second", left)
+        said(store, "fourth", NEEDS_HAND_IN, date(2026, 8, 19), head=heads["fourth"], action="Ask")
+
+        refused = press(client, section(week), "fourth")
+        shown = about_of(refused.text)
+        action = "/student/actions/assignments/fourth/hand-in"
+        newer = store.hand_in_chains(["fourth"])["fourth"][-1].event_id
+        said(store, "fourth", NEEDS_HAND_IN, date(2026, 8, 19), head=newer, note="after that")
+        behind = client.post(action, data=form_fields(shown, action), headers=PAGE_HEADERS)
+        retry = form_fields(about_of(behind.text), action)
+        worked = client.post(action, data=retry, headers=PAGE_HEADERS)
+        chain = store.hand_in_chains(["fourth"])["fourth"]
+
+    assert listed(section(week)) == ["first", "third", "fourth"]
+    assert refused.status_code == 409
+    assert listed(section(refused.text)) == ["first", "second", "third"]
+    assert "To turn in (4)" in refused.text
+    assert "Work fourth" in shown
+    assert "Ask" in shown
+    assert form_fields(shown, action)["expected_hand_in_id"] == newer
+    assert behind.status_code == 409
+    assert "after that" in about_of(behind.text)
+    assert retry["state"] == "turned_in"
+    assert worked.status_code == 303
+    assert chain[-1].state == TURNED_IN
+    assert len(chain) == 4
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_a_refusal_about_a_record_that_is_gone_or_cannot_be_read_says_which(origin: str) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    action = f"/student/actions/assignments/{ESSAY_ID}/hand-in"
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        page = client.get(where).text
+        gone = client.post(
+            "/student/actions/assignments/assignment-not-there/hand-in",
+            data=form_fields(section(page), action),
+            headers=PAGE_HEADERS,
+        )
+        store._connection.execute("UPDATE hand_in_events SET state = 'invalid-state'")
+        store._connection.commit()
+        unreadable = press(client, page, ESSAY_ID)
+
+    assert gone.status_code == 404
+    assert said_first(gone.text, GONE_FROM_THE_LIST)
+    assert 'id="to-turn-in-about"' not in gone.text
+    assert unreadable.status_code == 500
+    assert said_first(unreadable.text, LIST_NOT_SAVED)
+    about = about_of(unreadable.text)
+    assert ESSAY_TITLE in about
+    assert "Your hand-in record for this assignment cannot be read right now." in about
+    assert 'name="expected_hand_in_id"' not in about
+
+
+# ------------------------------------------------- a failed write, and a failed reread
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+@pytest.mark.parametrize("route", ["hand-in", "undo-hand-in"])
+def test_a_write_the_file_refuses_is_said_even_when_the_list_cannot_be_read_back(
+    origin: str, route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First the write fails and the list can still be read; then the reread fails too, and
+    the plain page answers from what the request already held, reading nothing."""
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    action = f"/student/actions/assignments/{ESSAY_ID}/{route}"
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        page = client.get(where).text
+        if route == "undo-hand-in":
+            page = follow(client, press(client, page, ESSAY_ID))
+        fields = form_fields(section(page), action)
+        before = store._connection.execute("SELECT * FROM hand_in_events").fetchall()
+        tried: list[str] = []
+
+        def refuses(*args: object) -> None:
+            tried.append("write")
+            msg = "the chain forked"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(store, "_confirm_hand_in_head_locked", refuses)
+        readable = client.post(action, data=fields, headers=PAGE_HEADERS)
+
+        seen: list[str] = []
+        began: list[int] = []
+
+        def unread(*args: object) -> None:
+            began.append(len(seen))
+            msg = "the file cannot be read"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(store, "all_assignments", unread)
+        store._connection.set_trace_callback(seen.append)
+        plain = client.post(action, data=fields, headers=PAGE_HEADERS)
+        store._connection.set_trace_callback(None)
+        monkeypatch.undo()
+        after = store._connection.execute("SELECT * FROM hand_in_events").fetchall()
+
+    assert readable.status_code == 500
+    assert said_first(readable.text, LIST_NOT_SAVED if route == "hand-in" else HAND_IN_NOT_UNDONE)
+    assert ESSAY_TITLE in about_of(readable.text)
+    assert plain.status_code == 500
+    assert "<h1>" in plain.text
+    assert escape(PLAIN[route]) in plain.text
+    assert "Internal Server Error" not in plain.text
+    assert escape(TURNED_IN_FROM_THE_LIST) not in plain.text
+    assert escape(HAND_IN_UNDONE) not in plain.text
+    back = f"{TO_TURN_IN_PAGE}#to-turn-in" if origin == "list" else HER_PAGE
+    assert f'href="{back}"' in plain.text
+    assert f'href="/student/assignments/{ESSAY_ID}' in plain.text
+    assert tried == ["write", "write"]
+    assert len(began) == 1
+    assert [line for line in seen[began[0] :] if line.strip().upper() != "ROLLBACK"] == []
+    assert after == before
+
+
+# ----------------------------------------------------- what a row and the page say
+
+
+def test_a_note_written_on_a_later_day_says_its_own_day_beside_the_day_she_took_it_on(
+    tmp_path: pathlib.Path,
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        store = state_of(client).project_state
+        first = said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 7, 1), note="first words")
+        said(store, QUIZ_ID, NEEDS_HAND_IN, date(2026, 7, 2), note="same day")
+        same = client.get(TO_TURN_IN_PAGE).text
+        edit = said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19), head=first, note="new words")
+
+        hers = [client.get(TO_TURN_IN_PAGE).text, section(client.get(HER_PAGE).text)]
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs = [client.get(TO_TURN_IN_PAGE).text, section(client.get(HER_PAGE).text)]
+        undo_of(store, ESSAY_ID, edit)
+        restored = client.get(TO_TURN_IN_PAGE).text
+
+    assert "Note updated" not in same
+    for page, who in ((hers[0], "You"), (hers[1], "You"), (theirs[0], "She"), (theirs[1], "She")):
+        assert listed(page) == [ESSAY_ID, QUIZ_ID]
+        essay = page[page.index(f'id="to-turn-in-{ESSAY_ID}"') : page.index(f'-{QUIZ_ID}"')]
+        assert f"{who} reported Still to turn in on July 1, 2026." in essay
+        assert "new words" in essay
+        assert "Note updated August 19, 2026." in essay
+        assert "Note updated" not in page[page.index(f'id="to-turn-in-{QUIZ_ID}"') :]
+    assert "first words" in restored
+    assert "Note updated" not in restored
+    assert "She reported Still to turn in on July 1, 2026." in restored
+
+
+def test_with_the_sign_in_off_a_later_note_says_its_day_and_the_row_keeps_its_place() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        first = said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 7, 1), note="first words")
+        said(store, QUIZ_ID, NEEDS_HAND_IN, date(2026, 7, 2))
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19), head=first, note="new words")
+
+        pages = [client.get(TO_TURN_IN_PAGE).text, section(client.get(HER_PAGE).text)]
+
+    for page in pages:
+        assert listed(page) == [ESSAY_ID, QUIZ_ID]
+        assert "You reported Still to turn in on July 1, 2026." in page
+        assert "Note updated August 19, 2026." in page
+        assert page.count("Note updated") == 1
+
+
+def test_a_parent_reads_the_page_as_hers_and_never_as_their_own(tmp_path: pathlib.Path) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        store = state_of(client).project_state
+        hers_empty = client.get(TO_TURN_IN_PAGE).text
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        empty = client.get(TO_TURN_IN_PAGE).text
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        held = client.get(TO_TURN_IN_PAGE).text
+        turned = said(
+            store,
+            ESSAY_ID,
+            TURNED_IN,
+            date(2026, 8, 19),
+            head=store.hand_in_chains([ESSAY_ID])[ESSAY_ID][-1].event_id,
+        )
+        receipt = client.get(
+            TO_TURN_IN_PAGE,
+            params={"hand_in_said": "turned_in", "about": ESSAY_ID, "hand_in_event": turned},
+        ).text
+
+    assert "Back to my week" in hers_empty
+    assert EMPTY in hers_empty
+    for page in (empty, held, receipt):
+        assert "Back to her week" in page
+        assert "Back to my week" not in page
+        assert "What she said is still to turn in." in page
+        assert "What you said" not in page
+        assert "your" not in page[page.index("<main") : page.index("</main>")].lower()
+    assert "Nothing is on her To turn in list." in empty
+    assert EMPTY not in empty
+    assert escape(TURNED_IN_FROM_THE_LIST) not in receipt
+    assert 'name="hand_in_id"' not in receipt
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_nothing_is_said_to_be_on_the_list_only_when_nothing_may_belong_on_it(origin: str) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        held = press(client, client.get(where).text, ESSAY_ID).headers["location"]
+        emptied = client.get(held).text
+        store._connection.execute("UPDATE hand_in_events SET state = 'invalid-state'")
+        store._connection.commit()
+
+        unreadable = client.get(held).text
+
+    assert EMPTY in emptied
+    assert "cannot be read" in section(unreadable)
+    assert "It may belong on this list." in section(unreadable)
+    assert EMPTY not in unreadable
+
+
+def test_a_rows_forms_go_to_the_assignments_own_routes_whatever_its_name_holds() -> None:
+    odd = "set 3?b#c"
+    slashed = "unit/3"
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = state_of(client).project_state
+        store.put_on_record([a_row(odd, "Odd set"), a_row(slashed, "Slashed set")], {})
+        said(store, odd, NEEDS_HAND_IN, date(2026, 8, 19))
+        said(store, slashed, NEEDS_HAND_IN, date(2026, 8, 19))
+        page = client.get(TO_TURN_IN_PAGE).text
+        save, undo = hand_in_actions(odd)
+
+        answer = client.post(save, data=form_fields(page, save), headers=PAGE_HEADERS)
+        after = follow(client, answer)
+        chain = store.hand_in_chains([odd])[odd]
+
+    assert save == "/student/actions/assignments/set%203%3Fb%23c/hand-in"
+    assert f'action="{hand_in_actions(slashed)[0]}"' in page
+    assert "assignments/unit/3/" not in page
+    assert chain[-1].state == TURNED_IN
+    assert f'action="{undo}"' in after

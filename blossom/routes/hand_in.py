@@ -14,7 +14,6 @@ anything, and a plan never reads what is saved here.
 """
 
 import logging
-from dataclasses import replace
 from datetime import date, datetime
 from typing import Final, cast
 
@@ -41,6 +40,7 @@ from blossom.noticing import read_everything
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.navigation import (
     RETURN_FIELDS,
+    TO_TURN_IN,
     TO_TURN_IN_PAGE,
     WEEK_PAGE,
     ReturnTo,
@@ -53,19 +53,23 @@ from blossom.routes.student import (
     BAD_FORM,
     BAD_RETURN,
     NOT_HERS_TO_UPDATE,
+    TURNING_IT_IN,
     HandInCard,
     ListCard,
     ReturnLink,
     State,
     detail_page,
     gone_page,
+    hand_in_actions,
+    list_card_shown,
+    receipt_asked,
     showable,
     student_page,
     templates,
     viewer_of,
 )
 from blossom.stores.project_state import CouldNotSave, UnknownAssignment, UnknownHandIn
-from blossom.to_turn_in import result_for, to_turn_in
+from blossom.to_turn_in import Attempt, to_turn_in
 
 logger = logging.getLogger(__name__)
 
@@ -113,9 +117,17 @@ LIST_NOT_A_HAND_IN_OF_THIS: Final = (
     "The list shows what stands now."
 )
 LIST_BAD_FORM: Final = (
-    "That form carried a field twice, or one this page does not send, so nothing was saved. "
-    "Press again from the list."
+    "That form carried a field twice, or a field or a value this list does not send, so "
+    "nothing was saved. Press again from the list."
 )
+LIST_TURN_IN_FAILED: Final = (
+    "Reporting it turned in could not be saved, and nothing was changed. Go back and try again."
+)
+LIST_UNDO_FAILED: Final = (
+    "That Undo could not be saved, and nothing was changed. Go back and try again."
+)
+"""What the plain page says after a write the file refused when the list cannot be read back
+either: the press that was tried, by name, and that nothing changed."""
 LIST_ALREADY_UNDONE: Final = "That update was already undone. The list shows what stands now."
 ON_THE_LIST: Final[dict[str, str]] = {
     HAND_IN_CHANGED: LIST_CHANGED,
@@ -135,6 +147,14 @@ HAND_IN_UNDO_FIELDS: Final = frozenset({"hand_in_id"}) | RETURN_FIELDS | SHOWN_O
 NOTHING_CHOSEN: Final = frozenset({"state"}) | RETURN_FIELDS | SHOWN_ON
 """What a browser may leave out: the radio group when none is chosen, and the way back,
 which a form opened with none carries none of."""
+LIST_PRESS_FIELDS: Final = (
+    frozenset({"state", "next_action", "note", "expected_hand_in_id"}) | SHOWN_ON
+)
+LIST_UNDO_FIELDS: Final = frozenset({"hand_in_id"}) | SHOWN_ON
+"""The two forms the list makes, which are narrower than the details' forms that share
+their routes: every field here, no other, and no way back, since a press on the list
+comes back to the list. The one press says one thing, turned in with no next step and
+no note; a form from the list that says anything else is not one the list made."""
 
 
 def list_page(
@@ -152,15 +172,16 @@ def list_page(
     """
     everything = read_everything(state.project_state, state.project_state)
     still = to_turn_in(everything)
-    shown = None if card is None else replace(card, result=result_for(everything, *card.asked))
+    viewer = viewer_of(request)
     return templates.TemplateResponse(
         request,
         "student_to_turn_in.html",
         {
             "rows": still.rows,
             "unreadable": still.unreadable,
-            "list_card": shown,
-            "viewer": viewer_of(request),
+            "list_card": list_card_shown(card, everything, viewer),
+            "hand_in_routes": hand_in_actions,
+            "viewer": viewer,
             "sample": state.settings.sample,
         },
         status_code=status_code,
@@ -173,11 +194,14 @@ def to_turn_in_list(
     state: State,
     hand_in_said: str | None = None,
     about: str | None = None,
+    hand_in_event: str | None = None,
 ) -> HTMLResponse:
     """Everything she reports as still to turn in. Reading it changes nothing: no event, no
-    reminder, no plan. ``hand_in_said`` and ``about`` are what a press just did and to
-    which assignment, chosen by the server; any other word says nothing."""
-    card = ListCard(asked=(hand_in_said, about)) if hand_in_said else None
+    reminder, no plan. ``hand_in_said``, ``about``, and ``hand_in_event`` are what a press
+    did, to which assignment, and the event that press made, as the server wrote them into
+    the address. They are looked up in the page's reading and say nothing unless that
+    event is there, in that assignment's history."""
+    card = receipt_asked(hand_in_said, about, hand_in_event)
     return list_page(request, state, card=card)
 
 
@@ -195,19 +219,79 @@ def on_the_list(
     *,
     problem: str,
     status_code: int,
+    attempt: Attempt,
 ) -> HTMLResponse:
-    """A refusal shown where the press was made, with the list as it stands now."""
-    card = ListCard(problem=ON_THE_LIST.get(problem, problem))
+    """A refusal shown where the press was made, with the list as it stands now and, beside
+    the refusal, the assignment it was about as it stands now, on the list or off it."""
+    card = ListCard(problem=ON_THE_LIST.get(problem, problem), attempt=attempt)
     if view == "week":
         return student_page(request, state, turning_in=card, status_code=status_code)
     return list_page(request, state, card=card, status_code=status_code)
 
 
-def after_the_list(view: str, said: str, assignment_id: str) -> str:
+def after_the_list(view: str, said: str, assignment_id: str, event_id: str) -> str:
     """Where a press or an undo on the list sends her: back to where she pressed, at the
-    place that says what happened, which is there whether or not the row still is."""
+    place that says what happened, which is there whether or not the row still is. The
+    address names the event the save accepted, so the page that answers is about that
+    event and no later one."""
     page = WEEK_PAGE if view == "week" else TO_TURN_IN_PAGE
-    return address(page, fragment="to-turn-in-result", hand_in_said=said, about=assignment_id)
+    return address(
+        page,
+        fragment="to-turn-in-result",
+        hand_in_said=said,
+        about=assignment_id,
+        hand_in_event=event_id,
+    )
+
+
+def could_not_on_the_list(
+    request: Request, state: ApplicationState, view: str, attempt: Attempt, problem: str
+) -> HTMLResponse:
+    """The page after a write the file refused, for a press made on the list: the list with
+    the refusal first, tried once. When the list cannot be read back either, the plain
+    page her other updates use, made from what the request already held. It reads no
+    store, tries nothing again, names the press that failed, and says nothing changed."""
+    try:
+        return on_the_list(
+            request,
+            state,
+            view,
+            problem=problem,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            attempt=attempt,
+        )
+    except Exception:
+        logger.exception("the list could not be read back after a failed hand-in write")
+        on_week = view == "week"
+        return templates.TemplateResponse(
+            request,
+            "student_update_recovery.html",
+            {
+                "card": None,
+                "hand_in_card": HandInCard(
+                    problem=LIST_TURN_IN_FAILED
+                    if attempt.operation == "turn_in"
+                    else LIST_UNDO_FAILED
+                ),
+                "ways_back": [
+                    ReturnLink(WEEK_PAGE, "Back to my week")
+                    if on_week
+                    else ReturnLink(
+                        address(TO_TURN_IN_PAGE, fragment=TO_TURN_IN), "Back to To turn in"
+                    ),
+                    ReturnLink(
+                        details_href(
+                            attempt.assignment_id,
+                            fragment=TURNING_IT_IN,
+                            return_to="week" if on_week else "to_turn_in",
+                        ),
+                        "Open this assignment",
+                    ),
+                ],
+                "sample": state.settings.sample,
+            },
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 def after(assignment_id: str, said: str, back: ReturnTo) -> str:
@@ -300,9 +384,15 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     view, view_known = shown_on(fields)
     valid = valid and view_known
     view = view if view in LIST_VIEWS else None
+    pressed = Attempt("turn_in", assignment_id)
     if viewer == "parent" and view is not None:
         return on_the_list(
-            request, state, view, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
+            request,
+            state,
+            view,
+            problem=NOT_HERS_TO_UPDATE,
+            status_code=status.HTTP_403_FORBIDDEN,
+            attempt=pressed,
         )
     if viewer == "parent":
         return detail_page(
@@ -322,7 +412,9 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
 
     def refused(problem: str, code: int, *, field: str | None = None) -> Response:
         if view is not None:
-            return on_the_list(request, state, view, problem=problem, status_code=code)
+            return on_the_list(
+                request, state, view, problem=problem, status_code=code, attempt=pressed
+            )
         return detail_page(
             request,
             state,
@@ -342,6 +434,13 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
 
     if not whole:
         return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    if view is not None and (
+        fields.keys() != LIST_PRESS_FIELDS or said != TURNED_IN or action != "" or note != ""
+    ):
+        # The list's one press says one thing. Another state, or words, or a way back, from
+        # a form that says it is the list's is refused whole: nothing is coerced and
+        # nothing dropped.
+        return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if not valid:
         return refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if said not in STATES:
@@ -392,7 +491,7 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     except CouldNotSave:
         logger.exception("her hand-in update on %s could not be saved", assignment_id)
         if view is not None:
-            return refused(HAND_IN_NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return could_not_on_the_list(request, state, view, pressed, HAND_IN_NOT_SAVED)
         return could_not(
             request,
             state,
@@ -407,10 +506,10 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
             ),
         )
     match result:
-        case HandInSaved() if view is not None:
-            where = after_the_list(view, "turned_in", assignment_id)
-        case HandInAlreadySaved() if view is not None:
-            where = after_the_list(view, "same", assignment_id)
+        case HandInSaved(event=made) if view is not None:
+            where = after_the_list(view, "turned_in", assignment_id, made.event_id)
+        case HandInAlreadySaved(head=stands) if view is not None:
+            where = after_the_list(view, "same", assignment_id, stands.event_id)
         case HandInSaved():
             where = after(assignment_id, "saved", back)
         case HandInAlreadySaved():
@@ -445,9 +544,18 @@ async def undo_hand_in_from_the_page(
     view, view_known = shown_on(fields)
     valid = valid and view_known
     view = view if view in LIST_VIEWS else None
+    named = fields.get("hand_in_id", "").strip()
+    pressed = Attempt(
+        "undo", assignment_id, target=named if 0 < len(named) <= TOKEN_MAX_LENGTH else None
+    )
     if viewer == "parent" and view is not None:
         return on_the_list(
-            request, state, view, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
+            request,
+            state,
+            view,
+            problem=NOT_HERS_TO_UPDATE,
+            status_code=status.HTTP_403_FORBIDDEN,
+            attempt=pressed,
         )
     if viewer == "parent":
         return detail_page(
@@ -458,11 +566,12 @@ async def undo_hand_in_from_the_page(
             problem=NOT_HERS_TO_UPDATE,
             status_code=status.HTTP_403_FORBIDDEN,
         )
-    named = fields.get("hand_in_id", "").strip()
 
     def refused(problem: str, code: int) -> Response:
         if view is not None:
-            return on_the_list(request, state, view, problem=problem, status_code=code)
+            return on_the_list(
+                request, state, view, problem=problem, status_code=code, attempt=pressed
+            )
         return detail_page(
             request,
             state,
@@ -474,6 +583,8 @@ async def undo_hand_in_from_the_page(
 
     if not whole:
         return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
+    if view is not None and fields.keys() != LIST_UNDO_FIELDS:
+        return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if not valid:
         return refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if len(named) > TOKEN_MAX_LENGTH:
@@ -491,16 +602,16 @@ async def undo_hand_in_from_the_page(
     except CouldNotSave:
         logger.exception("her hand-in update on %s could not be undone", assignment_id)
         if view is not None:
-            return refused(HAND_IN_NOT_UNDONE, status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return could_not_on_the_list(request, state, view, pressed, HAND_IN_NOT_UNDONE)
         return could_not(
             request, state, assignment_id, back, HandInCard(problem=HAND_IN_NOT_UNDONE)
         )
     match result:
-        case HandInUndone():
+        case HandInUndone(event=made):
             where = (
                 after(assignment_id, "undone", back)
                 if view is None
-                else after_the_list(view, "undone", assignment_id)
+                else after_the_list(view, "undone", assignment_id, made.event_id)
             )
             return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
         case HandInConflict() as conflict:

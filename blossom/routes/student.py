@@ -142,7 +142,16 @@ from blossom.stores.project_state import (
 from blossom.stores.project_state import NOTE_MAX_LENGTH as UPDATE_NOTE_MAX_LENGTH
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.templating import page_templates
-from blossom.to_turn_in import COMPACT_ROWS, ListResult, result_for, to_turn_in
+from blossom.to_turn_in import (
+    COMPACT_ROWS,
+    Attempt,
+    ListRefusal,
+    ListResult,
+    Receipt,
+    refusal_for,
+    result_for,
+    to_turn_in,
+)
 from blossom.views import (
     HandInView,
     HelpRequestView,
@@ -921,11 +930,37 @@ class HandInCard:
 @dataclass(frozen=True)
 class ListCard:
     """What a visit adds to her To turn in list: what a press or an undo just did, or what
-    one could not do. ``asked`` is what the address named, before the record was read."""
+    one could not do. ``asked`` is what the address named and ``attempt`` what was refused,
+    both before the record was read; ``result`` and ``refusal`` are what the page's one
+    reading makes of them."""
 
-    asked: tuple[str | None, str | None] = (None, None)
+    asked: Receipt | None = None
     result: ListResult | None = None
     problem: str | None = None
+    attempt: Attempt | None = None
+    refusal: ListRefusal | None = None
+
+
+def receipt_asked(said: str | None, about: str | None, event_id: str | None) -> ListCard | None:
+    """What an address says a press on the list did, held to the length of any id the store
+    makes. An address that names no event, or one too long to be one, says nothing."""
+    if not said or not about or not event_id or len(event_id) > TOKEN_MAX_LENGTH:
+        return None
+    return ListCard(asked=Receipt(said, about, event_id))
+
+
+def list_card_shown(card: ListCard | None, everything: Everything, viewer: str) -> ListCard | None:
+    """A visit's card read against the page's one reading. A result is hers: a parent who
+    opens such an address is shown the list and no result, and a card that comes to
+    nothing is no card."""
+    if card is None:
+        return None
+    shown = replace(
+        card,
+        result=None if viewer == "parent" else result_for(everything, card.asked),
+        refusal=refusal_for(everything, card.attempt),
+    )
+    return shown if shown.result is not None or shown.problem is not None else None
 
 
 def student_page(
@@ -1003,9 +1038,8 @@ def student_page(
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "plan_reading": None if todays is None else todays.reading,
             "plan_asked": plan_asked,
-            "list_card": None
-            if turning_in is None
-            else replace(turning_in, result=result_for(everything, *turning_in.asked)),
+            "list_card": list_card_shown(turning_in, everything, viewer),
+            "hand_in_routes": hand_in_actions,
             "compact_rows": COMPACT_ROWS,
             "to_turn_in_page": TO_TURN_IN_PAGE,
             "viewer": viewer,
@@ -1064,6 +1098,9 @@ def due_this_week(
         str | None, Query(description="what a press on the To turn in list just did; a note")
     ] = None,
     about: Annotated[str | None, Query(description="the assignment it was about")] = None,
+    hand_in_event: Annotated[
+        str | None, Query(description="the event that press made; looked up, never trusted")
+    ] = None,
 ) -> HTMLResponse:
     """Render her week and today's plan.
 
@@ -1090,7 +1127,7 @@ def due_this_week(
             refreshed=was_refreshed,
             card=card,
             plan_asked=asked,
-            turning_in=ListCard(asked=(hand_in_said, about)) if hand_in_said else None,
+            turning_in=receipt_asked(hand_in_said, about, hand_in_event),
         )
     try:
         chosen = date.fromisoformat(week.strip())

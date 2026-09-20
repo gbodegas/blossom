@@ -7,16 +7,24 @@
   standing first. The page is there when the list is empty and says so
   plainly; it never says everything was handed over, which Blossom cannot
   know. It is reached from her week and leads back to it. Reading it writes
-  nothing and reminds no one.
+  nothing and reminds no one. A parent signed in reads it as hers: the way
+  back, the opening words, and the empty sentence all say so. Nothing is said
+  to be on the list only when nothing may belong on it, so a record that
+  cannot be read is never under a sentence that says the list is empty.
 #}
 {% block content %}
-  <p class="return"><a href="/student/due-this-week">Back to my week</a></p>
+  {% set mine = viewer != "parent" %}
+  <p class="return"><a href="/student/due-this-week">{% if mine %}Back to my week{% else %}Back to her week{% endif %}</a></p>
   <h1>To turn in{% if rows %} ({{ rows|length }}){% endif %}</h1>
   <section class="panel to-turn-in" id="to-turn-in" tabindex="-1" aria-label="To turn in">
-    <p class="note">What you said is still to turn in. Done means you have finished your part; this is the step after it. It is your own list: nothing here is sent to the school.</p>
+    {% if mine %}
+      <p class="note">What you said is still to turn in. Done means you have finished your part; this is the step after it. It is your own list: nothing here is sent to the school.</p>
+    {% else %}
+      <p class="note">What she said is still to turn in. Done means she has finished her part; this is the step after it. It is her own list: nothing here is sent to the school.</p>
+    {% endif %}
     {% with shown = rows|length, origin = "list" %}{% include "student_to_turn_in_rows.html" %}{% endwith %}
-    {% if not rows %}
-      <p class="empty quiet">Nothing is on your To turn in list.</p>
+    {% if not rows and not unreadable %}
+      <p class="empty quiet">Nothing is on {% if mine %}your{% else %}her{% endif %} To turn in list.</p>
     {% endif %}
   </section>
 {% endblock %}
