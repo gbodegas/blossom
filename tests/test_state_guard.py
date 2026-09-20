@@ -31,6 +31,7 @@ from blossom.settings import (
     get_settings,
 )
 from blossom.stores import paths as paths_module
+from blossom.stores import project_state as project_state_module
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.help_requests import HelpRequestsStore
@@ -45,6 +46,7 @@ from tests.state_guard import (
     HouseholdStateProtected,
     OutsideTheSuite,
     StateGuard,
+    application_guard,
     lands_inside,
     protecting,
 )
@@ -548,6 +550,22 @@ def test_the_helpers_ask_whether_a_guard_really_stands_behind_the_application(
     assert not protecting()
     with pytest.raises(OutsideTheSuite, match="fixture_settings"):
         fixture_settings()
+    with pytest.raises(OutsideTheSuite, match="practice_store"):
+        practice_store(tmp_path / "record.sqlite3")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_one_module_left_holding_the_applications_own_guard_is_no_protection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The stores import the path guard by name, so each holds its own. With the guard in
+    place everywhere else, one store handed the application's own function back would open
+    a protected file unasked, so the helpers refuse while any module of the application
+    holds it."""
+    monkeypatch.setattr(project_state_module, "refuse_unsafe_path", application_guard())
+
+    assert paths_module.refuse_unsafe_path is not application_guard()
+    assert not protecting()
     with pytest.raises(OutsideTheSuite, match="practice_store"):
         practice_store(tmp_path / "record.sqlite3")
     assert list(tmp_path.iterdir()) == []

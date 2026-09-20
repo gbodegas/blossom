@@ -82,6 +82,18 @@ CHECKOUT_REASON: Final = (
 )
 
 
+_APPLICATION: Final = (paths.refuse_unsafe_path, dependencies.create_lifespan)
+"""The application's own path guard and start, as they were before any guard here stood
+behind them: what no module of the application may be left holding while a run is called
+protected. Kept in a tuple, since ``rebind`` replaces every module attribute that is one
+of them, this module's included."""
+
+
+def application_guard() -> Callable[..., Any]:
+    """The application's own path guard, with no guard of this module behind it."""
+    return _APPLICATION[0]
+
+
 class HouseholdStateProtected(RuntimeError):
     """Raised when a test reaches for a folder that may hold a household's files."""
 
@@ -100,10 +112,20 @@ def protecting() -> bool:
     Read from what is really bound: the path guard the stores call and the
     start the application is built with must be a pair one guard put in
     place and has not yet taken out. A flag would only say that someone
-    meant to protect the run."""
-    return any(
+    meant to protect the run. The stores import the path guard by name, so
+    each holds its own: one of them handed the application's own function
+    back would open a protected file with every other binding in order, so
+    no module of the application may hold either of the two as they were."""
+    standing = any(
         paths.refuse_unsafe_path is guard and dependencies.create_lifespan is start
         for guard, start in _STANDING
+    )
+    return standing and not any(
+        value is unguarded
+        for name, module in list(sys.modules.items())
+        if name == "blossom" or name.startswith("blossom.")
+        for value in list(getattr(module, "__dict__", {}).values())
+        for unguarded in _APPLICATION
     )
 
 
