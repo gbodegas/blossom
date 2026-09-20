@@ -323,7 +323,9 @@ def read_everything(
     another card's. That holds for a saving through this store and for one
     through another connection to the same file. ``also`` names assignments
     the reader speaks about whether or not they are on record, a saved
-    plan's, so what stands about them comes from the same batch.
+    plan's or the one an address says a press was about, so what stands about
+    them comes from the same batch: the school's reports, and her hand-in
+    events, which stay in the file when an assignment leaves the record.
 
     The cost is at most six reads however much the record holds, the claims
     and her hand-in events among them each asked for once and not once per
@@ -339,7 +341,7 @@ def read_everything(
         claimed = source.deadline_records_by_assignment(on_record)
         records = {name: list(claimed.get(name, [])) for name in on_record}
         statuses = statuses_for(project_state, [*on_record, *also])
-        turned_in = project_state.hand_in_readings(on_record)
+        turned_in = project_state.hand_in_readings([*on_record, *also])
     return Everything(
         assignments=everything,
         records=records,

@@ -4,7 +4,7 @@
   Included by her page for every card in the week, the active ones and
   the ones she has reported done alike, so the two groups read the same.
 #}
-    <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}" id="assignment-{{ assignment.assignment_id }}" tabindex="-1">
+    <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}" id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
       <p class="course">{{ assignment.course }}</p>
       <h2>{{ assignment.title }}</h2>
       {#

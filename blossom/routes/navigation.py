@@ -27,8 +27,12 @@ FAMILY_PAGE: Final = "/parent"
 UNRESERVED: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 """The characters a path segment may carry as they are; every other one is escaped."""
 
-Target = Literal["week", "today", "family"]
-TARGETS: Final[tuple[str, ...]] = ("week", "today", "family")
+Target = Literal["week", "today", "family", "to_turn_in"]
+TARGETS: Final[tuple[str, ...]] = ("week", "today", "family", "to_turn_in")
+TO_TURN_IN_PAGE: Final = "/student/to-turn-in"
+"""Her list of everything she reports as still to turn in, on a page of its own."""
+TO_TURN_IN: Final = "to-turn-in"
+"""The id the list has on that page and on her week, there whether or not it has rows."""
 RETURN_FIELDS: Final = frozenset({"return_to", "week", "plan_id"})
 """The three fields that say where a reader came from, on a link and on a form alike."""
 PLAN_ID_MAX_LENGTH: Final = 200
@@ -37,13 +41,23 @@ PLAN_ID_MAX_LENGTH: Final = 200
 
 def segment(value: str) -> str:
     """One path segment, escaped: a slash, a question mark, a space, or anything else that
-    would read as part of the address's shape is written as its bytes."""
+    would read as part of the address's shape is written as its bytes.
+
+    The server undoes the escaping before it matches a route, so an escaped
+    slash arrives as a slash. The routes that carry an assignment's id take
+    it as the rest of the path up to their own ending, and so receive an id
+    that holds one as the one value it is."""
     return "".join(
         character
         if character in UNRESERVED
         else "".join(f"%{byte:02X}" for byte in character.encode("utf-8"))
         for character in value
     )
+
+
+def assignment_anchor(assignment_id: str) -> str:
+    """One DOM id, shared by an assignment and every link to it."""
+    return f"assignment-{segment(assignment_id)}"
 
 
 def address(path: str, fragment: str = "", **query: str | None) -> str:
@@ -83,8 +97,14 @@ def todays_plan_href() -> str:
 
 def result_anchor(assignment_id: str) -> str:
     """The id of the place on a page that says what a save or an undo did to one
-    assignment's update, which a redirect lands on."""
+    assignment's update, which a redirect lands on. The page writes the id with this and
+    the redirect names it with this, so the two agree whatever the assignment's id holds."""
     return f"update-result-{segment(assignment_id)}"
+
+
+def hand_in_result_anchor(assignment_id: str) -> str:
+    """The same for her hand-in update on an assignment's details."""
+    return f"hand-in-result-{segment(assignment_id)}"
 
 
 @dataclass(frozen=True)
@@ -156,10 +176,12 @@ def read_return(
 
 
 def week_href(week: date | None, assignment_id: str, **more: str | None) -> str:
-    """Her week with one card in view, the fold around it open."""
+    """Her week with one card in view, the fold around it open. The fragment is the
+    card's own id, which the page writes with the same helper, so the address names that
+    card as written and no other, whatever the assignment's id holds."""
     return address(
         WEEK_PAGE,
-        fragment=f"assignment-{assignment_id}",
+        fragment=assignment_anchor(assignment_id),
         week=None if week is None else week.isoformat(),
         **more,
     )
