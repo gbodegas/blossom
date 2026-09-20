@@ -75,6 +75,7 @@ from blossom.stores.project_state import (
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.stores.support_rules import SupportRule, SupportRulesStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
+from tests.state_guard import require_protection
 
 FIXTURE_TIMEZONE = "America/New_York"
 """The zone the synthetic fixtures are written in. A fictional household's."""
@@ -132,7 +133,12 @@ def fixture_settings(**environ: str) -> Settings:
     explicit mapping has to supply one. This keeps that from being repeated,
     and keeps the value in one place if the fixtures ever move. The synthetic
     set is named the same way, since the household's default is no fixture.
+
+    For a run the state guard stands behind. Anywhere else the paths these
+    settings name are the defaults, the checkout's own record, so it refuses
+    before it builds them.
     """
+    require_protection("fixture_settings")
     return Settings.from_environment(
         {TIMEZONE_VARIABLE: FIXTURE_TIMEZONE, FIXTURE_PATH_VARIABLE: str(FIXTURES), **environ}
     )
@@ -505,7 +511,9 @@ class Answer(Protocol):
 
 
 def browser(*, key: bool = False, **environ: str) -> TestClient:
-    """Her page on the pinned day, with scripted models when ``key`` is set."""
+    """Her page on the pinned day, with scripted models when ``key`` is set. For a run
+    the state guard stands behind, like the settings it is built on."""
+    require_protection("browser")
     with_key = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"} if key else {}
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **with_key, **environ))
     if key:
@@ -516,7 +524,9 @@ def browser(*, key: bool = False, **environ: str) -> TestClient:
 
 
 def signed_in_household(tmp_path: pathlib.Path) -> Settings:
-    """The pinned day with the sign-in on, its files under ``tmp_path``."""
+    """The pinned day with the sign-in on, its files under ``tmp_path``. For a run the
+    state guard stands behind: a folder handed in is the caller's word, not a check."""
+    require_protection("signed_in_household")
     return fixture_settings(
         BLOSSOM_TODAY=PLAN_DATE.isoformat(),
         BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
@@ -702,7 +712,10 @@ def a_row(assignment_id: str, title: str) -> Assignment:
 
 
 def practice_store(path: pathlib.Path) -> ProjectStateStore:
-    """A store of two assignments, the weekly practice and the reading log, and nothing said."""
+    """A store of two assignments, the weekly practice and the reading log, and nothing
+    said. It opens and writes the file it is given, so it is for a run the state guard
+    stands behind."""
+    require_protection("practice_store")
     store = ProjectStateStore.open(path, fixture_clock())
     store.put_on_record(
         [a_row(PRACTICE, "Weekly practice"), a_row(PRACTICE_LOG, "Reading log")], {}

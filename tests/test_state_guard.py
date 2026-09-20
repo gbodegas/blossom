@@ -8,6 +8,7 @@ for a household's, being written.
 
 import asyncio
 import ctypes
+import json
 import os
 import pathlib
 import sqlite3
@@ -29,6 +30,7 @@ from blossom.settings import (
     Settings,
     get_settings,
 )
+from blossom.stores import paths as paths_module
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.help_requests import HelpRequestsStore
@@ -41,10 +43,12 @@ from tests.state_guard import (
     CHECKOUT_STATE,
     RUNTIME_PATH_VARIABLES,
     HouseholdStateProtected,
+    OutsideTheSuite,
     StateGuard,
     lands_inside,
+    protecting,
 )
-from tests.support import fixture_clock, fixture_settings
+from tests.support import fixture_clock, fixture_settings, practice_store
 
 REPOSITORY = pathlib.Path(__file__).resolve().parent.parent
 WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="a Windows spelling of a path")
@@ -451,3 +455,111 @@ def test_a_guard_put_in_place_is_taken_out_again(tmp_path: pathlib.Path) -> None
     claim = claim_household(household / "blossom.sqlite3")
     claim.release()
     assert (household / "blossom.lock").exists()
+
+
+# ------------------------------------------ the shared helpers, outside a protected run
+
+OUTSIDE_THE_SUITE = """
+import json
+import pathlib
+import sys
+
+from blossom import settings as settings_module
+
+# Were a helper to go ahead after all, it would land here and nowhere of a household's.
+folder = pathlib.Path(sys.argv[1])
+settings_module.LOCAL_STATE_PATH = folder / "state"
+if sys.argv[2] == "pytest imported":
+    import pytest  # noqa: F401
+
+from tests import support
+
+calls = {
+    "fixture_settings": lambda: support.fixture_settings(),
+    "browser": lambda: support.browser(),
+    "signed_in_household": lambda: support.signed_in_household(folder / "signed-in"),
+    "practice_store": lambda: support.practice_store(folder / "record.sqlite3"),
+}
+answers = {}
+for name, call in calls.items():
+    try:
+        call()
+    except Exception as error:
+        answers[name] = [type(error).__name__, str(error)]
+    else:
+        answers[name] = ["went ahead", ""]
+print(json.dumps(answers))
+"""
+
+
+@pytest.mark.parametrize("claimed", ["nothing", "pytest imported", "the variable pytest sets"])
+def test_a_helper_that_prepares_or_starts_the_application_refuses_outside_a_protected_run(
+    claimed: str, tmp_path: pathlib.Path
+) -> None:
+    """A script that imports the shared helpers is no test: no guard stands behind it, and
+    the fixture that moves the state folder never ran, so the application it built would
+    open the checkout's own record. Having pytest imported, or the variable pytest sets
+    for a running test, is not that protection, and neither lets a helper through. The
+    process is given a folder of its own to land in, and leaves it empty."""
+    folder = tmp_path / "outside"
+    folder.mkdir()
+    script = tmp_path / "outside_the_suite.py"
+    script.write_text(OUTSIDE_THE_SUITE, encoding="utf-8")
+    environ = {name: value for name, value in os.environ.items() if name != "PYTEST_CURRENT_TEST"}
+    if claimed == "the variable pytest sets":
+        environ["PYTEST_CURRENT_TEST"] = "tests/test_made_up.py::test_made_up (call)"
+
+    run = subprocess.run(  # noqa: S603
+        [sys.executable, str(script), str(folder), claimed],
+        cwd=REPOSITORY,
+        env={**environ, "PYTHONPATH": str(REPOSITORY)},
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert run.returncode == 0, run.stderr
+    answers = json.loads(run.stdout.strip().splitlines()[-1])
+    assert sorted(answers) == [
+        "browser",
+        "fixture_settings",
+        "practice_store",
+        "signed_in_household",
+    ]
+    for helper, (kind, said) in answers.items():
+        assert kind == "OutsideTheSuite", (helper, kind, said)
+        assert helper in said
+        assert all(variable in said for variable in RUNTIME_PATH_VARIABLES)
+    assert list(folder.iterdir()) == []
+
+
+def test_the_helpers_ask_whether_a_guard_really_stands_behind_the_application(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """In the suite a guard stands, and the helpers work. What they ask is whether the
+    function every store calls is one a guard put there: with anything else in its place
+    they refuse, before settings are built or a path is looked at."""
+    assert protecting()
+    assert isinstance(fixture_settings(), Settings)
+
+    monkeypatch.setattr(paths_module, "refuse_unsafe_path", lambda path, environ=None: path)
+
+    assert not protecting()
+    with pytest.raises(OutsideTheSuite, match="fixture_settings"):
+        fixture_settings()
+    with pytest.raises(OutsideTheSuite, match="practice_store"):
+        practice_store(tmp_path / "record.sqlite3")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_guard_taken_out_is_no_protection_and_the_one_around_it_still_is(
+    tmp_path: pathlib.Path,
+) -> None:
+    second = StateGuard(checkout_state=(tmp_path / "household",), inherited={})
+
+    with second.installed():
+        inside = protecting()
+
+    assert inside
+    assert protecting()
