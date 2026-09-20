@@ -123,16 +123,15 @@ NOTE_GONE: Final = "This homework note is not on record."
 NOTE_UNREADABLE: Final = "This homework note cannot be read right now. Nothing was changed."
 WITHOUT_DATE: Final = "without_date"
 
-CREATE_FIELDS: Final = frozenset(
-    {"capture_id", "text", "course", "due_date", "date_pending", "choice"}
-)
-EDIT_FIELDS: Final = frozenset({"revision", "text", "course", "due_date", "date_pending", "choice"})
+WORDS_AND_DAY: Final = frozenset({"text", "course", "due_date"})
+PRESSED_OR_PENDING: Final = frozenset({"date_pending", "date_refused", "choice"})
+"""What a browser leaves out of a form these pages made: the mark that a day was refused
+and the words of that day, which only a refused form carries, and the name of the button
+pressed, which a form sent with the Enter key does not carry."""
+CREATE_FIELDS: Final = WORDS_AND_DAY | PRESSED_OR_PENDING | {"capture_id"}
+EDIT_FIELDS: Final = WORDS_AND_DAY | PRESSED_OR_PENDING | {"revision"}
 MOVE_FIELDS: Final = frozenset({"revision"})
 HELP_FIELDS: Final = frozenset({"note"})
-PRESSED_OR_PENDING: Final = frozenset({"date_pending", "choice"})
-"""What a browser leaves out of a form these pages made: the mark that a day was refused,
-which only a refused form carries, and the name of the button pressed, which a form sent
-with the Enter key does not carry."""
 
 SAID: Final[dict[str, tuple[str, str | None]]] = {
     "saved": (NOTE_SAVED, CREATE),
@@ -202,11 +201,15 @@ def refusal_for(refusal: TextRefused, *, course: bool) -> str:
 def checked(form: NoteForm, fields: dict[str, str]) -> tuple[NoteForm, date | None]:
     """Hold what she typed to the rules, field by field, and read the day.
 
-    Returns the form with its problem set when there is one. A day that
-    cannot be read is kept as she sent it and marks the form, so the next
-    save cannot drop it without her choosing to. A form so marked that
-    arrives with no day needs that choice.
+    Returns the form with its problem set when there is one. The day is
+    read first, whatever else is wrong, so the form that goes back always
+    holds it: a day that reads stays in its control when her words are what
+    is refused, and a day that cannot be read is kept as she sent it and
+    marks the form, so the next save cannot drop it without her choosing to.
+    A form so marked that arrives with no day needs that choice. One problem
+    is said at a time: her words, then the class, then the day.
     """
+    form, day, about_the_day = with_the_day(form, fields)
     try:
         if multiline(form.text, CAPTURE_TEXT_MAX_LENGTH) is None:
             return replace(form, problem=NOTE_NEEDS_WORDS, field="text"), None
@@ -216,34 +219,49 @@ def checked(form: NoteForm, fields: dict[str, str]) -> tuple[NoteForm, date | No
         single_line(form.course, CAPTURE_COURSE_MAX_LENGTH)
     except TextRefused as refusal:
         return replace(form, problem=refusal_for(refusal, course=True), field="course"), None
+    if about_the_day is not None:
+        return replace(form, problem=about_the_day, field="due_date"), None
+    return form, day
+
+
+def with_the_day(
+    form: NoteForm, fields: dict[str, str]
+) -> tuple[NoteForm, date | None, str | None]:
+    """The form with the day she sent settled on it, the day when it reads, and what to say
+    when it does not. A day that reads clears the mark and the refused words with it."""
     raw = fields.get("due_date", "").strip()
     if raw:
         try:
-            return replace(form, due_date=raw, date_pending=False), date.fromisoformat(raw)
+            day = date.fromisoformat(raw)
         except ValueError:
-            return (
-                replace(
-                    form,
-                    due_date="",
-                    date_refused=raw[:TOKEN_MAX_LENGTH],
-                    date_pending=True,
-                    problem=NOTE_DATE_UNREADABLE,
-                    field="due_date",
-                ),
-                None,
-            )
+            marked = replace(form, due_date="", date_refused=shown_day(raw), date_pending=True)
+            return marked, None, NOTE_DATE_UNREADABLE
+        return replace(form, due_date=raw, date_refused=None, date_pending=False), day, None
     if form.date_pending and fields.get("choice") != WITHOUT_DATE:
-        return replace(form, problem=NOTE_NEEDS_A_DATE_CHOICE, field="due_date"), None
-    return replace(form, date_pending=False), None
+        return form, None, NOTE_NEEDS_A_DATE_CHOICE
+    return replace(form, date_refused=None, date_pending=False), None, None
+
+
+def shown_day(raw: str) -> str | None:
+    """The words of a day that could not be read, as a page may say them back: cut to a
+    bounded length, and nothing at all when the text rule would not keep them. They are only
+    ever shown, escaped, and carried by the form; nothing stores them."""
+    try:
+        return single_line(raw.strip()[:TOKEN_MAX_LENGTH], TOKEN_MAX_LENGTH)
+    except TextRefused:
+        return None
 
 
 def form_from(fields: dict[str, str], capture_id: str, revision: int | None = None) -> NoteForm:
-    """The form as she sent it, every readable word kept."""
+    """The form as she sent it, every readable word kept: the mark that a day was refused,
+    and with it the words of that day, so an answer about anything else still says them."""
+    pending = fields.get("date_pending") == "1"
     return NoteForm(
         capture_id=capture_id,
         text=fields.get("text", ""),
         course=fields.get("course", ""),
-        date_pending=fields.get("date_pending") == "1",
+        date_refused=shown_day(fields.get("date_refused", "")) if pending else None,
+        date_pending=pending,
         revision=revision,
     )
 

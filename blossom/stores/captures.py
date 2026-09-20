@@ -64,28 +64,44 @@ from blossom.reconciliation import SourceChannel
 
 logger = logging.getLogger(__name__)
 
-CAPTURE_COLUMNS: Final = """
-    capture_id, created_order, original_text, initial, text, course, title, due_date, kind,
-    note, attribution, created_at_utc, created_on, updated_at_utc, updated_on, revision,
-    archived, assignment_id
+CAPTURE_NAMED: Final = """
+    SELECT
+        capture_id, created_order, original_text, initial, text, course, title, due_date,
+        kind, note, attribution, created_at_utc, created_on, updated_at_utc, updated_on,
+        revision, archived, assignment_id
+    FROM homework_captures
+    WHERE capture_id = ?
 """
-CAPTURE_NAMED: Final = f"SELECT {CAPTURE_COLUMNS} FROM homework_captures WHERE capture_id = ?"  # noqa: S608
-OUTSTANDING_CAPTURES: Final = f"""
-    SELECT {CAPTURE_COLUMNS} FROM homework_captures
+OUTSTANDING_CAPTURES: Final = """
+    SELECT
+        capture_id, created_order, original_text, initial, text, course, title, due_date,
+        kind, note, attribution, created_at_utc, created_on, updated_at_utc, updated_on,
+        revision, archived, assignment_id
+    FROM homework_captures
     WHERE archived = 0 AND assignment_id IS NULL
     ORDER BY created_order
-"""  # noqa: S608
-ARCHIVED_CAPTURES: Final = f"""
-    SELECT {CAPTURE_COLUMNS} FROM homework_captures
+"""
+ARCHIVED_CAPTURES: Final = """
+    SELECT
+        capture_id, created_order, original_text, initial, text, course, title, due_date,
+        kind, note, attribution, created_at_utc, created_on, updated_at_utc, updated_on,
+        revision, archived, assignment_id
+    FROM homework_captures
     WHERE archived = 1
     ORDER BY created_order
-"""  # noqa: S608
-CAPTURES_NAMED: Final = f"""
-    SELECT {CAPTURE_COLUMNS} FROM homework_captures
+"""
+CAPTURES_NAMED: Final = """
+    SELECT
+        capture_id, created_order, original_text, initial, text, course, title, due_date,
+        kind, note, attribution, created_at_utc, created_on, updated_at_utc, updated_on,
+        revision, archived, assignment_id
+    FROM homework_captures
     WHERE capture_id IN (SELECT value FROM json_each(?))
     ORDER BY created_order
-"""  # noqa: S608
-"""Every statement is fixed text over a fixed column list; a name is always a bound value."""
+"""
+"""Each read is written out whole: fixed text, put together nowhere, with a name always a
+bound value. A row is decoded by position, so the four name the same columns in the same
+order, which a test holds them to."""
 INSERT_CAPTURE: Final = """
     INSERT INTO homework_captures (
         capture_id, created_order, original_text, initial, text, course, title, due_date,
@@ -137,7 +153,7 @@ def new_capture_event_id() -> str:
 
 
 def capture_from(row: tuple[object, ...]) -> Capture:
-    """One note from a row read by ``CAPTURE_COLUMNS``, or ``UnreadableCapture``."""
+    """One note from a row of one of the four reads, by position, or ``UnreadableCapture``."""
     try:
         attribution = json.loads(str(row[10]))
         return Capture(

@@ -6,6 +6,7 @@ assignment is involved: a note is a note.
 """
 
 import pathlib
+import re
 import sqlite3
 import threading
 import uuid
@@ -41,6 +42,7 @@ from blossom.captures import (
 )
 from blossom.noticing import planning_digest, read_everything, week_from
 from blossom.reconciliation import SourceChannel
+from blossom.stores import captures as captures_store
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import PRACTICE, PRACTICE_LOG, fixture_clock, practice_store
 
@@ -169,6 +171,29 @@ def test_a_note_is_named_by_a_uuid_written_one_way() -> None:
     ):
         with pytest.raises(NotACaptureId):
             capture_id_from(not_one)
+
+
+def test_every_read_of_a_note_names_the_same_columns_in_the_same_order() -> None:
+    """A row is decoded by position, so the four reads are written out whole and must agree.
+    Each is fixed text: nothing is put together when it runs, and a name is a bound value."""
+    reads = (
+        captures_store.CAPTURE_NAMED,
+        captures_store.OUTSTANDING_CAPTURES,
+        captures_store.ARCHIVED_CAPTURES,
+        captures_store.CAPTURES_NAMED,
+    )
+    named = [
+        [column.strip() for column in read.split("FROM")[0].replace("SELECT", "").split(",")]
+        for read in reads
+    ]
+    source = pathlib.Path(captures_store.__file__).read_text(encoding="utf-8")
+
+    assert named[0][:2] == ["capture_id", "created_order"]
+    assert len(named[0]) == 18
+    assert all(columns == named[0] for columns in named)
+    assert "S608" not in source
+    assert not re.search(r"Final = f[\"']", source)
+    assert not any("{" in read for read in reads)
 
 
 def test_the_store_looks_up_nothing_under_a_name_that_is_no_id(store: ProjectStateStore) -> None:

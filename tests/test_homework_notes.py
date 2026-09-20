@@ -17,7 +17,13 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.captures import HOUSEHOLD, STUDENT, capture_id_from, new_capture_id
+from blossom.captures import (
+    CAPTURE_TEXT_MAX_LENGTH,
+    HOUSEHOLD,
+    STUDENT,
+    capture_id_from,
+    new_capture_id,
+)
 from blossom.routes.captures import (
     NOTE_ALREADY_SAVED,
     NOTE_ARCHIVED,
@@ -272,6 +278,81 @@ def test_a_day_that_cannot_be_read_keeps_everything_and_is_never_dropped_without
     assert omitted.status_code == 303
     assert without is not None
     assert (without.due_date, without.course, without.text) == (None, "Geometry", WORDS)
+
+
+def test_a_day_that_was_refused_is_said_on_every_later_answer_until_one_reads() -> None:
+    """The form carries the words of the day it refused, so an answer about anything else
+    still says them. A day that reads is kept when her words are what is refused, and takes
+    the refused words off the page. Words the text rule would not keep are never shown."""
+    raw = "next <b>tuesday</b>"
+    long_words = "w" * (CAPTURE_TEXT_MAX_LENGTH + 1)
+    typed = {"text": WORDS, "course": "Geometry"}
+    with browser() as client:
+        store = state_of(client).project_state
+        fields = new_form(client)
+        refused = send(client, fields, **typed, due_date=raw)
+        carried = form_fields(refused.text, NOTE_ACTIONS)
+        no_choice = send(client, carried, **typed, due_date="")
+        carried_again = form_fields(no_choice.text, NOTE_ACTIONS)
+        too_long = send(client, carried_again, text=long_words, course="Geometry", due_date="")
+        forged = send(client, {**carried, "date_refused": "ring" + chr(7)}, **typed, due_date="")
+        with_a_day = send(
+            client, carried_again, text=long_words, course="Geometry", due_date="2026-08-21"
+        )
+        after_a_day = form_fields(with_a_day.text, NOTE_ACTIONS)
+        written = tables(store)
+        saved = send(client, after_a_day, **typed, due_date="2026-08-21")
+        note = store.capture(fields["capture_id"])
+
+    said = f'You wrote <q class="authored-text">{escape(raw)}</q>'
+    assert (carried["date_pending"], carried["date_refused"]) == ("1", raw)
+    assert carried_again == carried
+    for answer, sentence in ((no_choice, NOTE_NEEDS_A_DATE_CHOICE), (too_long, NOTE_TOO_LONG)):
+        assert answer.status_code == 422
+        assert said_first(answer.text, sentence)
+        assert said in answer.text
+        assert "<b>tuesday" not in answer.text
+        assert ">Save without the date</button>" in answer.text
+        assert re.search(r"<details[^>]* open", answer.text)
+    assert forged.status_code == 422
+    assert said_first(forged.text, NOTE_NEEDS_A_DATE_CHOICE)
+    assert "ring" not in forged.text
+    assert with_a_day.status_code == 422
+    assert said_first(with_a_day.text, NOTE_TOO_LONG)
+    assert re.search(r'<input[^>]*name="due_date"[^>]*value="2026-08-21"', with_a_day.text)
+    assert "You wrote" not in with_a_day.text
+    assert ">Save without the date</button>" not in with_a_day.text
+    assert set(after_a_day) == {"capture_id"}
+    assert written == ([], [])
+    assert saved.status_code == 303
+    assert note is not None
+    assert note.due_date == date(2026, 8, 21)
+
+
+def test_an_edit_keeps_the_day_it_refused_the_same_way() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        action = note_action(name, "edit")
+        opened = form_fields(client.get(note_href(name, edit="1")).text, action)
+        typed = {"text": WORDS, "course": ""}
+        refused = client.post(
+            action, data={**opened, **typed, "due_date": "friday"}, headers=PAGE_HEADERS
+        )
+        carried = form_fields(refused.text, action)
+        no_choice = client.post(
+            action, data={**carried, **typed, "due_date": ""}, headers=PAGE_HEADERS
+        )
+        note = store.capture(name)
+
+    assert refused.status_code == 422
+    assert (carried["date_pending"], carried["date_refused"]) == ("1", "friday")
+    assert carried["revision"] == opened["revision"]
+    assert no_choice.status_code == 422
+    assert said_first(no_choice.text, NOTE_NEEDS_A_DATE_CHOICE)
+    assert 'You wrote <q class="authored-text">friday</q>' in no_choice.text
+    assert note is not None
+    assert (note.revision, note.due_date) == (1, None)
 
 
 # ------------------------------------------------------- forms that are not whole

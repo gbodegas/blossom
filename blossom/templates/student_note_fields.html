@@ -5,7 +5,9 @@
   could not be read is shown as she sent it, escaped, beside the field; the
   control itself is left empty, since a native date control can hold nothing
   else, and the form then carries the mark that a day was refused, so the
-  next save needs a day that reads or her choice to save without one.
+  next save needs a day that reads or her choice to save without one. The
+  words of that day travel with the mark, so an answer about anything else
+  still says them; they are shown and never stored.
   ``form`` is what she typed; nothing here is what is stored.
 #}
 {% set at_text = form.field == "text" %}
@@ -28,4 +30,5 @@
 </details>
 {% if form.date_pending %}
   <input type="hidden" name="date_pending" value="1">
+  {% if form.date_refused %}<input type="hidden" name="date_refused" value="{{ form.date_refused }}">{% endif %}
 {% endif %}

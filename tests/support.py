@@ -652,10 +652,12 @@ def lands_on(page: str, address: str) -> str:
 
 
 def form_fields(html: str, action: str) -> dict[str, str]:
-    """The hidden fields of the form with this action, as the page wrote them."""
+    """The hidden fields of the form with this action, as a browser would send them back:
+    each value read out of its attribute, so what the page escaped arrives as it was."""
     start = html.index(f'action="{action}"')
     form = html[start : html.index("</form>", start)]
-    return dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form))
+    found = re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form)
+    return {name: unescape(value) for name, value in found}
 
 
 def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:
