@@ -209,16 +209,21 @@ def result_for(everything: Everything, receipt: Receipt | None) -> ListResult | 
     is what stands, and a report of hers can be taken back from here; an
     undo that stands offers none, since the head is no report. Once
     something newer follows it, the result is something she did earlier,
-    shown beside what stands now, with no Undo. An assignment off the
-    record, or one whose record cannot be read, keeps the place and says
-    which, since the address may be a true one.
+    shown beside what stands now, with no Undo.
+
+    An assignment on record whose hand-in record cannot be read keeps the
+    place and says so, which is true of that record whatever the address
+    names. An assignment off the record is held to the same proof as any
+    other: her events stay in the file when an assignment leaves it, the
+    page's reading holds them for the one the address names, and only an
+    address they bear out is told the assignment is gone. An address about
+    an assignment that was never there, or naming an event that history
+    does not hold, says nothing, as it would for one on record.
     """
     if receipt is None or receipt.said not in SAID:
         return None
     about = affected(everything, receipt.about)
-    if about.hand_in is None:
-        return ListResult(RESULT_GONE, about, stands=False, undo_event_id=None)
-    if about.hand_in.unavailable:
+    if about.hand_in is not None and about.hand_in.unavailable:
         return ListResult(RESULT_UNREADABLE, about, stands=False, undo_event_id=None)
     reading = everything.hand_ins.get(receipt.about)
     if reading is None or reading.head is None:
@@ -228,6 +233,8 @@ def result_for(everything: Everything, receipt: Receipt | None) -> ListResult | 
     )
     if event is None or not _is_what_was_said(event, receipt.said):
         return None
+    if about.hand_in is None:
+        return ListResult(RESULT_GONE, about, stands=False, undo_event_id=None)
     if reading.head.event_id != event.event_id:
         return ListResult(EARLIER[receipt.said], about, stands=False, undo_event_id=None)
     return ListResult(

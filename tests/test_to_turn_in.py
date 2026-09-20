@@ -48,6 +48,7 @@ from blossom.routes.student import (
 )
 from blossom.stores.project_state import ProjectStateStore
 from blossom.to_turn_in import (
+    RESULT_GONE,
     RESULT_UNREADABLE,
     SAME_EARLIER,
     TURNED_IN_EARLIER,
@@ -719,6 +720,61 @@ def test_a_result_whose_record_cannot_be_read_now_keeps_its_place_and_says_so(or
     assert ESSAY_TITLE in result_of(page.text)
     assert escape(TURNED_IN_FROM_THE_LIST) not in page.text
     assert 'name="hand_in_id"' not in page.text
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_a_result_for_an_assignment_off_the_record_is_said_only_when_its_history_bears_it_out(
+    origin: str,
+) -> None:
+    """An assignment can leave the record while what she said about it stays. A true address
+    for it keeps its place and says the assignment is gone; an address made up about an
+    assignment that is not there, or naming an event its history does not bear out, says
+    nothing, and reading that history costs the page no statement of its own."""
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    with browser() as client:
+        store = state_of(client).project_state
+        waiting = said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        held = press(client, client.get(where).text, ESSAY_ID).headers["location"]
+        turned = store.hand_in_chains([ESSAY_ID])[ESSAY_ID][-1].event_id
+        elsewhere = said(store, QUIZ_ID, TURNED_IN, date(2026, 8, 19))
+        store._connection.execute("DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,))
+        store._connection.commit()
+        made_up = [
+            ("turned_in", "assignment-never-there", "anything-at-all"),
+            ("turned_in", "assignment-never-there", turned),
+            ("same", "assignment-never-there", turned),
+            ("turned_in", ESSAY_ID, "no-such-event"),
+            ("turned_in", ESSAY_ID, waiting),
+            ("undone", ESSAY_ID, turned),
+            ("turned_in", ESSAY_ID, elsewhere),
+        ]
+
+        seen: list[str] = []
+        store._connection.set_trace_callback(seen.append)
+        gone = client.get(held)
+        store._connection.set_trace_callback(None)
+        pages = [
+            client.get(where, params={"hand_in_said": a, "about": b, "hand_in_event": c}).text
+            for a, b, c in made_up
+        ]
+        store._connection.execute(
+            "UPDATE hand_in_events SET state = 'invalid-state' WHERE assignment_id = ?",
+            (ESSAY_ID,),
+        )
+        store._connection.commit()
+        unreadable = client.get(held).text
+
+    assert f"hand_in_event={turned}" in held
+    assert gone.status_code == 200
+    assert escape(RESULT_GONE) in result_of(gone.text)
+    assert ESSAY_TITLE not in gone.text
+    assert escape(TURNED_IN_FROM_THE_LIST) not in gone.text
+    assert 'name="hand_in_id"' not in gone.text
+    assert len(seen) == 8
+    for page in (*pages, unreadable):
+        assert 'id="to-turn-in-result"' not in page
+        assert escape(RESULT_GONE) not in page
+        assert 'name="hand_in_id"' not in page
 
 
 @pytest.mark.parametrize("origin", ["list", "week"])

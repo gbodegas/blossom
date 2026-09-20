@@ -145,7 +145,9 @@ dated statement that stands, with an Undo for that event and no other, and a
 press already saved may name an undo that put her report back, which offers
 none; once something newer follows, it is said as
 something done earlier beside what stands now, with no Undo; an id the
-history does not hold says nothing. A refusal carries what was tried and on
+history does not hold says nothing, and an assignment that has left the
+record is told to be gone only when her events for it, which stay in the file
+and are read in the same batch, bear the address out. A refusal carries what was tried and on
 which assignment, and the page shows that assignment as it stands now beside
 the refusal, on the list or off it, with the press again only while it is
 still to turn in. A write the file refuses, when the list cannot be read

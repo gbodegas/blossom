@@ -169,9 +169,12 @@ def list_page(
 
     The reading is the one her week makes, so the list costs no read of its
     own and a long list costs no more than a short one. Nothing is written,
-    and what the address says a press did is looked up in that same reading.
+    and what the address says a press did is looked up in that same reading,
+    which is told the assignment the address names, so her events for it are
+    in the batch whether or not it is still on record.
     """
-    everything = read_everything(state.project_state, state.project_state)
+    about = () if card is None or card.asked is None else (card.asked.about,)
+    everything = read_everything(state.project_state, state.project_state, also=about)
     still = to_turn_in(everything)
     viewer = viewer_of(request)
     return templates.TemplateResponse(

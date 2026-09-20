@@ -998,10 +998,13 @@ def student_page(
     # named to it: the week, the planning window, the plan's notice and
     # marks, and whether the plan still fits all come out of that reading.
     record = state.drafts.latest_for(today)
+    # The assignment an address says a press was about is named to the reading too, so a
+    # result is checked against that assignment's own events even when it is off the record.
+    about = () if turning_in is None or turning_in.asked is None else (turning_in.asked.about,)
     everything = read_everything(
         state.project_state,
         state.project_state,
-        also=() if record is None else record.plan_assignment_ids or (),
+        also=(*(() if record is None else record.plan_assignment_ids or ()), *about),
     )
     todays = (
         None
