@@ -17,9 +17,17 @@ from markupsafe import escape
 from blossom.app import create_app
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.reconciliation import SourceChannel
-from blossom.routes.hand_in import HAND_IN_CHANGED
+from blossom.routes.hand_in import (
+    GONE_FROM_THE_LIST,
+    LIST_ALREADY_UNDONE,
+    LIST_BAD_FORM,
+    LIST_CHANGED,
+    LIST_NOT_A_HAND_IN_OF_THIS,
+    LIST_NOT_SAVED,
+)
 from blossom.routes.navigation import TO_TURN_IN_PAGE
 from blossom.routes.student import (
+    BAD_RETURN,
     HAND_IN_ALREADY_SAVED,
     HAND_IN_UNDONE,
     NOT_HERS_TO_UPDATE,
@@ -78,11 +86,26 @@ def section(page: str) -> str:
     return page[start : page.index("</section>", start)]
 
 
-def press(client: TestClient, page: str, assignment_id: str) -> Answer:
-    """Press the row's button, sending the fields the page wrote for it."""
+def press(client: TestClient, page: str, assignment_id: str, **changed: str) -> Answer:
+    """Press the row's button, sending the fields the page wrote for it. ``changed`` is
+    what a request made up by hand sends in place of them."""
     action = f"/student/actions/assignments/{assignment_id}/hand-in"
     row = page[page.index(f'id="to-turn-in-{assignment_id}"') :]
-    return client.post(action, data=form_fields(row, action), headers=PAGE_HEADERS)
+    return client.post(action, data={**form_fields(row, action), **changed}, headers=PAGE_HEADERS)
+
+
+def said_first(page: str, sentence: str) -> bool:
+    """Whether a refusal is said once, in the list's own place for it, ahead of the rows,
+    as the one thing on the page given the focus."""
+    place = page.index('id="to-turn-in-problem"')
+    rows = page.find('<ul class="to-turn-in-rows">')
+    return (
+        page.count(str(escape(sentence))) == 1
+        and page.index(str(escape(sentence))) > place
+        and (rows == -1 or place < rows)
+        and page.count(" autofocus") == 1
+        and "autofocus" in page[place : page.index(">", place)]
+    )
 
 
 def follow(client: TestClient, answer: Answer) -> str:
@@ -269,10 +292,109 @@ def test_a_second_press_is_already_saved_and_a_row_that_moved_on_is_refused() ->
         kept = len(store.hand_in_chains([QUIZ_ID])[QUIZ_ID])
 
     assert refused.status_code == 409
-    assert escape(HAND_IN_CHANGED) in refused.text
+    assert said_first(refused.text, LIST_CHANGED)
     assert "Hand it to her" in refused.text
     assert listed(refused.text) == [QUIZ_ID]
     assert kept == 2
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_a_press_the_list_refuses_is_said_first_where_she_pressed_and_writes_nothing(
+    origin: str,
+) -> None:
+    """Each refusal a press can get, in the list's own words, on the page it was made from."""
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19), note="mine")
+        page = client.get(where).text
+        action = f"/student/actions/assignments/{ESSAY_ID}/hand-in"
+
+        foreign = press(client, page, ESSAY_ID, expected_hand_in_id="hand-in-not-this-one")
+        extra = press(client, page, ESSAY_ID, role="parent")
+        twice = client.post(
+            action,
+            content=f"state=turned_in&state=unknown&next_action=&note=&hand_in_view={origin}",
+            headers={**PAGE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        gone = client.post(
+            "/student/actions/assignments/assignment-not-there/hand-in",
+            data={**form_fields(page[page.index(f'id="to-turn-in-{ESSAY_ID}"') :], action)},
+            headers=PAGE_HEADERS,
+        )
+        kept = store.hand_in_chains()
+
+    assert (foreign.status_code, extra.status_code, twice.status_code) == (422, 422, 422)
+    assert said_first(foreign.text, LIST_NOT_A_HAND_IN_OF_THIS)
+    assert said_first(extra.text, LIST_BAD_FORM)
+    assert said_first(twice.text, LIST_BAD_FORM)
+    assert gone.status_code == 404
+    assert said_first(gone.text, GONE_FROM_THE_LIST)
+    for answer in (foreign, extra, twice, gone):
+        assert listed(answer.text) == [ESSAY_ID]
+        assert ("<h1>To turn in" in answer.text) == (origin == "list")
+        assert "Your words are still here" not in answer.text
+    assert list(kept) == [ESSAY_ID]
+    assert len(kept[ESSAY_ID]) == 1
+
+
+def test_a_place_to_show_the_result_that_these_pages_do_not_make_is_refused() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        page = client.get(TO_TURN_IN_PAGE).text
+
+        forged = press(client, page, ESSAY_ID, hand_in_view="https://example.test/")
+        kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+
+    assert forged.status_code == 422
+    assert escape(BAD_RETURN) in forged.text
+    assert "example.test" not in forged.text
+    assert kept == 1
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_a_press_over_a_record_that_cannot_be_read_says_so_with_no_word_of_a_save(
+    origin: str,
+) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        page = client.get(where).text
+        store._connection.execute("UPDATE hand_in_events SET previous_event_id = 'no-such-event'")
+        store._connection.commit()
+
+        answer = press(client, page, ESSAY_ID)
+        rows = store._connection.execute("SELECT COUNT(*) FROM hand_in_events").fetchone()[0]
+
+    assert answer.status_code == 500
+    assert said_first(answer.text, LIST_NOT_SAVED)
+    assert escape(TURNED_IN_FROM_THE_LIST) not in answer.text
+    assert listed(answer.text) == []
+    assert "cannot be read" in answer.text
+    assert rows == 1
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_an_undo_pressed_twice_on_the_list_is_said_to_be_already_undone(origin: str) -> None:
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    undo = f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in"
+    with browser() as client:
+        store = state_of(client).project_state
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+        after = follow(client, press(client, client.get(where).text, ESSAY_ID))
+        fields = form_fields(after, undo)
+        follow(client, client.post(undo, data=fields, headers=PAGE_HEADERS))
+
+        again = client.post(undo, data=fields, headers=PAGE_HEADERS)
+        kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
+
+    assert fields["hand_in_view"] == origin
+    assert again.status_code == 409
+    assert said_first(again.text, LIST_ALREADY_UNDONE)
+    assert listed(again.text) == [ESSAY_ID]
+    assert kept == 3
 
 
 def test_reading_the_list_writes_nothing() -> None:

@@ -104,6 +104,29 @@ its own, ``week`` from the section on her week. It decides where the result is s
 and nothing else. A form on an assignment's details sends none."""
 LIST_VIEWS: Final = ("list", "week")
 GONE_FROM_THE_LIST: Final = "That assignment is not on record now, so nothing was changed."
+LIST_CHANGED: Final = (
+    "That changed while you were away, so nothing was saved. The list shows what stands now."
+)
+LIST_NOT_SAVED: Final = "That could not be saved, and nothing was changed. Try again."
+LIST_NOT_A_HAND_IN_OF_THIS: Final = (
+    "That form names a hand-in update this assignment does not have, so nothing was saved. "
+    "The list shows what stands now."
+)
+LIST_BAD_FORM: Final = (
+    "That form carried a field twice, or one this page does not send, so nothing was saved. "
+    "Press again from the list."
+)
+LIST_ALREADY_UNDONE: Final = "That update was already undone. The list shows what stands now."
+ON_THE_LIST: Final[dict[str, str]] = {
+    HAND_IN_CHANGED: LIST_CHANGED,
+    HAND_IN_NOT_SAVED: LIST_NOT_SAVED,
+    NOT_A_HAND_IN_OF_THIS: LIST_NOT_A_HAND_IN_OF_THIS,
+    BAD_FORM: LIST_BAD_FORM,
+    ALREADY_UNDONE: LIST_ALREADY_UNDONE,
+}
+"""The sentences written for an assignment's details that would be untrue on the list, which
+has no card, no form to choose from, and no words of hers to keep, each with what the list
+says instead. Any other refusal reads the same in both places."""
 HAND_IN_FIELDS: Final = (
     frozenset({"state", "next_action", "note", "expected_hand_in_id"}) | RETURN_FIELDS | SHOWN_ON
 )
@@ -174,7 +197,7 @@ def on_the_list(
     status_code: int,
 ) -> HTMLResponse:
     """A refusal shown where the press was made, with the list as it stands now."""
-    card = ListCard(problem=problem)
+    card = ListCard(problem=ON_THE_LIST.get(problem, problem))
     if view == "week":
         return student_page(request, state, turning_in=card, status_code=status_code)
     return list_page(request, state, card=card, status_code=status_code)
