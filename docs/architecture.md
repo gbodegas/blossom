@@ -110,7 +110,52 @@ decision lock, a redirect to a result the address lands on, and a refusal
 that keeps what she chose and wrote, a moved head shown with what stands
 above a form headed as not saved. An Undo already taken back is said to be
 that, from the head the refusing save read, and her work update's Undo says
-the same. Her week's cards show one line and a link, the family page lists
+the same. `blossom/to_turn_in.py` draws her To turn in list from the page's
+one reading, with no read of its own: every assignment she reports as still
+to turn in, whatever her work update says and whatever week it is due in,
+ordered by the event that began that state as the file ordered it, so an
+edit does not move a row, coming back to the state puts it last, and an undo
+puts it back where it was; a record that cannot be read is named under the
+list and never dropped from it. The list is a page of its own,
+`/student/to-turn-in`, there when empty, reached from a link under the main
+controls that carries a count only when there is one, and its first rows
+are on her week after Today. A row's one press is the same save as the
+details' form, turned in with the head the row showed and no words, and a
+checked field says where its result is shown: on the list or on her week,
+at a place that is there whether or not the row still is. A form that says
+it is the list's is held to the list's own shape, every field, no other, no
+way back, each value exactly as the page wrote it, and for the press that
+one state with no words; anything else is refused whole. The store holds
+the list's forms to what stands, in the transaction that would write: the
+press is written only over still to turn in, and the Undo takes back only her
+report that it was turned in, so a form in the list's shape that names
+anything else writes nothing. Her routes that
+carry an assignment's id take it as the rest of the path up to their own
+ending, so an id that holds a slash is reached by the addresses made for it.
+A place a redirect lands on is named by one helper, used by the page that
+writes the id and by the address sent to it, and her week with a card in view
+is one address builder that escapes the id in the query and in the fragment,
+so the two agree whatever an id holds. A card or a row on her week writes its
+id with one helper too, the assignment's id escaped, and every fragment that
+names it is made by that helper, so two ids that differ only by an escape
+are two places. The redirect names the event the save accepted, and the page
+that answers looks it up in that assignment's history in its one reading:
+while that event is the latest the result is what stands, said with the
+dated statement that stands, with an Undo for that event and no other, and a
+press already saved may name an undo that put her report back, which offers
+none; once something newer follows, it is said as
+something done earlier beside what stands now, with no Undo; an id the
+history does not hold says nothing, and an assignment that has left the
+record is told to be gone only when her events for it, which stay in the file
+and are read in the same batch, bear the address out. A refusal carries what was tried and on
+which assignment, and the page shows that assignment as it stands now beside
+the refusal, on the list or off it, with the press again only while it is
+still to turn in. A write the file refuses, when the list cannot be read
+back either, is answered by the plain page that reads no store, whose one
+sentence takes the focus as the page arrives. The way back
+from the details gains a fourth place, the list. Help
+remembering is a GET that opens the form with Still to turn in chosen and
+writes nothing. Her week's rows show one line and a link, the family page lists
 what is still to turn in, however old, then what else she said in the last
 fourteen days, with no form, and a row worth checking together carries it as
 context that decides nothing. A page's one reading holds every chain, read

@@ -36,7 +36,7 @@
     {% set hand_in_general = hand_in_problem and not problem and not (card and card.problem) and not hand_in_field %}
     <p class="problem" role="alert" id="problem-summary" tabindex="-1"{% if hand_in_general %} autofocus{% endif %}>{{ trouble }}{% if card and card.problem %} <a href="#update-problem-{{ assignment.assignment_id }}">Go to the update.</a>{% elif hand_in_field == "next_action" %} <a href="#next-action-{{ assignment.assignment_id }}">Go to the next step.</a>{% elif hand_in_field == "note" %} <a href="#hand-in-note-{{ assignment.assignment_id }}">Go to the note.</a>{% elif hand_in_field == "state" %} <a href="#hand-in-state-{{ assignment.assignment_id }}">Go to the choices.</a>{% elif hand_in_general %} <a href="#hand-in-problem-{{ assignment.assignment_id }}">Go to Turning it in.</a>{% endif %}</p>
   {% endif %}
-  <article class="assignment detail confidence-{{ assignment.deadline_confidence|lower }}" id="assignment-{{ assignment.assignment_id }}">
+  <article class="assignment detail confidence-{{ assignment.deadline_confidence|lower }}" id="{{ assignment_anchor(assignment.assignment_id) }}">
     <p class="course">{{ assignment.course }}</p>
     <h1>{{ assignment.title }}</h1>
     <p class="note">Current assignment record. Updates shown are the latest on record.</p>

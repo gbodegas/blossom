@@ -25,6 +25,7 @@ from blossom.hand_in import (
     HandInAlreadySaved,
     HandInConflict,
     HandInEvent,
+    HandInNotOffered,
     HandInProjection,
     HandInSaved,
     HandInState,
@@ -83,7 +84,7 @@ def said(
     action: str | None = None,
     note: str | None = None,
     assignment_id: str = PRACTICE,
-) -> HandInSaved | HandInAlreadySaved | HandInConflict:
+) -> HandInSaved | HandInAlreadySaved | HandInConflict | HandInNotOffered:
     return store.record_hand_in(
         assignment_id,
         state,
@@ -748,3 +749,119 @@ def test_every_chain_is_read_in_one_statement(count: int, tmp_path: pathlib.Path
     assert list(chains) == names[::2]
     assert len(seen) == 1
     assert store.hand_in_chains([]) == {}
+
+
+# ------------------------------------------- a save or an undo a page offers only over one state
+
+
+def kept_rows(store: ProjectStateStore) -> list[tuple[object, ...]]:
+    return store._connection.execute("SELECT * FROM hand_in_events ORDER BY sequence").fetchall()
+
+
+def test_a_save_offered_only_over_one_state_is_written_over_that_state_alone(
+    store: ProjectStateStore,
+) -> None:
+    """Her To turn in list offers turned in only over still to turn in. The store holds a
+    save to that inside the transaction that would write it."""
+    nothing = store.record_hand_in(
+        PRACTICE,
+        TURNED_IN,
+        None,
+        None,
+        expected_head=None,
+        only_over=NEEDS_HAND_IN,
+        now=AT,
+        today=MONDAY,
+    )
+    written_over_nothing = kept_rows(store)
+    refused = []
+    elsewhere: list[tuple[HandInState, str | None]] = [
+        (UNKNOWN, None),
+        (NOT_REQUIRED, None),
+        (TURNED_IN, "with a note"),
+    ]
+    for state, note in elsewhere:
+        head = standing(store).head_id
+        stands = saved(said(store, state, head=head, note=note))
+        before = kept_rows(store)
+        outcome = store.record_hand_in(
+            PRACTICE,
+            TURNED_IN,
+            None,
+            None,
+            expected_head=stands.event_id,
+            only_over=NEEDS_HAND_IN,
+            now=AT,
+            today=MONDAY,
+        )
+        refused.append((outcome, stands, kept_rows(store) == before))
+
+    waiting = saved(said(store, NEEDS_HAND_IN, head=standing(store).head_id, note="mine"))
+    behind = store.record_hand_in(
+        PRACTICE,
+        TURNED_IN,
+        None,
+        None,
+        expected_head=refused[-1][1].event_id,
+        only_over=NEEDS_HAND_IN,
+        now=AT,
+        today=MONDAY,
+    )
+    kept = store.record_hand_in(
+        PRACTICE,
+        TURNED_IN,
+        None,
+        None,
+        expected_head=waiting.event_id,
+        only_over=NEEDS_HAND_IN,
+        now=AT,
+        today=MONDAY,
+    )
+    again = store.record_hand_in(
+        PRACTICE,
+        TURNED_IN,
+        None,
+        None,
+        expected_head=waiting.event_id,
+        only_over=NEEDS_HAND_IN,
+        now=AT,
+        today=MONDAY,
+    )
+
+    assert isinstance(nothing, HandInNotOffered)
+    assert nothing.head is None
+    assert written_over_nothing == []
+    for outcome, stands, unchanged in refused:
+        assert isinstance(outcome, HandInNotOffered)
+        assert outcome.head == stands
+        assert unchanged
+    assert isinstance(behind, HandInConflict)
+    assert isinstance(kept, HandInSaved)
+    assert isinstance(again, HandInAlreadySaved)
+    assert standing(store).state == TURNED_IN
+
+
+def test_an_undo_offered_only_over_one_state_takes_back_that_state_alone(
+    store: ProjectStateStore,
+) -> None:
+    waiting = saved(said(store, NEEDS_HAND_IN, head=None, note="mine"))
+    before = kept_rows(store)
+    refused = store.undo_hand_in(
+        PRACTICE, waiting.event_id, only_over=TURNED_IN, now=AT, today=MONDAY
+    )
+    unchanged = kept_rows(store) == before
+    turned = saved(said(store, TURNED_IN, head=waiting.event_id))
+    behind = store.undo_hand_in(
+        PRACTICE, waiting.event_id, only_over=TURNED_IN, now=AT, today=MONDAY
+    )
+    undone = store.undo_hand_in(
+        PRACTICE, turned.event_id, only_over=TURNED_IN, now=AT, today=MONDAY
+    )
+
+    assert isinstance(refused, HandInNotOffered)
+    assert refused.head == waiting
+    assert unchanged
+    assert isinstance(behind, HandInConflict)
+    assert isinstance(undone, HandInUndone)
+    assert standing(store).state == NEEDS_HAND_IN
+    assert standing(store).note == "mine"

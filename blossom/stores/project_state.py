@@ -47,6 +47,7 @@ from blossom.hand_in import (
     HandInAlreadySaved,
     HandInConflict,
     HandInEvent,
+    HandInNotOffered,
     HandInProjection,
     HandInSaved,
     HandInState,
@@ -1323,7 +1324,8 @@ class ProjectStateStore:
         expected_head: str | None,
         now: datetime,
         today: date,
-    ) -> HandInSaved | HandInAlreadySaved | HandInConflict:
+        only_over: HandInState | None = None,
+    ) -> HandInSaved | HandInAlreadySaved | HandInConflict | HandInNotOffered:
         """Keep what she says about turning an assignment in, once, as of now.
 
         The order is her work report's. The words are made what is kept
@@ -1340,6 +1342,14 @@ class ProjectStateStore:
         the head now, a blank one meaning no event at all, or nothing is
         written and the head as read here is handed back; otherwise the
         report is appended. Her work reports are not read and not touched.
+
+        ``only_over`` is for a page that offers this save over one state and no
+        other, as her To turn in list offers turned in only over still to turn
+        in. It is checked last, in this same transaction, when the save would
+        otherwise be written: the head is the one the form named, and unless
+        that state stands, a blank head included, no such page made the form
+        and nothing is written. A save already standing and a head that moved
+        on are answered as they always are, before it.
 
         A chain that does not hold is ``BrokenChain``, raised as
         ``CouldNotSave`` like any other refused write: nothing is called
@@ -1367,6 +1377,8 @@ class ProjectStateStore:
                     return HandInAlreadySaved(head)
                 if reading.head_id != expected_head:
                     return HandInConflict(head)
+                if only_over is not None and (head is None or reading.state != only_over):
+                    return HandInNotOffered(head)
                 stays = reading.source is not None and reading.state == state == NEEDS_HAND_IN
                 report = HandInEvent(
                     event_id=new_hand_in_id(),
@@ -1385,8 +1397,14 @@ class ProjectStateStore:
             raise CouldNotSave(assignment_id, error) from error
 
     def undo_hand_in(
-        self, assignment_id: str, event_id: str, *, now: datetime, today: date
-    ) -> HandInUndone | HandInConflict:
+        self,
+        assignment_id: str,
+        event_id: str,
+        *,
+        now: datetime,
+        today: date,
+        only_over: HandInState | None = None,
+    ) -> HandInUndone | HandInConflict | HandInNotOffered:
         """Take back her current hand-in report, restoring what stood before it.
 
         The event the button names must be one of this assignment's, or
@@ -1398,6 +1416,12 @@ class ProjectStateStore:
         already taken back from a change. What is restored is what the chain
         says stood before the head, worked out from the events before it,
         never looked up by a link alone and never taken from the page.
+
+        ``only_over`` is for a page that offers Undo beside one kind of report,
+        as her To turn in list does beside her report that it was turned in.
+        The head may be hers to take back and still not that page's: when the
+        report named is the head and says another state, nothing is written,
+        decided in this same transaction.
         """
         try:
             with self._lock, self._writing():
@@ -1407,6 +1431,8 @@ class ProjectStateStore:
                 head = reading.head
                 if head is None or head.event_id != event_id or head.operation != REPORT:
                     return HandInConflict(head)
+                if only_over is not None and head.state != only_over:
+                    return HandInNotOffered(head)
                 restored_state, restored_action, restored_note, restored_cue = (
                     reading.words_before_head
                 )

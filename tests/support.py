@@ -31,6 +31,7 @@ from langchain_core.tracers.langchain import LangChainTracer
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from blossom.agent.compose import Composition, compose
 from blossom.agent.graph import (
@@ -51,6 +52,7 @@ from blossom.plan_checks import check_plan
 from blossom.plan_reading import anchor_for
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
+from blossom.routes.navigation import assignment_anchor
 from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
@@ -530,6 +532,34 @@ def state_of(client: TestClient) -> ApplicationState:
     return state
 
 
+class PathAsServed:
+    """The path as a real server hands it to the application: the raw path, its escapes
+    undone once.
+
+    The test client undoes them twice: the path it takes from its request is
+    already decoded, and it decodes that again. Nothing shows for any id but
+    one that holds an escaped percent sign, where the second pass turns
+    ``unit%2F3`` into ``unit/3``, which is another assignment. Uvicorn
+    decodes once. A test about such an id puts this in front of the
+    application, so what reaches the routes is what reaches them at home.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            scope = {**scope, "path": unquote(scope["raw_path"].decode("ascii"))}
+        await self.app(scope, receive, send)
+
+
+def as_served(client: TestClient) -> TestClient:
+    """The same client over the same application, with paths decoded as a server decodes
+    them. Called before the client is entered, while the application can still be wrapped."""
+    client.app.add_middleware(PathAsServed)  # type: ignore[attr-defined]
+    return client
+
+
 def with_clock(client: TestClient, clock: Clock) -> None:
     """Give a running application another clock, as a day turning over does."""
     state = state_of(client)
@@ -586,7 +616,7 @@ class ReportsWhileAsked[T: BaseModel]:
 
 def card_for(page: str, assignment_id: str) -> str:
     """One card or list entry, whole: from its id to the next card's, or the page's end."""
-    start = page.index(f'id="assignment-{assignment_id}"')
+    start = page.index(f'id="{assignment_anchor(assignment_id)}"')
     following = page.find('id="assignment-', start + 1)
     return page[start:] if following < 0 else page[start:following]
 

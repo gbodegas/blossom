@@ -95,9 +95,11 @@ def test_a_reading_costs_the_same_statements_whatever_the_record_holds(
 def test_a_record_that_holds_nothing_costs_fewer_reads_and_never_more(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Six is the most. A reader asked about no assignments runs no statement, so with
-    nothing on record only the assignments and the school's reports are read; naming a
-    saved plan's assignment brings her events and the family's checks back."""
+    """Six reads is the most. A reader asked about no assignments runs no statement, so
+    with nothing on record only the assignments and the school's reports are read; naming
+    an assignment, a saved plan's or the one an address is about, brings her events, the
+    family's checks, and her hand-in events back, each asked for once, and still no
+    claims, which are read for assignments on record alone."""
     store = store_of(tmp_path / "record.sqlite3", 0)
 
     with statements_of(store) as nothing_named:
@@ -114,7 +116,8 @@ def test_a_record_that_holds_nothing_costs_fewer_reads_and_never_more(
         "COMMIT",
     ]
     assert not any("FROM date_claims" in statement for statement in nothing_named)
-    assert len(one_named) == 6
+    assert len(one_named) == 7
+    assert sum("FROM hand_in_events" in statement for statement in one_named) == 1
     assert not any("FROM date_claims" in statement for statement in one_named)
 
 

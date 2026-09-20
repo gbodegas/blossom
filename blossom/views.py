@@ -146,6 +146,22 @@ class HandInView(BaseModel):
         )
 
 
+class ToTurnInRowView(BaseModel):
+    """One assignment on her To turn in list: what it is, what she said, and what the
+    school says now, read apart. ``hand_in`` carries the head the row's one press sends
+    back, so the press lands on the chain the row showed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignment_id: str
+    course: str
+    title: str
+    hand_in: HandInView
+    missing: list[SchoolStatementView] = []
+    """Each school channel whose current word is missing, with its day: shown beside her
+    report, never in place of it."""
+
+
 class HandInRowView(BaseModel):
     """One assignment in the family page's section on turning work in."""
 
@@ -451,6 +467,11 @@ class StudentDueThisWeekView(BaseModel):
     full_budget_minutes: int
     budget_minutes: int
     plan: StudentPlanView | None = None
+    to_turn_in: list[ToTurnInRowView] = []
+    """Everything she reports as still to turn in, whatever the week shown, in the order
+    she took each on. Her own list, which no plan is drawn from."""
+    to_turn_in_unreadable: list[ToTurnInRowView] = []
+    """The assignments whose hand-in record cannot be read, named under the list."""
     can_plan: bool = False
     too_much: WorkloadSignalView | None = None
     signals: list[WorkloadSignalView] = []
