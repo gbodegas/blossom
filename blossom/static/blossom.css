@@ -1417,6 +1417,30 @@ main.wide {
   margin: 0.35rem 0;
 }
 
+/* Turning it in: her own words, as long as she likes and with no breaks to wrap at,
+   stay inside the card at every width, line breaks kept. */
+.hand-in,
+.hand-in-line {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.authored-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.hand-in input[type="text"] {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.hand-in-line {
+  margin: 0.35rem 0 0;
+}
+
 /* Work she has reported done folds under the active cards; the cards inside
    keep their shape. */
 details.reported-done {

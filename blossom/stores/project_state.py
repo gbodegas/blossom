@@ -24,6 +24,7 @@ not treat it as completion.
 """
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -57,6 +58,8 @@ from blossom.retrieval import RetrievalResult
 from blossom.stores.paths import refuse_unsafe_path
 
 DUE_THIS_WEEK_KEY = "due_this_week"
+logger = logging.getLogger(__name__)
+
 DUE_THIS_WEEK_SPAN = timedelta(days=6)
 EVERY_STUDENT_REPORT: Final = """
     SELECT report_id, assignment_id, operation, status, note, reported_at, reported_on,
@@ -369,6 +372,16 @@ class UnknownReport(LookupError):
     """A form named an update that is not one of the assignment's: no such event, or an
     event under another assignment. Such a name proves nothing about the page it came
     from, so it is refused before anything is compared or written."""
+
+
+@dataclass(frozen=True)
+class HandInReadings:
+    """What a page reads about turning work in: a reading for each assignment whose
+    record can be read, and the ones whose record cannot, named apart. An assignment
+    in the second is never shown as having said nothing."""
+
+    readable: dict[str, HandInProjection]
+    unreadable: frozenset[str]
 
 
 class UnknownHandIn(LookupError):
@@ -1247,6 +1260,47 @@ class ProjectStateStore:
         for row in rows:
             chains.setdefault(str(row[1]), []).append(hand_in_event_from(row))
         return chains
+
+    def hand_in_readings(self, assignment_ids: Iterable[str]) -> HandInReadings:
+        """What stands about turning each assignment named in, for a page: the readings that
+        can be made, and the assignments whose record cannot be read.
+
+        One read for every assignment named, as ``hand_in_chains`` makes. The
+        rows are then taken one assignment at a time: a row that cannot be
+        decoded, a state that is none of the four, a day that is no day, words
+        past the limit, makes that whole assignment unreadable, and so does a
+        chain that does not hold together. Such an assignment is named apart
+        and never read from what is left of it, the rest read as usual, and
+        one with no rows has a reading that says nothing. Nothing is
+        repaired, and a failed read of the file is raised, never turned into
+        an empty answer. What is logged names the assignment and the kind of
+        fault, never her words. The writers do not come through here: they
+        read one chain strictly, inside their own transaction.
+        """
+        wanted = list(dict.fromkeys(assignment_ids))
+        if not wanted:
+            return HandInReadings({}, frozenset())
+        with self._lock:
+            rows = self._connection.execute(
+                HAND_IN_EVENTS_NAMED, (json.dumps(sorted(wanted)),)
+            ).fetchall()
+        grouped: dict[str, list[tuple[object, ...]]] = {name: [] for name in wanted}
+        for row in rows:
+            grouped.setdefault(str(row[1]), []).append(row)
+        readable: dict[str, HandInProjection] = {}
+        unreadable: set[str] = set()
+        for assignment_id in wanted:
+            try:
+                chain = [hand_in_event_from(row) for row in grouped[assignment_id]]
+                readable[assignment_id] = project(assignment_id, chain)
+            except (ValueError, TypeError) as fault:
+                logger.warning(
+                    "the hand-in record of %s cannot be read (%s)",
+                    assignment_id,
+                    type(fault).__name__,
+                )
+                unreadable.add(assignment_id)
+        return HandInReadings(readable, frozenset(unreadable))
 
     def record_hand_in(
         self,

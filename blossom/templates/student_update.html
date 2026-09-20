@@ -38,6 +38,14 @@
   #}
   {% if here and card.said %}
     <p class="note update-result" role="status" id="update-result-{{ key|urlencode }}" tabindex="-1">{{ card.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
+    {#
+      Done is saved and that is all she has to do. When she has said nothing yet
+      about turning it in, the way to say so is offered once, quietly, beside the
+      result, and nothing is asked or written if she leaves.
+    #}
+    {% if ctx.can_update and assignment.update_status == "done" and assignment.hand_in.state is none and not assignment.hand_in.unavailable %}
+      <p class="note"><a class="assignment-link" href="{% if hand_in_links is defined %}{{ hand_in_links.change }}{% else %}{{ details_href(assignment.assignment_id, fragment="turning-it-in", hand_in="change", return_to="week", week=view.week.start.isoformat()) }}{% endif %}" aria-label="Update hand-in status for {{ assignment.title }}, {{ assignment.course }}">Update hand-in status</a></p>
+    {% endif %}
   {% endif %}
   {% if here and card.problem %}
     <p class="problem" role="alert" id="update-problem-{{ key }}">{{ card.problem }}</p>

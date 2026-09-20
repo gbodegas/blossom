@@ -103,6 +103,18 @@ pages, and where her Done stands beside a school report of Missing, from any
 one of the school's channels, the family page lists it as worth checking
 together, with what each channel says and the day it said it.
 
+**Turning it in.** Done is about her part, and the trouble is often the step
+after it. On an assignment's details she can say what stands with handing it
+over: still to turn in, turned in, nothing to turn in, or not sure, with one
+next step of her own choosing and a note if she wants them. It is her own
+report, kept with the day Blossom took it, and she can change or undo it.
+Saying nothing is not the same as saying not sure, and the page never reads
+one as the other. Her week's cards show it in a line, and the family page
+lists what is still to turn in, however old, and what else she said lately;
+a parent reads it and cannot say it for her. It sends nothing to the school,
+reminds no one, changes nothing about Done or the school's reports, and is
+never sent to the planner.
+
 **Mark checked.** Where her Done stands beside a school report of Missing,
 the family page offers Mark checked, with a note for her card if a parent
 wants one. It records that a parent checked that discrepancy with her, here

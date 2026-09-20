@@ -6,7 +6,6 @@ details list every claim about its date, a reviewer's reason ends once, and
 the way back to today's plan is a place that is there whichever plan is.
 """
 
-import dataclasses
 import html
 import json
 import logging
@@ -15,11 +14,9 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.clock import spoken_time
-from blossom.dependencies import STATE_ATTRIBUTE
 from blossom.plan_reading import anchor_for
 from blossom.plan_snapshot import read_snapshot
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
@@ -42,6 +39,7 @@ from tests.support import (
     report,
     state_of,
     walkthrough,
+    with_clock,
 )
 
 DETAILS = f"/student/assignments/{ESSAY_ID}"
@@ -353,11 +351,6 @@ def test_an_old_note_is_in_the_history_as_she_wrote_it_on_a_card_and_on_the_deta
 
 
 # ------------------------------------------------------------- a way back that is always there
-
-
-def with_clock(client: TestClient, clock: SetClock) -> None:
-    state = state_of(client)
-    setattr(client.app.state, STATE_ATTRIBUTE, dataclasses.replace(state, clock=clock))  # type: ignore[attr-defined]
 
 
 def return_href(page: str, label: str) -> str:

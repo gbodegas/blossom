@@ -12,6 +12,7 @@ This is a plain module rather than `conftest.py`: importing from a conftest
 makes the same file reachable under two module names, which mypy rejects.
 """
 
+import dataclasses
 import pathlib
 import re
 import sqlite3
@@ -527,6 +528,12 @@ def state_of(client: TestClient) -> ApplicationState:
     return state
 
 
+def with_clock(client: TestClient, clock: Clock) -> None:
+    """Give a running application another clock, as a day turning over does."""
+    state = state_of(client)
+    setattr(client.app.state, STATE_ATTRIBUTE, dataclasses.replace(state, clock=clock))  # type: ignore[attr-defined]
+
+
 class SetClock:
     """A clock whose household day is whatever the test last set."""
 
@@ -587,6 +594,13 @@ def hidden(html: str, name: str) -> str:
     match = re.search(rf'name="{name}" value="([^"]*)"', html)
     assert match is not None, name
     return match.group(1)
+
+
+def form_fields(html: str, action: str) -> dict[str, str]:
+    """The hidden fields of the form with this action, as the page wrote them."""
+    start = html.index(f'action="{action}"')
+    form = html[start : html.index("</form>", start)]
+    return dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form))
 
 
 def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:

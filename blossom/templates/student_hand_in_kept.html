@@ -1,0 +1,19 @@
+{#
+  What she chose and wrote for a hand-in update that was not saved, shown where
+  there is no form to hold it: read-only, as typed, line breaks and all, so
+  nothing of hers is lost and it can be copied. ``kept`` is what her form
+  carried; an empty field she sent is still hers and is shown as empty. Used
+  by the section when the record cannot be read, and by the two small pages
+  for an assignment off the record and for a page that cannot be read back.
+#}
+{% if kept.state %}
+  <p>Your choice for turning it in: {% if kept.state == "needs_hand_in" %}Still to turn in{% elif kept.state == "turned_in" %}Turned in{% elif kept.state == "not_required" %}Nothing to turn in{% else %}Not sure{% endif %}. It was not saved.</p>
+{% endif %}
+{% if kept.next_action is not none and kept.next_action != "" %}
+  <label for="kept-next-action">Your next step, as typed</label>
+  <textarea id="kept-next-action" rows="2" readonly>{{ kept.next_action }}</textarea>
+{% endif %}
+{% if kept.note is not none and kept.note != "" %}
+  <label for="kept-hand-in-note">Your note, as typed</label>
+  <textarea id="kept-hand-in-note" rows="4" readonly>{{ kept.note }}</textarea>
+{% endif %}

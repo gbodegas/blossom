@@ -18,4 +18,7 @@
     <label for="kept-note">Your note, as typed</label>
     <textarea id="kept-note" rows="4" readonly>{{ card.note }}</textarea>
   {% endif %}
+  {% if hand_in_card %}
+    {% with kept = hand_in_card %}{% include "student_hand_in_kept.html" %}{% endwith %}
+  {% endif %}
 {% endblock %}

@@ -101,8 +101,31 @@ with what stands now. A check another parent made with other words is refused
 the same way, both notes shown. Check again reopens it, held to the basis its
 page showed. A check changes neither account, no plan, and no digest.
 
-What she says about turning work in is a fourth account, and the record can
-hold it though no page reads or writes it yet. `blossom/hand_in.py` has the
+What she says about turning work in is a fourth account. Its forms are on an
+assignment's details and nowhere else, in a section after her update,
+`student_hand_in.html`, through two routes of their own in
+`blossom/routes/hand_in.py` that follow her work update's: the form read
+whole, who may save decided from the sign-in, one operation under the
+decision lock, a redirect to a result the address lands on, and a refusal
+that keeps what she chose and wrote, a moved head shown with what stands
+above a form headed as not saved. An Undo already taken back is said to be
+that, from the head the refusing save read, and her work update's Undo says
+the same. Her week's cards show one line and a link, the family page lists
+what is still to turn in, however old, then what else she said in the last
+fourteen days, with no form, and a row worth checking together carries it as
+context that decides nothing. A page's one reading holds every chain, read
+once through `hand_in_readings`, which takes the rows one assignment at a
+time: a row that cannot be decoded, or a chain that does not hold, makes
+that assignment's record unreadable, named apart, said on the page as one
+that cannot be read and never shown as nothing recorded, while every other
+assignment reads as usual and no page fails for it. The writers do not come
+that way: they read one chain strictly and write nothing on a bad one. A save
+refused over such a record has no form to return to, so what she chose and
+wrote is shown as sent, read-only. A refusal about no one field is said
+first on the details and takes the focus there, with a link down to the
+section; a save and an undo read the clock once and draw the day from that
+moment.
+`blossom/hand_in.py` has the
 event and the reading of a chain, and the store keeps the chain in
 `hand_in_events` the way it keeps her work reports: the writer reserved
 before the head is read, the same words already saved whatever head the page
@@ -179,10 +202,10 @@ and, inside it, one read transaction, `ProjectStateStore.reading()`: the lock
 keeps this process's other callers out, and the transaction keeps the file as
 it was at the first read, since the drafts, her signals, and her requests
 write the same file through connections of their own. The reading is at most
-five read statements however much the record holds, between the statement
-that begins the transaction and the one that ends it: the claims are asked
-for once and not once per assignment, and a reader asked about no
-assignments runs none, so an empty record costs two. It ends before
+six read statements however much the record holds, between the statement
+that begins the transaction and the one that ends it: the claims and her
+hand-in events are each asked for once and not once per assignment, and a
+reader asked about no assignments runs none, so an empty record costs two. It ends before
 anything is rendered; while it lasts, another connection's commit waits, a
 few reads long. The file stays in rollback-journal mode with the default
 wait. The rule is only that the

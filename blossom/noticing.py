@@ -32,6 +32,7 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict
 
 from blossom.assignment_status import AssignmentStatus, statuses_for
+from blossom.hand_in import HandInProjection
 from blossom.reconciliation import (
     Reconciler,
     ReconciliationResult,
@@ -295,6 +296,14 @@ class Everything:
     statuses: dict[str, AssignmentStatus]
     """What stands about each of them, by id, and about any other id the reader named as
     well: a saved plan can speak about work that has left the record."""
+    hand_ins: dict[str, HandInProjection] = field(default_factory=dict)
+    """What she has said about turning each of them in, by id, for every assignment
+    on record whose chain holds together; one she has said nothing about has a
+    reading that says nothing. Her own account of delivery, which no plan, digest,
+    or week is ever drawn from."""
+    hand_ins_unavailable: frozenset[str] = frozenset()
+    """The assignments whose hand-in chain does not hold. A page says that record
+    cannot be read, and never that nothing is recorded."""
 
     @property
     def ids(self) -> frozenset[str]:
@@ -316,8 +325,9 @@ def read_everything(
     the reader speaks about whether or not they are on record, a saved
     plan's, so what stands about them comes from the same batch.
 
-    The cost is at most five reads however much the record holds, the claims
-    among them asked for once and not once per assignment. It is fewer for a
+    The cost is at most six reads however much the record holds, the claims
+    and her hand-in events among them each asked for once and not once per
+    assignment. It is fewer for a
     record that holds nothing, since a reader asked about no assignments runs
     no statement. What comes back is plain lists and mappings with nothing
     left open, so the transaction is over before anything is rendered or a
@@ -329,7 +339,14 @@ def read_everything(
         claimed = source.deadline_records_by_assignment(on_record)
         records = {name: list(claimed.get(name, [])) for name in on_record}
         statuses = statuses_for(project_state, [*on_record, *also])
-    return Everything(assignments=everything, records=records, statuses=statuses)
+        turned_in = project_state.hand_in_readings(on_record)
+    return Everything(
+        assignments=everything,
+        records=records,
+        statuses=statuses,
+        hand_ins=turned_in.readable,
+        hand_ins_unavailable=turned_in.unreadable,
+    )
 
 
 def week_from(everything: Everything, start: date) -> Week:
