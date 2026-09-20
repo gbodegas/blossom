@@ -25,6 +25,7 @@ from blossom.noticing import expect_due_date, notice_due_date
 from blossom.plan_checks import PlanCheck, check_plan
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import Reconciler, SourceChannel, SourceConfidence, SourceRecord
+from blossom.routes.navigation import segment
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from blossom.views import StudentAssignmentView
 from tests.support import FIXTURE_TIMEZONE, SAME_ORIGIN, fixture_clock, fixture_settings
@@ -95,6 +96,22 @@ def test_the_due_date_must_be_stated_even_when_it_is_absent() -> None:
 
     with pytest.raises(ValidationError, match="due_date"):
         Assignment.model_validate(with_key_missing)
+
+
+@pytest.mark.parametrize("name", [".", ".."])
+def test_an_id_that_is_a_step_in_a_path_is_refused(name: str) -> None:
+    """A browser resolves a segment of one dot or two before it sends an address, escaped
+    or not, so no address could name such an assignment."""
+    with pytest.raises(ValidationError, match="step in a path"):
+        Assignment.model_validate({**SYLLABUS.model_dump(), "assignment_id": name})
+
+
+@pytest.mark.parametrize("name", ["...", ".a", "a.", "./", "../..", "unit/../3", "%2E"])
+def test_an_id_that_only_holds_dots_among_other_things_is_kept(name: str) -> None:
+    kept = Assignment.model_validate({**SYLLABUS.model_dump(), "assignment_id": name})
+
+    assert kept.assignment_id == name
+    assert segment(name) not in {".", ".."}
 
 
 def test_the_view_carries_the_kind_and_defaults_to_homework() -> None:

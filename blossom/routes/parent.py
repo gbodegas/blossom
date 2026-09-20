@@ -68,7 +68,7 @@ from blossom.intake import TEXT_MAX_LENGTH
 from blossom.noticing import Everything, read_everything
 from blossom.plan_reading import DoneMark, PlanReading, read_plan
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
-from blossom.routes.navigation import details_href, segment
+from blossom.routes.navigation import FAMILY_PAGE, address, details_href, segment
 from blossom.routes.runs import (
     Graphs,
     PlanGraphBuilder,
@@ -1097,8 +1097,12 @@ def another_rows(basis: str, assignment_id: str) -> bool:
 
 
 def back_to_the_row(said: str, assignment_id: str) -> str:
-    """Where a check or a reopening sends a parent: the page, the row, and what happened."""
-    return f"/parent?{said}={assignment_id}#update-{assignment_id}"
+    """Where a check or a reopening sends a parent: the page, the row, and what happened.
+    The id is escaped in the query, and in the fragment too, which a browser undoes to
+    find the row, so an id that holds a hash names its row in both."""
+    return address(
+        FAMILY_PAGE, fragment=f"update-{segment(assignment_id)}", **{said: assignment_id}
+    )
 
 
 def check_actions(assignment_id: str) -> tuple[str, str]:

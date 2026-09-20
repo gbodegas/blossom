@@ -18,7 +18,9 @@ import re
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from html import unescape
 from typing import Annotated, Any, Protocol
+from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends
@@ -594,6 +596,18 @@ def hidden(html: str, name: str) -> str:
     match = re.search(rf'name="{name}" value="([^"]*)"', html)
     assert match is not None, name
     return match.group(1)
+
+
+def lands_on(page: str, address: str) -> str:
+    """The opening tag of the element a browser lands on for an address: the element whose
+    id is the fragment as written, or failing that the fragment with its escapes undone,
+    which is the order a browser tries them in. Empty when the fragment names nothing."""
+    fragment = urlsplit(address).fragment
+    tags = {
+        unescape(found.group(1)): found.group(0)
+        for found in re.finditer(r'<\w+\b[^>]*?\sid="([^"]*)"[^>]*>', page)
+    }
+    return tags.get(fragment) or tags.get(unquote(fragment)) or ""
 
 
 def form_fields(html: str, action: str) -> dict[str, str]:
