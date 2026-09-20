@@ -26,6 +26,7 @@ from blossom.routes.hand_in import (
     LIST_NOT_SAVED,
 )
 from blossom.routes.navigation import TO_TURN_IN_PAGE
+from blossom.routes.runs import NOTHING_TO_SCHEDULE
 from blossom.routes.student import (
     BAD_RETURN,
     HAND_IN_ALREADY_SAVED,
@@ -163,6 +164,27 @@ def test_the_list_holds_what_is_still_to_turn_in_whatever_the_work_or_the_week()
     assert listed(section(week)) == ["done-work", "far-off"]
     assert "To turn in (2)" in week
     assert week.index('id="to-turn-in"') < week.index("Reported done (1)")
+
+
+def test_with_every_assignment_done_her_week_still_leads_to_what_is_left_to_turn_in() -> None:
+    """No plan can be asked for and none is offered; the list is another matter, and the
+    Today panel's link and the section are both there, outside the fold of finished work."""
+    with browser(key=True) as client:
+        store = state_of(client).project_state
+        for item in store.all_assignments():
+            report(client, item.assignment_id, "done")
+        said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19))
+
+        week = client.get(HER_PAGE).text
+
+    today = week[week.index('id="today"') : week.index('id="to-turn-in"')]
+    assert NOTHING_TO_SCHEDULE in today
+    assert 'action="/student/actions/plan"' not in week
+    assert f'<a href="{TO_TURN_IN_PAGE}">To turn in (1)</a>' in today
+    assert listed(section(week)) == [ESSAY_ID]
+    assert PRESS in section(week)
+    assert week.index('id="to-turn-in"') < week.index("Reported done (")
+    assert "<details" not in section(week)
 
 
 def test_the_order_is_the_order_she_took_each_on_and_an_edit_does_not_move_a_row() -> None:
