@@ -27,8 +27,12 @@ FAMILY_PAGE: Final = "/parent"
 UNRESERVED: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 """The characters a path segment may carry as they are; every other one is escaped."""
 
-Target = Literal["week", "today", "family"]
-TARGETS: Final[tuple[str, ...]] = ("week", "today", "family")
+Target = Literal["week", "today", "family", "to_turn_in"]
+TARGETS: Final[tuple[str, ...]] = ("week", "today", "family", "to_turn_in")
+TO_TURN_IN_PAGE: Final = "/student/to-turn-in"
+"""Her list of everything she reports as still to turn in, on a page of its own."""
+TO_TURN_IN: Final = "to-turn-in"
+"""The id the list has on that page and on her week, there whether or not it has rows."""
 RETURN_FIELDS: Final = frozenset({"return_to", "week", "plan_id"})
 """The three fields that say where a reader came from, on a link and on a form alike."""
 PLAN_ID_MAX_LENGTH: Final = 200

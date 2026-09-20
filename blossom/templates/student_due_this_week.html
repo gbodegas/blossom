@@ -156,6 +156,14 @@
       {% endif %}
       <a class="to-help" href="#ask-for-help">Ask for help</a>
     </div>
+    {#
+      The places that hold what is left to do beside the plan, under the
+      controls and never in the masthead. Each link goes to a page of its
+      own, which is there when its list is empty, and carries a count only
+      when there is something to count. With every assignment Done this is
+      still how she finds what is left to turn in.
+    #}
+    <p class="support-links"><a href="{{ to_turn_in_page }}">To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</a></p>
     {% if view.nothing_to_plan %}
     {% elif view.can_plan %}
       <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
@@ -242,6 +250,26 @@
     {% endif %}
 
   </section>
+
+  {#
+    To turn in: everything she reports as still to turn in, whatever the week
+    and whether or not its work is Done, outside the fold of finished work, so
+    finding it takes no remembered step. The first few rows, and a link to all
+    of them. With nothing to show the section is left out and the link under
+    the controls is how the list is reached; when a press here just emptied
+    it, the section stays, since it holds what the press did and its Undo.
+  #}
+  {% if view.to_turn_in or view.to_turn_in_unreadable or list_card %}
+    <section class="panel to-turn-in" id="to-turn-in" tabindex="-1">
+      <h2>To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</h2>
+      {% with rows = view.to_turn_in, unreadable = view.to_turn_in_unreadable, shown = compact_rows, origin = "week" %}{% include "student_to_turn_in_rows.html" %}{% endwith %}
+      {% if view.to_turn_in|length > compact_rows %}
+        <p class="note"><a href="{{ to_turn_in_page }}">View all {{ view.to_turn_in|length }} to turn in</a></p>
+      {% elif not view.to_turn_in %}
+        <p class="empty quiet">Nothing is on your To turn in list.</p>
+      {% endif %}
+    </section>
+  {% endif %}
   {% else %}
     <p class="return"><a href="/student/due-this-week">Return to this week and today's plan</a></p>
   {% endif %}

@@ -1417,6 +1417,43 @@ main.wide {
   margin: 0.35rem 0;
 }
 
+/* Her To turn in list: rows that wrap whatever she wrote, and the links under the
+   main controls to the places that hold what is left beside the plan. */
+.support-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  margin: 0.75rem 0 0;
+}
+
+.support-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+}
+
+.to-turn-in-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.to-turn-in-row {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--edge);
+}
+
+.to-turn-in-row:first-child {
+  border-top: 0;
+}
+
+.to-turn-in-row p {
+  margin: 0.25rem 0;
+}
+
 /* Turning it in: her own words, as long as she likes and with no breaks to wrap at,
    stay inside the card at every width, line breaks kept. */
 .hand-in,

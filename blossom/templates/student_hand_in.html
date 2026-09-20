@@ -81,6 +81,20 @@
       {% endif %}
       {% if ctx.can_update and not form_open and not offered_above %}
         <div class="actions">
+          {#
+            Help remembering is hers to ask for, before she has said anything and
+            after saying she is not sure. It opens the form with Still to turn in
+            chosen, since that is what she asked for, and saves nothing: only the
+            form's own button does. It is never asked of her.
+          #}
+          {% if hi.state is none or hi.state == "unknown" %}
+            <form method="get" action="{{ hand_in_links.open }}" class="action">
+              {% for name, value in hand_in_remember_fields %}
+              <input type="hidden" name="{{ name }}" value="{{ value }}">
+              {% endfor %}
+              <button type="submit" class="secondary" aria-label="Help me remember to turn this in: {{ assignment.title }}, {{ assignment.course }}">Help me remember to turn this in</button>
+            </form>
+          {% endif %}
           <form method="get" action="{{ hand_in_links.open }}" class="action">
             {% for name, value in hand_in_change_fields %}
             <input type="hidden" name="{{ name }}" value="{{ value }}">

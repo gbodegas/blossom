@@ -109,7 +109,14 @@ over: still to turn in, turned in, nothing to turn in, or not sure, with one
 next step of her own choosing and a note if she wants them. It is her own
 report, kept with the day Blossom took it, and she can change or undo it.
 Saying nothing is not the same as saying not sure, and the page never reads
-one as the other. Her week's cards show it in a line, and the family page
+one as the other. Everything still to turn in is on a list of its own, **To
+turn in**, found from a link under her main controls and shown on her week
+outside the fold of finished work, however old and whatever week it is due
+in, in the order she took each on. One press says a thing was turned in, and
+the result offers Undo where she pressed. After a Done save, and after saying
+she is not sure, she can ask for help remembering, which opens the form with
+Still to turn in chosen and saves nothing until she does. Her week's rows
+show it in a line, and the family page
 lists what is still to turn in, however old, and what else she said lately;
 a parent reads it and cannot say it for her. It sends nothing to the school,
 reminds no one, changes nothing about Done or the school's reports, and is

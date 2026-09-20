@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% set page = "student" %}
+{% block title %}Blossom - To turn in{% endblock %}
+{#
+  Her To turn in list on a page of its own: every assignment she reports as
+  still to turn in, however old and whatever week it is due in, the longest
+  standing first. The page is there when the list is empty and says so
+  plainly; it never says everything was handed over, which Blossom cannot
+  know. It is reached from her week and leads back to it. Reading it writes
+  nothing and reminds no one.
+#}
+{% block content %}
+  <p class="return"><a href="/student/due-this-week">Back to my week</a></p>
+  <h1>To turn in{% if rows %} ({{ rows|length }}){% endif %}</h1>
+  <section class="panel to-turn-in" id="to-turn-in" tabindex="-1" aria-label="To turn in">
+    <p class="note">What you said is still to turn in. Done means you have finished your part; this is the step after it. It is your own list: nothing here is sent to the school.</p>
+    {% with shown = rows|length, origin = "list" %}{% include "student_to_turn_in_rows.html" %}{% endwith %}
+    {% if not rows %}
+      <p class="empty quiet">Nothing is on your To turn in list.</p>
+    {% endif %}
+  </section>
+{% endblock %}

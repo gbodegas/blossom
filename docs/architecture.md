@@ -110,7 +110,22 @@ decision lock, a redirect to a result the address lands on, and a refusal
 that keeps what she chose and wrote, a moved head shown with what stands
 above a form headed as not saved. An Undo already taken back is said to be
 that, from the head the refusing save read, and her work update's Undo says
-the same. Her week's cards show one line and a link, the family page lists
+the same. `blossom/to_turn_in.py` draws her To turn in list from the page's
+one reading, with no read of its own: every assignment she reports as still
+to turn in, whatever her work update says and whatever week it is due in,
+ordered by the event that began that state as the file ordered it, so an
+edit does not move a row, coming back to the state puts it last, and an undo
+puts it back where it was; a record that cannot be read is named under the
+list and never dropped from it. The list is a page of its own,
+`/student/to-turn-in`, there when empty, reached from a link under the main
+controls that carries a count only when there is one, and its first rows
+are on her week after Today. A row's one press is the same save as the
+details' form, turned in with the head the row showed and no words, and a
+checked field says where its result is shown: on the list or on her week,
+at a place that is there whether or not the row still is, with Undo beside
+it. The way back from the details gains a fourth place, the list. Help
+remembering is a GET that opens the form with Still to turn in chosen and
+writes nothing. Her week's rows show one line and a link, the family page lists
 what is still to turn in, however old, then what else she said in the last
 fourteen days, with no form, and a row worth checking together carries it as
 context that decides nothing. A page's one reading holds every chain, read

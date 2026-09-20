@@ -47,7 +47,7 @@ signed in sees her update and cannot make one in her name.
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 from typing import Annotated, Final, cast
@@ -71,7 +71,7 @@ from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
-from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEXT_ACTION_MAX_LENGTH
+from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEEDS_HAND_IN, NEXT_ACTION_MAX_LENGTH
 from blossom.noticing import (
     Everything,
     Noticing,
@@ -98,6 +98,8 @@ from blossom.reconciliation import (
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.navigation import (
     FAMILY_PAGE,
+    TO_TURN_IN,
+    TO_TURN_IN_PAGE,
     WEEK_PAGE,
     ReturnTo,
     address,
@@ -140,6 +142,7 @@ from blossom.stores.project_state import (
 from blossom.stores.project_state import NOTE_MAX_LENGTH as UPDATE_NOTE_MAX_LENGTH
 from blossom.stores.workload_signals import DETAIL_MAX_LENGTH, WorkloadSignal
 from blossom.templating import page_templates
+from blossom.to_turn_in import COMPACT_ROWS, ListResult, result_for, to_turn_in
 from blossom.views import (
     HandInView,
     HelpRequestView,
@@ -833,6 +836,7 @@ def build_student_due_this_week_view(
     ]
     tonight = state.workload_signals.for_evening(today)
     household = state.settings
+    still_to_turn_in = to_turn_in(found)
     return StudentDueThisWeekView(
         generated_at=datetime.now(UTC),
         today=today,
@@ -843,6 +847,8 @@ def build_student_due_this_week_view(
         full_budget_minutes=household.evening_minutes,
         budget_minutes=household.too_much_minutes if tonight else household.evening_minutes,
         plan=todays_plan(state) if isinstance(plan, Unread) else plan,
+        to_turn_in=still_to_turn_in.rows,
+        to_turn_in_unreadable=still_to_turn_in.unreadable,
         can_plan=model_configured(state.settings),
         too_much=signal_view(state, tonight[-1]) if tonight else None,
         signals=[signal_view(state, signal) for signal in state.workload_signals.held()],
@@ -912,6 +918,16 @@ class HandInCard:
     unsaved: bool = False
 
 
+@dataclass(frozen=True)
+class ListCard:
+    """What a visit adds to her To turn in list: what a press or an undo just did, or what
+    one could not do. ``asked`` is what the address named, before the record was read."""
+
+    asked: tuple[str | None, str | None] = (None, None)
+    result: ListResult | None = None
+    problem: str | None = None
+
+
 def student_page(
     request: Request,
     state: ApplicationState,
@@ -921,6 +937,7 @@ def student_page(
     refreshed: bool = False,
     card: CardState | None = None,
     plan_asked: bool = False,
+    turning_in: ListCard | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
@@ -986,6 +1003,12 @@ def student_page(
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "plan_reading": None if todays is None else todays.reading,
             "plan_asked": plan_asked,
+            "list_card": None
+            if turning_in is None
+            else replace(turning_in, result=result_for(everything, *turning_in.asked)),
+            "compact_rows": COMPACT_ROWS,
+            "to_turn_in_page": TO_TURN_IN_PAGE,
+            "viewer": viewer,
             "no_plan_now": NO_PLAN_NOW,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
@@ -1037,6 +1060,10 @@ def due_this_week(
     show: Annotated[
         str | None, Query(description="the assignment to bring into view; changes nothing")
     ] = None,
+    hand_in_said: Annotated[
+        str | None, Query(description="what a press on the To turn in list just did; a note")
+    ] = None,
+    about: Annotated[str | None, Query(description="the assignment it was about")] = None,
 ) -> HTMLResponse:
     """Render her week and today's plan.
 
@@ -1057,7 +1084,14 @@ def due_this_week(
     asked = show_plan == "1"
     card = card_shown(saved, same, undone, change, show)
     if week is None:
-        return student_page(request, state, refreshed=was_refreshed, card=card, plan_asked=asked)
+        return student_page(
+            request,
+            state,
+            refreshed=was_refreshed,
+            card=card,
+            plan_asked=asked,
+            turning_in=ListCard(asked=(hand_in_said, about)) if hand_in_said else None,
+        )
     try:
         chosen = date.fromisoformat(week.strip())
     except ValueError:
@@ -1213,6 +1247,8 @@ def way_back(
         return ReturnLink(
             week_href(back.week, assignment_id, show=assignment_id), "Back to the week"
         )
+    if back.target == "to_turn_in":
+        return ReturnLink(address(TO_TURN_IN_PAGE, fragment=TO_TURN_IN), "Back to To turn in")
     if back.target == "today":
         latest = state.drafts.latest_for(today)
         if latest is None:
@@ -1323,10 +1359,17 @@ def detail_page(
                 ),
                 "keep": details_href(assignment_id, fragment=TURNING_IT_IN, **back.fields()),
                 "open": details_href(assignment_id, fragment=TURNING_IT_IN),
+                "remember": details_href(
+                    assignment_id, fragment=TURNING_IT_IN, hand_in="remember", **back.fields()
+                ),
             },
             "hand_in_change_fields": [
                 *[(name, value) for name, value in back.fields().items() if value],
                 ("hand_in", "change"),
+            ],
+            "hand_in_remember_fields": [
+                *[(name, value) for name, value in back.fields().items() if value],
+                ("hand_in", "remember"),
             ],
             "next_action_max_length": NEXT_ACTION_MAX_LENGTH,
             "hand_in_note_max_length": HAND_IN_NOTE_MAX_LENGTH,
@@ -1379,6 +1422,8 @@ def assignment_details(
         turning_in = HandInCard(said=HAND_IN_CONFIRMATIONS[hand_in])
     elif hand_in == "change":
         turning_in = HandInCard(change=True)
+    elif hand_in == "remember":
+        turning_in = HandInCard(change=True, state=NEEDS_HAND_IN)
     return detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
 
 
@@ -1480,6 +1525,11 @@ def plain_ways_back(origin: Origin, assignment_id: str) -> list[ReturnLink]:
         return [
             details,
             ReturnLink(week_href(back.week, assignment_id, show=assignment_id), "Back to the week"),
+        ]
+    if back.target == "to_turn_in":
+        return [
+            details,
+            ReturnLink(address(TO_TURN_IN_PAGE, fragment=TO_TURN_IN), "Back to To turn in"),
         ]
     if back.target == "today":
         return [details, ReturnLink(address(WEEK_PAGE, fragment="today"), "Back to Today")]
