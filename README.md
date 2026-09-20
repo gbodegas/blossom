@@ -122,6 +122,21 @@ a parent reads it and cannot say it for her. It sends nothing to the school,
 reminds no one, changes nothing about Done or the school's reports, and is
 never sent to the planner.
 
+**Homework notes.** Homework she hears about outside the portal, from a
+classmate, in class, on the way out, can be written down at once. **Add
+homework** on her week opens a page that asks for her words and nothing
+else: no class, no date, no source, and nobody's approval, though a class
+and a date can be added. A date that cannot be read does not lose the note,
+and is never dropped without her choosing to save without it. She can change
+a note, put it away, and bring it back, and every change is kept as history;
+her first words are never altered. Her notes are on her week, outside the
+week's cards and the fold of finished work, the oldest first, and on a page
+of their own. Her parents read them on the family page, the ones she put away
+included, and cannot change one. She can ask for help about a note, and the
+request opens the note for her parents. A note is not an assignment: it is
+in no plan, and no note is ever sent to the planner. Turning a note into
+homework is a separate step that is not built yet.
+
 **Mark checked.** Where her Done stands beside a school report of Missing,
 the family page offers Mark checked, with a note for her card if a parent
 wants one. It records that a parent checked that discrepancy with her, here

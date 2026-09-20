@@ -1,0 +1,381 @@
+"""Her homework notes on the pages that already exist: her week, the family page, and a
+request for help that is about a note. What a note never does is here too: it reaches no
+model, makes no plan stale, and costs a page no read per note.
+"""
+
+import pathlib
+import sqlite3
+
+import pytest
+from fastapi.testclient import TestClient
+from markupsafe import escape
+
+from blossom.app import create_app
+from blossom.captures import new_capture_id
+from blossom.routes.captures import NOTE_ASKED, NOTE_NOT_SAVED
+from blossom.routes.navigation import (
+    NEW_NOTE_PAGE,
+    NOTE_ACTIONS,
+    NOTES_PAGE,
+    note_action,
+    note_help_href,
+    note_href,
+)
+from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
+from blossom.routes.runs import plan_graphs
+from blossom.routes.student import ASSIGNMENTS_CHANGED
+from blossom.stores.project_state import ProjectStateStore
+from tests.support import (
+    FIXTURE_WEEK,
+    HER_PAGE,
+    HERS,
+    PAGE_HEADERS,
+    PLAN_DATE,
+    SAME_ORIGIN,
+    THEIRS,
+    Answer,
+    Scripted,
+    accepting,
+    browser,
+    dissent,
+    fixture_week_plan,
+    form_fields,
+    report,
+    scripted_graphs,
+    signed_in_household,
+    state_of,
+)
+
+FAMILY = "/parent"
+WORDS = "Geometry questions 4-8, heard from a classmate"
+
+
+def save_note(client: TestClient, text: str = WORDS, **typed: str) -> str:
+    fields = form_fields(client.get(NEW_NOTE_PAGE).text, NOTE_ACTIONS)
+    answer = client.post(
+        NOTE_ACTIONS,
+        data={**fields, "text": text, "course": typed.get("course", ""), "due_date": ""},
+        headers=PAGE_HEADERS,
+    )
+    assert answer.status_code == 303, answer.text
+    return fields["capture_id"]
+
+
+def change_note(client: TestClient, name: str, step: str, **typed: str) -> Answer:
+    page = client.get(note_href(name, edit="1") if step == "edit" else note_href(name)).text
+    action = note_action(name, step)
+    return client.post(action, data={**form_fields(page, action), **typed}, headers=PAGE_HEADERS)
+
+
+def ask_about(client: TestClient, name: str, question: str = "") -> Answer:
+    return client.post(
+        note_action(name, "ask-for-help"), data={"note": question}, headers=PAGE_HEADERS
+    )
+
+
+def notes_section(page: str) -> str:
+    start = page.index('id="homework-notes"')
+    return page[start : page.index("</section>", start)]
+
+
+def statements(store: ProjectStateStore, client: TestClient, where: str) -> list[str]:
+    seen: list[str] = []
+    store._connection.set_trace_callback(seen.append)
+    try:
+        assert client.get(where).status_code == 200
+    finally:
+        store._connection.set_trace_callback(None)
+    return seen
+
+
+# ------------------------------------------------------------------ her week
+
+
+def test_her_week_offers_the_way_in_and_shows_the_oldest_notes_outside_the_week() -> None:
+    with browser() as client:
+        empty = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        names = [save_note(client, f"note number {index}") for index in range(4)]
+        change_note(
+            client, names[0], "edit", text="note number 0, edited last", course="", due_date=""
+        )
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        change_note(client, names[1], "archive")
+        fewer = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+
+    assert f'href="{NEW_NOTE_PAGE}">Add homework</a>' in empty
+    assert f'<a href="{NOTES_PAGE}">Homework notes</a>' in empty
+    assert "Homework notes (0)" not in empty
+    assert 'id="homework-notes"' not in empty
+    assert f'<a href="{NOTES_PAGE}">Homework notes (4)</a>' in week
+    shown = notes_section(week)
+    assert "Homework notes (4)" in shown
+    assert [f"note number {index}" in shown for index in range(4)] == [True, True, True, False]
+    assert shown.index("note number 0, edited last") < shown.index("note number 1")
+    assert "View all 4 homework notes" in shown
+    assert "It is not in a plan yet." in shown
+    assert not [
+        words for words in ("Add it to homework", "Ready to add", "Link to") if words in shown
+    ]
+    assert week.index('id="today"') < week.index('id="homework-notes"')
+    assert week.index('id="homework-notes"') < week.index('class="list-heading"')
+    assert "Homework notes (3)" in notes_section(fewer)
+    assert "View all" not in notes_section(fewer)
+
+
+def test_with_every_assignment_done_and_an_empty_week_the_notes_are_still_there(
+    tmp_path: pathlib.Path,
+) -> None:
+    with browser(key=True) as client:
+        store = state_of(client).project_state
+        for item in store.all_assignments():
+            report(client, item.assignment_id, "done")
+        save_note(client)
+        done = client.get(HER_PAGE).text
+    empty_record = str(tmp_path / "empty.sqlite3")
+    with browser(BLOSSOM_FIXTURE_PATH="", BLOSSOM_DATABASE_PATH=empty_record) as client:
+        nothing_due = client.get(HER_PAGE).text
+        save_note(client)
+        with_a_note = client.get(HER_PAGE).text
+
+    assert 'action="/student/actions/plan"' not in done
+    assert "Homework notes (1)" in notes_section(done)
+    assert done.index('id="homework-notes"') < done.index("Reported done (")
+    assert "No assignments are recorded as due" in nothing_due
+    assert f'href="{NEW_NOTE_PAGE}">Add homework</a>' in nothing_due
+    assert "Homework notes (1)" in notes_section(with_a_note)
+
+
+@pytest.mark.parametrize("where", [HER_PAGE, NOTES_PAGE, FAMILY])
+def test_a_page_costs_the_same_statements_however_many_notes_and_requests_there_are(
+    where: str, tmp_path: pathlib.Path
+) -> None:
+    costs = []
+    for count in (1, 20, 200):
+        record = str(tmp_path / f"record-{count}.sqlite3")
+        with browser(BLOSSOM_DATABASE_PATH=record) as client:
+            state = state_of(client)
+            names = [new_capture_id() for _ in range(count)]
+            for index, name in enumerate(names):
+                created = client.post(
+                    NOTE_ACTIONS,
+                    data={
+                        "capture_id": name,
+                        "text": f"note {index}",
+                        "course": "",
+                        "due_date": "",
+                    },
+                    headers=PAGE_HEADERS,
+                )
+                assert created.status_code == 303
+                state.help_requests.ask(PLAN_DATE, None, capture_id=name)
+            costs.append(len(statements(state.project_state, client, where)))
+
+    assert costs[0] == costs[1] == costs[2]
+    assert costs[0] <= 10
+
+
+# -------------------------------------------------------------- the family page
+
+
+def test_the_family_page_shows_what_she_added_and_offers_no_way_to_change_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client, "first <b>words</b>", course="Geometry")
+        change_note(client, name, "edit", text="current words", course="Geometry", due_date="")
+        put_away = save_note(client, "a note she put away")
+        change_note(client, put_away, "archive")
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+
+        family = client.get(FAMILY).text
+
+    start = family.index("<h2>Homework she added</h2>")
+    section = family[start : family.index("</section>", start)]
+    assert "current words" in section
+    assert "first &lt;b&gt;words&lt;/b&gt;" in section
+    assert "<b>words</b>" not in family
+    assert "Geometry" in section
+    assert f'href="{note_href(name)}"' in section
+    assert "a note she put away" not in section
+    assert "Archived homework notes" in section
+    assert "<form" not in section
+    assert "It is not an assignment" in section
+
+
+# ------------------------------------------------------------ help about a note
+
+
+def test_opening_the_help_page_sends_nothing_and_a_request_names_the_note(
+    tmp_path: pathlib.Path,
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        help_store = state_of(client).help_requests
+        name = save_note(client, "Geometry questions 4-8")
+        opened = client.get(note_help_href(name))
+        nothing_sent = help_store.open_requests()
+
+        asked = ask_about(client, name, "which questions?")
+        landed = client.get(asked.headers["location"]).text
+        requests = help_store.open_requests()
+        change_note(client, name, "edit", text="Geometry questions 4-9", course="", due_date="")
+        hers = client.get(HER_PAGE).text
+        change_note(client, name, "archive")
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs = client.get(FAMILY).text
+        store = state_of(client).project_state
+        store._connection.execute("UPDATE homework_captures SET due_date = 'next week'")
+        store._connection.commit()
+        unreadable = client.get(FAMILY).text
+
+    assert opened.status_code == 200
+    assert "Geometry questions 4-8" in opened.text
+    assert nothing_sent == []
+    assert asked.status_code == 303
+    assert escape(NOTE_ASKED) in landed
+    assert [(item.capture_id, item.note) for item in requests] == [(name, "which questions?")]
+    assert "Geometry questions" not in (requests[0].note or "")
+    assert "About your homework note, as it stands now" in hers
+    assert "Geometry questions 4-9" in hers
+    assert f'href="{note_href(name)}"' in hers
+    assert "About her homework note, as it stands now" in theirs
+    assert "Geometry questions 4-9" in theirs
+    assert ">Open homework note</a>" in theirs
+    assert "which questions?" in unreadable
+    assert "Her homework note cannot be read right now." in unreadable
+
+
+def test_a_request_about_a_name_that_is_no_note_is_refused_and_writes_nothing() -> None:
+    with browser() as client:
+        help_store = state_of(client).help_requests
+        save_note(client)
+
+        answers = [
+            ask_about(client, new_capture_id(), "about nothing"),
+            client.post(
+                f"{NOTE_ACTIONS}/note-1/ask-for-help", data={"note": ""}, headers=PAGE_HEADERS
+            ),
+        ]
+        extra = client.post(
+            note_action(save_note(client, "another"), "ask-for-help"),
+            data={"note": "", "capture_id": new_capture_id()},
+            headers=PAGE_HEADERS,
+        )
+        sent = help_store.open_requests()
+
+    assert [answer.status_code for answer in answers] == [404, 404]
+    assert extra.status_code == 422
+    assert sent == []
+
+
+# --------------------------------------------------------- what a note never does
+
+
+def test_no_word_of_a_note_reaches_a_planner_or_a_critic_and_no_plan_goes_stale() -> None:
+    """Saved before the plan is asked for, with a first brief and a revision after the
+    critic's dissent, and changed again while the plan waits."""
+    planners: list[Scripted] = []  # type: ignore[type-arg]
+    critics: list[Scripted] = []  # type: ignore[type-arg]
+    with browser(key=True) as client:
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [fixture_week_plan(), fixture_week_plan()],
+            lambda: [dissent(), accepting()],
+            planners=planners,
+            critics=critics,
+        )
+        store = state_of(client).project_state
+        before = [item.model_dump() for item in store.all_assignments()]
+        name = save_note(client, "ZEBRA-WORDS about the canal essay", course="ZEBRA-CLASS")
+        ask_about(client, name, "ZEBRA-QUESTION")
+
+        assert client.post("/student/actions/plan").status_code == 303
+        waiting = state_of(client).drafts.latest_for(PLAN_DATE)
+        change_note(client, name, "edit", text="ZEBRA-LATER", course="", due_date="")
+        change_note(client, name, "archive")
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        family = client.get(FAMILY).text
+        after = [item.model_dump() for item in store.all_assignments()]
+
+    assert waiting is not None
+    assert [len(planner.briefs) for planner in planners] == [2]
+    assert [len(critic.briefs) for critic in critics] == [2]
+    for asked in (*planners, *critics):
+        sent = " ".join(str(message.content) for brief in asked.briefs for message in brief)
+        assert "ZEBRA" not in sent
+        assert "homework note" not in sent.lower()
+    assert ASSIGNMENTS_CHANGED not in week
+    assert THEIR_ASSIGNMENTS_CHANGED not in family
+    assert after == before
+
+
+def test_her_page_says_who_reads_a_note_and_that_no_model_does() -> None:
+    with browser() as client:
+        week = client.get(HER_PAGE).text
+
+    shared = week[week.index('id="what-is-shared"') :]
+    assert "homework notes" in shared.lower()
+    assert "never sent" in shared.lower()
+
+
+# ---------------------------------------------------- a write and then a read fail
+
+
+@pytest.mark.parametrize("step", ["edit", "archive"])
+def test_a_change_the_file_refuses_is_said_even_when_the_note_cannot_be_read_back(
+    step: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = save_note(client)
+        page = client.get(note_href(name, edit="1") if step == "edit" else note_href(name)).text
+        action = note_action(name, step)
+        typed = (
+            {"text": "<i>my</i> new words", "course": "", "due_date": ""} if step == "edit" else {}
+        )
+        fields = {**form_fields(page, action), **typed}
+        before = store._connection.execute("SELECT * FROM capture_events").fetchall()
+        tried: list[str] = []
+
+        def refuses(*args: object, **kwargs: object) -> None:
+            tried.append("write")
+            msg = "the file refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "_append_capture_event_locked", refuses)
+        readable = client.post(action, data=fields, headers=PAGE_HEADERS)
+        seen: list[str] = []
+        began: list[int] = []
+
+        def unread(*args: object, **kwargs: object) -> None:
+            began.append(len(seen))
+            msg = "the file cannot be read"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "capture", unread)
+        store._connection.set_trace_callback(seen.append)
+        plain = client.post(action, data=fields, headers=PAGE_HEADERS)
+        store._connection.set_trace_callback(None)
+        monkeypatch.undo()
+        after = store._connection.execute("SELECT * FROM capture_events").fetchall()
+
+    for answer in (readable, plain):
+        assert answer.status_code == 500
+        assert answer.text.count(" autofocus") == 1
+        assert "Your changes are saved" not in answer.text
+        assert "<i>my</i>" not in answer.text
+        if step == "edit":
+            assert str(escape(NOTE_NOT_SAVED)) in answer.text
+            assert "&lt;i&gt;my&lt;/i&gt; new words" in answer.text
+    assert "<h1>Update not saved</h1>" in plain.text
+    assert f'href="{NOTES_PAGE}"' in plain.text
+    assert tried == ["write", "write"]
+    assert len(began) == 1
+    assert [
+        line for line in seen[began[0] :] if line.strip().upper() not in ("ROLLBACK", "COMMIT")
+    ] == []
+    assert after == before

@@ -68,7 +68,13 @@ from blossom.intake import TEXT_MAX_LENGTH
 from blossom.noticing import Everything, read_everything
 from blossom.plan_reading import DoneMark, PlanReading, read_plan
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
-from blossom.routes.navigation import FAMILY_PAGE, address, details_href, segment
+from blossom.routes.navigation import (
+    ARCHIVED_NOTES_PAGE,
+    FAMILY_PAGE,
+    address,
+    details_href,
+    segment,
+)
 from blossom.routes.runs import (
     Graphs,
     PlanGraphBuilder,
@@ -79,6 +85,7 @@ from blossom.routes.runs import (
     tidy_thread,
 )
 from blossom.settings import CALENDAR_MARGIN
+from blossom.stores.captures import NamedCaptures
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
 from blossom.stores.project_state import (
@@ -104,6 +111,7 @@ from blossom.views import (
     DecisionView,
     HandInRowView,
     HandInView,
+    HelpNoteView,
     HelpRequestView,
     NamedAssignmentView,
     ParentCheckpointAssignmentView,
@@ -540,9 +548,13 @@ class HelpStep(BaseModel):
     response: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
 
 
-def help_view(state: ApplicationState, request: HelpRequest) -> HelpRequestView:
-    """The request as the parent sees it, which is exactly as she sees it."""
+def help_view(
+    state: ApplicationState, request: HelpRequest, named: NamedCaptures | None = None
+) -> HelpRequestView:
+    """The request as the parent sees it, which is exactly as she sees it, with the
+    homework note it is about, when it is about one, out of the page's one batch."""
     return HelpRequestView(
+        about_note=HelpNoteView.about(request.capture_id, None if named is None else named.notes),
         request_id=request.request_id,
         evening=request.evening,
         asked_at=request.asked_at,
@@ -664,11 +676,19 @@ def review_page(
     records = state.drafts.review_snapshot(today)
     shown = (*records.waiting, *records.decided)
     working = next((record for record in shown if record.draft_id == records.current_id), None)
-    everything = read_everything(
-        state.project_state,
-        state.project_state,
-        also=() if working is None else working.plan_assignment_ids or (),
-    )
+    # What she added as homework notes is read beside the record, in the same snapshot,
+    # and is no part of it. The notes her requests are about come in one more statement.
+    asked = [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
+    with state.project_state.reading():
+        everything = read_everything(
+            state.project_state,
+            state.project_state,
+            also=() if working is None else working.plan_assignment_ids or (),
+        )
+        notes = state.project_state.outstanding_captures()
+        named = state.project_state.captures_named(
+            request.capture_id for request in asked if request.capture_id
+        )
     plans = {
         record.draft_id: read_a_plan(
             state,
@@ -698,8 +718,11 @@ def review_page(
             "problem": check.problem if about_a_row and check is not None else problem,
             "problem_target": check.assignment_id if about_a_row and check is not None else None,
             "reason_max_length": REASON_MAX_LENGTH,
-            "help_open": [help_view(state, r) for r in state.help_requests.open_requests()],
-            "help_resolved": [help_view(state, r) for r in state.help_requests.recently_resolved()],
+            "help_open": [help_view(state, r, named) for r in asked if r.open],
+            "help_resolved": [help_view(state, r, named) for r in asked if not r.open],
+            "homework_notes": notes.notes,
+            "homework_notes_unreadable": notes.unreadable,
+            "archived_notes_page": ARCHIVED_NOTES_PAGE,
             "note_max_length": NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
             "zone": state.clock.zone,

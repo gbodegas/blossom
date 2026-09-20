@@ -51,6 +51,10 @@ With the app running as the README describes:
   reads the details and cannot save from them. There is no JSON route for it.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
   to `/student/plans` makes one.
+- <http://127.0.0.1:8000/student/homework-notes> is her homework notes, with
+  the ones she put away under `/archived`, the form for a new one under `/new`,
+  and each note on a page of its own under its id, where asking for help about
+  it is `/help`. Reading any of them writes nothing.
 - <http://127.0.0.1:8000/student/help-requests> lists her requests for help
   as JSON, the open ones and those resolved within two weeks; a POST there
   asks, with an optional note, and a DELETE takes one back while nobody has
@@ -150,7 +154,11 @@ Three files under `.local/` outlive a restart:
   published over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
   any words she added, kept for a week and removable from her page, and so
   do her requests for help with what a parent did with each, kept until
-  resolved and for two weeks after.
+  resolved and for two weeks after. Her homework notes are here as well: each
+  note as it stands, its first words, and every change to it. There is no way
+  to delete a note from a page, putting one away keeps it, and nothing sweeps
+  them, so a copy of this file made as a backup holds her notes and their
+  history too, for as long as that copy is kept.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
   and an expired draft's state goes with it, so it holds only what is
@@ -247,7 +255,9 @@ the sign-in; after signing in, she enters the update again. A parent signed
 in sees her updates on her page and cannot make one in her name. Her device
 cannot mark a check: the gate answers it 403 on the family page's paths. An
 update saved from an assignment's details meets an expired sign-in the same
-way as one saved from a card.
+way as one saved from a card. So does a homework note: one written or changed
+after the sign-in expired is not saved, and its words are not kept through the
+sign-in, so she writes it again.
 
 If a passphrase may have been seen, change it in `.env` and restart: every
 device signed in with it is signed out, the other person's devices stay

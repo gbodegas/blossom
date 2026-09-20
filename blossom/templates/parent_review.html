@@ -62,6 +62,7 @@
       <article class="draft help-{{ ask.state }}">
         <p class="course">Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local|clock }}</p>
         {% if ask.note %}<p class="body">She said: <q>{{ ask.note }}</q></p>{% else %}<p class="note">No words with it.</p>{% endif %}
+        {% if ask.about_note %}<p class="note">{% with about = ask.about_note, viewer = "parent" %}{% include "help_about_note.html" %}{% endwith %}</p>{% endif %}
         <p class="decision-line">
           {% if ask.state == "requested" %}Not taken up yet. Her page says it is waiting for a parent to respond.{% else %}<strong>Taken up.</strong> Her page says a parent is on it.{% if ask.response %} Reply so far: <q>{{ ask.response }}</q>{% endif %}{% endif %}
         </p>
@@ -97,6 +98,37 @@
         </ul>
       </details>
     {% endif %}
+  </section>
+
+  {#
+    Homework she added: the notes she wrote down to remember and has not put
+    away, in the order she first saved them, as they stand now, with the first
+    words when she has changed them. They are hers: nothing here changes one,
+    and nothing here needs a parent's approval. A note is no assignment and is
+    in no plan; a parent who wants it planned can add the assignment the usual
+    way. Each opens on its own page, with its history, and the ones she put
+    away are a link from here.
+  #}
+  <section class="homework-notes" id="homework-she-added">
+    <h2>Homework she added</h2>
+    {% if not homework_notes and not homework_notes_unreadable %}
+      <p class="empty">No homework notes are waiting.</p>
+    {% endif %}
+    {% for note in homework_notes %}
+      <article class="draft homework-note">
+        <p class="course">{% if note.course %}<span class="authored-text">{{ note.course }}</span> &middot; {% endif %}Saved {{ note.created_on|long_date }}{% if note.updated_on != note.created_on %}, changed {{ note.updated_on|long_date }}{% endif %}</p>
+        <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
+        {% if note.text != note.original_text %}
+          <p class="note">First written as: <q class="authored-text">{{ note.original_text }}</q></p>
+        {% endif %}
+        {% if note.due_date %}<p class="note">Due date she gave: {{ note.due_date|long_date }}</p>{% endif %}
+        <p class="note">It is not an assignment and is in no plan. <a href="{{ note_href(note.capture_id) }}">Open homework note</a></p>
+      </article>
+    {% endfor %}
+    {% if homework_notes_unreadable %}
+      <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now. Nothing was changed.</p>
+    {% endif %}
+    <p class="note"><a href="{{ archived_notes_page }}">Archived homework notes</a></p>
   </section>
 
   {#

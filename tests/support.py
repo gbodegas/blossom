@@ -443,13 +443,15 @@ def scripted_graphs(
     critic: Callable[[], list[CriticVerdict]],
     *,
     planners: list[Scripted[DailyPlan]] | None = None,
+    critics: list[Scripted[CriticVerdict]] | None = None,
 ) -> Callable[..., PlanGraphs]:
     """A replacement for the route's graphs dependency, over the app's own stores.
 
     Scripted models, and permission to start, so a run can be driven in an
     application that has no key; the models are never asked for one. Each
     planner built is added to ``planners`` when a test hands a list in, so
-    it can read how often a run asked and what it was sent.
+    it can read how often a run asked and what it was sent, and each critic
+    to ``critics`` the same way.
     """
 
     def override(
@@ -459,11 +461,10 @@ def scripted_graphs(
             asked = Scripted(*[ok(plan) for plan in planner()])
             if planners is not None:
                 planners.append(asked)
-            return plan_graph_for(
-                state,
-                planner=asked,
-                critic=Scripted(*[ok(verdict) for verdict in critic()]),
-            )
+            reviewer = Scripted(*[ok(verdict) for verdict in critic()])
+            if critics is not None:
+                critics.append(reviewer)
+            return plan_graph_for(state, planner=asked, critic=reviewer)
 
         return PlanGraphs(build=build, may_start=True)
 

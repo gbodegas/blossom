@@ -250,7 +250,12 @@ write the same file through connections of their own. The reading is at most
 six read statements however much the record holds, between the statement
 that begins the transaction and the one that ends it: the claims and her
 hand-in events are each asked for once and not once per assignment, and a
-reader asked about no assignments runs none, so an empty record costs two. It ends before
+reader asked about no assignments runs none, so an empty record costs two. Her
+week and the family page read her homework notes beside the record, inside that
+same transaction: one statement more however many notes there are, and one
+again, only when a request for help is about a note, for every such note at
+once. The notes are no part of the reading a plan, a digest, or a brief is
+made from, so none of those can hold one. It ends before
 anything is rendered; while it lasts, another connection's commit waits, a
 few reads long. The file stays in rollback-journal mode with the default
 wait. The rule is only that the
@@ -501,7 +506,7 @@ still answers the structured side for one that would.
 | `DraftsStore` | Every draft that reached the gate, as its text and, in a nullable versioned column, the plan as data; every decision about it; and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
 | `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her |
-| `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, and the parent's word back | Wired and tested; in the drafts file, kept until resolved and swept two weeks after |
+| `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, the parent's word back, and the id of the homework note a request is about, never the note's words | Wired and tested; in the drafts file, kept until resolved and swept two weeks after |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -823,6 +828,46 @@ a button on a page, a hardware button, a lock screen control, or a single-tap
 shortcut, and whether asking for a coping strategy is the same gesture or a
 second one is a question for her. The page's button is the form the control
 takes until those are decided with her.
+
+## Homework notes
+
+A homework note is her own words about something to remember, saved before it
+is homework. `blossom/captures.py` holds the types and the rules and reads no
+file; `blossom/stores/captures.py` is the part of the record's store that
+keeps them, in the file the assignments are in, since the later step that
+makes a note into homework has to write both as one thing.
+`blossom/routes/captures.py` holds the pages.
+
+`homework_captures` holds each note as it stands, the words of its first save,
+which nothing changes, everything that first save sent, and for a class or a
+day who supplied it and through which way in. `capture_events` holds every
+change with what stood before and after, and who made it: the student, a
+parent, or the household when the sign-in is off. Both tables and both
+indexes are made in one transaction, so a start that is refused one of them
+leaves an older file as it was. A note's place among all notes is the number
+the file gave its first event, so an edit, an archive, or a restore never
+moves it.
+
+A form is given a random id when its page is made, which writes nothing. A
+first save under a new id is written with its event in one transaction that
+reserves the writer before it reads. The same id again is compared with
+everything that first save sent, the words with the class and the day: the
+same is the same save, answered with the note as it stands now, edited or
+archived as it may be, and nothing is written or brought back; anything else
+is refused with both shown. An edit is compared whole too. The same three as
+stand are already saved whatever page sent them; anything else must come from
+the revision the page showed, so a page that is behind overwrites nothing and
+an archived note is never brought back by an edit. An archive and a restore
+go by that revision as well and never touch the words. A result names the
+revision the save made or found, and the page looks it up in the note's
+history: while it is the latest the result is what stands, and once something
+newer follows it is said as something done earlier.
+
+A note's id is a UUID and its routes take it as one path segment. A note is
+no assignment, makes no claim about a date, and is read by no model: the
+pages read notes beside the record and never into it. Turning a note into
+homework, a parent's clarification, and joining a note to homework already on
+record are not built.
 
 ## Asking for help
 

@@ -11,13 +11,14 @@ store directly and renders whatever it likes would bypass them; the design notes
 call for that policy layer.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from blossom.agent.steps import StepRecord, describe_outcome
 from blossom.assignment_status import HistoryRow
+from blossom.captures import Capture
 from blossom.drafts import Decision, DraftStatus
 from blossom.hand_in import HandInProjection
 from blossom.intake import spoken_report
@@ -363,6 +364,36 @@ class WorkloadSignalView(BaseModel):
     """Words she chose to add, exactly as kept; ``None`` when she pressed and said nothing."""
 
 
+class HelpNoteView(BaseModel):
+    """The homework note a request for help is about, as it stands when the page is read.
+
+    A request carries the note's id and none of its words, so what is shown
+    is the note now, which she may have edited or put away since she asked,
+    and the page says so. ``unavailable`` means the note cannot be read or is
+    not on record; the request is shown all the same.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    capture_id: str
+    text: str | None = None
+    archived: bool = False
+    unavailable: bool = False
+
+    @classmethod
+    def about(
+        cls, capture_id: str | None, notes: Mapping[str, Capture] | None
+    ) -> "HelpNoteView | None":
+        """The note a request names, out of the notes a page read in one batch; ``None``
+        for a request about no note. One the batch does not hold is unavailable."""
+        if capture_id is None:
+            return None
+        note = None if notes is None else notes.get(capture_id)
+        if note is None:
+            return cls(capture_id=capture_id, unavailable=True)
+        return cls(capture_id=note.capture_id, text=note.text, archived=note.archived)
+
+
 class HelpRequestView(BaseModel):
     """One request for help as both pages see it: her words, where it stands, the word back.
 
@@ -382,6 +413,8 @@ class HelpRequestView(BaseModel):
     accepted_at: AwareDatetime | None = None
     resolved_at: AwareDatetime | None = None
     response: str | None = None
+    about_note: HelpNoteView | None = None
+    """The homework note the request is about, when it is about one."""
 
 
 class NamedAssignmentView(BaseModel):

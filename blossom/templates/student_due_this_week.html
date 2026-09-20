@@ -154,6 +154,7 @@
           <button type="submit" class="secondary">Too much right now</button>
         </form>
       {% endif %}
+      {% if viewer != "parent" %}<a class="to-help" href="{{ new_note_page }}">Add homework</a>{% endif %}
       <a class="to-help" href="#ask-for-help">Ask for help</a>
     </div>
     {#
@@ -163,7 +164,7 @@
       when there is something to count. With every assignment Done this is
       still how she finds what is left to turn in.
     #}
-    <p class="support-links"><a href="{{ to_turn_in_page }}">To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</a></p>
+    <p class="support-links"><a href="{{ to_turn_in_page }}">To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</a><a href="{{ notes_page }}">Homework notes{% if homework_notes %} ({{ homework_notes|length }}){% endif %}</a></p>
     {% if view.nothing_to_plan %}
     {% elif view.can_plan %}
       <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
@@ -217,6 +218,7 @@
           <li>
             <strong>You asked for help</strong> at {{ ask.asked_local|clock }}
             on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
+            {% if ask.about_note %}{% with about = ask.about_note %}{% include "help_about_note.html" %}{% endwith %}{% endif %}
             {% if ask.state == "requested" %}
               Waiting for a parent to respond.
               <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
@@ -270,6 +272,27 @@
       {% endif %}
     </section>
   {% endif %}
+
+  {#
+    Homework notes: what she wrote down to remember, outside the week's cards
+    and the fold of finished work, since a note is no assignment and belongs
+    to no week. The oldest few, in the order they were first saved, and a link
+    to all of them. With nothing to show the section is left out and the link
+    under the controls is how the page of notes is reached. A row says the
+    note is in no plan and suggests nothing that cannot be done yet.
+  #}
+  {% if homework_notes or homework_notes_unreadable %}
+    <section class="panel homework-notes" id="homework-notes" tabindex="-1">
+      <h2>Homework notes{% if homework_notes %} ({{ homework_notes|length }}){% endif %}</h2>
+      {% with rows = homework_notes, shown = compact_rows %}{% include "student_notes_rows.html" %}{% endwith %}
+      {% if homework_notes|length > compact_rows %}
+        <p class="note"><a href="{{ notes_page }}">View all {{ homework_notes|length }} homework notes</a></p>
+      {% endif %}
+      {% if homework_notes_unreadable %}
+        <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now. Nothing was changed.</p>
+      {% endif %}
+    </section>
+  {% endif %}
   {% else %}
     <p class="return"><a href="/student/due-this-week">Return to this week and today's plan</a></p>
   {% endif %}
@@ -290,7 +313,7 @@
   <h2 class="list-heading">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
 
   {% if not view.assignments %}
-    <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.</p>
+    <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.{% if viewer != "parent" %} Heard about something? <a href="{{ new_note_page }}">Add homework</a>{% endif %}</p>
   {% endif %}
 
   {#
@@ -378,12 +401,14 @@
         note you wrote, and, when you have said today is too much, that you said so, to the
         model provider; when the first plan needs another try, the plan it made and what was
         wrong with it go too. Work you report as Done is left out, note and all. What you say
-        about turning work in, your next step and note with it, is never sent. Nothing else
-        leaves.
+        about turning work in, your next step and note with it, is never sent. Your homework
+        notes are never sent either, whatever they say, and no plan is made from one. Nothing
+        else leaves.
       </p>
       <p>
         Your updates and notes are kept in the family's own file. Your parents can read them
-        on the family page, what you say about turning work in included. Done means you have
+        on the family page, what you say about turning work in and your homework notes
+        included, the ones you put away and their history too. Done means you have
         finished your part; it does not turn work in, and your school record is separate.
         Saying you turned something in is your own report: it sends nothing to the school.
       </p>
