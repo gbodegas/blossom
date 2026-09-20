@@ -310,7 +310,7 @@
     <p class="confidence disagree" role="status">
       <strong>{{ to_check|length }} finished assignment{% if to_check|length != 1 %}s{% endif %}
       {% if to_check|length == 1 %}has a school report{% else %}have school reports{% endif %} to check:</strong>
-      {% for item in to_check %}<a href="/student/due-this-week?week={{ view.week.start.isoformat() }}&amp;show={{ item.assignment_id|urlencode }}#assignment-{{ item.assignment_id }}">{{ item.title }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.
+      {% for item in to_check %}<a href="{{ week_href(view.week.start, item.assignment_id, show=item.assignment_id) }}">{{ item.title }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.
     </p>
   {% endif %}
   {% for assignment in active_cards %}

@@ -37,7 +37,7 @@
     back on its own.
   #}
   {% if here and card.said %}
-    <p class="note update-result" role="status" id="update-result-{{ key|urlencode }}" tabindex="-1">{{ card.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
+    <p class="note update-result" role="status" id="{{ result_anchor(key) }}" tabindex="-1">{{ card.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
     {#
       Done is saved and that is all she has to do. When she has said nothing yet
       about turning it in, help remembering is offered once, with the quieter

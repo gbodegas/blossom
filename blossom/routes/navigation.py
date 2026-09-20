@@ -92,8 +92,14 @@ def todays_plan_href() -> str:
 
 def result_anchor(assignment_id: str) -> str:
     """The id of the place on a page that says what a save or an undo did to one
-    assignment's update, which a redirect lands on."""
+    assignment's update, which a redirect lands on. The page writes the id with this and
+    the redirect names it with this, so the two agree whatever the assignment's id holds."""
     return f"update-result-{segment(assignment_id)}"
+
+
+def hand_in_result_anchor(assignment_id: str) -> str:
+    """The same for her hand-in update on an assignment's details."""
+    return f"hand-in-result-{segment(assignment_id)}"
 
 
 @dataclass(frozen=True)
@@ -165,10 +171,12 @@ def read_return(
 
 
 def week_href(week: date | None, assignment_id: str, **more: str | None) -> str:
-    """Her week with one card in view, the fold around it open."""
+    """Her week with one card in view, the fold around it open. The card's id is the
+    assignment's as it is; the fragment is that id escaped, which a browser undoes to find
+    the card, so an id that holds a hash or a space still names one place."""
     return address(
         WEEK_PAGE,
-        fragment=f"assignment-{assignment_id}",
+        fragment=f"assignment-{segment(assignment_id)}",
         week=None if week is None else week.isoformat(),
         **more,
     )

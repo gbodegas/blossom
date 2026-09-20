@@ -1160,9 +1160,15 @@ def week_named(given: str) -> date | None:
 
 
 def back_to_the_card(week: date | None, said: str, assignment_id: str) -> str:
-    """Where a save or an undo sends her: the week she was on, the card, and what happened."""
-    where = "" if week is None else f"week={week.isoformat()}&"
-    return f"{PAGE}?{where}{said}={assignment_id}#assignment-{assignment_id}"
+    """Where a save or an undo sends her: the week she was on, the card, and what happened.
+    The id is escaped where it goes, in the query and in the fragment, so one that holds a
+    hash, an ampersand, or a question mark is still one value and one place."""
+    return address(
+        PAGE,
+        fragment=f"assignment-{segment(assignment_id)}",
+        week=None if week is None else week.isoformat(),
+        **{said: assignment_id},
+    )
 
 
 @dataclass(frozen=True)

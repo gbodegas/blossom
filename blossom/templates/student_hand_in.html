@@ -44,7 +44,7 @@
   <h2 class="update-heading" id="turning-it-in-heading">Turning it in</h2>
   <div class="update">
     {% if hc and hc.said %}
-      <p class="note update-result" role="status" id="hand-in-result-{{ key|urlencode }}" tabindex="-1">{{ hc.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
+      <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1">{{ hc.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
     {% endif %}
     {% if hc and hc.problem %}
       <p class="problem" role="alert" id="hand-in-problem-{{ key }}" tabindex="-1">{{ hc.problem }}</p>

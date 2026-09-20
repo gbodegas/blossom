@@ -127,7 +127,11 @@ it is the list's is held to the list's own shape, every field, no other, no
 way back, each value exactly as the page wrote it, and for the press that
 one state with no words; anything else is refused whole. Her routes that
 carry an assignment's id take it as the rest of the path up to their own
-ending, so an id that holds a slash is reached by the addresses made for it. The redirect names the event the save accepted, and the page
+ending, so an id that holds a slash is reached by the addresses made for it.
+A place a redirect lands on is named by one helper, used by the page that
+writes the id and by the address sent to it, and her week with a card in view
+is one address builder that escapes the id in the query and in the fragment,
+so the two agree whatever an id holds. The redirect names the event the save accepted, and the page
 that answers looks it up in that assignment's history in its one reading:
 while that event is the latest the result is what stands, said with the
 dated statement that stands, with an Undo for that event and no other, and a
@@ -138,7 +142,8 @@ history does not hold says nothing. A refusal carries what was tried and on
 which assignment, and the page shows that assignment as it stands now beside
 the refusal, on the list or off it, with the press again only while it is
 still to turn in. A write the file refuses, when the list cannot be read
-back either, is answered by the plain page that reads no store. The way back
+back either, is answered by the plain page that reads no store, whose one
+sentence takes the focus as the page arrives. The way back
 from the details gains a fourth place, the list. Help
 remembering is a GET that opens the form with Still to turn in chosen and
 writes nothing. Her week's rows show one line and a link, the family page lists

@@ -6,11 +6,14 @@
   read back either: what happened, in a sentence, what she chose and typed,
   so nothing of hers is lost with the failure, and the ways back her form
   carried, made on the server from checked values. Nothing here reads the
-  record, tries the save again, or says anything was saved.
+  record, tries the save again, or says anything was saved. The sentence is the
+  one thing on the page that matters, so it takes the focus as the page
+  arrives, with no script, as a refusal does on the pages this one stands in
+  for.
 #}
 {% block content %}
   <h1>Update not saved</h1>
-  <p class="problem" role="alert">{{ card.problem if card else hand_in_card.problem }}</p>
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ card.problem if card else hand_in_card.problem }}</p>
   {% if card and card.status %}
     <p>Your choice: {% if card.status == "done" %}Done{% else %}Not yet{% endif %}.</p>
   {% endif %}

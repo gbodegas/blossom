@@ -6,9 +6,11 @@ the row showed, and can be undone from where she pressed. The fixture week
 through the app, a pinned clock, and forms read from the page's own HTML.
 """
 
+import html
 import pathlib
 import re
 from datetime import UTC, date, datetime
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,7 +31,7 @@ from blossom.routes.hand_in import (
     LIST_TURN_IN_FAILED,
     LIST_UNDO_FAILED,
 )
-from blossom.routes.navigation import TO_TURN_IN_PAGE
+from blossom.routes.navigation import TO_TURN_IN_PAGE, details_href, result_anchor
 from blossom.routes.runs import NOTHING_TO_SCHEDULE
 from blossom.routes.student import (
     BAD_RETURN,
@@ -37,6 +39,7 @@ from blossom.routes.student import (
     HAND_IN_UNDONE,
     NOT_HERS_TO_UPDATE,
     hand_in_actions,
+    report_actions,
 )
 from blossom.stores.project_state import ProjectStateStore
 from blossom.to_turn_in import (
@@ -1012,6 +1015,12 @@ def test_a_write_the_file_refuses_is_said_even_when_the_list_cannot_be_read_back
     assert plain.status_code == 500
     assert "<h1>" in plain.text
     assert escape(PLAIN[route]) in plain.text
+    alert = re.search(r'<p class="problem"[^>]*role="alert"[^>]*>(.*?)</p>', plain.text, re.S)
+    assert alert is not None
+    assert str(escape(PLAIN[route])) in alert.group(1)
+    assert 'tabindex="-1"' in alert.group(0)
+    assert " autofocus" in alert.group(0).split(">", 1)[0]
+    assert plain.text.count(" autofocus") == 1
     assert "Internal Server Error" not in plain.text
     assert escape(TURNED_IN_FROM_THE_LIST) not in plain.text
     assert escape(HAND_IN_UNDONE) not in plain.text
@@ -1378,3 +1387,133 @@ def test_a_result_says_what_stands_with_the_day_she_said_it_whatever_day_it_is_r
     assert "In my folder" in the_result(undone)
     for page in (saved, same, undone):
         assert 'id="to-turn-in-result" tabindex="-1"' in the_result(page)
+
+
+# ------------------------------ an address made for any id lands on the place it names
+
+SLASHED = "unit/3 part?b#c"
+SLASHED_UNICODE = "unit/" + chr(0xE9) + "/\U0001f469" + chr(0x200D) + "\U0001f52c"
+
+
+def lands_on(page: str, address: str) -> str:
+    """The opening tag of the element a browser lands on for an address: the element whose
+    id is the fragment as written, or failing that the fragment with its escapes undone,
+    which is the order a browser tries them in. Empty when the fragment names nothing."""
+    fragment = urlsplit(address).fragment
+    tags = {
+        html.unescape(found.group(1)): found.group(0)
+        for found in re.finditer(r'<\w+\b[^>]*?\sid="([^"]*)"[^>]*>', page)
+    }
+    return tags.get(fragment) or tags.get(unquote(fragment)) or ""
+
+
+def special_record(client: TestClient, name: str) -> ProjectStateStore:
+    store = state_of(client).project_state
+    store.put_on_record(
+        [a_row(name, "Special set").model_copy(update={"due_date": date(2026, 8, 20)})], {}
+    )
+    said(store, name, NEEDS_HAND_IN, date(2026, 8, 19))
+    return store
+
+
+@pytest.mark.parametrize("name", [SLASHED, SLASHED_UNICODE], ids=["ascii", "unicode"])
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_her_work_update_on_the_details_lands_on_its_result_for_any_id(
+    origin: str, name: str
+) -> None:
+    """The details are reached by the row's own link. A save, the same save again, and an
+    undo each answer with an address whose fragment names the result that is on the page."""
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    save, undo = report_actions(name)
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = special_record(client, name)
+        page = client.get(where).text
+        row = page[page.index(f'id="to-turn-in-{name}"') :]
+        link = re.search(r'<a class="assignment-link" href="([^"]+)"', row)
+        assert link is not None
+        details = client.get(html.unescape(link.group(1)))
+        fields = {**form_fields(details.text, save), "status": "done", "note": ""}
+
+        saved = client.post(save, data=fields, headers=PAGE_HEADERS)
+        after_save = client.get(saved.headers["location"]).text
+        again = client.post(save, data=fields, headers=PAGE_HEADERS)
+        after_again = client.get(again.headers["location"]).text
+        undone = client.post(undo, data=form_fields(after_save, undo), headers=PAGE_HEADERS)
+        after_undo = client.get(undone.headers["location"]).text
+        reports = store.student_reports(name)
+
+    assert details.status_code == 200
+    assert (saved.status_code, again.status_code, undone.status_code) == (303, 303, 303)
+    for answer, shown in ((saved, after_save), (again, after_again), (undone, after_undo)):
+        landed = lands_on(shown, answer.headers["location"])
+        assert 'class="note update-result"' in landed, answer.headers["location"]
+        assert f'id="{escape(result_anchor(name))}"' in landed
+    back = "Back to To turn in" if origin == "list" else "Back to the week"
+    assert back in after_save
+    assert len(reports) == 2
+
+
+@pytest.mark.parametrize("name", [SLASHED, SLASHED_UNICODE], ids=["ascii", "unicode"])
+def test_her_hand_in_update_on_the_details_lands_on_its_result_for_any_id(name: str) -> None:
+    save, undo = hand_in_actions(name)
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        special_record(client, name)
+        opened = client.get(details_href(name, hand_in="change", return_to="to_turn_in")).text
+        fields = {**form_fields(opened, save), "state": "not_required", "next_action": ""}
+        fields["note"] = "online"
+
+        saved = client.post(save, data=fields, headers=PAGE_HEADERS)
+        after_save = client.get(saved.headers["location"]).text
+        undone = client.post(undo, data=form_fields(after_save, undo), headers=PAGE_HEADERS)
+        after_undo = client.get(undone.headers["location"]).text
+
+    assert (saved.status_code, undone.status_code) == (303, 303)
+    for answer, shown in ((saved, after_save), (undone, after_undo)):
+        landed = lands_on(shown, answer.headers["location"])
+        assert 'class="note update-result"' in landed, answer.headers["location"]
+        assert 'id="hand-in-result-' in landed
+
+
+@pytest.mark.parametrize("name", [SLASHED, SLASHED_UNICODE], ids=["ascii", "unicode"])
+def test_a_card_on_her_week_and_the_way_back_to_it_land_on_the_card_for_any_id(name: str) -> None:
+    """A save and an undo from the card answer with her week, the card named in the query
+    whole and in the fragment; the details' way back to the week lands on the card too, and
+    so does the link her week writes for something worth checking."""
+    save, undo = report_actions(name)
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = special_record(client, name)
+        store.record_status_reports(
+            name, [school_said("missing", SourceChannel.EMAIL, date(2026, 8, 19))]
+        )
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        card = card_for(week, name)
+        fields = {**form_fields(card, save), "status": "done", "note": ""}
+
+        saved = client.post(save, data=fields, headers=PAGE_HEADERS)
+        after_save = client.get(saved.headers["location"]).text
+        to_check = re.search(r'to check:</strong>\s*<a href="([^"]+)"', after_save)
+        assert to_check is not None
+        checked = client.get(html.unescape(to_check.group(1))).text
+        undone = client.post(
+            undo, data=form_fields(card_for(after_save, name), undo), headers=PAGE_HEADERS
+        )
+        after_undo = client.get(undone.headers["location"]).text
+        details = client.get(details_href(name, return_to="week", week=FIXTURE_WEEK)).text
+        way_back = re.search(r'<p class="return"><a href="([^"]+)">Back to the week</a>', details)
+        assert way_back is not None
+        returned = client.get(html.unescape(way_back.group(1))).text
+
+    assert (saved.status_code, undone.status_code) == (303, 303)
+    for answer, shown, word in ((saved, after_save, "saved"), (undone, after_undo, "undone")):
+        address = answer.headers["location"]
+        assert parse_qs(urlsplit(address).query)[word] == [name]
+        assert f'id="{escape("assignment-" + name)}"' in lands_on(shown, address)
+        assert 'class="note update-result"' in card_for(shown, name)
+    assert f'id="{escape("assignment-" + name)}"' in lands_on(
+        returned, html.unescape(way_back.group(1))
+    )
+    assert parse_qs(urlsplit(html.unescape(way_back.group(1))).query)["show"] == [name]
+    assert f'id="{escape("assignment-" + name)}"' in lands_on(
+        checked, html.unescape(to_check.group(1))
+    )
+    assert parse_qs(urlsplit(html.unescape(to_check.group(1))).query)["show"] == [name]

@@ -8,7 +8,14 @@ from fastapi.templating import Jinja2Templates
 from blossom.clock import spoken_time
 from blossom.plan_reading import long_date
 from blossom.plan_text import present_plan
-from blossom.routes.navigation import TODAYS_PLAN, details_href, todays_plan_href
+from blossom.routes.navigation import (
+    TODAYS_PLAN,
+    details_href,
+    hand_in_result_anchor,
+    result_anchor,
+    todays_plan_href,
+    week_href,
+)
 from blossom.settings import STATIC_PATH, TEMPLATE_PATH
 
 ASSETS = ("blossom.css", "blossom.js")
@@ -44,8 +51,11 @@ def page_templates() -> Jinja2Templates:
     """The packaged templates, with ``clock`` for times, ``long_date`` for a date with its
     year, ``present`` for a saved plan's text, ``ended`` for typed words that close a
     sentence, ``details_href`` for the address of an
-    assignment's details, ``todays_plan_id`` and ``todays_plan_href`` for the place on her week
-    that holds today's plan, and ``asset_tag`` for the files a page links."""
+    assignment's details, ``week_href`` for her week with one card in view,
+    ``result_anchor`` and ``hand_in_result_anchor`` for the places a save's redirect lands
+    on, so a page and the address sent to it name a place the same way, ``todays_plan_id``
+    and ``todays_plan_href`` for the place on her week that holds today's plan, and
+    ``asset_tag`` for the files a page links."""
     templates = Jinja2Templates(directory=TEMPLATE_PATH)
     templates.env.filters["clock"] = spoken_time
     templates.env.filters["ended"] = ended
@@ -53,6 +63,9 @@ def page_templates() -> Jinja2Templates:
     templates.env.filters["present"] = present_plan
     templates.env.globals["asset_tag"] = asset_tag()
     templates.env.globals["details_href"] = details_href
+    templates.env.globals["result_anchor"] = result_anchor
+    templates.env.globals["hand_in_result_anchor"] = hand_in_result_anchor
+    templates.env.globals["week_href"] = week_href
     templates.env.globals["todays_plan_id"] = TODAYS_PLAN
     templates.env.globals["todays_plan_href"] = todays_plan_href
     return templates

@@ -46,6 +46,7 @@ from blossom.routes.navigation import (
     ReturnTo,
     address,
     details_href,
+    hand_in_result_anchor,
     read_return,
 )
 from blossom.routes.student import (
@@ -76,7 +77,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/student", tags=["student"])
 
 STATES: Final = (NEEDS_HAND_IN, TURNED_IN, NOT_REQUIRED, UNKNOWN)
-RESULT: Final = "hand-in-result"
 CHOOSE_A_STATE: Final = "Choose one: Still to turn in, Turned in, Nothing to turn in, or Not sure."
 NEXT_ACTION_TOO_LONG: Final = f"Keep the next step to {NEXT_ACTION_MAX_LENGTH} characters or fewer."
 NEXT_ACTION_ONE_LINE: Final = "Keep the next step on one line."
@@ -299,7 +299,10 @@ def could_not_on_the_list(
 def after(assignment_id: str, said: str, back: ReturnTo) -> str:
     """Where a save or an undo sends her: the details, at the result, with what happened."""
     return details_href(
-        assignment_id, fragment=f"{RESULT}-{assignment_id}", hand_in=said, **back.fields()
+        assignment_id,
+        fragment=hand_in_result_anchor(assignment_id),
+        hand_in=said,
+        **back.fields(),
     )
 
 
