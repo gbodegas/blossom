@@ -8,7 +8,9 @@ not, and that none of it touches her account, the school's, a plan, or the
 digest.
 """
 
+import html
 import pathlib
+import re
 import sqlite3
 import threading
 from datetime import date
@@ -76,6 +78,7 @@ from tests.support import (
     SAME_ORIGIN,
     THEIRS,
     Answer,
+    a_row,
     accepting,
     browser,
     card_for,
@@ -581,11 +584,18 @@ def a_discrepancy(client: TestClient) -> None:
     report(client, ESSAY_ID, "done", "Handed in Tuesday.")
 
 
+def action_of(row: str, ending: str) -> str:
+    """The address one of a row's two check forms is sent to, as the page wrote it."""
+    found = re.search(rf'<form method="post" action="([^"]*/{ending})"', row)
+    assert found is not None, ending
+    return html.unescape(found.group(1))
+
+
 def mark(client: TestClient, assignment_id: str, note: str = "") -> Answer:
     """Mark the row checked from the family page as it stands, with the fields it carries."""
     row = row_for(family_page(client), assignment_id)
     return client.post(
-        f"/parent/actions/checks/{assignment_id}/mark",
+        action_of(row, "mark"),
         data={
             "basis": hidden(row, "basis"),
             "expected_check_id": hidden(row, "expected_check_id"),
@@ -599,7 +609,7 @@ def check_again(client: TestClient, assignment_id: str) -> Answer:
     """Reopen the check from the family page as it stands."""
     row = row_for(family_page(client), assignment_id)
     return client.post(
-        f"/parent/actions/checks/{assignment_id}/again",
+        action_of(row, "again"),
         data={"check_id": hidden(row, "check_id"), "basis": hidden(row, "basis")},
         headers=PAGE_HEADERS,
     )
@@ -676,6 +686,55 @@ def test_the_family_page_offers_mark_checked_and_a_check_shows_on_both_pages() -
     assert [(item.operation, item.note) for item in chain] == [
         ("checked", "Teacher has it on paper.\nSaid so Tuesday.")
     ]
+
+
+def test_both_checks_reach_an_assignment_whose_id_holds_a_slash() -> None:
+    """Each form is sent to the address the family page wrote for it. An id that holds a
+    slash, a space, a question mark, and a hash is one value to both routes, and an id
+    with none of them is written into the address as it is."""
+    slashed = "unit/3 part?b#c"
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        store.put_on_record(
+            [a_row(slashed, "Slashed set")],
+            {},
+            {slashed: [school_said("missing", SourceChannel.EMAIL, PLAN_DATE)]},
+        )
+        done = store.report_status(
+            slashed,
+            "done",
+            None,
+            expected_head=None,
+            now=state.clock.now(),
+            today=state.clock.today(),
+        )
+        a_discrepancy(client)
+        before = family_page(client)
+        mark_at = action_of(row_for(before, slashed), "mark")
+        marked = mark(client, slashed, "Seen on paper.")
+        after_mark = [item.operation for item in store.family_checks(slashed)]
+        again_at = action_of(row_for(family_page(client), slashed), "again")
+        reopened = check_again(client, slashed)
+        chain = store.family_checks(slashed)
+        the_essays = store.family_checks(ESSAY_ID)
+
+    assert isinstance(done, Saved)
+    assert where(before, slashed) == "Worth checking together"
+    assert mark_at == "/parent/actions/checks/unit%2F3%20part%3Fb%23c/mark"
+    assert again_at == "/parent/actions/checks/unit%2F3%20part%3Fb%23c/again"
+    assert action_of(row_for(before, ESSAY_ID), "mark") == (
+        f"/parent/actions/checks/{ESSAY_ID}/mark"
+    )
+    assert marked.status_code == 303, marked.text[:300]
+    assert after_mark == ["checked"]
+    assert reopened.status_code == 303, reopened.text[:300]
+    assert [(item.operation, item.note) for item in chain] == [
+        ("checked", "Seen on paper."),
+        ("reopened", None),
+    ]
+    assert chain[0].basis.startswith(f"{slashed}|{done.report.report_id}|")
+    assert the_essays == []
 
 
 def test_only_a_parents_device_marks_a_check_and_the_check_holds_through_a_restart(
