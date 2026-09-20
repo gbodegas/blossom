@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% set page = "student" %}
+{% block title %}Blossom - Homework note{% endblock %}
+{#
+  One homework note: what stands now, the first words when an edit has moved
+  away from them, a class and a day when she gave them, and the history of
+  every change. It says plainly that the note is in no plan. Nothing here
+  offers to make it homework or to join it to homework: those come with
+  routes of their own, and until then no page suggests they can be done.
+
+  What a save did is said first, at a place the address lands on. The result
+  belongs to the revision the save made or found: while that is the latest it
+  is what stands, and once something newer follows it is said as something
+  done earlier, on this same page, which always shows the note as it stands.
+  A refusal is said first too and takes the focus as the page arrives, with
+  no script. A form from a page that is behind comes back holding her words,
+  headed as unsaved, and names the newer revision, so saving again is her
+  choice; on an archived note her words are shown to copy and nothing can be
+  saved until she brings the note back.
+
+  She may edit, archive, and restore. A parent signed in reads all of it, the
+  archived and the history included, and is told the note is hers to change.
+#}
+{% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
+{% macro by(author) %}{% if author == "student" %}by the student{% elif author == "parent" %}by a parent{% else %}in this household{% endif %}{% endmacro %}
+{% block content %}
+  {% for link in ways_back %}
+    <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
+  {% endfor %}
+  <h1>Homework note</h1>
+  {% if result %}
+    <p class="note update-result" role="status" id="note-result" tabindex="-1">{{ result.said }}</p>
+  {% endif %}
+  {% if problem %}
+    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}</p>
+  {% endif %}
+  <section class="panel homework-note" id="{{ note_anchor(note.capture_id) }}">
+    <h2 class="update-heading">{% if mine %}What you wrote{% else %}What she wrote{% endif %}</h2>
+    <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
+    {% if note.course %}<p class="note">Class: <span class="authored-text">{{ note.course }}</span></p>{% endif %}
+    {% if note.due_date %}<p class="note">Due date {% if mine %}you{% else %}she{% endif %} gave: {{ on(note.due_date) }}</p>{% endif %}
+    {% if note.archived %}
+      <p class="note"><span class="pill">Archived</span> This note is archived. It is kept with its history and can be brought back.</p>
+    {% else %}
+      <p class="note">Saved {{ on(note.created_on) }}{% if note.updated_on != note.created_on %}, changed {{ on(note.updated_on) }}{% endif %}. It is not in a plan yet, and it is not an assignment.</p>
+    {% endif %}
+    {% if note.text != note.original_text %}
+      <h3 class="update-heading">First written as</h3>
+      <blockquote class="authored-text note-words">{{ note.original_text }}</blockquote>
+    {% endif %}
+    {% if not mine %}
+      <p class="note">Sign in as the student to change this note.</p>
+    {% elif form and note.archived %}
+      <h3 class="update-heading">Your unsaved changes</h3>
+      <p class="note">This note is archived, so nothing was saved. Your words are here to copy. Bring the note back to change it.</p>
+      <label for="kept-note-words">Your words, as typed</label>
+      <textarea id="kept-note-words" rows="4" readonly>{{ form.text }}</textarea>
+    {% elif form %}
+      <form method="post" action="{{ note_action(note.capture_id, "edit") }}" class="report">
+        {% if form.unsaved %}<h3 class="update-heading">Your unsaved changes</h3>{% endif %}
+        <input type="hidden" name="revision" value="{{ form.revision }}">
+        {% include "student_note_fields.html" %}
+        <div class="actions">
+          <button type="submit" class="primary" name="choice" value="save">{% if form.unsaved %}Save again{% else %}Save changes{% endif %}</button>
+          {% if form.date_pending %}
+            <button type="submit" class="secondary" name="choice" value="without_date">Save without the date</button>
+          {% endif %}
+          <a class="cancel" href="{{ note_href(note.capture_id) }}">Keep it as it is</a>
+        </div>
+      </form>
+    {% endif %}
+    {% if mine and not form %}
+      <div class="actions">
+        {% if not note.archived %}
+          <form method="get" action="{{ note_href(note.capture_id) }}" class="action">
+            <input type="hidden" name="edit" value="1">
+            <button type="submit" class="secondary">Edit this note</button>
+          </form>
+          <form method="post" action="{{ note_action(note.capture_id, "archive") }}" class="action">
+            <input type="hidden" name="revision" value="{{ note.revision }}">
+            <button type="submit" class="secondary">Archive this note</button>
+          </form>
+        {% else %}
+          <form method="post" action="{{ note_action(note.capture_id, "restore") }}" class="action">
+            <input type="hidden" name="revision" value="{{ note.revision }}">
+            <button type="submit" class="secondary">Bring this note back</button>
+          </form>
+        {% endif %}
+      </div>
+      <p class="note"><a href="{{ note_help_href(note.capture_id) }}">Ask for help about this note</a>. Opening that page sends nothing.</p>
+    {% endif %}
+    <details class="steps history">
+      <summary>History of this note</summary>
+      <ol class="history-list">
+        {% for event in history %}
+          <li>
+            {% if event.operation == "create" %}Saved{% elif event.operation == "edit" %}Changed{% elif event.operation == "archive" %}Archived{% else %}Brought back{% endif %}
+            {{ on(event.occurred_on) }}, {{ by(event.authored_by) }}.
+            {% if event.operation in ("create", "edit") %}
+              <blockquote class="authored-text note-words">{{ event.after.text }}</blockquote>
+              {% if event.after.course %}<span class="note">Class: <span class="authored-text">{{ event.after.course }}</span>.</span>{% endif %}
+              {% if event.after.due_date %}<span class="note">Due date given: {{ on(event.after.due_date) }}.</span>{% endif %}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+      <p class="note">Notes and their history are kept in the family's own file, and in any backup of it. Nothing here is sent to the school or to the planning model.</p>
+    </details>
+  </section>
+{% endblock %}

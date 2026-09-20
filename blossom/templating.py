@@ -13,6 +13,10 @@ from blossom.routes.navigation import (
     assignment_anchor,
     details_href,
     hand_in_result_anchor,
+    note_action,
+    note_anchor,
+    note_help_href,
+    note_href,
     result_anchor,
     todays_plan_href,
     week_href,
@@ -66,6 +70,10 @@ def page_templates() -> Jinja2Templates:
     templates.env.globals["asset_tag"] = asset_tag()
     templates.env.globals["assignment_anchor"] = assignment_anchor
     templates.env.globals["details_href"] = details_href
+    templates.env.globals["note_href"] = note_href
+    templates.env.globals["note_help_href"] = note_help_href
+    templates.env.globals["note_action"] = note_action
+    templates.env.globals["note_anchor"] = note_anchor
     templates.env.globals["result_anchor"] = result_anchor
     templates.env.globals["hand_in_result_anchor"] = hand_in_result_anchor
     templates.env.globals["week_href"] = week_href

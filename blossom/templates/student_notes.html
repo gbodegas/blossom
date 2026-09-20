@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% set page = "student" %}
+{% block title %}Blossom - {% if archived %}Archived homework notes{% else %}Homework notes{% endif %}{% endblock %}
+{#
+  Her homework notes on a page of their own: the ones still to do something
+  about, or the ones she put away. Either list is in the order the notes were
+  first saved, which an edit never changes, and a note brought back returns to
+  the place it had. The page is there when the list is empty and says so. A
+  note whose row cannot be read is said to be that, apart from the list, and
+  breaks nothing. Reading either page writes nothing. A parent signed in reads
+  both and is offered no form.
+#}
+{% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
+{% block content %}
+  {% set mine = viewer != "parent" %}
+  <p class="return"><a href="/student/due-this-week">{% if mine %}Back to my week{% else %}Back to her week{% endif %}</a></p>
+  <h1>{% if archived %}Archived homework notes{% else %}Homework notes{% endif %}{% if notes %} ({{ notes|length }}){% endif %}</h1>
+  <section class="panel homework-notes" id="homework-notes" tabindex="-1" aria-label="{% if archived %}Archived homework notes{% else %}Homework notes{% endif %}">
+    {% if archived %}
+      <p class="note">Notes {% if mine %}you{% else %}she{% endif %} put away. Each is kept with its history and can be brought back from its own page.</p>
+    {% else %}
+      <p class="note">What {% if mine %}you{% else %}she{% endif %} wrote down to remember. A note is not an assignment and is in no plan.</p>
+    {% endif %}
+    {% with rows = notes, shown = notes|length %}{% include "student_notes_rows.html" %}{% endwith %}
+    {% if not notes and not unreadable %}
+      <p class="empty quiet">{% if archived %}No homework notes are archived.{% else %}No homework notes are waiting.{% endif %}</p>
+    {% endif %}
+    {% if unreadable %}
+      <p class="problem">{{ unreadable|length }} homework note{% if unreadable|length != 1 %}s{% endif %} cannot be read right now. Nothing was changed.</p>
+    {% endif %}
+  </section>
+  <p class="support-links">
+    {% if mine and not archived %}<a href="{{ new_note_page }}">Add homework</a>{% endif %}
+    {% if archived %}<a href="{{ notes_page }}">Homework notes</a>{% else %}<a href="{{ archived_notes_page }}">Archived homework notes</a>{% endif %}
+  </p>
+{% endblock %}

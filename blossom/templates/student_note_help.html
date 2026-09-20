@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% set page = "student" %}
+{% block title %}Blossom - Ask for help about a note{% endblock %}
+{#
+  Asking for help about one homework note. Opening this page sends nothing:
+  only the button does. The note is shown as it stands, for context, and is
+  never copied into her question, which stays optional and hers to write. The
+  request carries the note's id, so her parents can open the note from it. A
+  parent signed in is told the request is hers to make, and sees no form.
+#}
+{% block content %}
+  <p class="return"><a href="{{ note_href(note.capture_id) }}">Back to the note</a></p>
+  <h1>Ask for help about this note</h1>
+  {% if problem %}
+    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}</p>
+  {% endif %}
+  <section class="panel homework-note">
+    <h2 class="update-heading">The note, as it stands now</h2>
+    <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
+    {% if note.archived %}<p class="note">This note is archived.</p>{% endif %}
+    {% if viewer == "parent" %}
+      <p class="note">{{ not_hers }} A request for help is hers to make.</p>
+    {% else %}
+      <form method="post" action="{{ note_action(note.capture_id, "ask-for-help") }}" class="ask">
+        <label for="help-question">What are you stuck on? (optional)</label>
+        <input id="help-question" type="text" name="note" value="{{ question }}" maxlength="{{ note_max_length }}" aria-describedby="help-question-hint">
+        <p class="note" id="help-question-hint">Your parents see this question and can open the note. Nothing is sent until you press the button, and nothing goes to the school or to the planning model.</p>
+        <div class="actions">
+          <button type="submit" class="primary">Ask for help about this note</button>
+          <a class="cancel" href="{{ note_href(note.capture_id) }}">Not now</a>
+        </div>
+      </form>
+    {% endif %}
+  </section>
+{% endblock %}

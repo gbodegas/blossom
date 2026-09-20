@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% set page = "student" %}
+{% block title %}Blossom - Add homework{% endblock %}
+{#
+  The page a homework note is first written on. It asks for her words and
+  nothing else: no class, no date, no source, no one's approval, and no model
+  reads it. The form carries an id made with the page, which wrote nothing, so
+  the same form sent twice is one note. This page reads no record, so it can
+  be shown whatever state the file is in, and a save the file refused comes
+  back here with her words still in it.
+
+  A refusal is said first and takes the focus as the page arrives, with no
+  script. When the form's id already belongs to another note, that note is
+  shown as it stands beside the words she sent, which come back in a form
+  with an id of its own: saving them as another note is her choice to make.
+  A parent signed in is told the note is hers to write, and sees no form.
+#}
+{% block content %}
+  <p class="return"><a href="/student/due-this-week">Back to my week</a></p>
+  <h1>Add homework</h1>
+  {% if form.problem %}
+    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ form.problem }}</p>
+  {% endif %}
+  {% if taken %}
+    <section class="panel homework-note" aria-label="The note this form already saved">
+      <h2>The note this form already saved</h2>
+      <blockquote class="authored-text note-words">{{ taken.text }}</blockquote>
+      {% if taken.archived %}<p class="note">This note is archived.</p>{% endif %}
+      <p class="note"><a href="{{ note_href(taken.capture_id) }}">Open that note</a></p>
+    </section>
+  {% endif %}
+  {% if viewer == "parent" %}
+    <p class="note">{{ not_hers }} A homework note is hers to write.</p>
+  {% else %}
+    <section class="panel homework-note">
+      {% if form.unsaved %}<h2 class="update-heading">Your unsaved words</h2>{% endif %}
+      <form method="post" action="/student/actions/homework-notes" class="report">
+        <input type="hidden" name="capture_id" value="{{ form.capture_id }}">
+        {% include "student_note_fields.html" %}
+        <div class="actions">
+          <button type="submit" class="primary" name="choice" value="save">{% if form.unsaved %}Save as a new note{% else %}Save homework note{% endif %}</button>
+          {% if form.date_pending %}
+            <button type="submit" class="secondary" name="choice" value="without_date">Save without the date</button>
+          {% endif %}
+          <a class="cancel" href="/student/due-this-week">Not now</a>
+        </div>
+      </form>
+    </section>
+  {% endif %}
+  <p class="note"><a href="/student/homework-notes">Homework notes</a></p>
+{% endblock %}
