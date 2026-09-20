@@ -776,6 +776,8 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     Only this, an explicit submit from her, makes a request. It carries the
     note's id and her question, never the note's words. The name is checked
     again where the request is written, in the help store's own transaction.
+    A request the file refuses is said on the page she sent it from, made from
+    the note already read, so it reads no store again and keeps her question.
     A parent is answered 403 and nothing is sent in her name.
     """
     fields, whole = await fields_of(request, HELP_FIELDS)
@@ -813,7 +815,14 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
         return gone(request, state)
     except Exception:
         logger.exception("her request for help about note %s could not be sent", name)
-        return plain_failure(request, state, HELP_NOT_ASKED, None)
+        return help_page(
+            request,
+            state,
+            note,
+            question=question,
+            problem=HELP_NOT_ASKED,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
     return RedirectResponse(
         note_href(name, fragment=NOTE_RESULT, asked=asked.request_id),
         status_code=status.HTTP_303_SEE_OTHER,

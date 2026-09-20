@@ -3,7 +3,9 @@ request for help that is about a note. What a note never does is here too: it re
 model, makes no plan stale, and costs a page no read per note.
 """
 
+import html
 import pathlib
+import re
 import sqlite3
 
 import pytest
@@ -12,7 +14,7 @@ from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.captures import new_capture_id
-from blossom.routes.captures import NOTE_ASKED, NOTE_NOT_SAVED
+from blossom.routes.captures import HELP_NOT_ASKED, NOTE_ASKED, NOTE_NOT_SAVED
 from blossom.routes.navigation import (
     NEW_NOTE_PAGE,
     NOTE_ACTIONS,
@@ -379,3 +381,52 @@ def test_a_change_the_file_refuses_is_said_even_when_the_note_cannot_be_read_bac
         line for line in seen[began[0] :] if line.strip().upper() not in ("ROLLBACK", "COMMIT")
     ] == []
     assert after == before
+
+
+def test_a_request_the_file_refuses_is_said_with_her_question_kept_and_nothing_read_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The page that says so is made from the note read before the write, so it reads no
+    store after the refusal, keeps her question as she typed it, and offers the button again."""
+    with browser() as client:
+        state = state_of(client)
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        opened = client.get(note_help_href(name)).text
+        fields = {**form_fields(opened, action), "note": "<b>which</b> part first?"}
+        seen: list[str] = []
+        refused_at: list[int] = []
+
+        def refuses(*args: object, **kwargs: object) -> None:
+            refused_at.append(len(seen))
+            msg = "the file refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(state.help_requests, "ask", refuses)
+        state.project_state._connection.set_trace_callback(seen.append)
+        answer = client.post(action, data=fields, headers=PAGE_HEADERS)
+        state.project_state._connection.set_trace_callback(None)
+        monkeypatch.undo()
+        sent = state.help_requests.open_requests()
+        kept = re.search(r'name="note" value="([^"]*)"', answer.text)
+        assert kept is not None
+        again = client.post(
+            action, data={"note": html.unescape(kept.group(1))}, headers=PAGE_HEADERS
+        )
+        asked = state.help_requests.open_requests()
+
+    assert answer.status_code == 500
+    assert answer.text.count(" autofocus") == 1
+    assert 'id="note-problem"' in answer.text
+    assert str(escape(HELP_NOT_ASKED)) in answer.text
+    assert "&lt;b&gt;which&lt;/b&gt; part first?" in answer.text
+    assert "<b>which</b>" not in answer.text
+    assert WORDS in answer.text
+    assert str(escape(NOTE_ASKED)) not in answer.text
+    assert len(refused_at) == 1
+    assert [
+        line for line in seen[refused_at[0] :] if line.strip().upper() not in ("ROLLBACK", "COMMIT")
+    ] == []
+    assert sent == []
+    assert again.status_code == 303
+    assert [(item.capture_id, item.note) for item in asked] == [(name, "<b>which</b> part first?")]
