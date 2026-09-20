@@ -961,3 +961,147 @@ def test_a_row_in_both_sections_keeps_one_of_each_id_and_an_absent_one_keeps_its
     assert both.count(f'id="hand-in-{ESSAY_ID}"') == 1
     assert absent.count(f'id="update-{QUIZ_ID}"') == 1
     assert f'<span id="update-{QUIZ_ID}"' in absent
+
+
+# ------------------------------------------------ offered once, and on every kind of row
+
+ALGEBRA_ID = "assignment-algebra-set"
+ALGEBRA = f"/student/assignments/{ALGEBRA_ID}"
+ALGEBRA_ACTIONS = f"/student/actions/assignments/{ALGEBRA_ID}"
+OFFER = ">Update hand-in status<"
+
+
+def test_after_a_done_save_on_the_details_the_hand_in_update_is_offered_once() -> None:
+    """The offer beside the result stands in for the section's own opener, never beside it."""
+    with browser() as client:
+        page = client.get(DETAILS, params={"return_to": "week", "week": FIXTURE_WEEK}).text
+        fields = form_fields(page, f"{ACTIONS}/report")
+        answer = client.post(
+            f"{ACTIONS}/report", data={**fields, "status": "done", "note": ""}, headers=PAGE_HEADERS
+        )
+        result = landed(client, answer)
+        later = client.get(DETAILS).text
+
+    assert "Your update is saved." in result
+    assert result.count(OFFER) == 1
+    assert OFFER not in section(result)
+    assert NOT_RECORDED in section(result)
+    assert "hand_in=change" in result[: result.index('id="turning-it-in"')]
+    assert later.count(OFFER) == 1
+    assert OFFER in section(later)
+
+
+def back_to_the_week(client: TestClient, result: str) -> str:
+    found = re.search(r'<a href="([^"]+)">Back to the week</a>', result)
+    assert found is not None
+    shown = client.get(found.group(1).replace("&amp;", "&"))
+    assert shown.status_code == 200
+    return shown.text
+
+
+SAID = {
+    "still to turn in": (NEEDS_HAND_IN, "Still to turn in. Next:"),
+    "turned in": (TURNED_IN, "Reported turned in."),
+    "nothing to turn in": ("not_required", "Reported nothing to turn in."),
+    "not sure": ("unknown", "Hand-in status: Not sure."),
+    "a record that cannot be read": (TURNED_IN, "cannot be read"),
+}
+
+
+@pytest.mark.parametrize("work", ["not_yet", "done"])
+@pytest.mark.parametrize("kind", SAID.keys())
+def test_a_row_that_is_due_later_shows_what_she_said_about_turning_it_in(
+    kind: str, work: str
+) -> None:
+    """Saved on the details, then her real way back: the line is in the row she returns to."""
+    state, expected = SAID[kind]
+    with browser() as client:
+        report(client, ALGEBRA_ID, work)
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        assert "Assigned this week, due later" in week
+        assert NOT_RECORDED in card_for(week, ALGEBRA_ID)
+        page = client.get(
+            ALGEBRA, params={"hand_in": "change", "return_to": "week", "week": FIXTURE_WEEK}
+        ).text
+        fields = form_fields(page, f"{ALGEBRA_ACTIONS}/hand-in")
+        action = "Put it in the return folder" if work == "not_yet" else ""
+        answer = client.post(
+            f"{ALGEBRA_ACTIONS}/hand-in",
+            data={**fields, "state": state, "next_action": action, "note": ""},
+            headers=PAGE_HEADERS,
+        )
+        result = landed(client, answer)
+        if kind == "a record that cannot be read":
+            store = state_of(client).project_state
+            store._connection.execute(
+                "UPDATE hand_in_events SET state = 'invalid-state' WHERE assignment_id = ?",
+                (ALGEBRA_ID,),
+            )
+            store._connection.commit()
+        returned = back_to_the_week(client, result)
+
+    row = card_for(returned, ALGEBRA_ID)
+    assert expected in row
+    assert NOT_RECORDED not in row
+    if kind == "still to turn in":
+        assert ("Put it in the return folder" if work == "not_yet" else "Turn it in.") in row
+    assert 'href="' + ALGEBRA + "?return_to=week&amp;week=2026-08-17#turning-it-in" + '"' in row
+    assert f"{ALGEBRA_ACTIONS}/hand-in" not in row
+    if work == "done":
+        fold = returned[: returned.index(f'id="assignment-{ALGEBRA_ID}"')]
+        assert fold.rindex('<details class="steps reported-done" open>') > fold.rindex("due later")
+
+
+def test_an_earlier_week_shows_what_stands_now_on_its_due_later_row() -> None:
+    with browser() as client:
+        landed(client, save(client, opened(client), NEEDS_HAND_IN, action="Put it in my folder"))
+        earlier = client.get(HER_PAGE, params={"week": "2026-08-10"}).text
+
+    assert "Assigned this week, due later" in earlier
+    row = card_for(earlier, ESSAY_ID)
+    assert "Still to turn in. Next:" in row
+    assert "Put it in my folder" in row
+    assert "week=2026-08-10#turning-it-in" in row
+
+
+# ------------------------------------ a field refused on a record that cannot be read
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [
+        {"state": TURNED_IN, "note": "x" * 501, "action": "kept step"},
+        {"state": NEEDS_HAND_IN, "note": "kept words", "action": "y" * 201},
+        {"state": None, "note": "kept words", "action": "kept step"},
+    ],
+    ids=["a note past the limit", "a next step past the limit", "nothing chosen"],
+)
+def test_a_field_refused_on_an_unreadable_record_points_at_what_is_on_the_page(
+    sent: dict[str, str | None],
+) -> None:
+    """No form is shown there, so the summary cannot send her to a field of it."""
+    with browser() as client:
+        landed(client, save(client, opened(client), TURNED_IN))
+        behind = opened(client)
+        before = damage(client, "previous_event_id", "no-such-event")
+
+        answer = save(
+            client, behind, sent["state"], action=sent["action"] or "", note=sent["note"] or ""
+        )
+
+        assert answer.status_code == 422
+        page = answer.text
+        first = summary(page)
+        targets = re.findall(r'href="#([^"]+)"', first)
+        assert targets == [f"hand-in-problem-{ESSAY_ID}"]
+        assert all(f'id="{target}"' in page for target in targets)
+        assert page.count(" autofocus") == 1
+        assert " autofocus" in first
+        turning = section(page)
+        assert "cannot be read" in turning
+        assert "Your unsaved hand-in update" in turning
+        for words in (sent["note"], sent["action"]):
+            assert str(words) in turning
+        assert f"{ACTIONS}/hand-in" not in turning
+        assert "undo-hand-in" not in turning
+        assert rows(client) == before

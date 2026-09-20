@@ -25,12 +25,14 @@
     the section's own words when it is about no one field, a change made
     elsewhere, a stale Undo, a form these pages did not make, a save the file
     refused; then the summary itself takes the focus as the page arrives, with
-    no script. One thing on the page is ever given the focus.
+    no script. A record that cannot be read shows no form, so a field refused
+    on one is treated the same way, and the link goes to the section's words
+    and what she sent. One thing on the page is ever given the focus.
   #}
   {% set hand_in_problem = hand_in_card.problem if hand_in_card else none %}
   {% set trouble = problem or (card.problem if card else none) or hand_in_problem %}
   {% if trouble %}
-    {% set hand_in_field = hand_in_card.field if (hand_in_card and hand_in_problem and not problem and not (card and card.problem)) else none %}
+    {% set hand_in_field = hand_in_card.field if (hand_in_card and hand_in_problem and not problem and not (card and card.problem) and not assignment.hand_in.unavailable) else none %}
     {% set hand_in_general = hand_in_problem and not problem and not (card and card.problem) and not hand_in_field %}
     <p class="problem" role="alert" id="problem-summary" tabindex="-1"{% if hand_in_general %} autofocus{% endif %}>{{ trouble }}{% if card and card.problem %} <a href="#update-problem-{{ assignment.assignment_id }}">Go to the update.</a>{% elif hand_in_field == "next_action" %} <a href="#next-action-{{ assignment.assignment_id }}">Go to the next step.</a>{% elif hand_in_field == "note" %} <a href="#hand-in-note-{{ assignment.assignment_id }}">Go to the note.</a>{% elif hand_in_field == "state" %} <a href="#hand-in-state-{{ assignment.assignment_id }}">Go to the choices.</a>{% elif hand_in_general %} <a href="#hand-in-problem-{{ assignment.assignment_id }}">Go to Turning it in.</a>{% endif %}</p>
   {% endif %}

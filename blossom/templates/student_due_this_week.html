@@ -310,6 +310,7 @@
             Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
             {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
             <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
+            {% include "student_hand_in_line.html" %}
             {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
           </li>
         {% endfor %}
@@ -325,6 +326,7 @@
                 Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
                 {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
                 <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
+                {% include "student_hand_in_line.html" %}
                 {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
               </li>
             {% endfor %}

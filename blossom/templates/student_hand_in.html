@@ -34,6 +34,12 @@
 {% set at_state = hc and hc.field == "state" %}
 {% set at_action = hc and hc.field == "next_action" %}
 {% set at_note = hc and hc.field == "note" %}
+{#
+  After a Done save on this page her update's result offers the hand-in update
+  once, beside what she just did. It stands in for this section's own opener
+  on that visit, so the page never offers the same thing twice.
+#}
+{% set offered_above = card and card.assignment_id == assignment.assignment_id and card.said and assignment.update_status == "done" and hi.state is none %}
 <section class="hand-in" id="turning-it-in" tabindex="-1" aria-labelledby="turning-it-in-heading">
   <h2 class="update-heading" id="turning-it-in-heading">Turning it in</h2>
   <div class="update">
@@ -73,7 +79,7 @@
       {% if hi.state is not none %}
         <p class="effect">This is {% if mine %}your{% else %}her{% endif %} own report, kept on the day Blossom took it. It sends nothing to the school, and the school's record is separate.</p>
       {% endif %}
-      {% if ctx.can_update and not form_open %}
+      {% if ctx.can_update and not form_open and not offered_above %}
         <div class="actions">
           <form method="get" action="{{ hand_in_links.open }}" class="action">
             {% for name, value in hand_in_change_fields %}
