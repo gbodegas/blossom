@@ -124,11 +124,15 @@ details' form, turned in with the head the row showed and no words, and a
 checked field says where its result is shown: on the list or on her week,
 at a place that is there whether or not the row still is. A form that says
 it is the list's is held to the list's own shape, every field, no other, no
-way back, and for the press that one state with no words; anything else is
-refused whole. The redirect names the event the save accepted, and the page
+way back, each value exactly as the page wrote it, and for the press that
+one state with no words; anything else is refused whole. Her routes that
+carry an assignment's id take it as the rest of the path up to their own
+ending, so an id that holds a slash is reached by the addresses made for it. The redirect names the event the save accepted, and the page
 that answers looks it up in that assignment's history in its one reading:
-while that event is the latest the result is what stands, with an Undo for
-that event and no other; once something newer follows, it is said as
+while that event is the latest the result is what stands, said with the
+dated statement that stands, with an Undo for that event and no other, and a
+press already saved may name an undo that put her report back, which offers
+none; once something newer follows, it is said as
 something done earlier beside what stands now, with no Undo; an id the
 history does not hold says nothing. A refusal carries what was tried and on
 which assignment, and the page shows that assignment as it stands now beside

@@ -189,10 +189,11 @@ def affected(everything: Everything, assignment_id: str) -> Affected:
 
 
 def _is_what_was_said(event: HandInEvent, said: str) -> bool:
-    """Whether an event is of the kind a result speaks of: an undo for an undo, and her
-    report that it was turned in for the other two."""
+    """Match a report, a no-op state, or an undo against validated history."""
     if said == "undone":
         return event.operation == UNDO
+    if said == "same":
+        return event.state == TURNED_IN
     return event.operation == REPORT and event.state == TURNED_IN
 
 
@@ -201,12 +202,16 @@ def result_for(everything: Everything, receipt: Receipt | None) -> ListResult | 
 
     The event must be in the named assignment's history and of the kind the
     address says; anything else, a made-up id, another assignment's event, a
-    report named as an undo, says nothing at all. While that event is the
-    latest the result is what stands, and a report of hers can be taken back
-    from here. Once something newer follows it, the result is something she
-    did earlier, shown beside what stands now, with no Undo. An assignment
-    off the record, or one whose record cannot be read, keeps the place and
-    says which, since the address may be a true one.
+    report named as an undo, says nothing at all. A press that was already
+    saved names whatever event stood then, which is her report or an undo
+    that put her report back, so it is held to the state that event left
+    standing and not to its kind. While that event is the latest the result
+    is what stands, and a report of hers can be taken back from here; an
+    undo that stands offers none, since the head is no report. Once
+    something newer follows it, the result is something she did earlier,
+    shown beside what stands now, with no Undo. An assignment off the
+    record, or one whose record cannot be read, keeps the place and says
+    which, since the address may be a true one.
     """
     if receipt is None or receipt.said not in SAID:
         return None

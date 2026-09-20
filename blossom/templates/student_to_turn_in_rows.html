@@ -66,7 +66,7 @@
 {% if list_card and list_card.result %}
   {% set done = list_card.result %}
   <div class="update">
-    <p class="note update-result" role="status" id="to-turn-in-result" tabindex="-1">{{ done.said }}{% if done.stands and done.about.title %} <strong>{{ done.about.title }}</strong> ({{ done.about.course }}).{% endif %}</p>
+    <p class="note update-result" role="status" id="to-turn-in-result" tabindex="-1">{{ done.said }}{% if done.stands and done.about.title %} <strong>{{ done.about.title }}</strong> ({{ done.about.course }}).{% endif %}{% if done.stands and done.about.hand_in %} {{ stands_now(done.about.hand_in) }}{% endif %}</p>
     {% if done.stands and done.undo_event_id and mine %}
       <div class="actions">
         <form method="post" action="{{ hand_in_routes(done.about.assignment_id)[1] }}" class="action">

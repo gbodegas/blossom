@@ -207,8 +207,10 @@ def to_turn_in_list(
 
 def shown_on(fields: dict[str, str]) -> tuple[str | None, bool]:
     """Where a form says its result is to be shown, and whether it said so in words these
-    pages make: nothing for the details, or one of the two places the list is."""
-    given = fields.get("hand_in_view", "").strip()
+    pages make: nothing for the details, or one of the two places the list is. The value is
+    read as it was sent. One with space around it is not one a page wrote, and trimming it
+    would let a form made by hand choose which rules it is held to."""
+    given = fields.get("hand_in_view", "")
     return (given or None, given in ("", *LIST_VIEWS))
 
 
@@ -359,7 +361,7 @@ def could_not(
 
 
 @router.post(
-    "/actions/assignments/{assignment_id}/hand-in",
+    "/actions/assignments/{assignment_id:path}/hand-in",
     response_class=HTMLResponse,
     include_in_schema=False,
 )
@@ -435,11 +437,15 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     if not whole:
         return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if view is not None and (
-        fields.keys() != LIST_PRESS_FIELDS or said != TURNED_IN or action != "" or note != ""
+        fields.keys() != LIST_PRESS_FIELDS
+        or fields["state"] != TURNED_IN
+        or fields["expected_hand_in_id"] != token
+        or action != ""
+        or note != ""
     ):
-        # The list's one press says one thing. Another state, or words, or a way back, from
-        # a form that says it is the list's is refused whole: nothing is coerced and
-        # nothing dropped.
+        # The list's one press says one thing, in the values the row wrote. Another state,
+        # or words, or a way back, or a value with space around it, from a form that says it
+        # is the list's is refused whole: nothing is coerced, trimmed, or dropped.
         return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if not valid:
         return refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)
@@ -520,7 +526,7 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
 
 
 @router.post(
-    "/actions/assignments/{assignment_id}/undo-hand-in",
+    "/actions/assignments/{assignment_id:path}/undo-hand-in",
     response_class=HTMLResponse,
     include_in_schema=False,
 )
@@ -583,7 +589,8 @@ async def undo_hand_in_from_the_page(
 
     if not whole:
         return refused(BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
-    if view is not None and fields.keys() != LIST_UNDO_FIELDS:
+    if view is not None and (fields.keys() != LIST_UNDO_FIELDS or fields["hand_in_id"] != named):
+        # The list's Undo names the update exactly as the result wrote it.
         return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     if not valid:
         return refused(BAD_RETURN, status.HTTP_422_UNPROCESSABLE_CONTENT)

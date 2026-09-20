@@ -243,6 +243,9 @@ def test_a_change_to_the_record_shows_on_the_details_and_not_on_the_saved_plan()
 
 
 def test_an_unknown_or_malformed_id_is_a_small_404_and_shows_no_other_record() -> None:
+    """An id may hold a slash, so one made of dots and slashes is an id like any other: it
+    is looked up on the record, found on none, and answered by the same small page. It is
+    never an address of another page."""
     with browser() as client:
         answers = [
             client.get(f"/student/assignments/{name}", headers=PAGE_HEADERS)
@@ -250,10 +253,11 @@ def test_an_unknown_or_malformed_id_is_a_small_404_and_shows_no_other_record() -
         ]
 
     assert [answer.status_code for answer in answers] == [404, 404, 404, 404]
-    assert all(GONE in answer.text for answer in answers[:3])
-    assert "parent" not in answers[3].text.lower()
+    assert all(GONE in answer.text for answer in answers)
+    assert "<title>Blossom - Family review" not in answers[3].text
+    assert "Assignment updates" not in answers[3].text
     assert all(ESSAY_TITLE not in answer.text for answer in answers)
-    assert all('href="/student/due-this-week' in answer.text for answer in answers[:3])
+    assert all('href="/student/due-this-week' in answer.text for answer in answers)
 
 
 # ------------------------------------------------------------- the forms, from the page's own HTML

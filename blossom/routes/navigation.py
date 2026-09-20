@@ -41,7 +41,12 @@ PLAN_ID_MAX_LENGTH: Final = 200
 
 def segment(value: str) -> str:
     """One path segment, escaped: a slash, a question mark, a space, or anything else that
-    would read as part of the address's shape is written as its bytes."""
+    would read as part of the address's shape is written as its bytes.
+
+    The server undoes the escaping before it matches a route, so an escaped
+    slash arrives as a slash. The routes that carry an assignment's id take
+    it as the rest of the path up to their own ending, and so receive an id
+    that holds one as the one value it is."""
     return "".join(
         character
         if character in UNRESERVED

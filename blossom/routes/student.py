@@ -1418,7 +1418,9 @@ def detail_page(
     )
 
 
-@router.get("/assignments/{assignment_id}", response_class=HTMLResponse, include_in_schema=False)
+@router.get(
+    "/assignments/{assignment_id:path}", response_class=HTMLResponse, include_in_schema=False
+)
 def assignment_details(
     request: Request,
     assignment_id: str,
@@ -1613,7 +1615,7 @@ def could_not(
 
 
 @router.post(
-    "/actions/assignments/{assignment_id}/report",
+    "/actions/assignments/{assignment_id:path}/report",
     response_class=HTMLResponse,
     include_in_schema=False,
 )
@@ -1743,7 +1745,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
 
 
 @router.post(
-    "/actions/assignments/{assignment_id}/undo-report",
+    "/actions/assignments/{assignment_id:path}/undo-report",
     response_class=HTMLResponse,
     include_in_schema=False,
 )
