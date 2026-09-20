@@ -275,6 +275,42 @@ def test_a_request_about_a_name_that_is_no_note_is_refused_and_writes_nothing() 
     assert sent == []
 
 
+def test_a_request_read_without_a_page_still_says_the_note_it_is_about() -> None:
+    """The endpoints that answer in JSON read the notes their requests name, in one statement
+    for all of them, so a note that can be read is never said to be unavailable."""
+    with browser() as client:
+        state = state_of(client)
+        names = [save_note(client, f"Note {number}") for number in range(3)]
+        for name in names:
+            assert ask_about(client, name, "which part?").status_code == 303
+        client.post("/student/help-requests", json={"note": "about no note"})
+        seen: list[str] = []
+        state.project_state._connection.set_trace_callback(seen.append)
+        hers = client.get("/student/help-requests")
+        hers_cost = [line for line in seen if "homework_captures" in line]
+        seen.clear()
+        theirs = client.get("/parent/help-requests")
+        theirs_cost = [line for line in seen if "homework_captures" in line]
+        state.project_state._connection.set_trace_callback(None)
+        first = next(item for item in theirs.json() if item["about_note"] is not None)
+        taken_up = client.post(f"/parent/help-requests/{first['request_id']}/accept", json={})
+        answered = client.post(f"/parent/help-requests/{first['request_id']}/resolve", json={})
+
+    for listing in (hers.json(), theirs.json()):
+        about = [item["about_note"] for item in listing]
+        assert about.count(None) == 1
+        said = {note["capture_id"]: note for note in about if note is not None}
+        assert {name: note["text"] for name, note in said.items()} == {
+            name: f"Note {number}" for number, name in enumerate(names)
+        }
+        assert not any(note["unavailable"] or note["archived"] for note in said.values())
+    assert (len(hers_cost), len(theirs_cost)) == (1, 1)
+    for answer in (taken_up, answered):
+        assert answer.status_code == 200
+        assert answer.json()["about_note"] == first["about_note"]
+        assert answer.json()["about_note"]["unavailable"] is False
+
+
 # --------------------------------------------------------- what a note never does
 
 

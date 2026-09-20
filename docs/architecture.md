@@ -859,9 +859,19 @@ stand are already saved whatever page sent them; anything else must come from
 the revision the page showed, so a page that is behind overwrites nothing and
 an archived note is never brought back by an edit. An archive and a restore
 go by that revision as well and never touch the words. A result names the
-revision the save made or found, and the page looks it up in the note's
-history: while it is the latest the result is what stands, and once something
-newer follows it is said as something done earlier.
+change the save made by the id the record gave it, and a save that wrote
+nothing names the latest change it found, read in the transaction that found
+nothing to do. The page looks that id up in the note's own history: while it
+is the latest the result is what stands, once something newer follows it is
+said as something done earlier, and a revision number, another note's id, or
+anything else a person could put in the address says nothing.
+
+A note on record that cannot be read is said as unavailable wherever it is
+opened, its own page and the help page alike, and is never said to be off the
+record; a request for help about it is refused and sends nothing. A change in
+a note's history that cannot be read makes the note's page say the same. The
+endpoints that answer a request for help in JSON read the notes their requests
+name, once for all of them, as the two pages do.
 
 A note's id is a UUID and its routes take it as one path segment. A note is
 no assignment, makes no claim about a date, and is read by no model: the

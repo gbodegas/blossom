@@ -275,9 +275,12 @@ class CaptureCreated:
 @dataclass(frozen=True)
 class CaptureAlreadyCreated:
     """The same form was sent again: the note exists, nothing was written, and ``capture`` is
-    the note as it stands now, edited or archived as it may since have been."""
+    the note as it stands now, edited or archived as it may since have been. ``head`` is the
+    latest change of the note, read in the transaction that found nothing to do, so a page
+    can say what this save found from an id only the record gives out."""
 
     capture: Capture
+    head: CaptureEvent
 
 
 @dataclass(frozen=True)
@@ -298,9 +301,11 @@ class CaptureChanged:
 
 @dataclass(frozen=True)
 class CaptureUnchanged:
-    """What was asked for is what stands: nothing was written."""
+    """What was asked for is what stands: nothing was written. ``head`` is the latest change
+    of the note, read in the transaction that found nothing to do."""
 
     capture: Capture
+    head: CaptureEvent
 
 
 @dataclass(frozen=True)

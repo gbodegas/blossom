@@ -127,6 +127,12 @@ CAPTURE_EVENTS: Final = """
     FROM capture_events
     WHERE capture_id = ? ORDER BY sequence
 """
+LATEST_CAPTURE_EVENT: Final = """
+    SELECT event_id, capture_id, operation, before, after, revision, occurred_at_utc,
+        occurred_on, authored_by, sequence
+    FROM capture_events
+    WHERE capture_id = ? ORDER BY sequence DESC LIMIT 1
+"""
 
 
 @dataclass(frozen=True)
@@ -181,19 +187,24 @@ def capture_from(row: tuple[object, ...]) -> Capture:
 
 
 def capture_event_from(row: tuple[object, ...]) -> CaptureEvent:
-    """One change from a row read by ``CAPTURE_EVENTS``."""
-    return CaptureEvent(
-        event_id=str(row[0]),
-        capture_id=str(row[1]),
-        operation=str(row[2]),  # type: ignore[arg-type]
-        before=None if row[3] is None else CaptureSnapshot.model_validate_json(str(row[3])),
-        after=CaptureSnapshot.model_validate_json(str(row[4])),
-        revision=int(str(row[5])),
-        occurred_at=datetime.fromisoformat(str(row[6])),
-        occurred_on=date.fromisoformat(str(row[7])),
-        authored_by=str(row[8]),  # type: ignore[arg-type]
-        sequence=int(str(row[9])),
-    )
+    """One change from a row read by ``CAPTURE_EVENTS`` or ``LATEST_CAPTURE_EVENT``, or
+    ``UnreadableCapture`` for the note it belongs to: a change that cannot be read makes the
+    note's history unavailable, which a page says, and is never a failure of the page."""
+    try:
+        return CaptureEvent(
+            event_id=str(row[0]),
+            capture_id=str(row[1]),
+            operation=str(row[2]),  # type: ignore[arg-type]
+            before=None if row[3] is None else CaptureSnapshot.model_validate_json(str(row[3])),
+            after=CaptureSnapshot.model_validate_json(str(row[4])),
+            revision=int(str(row[5])),
+            occurred_at=datetime.fromisoformat(str(row[6])),
+            occurred_on=date.fromisoformat(str(row[7])),
+            authored_by=str(row[8]),  # type: ignore[arg-type]
+            sequence=int(str(row[9])),
+        )
+    except (ValueError, TypeError, AttributeError) as fault:
+        raise UnreadableCapture(str(row[1])) from fault
 
 
 def attributed(
@@ -376,7 +387,9 @@ class CaptureRecords:
                 standing = self._capture_locked(name)
                 if standing is not None:
                     same = standing.initial == words
-                    return CaptureAlreadyCreated(standing) if same else CaptureIdTaken(standing)
+                    if not same:
+                        return CaptureIdTaken(standing)
+                    return CaptureAlreadyCreated(standing, self._latest_event_locked(name))
                 source = FieldSource(authored_by=authored_by, channel=channel)
                 note = Capture(
                     capture_id=name,
@@ -449,7 +462,7 @@ class CaptureRecords:
             with self._lock, self._writing():
                 standing = self._required_capture_locked(name)
                 if standing.words == words:
-                    return CaptureUnchanged(standing)
+                    return CaptureUnchanged(standing, self._latest_event_locked(name))
                 if standing.revision != expected_revision or standing.archived:
                     return CaptureConflict(standing)
                 source = FieldSource(authored_by=authored_by, channel=channel)
@@ -511,7 +524,7 @@ class CaptureRecords:
             with self._lock, self._writing():
                 standing = self._required_capture_locked(name)
                 if standing.archived == archived:
-                    return CaptureUnchanged(standing)
+                    return CaptureUnchanged(standing, self._latest_event_locked(name))
                 if standing.revision != expected_revision:
                     return CaptureConflict(standing)
                 note = standing.model_copy(update={"archived": archived})
@@ -602,6 +615,15 @@ class CaptureRecords:
     def _capture_locked(self, capture_id: str) -> Capture | None:
         row = self._connection.execute(CAPTURE_NAMED, (capture_id,)).fetchone()
         return None if row is None else capture_from(row)
+
+    def _latest_event_locked(self, capture_id: str) -> CaptureEvent:
+        """The latest change of a note, inside the caller's transaction. Every note has one,
+        since a note and its first event are written together."""
+        row = self._connection.execute(LATEST_CAPTURE_EVENT, (capture_id,)).fetchone()
+        if row is None:
+            msg = f"note {capture_id!r} has no change on record"
+            raise RuntimeError(msg)
+        return capture_event_from(row)
 
     def _required_capture_locked(self, capture_id: str) -> Capture:
         note = self._capture_locked(capture_id)

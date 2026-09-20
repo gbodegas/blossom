@@ -13,10 +13,12 @@ else, who may write is decided from the sign-in and never from the form, the
 write is one operation under the decision lock, a success is a redirect to a
 page that says what stands, and a refusal keeps every readable word. A parent
 reads every note, archived ones and history included, and changes none. A
-result names the revision the save made or found, and the page that answers
-looks that revision up in the note's own history: while it is the latest the
-result is what stands, and once something newer follows it is said as
-something done earlier, on a page that shows the note as it stands.
+result names the change the save made, or for a save that wrote nothing the
+change it found standing, by the id the record gave that change, which no
+page can work out. The page that answers looks that id up in the note's own
+history: while it is the latest the result is what stands, and once something
+newer follows it is said as something done earlier, on a page that shows the
+note as it stands.
 
 Nothing here makes an assignment, asks a model, or touches what a plan is made
 from. Turning a note into homework is a later step with routes of its own, and
@@ -141,9 +143,11 @@ SAID: Final[dict[str, tuple[str, str | None]]] = {
     "archived": (NOTE_ARCHIVED, ARCHIVE),
     "restored": (NOTE_RESTORED, RESTORE),
 }
-"""What an address says a save did, the sentence for it, and the kind of change its
-revision must be in the note's history. The server writes the address; the page believes
-none of it until the history bears it out."""
+"""What an address says a save did, the sentence for it, and the kind of change the event
+it names must be in the note's history. A save that wrote nothing names the change it found
+standing, which may be of any kind. The server writes the address; the page believes none
+of it until the history bears it out, and an event id is not a number a person can count
+to: a revision in its place, or an id of another note's, says nothing."""
 
 
 @dataclass(frozen=True)
@@ -331,17 +335,32 @@ def plain_failure(
 
 
 def result_of(
-    note: Capture, history: list[CaptureEvent], said: str | None, rev: str | None
+    history: list[CaptureEvent], said: str | None, event: str | None
 ) -> NoteResult | None:
-    """The result an address names, when the note's own history bears it out."""
-    if said not in SAID or rev is None or not rev.isdecimal() or len(rev) > 9:
+    """The result an address names, when the note's own history bears it out: the event is
+    one of this note's, of the kind the sentence is about, and the sentence is said as what
+    stands only while that event is the latest."""
+    if said not in SAID or not event or len(event) > TOKEN_MAX_LENGTH:
         return None
     sentence, kind = SAID[said]
-    made = next((event for event in history if event.revision == int(rev)), None)
+    made = next((change for change in history if change.event_id == event), None)
     if made is None or (kind is not None and made.operation != kind):
         return None
-    stands = note.revision == made.revision
+    stands = history[-1].event_id == made.event_id
     return NoteResult(sentence if stands else NOTE_SAVED_EARLIER, stands)
+
+
+def unreadable(
+    request: Request, state: ApplicationState, status_code: int = status.HTTP_200_OK
+) -> HTMLResponse:
+    """The small page for a note that is on record and cannot be read, which is not the page
+    for a name that is no note: it says the note is unavailable and that nothing changed."""
+    return templates.TemplateResponse(
+        request,
+        "student_note_gone.html",
+        {"problem": NOTE_UNREADABLE, "ways_back": ways_back(), "sample": state.settings.sample},
+        status_code=status_code,
+    )
 
 
 def note_page(
@@ -352,30 +371,26 @@ def note_page(
     form: NoteForm | None = None,
     problem: str | None = None,
     said: str | None = None,
-    rev: str | None = None,
+    event: str | None = None,
     asked: str | None = None,
     edit: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """One note's page: what stands, the first words when they differ, who supplied a class
-    or a day, the history, and for her the ways to change it. Two reads in one snapshot."""
+    or a day, the history, and for her the ways to change it. Two reads in one snapshot. A
+    note or a change of it that cannot be read is said as unavailable, never as gone."""
     store = state.project_state
     try:
         with store.reading():
             note = store.capture(capture_id)
             history = [] if note is None else store.capture_history(capture_id)
     except UnreadableCapture:
-        return templates.TemplateResponse(
-            request,
-            "student_note_gone.html",
-            {"problem": NOTE_UNREADABLE, "ways_back": ways_back(), "sample": state.settings.sample},
-            status_code=status_code if status_code != status.HTTP_200_OK else status.HTTP_200_OK,
-        )
+        return unreadable(request, state, status_code)
     if note is None:
         return gone(request, state)
     viewer = viewer_of(request)
     mine = viewer != "parent"
-    result = result_of(note, history, said, rev) if mine else None
+    result = result_of(history, said, event) if mine else None
     if mine and result is None and asked:
         request_made = state.help_requests.get(asked[:TOKEN_MAX_LENGTH])
         if request_made is not None and request_made.capture_id == note.capture_id:
@@ -479,29 +494,33 @@ def one_note(
     capture_id: str,
     state: State,
     said: str | None = None,
-    rev: str | None = None,
+    event: str | None = None,
     asked: str | None = None,
     edit: str | None = None,
 ) -> HTMLResponse:
-    """One note. ``said`` and ``rev`` are what a save did and the revision it made or found,
+    """One note. ``said`` and ``event`` are what a save did and the change it made or found,
     looked up in the note's history; ``edit`` opens the form; nothing here writes."""
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    return note_page(request, state, name, said=said, rev=rev, asked=asked, edit=edit == "1")
+    return note_page(request, state, name, said=said, event=event, asked=asked, edit=edit == "1")
 
 
 @router.get(
     "/homework-notes/{capture_id}/help", response_class=HTMLResponse, include_in_schema=False
 )
 def help_about_a_note(request: Request, capture_id: str, state: State) -> HTMLResponse:
-    """The page that offers to ask for help about one note. Opening it sends nothing."""
+    """The page that offers to ask for help about one note. Opening it sends nothing. A
+    note on record that cannot be read is said as that, and never as not on record."""
     try:
         name = capture_id_from(capture_id)
-        note = state.project_state.capture(name)
-    except (NotACaptureId, UnreadableCapture):
+    except NotACaptureId:
         return gone(request, state)
+    try:
+        note = state.project_state.capture(name)
+    except UnreadableCapture:
+        return unreadable(request, state)
     if note is None:
         return gone(request, state)
     return help_page(request, state, note)
@@ -594,10 +613,10 @@ async def save_a_new_note(request: Request, state: State) -> Response:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     match outcome:
-        case CaptureCreated(capture=note):
-            where = note_href(name, fragment=NOTE_RESULT, said="saved", rev=str(note.revision))
-        case CaptureAlreadyCreated(capture=note):
-            where = note_href(name, fragment=NOTE_RESULT, said="same", rev=str(note.revision))
+        case CaptureCreated(event=made):
+            where = note_href(name, fragment=NOTE_RESULT, said="saved", event=made.event_id)
+        case CaptureAlreadyCreated(head=found):
+            where = note_href(name, fragment=NOTE_RESULT, said="same", event=found.event_id)
         case CaptureIdTaken(capture=note):
             return new_note_page(
                 request,
@@ -684,10 +703,10 @@ async def edit_a_note(request: Request, capture_id: str, state: State) -> Respon
         logger.exception("her homework note %s could not be changed", name)
         return note_or_plain(request, state, name, NOTE_NOT_SAVED, form)
     match outcome:
-        case CaptureChanged(capture=note):
-            where = note_href(name, fragment=NOTE_RESULT, said="edited", rev=str(note.revision))
-        case CaptureUnchanged(capture=note):
-            where = note_href(name, fragment=NOTE_RESULT, said="unchanged", rev=str(note.revision))
+        case CaptureChanged(event=made):
+            where = note_href(name, fragment=NOTE_RESULT, said="edited", event=made.event_id)
+        case CaptureUnchanged(head=found):
+            where = note_href(name, fragment=NOTE_RESULT, said="unchanged", event=found.event_id)
         case CaptureConflict(capture=note):
             return note_page(
                 request,
@@ -747,11 +766,11 @@ async def move_a_note(
         logger.exception("her homework note %s could not be moved", name)
         return note_or_plain(request, state, name, NOTE_NOT_MOVED, None)
     match outcome:
-        case CaptureChanged(capture=note):
+        case CaptureChanged(event=made):
             said = "archived" if archive else "restored"
-            where = note_href(name, fragment=NOTE_RESULT, said=said, rev=str(note.revision))
-        case CaptureUnchanged(capture=note):
-            where = note_href(name, fragment=NOTE_RESULT, said="unchanged", rev=str(note.revision))
+            where = note_href(name, fragment=NOTE_RESULT, said=said, event=made.event_id)
+        case CaptureUnchanged(head=found):
+            where = note_href(name, fragment=NOTE_RESULT, said="unchanged", event=found.event_id)
         case CaptureConflict():
             return note_page(
                 request,
@@ -796,14 +815,18 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     again where the request is written, in the help store's own transaction.
     A request the file refuses is said on the page she sent it from, made from
     the note already read, so it reads no store again and keeps her question.
+    A note on record that cannot be read is said as that, and nothing is sent.
     A parent is answered 403 and nothing is sent in her name.
     """
     fields, whole = await fields_of(request, HELP_FIELDS)
     try:
         name = capture_id_from(capture_id)
-        note = state.project_state.capture(name)
-    except (NotACaptureId, UnreadableCapture):
+    except NotACaptureId:
         return gone(request, state)
+    try:
+        note = state.project_state.capture(name)
+    except UnreadableCapture:
+        return unreadable(request, state, status.HTTP_500_INTERNAL_SERVER_ERROR)
     if note is None:
         return gone(request, state)
     question = fields.get("note", "")

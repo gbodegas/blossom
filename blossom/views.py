@@ -381,14 +381,13 @@ class HelpNoteView(BaseModel):
     unavailable: bool = False
 
     @classmethod
-    def about(
-        cls, capture_id: str | None, notes: Mapping[str, Capture] | None
-    ) -> "HelpNoteView | None":
-        """The note a request names, out of the notes a page read in one batch; ``None``
-        for a request about no note. One the batch does not hold is unavailable."""
+    def about(cls, capture_id: str | None, notes: Mapping[str, Capture]) -> "HelpNoteView | None":
+        """The note a request names, out of the notes read for it in one batch; ``None`` for
+        a request about no note. One the batch does not hold is unavailable, so whoever
+        shows a request reads the notes first: there is no way to say they were not read."""
         if capture_id is None:
             return None
-        note = None if notes is None else notes.get(capture_id)
+        note = notes.get(capture_id)
         if note is None:
             return cls(capture_id=capture_id, unavailable=True)
         return cls(capture_id=note.capture_id, text=note.text, archived=note.archived)

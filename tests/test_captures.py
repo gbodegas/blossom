@@ -330,6 +330,75 @@ def test_the_same_id_with_anything_else_in_it_is_not_that_note(
     assert len(rows(store)[0]) == len(before[0]) == 1
 
 
+def test_a_save_that_writes_nothing_names_the_change_it_found_standing(
+    store: ProjectStateStore,
+) -> None:
+    """A page says what a save did from the change it names. One that wrote nothing names
+    the latest change of the note, read in the transaction that decided nothing was to do."""
+    name = new_capture_id()
+    first = create(store, name)
+    assert isinstance(first, CaptureCreated)
+    again = create(store, name)
+    edited = edit(store, name, "Questions 4-9", None, None, 1, on=1)
+    assert isinstance(edited, CaptureChanged)
+    after_edit = create(store, name, on=2)
+    same_words = edit(store, name, "Questions 4-9", None, None, 1, on=2)
+    put_away = archive(store, name, 2, on=3)
+    assert isinstance(put_away, CaptureChanged)
+    put_away_again = archive(store, name, 2, on=4)
+    after_archive = create(store, name, on=4)
+    back = restore(store, name, 3, on=5)
+    assert isinstance(back, CaptureChanged)
+    back_again = restore(store, name, 3, on=6)
+
+    assert isinstance(again, CaptureAlreadyCreated)
+    assert again.head == first.event
+    assert isinstance(after_edit, CaptureAlreadyCreated)
+    assert after_edit.head == edited.event
+    assert isinstance(same_words, CaptureUnchanged)
+    assert same_words.head == edited.event
+    assert isinstance(put_away_again, CaptureUnchanged)
+    assert put_away_again.head == put_away.event
+    assert isinstance(after_archive, CaptureAlreadyCreated)
+    assert after_archive.head == put_away.event
+    assert isinstance(back_again, CaptureUnchanged)
+    assert back_again.head == back.event
+    assert [event.event_id for event in store.capture_history(name)] == [
+        first.event.event_id,
+        edited.event.event_id,
+        put_away.event.event_id,
+        back.event.event_id,
+    ]
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "UPDATE capture_events SET occurred_on = 'someday' WHERE revision = 2",
+        "UPDATE capture_events SET occurred_at_utc = 'then' WHERE revision = 2",
+        "UPDATE capture_events SET after = '{' WHERE revision = 2",
+        "UPDATE capture_events SET before = 'not json' WHERE revision = 2",
+        "UPDATE capture_events SET operation = 'guess' WHERE revision = 2",
+        "UPDATE capture_events SET authored_by = 'nobody' WHERE revision = 2",
+    ],
+)
+def test_a_change_that_cannot_be_read_is_an_unreadable_note_and_never_a_crash(
+    store: ProjectStateStore, damage: str
+) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    changed(edit(store, name, "Questions 4-9", None, None, 1))
+    store._connection.execute(damage)
+    store._connection.commit()
+
+    with pytest.raises(UnreadableCapture):
+        store.capture_history(name)
+    with pytest.raises(CaptureNotSaved):
+        edit(store, name, "Questions 4-9", None, None, 2)
+    assert store.capture(name) is not None
+    assert [note.capture_id for note in store.outstanding_captures().notes] == [name]
+
+
 def test_two_notes_with_the_same_words_are_two_notes(store: ProjectStateStore) -> None:
     first = created(create(store, new_capture_id()))
     second = created(create(store, new_capture_id()))

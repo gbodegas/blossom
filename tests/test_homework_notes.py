@@ -30,6 +30,7 @@ from blossom.routes.captures import (
     NOTE_CHANGED,
     NOTE_DATE_UNREADABLE,
     NOTE_EDITED,
+    NOTE_GONE,
     NOTE_ID_TAKEN,
     NOTE_NEEDS_A_DATE_CHOICE,
     NOTE_NEEDS_WORDS,
@@ -38,6 +39,7 @@ from blossom.routes.captures import (
     NOTE_SAVED,
     NOTE_SAVED_EARLIER,
     NOTE_TOO_LONG,
+    NOTE_UNREADABLE,
 )
 from blossom.routes.navigation import (
     ARCHIVED_NOTES_PAGE,
@@ -45,6 +47,7 @@ from blossom.routes.navigation import (
     NOTE_ACTIONS,
     NOTES_PAGE,
     note_action,
+    note_help_href,
     note_href,
 )
 from blossom.routes.student import BAD_FORM, NOT_HERS_TO_UPDATE
@@ -545,22 +548,101 @@ def test_a_result_read_after_the_note_moved_on_says_so_and_a_made_up_one_says_no
         )
 
         later = client.get(held).text
+        first, second = (event.event_id for event in store.capture_history(name))
+        other = saved_note(client, "Another note")
+        elsewhere = store.capture_history(other)[0].event_id
         made_up = [
-            client.get(note_href(name, said="archived", rev="2")).text,
-            client.get(note_href(name, said="saved", rev="2")).text,
-            client.get(note_href(name, said="saved", rev="9")).text,
-            client.get(note_href(name, said="everything", rev="1")).text,
+            client.get(note_href(name, said="archived", event=first)).text,
+            client.get(note_href(name, said="saved", event=second)).text,
+            client.get(note_href(name, said="edited", event=first)).text,
+            client.get(note_href(name, said="saved", event="note-event-000000000000")).text,
+            client.get(note_href(name, said="everything", event=first)).text,
+            client.get(note_href(name, said="same", event="2")).text,
+            client.get(note_href(name, said="same", rev="2")).text,
+            client.get(note_href(name, said="unchanged", rev="2")).text,
+            client.get(note_href(name, said="unchanged", event=elsewhere)).text,
+            client.get(note_href(name, said="same", event="e" * 500)).text,
+            client.get(note_href(name, said="same")).text,
         ]
         rows = tables(store)
 
     assert "said=saved" in held
-    assert "rev=1" in held
+    assert f"event={first}" in held
+    assert "rev=" not in held
     assert escape(NOTE_SAVED_EARLIER) in later
     assert escape(NOTE_SAVED) not in later
     assert "Edited elsewhere" in later
     for page in made_up:
         assert 'id="note-result"' not in page
-    assert len(rows[1]) == 2
+        assert escape(NOTE_ALREADY_SAVED) not in page
+    assert len(rows[1]) == 3
+
+
+def test_a_save_that_wrote_nothing_is_said_from_the_change_it_found_and_no_other() -> None:
+    """The address of an already saved result names the change the save found standing, which
+    only the server knows; while that is the latest it is said, and after another change it
+    is said as something done earlier."""
+    with browser() as client:
+        store = state_of(client).project_state
+        fields = new_form(client)
+        typed = {"text": WORDS, "course": "", "due_date": ""}
+        send(client, fields, **typed)
+        name = fields["capture_id"]
+        replay = send(client, fields, **typed).headers["location"]
+        edit = note_action(name, "edit")
+        opened = form_fields(client.get(note_href(name, edit="1")).text, edit)
+        no_change = client.post(edit, data={**opened, **typed}, headers=PAGE_HEADERS)
+        unchanged = no_change.headers["location"]
+        first = store.capture_history(name)[0].event_id
+        said_now = [client.get(replay).text, client.get(unchanged).text]
+        client.post(edit, data={**opened, **typed, "text": "Edited since"}, headers=PAGE_HEADERS)
+        said_later = [client.get(replay).text, client.get(unchanged).text]
+        events = tables(store)[1]
+
+    assert no_change.status_code == 303
+    for where, said in ((replay, "same"), (unchanged, "unchanged")):
+        assert f"said={said}" in where
+        assert f"event={first}" in where
+        assert "rev=" not in where
+    for page in said_now:
+        assert escape(NOTE_ALREADY_SAVED) in page
+    for page in said_later:
+        assert escape(NOTE_SAVED_EARLIER) in page
+        assert escape(NOTE_ALREADY_SAVED) not in page
+        assert "Edited since" in page
+    assert len(events) == 2
+
+
+def test_a_note_that_cannot_be_read_is_said_so_wherever_it_is_opened_and_never_as_gone() -> None:
+    """On record and unreadable is not the same as not on record: the help page and a request
+    for help say the first, as the note's own page does, and nothing is sent. A change that
+    cannot be read makes the note's page say the same and never fail."""
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        name = saved_note(client)
+        damaged = saved_note(client, "A note whose history is damaged")
+        store._connection.execute(
+            "UPDATE homework_captures SET due_date = 'next week' WHERE capture_id = ?", (name,)
+        )
+        store._connection.execute(
+            "UPDATE capture_events SET occurred_on = 'someday' WHERE capture_id = ?", (damaged,)
+        )
+        store._connection.commit()
+
+        opened = client.get(note_help_href(name))
+        asked = client.post(
+            note_action(name, "ask-for-help"), data={"note": "which part?"}, headers=PAGE_HEADERS
+        )
+        page = client.get(note_href(damaged))
+        sent = state.help_requests.open_requests()
+
+    for answer, status_code in ((opened, 200), (asked, 500), (page, 200)):
+        assert answer.status_code == status_code
+        assert escape(NOTE_UNREADABLE) in answer.text
+        assert escape(NOTE_GONE) not in answer.text
+        assert WORDS not in answer.text
+    assert sent == []
 
 
 # ------------------------------------------------------------------- who may

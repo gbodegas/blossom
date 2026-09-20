@@ -548,13 +548,22 @@ class HelpStep(BaseModel):
     response: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
 
 
+def notes_named_by(state: ApplicationState, requests: list[HelpRequest]) -> NamedCaptures:
+    """The notes these requests are about, in one statement for all of them, and in none
+    when no request is about a note."""
+    return state.project_state.captures_named(
+        request.capture_id for request in requests if request.capture_id
+    )
+
+
 def help_view(
-    state: ApplicationState, request: HelpRequest, named: NamedCaptures | None = None
+    state: ApplicationState, request: HelpRequest, named: NamedCaptures
 ) -> HelpRequestView:
     """The request as the parent sees it, which is exactly as she sees it, with the
-    homework note it is about, when it is about one, out of the page's one batch."""
+    homework note it is about, when it is about one, out of ``named``, the notes read for
+    the requests being shown."""
     return HelpRequestView(
-        about_note=HelpNoteView.about(request.capture_id, None if named is None else named.notes),
+        about_note=HelpNoteView.about(request.capture_id, named.notes),
         request_id=request.request_id,
         evening=request.evening,
         asked_at=request.asked_at,
@@ -590,14 +599,11 @@ def move_request(
 
 @router.get("/help-requests")
 def help_requests(state: State) -> list[HelpRequestView]:
-    """Every request she has open, oldest first, then those resolved within two weeks."""
-    return [
-        help_view(state, request)
-        for request in [
-            *state.help_requests.open_requests(),
-            *state.help_requests.recently_resolved(),
-        ]
-    ]
+    """Every request she has open, oldest first, then those resolved within two weeks, each
+    with the note it is about, read once for all of them."""
+    asked = [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
+    named = notes_named_by(state, asked)
+    return [help_view(state, request, named) for request in asked]
 
 
 @router.post("/help-requests/{request_id}/accept")
@@ -606,7 +612,8 @@ def accept_help_request(
 ) -> HelpRequestView:
     """Take a request up, so her page says a parent is on it."""
     response = None if payload is None else payload.response
-    return help_view(state, move_request(state, request_id, "accept", response))
+    moved = move_request(state, request_id, "accept", response)
+    return help_view(state, moved, notes_named_by(state, [moved]))
 
 
 @router.post("/help-requests/{request_id}/resolve")
@@ -615,7 +622,8 @@ def resolve_help_request(
 ) -> HelpRequestView:
     """Answer a request, with a word back if given; her page shows it for two weeks."""
     response = None if payload is None else payload.response
-    return help_view(state, move_request(state, request_id, "resolve", response))
+    moved = move_request(state, request_id, "resolve", response)
+    return help_view(state, moved, notes_named_by(state, [moved]))
 
 
 # --------------------------------------------------------------------- the page
@@ -686,9 +694,7 @@ def review_page(
             also=() if working is None else working.plan_assignment_ids or (),
         )
         notes = state.project_state.outstanding_captures()
-        named = state.project_state.captures_named(
-            request.capture_id for request in asked if request.capture_id
-        )
+        named = notes_named_by(state, asked)
     plans = {
         record.draft_id: read_a_plan(
             state,

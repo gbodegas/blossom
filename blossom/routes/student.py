@@ -378,12 +378,21 @@ class HelpRequestResponse(BaseModel):
     request: HelpRequestView
 
 
+def notes_named_by(state: ApplicationState, requests: list[HelpRequest]) -> NamedCaptures:
+    """The notes these requests are about, in one statement for all of them, and in none
+    when no request is about a note."""
+    return state.project_state.captures_named(
+        request.capture_id for request in requests if request.capture_id
+    )
+
+
 def help_view(
-    state: ApplicationState, request: HelpRequest, named: NamedCaptures | None = None
+    state: ApplicationState, request: HelpRequest, named: NamedCaptures
 ) -> HelpRequestView:
-    """The request as both pages see it, with the time she asked in the household's zone."""
+    """The request as both pages see it, with the time she asked in the household's zone and
+    the note it is about out of ``named``, the notes read for the requests being shown."""
     return HelpRequestView(
-        about_note=HelpNoteView.about(request.capture_id, None if named is None else named.notes),
+        about_note=HelpNoteView.about(request.capture_id, named.notes),
         request_id=request.request_id,
         evening=request.evening,
         asked_at=request.asked_at,
@@ -407,9 +416,12 @@ def help_requests_shown(
     held: list[HelpRequest] | None = None,
     named: NamedCaptures | None = None,
 ) -> list[HelpRequestView]:
-    """What she sees: open requests oldest first, then those resolved within two weeks."""
+    """What she sees: open requests oldest first, then those resolved within two weeks. A
+    caller that read the notes they name with its own reading passes them; otherwise they
+    are read here, once for all of them."""
     requests = help_requests_held(state) if held is None else held
-    return [help_view(state, request, named) for request in requests]
+    about = notes_named_by(state, requests) if named is None else named
+    return [help_view(state, request, about) for request in requests]
 
 
 @router.post("/help-requests", status_code=status.HTTP_201_CREATED)
@@ -419,7 +431,10 @@ def ask_for_help(
     """Ask for help today. ``payload`` is optional so an empty POST works."""
     note = None if payload is None else payload.note
     request = state.help_requests.ask(state.clock.today(), note)
-    return HelpRequestResponse(principal=Principal.STUDENT, request=help_view(state, request))
+    return HelpRequestResponse(
+        principal=Principal.STUDENT,
+        request=help_view(state, request, notes_named_by(state, [request])),
+    )
 
 
 @router.get("/help-requests")
@@ -1025,9 +1040,7 @@ def student_page(
             also=(*(() if record is None else record.plan_assignment_ids or ()), *about),
         )
         notes = state.project_state.outstanding_captures()
-        named = state.project_state.captures_named(
-            request.capture_id for request in held if request.capture_id
-        )
+        named = notes_named_by(state, held)
     todays = (
         None
         if record is None
