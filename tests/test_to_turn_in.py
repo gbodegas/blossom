@@ -31,7 +31,12 @@ from blossom.routes.hand_in import (
     LIST_TURN_IN_FAILED,
     LIST_UNDO_FAILED,
 )
-from blossom.routes.navigation import TO_TURN_IN_PAGE, details_href, result_anchor
+from blossom.routes.navigation import (
+    TO_TURN_IN_PAGE,
+    assignment_anchor,
+    details_href,
+    result_anchor,
+)
 from blossom.routes.runs import NOTHING_TO_SCHEDULE
 from blossom.routes.student import (
     BAD_RETURN,
@@ -60,6 +65,7 @@ from tests.support import (
     THEIRS,
     Answer,
     a_row,
+    as_served,
     browser,
     card_for,
     fixture_clock,
@@ -1507,13 +1513,210 @@ def test_a_card_on_her_week_and_the_way_back_to_it_land_on_the_card_for_any_id(n
     for answer, shown, word in ((saved, after_save, "saved"), (undone, after_undo, "undone")):
         address = answer.headers["location"]
         assert parse_qs(urlsplit(address).query)[word] == [name]
-        assert f'id="{escape("assignment-" + name)}"' in lands_on(shown, address)
+        assert f'id="{assignment_anchor(name)}"' in lands_on(shown, address)
         assert 'class="note update-result"' in card_for(shown, name)
-    assert f'id="{escape("assignment-" + name)}"' in lands_on(
-        returned, html.unescape(way_back.group(1))
-    )
+    assert f'id="{assignment_anchor(name)}"' in lands_on(returned, html.unescape(way_back.group(1)))
     assert parse_qs(urlsplit(html.unescape(way_back.group(1))).query)["show"] == [name]
-    assert f'id="{escape("assignment-" + name)}"' in lands_on(
-        checked, html.unescape(to_check.group(1))
-    )
+    assert f'id="{assignment_anchor(name)}"' in lands_on(checked, html.unescape(to_check.group(1)))
     assert parse_qs(urlsplit(html.unescape(to_check.group(1))).query)["show"] == [name]
+
+
+# ------------------------- a list form is held to what stands, where the write is decided
+
+READING_LOG_ID = "assignment-reading-log"
+
+
+def list_press(origin: str, head: str) -> dict[str, str]:
+    """The row's form, made by hand: every field, as the list would write it."""
+    return {
+        "state": "turned_in",
+        "next_action": "",
+        "note": "",
+        "expected_hand_in_id": head,
+        "hand_in_view": origin,
+    }
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_a_list_shaped_press_over_anything_but_still_to_turn_in_writes_nothing(origin: str) -> None:
+    """No row is drawn for these, so no list form could name them: nothing said yet, not
+    sure, nothing to turn in, and turned in with a note the press would have dropped."""
+    with browser() as client:
+        store = state_of(client).project_state
+        heads = {
+            ESSAY_ID: said(store, ESSAY_ID, "unknown", date(2026, 8, 19)),
+            QUIZ_ID: said(store, QUIZ_ID, "not_required", date(2026, 8, 19)),
+            ALGEBRA_ID: said(store, ALGEBRA_ID, TURNED_IN, date(2026, 8, 19), note="at the office"),
+            READING_LOG_ID: "",
+        }
+        before = store._connection.execute("SELECT * FROM hand_in_events").fetchall()
+        answers = {
+            name: client.post(
+                hand_in_actions(name)[0], data=list_press(origin, head), headers=PAGE_HEADERS
+            )
+            for name, head in heads.items()
+        }
+        after = store._connection.execute("SELECT * FROM hand_in_events").fetchall()
+
+    for name, answer in answers.items():
+        assert answer.status_code == 422, name
+        assert said_first(answer.text, LIST_BAD_FORM), name
+        assert escape(TURNED_IN_FROM_THE_LIST) not in answer.text
+        assert 'name="expected_hand_in_id"' not in about_of(answer.text)
+    assert "at the office" in about_of(answers[ALGEBRA_ID].text)
+    assert "Hand-in status not recorded." in about_of(answers[READING_LOG_ID].text)
+    assert after == before
+
+
+@pytest.mark.parametrize("origin", ["list", "week"])
+def test_a_list_shaped_undo_of_anything_but_her_turned_in_report_writes_nothing(
+    origin: str,
+) -> None:
+    """The list offers Undo beside one thing, her report that it was turned in. The head a
+    row carries is a report too, of still to turn in, and is not the list's to take back."""
+    where = TO_TURN_IN_PAGE if origin == "list" else HER_PAGE
+    with browser() as client:
+        store = state_of(client).project_state
+        waiting = said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19), note="mine")
+        unsure = said(store, QUIZ_ID, "unknown", date(2026, 8, 19))
+        before = store._connection.execute("SELECT * FROM hand_in_events").fetchall()
+        answers = [
+            client.post(
+                hand_in_actions(name)[1],
+                data={"hand_in_id": head, "hand_in_view": origin},
+                headers=PAGE_HEADERS,
+            )
+            for name, head in ((ESSAY_ID, waiting), (QUIZ_ID, unsure))
+        ]
+        after = store._connection.execute("SELECT * FROM hand_in_events").fetchall()
+        undo = hand_in_actions(ESSAY_ID)[1]
+        pressed = follow(client, press(client, client.get(where).text, ESSAY_ID))
+        worked = client.post(undo, data=form_fields(pressed, undo), headers=PAGE_HEADERS)
+        restored = store.hand_in_chains([ESSAY_ID])[ESSAY_ID][-1]
+
+    for answer in answers:
+        assert answer.status_code == 422
+        assert said_first(answer.text, LIST_BAD_FORM)
+        assert escape(HAND_IN_UNDONE) not in answer.text
+    assert "mine" in about_of(answers[0].text)
+    assert after == before
+    assert worked.status_code == 303
+    assert (restored.operation, restored.state, restored.note) == ("undo", NEEDS_HAND_IN, "mine")
+
+
+# ------------------------------------- two ids that differ only by an escape, side by side
+
+PAIR = {"unit/3": "Slash set", "unit%2F3": "Escaped set"}
+
+
+def landed(page: str, address: str) -> str:
+    """The card or row a browser lands on for an address, whole: from the element the
+    fragment names to the next card's. Empty when the fragment names nothing."""
+    tag = lands_on(page, address)
+    if not tag:
+        return ""
+    start = page.index(tag)
+    following = page.find('id="assignment-', start + len(tag))
+    return page[start:] if following < 0 else page[start:following]
+
+
+def in_an_open_fold(page: str, address: str) -> bool:
+    """Whether the element an address lands on sits inside a Reported done fold that is
+    open, which a fold the server did not open would hide from her."""
+    start = page.index(lands_on(page, address))
+    opened = page.rfind('<details class="steps reported-done"', 0, start)
+    if opened <= page.rfind("</details>", 0, start):
+        return False
+    return " open" in page[opened : page.index(">", opened)]
+
+
+@pytest.mark.parametrize("placement", ["due this week", "due later"])
+@pytest.mark.parametrize("target", list(PAIR))
+def test_every_way_to_a_card_lands_on_that_card_when_another_id_differs_only_by_an_escape(
+    target: str, placement: str
+) -> None:
+    """Both assignments are on her week together, as cards or as rows due later. From the
+    way back, a refusal's link, a save, the same save again, the link to something worth
+    checking, Change, keeping it as it is, and an undo, the place reached is the one
+    assignment's, active or under Reported done with that fold open, and the other's
+    record is as it was. The paths are decoded as a server decodes them, once, which for
+    an id that holds an escaped percent sign is not what the test client does by itself."""
+    other = next(name for name in PAIR if name != target)
+    save, undo = report_actions(target)
+    with as_served(browser(BLOSSOM_FIXTURE_PATH="")) as client:
+        store = state_of(client).project_state
+        dates = (
+            {"due_date": date(2026, 8, 20)}
+            if placement == "due this week"
+            else {"assigned_on": date(2026, 8, 18), "due_date": date(2026, 8, 28)}
+        )
+        store.put_on_record(
+            [a_row(name, title).model_copy(update=dates) for name, title in PAIR.items()], {}
+        )
+        store.record_status_reports(
+            target, [school_said("missing", SourceChannel.EMAIL, date(2026, 8, 19))]
+        )
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        fields = form_fields(card_for(week, target), save)
+        reached: dict[str, tuple[str, str]] = {}
+
+        details = client.get(details_href(target, return_to="week", week=FIXTURE_WEEK)).text
+        found = re.search(r'<p class="return"><a href="([^"]+)">Back to the week</a>', details)
+        assert found is not None
+        way_back = html.unescape(found.group(1))
+        reached["the way back"] = (client.get(way_back).text, way_back)
+
+        refused = client.post(save, data={**fields, "note": ""}, headers=PAGE_HEADERS)
+        found = re.search(r'<a href="(#[^"]+)">Go to the assignment.</a>', refused.text)
+        assert found is not None
+        reached["the refusal's link"] = (refused.text, html.unescape(found.group(1)))
+
+        chosen = {**fields, "status": "done", "note": ""}
+        saved = client.post(save, data=chosen, headers=PAGE_HEADERS)
+        after_save = client.get(saved.headers["location"]).text
+        reached["a save"] = (after_save, saved.headers["location"])
+        again = client.post(save, data=chosen, headers=PAGE_HEADERS)
+        reached["the same save"] = (
+            client.get(again.headers["location"]).text,
+            again.headers["location"],
+        )
+
+        found = re.search(r'to check:</strong>\s*<a href="([^"]+)"', after_save)
+        assert found is not None
+        to_check = html.unescape(found.group(1))
+        reached["worth checking"] = (client.get(to_check).text, to_check)
+
+        mine = landed(after_save, saved.headers["location"])
+        found = re.search(r'<form method="get" action="([^"]+)" class="action">', mine)
+        assert found is not None
+        change = html.unescape(found.group(1))
+        opened = client.get(
+            urlsplit(change).path, params=form_fields(mine, found.group(1)), headers=PAGE_HEADERS
+        ).text
+        reached["Change"] = (opened, change)
+        found = re.search(r'<a class="cancel" href="([^"]+)"', landed(opened, change))
+        assert found is not None
+        keep = html.unescape(found.group(1))
+        reached["keeping it"] = (client.get(keep).text, keep)
+
+        undone = client.post(undo, data=form_fields(mine, undo), headers=PAGE_HEADERS)
+        reached["an undo"] = (
+            client.get(undone.headers["location"]).text,
+            undone.headers["location"],
+        )
+        reports = {name: len(store.student_reports(name)) for name in PAIR}
+
+    assert (refused.status_code, saved.status_code, again.status_code) == (422, 303, 303)
+    assert undone.status_code == 303
+    for how, (page, address) in reached.items():
+        place = landed(page, address)
+        assert f'id="{assignment_anchor(target)}"' in lands_on(page, address), how
+        assert PAIR[target] in place, how
+        assert PAIR[other] not in place, how
+        done_now = how not in ("the way back", "the refusal's link", "an undo")
+        assert in_an_open_fold(page, address) == done_now, how
+    for how in ("a save", "the same save", "an undo"):
+        assert 'class="note update-result"' in landed(*reached[how]), how
+    assert parse_qs(urlsplit(reached["a save"][1]).query)["saved"] == [target]
+    assert parse_qs(urlsplit(way_back).query)["show"] == [target]
+    assert reports == {target: 2, other: 0}

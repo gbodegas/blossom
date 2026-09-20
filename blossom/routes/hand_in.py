@@ -31,6 +31,7 @@ from blossom.hand_in import (
     UNKNOWN,
     HandInAlreadySaved,
     HandInConflict,
+    HandInNotOffered,
     HandInSaved,
     HandInState,
     HandInUndone,
@@ -484,6 +485,9 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
                 expected_head=token or None,
                 now=now,
                 today=today,
+                # A row is drawn only over still to turn in, so that is all its press may
+                # be written over. The store decides it where it decides the write.
+                only_over=NEEDS_HAND_IN if view is not None else None,
             )
     except UnknownAssignment:
         if view is not None:
@@ -525,6 +529,8 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
             where = after(assignment_id, "same", back)
         case HandInConflict():
             return refused(HAND_IN_CHANGED, status.HTTP_409_CONFLICT)
+        case HandInNotOffered():
+            return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -602,7 +608,15 @@ async def undo_hand_in_from_the_page(
     try:
         async with state.decision_lock:
             now, today = accepted_at(state)
-            result = state.project_state.undo_hand_in(assignment_id, named, now=now, today=today)
+            result = state.project_state.undo_hand_in(
+                assignment_id,
+                named,
+                now=now,
+                today=today,
+                # The list offers Undo beside her report that it was turned in and nothing
+                # else, so that is all an Undo from the list may take back.
+                only_over=TURNED_IN if view is not None else None,
+            )
     except UnknownAssignment:
         if view is not None:
             return refused(GONE_FROM_THE_LIST, status.HTTP_404_NOT_FOUND)
@@ -629,3 +643,5 @@ async def undo_hand_in_from_the_page(
                 ALREADY_UNDONE if already_undone(conflict, named) else HAND_IN_CANNOT_UNDO,
                 status.HTTP_409_CONFLICT,
             )
+        case HandInNotOffered():
+            return refused(LIST_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)

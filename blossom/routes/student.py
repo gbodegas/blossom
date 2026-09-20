@@ -103,6 +103,7 @@ from blossom.routes.navigation import (
     WEEK_PAGE,
     ReturnTo,
     address,
+    assignment_anchor,
     details_href,
     read_return,
     result_anchor,
@@ -1161,11 +1162,12 @@ def week_named(given: str) -> date | None:
 
 def back_to_the_card(week: date | None, said: str, assignment_id: str) -> str:
     """Where a save or an undo sends her: the week she was on, the card, and what happened.
-    The id is escaped where it goes, in the query and in the fragment, so one that holds a
-    hash, an ampersand, or a question mark is still one value and one place."""
+    The id is escaped where it goes, in the query, and the fragment is the card's own id,
+    so one that holds a hash, an ampersand, or a question mark is still one value and one
+    place."""
     return address(
         PAGE,
-        fragment=f"assignment-{segment(assignment_id)}",
+        fragment=assignment_anchor(assignment_id),
         week=None if week is None else week.isoformat(),
         **{said: assignment_id},
     )
@@ -1226,7 +1228,7 @@ def week_context(assignment_id: str, week: date, viewer: str) -> ReportContext:
         can_update=viewer != "parent",
         report_action=report,
         undo_action=undo,
-        change_action=address(WEEK_PAGE, fragment=f"assignment-{segment(assignment_id)}"),
+        change_action=address(WEEK_PAGE, fragment=assignment_anchor(assignment_id)),
         change_fields=[("week", week.isoformat()), ("change", assignment_id)],
         cancel_href=week_href(week, assignment_id, show=assignment_id),
         post_fields=[("week", week.isoformat())],

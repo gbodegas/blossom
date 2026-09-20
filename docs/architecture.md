@@ -125,13 +125,20 @@ checked field says where its result is shown: on the list or on her week,
 at a place that is there whether or not the row still is. A form that says
 it is the list's is held to the list's own shape, every field, no other, no
 way back, each value exactly as the page wrote it, and for the press that
-one state with no words; anything else is refused whole. Her routes that
+one state with no words; anything else is refused whole. The store holds
+the list's forms to what stands, in the transaction that would write: the
+press is written only over still to turn in, and the Undo takes back only her
+report that it was turned in, so a form in the list's shape that names
+anything else writes nothing. Her routes that
 carry an assignment's id take it as the rest of the path up to their own
 ending, so an id that holds a slash is reached by the addresses made for it.
 A place a redirect lands on is named by one helper, used by the page that
 writes the id and by the address sent to it, and her week with a card in view
 is one address builder that escapes the id in the query and in the fragment,
-so the two agree whatever an id holds. The redirect names the event the save accepted, and the page
+so the two agree whatever an id holds. A card or a row on her week writes its
+id with one helper too, the assignment's id escaped, and every fragment that
+names it is made by that helper, so two ids that differ only by an escape
+are two places. The redirect names the event the save accepted, and the page
 that answers looks it up in that assignment's history in its one reading:
 while that event is the latest the result is what stands, said with the
 dated statement that stands, with an Undo for that event and no other, and a

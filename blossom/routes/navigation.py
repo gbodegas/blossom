@@ -55,6 +55,11 @@ def segment(value: str) -> str:
     )
 
 
+def assignment_anchor(assignment_id: str) -> str:
+    """One DOM id, shared by an assignment and every link to it."""
+    return f"assignment-{segment(assignment_id)}"
+
+
 def address(path: str, fragment: str = "", **query: str | None) -> str:
     """An address on this site from a path, the query values that are not blank, and a
     fragment, each escaped by the framework."""
@@ -171,12 +176,12 @@ def read_return(
 
 
 def week_href(week: date | None, assignment_id: str, **more: str | None) -> str:
-    """Her week with one card in view, the fold around it open. The card's id is the
-    assignment's as it is; the fragment is that id escaped, which a browser undoes to find
-    the card, so an id that holds a hash or a space still names one place."""
+    """Her week with one card in view, the fold around it open. The fragment is the
+    card's own id, which the page writes with the same helper, so the address names that
+    card as written and no other, whatever the assignment's id holds."""
     return address(
         WEEK_PAGE,
-        fragment=f"assignment-{segment(assignment_id)}",
+        fragment=assignment_anchor(assignment_id),
         week=None if week is None else week.isoformat(),
         **more,
     )

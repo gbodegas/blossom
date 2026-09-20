@@ -155,6 +155,15 @@ class HandInConflict:
 
 
 @dataclass(frozen=True)
+class HandInNotOffered:
+    """A save or an undo that the page it came from offers only over one state, asked for
+    over another; nothing was written. The head is the one the page named and is still
+    the head, so this is no change made elsewhere: no such page wrote that form."""
+
+    head: HandInEvent | None
+
+
+@dataclass(frozen=True)
 class HandInUndone:
     """The head was taken back; the undo is the head now."""
 
