@@ -56,6 +56,7 @@ from blossom.hand_in import (
 )
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.retrieval import RetrievalResult
+from blossom.stores.captures import CaptureRecords
 from blossom.stores.paths import refuse_unsafe_path
 
 DUE_THIS_WEEK_KEY = "due_this_week"
@@ -492,7 +493,7 @@ class Reopened:
     check: FamilyCheck
 
 
-class ProjectStateStore:
+class ProjectStateStore(CaptureRecords):
     """SQLite-backed project state, opened once and shared across worker threads.
 
     The connection is created at application startup rather than per request,
@@ -619,6 +620,10 @@ class ProjectStateStore:
         # it. Inside a first start's transaction this joins it and ends nothing.
         with self._writing():
             self._create_hand_in_tables()
+        # Her homework notes and their events are one unit of four, two tables and two
+        # indexes: a start that is refused any of them leaves a file from before as it was.
+        with self._writing():
+            self._create_capture_tables()
         self._upgrade()
 
     def _create_hand_in_tables(self) -> None:
