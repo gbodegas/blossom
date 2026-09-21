@@ -433,21 +433,15 @@ model key come from there and nothing in it touches the family's own state:
 uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
 
-Without `uv`, nothing reads `.env`, so the shell has to load both files
-itself, `.env` first for the household's time zone and the model key, then
-the sample's for its paths and clock. These two lines read each file into
-the session without printing a value, and the third starts the app through
-the venv's own Python, from the repository folder:
+The README's [Start the sample](../README.md#try-it-locally) block does the
+same loading in PowerShell without uv: the household's `.env`, or the
+example when there is none, followed by the sample's paths and clock. The
+pip instructions below also cover macOS and Linux. Neither Python nor the
+app reads `.env` automatically.
 
-```powershell
-Get-Content .env | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object { $k, $v = $_ -split '=', 2; Set-Item -Path "Env:$($k.Trim())" -Value $v.Trim() }
-Get-Content data\sample\sample.env | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object { $k, $v = $_ -split '=', 2; Set-Item -Path "Env:$($k.Trim())" -Value $v.Trim() }
-.\.venv\Scripts\python -m uvicorn blossom.app:app --reload
-```
-
-The variables last for that PowerShell window; a fresh window is back to the
-family's own state. Without a key in `.env` the pages work and the plan
-button is not offered.
+The variables last for that PowerShell window. Use a fresh window when
+switching from the sample to the household's own settings. Without a key in
+`.env` the pages work and the plan button is not offered.
 
 To start the sample again from nothing, stop the app and delete the
 `.local/sample/` folder; the family's own state under `.local/` is untouched,
@@ -477,43 +471,86 @@ passed its checks; the app has no way to serve it as a plan, by design.
 
 ## When uv cannot download
 
-On a network that routes Python packages through an internal proxy or index,
-`uv sync` can fail with `HandshakeFailure` or a TLS error while `pip` already
-has the configuration it needs. The fallback is to build the environment with
-pip. If `uv sync` created `.venv` before failing, that venv has no pip yet,
-so bootstrap it first. Pip is always run through the venv's own Python,
-because the executable it installs is named differently from one system to
-the next. Uvicorn's own `--env-file` needs a package this project does not
-install, so the fallback sets the two variables the first run needs in the
-shell instead.
+Depending on your network and certificate settings, uv can have trouble
+downloading packages even when pip works. If that happens, or you'd rather
+use the tools you already have, Python and pip are enough to run Blossom. The
+[README](../README.md#try-it-locally) gives the full Windows PowerShell path,
+including creating the environment and loading the sample settings.
+
+For macOS and Linux, run these once from the repository folder, with Python
+3.12 or 3.13 installed. Use `python3.13` in the first line if that is the
+version you have:
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m ensurepip --upgrade
+.venv/bin/python -m pip install -e .
+```
+
+Paste the following block from the Blossom folder to start the sample. Use
+it again whenever you want to start the app. It reads your `.env` if you've
+made one, or `.env.example` if you haven't, then loads the sample settings
+so your changes stay under `.local/sample/`. Like the PowerShell version,
+it reads plain `KEY=value` lines and allows spaces in passphrases. Enter
+values without surrounding quotes.
+
+```bash
+.venv/bin/python - <<'PYTHON'
+import os
+import sys
+from pathlib import Path
+
+settings = Path(".env") if Path(".env").exists() else Path(".env.example")
+for path in (settings, Path("data/sample/sample.env")):
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip().isidentifier():
+            os.environ[key.strip()] = value.strip()
+
+os.execv(sys.executable, [sys.executable, "-m", "uvicorn", "blossom.app:app", "--reload"])
+PYTHON
+```
+
+Open <http://127.0.0.1:8000/student/due-this-week> or
+<http://127.0.0.1:8000/parent>. Press Ctrl+C to stop. For the optional planner,
+copy `.env.example` to `.env` if you do not already have one, set
+`ANTHROPIC_API_KEY` in your editor, and repeat the launch block. An existing
+`.env` is never overwritten by the launcher.
+
+Blossom doesn't read `.env` on its own; the launch block does that for you.
+Uvicorn also has an `--env-file` option, but it needs an extra package,
+`python-dotenv`, that Blossom doesn't install. The blocks above work without
+it. If an earlier uv attempt left an environment without pip, the `ensurepip`
+step puts it back. You don't need to activate the environment on either
+platform.
+
+If you are contributing code, install the development tools as well. These
+are not needed just to try the app.
 
 Windows (PowerShell):
 
 ```powershell
-.\.venv\Scripts\python -m ensurepip
-.\.venv\Scripts\python -m pip install -e .
 .\.venv\Scripts\python -m pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
-$env:BLOSSOM_TIMEZONE = "America/New_York"
-$env:BLOSSOM_TODAY = "2026-08-19"
-.\.venv\Scripts\python -m uvicorn blossom.app:app --reload
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m ruff format --check .
+.\.venv\Scripts\python -m mypy blossom tests
+.\.venv\Scripts\python -m pytest
 ```
 
 macOS and Linux:
 
 ```bash
-.venv/bin/python -m ensurepip
-.venv/bin/python -m pip install -e .
 .venv/bin/python -m pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
-BLOSSOM_TIMEZONE=America/New_York BLOSSOM_TODAY=2026-08-19 .venv/bin/python -m uvicorn blossom.app:app --reload
+.venv/bin/python -m ruff check .
+.venv/bin/python -m ruff format --check .
+.venv/bin/python -m mypy blossom tests
+.venv/bin/python -m pytest
 ```
 
-If there is no `.venv` yet, create one first with `python -m venv .venv`
-using a Python 3.12 or 3.13 interpreter. Keep the version pins matching
-`pyproject.toml`; a test checks that they do. Pip resolves the rest of the
-dependencies on its own, so their versions can differ slightly from
-`uv.lock`. Run the checks through the same Python, as
-`.venv/bin/python -m pytest` and so on, rather than through `uv run`, which
-would try the download that failed.
+Keep the version pins matching `pyproject.toml`; a test checks that they do.
+Pip resolves transitive dependencies itself, so those versions can differ
+from `uv.lock`. Run the checks through the environment's own Python rather
+than `uv run`, which would try the download that failed.
 
 ## Troubleshooting
 
