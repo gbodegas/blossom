@@ -145,9 +145,11 @@ stays a note; **Add to homework** adds exactly the fields shown, once, however
 many times the form arrives. She uses that form from her pages and a parent
 from the family page, and a detail a parent gave says so. When homework with
 the same class and title is already on record, nothing is merged by itself:
-the form lists it and asks whether this is the **Same homework**, which joins
-the note to that assignment and changes nothing on it, or to **Keep as a
-separate assignment**. A note in homework leaves her waiting notes, stays
+the form lists it with its date, what she and the school currently say about
+it, and where the record came from, and asks whether this is the **Same
+homework**, which joins the note to that assignment and changes nothing on it,
+or to **Keep as a separate assignment**. A choice made about rows that have
+since changed is asked again. A note in homework leaves her waiting notes, stays
 reachable with its history, and is shown as evidence on the assignment's
 details. From then on the assignment's class, title, date, and note about the
 work reach the planner as any homework's do, the note told to it as hers. A

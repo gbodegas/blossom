@@ -977,22 +977,61 @@ words only when they are one line that fits a title, and is never cut to fit.
 the writer before it reads: the assignment, the note's link to it, the claim
 about its date when a day was given, and the event with the decision are one
 commit, and a failure leaves none of them. The assignment's id is named from
-the note's id in a fixed namespace, never from its title or date, so the same
-form again, or a lost answer sent again, finds the link standing and writes
-nothing. Its record is marked with the way in the press came through and each
-field with whoever supplied it; no report of the school's is made up for it.
+the note's id in a fixed namespace, never from its title or date, so a second
+press can never make a second assignment. Its record is marked with the way in
+the press came through and each field with whoever supplied it; no report of
+the school's is made up for it.
+
+The id says which note and nothing about the press, since every assignment
+made from one note has the one id. So a press for a note already in homework
+is compared, inside that same transaction, with the press that was accepted as
+its event keeps it: the same kind of press, the same choice, the same
+assignment, and the same five details as the rules keep them are that press
+again, answered as already added with nothing written. Anything else is a
+conflict, 409, with what was typed kept and what the note was added with
+shown beside it. The comparison is with the accepted event and never with the
+note as it has since become, because her words, class, and day can change
+after the note is in homework and the assignment does not follow them.
+
+A press is prepared whole before anything about it is refused: the class
+chosen and typed, the title, the day in the one spelling a date control holds
+or said back when it does not read, the kind, the note, and the choice. Every
+refusal shows that same form, a form refused whole and a press by the one who
+may not write here included, so a returned form can be sent again with nothing
+typed twice. When the page with the form cannot be made, because the note
+cannot be read, is not on record, or the classes cannot be read, the answer is
+one page that reads no store, tries nothing again, and shows every value to
+copy, with the refusal's own status: 404 for a note that is gone, 500 for one
+that cannot be read or a file that cannot be, 422 and 403 as they were.
 
 Homework on record with the same class and title, paired by the rule the
 school's paste pairs by, whitespace collapsed and case kept, is never merged
-by itself. Every such assignment is a candidate whatever its date. The page
-lists them and sends back a fingerprint of the list it showed, a digest of
-each candidate's id, class, title, date, kind, and status. The store reads the
-candidates again inside its transaction: a fingerprint that differs means
-homework arrived, left, or changed since, and the choice is put again with
-409 and everything typed kept. Same homework joins the note to that assignment
-and changes nothing on it; a day the note gives is one more claim beside the
-others. Keep as a separate assignment makes the note's own. The event keeps
-the choice, the candidates it was made among, and the fingerprint.
+by itself. Every such assignment is a candidate whatever its date.
+`blossom/candidates.py` reads each one as a person is shown it: what the record
+holds, where the record came from, what she currently says about the work with
+the day she said it, and what each school channel currently says, her account
+and the school's apart, and no report of hers said as that and never filled in
+from the record's own status. A row is written from that reading and the
+fingerprint the page sends back is made from the same one, so what is shown and
+what is compared cannot differ; moments of reading and the family's checks are
+in neither. The store is handed that reading and calls it inside its
+transaction, through its own connection: a fingerprint that differs means
+homework arrived, left, or changed in something shown, and the choice is put
+again with 409, the rows as they stand, everything typed kept, and the earlier
+choice said back as unsaved with nothing chosen for anyone. The reads are
+batched, one for the assignments and three for what stands about the
+candidates, however many there are. Same homework joins the note to that
+assignment and changes nothing on it; a day the note gives is one more claim
+beside the others. Keep as a separate assignment makes the note's own. The
+event keeps the choice, the candidates it was made among, and the fingerprint.
+
+A choice is sent with its kind apart from the assignment's id, `same:` and
+then the id, or `separate`, written and read by one pair of functions. An id
+is any one line the record keeps, the word `separate` and a colon included, so
+the prefix is taken off once and the rest is the id whole, never trimmed or
+split. Any other spelling is a form these pages did not make. A choice made
+stays chosen through a refusal about something else, while it is still one of
+the choices shown; a fresh page chooses nothing.
 
 `date_claims` says where a claim came from. Its rows carry the note and the
 note's revision when a note made the claim, whether the claim still counts,
@@ -1013,9 +1052,20 @@ school homework mark nothing. The save reserves the writer and compares inside
 that transaction, so a note added through another connection between the
 review and the save is met too.
 
+The five details are shown by one template macro wherever they are shown: on
+the note's page, where a kind is shown whenever one is held, beside a form
+from a page that is behind, as what a note was added with, and in each entry of
+the history. A history entry shows every detail as it stood after the change
+and marks only what that change set or removed, so the one who made a change
+is never said to have supplied what it left alone.
+
 A note in homework leaves the notes that wait and is listed with the others
 that are in homework. Its page says so, leads to the assignment, and says when
-the assignment is outside today's planning window. The assignment's details
+the assignment is outside today's planning window. A change to such a note,
+an edit or bringing it back, is answered with a sentence read from the change
+itself: the note's changes are saved or it is back among the notes added to
+homework, and the assignment is unchanged. Whether the assignment is in a plan
+is nothing a note's page reads, so nothing is said of it. The assignment's details
 show the notes it was added from or joined by, her words as they stand with
 the day each was saved, as evidence beside the record: nothing of them is
 copied into the assignment, and changing a note afterward changes nothing
