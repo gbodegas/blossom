@@ -211,6 +211,10 @@ def normalize_note(text: str | None) -> str | None:
     return cleaned or None
 
 
+NoteBy = Literal["teacher", "parent", "student"]
+"""Whose words an assignment's note is."""
+
+
 class AssignmentKind(StrEnum):
     """What sort of work an item is, so a planner can size it.
 
@@ -253,6 +257,28 @@ class Assignment(BaseModel):
     itself, then ``note``, ``kind``, ``due_date``, and ``assigned_on`` when a channel
     supplied them. A parent's entry keeps its origin through a later paste, and a
     parent's correction of a type or a note is told from the school's text."""
+
+    @property
+    def note_by(self) -> NoteBy | None:
+        """Whose words the note is, or ``None`` with no note, so that a mark left on a record
+        with no note says nothing.
+
+        A note marked as a parent's entry is a parent's, and one marked as her
+        report is hers. Any other mark is the school's, and so is no mark at
+        all: every note kept before notes carried a mark came from the
+        school's own card, and reading those as anyone else's would put words
+        in a mouth. Her note is her account of the work and never the
+        teacher's instruction, which is why a page, a brief, and the
+        fingerprint a plan is checked against all ask here and nowhere else.
+        """
+        if not self.note:
+            return None
+        mark = self.origins.get("note")
+        if mark == SourceChannel.PARENT_ENTRY:
+            return "parent"
+        if mark == SourceChannel.STUDENT_REPORT:
+            return "student"
+        return "teacher"
 
     @field_validator("assignment_id")
     @classmethod

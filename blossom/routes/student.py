@@ -734,7 +734,7 @@ def assignment_view(
         and any(record.channel in SCHOOL_CHANNELS for record in readable),
         assigned_on=assignment.assigned_on,
         note=assignment.note,
-        note_by_a_parent=assignment.origins.get("note") == SourceChannel.PARENT_ENTRY,
+        note_by=assignment.note_by,
         entered_by_a_parent=assignment.origins.get("record") == SourceChannel.PARENT_ENTRY,
         school_statements=[
             SchoolStatementView.from_report(report)

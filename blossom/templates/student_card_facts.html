@@ -164,7 +164,9 @@
         </p>
       {% endfor %}
       {% if assignment.note %}
-        <p class="from-teacher">{% if assignment.note_by_a_parent %}A parent wrote{% else %}From the teacher{% endif %}: <q>{{ assignment.note }}</q></p>
+        {# Whose words the note is, said to whoever reads it. Hers are hers: never the teacher's. #}
+        {% set read_by_a_parent = (viewer is defined and viewer == "parent") or (ctx is defined and ctx.viewer == "parent") %}
+        <p class="from-teacher">{% if assignment.note_by == "parent" %}A parent wrote{% elif assignment.note_by == "student" %}{% if read_by_a_parent %}She wrote{% else %}You wrote{% endif %}{% else %}From the teacher{% endif %}: <q>{{ assignment.note }}</q></p>
       {% endif %}
       {% if assignment.entered_by_a_parent %}
         <p class="source">Entered by a parent.</p>

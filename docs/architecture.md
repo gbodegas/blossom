@@ -54,10 +54,20 @@ reports held twice for one day to the first. A recorded due date is replaced by 
 paste only when a parent says the assignment moved; each fact on a row carries
 its origin, the portal, the email, or a parent, so the pages can say whose
 it is, each field with the channel that gave it when a text mixes the email
-and the portal. A plan carries a fingerprint of the week it was made from,
-the reported status included, and a waiting plan whose week reads
-differently is stale on both pages and refused at approval; a decided plan
-is history. Saving and deciding share the decision lock, so a decision is
+and the portal. A note is the teacher's, a parent's, or hers, and the record
+says which in one place, `Assignment.note_by`: marked as a parent's entry it
+is a parent's, marked as her report it is hers, and any other mark or none is
+the school's, since every note kept before notes carried a mark came from the
+school's card. The pages say it to whoever reads, and both models are told
+it, hers as `student_noted`: her account of work she added, never the
+teacher's instruction. A plan carries a fingerprint of the week it was made
+from, the reported status and whose words each note is included, and a
+waiting plan whose week reads differently is stale on both pages and refused
+at approval; a decided plan is history. With no note there is no hand to
+name, so a mark alone changes no fingerprint. The fingerprint is drawn from a
+fixed namespace, one for each shape it has had; a plan that was waiting when
+the shape changed reads as changed once and is asked for again, and nothing
+asks a model for it. Saving and deciding share the decision lock, so a decision is
 checked against a week that holds still until it lands.
 
 Her own word about her work is the third account, beside the school's and the

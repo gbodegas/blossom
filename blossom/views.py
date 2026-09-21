@@ -25,7 +25,7 @@ from blossom.intake import spoken_report
 from blossom.reconciliation import CHANNEL_NAMES, SourceConfidence
 from blossom.stores.drafts import DraftRecord, RunRecord
 from blossom.stores.help_requests import HelpState
-from blossom.stores.project_state import AssignmentKind, StatusReport
+from blossom.stores.project_state import AssignmentKind, NoteBy, StatusReport
 
 
 class SchoolStatementView(BaseModel):
@@ -230,8 +230,8 @@ class StudentAssignmentView(BaseModel):
     assigned_on: date | None = None
     note: str | None = None
     """What the teacher wrote under the card, as the portal shows it, or what a parent
-    typed; ``note_by_a_parent`` says which."""
-    note_by_a_parent: bool = False
+    typed, or what she wrote on work she added; ``note_by`` says whose words it is."""
+    note_by: NoteBy | None = None
     entered_by_a_parent: bool = False
     """Whether the assignment itself came from a parent's entry rather than the school."""
     school_statements: list[SchoolStatementView] = []

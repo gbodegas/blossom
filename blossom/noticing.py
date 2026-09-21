@@ -36,7 +36,6 @@ from blossom.hand_in import HandInProjection
 from blossom.reconciliation import (
     Reconciler,
     ReconciliationResult,
-    SourceChannel,
     SourceRecord,
 )
 from blossom.sources import DateClaims
@@ -216,10 +215,12 @@ def monday_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-PLANNING_DIGEST: Final = uuid.UUID("3b9c1f52-8a47-4d06-b1e3-5c7a9d2f4e68")
+PLANNING_DIGEST: Final = uuid.UUID("7d1e6a34-2c9b-4f58-a0d7-93b5e1c8f264")
 """The namespace a week's fingerprint is drawn from. A namespace of its own for each
 shape the fingerprint has had, so a draft fingerprinted under an earlier one reads as
-stale rather than as unchanged."""
+stale rather than as unchanged. This one is the shape that says whose words a note is;
+the one before it said only whether a parent wrote it. A plan that was waiting when the
+shape changed reads as changed once and is asked for again. Nothing asks a model for it."""
 
 
 def canonical_active_input(week: Week) -> list[dict[str, object]]:
@@ -227,8 +228,9 @@ def canonical_active_input(week: Week) -> list[dict[str, object]]:
     that the fingerprint is drawn from.
 
     For each assignment she has not reported done, by id: its course, title,
-    due and assigned dates, kind, note and whether a parent wrote it, which
-    the planner is told, and reported status; whether she has said "not yet"
+    due and assigned dates, kind, note and whose words it is, which the
+    planner is told and which is nothing when there is no note, and
+    reported status; whether she has said "not yet"
     and what she wrote with it; and each claim about its date, channel,
     value, and where it was read, sorted. Left out: when a claim or a report
     was made, which report it was, how sure a claim was, her history, and
@@ -247,8 +249,7 @@ def canonical_active_input(week: Week) -> list[dict[str, object]]:
                 "assigned": None if item.assigned_on is None else item.assigned_on.isoformat(),
                 "kind": item.kind.value,
                 "note": item.note,
-                "note_by_a_parent": bool(item.note)
-                and item.origins.get("note") == SourceChannel.PARENT_ENTRY,
+                "note_by": item.note_by,
                 "reported_status": item.reported_submission_status,
                 "student_status": None if said is None else said.status,
                 "student_note": None if said is None else said.note,
