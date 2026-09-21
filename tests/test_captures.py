@@ -545,6 +545,32 @@ def test_the_store_of_the_record_says_how_long_it_keeps_her_notes_and_why() -> N
         assert said in " ".join(guide.split())
 
 
+@pytest.mark.parametrize("flag", [2, -1, "yes", 1.5])
+def test_an_archived_flag_that_is_neither_0_nor_1_is_a_note_that_cannot_be_read(
+    store: ProjectStateStore, flag: object
+) -> None:
+    """Whether a note is put away is written as 0 or 1 and read as nothing else, so a damaged
+    flag never reads as archived on one page and as nothing on the lists: the note is
+    unreadable by name, is named as unreadable by one of the two lists, and takes no write."""
+    name = new_capture_id()
+    created(create(store, name))
+    store._connection.execute("UPDATE homework_captures SET archived = ?", (flag,))
+    store._connection.commit()
+    before = rows(store)
+
+    with pytest.raises(UnreadableCapture):
+        store.capture(name)
+    with pytest.raises(UnreadableCapture):
+        store.sound_capture_history(name)
+    waiting, put_away = store.outstanding_captures(), store.archived_captures()
+    assert waiting.notes == put_away.notes == []
+    assert sorted(waiting.unreadable + put_away.unreadable) == [name]
+    assert store.captures_named([name]).unreadable == [name]
+    with pytest.raises(CaptureNotSaved):
+        archive(store, name, 1)
+    assert rows(store) == before
+
+
 def test_two_notes_with_the_same_words_are_two_notes(store: ProjectStateStore) -> None:
     first = created(create(store, new_capture_id()))
     second = created(create(store, new_capture_id()))

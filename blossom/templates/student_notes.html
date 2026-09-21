@@ -14,7 +14,7 @@
 {% block content %}
   {% set mine = viewer != "parent" %}
   <p class="return"><a href="/student/due-this-week">{% if mine %}Back to my week{% else %}Back to her week{% endif %}</a></p>
-  <h1>{% if archived %}Archived homework notes{% else %}Homework notes{% endif %}{% if notes %} ({{ notes|length }}){% endif %}</h1>
+  <h1>{% if archived %}Archived homework notes{% else %}Homework notes{% endif %}{% if notes or unreadable %} ({{ notes|length + unreadable|length }}){% endif %}</h1>
   <section class="panel homework-notes" id="homework-notes" tabindex="-1" aria-label="{% if archived %}Archived homework notes{% else %}Homework notes{% endif %}">
     {% if archived %}
       <p class="note">Notes {% if mine %}you{% else %}she{% endif %} put away. Each is kept with its history and can be brought back from its own page.</p>

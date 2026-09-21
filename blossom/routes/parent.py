@@ -550,10 +550,20 @@ class HelpStep(BaseModel):
 
 def notes_named_by(state: ApplicationState, requests: list[HelpRequest]) -> NamedCaptures:
     """The notes these requests are about, in one statement for all of them, and in none
-    when no request is about a note."""
-    return state.project_state.captures_named(
-        request.capture_id for request in requests if request.capture_id
-    )
+    when no request is about a note.
+
+    The notes are context for a request and never the answer itself, and an
+    accept or a resolve is already written when they are read. So a read of
+    them that fails is logged and answered as no notes read, which shows each
+    such note as unavailable, and never fails what it is context for.
+    """
+    try:
+        return state.project_state.captures_named(
+            request.capture_id for request in requests if request.capture_id
+        )
+    except Exception:
+        logger.exception("the homework notes her requests are about could not be read")
+        return NamedCaptures({}, [])
 
 
 def help_view(

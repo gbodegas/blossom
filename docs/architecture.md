@@ -888,6 +888,17 @@ written. A line that is not sound is refused with its cause kept, nothing is
 written and nothing is mended, and the note's page says the note cannot be read
 and gives no result. The lists read no history, so this costs a list nothing.
 
+Whether a note is put away is written as 0 or 1 and read as nothing else. A row
+that holds anything else is read with the notes that wait and named there as
+one that cannot be read, so a damaged flag never takes a note off both lists
+while its own page calls it archived. A note that cannot be read is counted
+wherever her notes are counted, since it is still a note of hers that waits. A
+revision is read from a form only as these pages write it, a count from 1 in
+plain digits, because a save that asks for what already stands is answered
+before revisions are compared. The notes a request for help names are context
+for it: a read of them that fails is logged and shows each as unavailable, and
+never fails an accept or a resolve that is already written.
+
 A note's id is a UUID and its routes take it as one path segment. A note is
 no assignment, makes no claim about a date, and is read by no model: the
 pages read notes beside the record and never into it. Turning a note into

@@ -26,6 +26,7 @@ no page here offers it or suggests it can be done.
 """
 
 import logging
+import re
 from dataclasses import dataclass, replace
 from datetime import date
 from typing import Final
@@ -124,6 +125,7 @@ HELP_NOT_ASKED: Final = "Your request could not be sent, and nothing was changed
 NOTE_GONE: Final = "This homework note is not on record."
 NOTE_UNREADABLE: Final = "This homework note cannot be read right now. Nothing was changed."
 WITHOUT_DATE: Final = "without_date"
+REVISION_AS_WRITTEN: Final = re.compile(r"[1-9][0-9]{0,8}", re.ASCII)
 
 WORDS_AND_DAY: Final = frozenset({"text", "course", "due_date"})
 PRESSED_OR_PENDING: Final = frozenset({"date_pending", "date_refused", "choice"})
@@ -716,9 +718,13 @@ async def save_a_new_note(request: Request, state: State) -> Response:
 
 
 def revision_of(fields: dict[str, str]) -> int | None:
-    """The revision a form says its page showed, or ``None`` for anything that is no count."""
+    """The revision a form says its page showed, or ``None`` for anything these pages do
+    not write: a revision is a count from 1, in plain digits with nothing before them. A
+    nought, a padded count, or a digit of another script is no revision of a note, and is
+    refused where the form is read, since a save that asks for what already stands is
+    answered before revisions are compared."""
     given = fields.get("revision", "")
-    return int(given) if given.isdecimal() and len(given) <= 9 else None
+    return int(given) if REVISION_AS_WRITTEN.fullmatch(given) else None
 
 
 @router.post(

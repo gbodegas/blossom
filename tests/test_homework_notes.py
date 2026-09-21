@@ -41,6 +41,7 @@ from blossom.routes.captures import (
     NOTE_SAVED_EARLIER,
     NOTE_TOO_LONG,
     NOTE_UNREADABLE,
+    revision_of,
 )
 from blossom.routes.navigation import (
     ARCHIVED_NOTES_PAGE,
@@ -770,6 +771,63 @@ def test_a_note_whose_changes_are_not_one_line_takes_no_change_and_keeps_her_wor
     assert escape(NOTE_UNREADABLE) in page.text
     assert 'id="note-result"' not in page.text
     assert "Changed once" not in page.text
+
+
+def test_a_revision_is_read_only_as_these_pages_write_it() -> None:
+    assert [revision_of({"revision": given}) for given in ("1", "12", "999999999")] == [
+        1,
+        12,
+        999999999,
+    ]
+    for given in (
+        "",
+        "0",
+        "00",
+        "01",
+        "1000000000",
+        "\uff11",
+        "\u0661",
+        " 1",
+        "1 ",
+        "+1",
+        "-1",
+        "1.0",
+    ):
+        assert revision_of({"revision": given}) is None, given
+    assert revision_of({}) is None
+
+
+@pytest.mark.parametrize("given", ["0", "00", "01", "\uff11", "-1"])
+@pytest.mark.parametrize("step", ["the same words", "archive again", "restore again"])
+def test_a_revision_written_any_other_way_is_a_form_these_pages_did_not_make(
+    given: str, step: str
+) -> None:
+    """Asking for what already stands is answered before revisions are compared, so a made-up
+    revision must be refused where the form is read: 422, nothing written, no redirect that
+    says already saved."""
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        if step == "the same words":
+            action = note_action(name, "edit")
+            fields = whole_form(client.get(note_href(name, edit="1")).text, action)
+        else:
+            action = note_action(name, "archive" if step == "archive again" else "restore")
+            fields = {"revision": "1"}
+            if step == "archive again":
+                archive = note_action(name, "archive")
+                page = client.get(note_href(name)).text
+                client.post(archive, data=form_fields(page, archive), headers=PAGE_HEADERS)
+        before = tables(store)
+        answer = client.post(action, data={**fields, "revision": given}, headers=PAGE_HEADERS)
+        after = tables(store)
+
+    assert answer.status_code == 422
+    assert said_first(answer.text, BAD_FORM)
+    assert escape(NOTE_ALREADY_SAVED) not in answer.text
+    if step == "the same words":
+        assert whole_form(answer.text, action)["text"] == WORDS
+    assert after == before
 
 
 # ------------------------------------------------------- forms that are not whole

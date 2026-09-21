@@ -444,6 +444,79 @@ def test_a_request_about_a_note_says_so_in_its_own_row_at_every_stage_on_both_pa
         assert f'<a href="{note_href(name)}">Open homework note</a>' in row
 
 
+@pytest.mark.parametrize(
+    "where",
+    ["accept", "resolve", "/student/help-requests", "/parent/help-requests", HER_PAGE, FAMILY],
+)
+def test_a_read_of_the_notes_that_fails_never_fails_an_answer_about_a_request(
+    where: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The notes a request names are context. A parent's accept or resolve has already been
+    written when they are read, so that read must not be able to fail the answer: the note
+    is said to be unavailable, the failure is logged, and the request stands as it was moved."""
+    with browser() as client:
+        state = state_of(client)
+        name = save_note(client)
+        assert ask_about(client, name, "").status_code == 303
+        asked = state.help_requests.open_requests()[0]
+
+        def unread(*args: object, **kwargs: object) -> None:
+            msg = "the file cannot be read"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(state.project_state, "captures_named", unread)
+        if where in ("accept", "resolve"):
+            answer = client.post(f"/parent/help-requests/{asked.request_id}/{where}", json={})
+        else:
+            answer = client.get(where)
+        monkeypatch.undo()
+        stands = state.help_requests.get(asked.request_id)
+
+    assert answer.status_code == 200
+    assert any("could not be read" in record.getMessage() for record in caplog.records)
+    assert stands is not None
+    if where in ("accept", "resolve"):
+        assert stands.state == {"accept": "accepted", "resolve": "resolved"}[where]
+        assert answer.json()["about_note"] == {
+            "capture_id": name,
+            "text": None,
+            "archived": False,
+            "unavailable": True,
+        }
+    elif where.endswith("help-requests"):
+        assert answer.json()[0]["about_note"]["unavailable"] is True
+    else:
+        whose = "Her" if where == FAMILY else "Your"
+        assert f"{whose} homework note cannot be read right now." in answer.text
+
+
+@pytest.mark.parametrize("readable", [0, 1, 4])
+def test_a_note_that_cannot_be_read_is_counted_wherever_her_notes_are_counted(
+    readable: int,
+) -> None:
+    """It is a note of hers, waiting like the others, so the link, the section, and the page
+    of notes all count it, and say apart that it cannot be read."""
+    with browser() as client:
+        store = state_of(client).project_state
+        for number in range(readable):
+            save_note(client, f"Readable {number}")
+        damaged = save_note(client, "Damaged")
+        store._connection.execute(
+            "UPDATE homework_captures SET attribution = 'no json' WHERE capture_id = ?", (damaged,)
+        )
+        store._connection.commit()
+        week = client.get(HER_PAGE).text
+        listed = client.get(NOTES_PAGE).text
+
+    total = readable + 1
+    assert f'<a href="{NOTES_PAGE}">Homework notes ({total})</a>' in week
+    assert f"<h2>Homework notes ({total})</h2>" in notes_section(week)
+    assert "1 homework note cannot be read right now." in notes_section(week)
+    assert ("View all 5 homework notes" in week) is (readable == 4)
+    assert f"<h1>Homework notes ({total})</h1>" in listed
+    assert "1 homework note cannot be read right now." in listed
+
+
 # --------------------------------------------------------- what a note never does
 
 

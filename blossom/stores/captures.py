@@ -80,9 +80,11 @@ OUTSTANDING_CAPTURES: Final = """
         kind, note, attribution, created_at_utc, created_on, updated_at_utc, updated_on,
         revision, archived, assignment_id
     FROM homework_captures
-    WHERE archived = 0 AND assignment_id IS NULL
+    WHERE (archived = 0 OR archived NOT IN (0, 1)) AND assignment_id IS NULL
     ORDER BY created_order
 """
+"""A row whose archived flag is neither 0 nor 1 is read with the notes that wait, where it
+is named as one that cannot be read, so no damaged flag takes a note off both lists."""
 ARCHIVED_CAPTURES: Final = """
     SELECT
         capture_id, created_order, original_text, initial, text, course, title, due_date,
@@ -175,11 +177,20 @@ def capture_from(row: tuple[object, ...]) -> Capture:
             updated_at=datetime.fromisoformat(str(row[13])),
             updated_on=date.fromisoformat(str(row[14])),
             revision=int(str(row[15])),
-            archived=bool(row[16]),
+            archived=archived_from(row[16]),
             assignment_id=None if row[17] is None else str(row[17]),
         )
     except (ValueError, TypeError, AttributeError) as fault:
         raise UnreadableCapture(str(row[0])) from fault
+
+
+def archived_from(flag: object) -> bool:
+    """Whether a note is put away, from the 0 or 1 the file holds. Anything else is no answer
+    to that, and is not read as one: ``bool`` would call every damaged value archived."""
+    if type(flag) is not int or flag not in (0, 1):
+        msg = f"the archived flag holds {flag!r}"
+        raise ValueError(msg)
+    return flag == 1
 
 
 def capture_event_from(row: tuple[object, ...]) -> CaptureEvent:

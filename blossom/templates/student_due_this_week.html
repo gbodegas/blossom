@@ -161,10 +161,13 @@
       The places that hold what is left to do beside the plan, under the
       controls and never in the masthead. Each link goes to a page of its
       own, which is there when its list is empty, and carries a count only
-      when there is something to count. With every assignment Done this is
-      still how she finds what is left to turn in.
+      when there is something to count. A homework note that cannot be read
+      is still a note of hers that waits, so it is counted, here and in the
+      section's heading, and said apart as one that cannot be read. With
+      every assignment Done this is still how she finds what is left to turn
+      in.
     #}
-    <p class="support-links"><a href="{{ to_turn_in_page }}">To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</a><a href="{{ notes_page }}">Homework notes{% if homework_notes %} ({{ homework_notes|length }}){% endif %}</a></p>
+    <p class="support-links"><a href="{{ to_turn_in_page }}">To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</a><a href="{{ notes_page }}">Homework notes{% if homework_notes or homework_notes_unreadable %} ({{ homework_notes|length + homework_notes_unreadable|length }}){% endif %}</a></p>
     {% if view.nothing_to_plan %}
     {% elif view.can_plan %}
       <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
@@ -288,10 +291,10 @@
   #}
   {% if homework_notes or homework_notes_unreadable %}
     <section class="panel homework-notes" id="homework-notes" tabindex="-1">
-      <h2>Homework notes{% if homework_notes %} ({{ homework_notes|length }}){% endif %}</h2>
+      <h2>Homework notes ({{ homework_notes|length + homework_notes_unreadable|length }})</h2>
       {% with rows = homework_notes, shown = compact_rows %}{% include "student_notes_rows.html" %}{% endwith %}
       {% if homework_notes|length > compact_rows %}
-        <p class="note"><a href="{{ notes_page }}">View all {{ homework_notes|length }} homework notes</a></p>
+        <p class="note"><a href="{{ notes_page }}">View all {{ homework_notes|length + homework_notes_unreadable|length }} homework notes</a></p>
       {% endif %}
       {% if homework_notes_unreadable %}
         <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now. Nothing was changed.</p>
