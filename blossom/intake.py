@@ -1245,13 +1245,35 @@ class Kept:
     unchanged: int
 
 
+@dataclass(frozen=True)
+class Held:
+    """The whole text was held and nothing of it was written: some of its rows carry the
+    class and title of homework made from a homework note, which the school's version
+    cannot yet be reviewed against. ``blocking`` is those rows, and ``assignments`` the
+    homework they would have touched."""
+
+    blocking: tuple[Reading, ...]
+    assignments: tuple[str, ...]
+
+
+def held_rows(items: tuple[Reading, ...], store: ProjectStateStore) -> Held | None:
+    """The rows of a text that are in the way, or ``None`` when none is. Read from the record
+    as it stands when this is called: a review calls it to say so early, and ``keep`` calls
+    it again inside the transaction it writes in, which is the one that decides."""
+    found = store.held_by_notes((item.course, item.title) for item in items)
+    if not found:
+        return None
+    blocking = tuple(item for item in items if item.pair in found)
+    return Held(blocking, tuple(sorted({found[item.pair] for item in blocking})))
+
+
 def keep(
     items: tuple[Reading, ...],
     store: ProjectStateStore,
     *,
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
-) -> Kept | list[Change]:
+) -> Kept | Held | list[Change]:
     """Compare and write as one: save what the record lacks, and say what changed.
 
     The comparison and the write happen while the store is held for this
@@ -1262,8 +1284,17 @@ def keep(
     the preview in a way that leaves a question open, or when two cards
     about one assignment choose different types, nothing is written and the
     changes are handed back for the parent to look at again.
+
+    The file's writer is reserved before anything is read, so nothing another
+    connection writes can land between the comparison and the write. That is
+    where a text is held: if any row carries the class and title of homework
+    made from a homework note, nothing of the whole text is written, not the
+    rows beside it either, and the rows in the way are handed back.
     """
-    with store.exclusively():
+    with store.comparing_and_writing():
+        held = held_rows(items, store)
+        if held is not None:
+            return held
         changes = changes_for(items, store, occurrences=occurrences, kinds=kinds)
         if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):
             return changes

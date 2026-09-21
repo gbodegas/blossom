@@ -984,8 +984,9 @@ class ProjectStateStore(CaptureRecords):
         reports: Mapping[str, Iterable[StatusReport]] | None = None,
     ) -> None:
         """Keep assignments, the claims about their dates, and what the school reports, in
-        one transaction, all or none, like the writes above."""
-        with self._lock, self._connection:
+        one transaction, all or none, like the writes above. A caller that compared before it
+        wrote, inside ``comparing_and_writing``, is joined and its transaction left to it."""
+        with self._lock, self._writing():
             self._upsert_assignments_locked(assignments)
             for assignment_id, records in claims.items():
                 self._record_claims_locked(assignment_id, records)
@@ -1983,6 +1984,34 @@ class ProjectStateStore(CaptureRecords):
         with self._lock:
             rows = self._connection.execute(DATE_CLAIMS_OF, (assignment_id,)).fetchall()
         return [source_record_from(row) for row in rows]
+
+    @contextmanager
+    def comparing_and_writing(self) -> Iterator[None]:
+        """Hold the store and reserve the file's writer before anything is read, for a
+        caller that compares what it has with the record and then writes. The process lock
+        keeps this process's other callers out; the reserved writer keeps another
+        connection's write from landing between the comparison and the write. Committed
+        when the block succeeds, rolled back when it fails."""
+        with self._lock, self._writing():
+            yield
+
+    def held_by_notes(self, pairs: Iterable[tuple[str, str]]) -> dict[tuple[str, str], str]:
+        """Which of these classes and titles are the class and title of homework a note
+        became, by the rule the school's paste pairs by, and which assignment each is.
+        Empty when none is, which is every paste until a note is added to homework."""
+        made = self.assignments_made_from_notes()
+        if not made:
+            return {}
+        by_name = {
+            pair(item.course, item.title): item.assignment_id
+            for item in self.all_assignments()
+            if item.assignment_id in made
+        }
+        return {
+            name: by_name[name]
+            for name in (pair(course, title) for course, title in pairs)
+            if name in by_name
+        }
 
     def promotion_candidates(
         self, details: CaptureDetails, *, among: Iterable["Assignment"] | None = None

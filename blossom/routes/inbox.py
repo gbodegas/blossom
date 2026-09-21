@@ -32,12 +32,14 @@ from blossom.intake import (
     REVIEW,
     TEXT_MAX_LENGTH,
     UPDATE,
+    Held,
     Kept,
     Read,
     by_hand,
     by_week,
     changes_for,
     conflicting_choices,
+    held_rows,
     keep,
     read_text,
     spoken_day,
@@ -85,6 +87,11 @@ LOOK_AGAIN: Final = (
 NEEDS_ANSWER: Final = (
     "A question above still needs your answer. Answer it, then save; what you chose on the "
     "other cards is kept."
+)
+HELD_BY_A_NOTE: Final = (
+    "Nothing was saved. Some of this is about homework she added from a note, and Blossom "
+    "cannot yet tell the school's version from hers. The rows are named below. Take them "
+    "out to save the rest, or leave this for now; the text is kept."
 )
 CHOOSE_ONE_TYPE: Final = (
     "Two cards about the same assignment choose different types. Pick one type for it, then save."
@@ -306,9 +313,15 @@ def preview_page(
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
     notice: str | None = None,
+    status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
-    """What was read, week by week against the record as it is, with the way to save it."""
+    """What was read, week by week against the record as it is, with the way to save it.
+    A text with a row about homework made from a homework note says so, names the rows, and
+    offers no save: the text stays to be edited."""
     changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+    held = held_rows(read.items, state.project_state)
+    if held is not None:
+        notice = HELD_BY_A_NOTE
     if notice is None and conflicting_choices(changes):
         notice = CHOOSE_ONE_TYPE
     shown = [change for change in changes if change.state != FOLDED]
@@ -333,10 +346,12 @@ def preview_page(
             "draft": draft,
             "kind_choices": KIND_CHOICES,
             "notice": notice,
+            "held": held,
             "sample": state.settings.sample,
             "spoken_report": spoken_report,
             "spoken_day": spoken_day,
         },
+        status_code=status_code,
     )
 
 
@@ -405,6 +420,16 @@ async def keep_readings(request: Request, state: State) -> Response:
     occurrences, kinds = answers_from(form, unasked_for(state, read))
     async with state.decision_lock:
         kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+    if isinstance(kept, Held):
+        return preview_page(
+            request,
+            state,
+            read,
+            draft,
+            occurrences=occurrences,
+            kinds=kinds,
+            status_code=status.HTTP_409_CONFLICT,
+        )
     if not isinstance(kept, Kept):
         open_questions = {change.key for change in kept if change.state == REVIEW}
         if conflicting_choices(kept):

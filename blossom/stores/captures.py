@@ -63,6 +63,7 @@ from blossom.captures import (
     UnknownCapture,
     UnreadableCapture,
     capture_id_from,
+    derived_assignment_id,
     kept_words,
     sound_history,
 )
@@ -112,6 +113,11 @@ bound value. A row is decoded by position, so the four name the same columns in 
 order, which a test holds them to."""
 SNAPSHOT_FIELDS_ADDED: Final = ("title", "kind", "note", "assignment_id")
 """What a moment of a note's history gained with details and adding to homework."""
+NOTES_THAT_NAME_AN_ASSIGNMENT: Final = """
+    SELECT capture_id, assignment_id FROM homework_captures
+    WHERE assignment_id IS NOT NULL
+    ORDER BY created_order
+"""
 INSERT_CAPTURE: Final = """
     INSERT INTO homework_captures (
         capture_id, created_order, original_text, initial, text, course, title, due_date,
@@ -513,6 +519,29 @@ class CaptureRecords:
             if note is None:
                 return None
             return note, self._validated_capture_history_locked(note).events
+
+    def assignments_made_from_notes(self) -> set[str]:
+        """The ids of the assignments on record that a note became, in one statement.
+
+        Such an assignment is named from its note's id, and that is the whole
+        test: not who pressed the button, since a parent's press marks the
+        record a family entry, and not anything she reported about school
+        homework. A note joined to homework that was already on record did
+        not make that homework, so it is not among these. A row that names a
+        note or an assignment by nothing the store writes is left out, and
+        cannot make a note's homework of anything.
+        """
+        with self._lock:
+            rows = self._connection.execute(NOTES_THAT_NAME_AN_ASSIGNMENT).fetchall()
+        made: set[str] = set()
+        for note, assignment in rows:
+            try:
+                name = capture_id_from(held_text(note, "capture_id"))
+                if held_text(assignment, "assignment_id") == derived_assignment_id(name):
+                    made.add(derived_assignment_id(name))
+            except (ValueError, TypeError):
+                continue
+        return made
 
     def outstanding_captures(self) -> CaptureReadings:
         """Every note still to do something about, not archived and not yet homework, the
