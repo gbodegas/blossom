@@ -917,6 +917,37 @@ def test_the_refused_words_are_valid_only_as_these_pages_write_them() -> None:
     assert not date_controls_are_valid({"date_refused": "friday"})
 
 
+def test_the_date_fields_are_valid_only_in_the_combinations_a_page_renders() -> None:
+    """The whole table. A form with no mark has the one button, or none for the Enter key.
+    A marked form has both buttons, and carries refused words only when they could be shown,
+    which are always words that did not read as a day."""
+    marked = {"date_pending": "1"}
+    rendered = [
+        {},
+        {"choice": "save"},
+        marked,
+        {**marked, "choice": "save"},
+        {**marked, "choice": "without_date"},
+        {**marked, "date_refused": "friday"},
+        {**marked, "date_refused": "friday", "choice": "save"},
+        {**marked, "date_refused": "friday", "choice": "without_date"},
+        {**marked, "date_refused": "2026-08-32", "choice": "without_date"},
+    ]
+    never_rendered = [
+        {"choice": "without_date"},
+        {"choice": "without_date", "date_refused": "friday"},
+        {"date_refused": "friday"},
+        {**marked, "date_refused": "2026-08-25"},
+        {**marked, "date_refused": "20260825", "choice": "save"},
+        {**marked, "date_refused": "2026-W35-2", "choice": "without_date"},
+        {"date_pending": "yes", "choice": "without_date"},
+    ]
+    for fields in rendered:
+        assert date_controls_are_valid(fields), fields
+    for fields in never_rendered:
+        assert not date_controls_are_valid(fields), fields
+
+
 @pytest.mark.parametrize("surface", ["new", "edit"])
 @pytest.mark.parametrize("choice", ["without_date", "save", None])
 @pytest.mark.parametrize("forged", sorted(FORGED_REFUSED_WORDS))
@@ -951,6 +982,76 @@ def test_refused_words_these_pages_never_write_are_a_form_they_did_not_make(
     # up in one by chance and fail this for no reason.
     assert "zig" not in answer.text
     assert "zzzzzzzzzz" not in answer.text
+
+
+@pytest.mark.parametrize("surface", ["new", "edit"])
+@pytest.mark.parametrize("day_sent", ["2026-08-25", "20260825", ""])
+def test_save_without_the_date_on_a_form_with_no_mark_is_refused_and_loses_no_day(
+    surface: str, day_sent: str
+) -> None:
+    """No page offers that button without the mark of a refused day, so a form that sends it
+    is not one of these pages'. It is refused whole with nothing written, and a day it
+    carried is still in the control: it is not dropped on the word of a button never shown."""
+    with browser() as client:
+        store = state_of(client).project_state
+        action, fields = opened_form(client, surface)
+        before = tables(store)
+        answer = client.post(
+            action,
+            data={
+                **fields,
+                "text": "Words with a day",
+                "due_date": day_sent,
+                "choice": "without_date",
+            },
+            headers=PAGE_HEADERS,
+        )
+        after = tables(store)
+        kept = whole_form(answer.text, action)
+        saved = client.post(action, data=kept, headers=PAGE_HEADERS)
+        note = store.capture(kept.get("capture_id") or action.split("/")[-2])
+
+    assert answer.status_code == 422
+    assert said_first(answer.text, BAD_FORM)
+    assert after == before
+    assert kept["text"] == "Words with a day"
+    assert kept["due_date"] == ("2026-08-25" if day_sent else "")
+    assert "date_pending" not in kept
+    assert ">Save without the date</button>" not in answer.text
+    assert saved.status_code == 303
+    assert note is not None
+    assert note.due_date == (date(2026, 8, 25) if day_sent else None)
+
+
+@pytest.mark.parametrize("surface", ["new", "edit"])
+@pytest.mark.parametrize("choice", ["without_date", "save", None])
+@pytest.mark.parametrize("refused", ["2026-08-25", "20260825", "2026-W35-2"])
+def test_refused_words_that_read_as_a_day_were_refused_by_no_page(
+    surface: str, choice: str | None, refused: str
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        action, fields = opened_form(client, surface)
+        sent = {
+            **fields,
+            "text": "Words on a forged form",
+            "due_date": "",
+            "date_pending": "1",
+            "date_refused": refused,
+        }
+        if choice is not None:
+            sent["choice"] = choice
+        before = tables(store)
+        answer = client.post(action, data=sent, headers=PAGE_HEADERS)
+        after = tables(store)
+        kept = whole_form(answer.text, action)
+
+    assert answer.status_code == 422
+    assert said_first(answer.text, BAD_FORM)
+    assert after == before
+    assert kept["text"] == "Words on a forged form"
+    assert "date_refused" not in kept
+    assert "You wrote" not in answer.text
 
 
 # ------------------------------------------------------- forms that are not whole

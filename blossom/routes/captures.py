@@ -214,19 +214,41 @@ class Prepared:
     about_the_day: str | None = None
 
 
+def reads_as_a_day(written: str) -> bool:
+    """Whether words are a day as the form reads one, in any spelling it reads."""
+    try:
+        date.fromisoformat(written.strip())
+    except ValueError:
+        return False
+    return True
+
+
 def date_controls_are_valid(fields: dict[str, str]) -> bool:
-    """Whether the fields that steer the date carry only what these pages send: the button
-    pressed, or none for the Enter key; the mark as written; the refused words only with it,
-    and only as a page writes them, which is what ``shown_day`` makes of a day. Words with a
-    control character, a line break, space around them, more than a page sends, or nothing
-    in them were written by no page, whichever button is pressed beside them. A value that
-    is near one of these is not one of these, and nothing is trimmed into it."""
-    refused = fields.get("date_refused")
+    """Whether the fields that steer the date are a combination one of these pages renders.
+
+    A form with no mark has the one button, or none for the Enter key. A
+    form marked by a refused day has both buttons, and carries the refused
+    words only when they could be shown. So the button that saves without
+    the date comes only with the mark, and would otherwise drop a day on the
+    word of a button no page showed. The refused words come only with the
+    mark, only as a page writes them, which is what ``shown_day`` makes of a
+    day, and only when they do not read as a day, since a day that reads is
+    never refused. Words with a control character, a line break, space
+    around them, more than a page sends, or nothing in them were written by
+    no page. A value that is near one of these is not one of these, and
+    nothing is trimmed into it.
+    """
+    choice, mark, refused = (
+        fields.get(name) for name in ("choice", "date_pending", "date_refused")
+    )
+    marked = mark == "1"
     return (
-        fields.get("choice") in (None, "save", WITHOUT_DATE)
-        and fields.get("date_pending") in (None, "1")
+        choice in (None, "save", WITHOUT_DATE)
+        and mark in (None, "1")
+        and (choice != WITHOUT_DATE or marked)
         and (
-            refused is None or (fields.get("date_pending") == "1" and shown_day(refused) == refused)
+            refused is None
+            or (marked and shown_day(refused) == refused and not reads_as_a_day(refused))
         )
     )
 
@@ -243,8 +265,10 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None = Non
     her choice to save without it takes effect only in the save it is
     pressed for, so it is never read out of a blank day after another error.
 
-    Save without the date does what it says, whatever the date control holds
-    beside it: no day goes to the store and nothing is said about the day.
+    Save without the date, on a form that carries the mark, does what it
+    says whatever the date control holds beside it: no day goes to the store
+    and nothing is said about the day. On a form with no mark no page showed
+    that button, so it settles nothing here and the route refuses the form.
     What she typed there is still kept on the form, with its mark, so that
     another refusal of the same form shows it and offers both buttons again.
     """
@@ -254,18 +278,31 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None = Non
         capture_id=capture_id,
         text=fields.get("text", ""),
         course=fields.get("course", ""),
-        # Shown again only as a page wrote them; forged words are not tidied into view.
-        date_refused=carried if carried and shown_day(carried) == carried else None,
+        # Shown again only as a page wrote them; forged words are not tidied into view, and
+        # words that read as a day were refused by no page.
+        date_refused=(
+            carried
+            if carried and shown_day(carried) == carried and not reads_as_a_day(carried)
+            else None
+        ),
         date_pending=marked,
         revision=revision,
     )
-    without = fields.get("choice") == WITHOUT_DATE
+    # The button counts only on a form that carries the mark; without it no page showed the
+    # button, and a day beside it is kept as any day is.
+    without = marked and fields.get("choice") == WITHOUT_DATE
     raw = fields.get("due_date", "").strip()
     if raw:
         try:
             day = date.fromisoformat(raw)
         except ValueError:
-            refused = replace(form, due_date="", date_refused=shown_day(raw), date_pending=True)
+            shown = shown_day(raw)
+            refused = replace(
+                form,
+                due_date="",
+                date_refused=None if shown is None or reads_as_a_day(shown) else shown,
+                date_pending=True,
+            )
             return Prepared(refused, None, None if without else NOTE_DATE_UNREADABLE)
         if without:
             return Prepared(replace(form, due_date=day.isoformat(), date_pending=True))

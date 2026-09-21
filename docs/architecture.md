@@ -921,7 +921,14 @@ is kept, marked as about a note whose reference cannot be read, shown with its
 note unavailable, and answered in JSON with no id at all. The words of a day
 that could not be read, which a form carries only to be shown again, are valid
 only as a page writes them; sent any other way the form is refused whole,
-whichever button is pressed beside them. Save without the date does what it says whatever the date control
+whichever button is pressed beside them. The fields that steer the date are
+held to the combinations a page renders, and the rule is the whole table: a
+form with no mark has the one button, or none for the Enter key; a form marked
+by a refused day has both buttons and carries the refused words only when they
+could be shown, which are always words that did not read as a day. So the
+button that saves without the date counts only with the mark, where it would
+otherwise drop a day on the word of a button no page showed, and refused words
+that read as a day were refused by no page. Save without the date does what it says whatever the date control
 holds beside it: no day goes to the store, and what she typed there stays on
 the form, with its mark, only so that another refusal can show it again.
 
