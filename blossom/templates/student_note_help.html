@@ -15,7 +15,7 @@
     <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}{% if question_error and viewer != "parent" %}{% with field = "question" %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
   {% endif %}
   <section class="panel homework-note">
-    <h2 class="update-heading">The note, as it stands now</h2>
+    <h2 class="update-heading">{% if before_the_refusal %}The note, as it stood when you pressed the button{% else %}The note, as it stands now{% endif %}</h2>
     <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
     {% if note.archived %}<p class="note">This note is archived.</p>{% endif %}
     {% if viewer == "parent" %}

@@ -605,6 +605,116 @@ def test_a_refusal_about_a_field_links_to_it_and_the_field_points_back(
     assert "<a " not in whole.group()
 
 
+# ------------------------------------------ a refusal over a note that is unavailable
+
+TYPED = {"text": "UNSAVED <i>words</i> \U0001f600", "course": "UNSAVED <b>class</b>"}
+
+
+def quiet_after_the_last_read(seen: list[str]) -> bool:
+    """Whether the page that answered read no store to be made: nothing follows the last
+    read of a note or its changes but where a transaction begins or ends."""
+    reads = [
+        place
+        for place, line in enumerate(seen)
+        if "homework_captures" in line or "capture_events" in line
+    ]
+    rest = seen[reads[-1] + 1 :] if reads else seen
+    return all(line.split()[0].upper() in ("BEGIN", "ROLLBACK", "COMMIT") for line in rest)
+
+
+@pytest.mark.parametrize("what", ["unreadable", "gone", "read_failure"])
+@pytest.mark.parametrize("day", ["2026-08-25", "friday"])
+def test_an_edit_refused_over_a_note_that_is_unavailable_keeps_everything_she_typed(
+    what: str, day: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The form is opened first, and the note becomes unreadable, leaves the record, or the
+    file cannot be read. The answer is the page that reads no store, with her words, the
+    class, and the day or the words of a day that could not be read."""
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        action = note_action(name, "edit")
+        opened = whole_form(client.get(note_href(name, edit="1")).text, action)
+        if what == "unreadable":
+            store._connection.execute(
+                "UPDATE homework_captures SET attribution = 'no json' WHERE capture_id = ?", (name,)
+            )
+        elif what == "gone":
+            store._connection.execute("DELETE FROM homework_captures WHERE capture_id = ?", (name,))
+        store._connection.commit()
+        before = tables(store)
+        if what == "read_failure":
+
+            def unread(*args: object, **kwargs: object) -> None:
+                msg = "the file cannot be read"
+                raise sqlite3.OperationalError(msg)
+
+            monkeypatch.setattr(store, "capture", unread)
+            monkeypatch.setattr(store, "_capture_locked", unread)
+        seen: list[str] = []
+        store._connection.set_trace_callback(seen.append)
+        answer = client.post(
+            action, data={**opened, **TYPED, "due_date": day}, headers=PAGE_HEADERS
+        )
+        store._connection.set_trace_callback(None)
+        monkeypatch.undo()
+        after = tables(store)
+        left_open = store._connection.in_transaction
+        still_opens = client.get(note_href(name))
+
+    refused_first = day == "friday"
+    expected = 422 if refused_first else {"unreadable": 500, "gone": 404, "read_failure": 500}[what]
+    assert answer.status_code == expected
+    assert "<h1>Update not saved</h1>" in answer.text
+    assert answer.text.count(" autofocus") == 1
+    assert "UNSAVED &lt;i&gt;words&lt;/i&gt; \U0001f600" in answer.text
+    assert "UNSAVED &lt;b&gt;class&lt;/b&gt;" in answer.text
+    assert "<i>words</i>" not in answer.text
+    assert day in answer.text
+    assert escape(NOTE_EDITED) not in answer.text
+    assert "<form" not in answer.text.split("<main", 1)[-1]
+    assert f'href="{NOTES_PAGE}"' in answer.text
+    assert quiet_after_the_last_read(seen)
+    assert after == before
+    assert not left_open
+    assert still_opens.status_code == (404 if what == "gone" else 200)
+
+
+@pytest.mark.parametrize("day", ["2026-09-23", "friday"])
+def test_an_edit_behind_an_archive_keeps_every_field_and_leads_to_the_note(day: str) -> None:
+    """Two devices: the edit is open on one, the note is archived on the other, and the edit
+    is then sent with other words, another class, and a day. Nothing is saved, nothing is
+    brought back, all of it is there to copy, and the way to the note is one link."""
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        action = note_action(name, "edit")
+        opened = whole_form(client.get(note_href(name, edit="1")).text, action)
+        archive = note_action(name, "archive")
+        page = client.get(note_href(name)).text
+        client.post(archive, data=form_fields(page, archive), headers=PAGE_HEADERS)
+        before = tables(store)
+        answer = client.post(
+            action, data={**opened, **TYPED, "due_date": day}, headers=PAGE_HEADERS
+        )
+        after = tables(store)
+        note = store.capture(name)
+
+    assert answer.status_code == (422 if day == "friday" else 409)
+    assert answer.text.count(" autofocus") == 1
+    assert "UNSAVED &lt;i&gt;words&lt;/i&gt; \U0001f600" in answer.text
+    assert "UNSAVED &lt;b&gt;class&lt;/b&gt;" in answer.text
+    assert day in answer.text
+    assert "This note is archived." in answer.text
+    assert "not saved" in answer.text
+    assert f'<a href="{note_href(name)}">' in answer.text
+    assert f'action="{action}"' not in answer.text
+    assert 'href="#note-' not in answer.text
+    assert after == before
+    assert note is not None
+    assert (note.archived, note.text) == (True, WORDS)
+
+
 # ------------------------------------------------------- forms that are not whole
 
 

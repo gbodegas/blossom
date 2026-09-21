@@ -53,9 +53,8 @@
       <p class="note">Sign in as the student to change this note.</p>
     {% elif form and note.archived %}
       <h3 class="update-heading">Your unsaved changes</h3>
-      <p class="note">This note is archived, so nothing was saved. Your words are here to copy. Bring the note back to change it.</p>
-      <label for="kept-note-words">Your words, as typed</label>
-      <textarea id="kept-note-words" rows="4" readonly>{{ form.text }}</textarea>
+      <p class="note">This note is archived, so your changes are not saved. Everything you typed is here to copy. <a href="{{ note_href(note.capture_id) }}">Open this note</a> to bring it back; bringing it back does not save these changes.</p>
+      {% with kept = form %}{% include "student_note_kept.html" %}{% endwith %}
     {% elif form %}
       <form method="post" action="{{ note_action(note.capture_id, "edit") }}" class="report">
         {% if form.unsaved %}<h3 class="update-heading">Your unsaved changes</h3>{% endif %}

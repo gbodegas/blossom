@@ -333,10 +333,16 @@ def gone(request: Request, state: ApplicationState) -> HTMLResponse:
 
 
 def plain_failure(
-    request: Request, state: ApplicationState, problem: str, form: NoteForm | None
+    request: Request,
+    state: ApplicationState,
+    problem: str,
+    form: NoteForm | None,
+    status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
 ) -> HTMLResponse:
-    """The page after a write the file refused when the note's page cannot be read back
-    either. It reads no store, tries nothing again, and keeps her words as she sent them."""
+    """The page for a refused change whenever the note's own page cannot be made: the note
+    cannot be read, it left the record, or the file cannot be read. It reads no store, tries
+    nothing again, and keeps everything she typed: her words, the class, the day, and the
+    words of a day that could not be read."""
     return templates.TemplateResponse(
         request,
         "student_update_recovery.html",
@@ -348,7 +354,37 @@ def plain_failure(
             "ways_back": ways_back(),
             "sample": state.settings.sample,
         },
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        status_code=status_code,
+    )
+
+
+def help_not_sent(
+    request: Request,
+    state: ApplicationState,
+    problem: str,
+    question: str,
+    capture_id: str | None,
+    status_code: int,
+) -> HTMLResponse:
+    """The page for a request for help that was refused where no note can be shown beside
+    it. It needs no note and reads no store: what happened, her question as she typed it,
+    and the ways back, the note's own page among them when its name is one. A parent is
+    shown no question, since the request is not theirs to make."""
+    mine = viewer_of(request) != "parent"
+    return templates.TemplateResponse(
+        request,
+        "student_update_recovery.html",
+        {
+            "card": None,
+            "hand_in_card": None,
+            "heading": "Request not sent",
+            "note_problem": problem if mine else NOT_HERS_TO_UPDATE,
+            "help_question": question if mine else "",
+            "help_note": capture_id,
+            "ways_back": ways_back(),
+            "sample": state.settings.sample,
+        },
+        status_code=status_code if mine else status.HTTP_403_FORBIDDEN,
     )
 
 
@@ -396,15 +432,29 @@ def note_page(
 ) -> HTMLResponse:
     """One note's page: what stands, the first words when they differ, who supplied a class
     or a day, the history, and for her the ways to change it. Two reads in one snapshot. A
-    note or a change of it that cannot be read is said as unavailable, never as gone."""
+    note or a change of it that cannot be read is said as unavailable, never as gone.
+
+    When the page is the answer to a refused change, ``form`` holds what she
+    typed, and a note that cannot be shown does not take that with it: the
+    answer is then the page that reads no store, with everything she typed.
+    """
     store = state.project_state
     try:
         with store.reading():
             note = store.capture(capture_id)
             history = [] if note is None else store.capture_history(capture_id)
     except UnreadableCapture:
+        if form is not None:
+            return plain_failure(request, state, NOTE_UNREADABLE, form, refusal(status_code))
         return unreadable(request, state, status_code)
+    except Exception:
+        if form is None:
+            raise
+        logger.exception("the note %s could not be read to answer a refused change", capture_id)
+        return plain_failure(request, state, problem or NOTE_UNREADABLE, form, refusal(status_code))
     if note is None:
+        if form is not None:
+            return plain_failure(request, state, NOTE_GONE, form, refusal(status_code, gone=True))
         return gone(request, state)
     viewer = viewer_of(request)
     mine = viewer != "parent"
@@ -443,6 +493,14 @@ def note_page(
         },
         status_code=status_code,
     )
+
+
+def refusal(status_code: int, *, gone: bool = False) -> int:
+    """The status of the page that reads no store: the refusal's own, which it stands in
+    for, and for a page that had none, what became of the note."""
+    if status_code != status.HTTP_200_OK:
+        return status_code
+    return status.HTTP_404_NOT_FOUND if gone else status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
 def note_or_plain(
@@ -556,11 +614,14 @@ def help_page(
     question: str = "",
     problem: str | None = None,
     question_error: bool = False,
+    before_the_refusal: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """The page that offers the request, with the note as context and her question as she
     typed it. Rendering it sends nothing. ``question_error`` says the problem is about the
-    question itself, so the alert links to it and the field points back."""
+    question itself, so the alert links to it and the field points back.
+    ``before_the_refusal`` says the note shown was read before a write the file refused
+    and was not read again, so the page says when it was read and not that it stands."""
     return templates.TemplateResponse(
         request,
         "student_note_help.html",
@@ -569,6 +630,7 @@ def help_page(
             "question": question,
             "problem": problem,
             "question_error": question_error,
+            "before_the_refusal": before_the_refusal,
             "viewer": viewer_of(request),
             "not_hers": NOT_HERS_TO_UPDATE,
             "note_max_length": NOTE_MAX_LENGTH,
@@ -725,7 +787,7 @@ async def edit_a_note(request: Request, capture_id: str, state: State) -> Respon
                 today=today,
             )
     except UnknownCapture:
-        return gone(request, state)
+        return plain_failure(request, state, NOTE_GONE, form, status.HTTP_404_NOT_FOUND)
     except CaptureNotSaved:
         logger.exception("her homework note %s could not be changed", name)
         return note_or_plain(request, state, name, NOTE_NOT_SAVED, form)
@@ -840,23 +902,33 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     Only this, an explicit submit from her, makes a request. It carries the
     note's id and her question, never the note's words. The name is checked
     again where the request is written, in the help store's own transaction.
-    A request the file refuses is said on the page she sent it from, made from
-    the note already read, so it reads no store again and keeps her question.
-    A note on record that cannot be read is said as that, and nothing is sent.
+    Her question is read before the note is, so no refusal loses it. A
+    request the file refuses is said on the page she sent it from, made from
+    the note already read, so it reads no store again. Where no note can be
+    shown, since it cannot be read, left the record before or during the
+    write, or the file cannot be read, the answer is the page that needs no
+    note, with her question, and nothing is sent.
     A parent is answered 403 and nothing is sent in her name.
     """
     fields, whole = await fields_of(request, HELP_FIELDS)
+    question = fields.get("note", "")
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return gone(request, state)
+        return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
     try:
         note = state.project_state.capture(name)
     except UnreadableCapture:
-        return unreadable(request, state, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return help_not_sent(
+            request, state, NOTE_UNREADABLE, question, name, status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+    except Exception:
+        logger.exception("the note %s could not be read for her request for help", name)
+        return help_not_sent(
+            request, state, HELP_NOT_ASKED, question, name, status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
     if note is None:
-        return gone(request, state)
-    question = fields.get("note", "")
+        return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
     if viewer_of(request) == "parent":
         return help_page(
             request,
@@ -881,7 +953,7 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
         async with state.decision_lock:
             asked = state.help_requests.ask(state.clock.today(), words or None, capture_id=name)
     except UnknownCaptureReference:
-        return gone(request, state)
+        return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
     except Exception:
         logger.exception("her request for help about note %s could not be sent", name)
         return help_page(
@@ -890,6 +962,7 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
             note,
             question=question,
             problem=HELP_NOT_ASKED,
+            before_the_refusal=True,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     return RedirectResponse(

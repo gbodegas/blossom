@@ -25,6 +25,7 @@ from blossom.routes.navigation import (
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED
+from blossom.stores.help_requests import UnknownCaptureReference
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
     FIXTURE_WEEK,
@@ -327,6 +328,62 @@ def test_a_question_that_is_too_long_links_to_its_field_and_the_field_points_bac
     assert answer.text.count(" autofocus") == 1
     assert 'aria-invalid="true"' in field.group()
     assert re.search(r'aria-describedby="note-problem help-question-hint"', field.group())
+    assert sent == []
+
+
+@pytest.mark.parametrize("what", ["unreadable", "gone", "read_failure", "reference"])
+def test_a_request_for_help_that_is_refused_keeps_her_question_whatever_became_of_the_note(
+    what: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Her question is read before the note is, so no refusal loses it: a note that cannot
+    be read, one that left the record, a file that cannot be read, and a note that left
+    between the read and the write. The page that answers reads no store and sends nothing."""
+    question = "UNSAVED <strong>why</strong> \U0001f600"
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        opened = whole_form(client.get(note_help_href(name)).text, action)
+        if what == "unreadable":
+            store._connection.execute(
+                "UPDATE homework_captures SET attribution = 'no json' WHERE capture_id = ?", (name,)
+            )
+        elif what == "gone":
+            store._connection.execute("DELETE FROM homework_captures WHERE capture_id = ?", (name,))
+        store._connection.commit()
+        tried: list[str] = []
+        if what == "read_failure":
+
+            def unread(*args: object, **kwargs: object) -> None:
+                msg = "the file cannot be read"
+                raise sqlite3.OperationalError(msg)
+
+            monkeypatch.setattr(store, "capture", unread)
+        if what == "reference":
+
+            def left(*args: object, **kwargs: object) -> None:
+                tried.append("write")
+                raise UnknownCaptureReference(name)
+
+            monkeypatch.setattr(state.help_requests, "ask", left)
+        seen: list[str] = []
+        store._connection.set_trace_callback(seen.append)
+        answer = client.post(action, data={**opened, "note": question}, headers=PAGE_HEADERS)
+        store._connection.set_trace_callback(None)
+        monkeypatch.undo()
+        sent = state.help_requests.open_requests()
+
+    expected = {"unreadable": 500, "gone": 404, "read_failure": 500, "reference": 404}[what]
+    assert answer.status_code == expected
+    assert answer.text.count(" autofocus") == 1
+    assert "UNSAVED &lt;strong&gt;why&lt;/strong&gt; \U0001f600" in answer.text
+    assert "<strong>why</strong>" not in answer.text
+    assert str(escape(NOTE_ASKED)) not in answer.text
+    assert WORDS not in answer.text
+    assert f'href="{NOTES_PAGE}"' in answer.text
+    assert tried == (["write"] if what == "reference" else [])
+    assert len([line for line in seen if "homework_captures" in line]) <= 1
     assert sent == []
 
 

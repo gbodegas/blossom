@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set page = "student" %}
-{% block title %}Blossom - Update not saved{% endblock %}
+{% block title %}Blossom - {{ heading if heading is defined and heading else "Update not saved" }}{% endblock %}
 {#
   The page for a save the file refused when the page it came from cannot be
   read back either: what happened, in a sentence, what she chose and typed,
@@ -12,7 +12,7 @@
   for.
 #}
 {% block content %}
-  <h1>Update not saved</h1>
+  <h1>{{ heading if heading is defined and heading else "Update not saved" }}</h1>
   <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ card.problem if card else (hand_in_card.problem if hand_in_card else note_problem) }}</p>
   {% if card and card.status %}
     <p>Your choice: {% if card.status == "done" %}Done{% else %}Not yet{% endif %}.</p>
@@ -25,14 +25,21 @@
     {% with kept = hand_in_card %}{% include "student_hand_in_kept.html" %}{% endwith %}
   {% endif %}
   {#
-    A homework note's failed change comes here too, with the words of the note
-    as she sent them, to copy.
+    A homework note's refused change comes here too, whenever the note's own
+    page cannot be made: the note cannot be read, it left the record, or the
+    file cannot be read. Everything she typed is here to copy. A request for
+    help about a note that meets the same comes here with her question, and
+    with the way back to the note when its name is one.
   #}
   {% if note_form is defined and note_form %}
-    <label for="kept-note-words">Your note, as typed</label>
-    <textarea id="kept-note-words" rows="4" readonly>{{ note_form.text }}</textarea>
-    {% if note_form.course %}<p>Class, as typed: <span class="authored-text">{{ note_form.course }}</span></p>{% endif %}
-    {% if note_form.due_date %}<p>Due date, as given: {{ note_form.due_date }}</p>{% endif %}
+    {% with kept = note_form %}{% include "student_note_kept.html" %}{% endwith %}
+  {% endif %}
+  {% if help_question is defined and help_question %}
+    <label for="kept-help-question">Your question, as typed</label>
+    <textarea id="kept-help-question" rows="3" readonly>{{ help_question }}</textarea>
+  {% endif %}
+  {% if help_note is defined and help_note %}
+    <p class="return"><a href="{{ note_href(help_note) }}">Back to the note</a></p>
   {% endif %}
   {% for link in ways_back %}
     <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
