@@ -28,6 +28,9 @@
   The one who may not write here is shown the note and told who can. A form
   that arrives after the note was put away or added to homework is answered
   with what was typed, shown to copy, since that note takes no more details.
+  A form from a page that is behind the note comes back under its own heading,
+  below the details the note holds now, so what was typed is set beside what is
+  saved and replaces none of it unseen.
 #}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% set targets = {
@@ -58,8 +61,15 @@
     {% elif note.archived %}
       <p class="note">This note is archived. <a href="{{ note_href(note.capture_id) }}">Open the note</a> to bring it back before adding it to homework.</p>
     {% endif %}
+    {% if form.unsaved and (note.course or note.title or note.due_date or note.note) %}
+      <h3 class="update-heading">Saved on the note now</h3>
+      {% if note.course %}<p class="note">Class: <span class="authored-text">{{ note.course }}</span></p>{% endif %}
+      {% if note.title %}<p class="note">Title: <span class="authored-text">{{ note.title }}</span></p>{% endif %}
+      {% if note.due_date %}<p class="note">Due date given: {{ on(note.due_date) }}</p>{% endif %}
+      {% if note.note %}<p class="note">Note about the work: <q class="authored-text">{{ note.note }}</q></p>{% endif %}
+    {% endif %}
     {% if typed and may_write is false and (note.assignment_id or note.archived) %}
-      <h3 class="update-heading">Unsaved details</h3>
+      <h3 class="update-heading">Your unsaved details</h3>
       <p class="note">These details were not saved. Everything typed is here to copy.</p>
       {% with kept = form %}{% include "student_note_details_kept.html" %}{% endwith %}
     {% endif %}
@@ -68,7 +78,7 @@
       <p class="note">{% if family %}Sign in as a parent to add details here.{% else %}{{ not_hers }}{% endif %}</p>
     {% else %}
       <form method="post" action="{{ note_add_action(note.capture_id, family=family) }}" class="report">
-        {% if form.unsaved %}<h3 class="update-heading">Unsaved details</h3>{% else %}<h3 class="update-heading">Homework details</h3>{% endif %}
+        {% if form.unsaved %}<h3 class="update-heading">Your unsaved details</h3>{% else %}<h3 class="update-heading">Homework details</h3>{% endif %}
         <input type="hidden" name="revision" value="{{ form.revision }}">
         <input type="hidden" name="basis" value="{{ basis }}">
 

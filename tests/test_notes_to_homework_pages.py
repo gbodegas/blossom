@@ -25,6 +25,7 @@ from blossom.routes.captures import (
     ALREADY_ADDED,
     DETAILS_SAVED,
     JOINED_TO_HOMEWORK,
+    NOTE_ALREADY_SAVED,
     NOTE_CHANGED,
     OUT_OF_THE_WINDOW,
 )
@@ -197,6 +198,21 @@ def test_details_are_saved_as_hers_and_her_words_are_as_they_were() -> None:
     assert {by.authored_by for by in note.attribution.values()} == {HOUSEHOLD}
     assert {by.channel for by in note.attribution.values()} == {SourceChannel.STUDENT_REPORT}
     assert note.outstanding
+
+
+def test_the_same_details_again_are_already_saved_and_write_nothing() -> None:
+    with browser() as client:
+        name = save_note(client)
+        first = save_details(client, name, {**opened(client, name), **typed()})
+        once = rows(client)
+        again = save_details(client, name, {**opened(client, name), **typed()})
+        landed = client.get(again.headers["location"]).text
+        behind = save_details(client, name, {**opened(client, name), **typed(), "revision": "1"})
+        after = rows(client)
+
+    assert (first.status_code, again.status_code, behind.status_code) == (303, 303, 303)
+    assert escape(NOTE_ALREADY_SAVED) in landed
+    assert after == once
 
 
 def test_a_parent_adds_a_detail_through_the_familys_tree_and_it_says_so(
@@ -469,6 +485,11 @@ def test_a_page_that_is_behind_the_note_is_refused_with_what_she_typed() -> None
     assert answer.status_code == 409
     assert escape(NOTE_CHANGED) in answer.text
     assert whole_form(answer.text, note_add_action(name))["title"] == "Typed on an old page"
+    assert "Saved on the note now" in answer.text
+    assert "Saved elsewhere" in answer.text
+    assert "Your unsaved details" in answer.text
+    saved_now = answer.text.index("Saved on the note now")
+    assert saved_now < answer.text.index("Your unsaved details")
 
 
 @pytest.mark.parametrize("sent", ["separate", "an-assignment-that-is-not-one-of-them"])
