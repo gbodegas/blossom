@@ -714,7 +714,15 @@ def test_a_candidate_is_read_with_what_she_and_the_school_currently_say(
     assert [(item.work_state, item.work_reported_on) for item in taken_back] == [(None, None)]
 
 
-SINCE_THE_PAGE = ("done", "not yet", "undone", "school missing", "record source")
+SINCE_THE_PAGE = (
+    "done",
+    "not yet",
+    "undone",
+    "done the same day as not yet",
+    "school missing",
+    "school says what the record holds",
+    "record source",
+)
 
 
 @pytest.mark.parametrize("choice", ["same", "separate"])
@@ -723,7 +731,8 @@ def test_anything_shown_about_a_candidate_that_changed_since_is_put_to_her_again
     store: ProjectStateStore, since: str, choice: str
 ) -> None:
     target = on_record(store, due=date(2026, 9, 25))
-    before_the_page = she_says(store, target, "not_yet") if since == "undone" else None
+    said_first = since in ("undone", "done the same day as not yet")
+    before_the_page = she_says(store, target, "not_yet") if said_first else None
     name = note(store)
     given = details()
     basis = candidate_basis(candidate_readings(store, given))
@@ -734,8 +743,18 @@ def test_anything_shown_about_a_candidate_that_changed_since_is_put_to_her_again
     elif since == "undone":
         assert before_the_page is not None
         store.undo_report(target.assignment_id, before_the_page, now=AT, today=MONDAY)
+    elif since == "done the same day as not yet":
+        # Only what she says changes: the day of her report is the day it was.
+        assert before_the_page is not None
+        saved = store.report_status(
+            target.assignment_id, "done", None, expected_head=before_the_page, now=AT, today=MONDAY
+        )
+        assert isinstance(saved, Saved)
     elif since == "school missing":
         school_says(store, target, "missing", MONDAY)
+    elif since == "school says what the record holds":
+        # Only the school's word changes: the record's own status is what it was.
+        school_says(store, target, target.reported_submission_status, MONDAY)
     else:
         moved = target.model_copy(update={"origins": {"record": SourceChannel.PARENT_ENTRY}})
         store.upsert_assignments([moved])
