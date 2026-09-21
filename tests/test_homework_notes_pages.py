@@ -573,6 +573,53 @@ def test_a_row_not_held_as_the_store_writes_it_is_said_to_be_unreadable_on_every
         assert "PADDED WORDS" not in page.text
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE homework_captures SET text = ?",
+        "UPDATE homework_captures SET course = ?",
+        "UPDATE homework_captures SET title = ?",
+    ],
+)
+def test_bytes_in_a_text_column_are_never_shown_as_her_words(statement: str) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = save_note(client, "Ordinary words", course="Geometry")
+        store._connection.execute(statement, (b"INJECTED <b>bytes</b>",))
+        store._connection.commit()
+        pages = [client.get(where) for where in (HER_PAGE, NOTES_PAGE, FAMILY, note_href(name))]
+
+    for page in pages:
+        assert page.status_code == 200
+        assert "INJECTED" not in page.text
+        assert "Ordinary words" not in page.text
+        assert "cannot be read right now" in page.text
+
+
+def test_a_note_reference_held_as_bytes_shows_the_request_and_no_note() -> None:
+    """The help store keeps only the note's id. Bytes in its place name no note, so the
+    request is still shown, the note is said to be unavailable, and nothing of the bytes is."""
+    with browser() as client:
+        state = state_of(client)
+        name = save_note(client, "Ordinary words")
+        assert ask_about(client, name, "which part?").status_code == 303
+        state.help_requests._connection.execute(
+            "UPDATE help_requests SET capture_id = ?", (b"INJECTED reference",)
+        )
+        state.help_requests._connection.commit()
+        pages = [client.get(HER_PAGE), client.get(FAMILY)]
+        listed = client.get("/parent/help-requests")
+
+    for page in pages:
+        assert page.status_code == 200
+        assert "which part?" in page.text
+        assert "homework note cannot be read right now." in page.text
+        assert "INJECTED" not in page.text
+    assert listed.status_code == 200
+    assert listed.json()[0]["about_note"]["unavailable"] is True
+    assert listed.json()[0]["about_note"]["text"] is None
+
+
 # --------------------------------------------------------- what a note never does
 
 

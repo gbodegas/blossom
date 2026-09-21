@@ -904,7 +904,13 @@ kept under the text rule, edges off, line endings as one kind, a blank class as
 no class. What the file holds must already be that: a row whose words, class,
 or first save are held any other way was not written by the store, is not
 quietly mended when read, and is a note that cannot be read, on the lists as on
-its own page. Save without the date does what it says whatever the date control
+its own page. The same holds for types and spellings. SQLite keeps bytes put
+into a text column as bytes and turns a number put there into its digits, and
+Python would make words of the first and read `20260918` as a day and `0_1` as
+a count. So a note's row and a change's row are read column by column as what
+the store writes: text as text, a count as an integer, a day and a moment in
+the one spelling it writes them, a snapshot as the JSON it wrote. Nothing is
+coerced on its way to being her words. Save without the date does what it says whatever the date control
 holds beside it: no day goes to the store, and what she typed there stays on
 the form, with its mark, only so that another refusal can show it again.
 

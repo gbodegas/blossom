@@ -156,29 +156,76 @@ def new_capture_event_id() -> str:
     return f"note-event-{uuid.uuid4().hex[:12]}"
 
 
+def held_text(value: object, column: str) -> str:
+    """A text column as the store writes it, which is a ``str`` and nothing else. SQLite keeps
+    bytes put into a text column as bytes, and ``str()`` would make ordinary words of them,
+    so a row the store never wrote could be shown as hers. Nothing is coerced here."""
+    if type(value) is not str:
+        msg = f"{column} holds {type(value).__name__}, not text"
+        raise TypeError(msg)
+    return value
+
+
+def held_text_or_nothing(value: object, column: str) -> str | None:
+    """A text column that may hold nothing."""
+    return None if value is None else held_text(value, column)
+
+
+def held_count(value: object, column: str) -> int:
+    """A count as the store writes it, an ``int``. Text is not read as one, since Python
+    counts ``0_1`` and the file never held that."""
+    if type(value) is not int:
+        msg = f"{column} holds {type(value).__name__}, not a count"
+        raise TypeError(msg)
+    return value
+
+
+def held_day(value: object, column: str) -> date:
+    """A day in the one spelling the store writes. ``20260918`` reads as a day in Python and
+    is no day the store wrote, and SQLite turns a number put into a text column into it."""
+    written = held_text(value, column)
+    day = date.fromisoformat(written)
+    if day.isoformat() != written:
+        msg = f"{column} holds a day in another spelling"
+        raise ValueError(msg)
+    return day
+
+
+def held_moment(value: object, column: str) -> datetime:
+    """A moment in the one spelling the store writes."""
+    written = held_text(value, column)
+    moment = datetime.fromisoformat(written)
+    if moment.isoformat() != written:
+        msg = f"{column} holds a moment in another spelling"
+        raise ValueError(msg)
+    return moment
+
+
 def capture_from(row: tuple[object, ...]) -> Capture:
-    """One note from a row of one of the four reads, by position, or ``UnreadableCapture``."""
+    """One note from a row of one of the four reads, by position, or ``UnreadableCapture``.
+    Every column is read as the type and the spelling the store writes it in, and as nothing
+    that could be made from another: no value is coerced on its way to being her words."""
     try:
-        attribution = json.loads(str(row[10]))
+        attribution = json.loads(held_text(row[10], "attribution"))
         return Capture(
-            capture_id=str(row[0]),
-            created_order=int(str(row[1])),
-            original_text=str(row[2]),
-            initial=initial_from(str(row[3])),
-            text=str(row[4]),
-            course=None if row[5] is None else str(row[5]),
-            title=None if row[6] is None else str(row[6]),
-            due_date=None if row[7] is None else date.fromisoformat(str(row[7])),
-            kind=None if row[8] is None else str(row[8]),
-            note=None if row[9] is None else str(row[9]),
+            capture_id=held_text(row[0], "capture_id"),
+            created_order=held_count(row[1], "created_order"),
+            original_text=held_text(row[2], "original_text"),
+            initial=initial_from(held_text(row[3], "initial")),
+            text=held_text(row[4], "text"),
+            course=held_text_or_nothing(row[5], "course"),
+            title=held_text_or_nothing(row[6], "title"),
+            due_date=None if row[7] is None else held_day(row[7], "due_date"),
+            kind=held_text_or_nothing(row[8], "kind"),
+            note=held_text_or_nothing(row[9], "note"),
             attribution={name: FieldSource(**source) for name, source in attribution.items()},
-            created_at=datetime.fromisoformat(str(row[11])),
-            created_on=date.fromisoformat(str(row[12])),
-            updated_at=datetime.fromisoformat(str(row[13])),
-            updated_on=date.fromisoformat(str(row[14])),
-            revision=int(str(row[15])),
+            created_at=held_moment(row[11], "created_at_utc"),
+            created_on=held_day(row[12], "created_on"),
+            updated_at=held_moment(row[13], "updated_at_utc"),
+            updated_on=held_day(row[14], "updated_on"),
+            revision=held_count(row[15], "revision"),
             archived=archived_from(row[16]),
-            assignment_id=None if row[17] is None else str(row[17]),
+            assignment_id=held_text_or_nothing(row[17], "assignment_id"),
         )
     except (ValueError, TypeError, AttributeError) as fault:
         raise UnreadableCapture(str(row[0])) from fault
@@ -205,22 +252,36 @@ def archived_from(flag: object) -> bool:
     return flag == 1
 
 
+def snapshot_from(raw: str) -> CaptureSnapshot:
+    """What stood at one moment, from the JSON the file holds, which must be that JSON as the
+    store writes it. Validating alone would read a day in another spelling, or a number, as
+    a day, and hand the line of changes something the file never held."""
+    held = json.loads(raw)
+    snapshot = CaptureSnapshot.model_validate(held)
+    if held != json.loads(snapshot.model_dump_json()):
+        msg = "a snapshot is not held as it is written"
+        raise ValueError(msg)
+    return snapshot
+
+
 def capture_event_from(row: tuple[object, ...]) -> CaptureEvent:
     """One change from a row read by ``CAPTURE_EVENTS``, or
     ``UnreadableCapture`` for the note it belongs to: a change that cannot be read makes the
-    note's history unavailable, which a page says, and is never a failure of the page."""
+    note's history unavailable, which a page says, and is never a failure of the page. Each
+    column is read as the type and the spelling the store writes, as a note's row is."""
     try:
+        before = held_text_or_nothing(row[3], "before")
         return CaptureEvent(
-            event_id=str(row[0]),
-            capture_id=str(row[1]),
-            operation=str(row[2]),  # type: ignore[arg-type]
-            before=None if row[3] is None else CaptureSnapshot.model_validate_json(str(row[3])),
-            after=CaptureSnapshot.model_validate_json(str(row[4])),
-            revision=int(str(row[5])),
-            occurred_at=datetime.fromisoformat(str(row[6])),
-            occurred_on=date.fromisoformat(str(row[7])),
-            authored_by=str(row[8]),  # type: ignore[arg-type]
-            sequence=int(str(row[9])),
+            event_id=held_text(row[0], "event_id"),
+            capture_id=held_text(row[1], "capture_id"),
+            operation=held_text(row[2], "operation"),  # type: ignore[arg-type]
+            before=None if before is None else snapshot_from(before),
+            after=snapshot_from(held_text(row[4], "after")),
+            revision=held_count(row[5], "revision"),
+            occurred_at=held_moment(row[6], "occurred_at_utc"),
+            occurred_on=held_day(row[7], "occurred_on"),
+            authored_by=held_text(row[8], "authored_by"),  # type: ignore[arg-type]
+            sequence=held_count(row[9], "sequence"),
         )
     except (ValueError, TypeError, AttributeError) as fault:
         raise UnreadableCapture(str(row[1])) from fault

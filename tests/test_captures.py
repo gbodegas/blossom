@@ -625,6 +625,125 @@ def test_words_as_a_form_sends_them_are_still_tidied_on_the_way_in(
     assert store.capture(name) == note
 
 
+ANOTHER_TYPE: dict[str, tuple[str, tuple[object, ...]]] = {
+    "words as bytes": ("UPDATE homework_captures SET text = ?", (b"Injected words",)),
+    "a class as bytes": ("UPDATE homework_captures SET course = ?", (b"Injected class",)),
+    "first words as bytes": (
+        "UPDATE homework_captures SET original_text = CAST(original_text AS BLOB)",
+        (),
+    ),
+    "the first save as bytes": ("UPDATE homework_captures SET initial = CAST(initial AS BLOB)", ()),
+    "who supplied what as bytes": (
+        "UPDATE homework_captures SET attribution = CAST(attribution AS BLOB)",
+        (),
+    ),
+    "a title as bytes": ("UPDATE homework_captures SET title = ?", (b"Injected title",)),
+    "a kind as bytes": ("UPDATE homework_captures SET kind = ?", (b"homework",)),
+    "a parent's note as bytes": ("UPDATE homework_captures SET note = ?", (b"Injected note",)),
+    "a day in another spelling": ("UPDATE homework_captures SET due_date = '20260918'", ()),
+    "a day as a number": ("UPDATE homework_captures SET due_date = 20260918", ()),
+    "a day as bytes": ("UPDATE homework_captures SET due_date = CAST(due_date AS BLOB)", ()),
+    "the saved day in another spelling": (
+        "UPDATE homework_captures SET created_on = '20260914'",
+        (),
+    ),
+    "the changed day in another spelling": (
+        "UPDATE homework_captures SET updated_on = '20260914'",
+        (),
+    ),
+    "the saved time in another spelling": (
+        "UPDATE homework_captures SET created_at_utc = replace(created_at_utc, 'T', ' ')",
+        (),
+    ),
+    "the changed time as bytes": (
+        "UPDATE homework_captures SET updated_at_utc = CAST(updated_at_utc AS BLOB)",
+        (),
+    ),
+    "a revision as text Python counts": ("UPDATE homework_captures SET revision = '0_1'", ()),
+    "a revision as a fraction": ("UPDATE homework_captures SET revision = 1.5", ()),
+    "a place as text Python counts": ("UPDATE homework_captures SET created_order = '0_1'", ()),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(ANOTHER_TYPE))
+def test_a_note_row_is_read_as_the_types_the_store_writes_or_not_at_all(
+    store: ProjectStateStore, damage: str
+) -> None:
+    """SQLite keeps bytes put into a text column as bytes, and ``str`` makes words of them;
+    Python reads ``0_1`` as a count and ``20260918`` as a day. None of that is a row the store
+    wrote, so none of it is read as a note: the row is named as one that cannot be read."""
+    name = new_capture_id()
+    created(create(store, name, course="Geometry", due=day(4)))
+    statement, values = ANOTHER_TYPE[damage]
+    store._connection.execute(statement, values)
+    store._connection.commit()
+    before = rows(store)
+
+    with pytest.raises(UnreadableCapture):
+        store.capture(name)
+    waiting = store.outstanding_captures()
+    assert (waiting.notes, waiting.unreadable) == ([], [name])
+    assert store.captures_named([name]).unreadable == [name]
+    with pytest.raises(CaptureNotSaved):
+        edit(store, name, "Other words", None, None, 1)
+    assert rows(store) == before
+
+
+CHANGE_OF_ANOTHER_TYPE = {
+    "an id as bytes": "UPDATE capture_events SET event_id = CAST(event_id AS BLOB)",
+    "a kind as bytes": "UPDATE capture_events SET operation = CAST(operation AS BLOB)",
+    "what stood after as bytes": "UPDATE capture_events SET after = CAST(after AS BLOB)",
+    "who made it as bytes": "UPDATE capture_events SET authored_by = CAST(authored_by AS BLOB)",
+    "its day in another spelling": "UPDATE capture_events SET occurred_on = '20260914'",
+    "its day as bytes": "UPDATE capture_events SET occurred_on = CAST(occurred_on AS BLOB)",
+    "its time in another spelling": (
+        "UPDATE capture_events SET occurred_at_utc = replace(occurred_at_utc, 'T', ' ')"
+    ),
+    "a revision as text Python counts": "UPDATE capture_events SET revision = '0_1'",
+}
+
+
+@pytest.mark.parametrize("damage", sorted(CHANGE_OF_ANOTHER_TYPE))
+def test_a_change_row_is_read_as_the_types_the_store_writes_or_not_at_all(
+    store: ProjectStateStore, damage: str
+) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    store._connection.execute(CHANGE_OF_ANOTHER_TYPE[damage])
+    store._connection.commit()
+    before = rows(store)
+
+    with pytest.raises(UnreadableCapture):
+        store.capture_history(name)
+    with pytest.raises(UnreadableCapture):
+        store.sound_capture_history(name)
+    with pytest.raises(CaptureNotSaved):
+        archive(store, name, 1)
+    assert rows(store) == before
+
+
+def test_rows_as_the_store_writes_them_read_back_whole(store: ProjectStateStore) -> None:
+    """The strict read costs a sound row nothing: every column the store writes, with a class
+    and a day, an edit, an archive, and a restore, comes back as it was written."""
+    name = new_capture_id()
+    created(create(store, name, course="Geometry", due=day(4)))
+    changed(edit(store, name, "Questions 4-9", None, day(5), 1, on=1))
+    changed(archive(store, name, 2, on=2))
+    note = changed(restore(store, name, 3, on=3))
+
+    assert store.capture(name) == note
+    reading = store.sound_capture_history(name)
+    assert reading is not None
+    assert [change.revision for change in reading[1]] == [1, 2, 3, 4]
+    assert [type(change.sequence) for change in reading[1]] == [int] * 4
+    assert (note.due_date, note.course, note.created_on, note.updated_on) == (
+        day(5),
+        None,
+        day(0),
+        day(3),
+    )
+
+
 def test_two_notes_with_the_same_words_are_two_notes(store: ProjectStateStore) -> None:
     first = created(create(store, new_capture_id()))
     second = created(create(store, new_capture_id()))
