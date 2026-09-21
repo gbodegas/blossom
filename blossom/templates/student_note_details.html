@@ -14,10 +14,14 @@
   that those details can be used in making a plan.
 
   With homework of the same class and title on record, each is listed with
-  its date, its reported status, and where it came from, and the choice is
-  hers or a parent's: the same homework, or a separate assignment. The form
-  carries a fingerprint of the homework it listed, so a choice made about a
-  list that has since changed is put again with the list as it stands.
+  its date, what she currently says about the work, what each school channel
+  currently says, the record's own status, and where the record came from, her
+  account and the school's apart. The choice is hers or a parent's: the same
+  homework, or a separate assignment. What a choice is sent as names its kind
+  apart from the assignment's id, since an id is any text the record keeps.
+  The form carries a fingerprint of everything those rows show, so a choice
+  made about rows that have since changed is put again with the rows as they
+  stand, the earlier choice said back as unsaved and nothing chosen for anyone.
 
   A refusal is said first and takes the focus as the page arrives, with no
   script, and links to the field it is about. A day that could not be read
@@ -35,6 +39,7 @@
   homework already here stays chosen through a refusal about something else,
   while it is still one of the choices; a choice that is put again is made again.
 #}
+{% from "note_details_shown.html" import details_shown %}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% set targets = {
   "course": ("details-course", "Go to the class."),
@@ -64,13 +69,13 @@
     {% elif note.archived %}
       <p class="note">This note is archived. <a href="{{ note_href(note.capture_id) }}">Open the note</a> to bring it back before adding it to homework.</p>
     {% endif %}
-    {% if form.unsaved %}
+    {% if typed and accepted %}
+      <h3 class="update-heading">What it was added with</h3>
+      {{ details_shown(accepted) }}
+      <p class="note">That is what stands. Nothing typed here changed it.</p>
+    {% elif form.unsaved %}
       <h3 class="update-heading">Saved on the note now</h3>
-      {% if note.course %}<p class="note">Class: <span class="authored-text">{{ note.course }}</span></p>{% endif %}
-      {% if note.title %}<p class="note">Title: <span class="authored-text">{{ note.title }}</span></p>{% endif %}
-      {% if note.due_date %}<p class="note">Due date given: {{ on(note.due_date) }}</p>{% endif %}
-      {% if note.kind %}<p class="note">Kind: {% if note.kind == "TASK" %}Task{% else %}Homework{% endif %}</p>{% endif %}
-      {% if note.note %}<p class="note">Note about the work: <q class="authored-text">{{ note.note }}</q></p>{% endif %}
+      {{ details_shown(note, attribution=note.attribution, mine=not family) }}
       {% if not (note.course or note.title or note.due_date or note.kind or note.note) %}<p class="note">No details are saved on the note.</p>{% endif %}
     {% endif %}
     {% if typed and may_write is false %}
@@ -132,8 +137,12 @@
         {% if candidates %}
           <fieldset class="choice" id="details-candidate" tabindex="-1" aria-describedby="{% if at == "candidate" %}details-problem {% endif %}details-candidate-hint">
             <legend>Homework with this class and title is already here</legend>
+            {% if previous %}
+              <p class="note">The choice made before was not saved: {% if previous.separate %}to keep it as a separate assignment{% elif previous.row %}the same homework as <span class="authored-text">{{ previous.row.course }}</span> &middot; <span class="authored-text">{{ previous.row.title }}</span>, {% if previous.row.due_date %}due {{ on(previous.row.due_date) }}{% else %}no due date recorded{% endif %}{% else %}the same homework as one that is not among these now{% endif %}. What is shown has changed since, so look at it as it stands and choose again.</p>
+            {% endif %}
             {% for item in candidates %}
-              <label><input type="radio" name="candidate" value="{{ item.assignment_id }}"{% if chosen == item.assignment_id %} checked{% endif %}> <span>Same homework as <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>, {% if item.due_date %}due {{ on(item.due_date) }}{% else %}no due date recorded{% endif %}{% if item.status != "unknown" %}, reported status: {{ item.status|replace("_", " ") }}{% endif %}{% if item.source %}, from {{ item.source }}{% endif %}</span></label>
+              <label><input type="radio" name="candidate" value="{{ item.value }}"{% if chosen == item.value %} checked{% endif %} aria-describedby="details-candidate-{{ loop.index }}"> <span>Same homework as <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>, {% if item.due_date %}due {{ on(item.due_date) }}{% else %}no due date recorded{% endif %}</span></label>
+              <p class="note candidate-facts" id="details-candidate-{{ loop.index }}">{{ item.hers }}{% for said in item.school %} {{ said }}{% endfor %}{% if item.recorded %} {{ item.recorded }}{% endif %}{% if item.source %} {{ item.source }}{% endif %}</p>
             {% endfor %}
             <label><input type="radio" name="candidate" value="{{ separate }}"{% if chosen == separate %} checked{% endif %}> <span>Keep as a separate assignment</span></label>
           </fieldset>

@@ -46,6 +46,7 @@ from blossom.captures import (
     PROMOTE,
     Author,
     CandidateDecision,
+    CandidateLike,
     CandidatesChanged,
     Capture,
     CaptureAlreadyPromoted,
@@ -60,6 +61,7 @@ from blossom.captures import (
     candidate_basis,
     capture_id_from,
     derived_assignment_id,
+    same_press,
 )
 from blossom.clock import Clock
 from blossom.hand_in import (
@@ -2037,6 +2039,7 @@ class ProjectStateStore(CaptureRecords):
         basis: str,
         choice: PromotionChoice,
         target: str | None = None,
+        candidates: Callable[[CaptureDetails, Sequence["Assignment"]], Sequence[CandidateLike]],
         authored_by: Author,
         channel: SourceChannel,
         now: datetime,
@@ -2052,15 +2055,23 @@ class ProjectStateStore(CaptureRecords):
         """Add a note to homework: as an assignment of its own, or joined to one on record.
 
         One transaction that reserves the writer before it reads. The note's
-        line of changes is checked first. A note that already names the
-        assignment this press would give it is the same press again, and
-        nothing is written. Otherwise the page's revision must be the note's,
+        line of changes is checked first. For a note already in homework the
+        press is compared with the one that was accepted, as its event keeps
+        it: the same kind of press, choice, assignment, and details are that
+        press again, and nothing is written; anything else is refused as a
+        conflict, since the assignment's id is the note's whatever a press
+        holds and proves nothing about it. The note as it has since become is
+        no part of that comparison. Otherwise the page's revision must be the note's,
         the note must not be put away, and it must have a class, a title, and
-        a kind. Then the homework of that class and title is read here, and
-        its fingerprint must be the one the page sent: homework that arrived,
-        left, or changed since is put to the person again, so no twin is made
-        because another connection won a race, and an old page that showed no
-        candidate is checked the same way.
+        a kind. Then the homework of that class and title is read here, as a
+        person is shown it, and its fingerprint must be the one the page sent:
+        homework that arrived, left, or changed in anything shown since is put
+        to the person again, so no twin is made because another connection
+        won a race, and an old page that showed no candidate is checked the
+        same way. ``candidates`` is that reading, ``blossom.candidates.reader``
+        of this store: what she and the school currently say is worked out by
+        a module that reads this one, so it is handed in, and it is called
+        here, inside the transaction, through this store's connection.
 
         With no candidate the choice is ``new``. With any, it is ``same``,
         naming one of them, or ``separate``. ``same`` joins the note to that
@@ -2079,8 +2090,12 @@ class ProjectStateStore(CaptureRecords):
                 own = derived_assignment_id(name)
                 if standing.assignment_id is not None:
                     asked = target if choice == "same" else own
-                    if standing.assignment_id == asked:
-                        return CaptureAlreadyPromoted(standing, reading.head, asked)
+                    if asked == standing.assignment_id and same_press(
+                        reading.accepted, details, choice, asked
+                    ):
+                        return CaptureAlreadyPromoted(
+                            standing, reading.head, standing.assignment_id
+                        )
                     return CaptureConflict(standing)
                 if standing.revision != expected_revision or standing.archived:
                     return CaptureConflict(standing)
@@ -2088,17 +2103,17 @@ class ProjectStateStore(CaptureRecords):
                 if needed:
                     return DetailsMissing(standing, needed)
                 rows = self.all_assignments()
-                candidates = self.promotion_candidates(details, among=rows)
-                if candidate_basis(candidates) != basis:
-                    return CandidatesChanged(standing, tuple(candidates))
-                named = tuple(item.assignment_id for item in candidates)
+                shown = tuple(candidates(details, rows))
+                if candidate_basis(shown) != basis:
+                    return CandidatesChanged(standing, shown)
+                named = tuple(item.assignment_id for item in shown)
                 fits = (
-                    (choice == "new" and not candidates)
-                    or (choice == "separate" and bool(candidates))
+                    (choice == "new" and not shown)
+                    or (choice == "separate" and bool(shown))
                     or (choice == "same" and target in named)
                 )
                 if not fits:
-                    return ChoiceNeeded(standing, tuple(candidates))
+                    return ChoiceNeeded(standing, shown)
                 joined = target if choice == "same" and target is not None else own
                 source = FieldSource(authored_by=authored_by, channel=channel)
                 note = with_details(standing, details, source, assignment_id=joined)

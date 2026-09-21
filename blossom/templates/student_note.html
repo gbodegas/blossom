@@ -26,9 +26,9 @@
   She may edit, archive, and restore. A parent signed in reads all of it, the
   archived and the history included, and is told the note is hers to change.
 #}
+{% from "note_details_shown.html" import details_shown %}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% macro by(author) %}{% if author == "student" %}by the student{% elif author == "parent" %}by a parent{% else %}in this household{% endif %}{% endmacro %}
-{% macro supplied(field) %}{% set source = note.attribution.get(field) %}{% if source and source.authored_by == "parent" %} <span class="source">added by a parent</span>{% elif source and source.authored_by == "student" and not mine %} <span class="source">added by the student</span>{% endif %}{% endmacro %}
 {% block content %}
   {% for link in ways_back %}
     <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
@@ -43,11 +43,7 @@
   <section class="panel homework-note" id="{{ note_anchor(note.capture_id) }}">
     <h2 class="update-heading">{% if mine %}What you wrote{% else %}What she wrote{% endif %}</h2>
     <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
-    {% if note.course %}<p class="note">Class: <span class="authored-text">{{ note.course }}</span>{{ supplied("course") }}</p>{% endif %}
-    {% if note.title %}<p class="note">Title: <span class="authored-text">{{ note.title }}</span>{{ supplied("title") }}</p>{% endif %}
-    {% if note.due_date %}<p class="note">Due date given: {{ on(note.due_date) }}{{ supplied("due_date") }}</p>{% endif %}
-    {% if note.kind and (note.title or note.note) %}<p class="note">Kind: {% if note.kind == "TASK" %}Task{% else %}Homework{% endif %}{{ supplied("kind") }}</p>{% endif %}
-    {% if note.note %}<p class="note">Note about the work: <q class="authored-text">{{ note.note }}</q>{{ supplied("note") }}</p>{% endif %}
+    {{ details_shown(note, attribution=note.attribution, mine=mine) }}
     {% if note.archived %}
       <p class="note"><span class="pill">Archived</span> This note is archived. It is kept with its history and can be brought back.</p>
     {% endif %}
@@ -111,9 +107,8 @@
             {% if event.operation == "create" %}Saved{% elif event.operation == "edit" %}Changed{% elif event.operation == "archive" %}Archived{% elif event.operation == "restore" %}Brought back{% elif event.operation == "clarify" %}Details saved{% elif event.operation == "promote" %}Added to homework{% else %}Joined to homework already here{% endif %}
             {{ on(event.occurred_on) }}, {{ by(event.authored_by) }}.
             {% if event.operation in ("clarify", "promote", "link") %}
-              {% if event.after.course %}<span class="note">Class: <span class="authored-text">{{ event.after.course }}</span>.</span>{% endif %}
-              {% if event.after.title %}<span class="note">Title: <span class="authored-text">{{ event.after.title }}</span>.</span>{% endif %}
-              {% if event.after.due_date %}<span class="note">Due date given: {{ on(event.after.due_date) }}.</span>{% endif %}
+              {# Every detail as it stood after the change, and what this change did to each. #}
+              {{ details_shown(event.after, before=event.before) }}
             {% endif %}
             {% if event.operation in ("create", "edit") %}
               <blockquote class="authored-text note-words">{{ event.after.text }}</blockquote>

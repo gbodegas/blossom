@@ -101,6 +101,10 @@ NOTE_ALREADY_SAVED: Final = "Already saved. This is the note as it stands now."
 NOTE_EDITED: Final = "Your changes are saved. It is not in a plan yet."
 NOTE_ARCHIVED: Final = "This note is put away. You can bring it back."
 NOTE_RESTORED: Final = "This note is back on your list. It is not in a plan yet."
+NOTE_EDITED_IN_HOMEWORK: Final = "Your changes are saved. The assignment is unchanged."
+NOTE_RESTORED_IN_HOMEWORK: Final = (
+    "This note is back in Notes added to homework. The assignment is unchanged."
+)
 NOTE_ASKED: Final = "You asked for help about this note. Your parents can see the request."
 DETAILS_SAVED: Final = "Details saved. This is still a note, and it is not in a plan yet."
 ADDED_TO_HOMEWORK: Final = "Added to homework."
@@ -171,6 +175,14 @@ it names must be in the note's history. A save that wrote nothing names the chan
 standing, which may be of any kind. The server writes the address; the page believes none
 of it until the history bears it out, and an event id is not a number a person can count
 to: a revision in its place, or an id of another note's, says nothing."""
+SAID_OF_A_NOTE_IN_HOMEWORK: Final = {
+    "edited": NOTE_EDITED_IN_HOMEWORK,
+    "restored": NOTE_RESTORED_IN_HOMEWORK,
+}
+"""The sentence for a change that left the note in homework, read from the change itself: a
+note in homework is in no queue of notes, and whether its assignment is in a plan is nothing
+a note's page reads, so neither is said. The assignment is never changed by a change to a
+note, and that is said."""
 SAID_TO_EITHER: Final = frozenset({"clarified", "added", "joined", "already", "unchanged"})
 """The results a parent is shown too: what a save through the family's tree did, in words
 that address nobody. The rest are about changes only she can make, and are said to her."""
@@ -367,13 +379,16 @@ def shown_day(raw: str) -> str | None:
         return None
 
 
-def ways_back() -> list[ReturnLink]:
+def ways_back(*, added: bool = False) -> list[ReturnLink]:
     """The two ways on from a note's pages, fixed addresses of this site: her notes, and
-    her week."""
-    return [
-        ReturnLink(NOTES_PAGE, "Back to Homework notes"),
-        ReturnLink(WEEK_PAGE, "Back to my week"),
-    ]
+    her week. A note in homework is on the list of those, so that is the list it goes back
+    to."""
+    notes = (
+        ReturnLink(ADDED_NOTES_PAGE, "Back to notes added to homework")
+        if added
+        else ReturnLink(NOTES_PAGE, "Back to Homework notes")
+    )
+    return [notes, ReturnLink(WEEK_PAGE, "Back to my week")]
 
 
 def new_note_page(
@@ -480,6 +495,8 @@ def result_of(
     if made is None or (kind is not None and made.operation != kind):
         return None
     stands = history[-1].event_id == made.event_id
+    if made.after.assignment_id is not None:
+        sentence = SAID_OF_A_NOTE_IN_HOMEWORK.get(said, sentence)
     return NoteResult(sentence if stands else NOTE_SAVED_EARLIER, stands)
 
 
@@ -566,7 +583,7 @@ def note_page(
             "mine": mine,
             "in_homework": in_homework(state, note),
             "out_of_the_window": OUT_OF_THE_WINDOW,
-            "ways_back": ways_back(),
+            "ways_back": ways_back(added=note.assignment_id is not None and not note.archived),
             "text_max_length": CAPTURE_TEXT_MAX_LENGTH,
             "course_max_length": CAPTURE_COURSE_MAX_LENGTH,
             "sample": state.settings.sample,

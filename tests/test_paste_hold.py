@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime
 import pytest
 from fastapi.testclient import TestClient
 
+from blossom.candidates import candidate_readings, reader
 from blossom.captures import (
     PARENT,
     STUDENT,
@@ -68,7 +69,8 @@ def homework_from_a_note(
         name,
         given,
         expected_revision=1,
-        basis=candidate_basis(store.promotion_candidates(given)),
+        basis=candidate_basis(candidate_readings(store, given)),
+        candidates=reader(store),
         choice="new",
         authored_by=by,  # type: ignore[arg-type]
         channel=channel,

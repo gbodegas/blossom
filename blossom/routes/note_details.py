@@ -18,6 +18,7 @@ copied nowhere.
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from typing import Final
@@ -26,6 +27,7 @@ from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from blossom.authored_text import TextRefused, multiline, single_line
+from blossom.candidates import CandidateReading, candidate_readings, reader
 from blossom.captures import (
     CAPTURE_COURSE_MAX_LENGTH,
     CAPTURE_NOTE_MAX_LENGTH,
@@ -50,6 +52,7 @@ from blossom.captures import (
     PromotionChoice,
     UnknownCapture,
     UnreadableCapture,
+    accepted_press,
     candidate_basis,
     capture_id_from,
 )
@@ -87,6 +90,10 @@ OTHER_CLASS: Final = "__another__"
 """The choice in the list of classes that means the class is typed in the box beside it."""
 SEPARATE: Final = "separate"
 """The choice among homework already on record that means none of them is this."""
+SAME: Final = "same:"
+"""What comes before an assignment's id in the choice that means it is that homework. The
+kind of choice is written apart from the id, since an id is any text the record keeps, the
+word for a separate assignment included."""
 
 CHOOSE_ABOUT_THESE: Final = (
     "Homework with this class and title is already here, so nothing was added yet. Say "
@@ -118,6 +125,10 @@ DATE_NEEDS_A_CHOICE: Final = (
     "date out."
 )
 NOT_SAVED: Final = "That could not be saved, and nothing was changed. What was typed is still here."
+ALREADY_IN_HOMEWORK: Final = (
+    "This note is already in homework, so nothing was saved. What it was added with is shown "
+    "here, and what was typed is kept to copy."
+)
 
 ADD_MAY_BE_ABSENT: Final = frozenset({"date_pending", "date_refused", "without_date", "candidate"})
 """What a browser leaves out of the form: the mark and the refused words when no day was
@@ -207,14 +218,40 @@ def details_date_controls_are_valid(fields: dict[str, str]) -> bool:
     )
 
 
+def choice_value(assignment_id: str) -> str:
+    """The choice that means a note is the same homework as this assignment, as a form
+    sends it. The one place it is written, for the page and for a page shown again."""
+    return f"{SAME}{assignment_id}"
+
+
+def choice_from(value: str | None) -> tuple[PromotionChoice, str | None] | None:
+    """The choice a form sent, or ``None`` for anything these pages do not write. No choice
+    is what a page with no homework of that class and title sends. The word for a separate
+    assignment is that. Anything else is the prefix, taken off once, and then an id exactly
+    as the record keeps ids: one line, bounded, with nothing around it. It is never trimmed
+    into one, and never split, so an id with a colon in it, or the prefix itself, is whole."""
+    if value is None:
+        return "new", None
+    if value == SEPARATE:
+        return "separate", None
+    if not value.startswith(SAME):
+        return None
+    named = value.removeprefix(SAME)
+    try:
+        kept = single_line(named, TOKEN_MAX_LENGTH)
+    except TextRefused:
+        return None
+    return ("same", named) if kept == named else None
+
+
 def choice_is_as_written(fields: dict[str, str]) -> bool:
     """Whether the fingerprint and the choice are as a page writes them: the fingerprint a
-    digest in plain hexadecimal, and the choice, when one came, an id of bounded length with
-    nothing around it. Both buttons send both, so both routes hold them to this; saving
+    digest in plain hexadecimal, and the choice, when one came, in the one spelling
+    ``choice_from`` reads. Both buttons send both, so both routes hold them to this; saving
     details then uses neither."""
-    chosen = fields.get("candidate")
-    return BASIS_AS_WRITTEN.fullmatch(fields.get("basis", "")) is not None and (
-        chosen is None or (0 < len(chosen) <= TOKEN_MAX_LENGTH and chosen == chosen.strip())
+    return (
+        BASIS_AS_WRITTEN.fullmatch(fields.get("basis", "")) is not None
+        and choice_from(fields.get("candidate")) is not None
     )
 
 
@@ -242,6 +279,7 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None) -> P
     """
     marked = "date_pending" in fields or "date_refused" in fields
     carried = fields.get("date_refused", "")
+    sent = fields.get("candidate", "")
     form = DetailsForm(
         capture_id=capture_id,
         revision=revision,
@@ -257,7 +295,8 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None) -> P
             else None
         ),
         date_pending=marked,
-        candidate=fields.get("candidate", "") if choice_is_as_written(fields) else "",
+        # A choice is kept only in the spelling a page writes one; anything else is dropped.
+        candidate=sent if sent and choice_from(sent) is not None else "",
     )
     without = marked and fields.get("without_date") == "1"
     raw = fields.get("due_date", "").strip()
@@ -375,33 +414,84 @@ def courses_of(assignments: list[Assignment]) -> list[str]:
     return sorted({item.course for item in assignments} - {OTHER_CLASS})
 
 
-@dataclass(frozen=True)
-class CandidateView:
-    """Homework on record with the class and title the form gives, as the choice shows it:
-    what it is, when it is due, what the school last reported, and where it came from."""
+def spoken(day: date) -> str:
+    """A day as these pages say one."""
+    return f"{day.strftime('%B')} {day.day}, {day.year}"
 
+
+WORK_STATES: Final = {"done": "Done", "not_yet": "Not yet"}
+
+
+@dataclass(frozen=True)
+class CandidateRow:
+    """One candidate as the choice shows it, every sentence made from the one reading the
+    fingerprint is made from: what it is, what she currently says about the work, what each
+    school channel currently says, what the record's own status holds, and where the record
+    came from. Her account and the school's are said apart, and no report of hers is said as
+    that, never filled in from the record's status."""
+
+    value: str
     assignment_id: str
     course: str
     title: str
     due_date: date | None
-    status: str
-    source: str
+    hers: str
+    school: tuple[str, ...]
+    recorded: str | None
+    source: str | None
 
 
-def candidate_view(item: Assignment, *, family: bool) -> CandidateView:
-    """One candidate for the choice. Where it came from is the channel of its record, in the
-    words her pages use, and said about her on the family's."""
-    channel = item.origins.get("record")
-    source = "" if channel is None else f"the {CHANNEL_NAMES[channel]}"
-    if channel is SourceChannel.STUDENT_REPORT:
-        source = "her report" if family else "your report"
-    return CandidateView(
+def candidate_row(item: CandidateReading, *, family: bool) -> CandidateRow:
+    """The row for one reading, in her words on her pages and about her on the family's."""
+    if item.work_state in WORK_STATES and item.work_reported_on is not None:
+        who = "She" if family else "You"
+        hers = f"{who} said {WORK_STATES[item.work_state]} on {spoken(item.work_reported_on)}."
+    else:
+        hers = f"No update from {'her' if family else 'you'} on it."
+    source = None
+    if item.record_source is SourceChannel.STUDENT_REPORT:
+        source = "From her report." if family else "From your report."
+    elif item.record_source is not None:
+        source = f"From the {CHANNEL_NAMES[item.record_source]}."
+    return CandidateRow(
+        value=choice_value(item.assignment_id),
         assignment_id=item.assignment_id,
         course=item.course,
         title=item.title,
         due_date=item.due_date,
-        status=item.reported_submission_status,
+        hers=hers,
+        school=tuple(
+            f"The {CHANNEL_NAMES[word.channel]} reported {word.status.replace('_', ' ')} "
+            f"on {spoken(word.reported_on)}."
+            for word in item.school
+        ),
+        recorded=(
+            None
+            if item.recorded_status == "unknown"
+            else f"Recorded status: {item.recorded_status.replace('_', ' ')}."
+        ),
         source=source,
+    )
+
+
+@dataclass(frozen=True)
+class PreviousChoice:
+    """A choice that came with a press and was not taken, because what it was made about has
+    changed: said back as an unsaved decision, and never made again for anyone."""
+
+    separate: bool
+    row: CandidateRow | None
+
+
+def previous_choice(form: DetailsForm, rows: Sequence[CandidateRow]) -> PreviousChoice | None:
+    """What the form chose, for a page that puts the choice again, or ``None`` when it chose
+    nothing."""
+    chosen = choice_from(form.candidate or None)
+    if chosen is None or chosen[0] == "new":
+        return None
+    return PreviousChoice(
+        separate=chosen[0] == "separate",
+        row=next((row for row in rows if row.value == form.candidate), None),
     )
 
 
@@ -492,16 +582,18 @@ def details_page(
     shown = form or form_for(note, courses)
     if not shown.revision:
         shown = replace(shown, revision=note.revision, unsaved=True)
-    candidates: list[Assignment] = []
+    candidates: list[CandidateReading] = []
     try:
         given = shown.course_other if shown.course_choice == OTHER_CLASS else shown.course_choice
         named = CaptureDetails(course=given, title=shown.title)
-        candidates = store.promotion_candidates(named, among=assignments)
+        candidates = candidate_readings(store, named, assignments)
     except ValueError:
         # A class or a title the rules will not keep names no homework; the form says so.
         candidates = []
     viewer = viewer_of(request)
-    offered = {item.assignment_id for item in candidates}
+    rows = [candidate_row(item, family=way.family) for item in candidates]
+    offered = {row.value for row in rows} | {SEPARATE}
+    accepted = accepted_press(found[1])
     return templates.TemplateResponse(
         request,
         "student_note_details.html",
@@ -512,17 +604,20 @@ def details_page(
             "courses": courses,
             "other_class": OTHER_CLASS,
             "separate": SEPARATE,
-            "candidates": [candidate_view(item, family=way.family) for item in candidates],
+            "candidates": rows,
             "basis": candidate_basis(candidates),
             "choosing": choosing,
             # A choice made is kept through a refusal about something else, while it is
-            # still one of the choices shown. A choice put again is made again.
-            "chosen": (
-                shown.candidate
-                if not choosing
-                and candidates
-                and (shown.candidate == SEPARATE or shown.candidate in offered)
-                else ""
+            # still one of the choices shown. A choice put again is made again: it is said
+            # back as unsaved, and nothing is chosen for anyone.
+            "chosen": shown.candidate
+            if rows and not choosing and shown.candidate in offered
+            else "",
+            "previous": previous_choice(shown, rows) if choosing else None,
+            # What a note in homework was added with: the press that was accepted, as its
+            # event keeps it, whatever the note's own words have become since.
+            "accepted": (
+                None if accepted is None or note.assignment_id is None else accepted.after
             ),
             "family": way.family,
             "may_write": way.open_to(viewer) and note.outstanding,
@@ -697,7 +792,7 @@ async def save_details(
                 name,
                 way,
                 replace(form, revision=note.revision, unsaved=True),
-                NOTE_CHANGED,
+                NOTE_CHANGED if note.assignment_id is None else ALREADY_IN_HOMEWORK,
                 status.HTTP_409_CONFLICT,
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
@@ -739,10 +834,7 @@ async def add_to_homework(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     basis = fields.get("basis", "")
-    chosen = fields.get("candidate")
-    choice: PromotionChoice = (
-        "new" if chosen is None else ("separate" if chosen == SEPARATE else "same")
-    )
+    choice, target = choice_from(fields.get("candidate")) or ("new", None)
     try:
         async with state.decision_lock:
             now, today = accepted_at(state)
@@ -752,7 +844,8 @@ async def add_to_homework(
                 expected_revision=revision,
                 basis=basis,
                 choice=choice,
-                target=chosen if choice == "same" else None,
+                target=target,
+                candidates=reader(state.project_state),
                 authored_by=actor(viewer_of(request)),
                 channel=way.channel,
                 now=now,
@@ -780,7 +873,7 @@ async def add_to_homework(
                 name,
                 way,
                 replace(form, revision=note.revision, unsaved=True),
-                NOTE_CHANGED,
+                NOTE_CHANGED if note.assignment_id is None else ALREADY_IN_HOMEWORK,
                 status.HTTP_409_CONFLICT,
             )
         case DetailsMissing():

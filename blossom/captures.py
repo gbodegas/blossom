@@ -446,6 +446,40 @@ class CaptureHistoryReading:
         """The latest change, which a save that wrote nothing names as what it found."""
         return self.events[-1]
 
+    @property
+    def accepted(self) -> CaptureEvent | None:
+        """The change that put the note in homework, or ``None`` for a note still waiting:
+        the press that was accepted, with the choice made and everything it carried. A
+        later press is the same press only when it is this one again, whatever has become
+        of the note's own words, class, and day since."""
+        return accepted_press(self.events)
+
+
+def accepted_press(events: Sequence[CaptureEvent]) -> CaptureEvent | None:
+    """The latest change that added a note to homework or joined it to homework on record."""
+    return next((made for made in reversed(events) if made.operation in (PROMOTE, LINK)), None)
+
+
+def same_press(
+    accepted: CaptureEvent | None,
+    details: CaptureDetails,
+    choice: PromotionChoice,
+    assignment_id: str | None,
+) -> bool:
+    """Whether a press is the accepted one again: the same kind of press, the same choice
+    about homework already on record, the same assignment, and the same five details as the
+    rules keep them. The assignment's id alone says which note and nothing about the press,
+    since every assignment made from one note has the one id."""
+    return (
+        accepted is not None
+        and accepted.decision is not None
+        and accepted.operation == (LINK if choice == "same" else PROMOTE)
+        and accepted.decision.choice == choice
+        and accepted.after.assignment_id == assignment_id
+        and accepted.after.details
+        == (details.course, details.title, details.due_date, details.kind, details.note)
+    )
+
 
 def _kept_as_written(capture_id: str, snapshot: CaptureSnapshot) -> CaptureWords:
     """A snapshot's words and details under the rules a note's are held to, by the same
@@ -599,31 +633,28 @@ def derived_assignment_id(capture_id: str) -> str:
 
 
 class CandidateLike(Protocol):
-    """What is read of homework on record to show it as a candidate and fingerprint it."""
+    """Homework on record shown as a candidate: which it is, and every value its row shows,
+    in a fixed order and spelling. ``blossom.candidates`` makes them; a page shows a row
+    from one and the fingerprint is made from the same one, so the two cannot differ."""
 
-    assignment_id: str
-    course: str
-    title: str
-    due_date: date | None
-    reported_submission_status: str
+    @property
+    def assignment_id(self) -> str:
+        """The id of the assignment shown."""
+        ...
+
+    def facts(self) -> list[object]:
+        """Every value the row shows, the id first, in a fixed order and spelling."""
+        ...
 
 
 def candidate_basis(candidates: Sequence[CandidateLike]) -> str:
     """A fingerprint of the homework shown as candidates: which, and everything about each
-    that the page showed. The page sends it back with the choice, and the save compares it
-    with the candidates as they stand inside its own transaction, so a choice made about
-    homework that has since arrived, left, or changed is put to the person again."""
-    shown = sorted(
-        [
-            item.assignment_id,
-            item.course,
-            item.title,
-            "" if item.due_date is None else item.due_date.isoformat(),
-            str(getattr(getattr(item, "kind", ""), "value", "")),
-            item.reported_submission_status,
-        ]
-        for item in candidates
-    )
+    that the page showed, what she and the school currently say and where the record came
+    from included. The page sends it back with the choice, and the save compares it with the
+    candidates as they stand inside its own transaction, so a choice made about homework that
+    has since arrived, left, or changed in anything shown is put to the person again. The
+    order the candidates came in is no part of it."""
+    shown = sorted((item.facts() for item in candidates), key=lambda facts: str(facts[0]))
     serialized = json.dumps(shown, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 

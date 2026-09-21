@@ -1466,6 +1466,12 @@ main.wide {
   min-width: 0;
 }
 
+/* What she and the school currently say about a candidate, under its choice and in line
+   with its words, not with the radio. */
+.homework-note .choice .candidate-facts {
+  margin: 0 0 0.5rem 1.75rem;
+}
+
 /* The way out of a note's form sits beside its buttons and is as tall as they are. */
 .homework-note .actions .cancel {
   display: inline-flex;

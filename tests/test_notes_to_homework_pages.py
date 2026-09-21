@@ -11,6 +11,7 @@ import pathlib
 import re
 import sqlite3
 from datetime import date
+from html import unescape
 
 import pytest
 from fastapi.testclient import TestClient
@@ -33,7 +34,11 @@ from blossom.routes.captures import (
     JOINED_TO_HOMEWORK,
     NOTE_ALREADY_SAVED,
     NOTE_CHANGED,
+    NOTE_EDITED,
+    NOTE_EDITED_IN_HOMEWORK,
     NOTE_GONE,
+    NOTE_RESTORED_IN_HOMEWORK,
+    NOTE_SAVED_EARLIER,
     NOTE_UNREADABLE,
     OUT_OF_THE_WINDOW,
 )
@@ -49,14 +54,18 @@ from blossom.routes.navigation import (
     note_href,
 )
 from blossom.routes.note_details import (
+    ALREADY_IN_HOMEWORK,
     CHOICE_IS_PAST,
     CHOOSE_ABOUT_THESE,
     NOT_SAVED,
+    SEPARATE,
+    choice_from,
+    choice_value,
     details_date_controls_are_valid,
 )
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import BAD_FORM, NOT_HERS_TO_UPDATE
-from blossom.stores.project_state import Assignment
+from blossom.stores.project_state import Assignment, Saved, StatusReport
 from tests.support import (
     FIXTURE_WEEK,
     HER_PAGE,
@@ -131,9 +140,21 @@ def rows(client: TestClient) -> tuple[list[object], list[object], list[object]]:
     )
 
 
-def on_record(client: TestClient, due: date, title: str = "Questions 4-8") -> Assignment:
+def radios(page: str) -> list[str]:
+    """The value of every choice the page offers about homework already on record, as a
+    browser would send it, in the order shown."""
+    return [unescape(value) for value in re.findall(r'name="candidate" value="([^"]*)"', page)]
+
+
+def spoken(day: date) -> str:
+    return f"{day.strftime('%B')} {day.day}, {day.year}"
+
+
+def on_record(
+    client: TestClient, due: date, title: str = "Questions 4-8", named: str | None = None
+) -> Assignment:
     row = Assignment(
-        assignment_id=intake.identity("Geometry", title, due.isoformat()),
+        assignment_id=named or intake.identity("Geometry", title, due.isoformat()),
         course="Geometry",
         title=title,
         due_date=due,
@@ -288,6 +309,11 @@ def test_a_parent_adds_a_detail_through_the_familys_tree_and_it_says_so(
     )
     assert note.text == WORDS
     assert "added by a parent" in page
+    by_the_parent = history_of(page).split("<li>")[-1]
+    assert "Details saved" in by_the_parent
+    assert "by a parent" in by_the_parent
+    assert by_the_parent.count("set in this change") == 1
+    assert "Due date given: August 21, 2026 <span" in " ".join(by_the_parent.split())
 
 
 # ------------------------------------------------------------------ adding it to homework
@@ -543,7 +569,7 @@ def test_homework_of_that_class_and_title_is_a_choice_she_makes_and_same_changes
         choices = whole_form(unasked.text, note_add_action(name))
         nothing = rows(client)
         assignments = rows(client)[0]
-        joined = add(client, name, {**choices, "candidate": target.assignment_id})
+        joined = add(client, name, {**choices, "candidate": choice_value(target.assignment_id)})
         landed = client.get(joined.headers["location"]).text
         note = store.capture(name)
         afterwards = rows(client)
@@ -567,7 +593,7 @@ def test_a_choice_is_kept_through_a_refusal_about_something_else_and_not_when_pu
     with browser() as client:
         shown = on_record(client, date(2026, 8, 28))
         name = save_note(client)
-        form = {**opened(client, name), **typed(), "candidate": shown.assignment_id}
+        form = {**opened(client, name), **typed(), "candidate": choice_value(shown.assignment_id)}
         too_long = add(client, name, {**form, "note": "n" * 501})
         kept = whole_form(too_long.text, note_add_action(name))
         on_record(client, date(2026, 9, 4))
@@ -575,9 +601,314 @@ def test_a_choice_is_kept_through_a_refusal_about_something_else_and_not_when_pu
         asked = whole_form(put_again.text, note_add_action(name))
 
     assert too_long.status_code == 422
-    assert kept["candidate"] == shown.assignment_id
+    assert kept["candidate"] == choice_value(shown.assignment_id)
     assert put_again.status_code == 409
     assert "candidate" not in asked
+    assert "The choice made before was not saved" in put_again.text
+
+
+# ------------------------------------------------------------------ the press that was accepted
+
+
+ACCEPTED_HEADING = '<h3 class="update-heading">What it was added with</h3>'
+DIFFERENTLY = [
+    ("course_other", "Physics", 'Class, as typed: <span class="authored-text">Physics'),
+    ("title", "Different work", "Different work"),
+    ("due_date", "2026-08-26", "2026-08-26"),
+    ("kind", "TASK", "Kind, as chosen: Task"),
+    ("note", "Different instructions", "Different instructions"),
+]
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize(("field", "value", "kept"), DIFFERENTLY)
+def test_a_second_form_with_anything_else_in_it_is_refused_with_both_shown(
+    field: str, value: str, kept: str, family: bool
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        form = {
+            **opened(client, name, family=family),
+            **typed(due_date="2026-08-25", note="Accepted instructions"),
+        }
+        first = add(client, name, form, family=family)
+        before = rows(client)
+        other = add(client, name, {**form, field: value}, family=family)
+        again = add(client, name, form, family=family)
+        after = rows(client)
+
+    assert first.status_code == 303
+    assert other.status_code == 409, other.headers.get("location")
+    assert other.text.count(" autofocus") == 1
+    assert escape(ALREADY_IN_HOMEWORK) in other.text
+    accepted = other.text.split(ACCEPTED_HEADING)[1].split("Your unsaved details")[0]
+    for shown in ("Geometry", "Questions 4-8", "August 25, 2026", "Kind: Homework"):
+        assert shown in accepted, shown
+    assert "Accepted instructions" in accepted
+    assert f'href="/student/assignments/{derived_assignment_id(name)}' in other.text
+    assert kept in other.text.split("Your unsaved details")[1]
+    assert ">Add to homework</button>" not in other.text
+    assert again.status_code == 303
+    assert "said=already" in again.headers["location"]
+    assert after == before
+
+
+def test_joining_again_with_another_note_about_the_work_is_refused_with_both_shown() -> None:
+    with browser() as client:
+        target = on_record(client, date(2026, 8, 28))
+        name = save_note(client)
+        shown = add(client, name, {**opened(client, name), **typed(note="Accepted instructions")})
+        form = {
+            **whole_form(shown.text, note_add_action(name)),
+            "candidate": choice_value(target.assignment_id),
+        }
+        first = add(client, name, form)
+        before = rows(client)
+        other = add(client, name, {**form, "note": "A different second-device instruction"})
+        as_separate = add(client, name, {**form, "candidate": SEPARATE})
+        again = add(client, name, form)
+        after = rows(client)
+
+    assert (shown.status_code, first.status_code) == (409, 303)
+    for refused in (other, as_separate):
+        assert refused.status_code == 409
+        assert escape(ALREADY_IN_HOMEWORK) in refused.text
+        assert "Accepted instructions" in refused.text.split(ACCEPTED_HEADING)[1]
+    assert "A different second-device instruction" in other.text
+    assert "said=already" in again.headers["location"]
+    assert after == before
+
+
+# ------------------------------------------------------------------ what a choice is sent as
+
+
+AWKWARD_IDS = [
+    "separate",
+    "same:separate",
+    "with:a:colon",
+    "unit/3 part?b#c",
+    "caf\N{LATIN SMALL LETTER E WITH ACUTE} \N{SPARKLES}",
+    "x" * 200,
+]
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize("named", AWKWARD_IDS)
+def test_same_homework_names_the_assignment_whatever_its_id_is(named: str, family: bool) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        target = on_record(client, date(2026, 8, 28), named=named)
+        name = save_note(client)
+        shown = add(client, name, {**opened(client, name, family=family), **typed()}, family=family)
+        form = whole_form(shown.text, note_add_action(name, family=family))
+        offered = radios(shown.text)
+        before = rows(client)[0]
+        joined = add(client, name, {**form, "candidate": offered[0]}, family=family)
+        note = store.capture(name)
+        after = rows(client)[0]
+
+    assert shown.status_code == 409
+    assert offered == [choice_value(target.assignment_id), SEPARATE]
+    assert choice_from(offered[0]) == ("same", target.assignment_id)
+    assert joined.status_code == 303, joined.text
+    assert "said=joined" in joined.headers["location"]
+    assert note is not None
+    assert note.assignment_id == named
+    assert after == before
+
+
+def test_keep_separate_beside_an_assignment_named_separate_makes_the_notes_own() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        on_record(client, date(2026, 8, 28), named="separate")
+        name = save_note(client)
+        shown = add(client, name, {**opened(client, name), **typed()})
+        form = whole_form(shown.text, note_add_action(name))
+        made = add(client, name, {**form, "candidate": radios(shown.text)[1]})
+        note = store.capture(name)
+
+    assert made.status_code == 303
+    assert "said=added" in made.headers["location"]
+    assert note is not None
+    assert note.assignment_id == derived_assignment_id(name)
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+@pytest.mark.parametrize(
+    "forged",
+    ["a-bare-id", " same:padded", "same:padded ", "same:", "same:" + "x" * 201, "Same:x", "other"],
+)
+def test_a_choice_in_any_other_spelling_is_a_form_these_pages_did_not_make(
+    forged: str, button: str
+) -> None:
+    with browser() as client:
+        on_record(client, date(2026, 8, 28))
+        name = save_note(client)
+        form = {**opened(client, name), **typed(), "candidate": forged}
+        before = rows(client)
+        send = add if button == "add" else save_details
+        answer = send(client, name, form)
+        after = rows(client)
+
+    assert choice_from(forged) is None
+    assert answer.status_code == 422
+    assert escape(BAD_FORM) in answer.text
+    assert after == before
+
+
+# ------------------------------------------------------------------ what is shown of a candidate
+
+
+def school_said(client: TestClient, target: Assignment, status: str, day: date) -> None:
+    state = state_of(client)
+    state.project_state.record_status_reports(
+        target.assignment_id,
+        [
+            StatusReport(
+                status=status,
+                channel=SourceChannel.LMS,
+                reported_on=day,
+                dated_by="the day it was pasted",
+                observed_at=state.clock.now(),
+            )
+        ],
+    )
+
+
+def she_said(client: TestClient, target: Assignment, status: str) -> None:
+    """Her update on the chain as it stands, so a second one lands after the first."""
+    state = state_of(client)
+    chain = state.project_state.student_report_chains([target.assignment_id])
+    said = chain.get(target.assignment_id, [])
+    saved = state.project_state.report_status(
+        target.assignment_id,
+        status,  # type: ignore[arg-type]
+        None,
+        expected_head=said[-1].report_id if said else None,
+        now=state.clock.now(),
+        today=state.clock.today(),
+    )
+    assert isinstance(saved, Saved), saved
+
+
+def choice_section(page: str) -> str:
+    return page.split('id="details-candidate"')[1].split("</fieldset>")[0]
+
+
+@pytest.mark.parametrize("family", [False, True])
+def test_a_candidate_says_what_she_and_the_school_currently_say_apart(family: bool) -> None:
+    with browser() as client:
+        today = state_of(client).clock.today()
+        quiet = on_record(client, date(2026, 8, 28))
+        busy = on_record(client, date(2026, 9, 4))
+        she_said(client, busy, "done")
+        school_said(client, busy, "missing", today)
+        name = save_note(client)
+        shown = add(client, name, {**opened(client, name, family=family), **typed()}, family=family)
+        rows_shown = choice_section(shown.text).split("<label>")[1:]
+        she_said(client, busy, "not_yet")
+        kept = {**opened(client, name, family=family), **typed()}
+        assert save_details(client, name, kept, family=family).status_code == 303
+        later = choice_section(client.get(note_add_href(name, family=family)).text)
+
+    who = "She" if family else "You"
+    assert shown.status_code == 409
+    assert f"{who} said Not yet on {spoken(today)}" in later
+    assert "said Done" not in later
+    about = {unescape(row.split('value="')[1].split('"')[0]): row for row in rows_shown}
+    said = about[choice_value(busy.assignment_id)]
+    silent = about[choice_value(quiet.assignment_id)]
+    assert f"{who} said Done on {spoken(today)}" in said
+    assert f"The school portal reported missing on {spoken(today)}" in said
+    assert "From the school portal" in said
+    assert f"No update from {'her' if family else 'you'}" in silent
+    assert "said Done" not in silent
+    assert "Recorded status: not started" in silent
+
+
+CHANGES = ["she says done", "school says missing", "record source"]
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize("change", CHANGES)
+def test_a_fact_shown_about_a_candidate_that_changed_is_put_again_with_what_stands(
+    change: str, family: bool
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        today = state_of(client).clock.today()
+        target = on_record(client, date(2026, 8, 28))
+        name = save_note(client)
+        shown = add(client, name, {**opened(client, name, family=family), **typed()}, family=family)
+        form = {
+            **whole_form(shown.text, note_add_action(name, family=family)),
+            "title": "Questions 4-8",
+            "note": "Typed before it changed",
+            "candidate": choice_value(target.assignment_id),
+        }
+        if change == "she says done":
+            she_said(client, target, "done")
+        elif change == "school says missing":
+            school_said(client, target, "missing", today)
+        else:
+            moved = target.model_copy(update={"origins": {"record": SourceChannel.PARENT_ENTRY}})
+            store.upsert_assignments([moved])
+        before = rows(client)
+        answer = add(client, name, form, family=family)
+        after = rows(client)
+        returned = whole_form(answer.text, note_add_action(name, family=family))
+        joined = add(
+            client,
+            name,
+            {**returned, "candidate": choice_value(target.assignment_id)},
+            family=family,
+        )
+
+    now_shown = {
+        "she says done": f"said Done on {spoken(today)}",
+        "school says missing": f"reported missing on {spoken(today)}",
+        "record source": "From the family entry",
+    }[change]
+    assert answer.status_code == 409, answer.headers.get("location")
+    assert escape(CHOOSE_ABOUT_THESE) in answer.text
+    assert now_shown in choice_section(answer.text)
+    assert returned["note"] == "Typed before it changed"
+    assert "candidate" not in returned
+    assert "The choice made before was not saved" in answer.text
+    assert after == before
+    assert joined.status_code == 303
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize("button", ["add", "details"])
+@pytest.mark.parametrize("which", ["same", "separate"])
+def test_a_choice_made_is_still_made_after_a_refusal_about_something_else(
+    which: str, button: str, family: bool
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        target = on_record(client, date(2026, 8, 28))
+        name = save_note(client)
+        fresh = client.get(note_add_href(name, family=family)).text
+        shown = add(client, name, {**opened(client, name, family=family), **typed()}, family=family)
+        chosen = radios(shown.text)[0 if which == "same" else 1]
+        form = {**whole_form(shown.text, note_add_action(name, family=family)), "candidate": chosen}
+        send = add if button == "add" else save_details
+        refused = send(client, name, {**form, "note": "n" * 501}, family=family)
+        returned = whole_form(refused.text, note_add_action(name, family=family))
+        done = add(client, name, {**returned, "note": "A note that fits"}, family=family)
+        note = store.capture(name)
+
+    assert " checked" not in fresh
+    assert refused.status_code == 422
+    assert refused.text.count(" autofocus") == 1
+    assert '<a href="#details-note">' in refused.text
+    assert returned["candidate"] == chosen
+    assert refused.text.count(" checked") == 1
+    assert done.status_code == 303, done.text
+    assert note is not None
+    expected = target.assignment_id if which == "same" else derived_assignment_id(name)
+    assert note.assignment_id == expected
 
 
 def test_keep_separate_makes_the_notes_own_assignment_beside_the_one_on_record() -> None:
@@ -602,12 +933,12 @@ def test_homework_that_arrived_after_the_choices_were_shown_is_put_to_her_again(
         choices = whole_form(unasked.text, note_add_action(name))
         arrived = on_record(client, date(2026, 9, 4))
         before = rows(client)
-        answer = add(client, name, {**choices, "candidate": shown.assignment_id})
+        answer = add(client, name, {**choices, "candidate": choice_value(shown.assignment_id)})
         after = rows(client)
 
     assert answer.status_code == 409
     assert escape(CHOOSE_ABOUT_THESE) in answer.text
-    assert arrived.assignment_id in answer.text
+    assert choice_value(arrived.assignment_id) in radios(answer.text)
     assert after == before
 
 
@@ -647,7 +978,7 @@ def test_a_page_behind_a_change_of_kind_alone_is_shown_the_kind_that_stands() ->
     assert whole_form(answer.text, note_add_action(name))["kind"] == "HOMEWORK"
 
 
-@pytest.mark.parametrize("sent", ["separate", "an-assignment-that-is-not-one-of-them"])
+@pytest.mark.parametrize("sent", ["separate", "same:an-assignment-that-is-not-one-of-them"])
 def test_a_choice_about_homework_that_is_not_there_adds_nothing_and_says_which_it_is(
     sent: str,
 ) -> None:
@@ -658,7 +989,7 @@ def test_a_choice_about_homework_that_is_not_there_adds_nothing_and_says_which_i
         before = rows(client)
         none_here = add(client, name, {**opened(client, name), **typed(), "candidate": sent})
         shown = {**opened(client, other), **typed(title="Another title")}
-        not_among = add(client, other, {**shown, "candidate": "an-assignment-that-is-not-one"})
+        not_among = add(client, other, {**shown, "candidate": "same:an-assignment-that-is-not-one"})
         after = rows(client)
 
     assert none_here.status_code == 409
@@ -961,6 +1292,115 @@ def test_a_note_in_homework_leaves_the_waiting_list_and_stays_reachable_with_its
     assert ">Add it to homework</a>" not in page
     assert ">Add to homework</button>" not in again
     assert "already in homework" in again
+
+
+# ------------------------------------------------------------------ the details, wherever shown
+
+
+@pytest.mark.parametrize("family", [False, True])
+def test_a_kind_saved_alone_is_shown_on_the_note(family: bool) -> None:
+    with browser() as client:
+        name = save_note(client, "A remembered task that still needs details")
+        only_kind = {"course_choice": "", "course_other": "", "title": "", "kind": "TASK"}
+        form = {**opened(client, name, family=family), **typed(**only_kind)}
+        saved = save_details(client, name, form, family=family)
+        page = client.get(saved.headers["location"]).text
+
+    assert saved.status_code == 303
+    assert "Kind: Task" in page.split("History of this note")[0]
+
+
+def history_of(page: str) -> str:
+    return page.split('<details class="steps history">')[1].split("</details>")[0]
+
+
+def test_the_history_keeps_every_detail_of_every_change_and_says_what_each_change_did() -> None:
+    with browser() as client:
+        name = save_note(client)
+        first = {**opened(client, name), **typed(note="Earlier unique instruction", kind="TASK")}
+        assert save_details(client, name, first).status_code == 303
+        second = {
+            **opened(client, name),
+            **typed(note="Later unique instruction", kind="HOMEWORK", title=""),
+        }
+        assert save_details(client, name, second).status_code == 303
+        third = {**opened(client, name, family=True), **typed(note="Later unique instruction")}
+        by_family = save_details(client, name, {**third, "due_date": "2026-08-21"}, family=True)
+        assert by_family.status_code == 303
+        added = add(client, name, opened(client, name))
+        page = client.get(added.headers["location"]).text
+
+    entries = history_of(page).split("<li>")[1:]
+    assert added.status_code == 303
+    assert [entry.strip().split(chr(10))[0].strip() for entry in entries] == [
+        "Saved",
+        "Details saved",
+        "Details saved",
+        "Details saved",
+        "Added to homework",
+    ]
+    assert "Earlier unique instruction" in entries[1]
+    assert "Kind: Task" in entries[1]
+    assert "Later unique instruction" in entries[2]
+    assert "Kind: Homework" in entries[2]
+    assert "Title removed in this change" in entries[2]
+    assert "Earlier unique instruction" not in entries[2]
+    assert entries[3].count("set in this change") == 2
+    assert "Due date given: August 21, 2026" in entries[3]
+    for kept in ("Geometry", "Questions 4-8", "Later unique instruction", "Kind: Homework"):
+        assert kept in entries[4], kept
+
+
+# ------------------------------------------------------------------ results on a note in homework
+
+
+@pytest.mark.parametrize("linked", ["its own", "on record"])
+def test_a_note_in_homework_says_the_assignment_is_unchanged_never_that_it_is_in_no_plan(
+    linked: str,
+) -> None:
+    with browser() as client:
+        target = on_record(client, date(2026, 8, 28)) if linked == "on record" else None
+        name = save_note(client)
+        plain = save_note(client, "A note that stays a note")
+        shown = add(client, name, {**opened(client, name), **typed()})
+        if target is not None:
+            form = whole_form(shown.text, note_add_action(name))
+            shown = add(client, name, {**form, "candidate": choice_value(target.assignment_id)})
+        assert shown.status_code == 303
+        assignments = rows(client)[0]
+
+        def change(note: str, step: str, **sent: str) -> Answer:
+            page = client.get(note_href(note), params={"edit": "1"} if step == "edit" else {}).text
+            fields = whole_form(page, note_action(note, step))
+            return client.post(
+                note_action(note, step), data={**fields, **sent}, headers=PAGE_HEADERS
+            )
+
+        edited = change(name, "edit", text="Changed the quoted words")
+        edited_page = client.get(edited.headers["location"]).text
+        assert change(name, "archive").status_code == 303
+        restored = change(name, "restore")
+        restored_page = client.get(restored.headers["location"]).text
+        earlier = client.get(edited.headers["location"]).text
+        unlinked = change(plain, "edit", text="Changed words of a plain note")
+        unlinked_page = client.get(unlinked.headers["location"]).text
+        added_list = client.get(ADDED_NOTES_PAGE).text
+        waiting_list = client.get(NOTES_PAGE).text
+        after = rows(client)[0]
+
+    def result(page: str) -> str:
+        return page.split('id="note-result"')[1].split("</p>")[0]
+
+    assert escape(NOTE_EDITED_IN_HOMEWORK) in result(edited_page)
+    assert escape(NOTE_RESTORED_IN_HOMEWORK) in result(restored_page)
+    for page in (edited_page, restored_page):
+        assert "not in a plan yet" not in result(page)
+        assert f'href="{ADDED_NOTES_PAGE}"' in page
+    assert escape(NOTE_SAVED_EARLIER) in result(earlier)
+    assert escape(NOTE_EDITED) in result(unlinked_page)
+    assert f'href="{note_href(name)}"' in added_list
+    assert f'href="{note_href(name)}"' not in waiting_list
+    assert after == assignments
 
 
 # ------------------------------------------------------------------ failure, a plan, the family

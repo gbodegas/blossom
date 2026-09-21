@@ -12,11 +12,13 @@ import pathlib
 import sqlite3
 import threading
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import pytest
 
 from blossom import intake
 from blossom.authored_text import TextRefused
+from blossom.candidates import candidate_readings, reader
 from blossom.captures import (
     CAPTURE_CLAIM_CONFIDENCE,
     CLARIFY,
@@ -46,7 +48,14 @@ from blossom.captures import (
 from blossom.noticing import planning_digest, read_everything, week_from
 from blossom.pairing import pair
 from blossom.reconciliation import SourceChannel
-from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
+from blossom.stores.project_state import (
+    Assignment,
+    AssignmentKind,
+    ProjectStateStore,
+    Saved,
+    StatusReport,
+    Undone,
+)
 from tests.support import fixture_clock, practice_store
 
 MONDAY = date(2026, 9, 14)
@@ -126,6 +135,7 @@ def promote(
         basis=basis,
         choice=choice,  # type: ignore[arg-type]
         target=target,
+        candidates=reader(store),
         authored_by=by,  # type: ignore[arg-type]
         channel=channel,
         now=AT + timedelta(hours=1),
@@ -330,6 +340,170 @@ def test_the_same_press_again_makes_no_second_assignment(store: ProjectStateStor
     assert everything(store) == after
 
 
+OTHERWISE: dict[str, dict[str, Any]] = {
+    "course": {"course": "Physics"},
+    "title": {"title": "Different work"},
+    "due": {"due": date(2026, 9, 19)},
+    "no due": {"due": None},
+    "kind": {"kind": "TASK"},
+    "about": {"about": "Different instructions"},
+}
+
+
+@pytest.mark.parametrize("changed", sorted(OTHERWISE))
+def test_a_second_press_with_anything_else_in_it_is_not_the_same_press(
+    store: ProjectStateStore, changed: str
+) -> None:
+    """The assignment's id is the note's, whatever the press holds, so the id proves which
+    note and never that the press is the one that was accepted."""
+    name = note(store)
+    accepted: dict[str, Any] = {"due": date(2026, 9, 18), "about": "Show the working."}
+    assert isinstance(promote(store, name, details(**accepted), 1), CapturePromoted)
+    after = everything(store)
+
+    other = promote(store, name, details(**{**accepted, **OTHERWISE[changed]}), 1)
+    again = promote(store, name, details(**accepted), 1)
+
+    assert isinstance(other, CaptureConflict)
+    assert isinstance(again, CaptureAlreadyPromoted)
+    assert everything(store) == after
+
+
+def test_joining_again_with_another_note_about_the_work_is_not_the_same_press(
+    store: ProjectStateStore,
+) -> None:
+    target = on_record(store, due=date(2026, 9, 25))
+    name = note(store)
+    given = details(about="Her own reminder.")
+    basis = candidate_basis(candidate_readings(store, given))
+    joined = promote(store, name, given, 1, basis=basis, choice="same", target=target.assignment_id)
+    after = everything(store)
+
+    other = promote(
+        store,
+        name,
+        details(about="A different second-device instruction"),
+        1,
+        basis=basis,
+        choice="same",
+        target=target.assignment_id,
+    )
+    again = promote(store, name, given, 1, basis=basis, choice="same", target=target.assignment_id)
+
+    assert isinstance(joined, CapturePromoted)
+    assert isinstance(other, CaptureConflict)
+    assert isinstance(again, CaptureAlreadyPromoted)
+    assert everything(store) == after
+
+
+def test_a_separate_assignment_made_on_purpose_is_held_to_the_press_that_made_it(
+    store: ProjectStateStore,
+) -> None:
+    on_record(store, due=date(2026, 9, 25))
+    name = note(store)
+    given = details(about="Kept apart on purpose.")
+    basis = candidate_basis(candidate_readings(store, given))
+    made = promote(store, name, given, 1, basis=basis, choice="separate")
+    after = everything(store)
+    now = candidate_basis(candidate_readings(store, given))
+
+    other = promote(store, name, details(about="Other words"), 1, basis=now, choice="separate")
+    as_new = promote(store, name, given, 1, basis=now, choice="new")
+    again = promote(store, name, given, 1, basis=basis, choice="separate")
+
+    assert isinstance(made, CapturePromoted)
+    assert isinstance(other, CaptureConflict)
+    assert isinstance(as_new, CaptureConflict)
+    assert isinstance(again, CaptureAlreadyPromoted)
+    assert everything(store) == after
+
+
+def test_another_kind_of_press_that_names_the_same_assignment_is_not_the_same_press(
+    store: ProjectStateStore,
+) -> None:
+    """Made as the note's own assignment, then asked for as a join to that very assignment,
+    and as a separate one beside homework that was never shown: the id matches each time and
+    the press does not."""
+    name = note(store)
+    given = details()
+    assert isinstance(promote(store, name, given, 1), CapturePromoted)
+    own = derived_assignment_id(name)
+    basis = candidate_basis(candidate_readings(store, given))
+    after = everything(store)
+
+    as_a_join = promote(store, name, given, 1, basis=basis, choice="same", target=own)
+    as_separate = promote(store, name, given, 1, basis=basis, choice="separate")
+
+    assert isinstance(as_a_join, CaptureConflict)
+    assert isinstance(as_separate, CaptureConflict)
+    assert everything(store) == after
+
+
+@pytest.mark.parametrize("since", ["edited", "archived"])
+def test_the_press_that_was_accepted_is_what_a_later_press_is_held_to(
+    store: ProjectStateStore, since: str
+) -> None:
+    """Her words, class, and day can change after the note is in homework, and the assignment
+    does not follow. A press is compared with the one that was accepted, never with the note
+    as it has since become."""
+    name = note(store)
+    accepted = details(due=date(2026, 9, 18))
+    assert isinstance(promote(store, name, accepted, 1), CapturePromoted)
+    if since == "edited":
+        moved = store.edit_capture(
+            name,
+            "Changed words",
+            "Physics",
+            date(2026, 9, 30),
+            expected_revision=2,
+            authored_by=STUDENT,
+            channel=HERS,
+            now=AT + timedelta(hours=2),
+            today=MONDAY,
+        )
+    else:
+        moved = store.archive_capture(
+            name,
+            expected_revision=2,
+            authored_by=STUDENT,
+            now=AT + timedelta(hours=2),
+            today=MONDAY,
+        )
+    assert isinstance(moved, CaptureChanged)
+    after = everything(store)
+
+    original = promote(store, name, accepted, 1)
+    as_it_reads_now = promote(
+        store,
+        name,
+        details(course="Physics", due=date(2026, 9, 30)),
+        the_note(store, name).revision,
+    )
+
+    assert isinstance(original, CaptureAlreadyPromoted)
+    assert isinstance(as_it_reads_now, CaptureConflict)
+    assert everything(store) == after
+
+
+def test_a_second_device_with_other_details_finds_the_first_ones_accepted(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Two connections to the file, the second reading after the first has committed."""
+    path = tmp_path / "record.sqlite3"
+    first = practice_store(path)
+    second = ProjectStateStore.open(path, fixture_clock())
+    name = note(first)
+    assert isinstance(promote(first, name, details(about="The first device's"), 1), CapturePromoted)
+    after = everything(first)
+
+    other = promote(
+        second, name, details(about="The second device's"), 1, by=PARENT, channel=THEIRS
+    )
+
+    assert isinstance(other, CaptureConflict)
+    assert everything(first) == after == everything(second)
+
+
 def test_two_devices_adding_one_note_at_once_make_one_assignment(tmp_path: pathlib.Path) -> None:
     """She and a parent press at the same moment, through two connections to the file: one
     press adds the note, the other finds it added, and there is one assignment, one claim,
@@ -471,7 +645,7 @@ def test_homework_of_the_same_class_and_title_is_a_choice_and_never_made_for_any
     name = note(store)
     given = details(course="  Geometry ", title="Questions   4-8", due=date(2026, 9, 18))
 
-    candidates = store.promotion_candidates(given)
+    candidates = candidate_readings(store, given)
     before = everything(store)
     unasked = promote(store, name, given, 1, basis=candidate_basis(candidates))
 
@@ -485,11 +659,165 @@ def test_homework_of_the_same_class_and_title_is_a_choice_and_never_made_for_any
     assert everything(store) == before
 
 
+def school_says(store: ProjectStateStore, target: Assignment, status: str, day: date) -> None:
+    store.record_status_reports(
+        target.assignment_id,
+        [
+            StatusReport(
+                status=status,
+                channel=SourceChannel.LMS,
+                reported_on=day,
+                dated_by="the day it was pasted",
+                observed_at=AT,
+            )
+        ],
+    )
+
+
+def she_says(store: ProjectStateStore, target: Assignment, status: str) -> str:
+    saved = store.report_status(
+        target.assignment_id,
+        status,  # type: ignore[arg-type]
+        None,
+        expected_head=None,
+        now=AT,
+        today=MONDAY,
+    )
+    assert isinstance(saved, Saved)
+    return saved.report.report_id
+
+
+def test_a_candidate_is_read_with_what_she_and_the_school_currently_say(
+    store: ProjectStateStore,
+) -> None:
+    """Her account and the school's are read apart, and no report of hers reads as none:
+    what the record's own status column holds is never offered in its place."""
+    target = on_record(store, due=date(2026, 9, 25))
+    given = details()
+    unreported = candidate_readings(store, given)
+    school_says(store, target, "missing", MONDAY)
+    done = she_says(store, target, "done")
+    standing = candidate_readings(store, given)
+    undone = store.undo_report(target.assignment_id, done, now=AT, today=MONDAY)
+    taken_back = candidate_readings(store, given)
+
+    assert [(item.work_state, item.work_reported_on, item.school) for item in unreported] == [
+        (None, None, ())
+    ]
+    assert unreported[0].recorded_status == "not_started"
+    assert unreported[0].record_source is SourceChannel.LMS
+    assert [(item.work_state, item.work_reported_on) for item in standing] == [("done", MONDAY)]
+    assert [(word.channel, word.status, word.reported_on) for word in standing[0].school] == [
+        (SourceChannel.LMS, "missing", MONDAY)
+    ]
+    assert isinstance(undone, Undone)
+    assert [(item.work_state, item.work_reported_on) for item in taken_back] == [(None, None)]
+
+
+SINCE_THE_PAGE = ("done", "not yet", "undone", "school missing", "record source")
+
+
+@pytest.mark.parametrize("choice", ["same", "separate"])
+@pytest.mark.parametrize("since", SINCE_THE_PAGE)
+def test_anything_shown_about_a_candidate_that_changed_since_is_put_to_her_again(
+    store: ProjectStateStore, since: str, choice: str
+) -> None:
+    target = on_record(store, due=date(2026, 9, 25))
+    before_the_page = she_says(store, target, "not_yet") if since == "undone" else None
+    name = note(store)
+    given = details()
+    basis = candidate_basis(candidate_readings(store, given))
+    if since == "done":
+        she_says(store, target, "done")
+    elif since == "not yet":
+        she_says(store, target, "not_yet")
+    elif since == "undone":
+        assert before_the_page is not None
+        store.undo_report(target.assignment_id, before_the_page, now=AT, today=MONDAY)
+    elif since == "school missing":
+        school_says(store, target, "missing", MONDAY)
+    else:
+        moved = target.model_copy(update={"origins": {"record": SourceChannel.PARENT_ENTRY}})
+        store.upsert_assignments([moved])
+    before = everything(store)
+
+    answer = promote(
+        store,
+        name,
+        given,
+        1,
+        basis=basis,
+        choice=choice,
+        target=target.assignment_id if choice == "same" else None,
+    )
+
+    assert isinstance(answer, CandidatesChanged)
+    assert [item.assignment_id for item in answer.candidates] == [target.assignment_id]
+    assert candidate_basis(answer.candidates) != basis
+    assert everything(store) == before
+
+
+def test_a_school_statement_that_changes_nothing_shown_asks_nothing_again(
+    store: ProjectStateStore,
+) -> None:
+    """The same statement pasted again, and a statement of an earlier day that is not the
+    channel's current word, leave every row as it was shown."""
+    target = on_record(store, due=date(2026, 9, 25))
+    school_says(store, target, "missing", MONDAY)
+    name = note(store)
+    given = details()
+    basis = candidate_basis(candidate_readings(store, given))
+    school_says(store, target, "missing", MONDAY)
+    school_says(store, target, "not_started", MONDAY - timedelta(days=3))
+
+    answer = promote(store, name, given, 1, basis=basis, choice="same", target=target.assignment_id)
+
+    assert candidate_basis(candidate_readings(store, given)) == basis
+    assert isinstance(answer, CapturePromoted)
+
+
+@pytest.mark.parametrize("size", [1, 20, 200])
+def test_the_reads_a_choice_costs_do_not_grow_with_the_candidates(
+    store: ProjectStateStore, size: int
+) -> None:
+    """Showing the candidates and checking them again inside the save each read the record
+    in a fixed number of statements, however many candidates there are."""
+    targets = [
+        on_record(store, due=date(2026, 9, 1) + timedelta(days=index)) for index in range(size)
+    ]
+    for target in targets[::7]:
+        she_says(store, target, "done")
+    name = note(store)
+    given = details()
+    statements: list[str] = []
+
+    store._connection.set_trace_callback(statements.append)
+    shown = candidate_readings(store, given)
+    to_show = [made for made in statements if made.lstrip().upper().startswith("SELECT")]
+    statements.clear()
+    answer = promote(
+        store,
+        name,
+        given,
+        1,
+        basis=candidate_basis(shown),
+        choice="same",
+        target=targets[0].assignment_id,
+    )
+    store._connection.set_trace_callback(None)
+    to_save = [made for made in statements if made.lstrip().upper().startswith("SELECT")]
+
+    assert len(shown) == size
+    assert isinstance(answer, CapturePromoted)
+    assert len(to_show) == 4
+    assert len(to_save) <= 8
+
+
 def test_same_homework_joins_the_note_and_overwrites_nothing(store: ProjectStateStore) -> None:
     target = on_record(store, due=date(2026, 9, 25))
     name = note(store)
     given = details(due=date(2026, 9, 18), about="Her own reminder.")
-    basis = candidate_basis(store.promotion_candidates(given))
+    basis = candidate_basis(candidate_readings(store, given))
     assignments = everything(store)[0]
 
     done = promote(store, name, given, 1, basis=basis, choice="same", target=target.assignment_id)
@@ -514,7 +842,7 @@ def test_keep_separate_is_written_down_and_makes_the_notes_own_assignment_once(
     other = on_record(store, due=date(2026, 9, 25))
     name = note(store)
     given = details()
-    basis = candidate_basis(store.promotion_candidates(given))
+    basis = candidate_basis(candidate_readings(store, given))
 
     done = promote(store, name, given, 1, basis=basis, choice="separate")
     again = promote(store, name, given, 1, basis=basis, choice="separate")
@@ -554,7 +882,7 @@ def test_homework_that_arrived_after_the_page_was_made_is_put_to_her_again(
     name = note(first)
     given = details()
     shown = on_record(first, due=date(2026, 9, 11)) if choice != "new" else None
-    basis = candidate_basis(first.promotion_candidates(given))
+    basis = candidate_basis(candidate_readings(first, given))
     arrived = on_record(second, due=date(2026, 9, 25))
     before = everything(first)
 
@@ -580,7 +908,7 @@ def test_a_candidate_that_changed_since_the_page_was_made_is_put_to_her_again(
     shown = on_record(store, due=date(2026, 9, 11))
     name = note(store)
     given = details()
-    basis = candidate_basis(store.promotion_candidates(given))
+    basis = candidate_basis(candidate_readings(store, given))
     store.upsert_assignments([shown.model_copy(update={"due_date": date(2026, 9, 12)})])
 
     answer = promote(store, name, given, 1, basis=basis, choice="same", target=shown.assignment_id)
@@ -594,7 +922,7 @@ def test_a_target_that_is_no_candidate_is_no_choice(store: ProjectStateStore) ->
     elsewhere = on_record(store, title="Another worksheet")
     name = note(store)
     given = details()
-    basis = candidate_basis(store.promotion_candidates(given))
+    basis = candidate_basis(candidate_readings(store, given))
 
     answer = promote(
         store, name, given, 1, basis=basis, choice="same", target=elsewhere.assignment_id
