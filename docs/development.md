@@ -530,6 +530,7 @@ are not needed just to try the app.
 Windows (PowerShell):
 
 ```powershell
+.\.venv\Scripts\python -m ensurepip --upgrade
 .\.venv\Scripts\python -m pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
 .\.venv\Scripts\python -m ruff check .
 .\.venv\Scripts\python -m ruff format --check .
@@ -540,6 +541,7 @@ Windows (PowerShell):
 macOS and Linux:
 
 ```bash
+.venv/bin/python -m ensurepip --upgrade
 .venv/bin/python -m pip install mypy==1.17.1 ruff==0.12.9 pytest==8.4.1 httpx2==2.10.0
 .venv/bin/python -m ruff check .
 .venv/bin/python -m ruff format --check .
