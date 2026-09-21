@@ -63,6 +63,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
+from blossom.pairing import pair as pair  # the one rule, kept where both askers share it
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel, SourceRecord
 from blossom.stores.project_state import (
     Assignment,
@@ -170,11 +171,6 @@ TEXT_MAX_LENGTH: Final = 40_000
 """How much one paste may hold: a page or a week is a few thousand characters."""
 IDENTITY: Final = uuid.UUID("5b0f9b2e-2a3c-4d0e-9b7a-0b2f8a1c6d33")
 """The namespace an assignment's id is drawn from, so the same pair always gives the same id."""
-
-
-def pair(course: str, title: str) -> tuple[str, str]:
-    """The course and title as the record matches them: their words, single-spaced."""
-    return " ".join(course.split()), " ".join(title.split())
 
 
 def slug(text: str) -> str:

@@ -30,7 +30,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -39,15 +39,18 @@ from typing import Final
 from blossom.captures import (
     ARCHIVE,
     ATTRIBUTED,
+    CLARIFY,
     CREATE,
     EDIT,
     RESTORE,
     Author,
+    CandidateDecision,
     Capture,
     CaptureAlreadyCreated,
     CaptureChanged,
     CaptureConflict,
     CaptureCreated,
+    CaptureDetails,
     CaptureEvent,
     CaptureHistoryReading,
     CaptureIdTaken,
@@ -107,6 +110,8 @@ CAPTURES_NAMED: Final = """
 """Each read is written out whole: fixed text, put together nowhere, with a name always a
 bound value. A row is decoded by position, so the four name the same columns in the same
 order, which a test holds them to."""
+SNAPSHOT_FIELDS_ADDED: Final = ("title", "kind", "note", "assignment_id")
+"""What a moment of a note's history gained with details and adding to homework."""
 INSERT_CAPTURE: Final = """
     INSERT INTO homework_captures (
         capture_id, created_order, original_text, initial, text, course, title, due_date,
@@ -116,22 +121,25 @@ INSERT_CAPTURE: Final = """
 """
 UPDATE_CAPTURE: Final = """
     UPDATE homework_captures
-    SET text = ?, course = ?, due_date = ?, attribution = ?, archived = ?,
-        updated_at_utc = ?, updated_on = ?, revision = ?
+    SET text = ?, course = ?, title = ?, due_date = ?, kind = ?, note = ?, attribution = ?,
+        archived = ?, assignment_id = ?, updated_at_utc = ?, updated_on = ?, revision = ?
     WHERE capture_id = ? AND revision = ?
 """
 INSERT_CAPTURE_EVENT: Final = """
     INSERT INTO capture_events (
         event_id, capture_id, operation, before, after, revision, occurred_at_utc,
-        occurred_on, authored_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        occurred_on, authored_by, decision
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 CAPTURE_EVENTS: Final = """
     SELECT event_id, capture_id, operation, before, after, revision, occurred_at_utc,
-        occurred_on, authored_by, sequence
+        occurred_on, authored_by, sequence, decision
     FROM capture_events
     WHERE capture_id = ? ORDER BY sequence
 """
+ADD_EVENT_DECISION: Final = "ALTER TABLE capture_events ADD COLUMN decision TEXT"
+"""What was chosen about homework already on record, kept with the change that added a note
+to homework. A table from before this gains the column, empty in every row it had."""
 
 
 @dataclass(frozen=True)
@@ -283,10 +291,28 @@ def snapshot_from(raw: str) -> CaptureSnapshot:
     a day, and hand the line of changes something the file never held."""
     held = json.loads(raw)
     snapshot = CaptureSnapshot.model_validate(held)
-    if held != json.loads(snapshot.model_dump_json()):
+    written = json.loads(snapshot.model_dump_json())
+    if isinstance(held, dict):
+        # A moment written before details and adding to homework held none of these four.
+        # Absent is read as nothing in each, and only as that.
+        for name in SNAPSHOT_FIELDS_ADDED:
+            if name not in held and written.get(name) is None:
+                written.pop(name, None)
+    if held != written:
         msg = "a snapshot is not held as it is written"
         raise ValueError(msg)
     return snapshot
+
+
+def decision_from(raw: str) -> CandidateDecision:
+    """What was chosen about homework on record, from the JSON the file holds, which must be
+    that JSON as the store writes it."""
+    held = json.loads(raw)
+    decision = CandidateDecision.model_validate(held)
+    if held != json.loads(decision.model_dump_json()):
+        msg = "a decision is not held as it is written"
+        raise ValueError(msg)
+    return decision
 
 
 def capture_event_from(row: tuple[object, ...]) -> CaptureEvent:
@@ -307,30 +333,68 @@ def capture_event_from(row: tuple[object, ...]) -> CaptureEvent:
             occurred_on=held_day(row[7], "occurred_on"),
             authored_by=held_text(row[8], "authored_by"),  # type: ignore[arg-type]
             sequence=held_count(row[9], "sequence"),
+            decision=None if row[10] is None else decision_from(held_text(row[10], "decision")),
         )
     except (ValueError, TypeError, AttributeError) as fault:
         raise UnreadableCapture(str(row[1])) from fault
 
 
 def attributed(
-    words: CaptureWords,
+    values: Mapping[str, object],
     standing: Capture | None,
     source: FieldSource,
 ) -> dict[str, FieldSource]:
-    """Who supplied each optional field that holds something once ``words`` stand.
+    """Who supplied each optional field that holds something once ``values`` stand.
 
-    A field whose value did not change keeps the source it had; one that
-    changed, or is new, takes the source of this change; one that holds
-    nothing says nothing.
+    ``values`` names every attributed field as it will stand. A field whose
+    value did not change keeps the source it had, whoever makes this change;
+    one that changed, or is new, takes the source of this change; one that
+    holds nothing says nothing.
     """
     kept: dict[str, FieldSource] = {}
     for name in ATTRIBUTED:
-        value = getattr(words, name)
+        value = values.get(name)
         if value is None:
             continue
         unchanged = standing is not None and getattr(standing, name) == value
         kept[name] = standing.attribution[name] if unchanged and standing else source
     return kept
+
+
+def standing_with(standing: Capture | None, words: CaptureWords) -> dict[str, object]:
+    """Every attributed field once her words, class, and day are ``words``: those three
+    from the form, the rest as they stand."""
+    return {
+        "course": words.course,
+        "due_date": words.due_date,
+        "title": None if standing is None else standing.title,
+        "kind": None if standing is None else standing.kind,
+        "note": None if standing is None else standing.note,
+    }
+
+
+def with_details(
+    standing: Capture,
+    details: CaptureDetails,
+    source: FieldSource,
+    *,
+    assignment_id: str | None = None,
+) -> Capture:
+    """The note with these details standing, each changed field saying ``source`` supplied
+    it and each unchanged one keeping the hand it had, and naming ``assignment_id`` when it
+    is being added to homework. Built whole, so the rules a note is held to are asked of it
+    before anything is written."""
+    values = details.model_dump()
+    return Capture.model_validate(
+        {
+            **standing.model_dump(),
+            **values,
+            "assignment_id": assignment_id or standing.assignment_id,
+            "attribution": {
+                name: by.model_dump() for name, by in attributed(values, standing, source).items()
+            },
+        }
+    )
 
 
 class CaptureRecords:
@@ -396,7 +460,8 @@ class CaptureRecords:
                 revision INTEGER NOT NULL,
                 occurred_at_utc TEXT NOT NULL,
                 occurred_on TEXT NOT NULL,
-                authored_by TEXT NOT NULL
+                authored_by TEXT NOT NULL,
+                decision TEXT
             )
             """
         )
@@ -406,6 +471,11 @@ class CaptureRecords:
             ON capture_events (capture_id, sequence)
             """
         )
+        held = {
+            str(row[1]) for row in self._connection.execute("PRAGMA table_info(capture_events)")
+        }
+        if "decision" not in held:
+            self._connection.execute(ADD_EVENT_DECISION)
 
     # ------------------------------------------------------------------ reading
 
@@ -529,7 +599,7 @@ class CaptureRecords:
                     text=words.text,
                     course=words.course,
                     due_date=words.due_date,
-                    attribution=attributed(words, None, source),
+                    attribution=attributed(standing_with(None, words), None, source),
                     created_at=now,
                     created_on=today,
                     updated_at=now,
@@ -603,11 +673,50 @@ class CaptureRecords:
                         "text": words.text,
                         "course": words.course,
                         "due_date": words.due_date,
-                        "attribution": attributed(words, standing, source),
+                        "attribution": attributed(standing_with(standing, words), standing, source),
                     }
                 )
                 return self._change_locked(
                     standing, note, EDIT, authored_by, reading, now=now, today=today
+                )
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CaptureNotSaved(name, error) from error
+
+    def clarify_capture(
+        self,
+        capture_id: str,
+        details: CaptureDetails,
+        *,
+        expected_revision: int,
+        authored_by: Author,
+        channel: SourceChannel,
+        now: datetime,
+        today: date,
+    ) -> CaptureChanged | CaptureUnchanged | CaptureConflict:
+        """Add or change a note's details: its class, title, day, kind, and a note about the
+        work. Her words are not details and are never touched here.
+
+        She may, and a parent may: whoever it is, each field that changes says
+        who supplied it and through which way in, and a field that does not
+        change keeps the hand it had. The same details as stand are already
+        saved. Anything else must come from the revision the page showed, on a
+        note that still waits: one that was put away, or is homework already,
+        takes no details.
+        """
+        name = capture_id_from(capture_id)
+        try:
+            with self._lock, self._writing():
+                standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
+                if standing.details == details:
+                    return CaptureUnchanged(standing, reading.head)
+                if standing.revision != expected_revision or not standing.outstanding:
+                    return CaptureConflict(standing)
+                note = with_details(
+                    standing, details, FieldSource(authored_by=authored_by, channel=channel)
+                )
+                return self._change_locked(
+                    standing, note, CLARIFY, authored_by, reading, now=now, today=today
                 )
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             raise CaptureNotSaved(name, error) from error
@@ -680,6 +789,7 @@ class CaptureRecords:
         *,
         now: datetime,
         today: date,
+        decision: CandidateDecision | None = None,
     ) -> CaptureChanged:
         """Write one change and its event, inside the caller's transaction. ``reading`` is
         the note's line of changes as that transaction read it, which the new change must
@@ -689,16 +799,27 @@ class CaptureRecords:
             update={"revision": standing.revision + 1, "updated_at": now, "updated_on": today}
         )
         event = self._append_capture_event_locked(
-            note, operation, standing, authored_by, reading.events, now=now, today=today
+            note,
+            operation,
+            standing,
+            authored_by,
+            reading.events,
+            now=now,
+            today=today,
+            decision=decision,
         )
         written = self._connection.execute(
             UPDATE_CAPTURE,
             (
                 note.text,
                 note.course,
+                note.title,
                 None if note.due_date is None else note.due_date.isoformat(),
+                note.kind,
+                note.note,
                 self._attribution_json(note.attribution),
                 int(note.archived),
+                note.assignment_id,
                 now.isoformat(),
                 today.isoformat(),
                 note.revision,
@@ -721,6 +842,7 @@ class CaptureRecords:
         *,
         now: datetime,
         today: date,
+        decision: CandidateDecision | None = None,
     ) -> CaptureEvent:
         """Append the event of one change, inside the caller's transaction, and give it the
         place the file gave it. ``line`` is the note's changes as this transaction read
@@ -736,6 +858,7 @@ class CaptureRecords:
             occurred_at=now,
             occurred_on=today,
             authored_by=authored_by,
+            decision=decision,
         )
         sound_history(note, [*line, event])
         cursor = self._connection.execute(
@@ -750,6 +873,7 @@ class CaptureRecords:
                 now.isoformat(),
                 today.isoformat(),
                 event.authored_by,
+                None if event.decision is None else event.decision.model_dump_json(),
             ),
         )
         return event.model_copy(update={"sequence": cursor.lastrowid})

@@ -39,7 +39,28 @@ from typing import Final, Literal, NamedTuple, Self, cast
 from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator, model_validator
 
 from blossom.authored_text import multiline, single_line
-from blossom.captures import capture_id_from
+from blossom.captures import (
+    CAPTURE_CLAIM_CONFIDENCE,
+    HOMEWORK_NOTE,
+    LINK,
+    PROMOTE,
+    Author,
+    CandidateDecision,
+    CandidatesChanged,
+    Capture,
+    CaptureAlreadyPromoted,
+    CaptureConflict,
+    CaptureDetails,
+    CaptureNotSaved,
+    CapturePromoted,
+    ChoiceNeeded,
+    DetailsMissing,
+    FieldSource,
+    PromotionChoice,
+    candidate_basis,
+    capture_id_from,
+    derived_assignment_id,
+)
 from blossom.clock import Clock
 from blossom.hand_in import (
     HAND_IN_NOTE_MAX_LENGTH,
@@ -55,6 +76,7 @@ from blossom.hand_in import (
     HandInUndone,
     project,
 )
+from blossom.pairing import pair
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.retrieval import RetrievalResult
 from blossom.stores.captures import (
@@ -63,6 +85,7 @@ from blossom.stores.captures import (
     held_flag,
     held_moment,
     held_text_or_nothing,
+    with_details,
 )
 from blossom.stores.paths import refuse_unsafe_path
 
@@ -1961,6 +1984,127 @@ class ProjectStateStore(CaptureRecords):
             rows = self._connection.execute(DATE_CLAIMS_OF, (assignment_id,)).fetchall()
         return [source_record_from(row) for row in rows]
 
+    def promotion_candidates(
+        self, details: CaptureDetails, *, among: Iterable["Assignment"] | None = None
+    ) -> list["Assignment"]:
+        """Homework on record with the class and title these details give: every one of
+        them, whatever its day, by the rule the school's paste pairs by. With no class or no
+        title there is nothing to pair, and no identity is made up from her words."""
+        if details.course is None or details.title is None:
+            return []
+        wanted = pair(details.course, details.title)
+        rows = self.all_assignments() if among is None else among
+        return sorted(
+            (item for item in rows if pair(item.course, item.title) == wanted),
+            key=lambda item: item.assignment_id,
+        )
+
+    def promote_capture(
+        self,
+        capture_id: str,
+        details: CaptureDetails,
+        *,
+        expected_revision: int,
+        basis: str,
+        choice: PromotionChoice,
+        target: str | None = None,
+        authored_by: Author,
+        channel: SourceChannel,
+        now: datetime,
+        today: date,
+    ) -> (
+        CapturePromoted
+        | CaptureAlreadyPromoted
+        | CaptureConflict
+        | DetailsMissing
+        | ChoiceNeeded
+        | CandidatesChanged
+    ):
+        """Add a note to homework: as an assignment of its own, or joined to one on record.
+
+        One transaction that reserves the writer before it reads. The note's
+        line of changes is checked first. A note that already names the
+        assignment this press would give it is the same press again, and
+        nothing is written. Otherwise the page's revision must be the note's,
+        the note must not be put away, and it must have a class, a title, and
+        a kind. Then the homework of that class and title is read here, and
+        its fingerprint must be the one the page sent: homework that arrived,
+        left, or changed since is put to the person again, so no twin is made
+        because another connection won a race, and an old page that showed no
+        candidate is checked the same way.
+
+        With no candidate the choice is ``new``. With any, it is ``same``,
+        naming one of them, or ``separate``. ``same`` joins the note to that
+        assignment and changes nothing about it: a day the note gives is one
+        more claim beside the school's. ``new`` and ``separate`` make the
+        note's own assignment, named from the note's id, its record marked
+        with the way in this press came through and each field with whoever
+        supplied it. The assignment, the claim, the note's link, and the event
+        with the choice are one commit. No report of the school's is made.
+        """
+        name = capture_id_from(capture_id)
+        try:
+            with self._lock, self._writing():
+                standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
+                own = derived_assignment_id(name)
+                if standing.assignment_id is not None:
+                    asked = target if choice == "same" else own
+                    if standing.assignment_id == asked:
+                        return CaptureAlreadyPromoted(standing, reading.head, asked)
+                    return CaptureConflict(standing)
+                if standing.revision != expected_revision or standing.archived:
+                    return CaptureConflict(standing)
+                needed = (*details.missing, *(("kind",) if details.kind is None else ()))
+                if needed:
+                    return DetailsMissing(standing, needed)
+                rows = self.all_assignments()
+                candidates = self.promotion_candidates(details, among=rows)
+                if candidate_basis(candidates) != basis:
+                    return CandidatesChanged(standing, tuple(candidates))
+                named = tuple(item.assignment_id for item in candidates)
+                fits = (
+                    (choice == "new" and not candidates)
+                    or (choice == "separate" and bool(candidates))
+                    or (choice == "same" and target in named)
+                )
+                if not fits:
+                    return ChoiceNeeded(standing, tuple(candidates))
+                joined = target if choice == "same" and target is not None else own
+                source = FieldSource(authored_by=authored_by, channel=channel)
+                note = with_details(standing, details, source, assignment_id=joined)
+                if choice != "same":
+                    if any(item.assignment_id == own for item in rows):
+                        msg = f"the assignment {own!r} is on record and its note says it is not"
+                        raise RuntimeError(msg)
+                    self._upsert_assignments_locked([assignment_from_note(note, channel)])
+                changed = self._change_locked(
+                    standing,
+                    note,
+                    LINK if choice == "same" else PROMOTE,
+                    authored_by,
+                    reading,
+                    now=now,
+                    today=today,
+                    decision=CandidateDecision(choice=choice, candidates=named, basis=basis),
+                )
+                if note.due_date is not None:
+                    self._record_capture_claim_locked(
+                        joined,
+                        SourceRecord(
+                            channel=note.attribution["due_date"].channel,
+                            asserted_value=note.due_date.isoformat(),
+                            observed_at=now,
+                            confidence=CAPTURE_CLAIM_CONFIDENCE,
+                            seen_in=HOMEWORK_NOTE,
+                        ),
+                        capture_id=name,
+                        capture_revision=changed.capture.revision,
+                    )
+                return CapturePromoted(changed.capture, changed.event, joined, choice != "same")
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CaptureNotSaved(name, error) from error
+
     def claim_history(self, assignment_id: str) -> list["ClaimOnRecord"]:
         """Every claim ever made about one assignment's due date, in the order made, with
         the note it came from when it came from one and whether it still counts. This is
@@ -2154,6 +2298,36 @@ def family_check_from(row: tuple[object, ...]) -> FamilyCheck:
         checked_at=datetime.fromisoformat(str(row[5])),
         checked_on=date.fromisoformat(str(row[6])),
         previous_check_id=None if row[7] is None else str(row[7]),
+    )
+
+
+def assignment_from_note(note: Capture, record_channel: SourceChannel) -> Assignment:
+    """The assignment a note becomes, from the note's details as they stand.
+
+    The record is marked with the way in the press came through, her page or
+    the family's. Each field is marked with whoever supplied it, which may be
+    someone else: a class she named stays hers when a parent adds the note to
+    homework. Her words are not copied anywhere; the note about the work is
+    only what the note field held. The school has said nothing about this
+    work, so its reported status is unknown and no report is made for it.
+    """
+    if note.assignment_id is None or note.course is None or note.title is None:
+        msg = f"note {note.capture_id!r} cannot be homework without an id, a class, and a title"
+        raise ValueError(msg)
+    origins = {"record": record_channel}
+    for name in ("course", "title", "due_date", "kind", "note"):
+        if getattr(note, name) is not None:
+            origins[name] = note.attribution[name].channel
+    return Assignment(
+        assignment_id=note.assignment_id,
+        course=note.course,
+        title=note.title,
+        due_date=note.due_date,
+        dependencies=[],
+        reported_submission_status="unknown",
+        kind=AssignmentKind(note.kind) if note.kind is not None else AssignmentKind.HOMEWORK,
+        note=note.note,
+        origins=origins,
     )
 
 
