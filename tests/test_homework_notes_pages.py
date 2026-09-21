@@ -387,6 +387,47 @@ def test_a_request_for_help_that_is_refused_keeps_her_question_whatever_became_o
     assert sent == []
 
 
+def test_signed_in_the_same_endpoints_say_a_readable_note_is_readable_and_a_damaged_one_is_not(
+    tmp_path: pathlib.Path,
+) -> None:
+    """As a household runs it: she asks signed in as the student, a parent reads and answers
+    signed in as a parent. A note that reads is never said to be unavailable, and one that
+    really cannot be read still is, so no constant answer passes."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        damaged = save_note(client, "A note that will not read")
+        for about in (name, damaged):
+            assert ask_about(client, about, "").status_code == 303
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE homework_captures SET attribution = 'no json' WHERE capture_id = ?", (damaged,)
+        )
+        store._connection.commit()
+        hers = client.get("/student/help-requests")
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs = client.get("/parent/help-requests")
+        readable = next(item for item in theirs.json() if item["about_note"]["capture_id"] == name)
+        moved = [
+            client.post(f"/parent/help-requests/{readable['request_id']}/{step}", json={})
+            for step in ("accept", "resolve")
+        ]
+
+    expected = {
+        name: {"capture_id": name, "text": WORDS, "archived": False, "unavailable": False},
+        damaged: {"capture_id": damaged, "text": None, "archived": False, "unavailable": True},
+    }
+    for listing in (hers, theirs):
+        assert listing.status_code == 200
+        said = {item["about_note"]["capture_id"]: item["about_note"] for item in listing.json()}
+        assert said == expected
+    for answer in moved:
+        assert answer.status_code == 200
+        assert answer.json()["about_note"] == expected[name]
+
+
 def own_row(page: str, *, family: bool, resolved: bool) -> str:
     """The one request's own row: its list item or its card, and nothing else of the page."""
     if resolved:
