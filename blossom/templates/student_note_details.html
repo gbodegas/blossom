@@ -26,11 +26,14 @@
 
   ``family`` says which tree the page is in, and with it where the form goes.
   The one who may not write here is shown the note and told who can. A form
-  that arrives after the note was put away or added to homework is answered
-  with what was typed, shown to copy, since that note takes no more details.
+  that cannot be taken, because the note was put away or added to homework in
+  the meantime or because of who pressed, is answered with what was typed and
+  chosen, shown to copy.
   A form from a page that is behind the note comes back under its own heading,
-  below the details the note holds now, so what was typed is set beside what is
-  saved and replaces none of it unseen.
+  below the details the note holds now, the kind among them, so what was typed
+  is set beside what is saved and replaces none of it unseen. A choice about
+  homework already here stays chosen through a refusal about something else,
+  while it is still one of the choices; a choice that is put again is made again.
 #}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% set targets = {
@@ -61,14 +64,16 @@
     {% elif note.archived %}
       <p class="note">This note is archived. <a href="{{ note_href(note.capture_id) }}">Open the note</a> to bring it back before adding it to homework.</p>
     {% endif %}
-    {% if form.unsaved and (note.course or note.title or note.due_date or note.note) %}
+    {% if form.unsaved %}
       <h3 class="update-heading">Saved on the note now</h3>
       {% if note.course %}<p class="note">Class: <span class="authored-text">{{ note.course }}</span></p>{% endif %}
       {% if note.title %}<p class="note">Title: <span class="authored-text">{{ note.title }}</span></p>{% endif %}
       {% if note.due_date %}<p class="note">Due date given: {{ on(note.due_date) }}</p>{% endif %}
+      {% if note.kind %}<p class="note">Kind: {% if note.kind == "TASK" %}Task{% else %}Homework{% endif %}</p>{% endif %}
       {% if note.note %}<p class="note">Note about the work: <q class="authored-text">{{ note.note }}</q></p>{% endif %}
+      {% if not (note.course or note.title or note.due_date or note.kind or note.note) %}<p class="note">No details are saved on the note.</p>{% endif %}
     {% endif %}
-    {% if typed and may_write is false and (note.assignment_id or note.archived) %}
+    {% if typed and may_write is false %}
       <h3 class="update-heading">Your unsaved details</h3>
       <p class="note">These details were not saved. Everything typed is here to copy.</p>
       {% with kept = form %}{% include "student_note_details_kept.html" %}{% endwith %}
@@ -128,9 +133,9 @@
           <fieldset class="choice" id="details-candidate" tabindex="-1" aria-describedby="{% if at == "candidate" %}details-problem {% endif %}details-candidate-hint">
             <legend>Homework with this class and title is already here</legend>
             {% for item in candidates %}
-              <label><input type="radio" name="candidate" value="{{ item.assignment_id }}"> <span>Same homework as <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>, {% if item.due_date %}due {{ on(item.due_date) }}{% else %}no due date recorded{% endif %}{% if item.status != "unknown" %}, reported status: {{ item.status|replace("_", " ") }}{% endif %}{% if item.source %}, from {{ item.source }}{% endif %}</span></label>
+              <label><input type="radio" name="candidate" value="{{ item.assignment_id }}"{% if chosen == item.assignment_id %} checked{% endif %}> <span>Same homework as <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>, {% if item.due_date %}due {{ on(item.due_date) }}{% else %}no due date recorded{% endif %}{% if item.status != "unknown" %}, reported status: {{ item.status|replace("_", " ") }}{% endif %}{% if item.source %}, from {{ item.source }}{% endif %}</span></label>
             {% endfor %}
-            <label><input type="radio" name="candidate" value="{{ separate }}"> <span>Keep as a separate assignment</span></label>
+            <label><input type="radio" name="candidate" value="{{ separate }}"{% if chosen == separate %} checked{% endif %}> <span>Keep as a separate assignment</span></label>
           </fieldset>
           <p class="note" id="details-candidate-hint">Same homework joins this note to that assignment and changes nothing on it: not its title, its date, its status, or its note. A different due date given here is kept as one more source for the date. Save details does not need this choice.</p>
         {% endif %}

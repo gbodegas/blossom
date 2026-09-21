@@ -1,20 +1,28 @@
 {#
-  What was typed into a note's details, shown to copy on the page that reads
-  no store, where the form itself cannot be. Every readable field is here,
-  escaped and read only: the class chosen or typed, the title, the day when it
-  read, the words of a day that did not, and the note about the work. ``kept``
-  is the form as it was sent. Nothing here is what is stored, and nothing here
-  saves anything.
+  What was typed and chosen for a note's details, shown to copy wherever the
+  form itself cannot be: on the page that reads no store, on a note that was
+  put away or added to homework in the meantime, and to the one who may not
+  write here. Every readable value is here, escaped and read only: the class
+  chosen from the list, a class typed beside it, the title, the day when it
+  read, the words of a day that did not, the kind, the note about the work,
+  and the choice about homework already on record. ``kept`` is the form as it
+  was sent. Nothing here is what is stored, and nothing here saves anything.
 #}
-{% set chosen = kept.course_other if kept.course_choice == "__another__" else kept.course_choice %}
-{% if chosen %}<p class="note">Class, as given: <span class="authored-text">{{ chosen }}</span></p>{% endif %}
+{% if kept.course_choice and kept.course_choice != "__another__" %}<p class="note">Class, as chosen: <span class="authored-text">{{ kept.course_choice }}</span></p>{% endif %}
+{% if kept.course_other %}<p class="note">Class, as typed: <span class="authored-text">{{ kept.course_other }}</span></p>{% endif %}
 {% if kept.title %}
   <label for="kept-details-title">Title, as typed</label>
   <input type="text" id="kept-details-title" value="{{ kept.title }}" readonly>
 {% endif %}
 {% if kept.due_date %}<p class="note">Due date, as given: <span class="authored-text">{{ kept.due_date }}</span></p>{% endif %}
 {% if kept.date_refused %}<p class="note">Due date, as typed: <q class="authored-text">{{ kept.date_refused }}</q>, which is not a date Blossom can read.</p>{% endif %}
+{% if kept.kind in ("HOMEWORK", "TASK") %}<p class="note">Kind, as chosen: {% if kept.kind == "TASK" %}Task{% else %}Homework{% endif %}</p>{% endif %}
 {% if kept.note %}
   <label for="kept-details-note">Note about the work, as typed</label>
   <textarea id="kept-details-note" rows="3" readonly>{{ kept.note }}</textarea>
+{% endif %}
+{% if kept.candidate == "separate" %}
+  <p class="note">Choice, as made: keep it as a separate assignment.</p>
+{% elif kept.candidate %}
+  <p class="note">Choice, as made: the same homework as one already here.</p>
 {% endif %}

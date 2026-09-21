@@ -57,6 +57,8 @@ from blossom.dependencies import ApplicationState
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel
 from blossom.routes.captures import (
     NOTE_CHANGED,
+    NOTE_GONE,
+    NOTE_UNREADABLE,
     gone,
     reads_as_a_day,
     revision_of,
@@ -177,6 +179,8 @@ class DetailsForm:
     note: str = ""
     date_refused: str | None = None
     date_pending: bool = False
+    candidate: str = ""
+    """The choice among homework already on record, as sent: one of them, or separate."""
     problem: str | None = None
     field: str | None = None
     unsaved: bool = False
@@ -214,12 +218,31 @@ def choice_is_as_written(fields: dict[str, str]) -> bool:
     )
 
 
-def form_of(fields: dict[str, str], capture_id: str, revision: int | None) -> DetailsForm:
+@dataclass(frozen=True)
+class PreparedDetails:
+    """A form as it will be shown again whatever is then refused, with the day it carried
+    settled: the day when it reads, and what to say about it when it does not."""
+
+    form: DetailsForm
+    day: date | None = None
+    about_the_day: str | None = None
+
+
+def prepared(fields: dict[str, str], capture_id: str, revision: int | None) -> PreparedDetails:
     """The form as it was sent, every readable value kept, made before anything is refused
-    so that every refusal shows the same thing."""
+    so that every refusal, of the whole form and of who pressed included, shows the same
+    thing: the class chosen and typed, the title, the day, the kind, the note, and the choice.
+
+    The day is settled here, apart from which problem is then said. A day
+    that reads is kept in the one spelling a date control holds and clears
+    the mark. One that does not is said back and marks the form, and a
+    marked form with no day needs the tick that leaves the due date out; a
+    blank is never read as that. The tick counts only in the save it was
+    ticked for, so a form that comes back is never ticked.
+    """
     marked = "date_pending" in fields or "date_refused" in fields
     carried = fields.get("date_refused", "")
-    return DetailsForm(
+    form = DetailsForm(
         capture_id=capture_id,
         revision=revision,
         course_choice=fields.get("course_choice", ""),
@@ -227,13 +250,37 @@ def form_of(fields: dict[str, str], capture_id: str, revision: int | None) -> De
         title=fields.get("title", ""),
         kind=fields.get("kind", ""),
         note=fields.get("note", ""),
+        # Shown again only as a page wrote them; forged words are not tidied into view.
         date_refused=(
             carried
             if carried and shown_day(carried) == carried and not reads_as_a_day(carried)
             else None
         ),
         date_pending=marked,
+        candidate=fields.get("candidate", "") if choice_is_as_written(fields) else "",
     )
+    without = marked and fields.get("without_date") == "1"
+    raw = fields.get("due_date", "").strip()
+    if raw:
+        try:
+            day = date.fromisoformat(raw)
+        except ValueError:
+            shown = shown_day(raw)
+            refused = replace(
+                form,
+                due_date="",
+                date_refused=None if shown is None or reads_as_a_day(shown) else shown,
+                date_pending=True,
+            )
+            return PreparedDetails(refused, None, None if without else DATE_UNREADABLE)
+        if without:
+            return PreparedDetails(replace(form, due_date=day.isoformat()))
+        return PreparedDetails(
+            replace(form, due_date=day.isoformat(), date_refused=None, date_pending=False), day
+        )
+    if marked and not without:
+        return PreparedDetails(form, None, DATE_NEEDS_A_CHOICE)
+    return PreparedDetails(form)
 
 
 def form_for(note: Capture, courses: list[str]) -> DetailsForm:
@@ -267,12 +314,13 @@ def refused_text(refusal: TextRefused, too_long: str) -> str:
 
 
 def read_details(
-    form: DetailsForm, fields: dict[str, str], courses: list[str], *, to_add: bool
+    ready: PreparedDetails, courses: list[str], *, to_add: bool
 ) -> tuple[DetailsForm, CaptureDetails | None]:
     """Hold what was sent to the rules, one problem at a time in the order of the page, and
-    give the details when there is none. The day is settled first so the form that goes back
-    always holds it. Adding to homework needs a class and a title; saving details does not."""
-    form, day, about_the_day = with_the_day(form, fields)
+    give the details when there is none. The form that goes back is the prepared one, so it
+    holds the day whichever field is refused. Adding to homework needs a class and a title;
+    saving details does not."""
+    form = ready.form
 
     def problem(text: str, field: str) -> tuple[DetailsForm, None]:
         return replace(form, problem=text, field=field), None
@@ -301,8 +349,8 @@ def read_details(
         return problem(refused_text(refusal, LONG_TITLE), "title")
     if title is None and to_add:
         return problem(NEEDS_A_TITLE, "title")
-    if about_the_day is not None:
-        return problem(about_the_day, "due_date")
+    if ready.about_the_day is not None:
+        return problem(ready.about_the_day, "due_date")
     if form.kind not in KINDS:
         return problem(NOT_A_KIND, "kind")
     try:
@@ -312,43 +360,10 @@ def read_details(
     return form, CaptureDetails(
         course=course,
         title=title,
-        due_date=day,
+        due_date=ready.day,
         kind=form.kind,  # type: ignore[arg-type]
         note=about,
     )
-
-
-def with_the_day(
-    form: DetailsForm, fields: dict[str, str]
-) -> tuple[DetailsForm, date | None, str | None]:
-    """The form with the day settled on it, the day when it reads, and what to say when it
-    does not. A day that reads is kept in the one spelling a date control holds and clears
-    the mark. One that does not is said back and marks the form, and a marked form with no
-    day needs the tick that leaves the due date out; a blank is never read as that."""
-    raw = fields.get("due_date", "").strip()
-    without = form.date_pending and fields.get("without_date") == "1"
-    if raw:
-        try:
-            day = date.fromisoformat(raw)
-        except ValueError:
-            shown = shown_day(raw)
-            marked = replace(
-                form,
-                due_date="",
-                date_refused=None if shown is None or reads_as_a_day(shown) else shown,
-                date_pending=True,
-            )
-            return marked, None, None if without else DATE_UNREADABLE
-        if without:
-            return replace(form, due_date=day.isoformat()), None, None
-        return (
-            replace(form, due_date=day.isoformat(), date_refused=None, date_pending=False),
-            day,
-            None,
-        )
-    if form.date_pending and not without:
-        return form, None, DATE_NEEDS_A_CHOICE
-    return form, None, None
 
 
 # ------------------------------------------------------------------ the page
@@ -390,6 +405,40 @@ def candidate_view(item: Assignment, *, family: bool) -> CandidateView:
     )
 
 
+def plain_details(
+    request: Request,
+    state: ApplicationState,
+    form: DetailsForm,
+    problem: str,
+    status_code: int,
+    *,
+    back_to_the_note: bool = True,
+) -> HTMLResponse:
+    """The page for a refused press whenever the page with the form cannot be made: the note
+    cannot be read, it is not on record, or the file cannot be read. It reads no store, tries
+    nothing again, and keeps every detail that was typed or chosen, to copy."""
+    return templates.TemplateResponse(
+        request,
+        "student_update_recovery.html",
+        {
+            "card": None,
+            "hand_in_card": None,
+            "note_problem": problem,
+            "details_form": form,
+            "help_note": form.capture_id if back_to_the_note else None,
+            "ways_back": ways_back(),
+            "sample": state.settings.sample,
+        },
+        status_code=status_code,
+    )
+
+
+def standing_in(status_code: int, otherwise: int) -> int:
+    """The status of the page that reads no store: the refusal's own, which it stands in for,
+    and for a page that had none, what became of the note."""
+    return status_code if status_code != status.HTTP_200_OK else otherwise
+
+
 def details_page(
     request: Request,
     state: ApplicationState,
@@ -404,14 +453,39 @@ def details_page(
     """The page with her words, the details, and the two buttons. The note is read as its own
     page reads it, its line of changes included, and the homework on record once: for the
     list of classes, and for the homework of the class and title the form gives, whose
-    fingerprint the form carries back."""
+    fingerprint the form carries back.
+
+    When the page is the answer to a refused press, ``form`` holds what was
+    typed, and a note that cannot be shown does not take that with it: the
+    answer is then the page that reads no store, with every detail kept. It
+    says what became of the note, except to the one who may not write here,
+    who is told that.
+    """
     store = state.project_state
+    turned_away = status_code == status.HTTP_403_FORBIDDEN
     try:
         found = store.sound_capture_history(capture_id)
     except UnreadableCapture:
-        return unreadable(request, state, status_code)
+        if form is None:
+            return unreadable(request, state, status_code)
+        return plain_details(
+            request,
+            state,
+            form,
+            problem if turned_away and problem else NOTE_UNREADABLE,
+            standing_in(status_code, status.HTTP_500_INTERNAL_SERVER_ERROR),
+        )
     if found is None:
-        return gone(request, state)
+        if form is None:
+            return gone(request, state)
+        return plain_details(
+            request,
+            state,
+            form,
+            problem if turned_away and problem else NOTE_GONE,
+            standing_in(status_code, status.HTTP_404_NOT_FOUND),
+            back_to_the_note=False,
+        )
     note = found[0]
     assignments = store.all_assignments()
     courses = courses_of(assignments)
@@ -427,6 +501,7 @@ def details_page(
         # A class or a title the rules will not keep names no homework; the form says so.
         candidates = []
     viewer = viewer_of(request)
+    offered = {item.assignment_id for item in candidates}
     return templates.TemplateResponse(
         request,
         "student_note_details.html",
@@ -440,6 +515,15 @@ def details_page(
             "candidates": [candidate_view(item, family=way.family) for item in candidates],
             "basis": candidate_basis(candidates),
             "choosing": choosing,
+            # A choice made is kept through a refusal about something else, while it is
+            # still one of the choices shown. A choice put again is made again.
+            "chosen": (
+                shown.candidate
+                if not choosing
+                and candidates
+                and (shown.candidate == SEPARATE or shown.candidate in offered)
+                else ""
+            ),
             "family": way.family,
             "may_write": way.open_to(viewer) and note.outstanding,
             "typed": form is not None,
@@ -481,20 +565,59 @@ def details_or_plain(
         )
     except Exception:
         logger.exception("a note's details page could not be read back after a refusal")
-        return templates.TemplateResponse(
+        return plain_details(request, state, form, problem, status_code)
+
+
+def classes_on_record(state: ApplicationState) -> list[str] | None:
+    """The classes a form's choice is held to, or ``None`` when the file cannot be read, which
+    a press answers as a save that did not happen, with what was typed kept."""
+    try:
+        return courses_of(state.project_state.all_assignments())
+    except Exception:
+        logger.exception("the classes on record could not be read for a note's details")
+        return None
+
+
+def on_arrival(
+    request: Request,
+    state: ApplicationState,
+    way: Way,
+    ready: PreparedDetails,
+    fields: dict[str, str],
+    *,
+    whole: bool,
+) -> HTMLResponse | int:
+    """The revision a press goes on from, or the answer to one that is refused before anything
+    it typed is weighed: by who pressed, or because the form is not one these pages make.
+    Either refusal keeps what was typed."""
+    form = ready.form
+    if not way.open_to(viewer_of(request)):
+        return details_or_plain(
             request,
-            "student_update_recovery.html",
-            {
-                "card": None,
-                "hand_in_card": None,
-                "note_problem": problem,
-                "details_form": form,
-                "help_note": capture_id,
-                "ways_back": ways_back(),
-                "sample": state.settings.sample,
-            },
-            status_code=status_code,
+            state,
+            form.capture_id,
+            way,
+            form,
+            NOT_HERS_TO_UPDATE,
+            status.HTTP_403_FORBIDDEN,
         )
+    if (
+        not whole
+        or form.revision is None
+        or not choice_is_as_written(fields)
+        or not details_date_controls_are_valid(fields)
+    ):
+        # A revision these pages did not write is part of a form they did not make.
+        return details_or_plain(
+            request,
+            state,
+            form.capture_id,
+            way,
+            form,
+            BAD_FORM,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    return form.revision
 
 
 def open_details(
@@ -521,29 +644,16 @@ async def save_details(
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    viewer = viewer_of(request)
-    revision = revision_of(fields)
-    form = form_of(fields, name, revision)
-    if not way.open_to(viewer):
-        return details_page(
-            request,
-            state,
-            name,
-            way,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
+    ready = prepared(fields, name, revision_of(fields))
+    revision = on_arrival(request, state, way, ready, fields, whole=whole)
+    if not isinstance(revision, int):
+        return revision
+    courses = classes_on_record(state)
+    if courses is None:
+        return plain_details(
+            request, state, ready.form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-    if (
-        not whole
-        or revision is None
-        or not choice_is_as_written(fields)
-        or not details_date_controls_are_valid(fields)
-    ):
-        return details_or_plain(
-            request, state, name, way, form, BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
-        )
-    courses = courses_of(state.project_state.all_assignments())
-    form, details = read_details(form, fields, courses, to_add=False)
+    form, details = read_details(ready, courses, to_add=False)
     if details is None:
         return details_or_plain(
             request,
@@ -561,7 +671,7 @@ async def save_details(
                 name,
                 details,
                 expected_revision=revision,
-                authored_by=actor(viewer),
+                authored_by=actor(viewer_of(request)),
                 channel=way.channel,
                 now=now,
                 today=today,
@@ -608,31 +718,16 @@ async def add_to_homework(
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    viewer = viewer_of(request)
-    revision = revision_of(fields)
-    form = form_of(fields, name, revision)
-    if not way.open_to(viewer):
-        return details_page(
-            request,
-            state,
-            name,
-            way,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
+    ready = prepared(fields, name, revision_of(fields))
+    revision = on_arrival(request, state, way, ready, fields, whole=whole)
+    if not isinstance(revision, int):
+        return revision
+    courses = classes_on_record(state)
+    if courses is None:
+        return plain_details(
+            request, state, ready.form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-    basis = fields.get("basis", "")
-    chosen = fields.get("candidate")
-    if (
-        not whole
-        or revision is None
-        or not choice_is_as_written(fields)
-        or not details_date_controls_are_valid(fields)
-    ):
-        return details_or_plain(
-            request, state, name, way, form, BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
-        )
-    courses = courses_of(state.project_state.all_assignments())
-    form, details = read_details(form, fields, courses, to_add=True)
+    form, details = read_details(ready, courses, to_add=True)
     if details is None:
         return details_or_plain(
             request,
@@ -643,6 +738,8 @@ async def add_to_homework(
             form.problem or BAD_FORM,
             status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
+    basis = fields.get("basis", "")
+    chosen = fields.get("candidate")
     choice: PromotionChoice = (
         "new" if chosen is None else ("separate" if chosen == SEPARATE else "same")
     )
@@ -656,7 +753,7 @@ async def add_to_homework(
                 basis=basis,
                 choice=choice,
                 target=chosen if choice == "same" else None,
-                authored_by=actor(viewer),
+                authored_by=actor(viewer_of(request)),
                 channel=way.channel,
                 now=now,
                 today=today,

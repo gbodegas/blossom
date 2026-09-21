@@ -18,7 +18,13 @@ from markupsafe import escape
 
 from blossom import intake
 from blossom.app import create_app
-from blossom.captures import HOUSEHOLD, PARENT, STUDENT, derived_assignment_id
+from blossom.captures import (
+    HOUSEHOLD,
+    PARENT,
+    STUDENT,
+    derived_assignment_id,
+    new_capture_id,
+)
 from blossom.reconciliation import SourceChannel
 from blossom.routes.captures import (
     ADDED_TO_HOMEWORK,
@@ -27,6 +33,8 @@ from blossom.routes.captures import (
     JOINED_TO_HOMEWORK,
     NOTE_ALREADY_SAVED,
     NOTE_CHANGED,
+    NOTE_GONE,
+    NOTE_UNREADABLE,
     OUT_OF_THE_WINDOW,
 )
 from blossom.routes.navigation import (
@@ -215,6 +223,38 @@ def test_the_same_details_again_are_already_saved_and_write_nothing() -> None:
     assert after == once
 
 
+@pytest.mark.parametrize("button", ["add", "details"])
+@pytest.mark.parametrize("readable", [True, False])
+def test_a_press_through_the_other_persons_tree_writes_nothing_and_keeps_what_was_typed(
+    readable: bool, button: str, tmp_path: pathlib.Path
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        her_form = opened(client, name)
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        form = {
+            **her_form,
+            **typed(title="Typed <i>by a parent</i>", due_date="2026-08-21", kind="TASK"),
+        }
+        if not readable:
+            damaged(client, name)
+        before = rows(client)
+        send = add if button == "add" else save_details
+        answer = send(client, name, form)
+        after = rows(client)
+
+    assert answer.status_code == 403
+    assert answer.text.count(" autofocus") == 1
+    assert escape(NOT_HERS_TO_UPDATE) in answer.text
+    for kept in ("Typed &lt;i&gt;by a parent&lt;/i&gt;", "2026-08-21", "Kind, as chosen: Task"):
+        assert kept in answer.text, kept
+    assert ">Add to homework</button>" not in answer.text
+    assert after == before
+
+
 def test_a_parent_adds_a_detail_through_the_familys_tree_and_it_says_so(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -381,23 +421,30 @@ def test_the_date_fields_of_this_form_are_valid_only_as_a_page_renders_them() ->
         assert not details_date_controls_are_valid(never), never
 
 
-@pytest.mark.parametrize("fault", ["unknown", "twice", "revision"])
+@pytest.mark.parametrize("button", ["add", "details"])
+@pytest.mark.parametrize("fault", ["unknown", "twice", "revision", "basis"])
 def test_a_form_these_pages_did_not_make_writes_nothing_and_keeps_what_she_typed(
-    fault: str,
+    fault: str, button: str
 ) -> None:
     with browser() as client:
         name = save_note(client)
         before = rows(client)
-        form = {**opened(client, name), **typed(title="Kept title")}
+        form = {
+            **opened(client, name),
+            **typed(title="Kept title", due_date="2026-08-21", kind="TASK", note="Kept note"),
+        }
         pairs = list(form.items())
         if fault == "unknown":
             pairs.append(("role", "parent"))
         elif fault == "twice":
             pairs.append(("title", "another"))
+        elif fault == "basis":
+            pairs = [(key, "no-digest" if key == "basis" else value) for key, value in pairs]
         else:
             pairs = [(key, "0" if key == "revision" else value) for key, value in pairs]
+        action = note_add_action(name) if button == "add" else note_details_action(name)
         answer = client.post(
-            note_add_action(name),
+            action,
             content="&".join(f"{key}={value}".replace(" ", "+") for key, value in pairs),
             headers={**PAGE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -405,8 +452,80 @@ def test_a_form_these_pages_did_not_make_writes_nothing_and_keeps_what_she_typed
 
     assert answer.status_code == 422
     assert escape(BAD_FORM) in answer.text
-    assert whole_form(answer.text, note_add_action(name))["title"] == "Kept title"
+    kept = whole_form(answer.text, note_add_action(name))
+    assert (kept["title"], kept["due_date"], kept["kind"], kept["note"]) == (
+        "Kept title",
+        "2026-08-21",
+        "TASK",
+        "Kept note",
+    )
+    assert (kept["course_choice"], kept["course_other"]) == (OTHER, "Geometry")
     assert after == before
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+@pytest.mark.parametrize("spelled", ["2026-08-25", "20260825", "2026-W35-2"])
+def test_the_form_a_refusal_returns_saves_the_day_that_was_picked(
+    spelled: str, button: str
+) -> None:
+    """The second request is the returned page's own form, with nothing typed again."""
+    with browser() as client:
+        store = state_of(client).project_state
+        name = save_note(client)
+        send = add if button == "add" else save_details
+        sent = {**opened(client, name), **typed(due_date=spelled), "role": "parent"}
+        refused = send(client, name, sent)
+        returned = whole_form(refused.text, note_add_action(name))
+        saved = send(client, name, returned)
+        note = store.capture(name)
+
+    assert refused.status_code == 422
+    assert returned["due_date"] == "2026-08-25"
+    assert "role" not in returned
+    assert saved.status_code == 303
+    assert note is not None
+    assert note.due_date == date(2026, 8, 25)
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+def test_leaving_the_day_out_counts_only_in_the_save_it_was_ticked_for(button: str) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = save_note(client)
+        send = add if button == "add" else save_details
+        refused = send(client, name, {**opened(client, name), **typed(due_date="after my lesson")})
+        marked = whole_form(refused.text, note_add_action(name))
+        other = send(client, name, {**marked, "without_date": "1", "note": "n" * 501})
+        carried = whole_form(other.text, note_add_action(name))
+        unticked = send(client, name, {**carried, "note": "A note that fits"})
+        asked = whole_form(unticked.text, note_add_action(name))
+        saved = send(client, name, {**asked, "without_date": "1"})
+        note = store.capture(name)
+
+    assert (refused.status_code, other.status_code, unticked.status_code) == (422, 422, 422)
+    assert carried["date_refused"] == "after my lesson"
+    assert "without_date" not in carried
+    assert "after my lesson" in unticked.text
+    assert saved.status_code == 303
+    assert note is not None
+    assert note.due_date is None
+
+
+def test_a_form_refused_whole_says_back_a_day_it_could_not_read() -> None:
+    with browser() as client:
+        name = save_note(client)
+        form = {**opened(client, name), **typed(due_date="next friday"), "role": "parent"}
+        answer = add(client, name, form)
+        kept = whole_form(answer.text, note_add_action(name))
+
+    assert answer.status_code == 422
+    assert escape(BAD_FORM) in answer.text
+    assert "next friday" in answer.text
+    assert (kept["due_date"], kept["date_pending"], kept["date_refused"]) == (
+        "",
+        "1",
+        "next friday",
+    )
 
 
 # ------------------------------------------------------------------ homework already on record
@@ -442,6 +561,23 @@ def test_homework_of_that_class_and_title_is_a_choice_she_makes_and_same_changes
     assert len(afterwards[1]) == len(nothing[1]) + 1
     assert note is not None
     assert note.assignment_id == target.assignment_id
+
+
+def test_a_choice_is_kept_through_a_refusal_about_something_else_and_not_when_put_again() -> None:
+    with browser() as client:
+        shown = on_record(client, date(2026, 8, 28))
+        name = save_note(client)
+        form = {**opened(client, name), **typed(), "candidate": shown.assignment_id}
+        too_long = add(client, name, {**form, "note": "n" * 501})
+        kept = whole_form(too_long.text, note_add_action(name))
+        on_record(client, date(2026, 9, 4))
+        put_again = add(client, name, form)
+        asked = whole_form(put_again.text, note_add_action(name))
+
+    assert too_long.status_code == 422
+    assert kept["candidate"] == shown.assignment_id
+    assert put_again.status_code == 409
+    assert "candidate" not in asked
 
 
 def test_keep_separate_makes_the_notes_own_assignment_beside_the_one_on_record() -> None:
@@ -490,6 +626,25 @@ def test_a_page_that_is_behind_the_note_is_refused_with_what_she_typed() -> None
     assert "Your unsaved details" in answer.text
     saved_now = answer.text.index("Saved on the note now")
     assert saved_now < answer.text.index("Your unsaved details")
+
+
+def test_a_page_behind_a_change_of_kind_alone_is_shown_the_kind_that_stands() -> None:
+    with browser() as client:
+        name = save_note(client)
+        only_kind = {"course_choice": "", "course_other": "", "title": "", "kind": "TASK"}
+        stale = {**opened(client, name), **typed(kind="HOMEWORK")}
+        saved = save_details(client, name, {**opened(client, name), **typed(**only_kind)})
+        note = state_of(client).project_state.capture(name)
+        answer = add(client, name, stale)
+        shown = answer.text[: answer.text.index("Your unsaved details")]
+
+    assert saved.status_code == 303
+    assert note is not None
+    assert (note.course, note.title, note.kind) == (None, None, "TASK")
+    assert answer.status_code == 409
+    assert "Saved on the note now" in shown
+    assert "Kind: Task" in shown
+    assert whole_form(answer.text, note_add_action(name))["kind"] == "HOMEWORK"
 
 
 @pytest.mark.parametrize("sent", ["separate", "an-assignment-that-is-not-one-of-them"])
@@ -545,7 +700,12 @@ def test_with_the_file_unreadable_the_plain_page_keeps_every_detail_typed(
         name = save_note(client)
         form = {
             **opened(client, name),
-            **typed(title="Typed <i>title</i>", note="Typed <b>note</b>", due_date="2026-08-21"),
+            **typed(
+                title="Typed <i>title</i>",
+                note="Typed <b>note</b>",
+                due_date="2026-08-21",
+                kind="TASK",
+            ),
         }
         before = rows(client)
 
@@ -565,8 +725,197 @@ def test_with_the_file_unreadable_the_plain_page_keeps_every_detail_typed(
     for kept in ("Geometry", "Typed &lt;i&gt;title&lt;/i&gt;", "Typed &lt;b&gt;note&lt;/b&gt;"):
         assert kept in answer.text
     assert "2026-08-21" in answer.text
+    assert "Kind, as chosen: Task" in answer.text
     assert f'href="{note_href(name)}"' in answer.text
     assert after == before
+
+
+def damaged(client: TestClient, name: str) -> None:
+    """Make the note one that cannot be read: a flag that is neither 0 nor 1."""
+    connection = state_of(client).project_state._connection
+    connection.execute("UPDATE homework_captures SET archived = 2 WHERE capture_id = ?", (name,))
+    connection.commit()
+
+
+KEPT = ("Typed &lt;i&gt;title&lt;/i&gt;", "Typed &lt;b&gt;note&lt;/b&gt;", "2026-08-21", "Geometry")
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+@pytest.mark.parametrize("whole", [True, False])
+def test_a_refused_form_for_a_note_that_cannot_be_read_keeps_every_detail(
+    whole: bool, button: str
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        form = {
+            **opened(client, name),
+            **typed(
+                title="Typed <i>title</i>",
+                note="Typed <b>note</b>",
+                due_date="2026-08-21",
+                kind="TASK",
+            ),
+        }
+        if not whole:
+            form["role"] = "parent"
+        damaged(client, name)
+        before = rows(client)
+        send = add if button == "add" else save_details
+        answer = send(client, name, form)
+        after = rows(client)
+
+    assert answer.status_code == (500 if whole else 422)
+    assert answer.text.count(" autofocus") == 1
+    assert escape(NOTE_UNREADABLE) in answer.text
+    for kept in (*KEPT, "Kind, as chosen: Task"):
+        assert kept in answer.text, kept
+    assert after == before
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+@pytest.mark.parametrize("whole", [True, False])
+def test_a_refused_form_for_a_note_that_is_not_on_record_keeps_every_detail(
+    whole: bool, button: str
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        form = {
+            **opened(client, name),
+            **typed(
+                title="Typed <i>title</i>",
+                note="Typed <b>note</b>",
+                due_date="2026-08-21",
+                kind="TASK",
+            ),
+        }
+        if not whole:
+            form["role"] = "parent"
+        missing = new_capture_id()
+        before = rows(client)
+        send = add if button == "add" else save_details
+        answer = send(client, missing, form)
+        after = rows(client)
+
+    assert answer.status_code == (404 if whole else 422)
+    assert answer.text.count(" autofocus") == 1
+    assert escape(NOTE_GONE) in answer.text
+    for kept in (*KEPT, "Kind, as chosen: Task"):
+        assert kept in answer.text, kept
+    assert f'href="{note_href(missing)}"' not in answer.text
+    assert after == before
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+def test_with_the_classes_unreadable_a_refusal_still_keeps_every_detail(
+    button: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page that answers reads no store: with the first read refused, the record's
+    connection runs no statement at all for the whole request."""
+    with browser() as client:
+        store = state_of(client).project_state
+        name = save_note(client)
+        form = {**opened(client, name), **typed(title="Typed <i>title</i>", kind="TASK")}
+        before = rows(client)
+        statements: list[str] = []
+
+        def refuses(*args: object, **kwargs: object) -> None:
+            msg = "the file refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "all_assignments", refuses)
+        store._connection.set_trace_callback(statements.append)
+        send = add if button == "add" else save_details
+        answer = send(client, name, form)
+        store._connection.set_trace_callback(None)
+        monkeypatch.undo()
+        after = rows(client)
+
+    assert statements == []
+    assert answer.status_code == 500
+    assert answer.text.count(" autofocus") == 1
+    assert escape(NOT_SAVED) in answer.text
+    assert "Typed &lt;i&gt;title&lt;/i&gt;" in answer.text
+    assert "Kind, as chosen: Task" in answer.text
+    assert after == before
+
+
+LONG = "W" * 150
+AUTHORED = {
+    "title": f"<b>bold</b> & \N{SPARKLES} {LONG}",
+    "note": "First <i>line</i> \N{SPARKLES}" + chr(10) + "second & last line",
+    "course_other": "<u>Art</u> & design \N{ARTIST PALETTE}",
+}
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+def test_a_write_refused_and_a_page_unreadable_try_the_write_once_and_keep_what_was_authored(
+    button: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = save_note(client)
+        form = {**opened(client, name), **typed(**AUTHORED, due_date="2026-08-21", kind="TASK")}
+        before = rows(client)
+        tried: list[str] = []
+        reading = store.sound_capture_history
+
+        def refused_write(*args: object, **kwargs: object) -> None:
+            tried.append("write")
+            msg = "the file refused"
+            raise sqlite3.OperationalError(msg)
+
+        def reads_until_the_write(capture_id: str) -> object:
+            if tried:
+                msg = "the file refused"
+                raise sqlite3.OperationalError(msg)
+            return reading(capture_id)
+
+        monkeypatch.setattr(store, "_change_locked", refused_write)
+        monkeypatch.setattr(store, "sound_capture_history", reads_until_the_write)
+        send = add if button == "add" else save_details
+        answer = send(client, name, form)
+        monkeypatch.undo()
+        after = rows(client)
+
+    assert tried == ["write"]
+    assert answer.status_code == 500
+    assert answer.text.count(" autofocus") == 1
+    assert 'id="problem-summary"' in answer.text
+    assert escape(NOT_SAVED) in answer.text
+    assert str(escape(AUTHORED["title"])) in answer.text
+    assert str(escape(AUTHORED["course_other"])) in answer.text
+    kept_note = answer.text.split('id="kept-details-note"')[1].split("</textarea>")[0]
+    assert str(escape("First <i>line</i>")) in kept_note
+    assert chr(10) + "second &amp; last line" in kept_note
+    assert "Kind, as chosen: Task" in answer.text
+    assert "2026-08-21" in answer.text
+    assert "<b>bold</b>" not in answer.text
+    assert after == before
+
+
+def test_the_kept_details_show_a_class_typed_beside_a_class_chosen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        on_record(client, date(2026, 8, 28), title="Another title")
+        name = save_note(client)
+        form = {
+            **opened(client, name),
+            **typed(course_choice="Geometry", course_other="Typed <i>class</i>"),
+        }
+
+        def refuses(*args: object, **kwargs: object) -> None:
+            msg = "the file refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "sound_capture_history", refuses)
+        answer = add(client, name, form)
+        monkeypatch.undo()
+
+    assert answer.status_code == 422
+    assert "Class, as chosen: <span" in answer.text
+    assert "Typed &lt;i&gt;class&lt;/i&gt;" in answer.text
 
 
 def test_with_the_sign_in_off_the_familys_tree_records_a_family_entry_by_the_household() -> None:
