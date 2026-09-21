@@ -3,7 +3,6 @@ request for help that is about a note. What a note never does is here too: it re
 model, makes no plan stale, and costs a page no read per note.
 """
 
-import html
 import pathlib
 import re
 import sqlite3
@@ -46,6 +45,7 @@ from tests.support import (
     scripted_graphs,
     signed_in_household,
     state_of,
+    whole_form,
 )
 
 FAMILY = "/parent"
@@ -311,6 +311,25 @@ def test_a_request_read_without_a_page_still_says_the_note_it_is_about() -> None
         assert answer.json()["about_note"]["unavailable"] is False
 
 
+def test_a_question_that_is_too_long_links_to_its_field_and_the_field_points_back() -> None:
+    with browser() as client:
+        help_store = state_of(client).help_requests
+        name = save_note(client)
+        answer = ask_about(client, name, "q" * 501)
+        sent = help_store.open_requests()
+
+    alert = re.search(r'<p class="problem"[^>]*id="note-problem"[^>]*>.*?</p>', answer.text, re.S)
+    field = re.search(r'<input\b[^>]*id="help-question"[^>]*>', answer.text)
+    assert answer.status_code == 422
+    assert alert is not None
+    assert field is not None
+    assert '<a href="#help-question">' in alert.group()
+    assert answer.text.count(" autofocus") == 1
+    assert 'aria-invalid="true"' in field.group()
+    assert re.search(r'aria-describedby="note-problem help-question-hint"', field.group())
+    assert sent == []
+
+
 # --------------------------------------------------------- what a note never does
 
 
@@ -444,11 +463,7 @@ def test_a_request_the_file_refuses_is_said_with_her_question_kept_and_nothing_r
         state.project_state._connection.set_trace_callback(None)
         monkeypatch.undo()
         sent = state.help_requests.open_requests()
-        kept = re.search(r'name="note" value="([^"]*)"', answer.text)
-        assert kept is not None
-        again = client.post(
-            action, data={"note": html.unescape(kept.group(1))}, headers=PAGE_HEADERS
-        )
+        again = client.post(action, data=whole_form(answer.text, action), headers=PAGE_HEADERS)
         asked = state.help_requests.open_requests()
 
     assert answer.status_code == 500

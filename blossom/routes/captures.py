@@ -202,18 +202,68 @@ def refusal_for(refusal: TextRefused, *, course: bool) -> str:
     return UNKEPT_CHARACTER
 
 
-def checked(form: NoteForm, fields: dict[str, str]) -> tuple[NoteForm, date | None]:
-    """Hold what she typed to the rules, field by field, and read the day.
+@dataclass(frozen=True)
+class Prepared:
+    """A form as it will be shown again whatever is then refused, with the day it carried
+    settled: the day when it reads, and what to say about it when it does not."""
 
-    Returns the form with its problem set when there is one. The day is
-    read first, whatever else is wrong, so the form that goes back always
-    holds it: a day that reads stays in its control when her words are what
-    is refused, and a day that cannot be read is kept as she sent it and
-    marks the form, so the next save cannot drop it without her choosing to.
-    A form so marked that arrives with no day needs that choice. One problem
-    is said at a time: her words, then the class, then the day.
+    form: NoteForm
+    day: date | None = None
+    about_the_day: str | None = None
+
+
+def date_controls_are_valid(fields: dict[str, str]) -> bool:
+    """Whether the fields that steer the date carry only what these pages send: the button
+    pressed, or none for the Enter key; the mark as written; the refused words only with it.
+    A value that is near one of these is not one of these, and nothing is trimmed into it."""
+    return (
+        fields.get("choice") in (None, "save", WITHOUT_DATE)
+        and fields.get("date_pending") in (None, "1")
+        and ("date_refused" not in fields or fields.get("date_pending") == "1")
+    )
+
+
+def prepared(fields: dict[str, str], capture_id: str, revision: int | None = None) -> Prepared:
+    """The form as she sent it, every readable word kept, made before anything is refused
+    so that every refusal, of the whole form included, shows the same thing.
+
+    The day is settled here, apart from which problem is then said. A day
+    that reads is kept in the one spelling a native date control holds. A
+    day that does not is kept as she sent it and marks the form. A form that
+    arrives marked, by either of the two fields that say so and whatever
+    they hold, stays marked until a day that reads replaces the refused one:
+    her choice to save without it takes effect only in the save it is
+    pressed for, so it is never read out of a blank day after another error.
     """
-    form, day, about_the_day = with_the_day(form, fields)
+    marked = "date_pending" in fields or "date_refused" in fields
+    form = NoteForm(
+        capture_id=capture_id,
+        text=fields.get("text", ""),
+        course=fields.get("course", ""),
+        date_refused=shown_day(fields.get("date_refused", "")) if marked else None,
+        date_pending=marked,
+        revision=revision,
+    )
+    raw = fields.get("due_date", "").strip()
+    if raw:
+        try:
+            day = date.fromisoformat(raw)
+        except ValueError:
+            refused = replace(form, due_date="", date_refused=shown_day(raw), date_pending=True)
+            return Prepared(refused, None, NOTE_DATE_UNREADABLE)
+        return Prepared(
+            replace(form, due_date=day.isoformat(), date_refused=None, date_pending=False), day
+        )
+    if marked and fields.get("choice") != WITHOUT_DATE:
+        return Prepared(form, None, NOTE_NEEDS_A_DATE_CHOICE)
+    return Prepared(form)
+
+
+def checked(ready: Prepared) -> tuple[NoteForm, date | None]:
+    """Hold what she typed to the rules, field by field. One problem is said at a time: her
+    words, then the class, then the day. The form that goes back is the prepared one, so
+    it holds the day whichever of them is refused."""
+    form = ready.form
     try:
         if multiline(form.text, CAPTURE_TEXT_MAX_LENGTH) is None:
             return replace(form, problem=NOTE_NEEDS_WORDS, field="text"), None
@@ -223,27 +273,9 @@ def checked(form: NoteForm, fields: dict[str, str]) -> tuple[NoteForm, date | No
         single_line(form.course, CAPTURE_COURSE_MAX_LENGTH)
     except TextRefused as refusal:
         return replace(form, problem=refusal_for(refusal, course=True), field="course"), None
-    if about_the_day is not None:
-        return replace(form, problem=about_the_day, field="due_date"), None
-    return form, day
-
-
-def with_the_day(
-    form: NoteForm, fields: dict[str, str]
-) -> tuple[NoteForm, date | None, str | None]:
-    """The form with the day she sent settled on it, the day when it reads, and what to say
-    when it does not. A day that reads clears the mark and the refused words with it."""
-    raw = fields.get("due_date", "").strip()
-    if raw:
-        try:
-            day = date.fromisoformat(raw)
-        except ValueError:
-            marked = replace(form, due_date="", date_refused=shown_day(raw), date_pending=True)
-            return marked, None, NOTE_DATE_UNREADABLE
-        return replace(form, due_date=raw, date_refused=None, date_pending=False), day, None
-    if form.date_pending and fields.get("choice") != WITHOUT_DATE:
-        return form, None, NOTE_NEEDS_A_DATE_CHOICE
-    return replace(form, date_refused=None, date_pending=False), None, None
+    if ready.about_the_day is not None:
+        return replace(form, problem=ready.about_the_day, field="due_date"), None
+    return form, ready.day
 
 
 def shown_day(raw: str) -> str | None:
@@ -254,20 +286,6 @@ def shown_day(raw: str) -> str | None:
         return single_line(raw.strip()[:TOKEN_MAX_LENGTH], TOKEN_MAX_LENGTH)
     except TextRefused:
         return None
-
-
-def form_from(fields: dict[str, str], capture_id: str, revision: int | None = None) -> NoteForm:
-    """The form as she sent it, every readable word kept: the mark that a day was refused,
-    and with it the words of that day, so an answer about anything else still says them."""
-    pending = fields.get("date_pending") == "1"
-    return NoteForm(
-        capture_id=capture_id,
-        text=fields.get("text", ""),
-        course=fields.get("course", ""),
-        date_refused=shown_day(fields.get("date_refused", "")) if pending else None,
-        date_pending=pending,
-        revision=revision,
-    )
 
 
 def ways_back() -> list[ReturnLink]:
@@ -391,6 +409,10 @@ def note_page(
     viewer = viewer_of(request)
     mine = viewer != "parent"
     result = result_of(history, said, event) if mine else None
+    if form is not None and not form.revision:
+        # A form that named no revision these pages made comes back on the note as it
+        # stands, as her unsaved words: saving them again is her choice, from this page.
+        form = replace(form, revision=note.revision, unsaved=True)
     if mine and result is None and asked:
         request_made = state.help_requests.get(asked[:TOKEN_MAX_LENGTH])
         if request_made is not None and request_made.capture_id == note.capture_id:
@@ -533,10 +555,12 @@ def help_page(
     *,
     question: str = "",
     problem: str | None = None,
+    question_error: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """The page that offers the request, with the note as context and her question as she
-    typed it. Rendering it sends nothing."""
+    typed it. Rendering it sends nothing. ``question_error`` says the problem is about the
+    question itself, so the alert links to it and the field points back."""
     return templates.TemplateResponse(
         request,
         "student_note_help.html",
@@ -544,6 +568,7 @@ def help_page(
             "note": note,
             "question": question,
             "problem": problem,
+            "question_error": question_error,
             "viewer": viewer_of(request),
             "not_hers": NOT_HERS_TO_UPDATE,
             "note_max_length": NOTE_MAX_LENGTH,
@@ -571,7 +596,8 @@ async def save_a_new_note(request: Request, state: State) -> Response:
         name = capture_id_from(fields.get("capture_id", ""))
     except NotACaptureId:
         name, whole = new_capture_id(), False
-    form = form_from(fields, name)
+    ready = prepared(fields, name)
+    form = ready.form
     if viewer == "parent":
         return new_note_page(
             request,
@@ -579,14 +605,14 @@ async def save_a_new_note(request: Request, state: State) -> Response:
             replace(form, problem=NOT_HERS_TO_UPDATE),
             status_code=status.HTTP_403_FORBIDDEN,
         )
-    if not whole:
+    if not whole or not date_controls_are_valid(fields):
         return new_note_page(
             request,
             state,
             replace(form, problem=BAD_FORM),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    form, due = checked(form, fields)
+    form, due = checked(ready)
     if form.problem is not None:
         return new_note_page(
             request, state, form, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT
@@ -663,17 +689,18 @@ async def edit_a_note(request: Request, capture_id: str, state: State) -> Respon
             status_code=status.HTTP_403_FORBIDDEN,
         )
     revision = revision_of(fields)
-    form = form_from(fields, name, revision)
-    if not whole or revision is None:
+    ready = prepared(fields, name, revision)
+    form = ready.form
+    if not whole or revision is None or not date_controls_are_valid(fields):
         return note_page(
             request,
             state,
             name,
-            form=replace(form, revision=revision or 0),
+            form=form,
             problem=BAD_FORM,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    form, due = checked(form, fields)
+    form, due = checked(ready)
     if form.problem is not None:
         return note_page(
             request,
@@ -847,6 +874,7 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
             note,
             question=question,
             problem=QUESTION_TOO_LONG if whole else BAD_FORM,
+            question_error=whole,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     try:

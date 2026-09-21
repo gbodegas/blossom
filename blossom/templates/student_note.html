@@ -33,7 +33,7 @@
     <p class="note update-result" role="status" id="note-result" tabindex="-1">{{ result.said }}</p>
   {% endif %}
   {% if problem %}
-    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}</p>
+    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}{% if mine and form and not note.archived %}{% with field = form.field %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
   {% endif %}
   <section class="panel homework-note" id="{{ note_anchor(note.capture_id) }}">
     <h2 class="update-heading">{% if mine %}What you wrote{% else %}What she wrote{% endif %}</h2>

@@ -19,7 +19,7 @@
   <p class="return"><a href="/student/due-this-week">Back to my week</a></p>
   <h1>Add homework</h1>
   {% if form.problem %}
-    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ form.problem }}</p>
+    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ form.problem }}{% if viewer != "parent" %}{% with field = form.field %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
   {% endif %}
   {% if taken %}
     <section class="panel homework-note" aria-label="The note this form already saved">

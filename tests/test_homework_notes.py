@@ -11,6 +11,7 @@ import pathlib
 import re
 import sqlite3
 from datetime import date
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
@@ -63,6 +64,7 @@ from tests.support import (
     form_fields,
     signed_in_household,
     state_of,
+    whole_form,
 )
 
 WORDS = "Geometry questions 4-8, heard from a classmate"
@@ -356,6 +358,251 @@ def test_an_edit_keeps_the_day_it_refused_the_same_way() -> None:
     assert 'You wrote <q class="authored-text">friday</q>' in no_choice.text
     assert note is not None
     assert (note.revision, note.due_date) == (1, None)
+
+
+# ------------------------------------- the form that comes back from any refusal
+
+URLENCODED = {**PAGE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
+
+
+def opened_form(client: TestClient, surface: str) -> tuple[str, dict[str, str]]:
+    """The action and the whole form of a fresh new note, or of an edit of a saved one."""
+    if surface == "new":
+        return NOTE_ACTIONS, whole_form(client.get(NEW_NOTE_PAGE).text, NOTE_ACTIONS)
+    action = note_action(saved_note(client), "edit")
+    name = action.split("/")[-2]
+    return action, whole_form(client.get(note_href(name, edit="1")).text, action)
+
+
+def broken(fields: dict[str, str], fault: str) -> str:
+    """The form's body with one thing about it that these pages never send."""
+    pairs = list(fields.items())
+    if fault == "twice":
+        pairs.append(("text", "a second text"))
+    elif fault == "unknown":
+        pairs.append(("role", "parent"))
+    elif fault == "revision":
+        pairs = [(name, "two" if name == "revision" else value) for name, value in pairs]
+    return urlencode(pairs)
+
+
+@pytest.mark.parametrize(
+    ("surface", "fault"),
+    [
+        ("new", "twice"),
+        ("new", "unknown"),
+        ("edit", "twice"),
+        ("edit", "unknown"),
+        ("edit", "revision"),
+    ],
+)
+def test_a_form_that_is_not_whole_comes_back_holding_the_day_it_carried(
+    surface: str, fault: str
+) -> None:
+    """Nothing is written for it, and nothing of hers is lost to it: a day that reads is in
+    the control, a day that does not is said back with its mark, and what comes next is the
+    same as after any other refusal."""
+    with browser() as client:
+        store = state_of(client).project_state
+        action, fields = opened_form(client, surface)
+        fields.update(text="Keep these words", course="Math")
+        before = tables(store)
+
+        with_a_day = client.post(
+            action, content=broken({**fields, "due_date": "2026-08-25"}, fault), headers=URLENCODED
+        )
+        kept = whole_form(with_a_day.text, action)
+        unread = client.post(
+            action, content=broken({**fields, "due_date": "friday"}, fault), headers=URLENCODED
+        )
+        marked = whole_form(unread.text, action)
+        refused = tables(store)
+        no_choice = client.post(action, data=marked, headers=PAGE_HEADERS)
+        still_nothing = tables(store)
+        saved = client.post(action, data=kept, headers=PAGE_HEADERS)
+        name = kept.get("capture_id") or action.split("/")[-2]
+        note = store.capture(name)
+
+    for answer in (with_a_day, unread):
+        assert answer.status_code == 422
+        assert said_first(answer.text, BAD_FORM)
+    assert (kept["text"], kept["course"], kept["due_date"]) == (
+        "Keep these words",
+        "Math",
+        "2026-08-25",
+    )
+    assert "date_pending" not in kept
+    assert (marked["due_date"], marked["date_pending"], marked["date_refused"]) == (
+        "",
+        "1",
+        "friday",
+    )
+    assert 'You wrote <q class="authored-text">friday</q>' in unread.text
+    assert refused == before
+    assert no_choice.status_code == 422
+    assert said_first(no_choice.text, NOTE_NEEDS_A_DATE_CHOICE)
+    assert still_nothing == before
+    assert saved.status_code == 303
+    assert note is not None
+    assert (note.text, note.course, note.due_date) == (
+        "Keep these words",
+        "Math",
+        date(2026, 8, 25),
+    )
+
+
+@pytest.mark.parametrize("surface", ["new", "edit"])
+@pytest.mark.parametrize("written", ["20260825", "2026-W35-2"])
+def test_a_day_written_another_way_comes_back_as_the_date_control_writes_it(
+    surface: str, written: str
+) -> None:
+    """A day Python reads and a native date control cannot hold is kept in the one spelling
+    the control can, so another refusal cannot turn a day she gave into no day."""
+    with browser() as client:
+        store = state_of(client).project_state
+        action, fields = opened_form(client, surface)
+        long_words = "w" * (CAPTURE_TEXT_MAX_LENGTH + 1)
+        refused = client.post(
+            action,
+            data={**fields, "text": long_words, "course": "Math", "due_date": written},
+            headers=PAGE_HEADERS,
+        )
+        kept = whole_form(refused.text, action)
+        saved = client.post(action, data={**kept, "text": "Short words"}, headers=PAGE_HEADERS)
+        note = store.capture(kept.get("capture_id") or action.split("/")[-2])
+
+    assert refused.status_code == 422
+    assert said_first(refused.text, NOTE_TOO_LONG)
+    assert kept["due_date"] == "2026-08-25"
+    assert "date_pending" not in kept
+    assert saved.status_code == 303
+    assert note is not None
+    assert note.due_date == date(2026, 8, 25)
+
+
+@pytest.mark.parametrize("surface", ["new", "edit"])
+@pytest.mark.parametrize(
+    "controls",
+    [
+        {"choice": "other"},
+        {"choice": " save"},
+        {"date_pending": "no"},
+        {"date_pending": " 1 "},
+        {"date_refused": "friday"},
+        {"date_pending": "0", "date_refused": "friday"},
+    ],
+)
+def test_a_value_of_the_date_flow_these_pages_never_send_writes_nothing(
+    surface: str, controls: dict[str, str]
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        action, fields = opened_form(client, surface)
+        before = tables(store)
+        answer = client.post(
+            action,
+            data={**fields, "text": "Words <b>kept</b>", "course": "", "due_date": "", **controls},
+            headers=PAGE_HEADERS,
+        )
+        kept = whole_form(answer.text, action)
+        after = tables(store)
+
+    assert answer.status_code == 422
+    assert said_first(answer.text, BAD_FORM)
+    assert kept["text"] == "Words <b>kept</b>"
+    assert "<b>kept</b>" not in answer.text
+    assert after == before
+
+
+def test_a_refused_day_whose_mark_was_changed_writes_nothing_and_still_needs_her_choice() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        fields = new_form(client)
+        typed = {"text": WORDS, "course": "Geometry"}
+        refused = send(client, fields, **typed, due_date="friday")
+        marked = whole_form(refused.text, NOTE_ACTIONS)
+        changed = send(client, {**marked, "date_pending": "no"})
+        returned = whole_form(changed.text, NOTE_ACTIONS)
+        no_choice = send(client, returned)
+        written = tables(store)
+        omitted = send(client, returned, choice="without_date")
+
+    assert changed.status_code == 422
+    assert said_first(changed.text, BAD_FORM)
+    assert (returned["date_pending"], returned["date_refused"]) == ("1", "friday")
+    assert (returned["text"], returned["course"]) == (WORDS, "Geometry")
+    assert ">Save without the date</button>" in changed.text
+    assert no_choice.status_code == 422
+    assert said_first(no_choice.text, NOTE_NEEDS_A_DATE_CHOICE)
+    assert written == ([], [])
+    assert omitted.status_code == 303
+
+
+def test_saving_without_the_date_is_her_choice_for_the_save_it_was_pressed_for_only() -> None:
+    """Pressed together with words that are refused, the choice saved nothing, so the form
+    that comes back still carries the day and its mark, and a plain save still needs it."""
+    with browser() as client:
+        store = state_of(client).project_state
+        fields = new_form(client)
+        long_words = "w" * (CAPTURE_TEXT_MAX_LENGTH + 1)
+        refused = send(client, fields, text=WORDS, course="", due_date="friday")
+        marked = whole_form(refused.text, NOTE_ACTIONS)
+        too_long = send(client, {**marked, "text": long_words}, choice="without_date")
+        returned = whole_form(too_long.text, NOTE_ACTIONS)
+        plain = send(client, {**returned, "text": WORDS}, choice="save")
+        written = tables(store)
+        omitted = send(client, {**returned, "text": WORDS}, choice="without_date")
+        note = store.capture(fields["capture_id"])
+
+    assert too_long.status_code == 422
+    assert said_first(too_long.text, NOTE_TOO_LONG)
+    assert (returned["date_pending"], returned["date_refused"]) == ("1", "friday")
+    assert plain.status_code == 422
+    assert said_first(plain.text, NOTE_NEEDS_A_DATE_CHOICE)
+    assert written == ([], [])
+    assert omitted.status_code == 303
+    assert note is not None
+    assert note.due_date is None
+
+
+@pytest.mark.parametrize("surface", ["new", "edit"])
+@pytest.mark.parametrize(
+    ("typed", "target", "opens"),
+    [
+        ({"text": "w" * 501}, "note-text", False),
+        ({"course": "c" * 61}, "note-course", True),
+        ({"due_date": "friday"}, "note-due-date", True),
+    ],
+)
+def test_a_refusal_about_a_field_links_to_it_and_the_field_points_back(
+    surface: str, typed: dict[str, str], target: str, opens: bool
+) -> None:
+    with browser() as client:
+        action, fields = opened_form(client, surface)
+        answer = client.post(
+            action,
+            data={**fields, "text": WORDS, "course": "", "due_date": "", **typed},
+            headers=PAGE_HEADERS,
+        )
+        general = client.post(
+            action, data={**fields, "text": WORDS, "role": "parent"}, headers=PAGE_HEADERS
+        )
+
+    alert = re.search(r'<p class="problem"[^>]*id="note-problem"[^>]*>.*?</p>', answer.text, re.S)
+    assert alert is not None
+    assert answer.status_code == 422
+    assert alert.group().count("<a ") == 1
+    assert f'<a href="#{target}">' in alert.group()
+    assert 'tabindex="-1"' in alert.group()
+    assert answer.text.count(" autofocus") == 1
+    field = re.search(rf'<(?:textarea|input)\b[^>]*id="{target}"[^>]*>', answer.text)
+    assert field is not None
+    assert 'aria-invalid="true"' in field.group()
+    assert re.search(r'aria-describedby="[^"]*\bnote-problem\b', field.group())
+    assert bool(re.search(r"<details[^>]* open", answer.text)) is opens
+    whole = re.search(r'<p class="problem"[^>]*id="note-problem"[^>]*>.*?</p>', general.text, re.S)
+    assert whole is not None
+    assert "<a " not in whole.group()
 
 
 # ------------------------------------------------------- forms that are not whole

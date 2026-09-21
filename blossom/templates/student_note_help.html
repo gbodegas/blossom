@@ -12,7 +12,7 @@
   <p class="return"><a href="{{ note_href(note.capture_id) }}">Back to the note</a></p>
   <h1>Ask for help about this note</h1>
   {% if problem %}
-    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}</p>
+    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}{% if question_error and viewer != "parent" %}{% with field = "question" %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
   {% endif %}
   <section class="panel homework-note">
     <h2 class="update-heading">The note, as it stands now</h2>
@@ -23,7 +23,11 @@
     {% else %}
       <form method="post" action="{{ note_action(note.capture_id, "ask-for-help") }}" class="ask">
         <label for="help-question">What are you stuck on? (optional)</label>
-        <input id="help-question" type="text" name="note" value="{{ question }}" maxlength="{{ note_max_length }}" aria-describedby="help-question-hint">
+        <input id="help-question" type="text" name="note"
+               value="{{ question }}"
+               maxlength="{{ note_max_length }}"
+               aria-describedby="{% if question_error %}note-problem {% endif %}help-question-hint"
+               {% if question_error %}aria-invalid="true"{% endif %}>
         <p class="note" id="help-question-hint">Your parents see this question and can open the note. Nothing is sent until you press the button, and nothing goes to the school or to the planning model.</p>
         <div class="actions">
           <button type="submit" class="primary">Ask for help about this note</button>

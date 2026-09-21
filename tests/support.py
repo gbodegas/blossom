@@ -19,6 +19,7 @@ import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import unescape
+from html.parser import HTMLParser
 from typing import Annotated, Any, Protocol
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
@@ -649,6 +650,51 @@ def lands_on(page: str, address: str) -> str:
         for found in re.finditer(r'<\w+\b[^>]*?\sid="([^"]*)"[^>]*>', page)
     }
     return tags.get(fragment) or tags.get(unquote(fragment)) or ""
+
+
+class _FormReader(HTMLParser):
+    """Every form of a page with what each would send: inputs of every kind but the ones a
+    browser leaves out, and text areas, their values as a browser reads them."""
+
+    def __init__(self, page: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms: list[tuple[str, dict[str, str]]] = []
+        self._fields: dict[str, str] | None = None
+        self._area: str | None = None
+        self.feed(page)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        given = dict(attrs)
+        if tag == "form":
+            self._fields = {}
+            self.forms.append((given.get("action") or "", self._fields))
+        elif self._fields is None or not given.get("name") or "disabled" in given:
+            return
+        elif tag == "input" and (
+            given.get("type") not in ("radio", "checkbox", "submit") or "checked" in given
+        ):
+            self._fields[str(given["name"])] = given.get("value") or ""
+        elif tag == "textarea":
+            self._area = str(given["name"])
+            self._fields[self._area] = ""
+
+    def handle_data(self, data: str) -> None:
+        if self._area is not None and self._fields is not None:
+            self._fields[self._area] += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "textarea":
+            self._area = None
+        elif tag == "form":
+            self._fields = None
+
+
+def whole_form(html: str, action: str) -> dict[str, str]:
+    """Everything the one form with this action would send with no button pressed, hidden
+    and visible alike, read the way a browser reads the page."""
+    found = [fields for where, fields in _FormReader(html).forms if where == action]
+    assert len(found) == 1, (action, len(found))
+    return dict(found[0])
 
 
 def form_fields(html: str, action: str) -> dict[str, str]:
