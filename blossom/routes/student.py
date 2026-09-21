@@ -98,6 +98,8 @@ from blossom.reconciliation import (
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.navigation import (
     FAMILY_PAGE,
+    NEW_NOTE_PAGE,
+    NOTES_PAGE,
     TO_TURN_IN,
     TO_TURN_IN_PAGE,
     WEEK_PAGE,
@@ -121,6 +123,7 @@ from blossom.routes.runs import (
     run_plan,
 )
 from blossom.settings import CALENDAR_MARGIN
+from blossom.stores.captures import NamedCaptures
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
 from blossom.stores.project_state import (
@@ -155,6 +158,7 @@ from blossom.to_turn_in import (
 )
 from blossom.views import (
     HandInView,
+    HelpNoteView,
     HelpRequestView,
     NamedAssignmentView,
     SchoolStatementView,
@@ -374,9 +378,35 @@ class HelpRequestResponse(BaseModel):
     request: HelpRequestView
 
 
-def help_view(state: ApplicationState, request: HelpRequest) -> HelpRequestView:
-    """The request as both pages see it, with the time she asked in the household's zone."""
+def notes_named_by(state: ApplicationState, requests: list[HelpRequest]) -> NamedCaptures:
+    """The notes these requests are about, in one statement for all of them, and in none
+    when no request is about a note.
+
+    The notes are context for a request and never the answer itself, and an
+    accept or a resolve is already written when they are read. So a read of
+    them that fails is logged and answered as no notes read, which shows each
+    such note as unavailable, and never fails what it is context for.
+    """
+    try:
+        return state.project_state.captures_named(
+            request.capture_id for request in requests if request.capture_id
+        )
+    except Exception:
+        logger.exception("the homework notes her requests are about could not be read")
+        return NamedCaptures({}, [])
+
+
+def help_view(
+    state: ApplicationState, request: HelpRequest, named: NamedCaptures
+) -> HelpRequestView:
+    """The request as both pages see it, with the time she asked in the household's zone and
+    the note it is about out of ``named``, the notes read for the requests being shown."""
     return HelpRequestView(
+        about_note=HelpNoteView.about(
+            request.capture_id,
+            named.notes,
+            unreadable_reference=request.capture_reference_unreadable,
+        ),
         request_id=request.request_id,
         evening=request.evening,
         asked_at=request.asked_at,
@@ -389,15 +419,23 @@ def help_view(state: ApplicationState, request: HelpRequest) -> HelpRequestView:
     )
 
 
-def help_requests_shown(state: ApplicationState) -> list[HelpRequestView]:
-    """What she sees: open requests oldest first, then those resolved within two weeks."""
-    return [
-        help_view(state, request)
-        for request in [
-            *state.help_requests.open_requests(),
-            *state.help_requests.recently_resolved(),
-        ]
-    ]
+def help_requests_held(state: ApplicationState) -> list[HelpRequest]:
+    """Open requests oldest first, then those resolved within two weeks, as the store holds
+    them, so a page can name the notes they are about to its one reading."""
+    return [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
+
+
+def help_requests_shown(
+    state: ApplicationState,
+    held: list[HelpRequest] | None = None,
+    named: NamedCaptures | None = None,
+) -> list[HelpRequestView]:
+    """What she sees: open requests oldest first, then those resolved within two weeks. A
+    caller that read the notes they name with its own reading passes them; otherwise they
+    are read here, once for all of them."""
+    requests = help_requests_held(state) if held is None else held
+    about = notes_named_by(state, requests) if named is None else named
+    return [help_view(state, request, about) for request in requests]
 
 
 @router.post("/help-requests", status_code=status.HTTP_201_CREATED)
@@ -407,7 +445,10 @@ def ask_for_help(
     """Ask for help today. ``payload`` is optional so an empty POST works."""
     note = None if payload is None else payload.note
     request = state.help_requests.ask(state.clock.today(), note)
-    return HelpRequestResponse(principal=Principal.STUDENT, request=help_view(state, request))
+    return HelpRequestResponse(
+        principal=Principal.STUDENT,
+        request=help_view(state, request, notes_named_by(state, [request])),
+    )
 
 
 @router.get("/help-requests")
@@ -781,6 +822,7 @@ def build_student_due_this_week_view(
     plan: StudentPlanView | None | Unread = UNREAD,
     today: date | None = None,
     everything: Everything | None = None,
+    help_requests: list[HelpRequestView] | None = None,
 ) -> StudentDueThisWeekView:
     """Assemble the student's weekly view from the stores ``ApplicationState``
     opened at startup; nothing is opened or seeded per request. ``week`` is any
@@ -862,7 +904,7 @@ def build_student_due_this_week_view(
         can_plan=model_configured(state.settings),
         too_much=signal_view(state, tonight[-1]) if tonight else None,
         signals=[signal_view(state, signal) for signal in state.workload_signals.held()],
-        help_requests=help_requests_shown(state),
+        help_requests=help_requests_shown(state) if help_requests is None else help_requests,
         viewer=viewer,
         can_update=viewer != "parent",
         nothing_to_plan=not window.active(),
@@ -1001,11 +1043,18 @@ def student_page(
     # The assignment an address says a press was about is named to the reading too, so a
     # result is checked against that assignment's own events even when it is off the record.
     about = () if turning_in is None or turning_in.asked is None else (turning_in.asked.about,)
-    everything = read_everything(
-        state.project_state,
-        state.project_state,
-        also=(*(() if record is None else record.plan_assignment_ids or ()), *about),
-    )
+    # Her homework notes are read beside the record, in the same snapshot, and are no part
+    # of it: nothing a plan, a digest, or a brief is made from ever holds one. The notes
+    # her requests for help are about come in one more statement, however many there are.
+    held = help_requests_held(state)
+    with state.project_state.reading():
+        everything = read_everything(
+            state.project_state,
+            state.project_state,
+            also=(*(() if record is None else record.plan_assignment_ids or ()), *about),
+        )
+        notes = state.project_state.outstanding_captures()
+        named = notes_named_by(state, held)
     todays = (
         None
         if record is None
@@ -1026,6 +1075,7 @@ def student_page(
         plan=None if todays is None else todays.view,
         today=today,
         everything=everything,
+        help_requests=help_requests_shown(state, held, named),
     )
     about_a_card = card is not None and card.problem is not None and problem is None
     listed = [*view.assignments, *view.assigned_this_week, *([view.apart] if view.apart else [])]
@@ -1046,6 +1096,10 @@ def student_page(
             "hand_in_routes": hand_in_actions,
             "compact_rows": COMPACT_ROWS,
             "to_turn_in_page": TO_TURN_IN_PAGE,
+            "homework_notes": notes.notes,
+            "homework_notes_unreadable": notes.unreadable,
+            "notes_page": NOTES_PAGE,
+            "new_note_page": NEW_NOTE_PAGE,
             "viewer": viewer,
             "no_plan_now": NO_PLAN_NOW,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,

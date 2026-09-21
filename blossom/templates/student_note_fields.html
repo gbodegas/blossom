@@ -1,0 +1,34 @@
+{#
+  The fields of a homework note's form, for the first save and for an edit:
+  her words, which are all a note needs, and a class and a day folded away
+  under Add details now unless one is in use or needs correcting. A day that
+  could not be read is shown as she sent it, escaped, beside the field; the
+  control itself is left empty, since a native date control can hold nothing
+  else, and the form then carries the mark that a day was refused, so the
+  next save needs a day that reads or her choice to save without one. The
+  words of that day travel with the mark, so an answer about anything else
+  still says them; they are shown and never stored.
+  ``form`` is what she typed; nothing here is what is stored.
+#}
+{% set at_text = form.field == "text" %}
+{% set at_course = form.field == "course" %}
+{% set at_date = form.field == "due_date" %}
+<label for="note-text">What do you need to remember?</label>
+<textarea id="note-text" name="text" rows="4" required aria-describedby="{% if at_text %}note-problem {% endif %}note-text-hint"{% if at_text %} aria-invalid="true"{% endif %}>{{ form.text }}</textarea>
+<p class="note" id="note-text-hint">Write what you know. You can add the class and date later. Up to {{ text_max_length }} characters. Your parents can read this. It is not shared with the planning model.</p>
+<details class="steps note-details"{% if form.details_open %} open{% endif %}>
+  <summary>Add details now</summary>
+  <label for="note-course">Class (optional)</label>
+  <input type="text" id="note-course" name="course" value="{{ form.course }}" aria-describedby="{% if at_course %}note-problem {% endif %}note-course-hint"{% if at_course %} aria-invalid="true"{% endif %}>
+  <p class="note" id="note-course-hint">One line, up to {{ course_max_length }} characters.</p>
+  <label for="note-due-date">Due date (optional)</label>
+  <input type="date" id="note-due-date" name="due_date" value="{{ form.due_date }}" aria-describedby="{% if at_date %}note-problem {% endif %}{% if form.date_refused %}note-date-refused {% endif %}note-date-hint"{% if at_date %} aria-invalid="true"{% endif %}>
+  {% if form.date_refused %}
+    <p class="note" id="note-date-refused">You wrote <q class="authored-text">{{ form.date_refused }}</q>, which is not a date Blossom can read.</p>
+  {% endif %}
+  <p class="note" id="note-date-hint">Leave it empty if you do not know the date. Blossom never works a date out from your words.</p>
+</details>
+{% if form.date_pending %}
+  <input type="hidden" name="date_pending" value="1">
+  {% if form.date_refused %}<input type="hidden" name="date_refused" value="{{ form.date_refused }}">{% endif %}
+{% endif %}

@@ -1,0 +1,13 @@
+{#
+  The way from a refusal to the field it is about, inside the one alert that
+  takes the focus. ``field`` is the form's name for it. A refusal about the
+  whole form, a write the file refused, or a page whose fields cannot be
+  changed names no field, and no link is made to a control that is not there.
+#}
+{% set targets = {
+  "text": ("note-text", "Go to your note."),
+  "course": ("note-course", "Go to the class."),
+  "due_date": ("note-due-date", "Go to the due date."),
+  "question": ("help-question", "Go to your question."),
+} %}
+{% if field in targets %} <a href="#{{ targets[field][0] }}">{{ targets[field][1] }}</a>{% endif %}

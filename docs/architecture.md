@@ -250,7 +250,12 @@ write the same file through connections of their own. The reading is at most
 six read statements however much the record holds, between the statement
 that begins the transaction and the one that ends it: the claims and her
 hand-in events are each asked for once and not once per assignment, and a
-reader asked about no assignments runs none, so an empty record costs two. It ends before
+reader asked about no assignments runs none, so an empty record costs two. Her
+week and the family page read her homework notes beside the record, inside that
+same transaction: one statement more however many notes there are, and one
+again, only when a request for help is about a note, for every such note at
+once. The notes are no part of the reading a plan, a digest, or a brief is
+made from, so none of those can hold one. It ends before
 anything is rendered; while it lasts, another connection's commit waits, a
 few reads long. The file stays in rollback-journal mode with the default
 wait. The rule is only that the
@@ -501,7 +506,7 @@ still answers the structured side for one that would.
 | `DraftsStore` | Every draft that reached the gate, as its text and, in a nullable versioned column, the plan as data; every decision about it; and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
 | `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her |
-| `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, and the parent's word back | Wired and tested; in the drafts file, kept until resolved and swept two weeks after |
+| `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, the parent's word back, and the id of the homework note a request is about, never the note's words | Wired and tested; in the drafts file, kept until resolved and swept two weeks after |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -823,6 +828,121 @@ a button on a page, a hardware button, a lock screen control, or a single-tap
 shortcut, and whether asking for a coping strategy is the same gesture or a
 second one is a question for her. The page's button is the form the control
 takes until those are decided with her.
+
+## Homework notes
+
+A homework note is her own words about something to remember, saved before it
+is homework. `blossom/captures.py` holds the types and the rules and reads no
+file; `blossom/stores/captures.py` is the part of the record's store that
+keeps them, in the file the assignments are in, since the later step that
+makes a note into homework has to write both as one thing.
+`blossom/routes/captures.py` holds the pages.
+
+`homework_captures` holds each note as it stands, the words of its first save,
+which nothing changes, everything that first save sent, and for a class or a
+day who supplied it and through which way in. `capture_events` holds every
+change with what stood before and after, and who made it: the student, a
+parent, or the household when the sign-in is off. Both tables and both
+indexes are made in one transaction, so a start that is refused one of them
+leaves an older file as it was. A note's place among all notes is the number
+the file gave its first event, so an edit, an archive, or a restore never
+moves it.
+
+A form is given a random id when its page is made, which writes nothing. A
+first save under a new id is written with its event in one transaction that
+reserves the writer before it reads. The same id again is compared with
+everything that first save sent, the words with the class and the day: the
+same is the same save, answered with the note as it stands now, edited or
+archived as it may be, and nothing is written or brought back; anything else
+is refused with both shown. An edit is compared whole too. The same three as
+stand are already saved whatever page sent them; anything else must come from
+the revision the page showed, so a page that is behind overwrites nothing and
+an archived note is never brought back by an edit. An archive and a restore
+go by that revision as well and never touch the words. A result names the
+change the save made by the id the record gave it, and a save that wrote
+nothing names the latest change it found, read in the transaction that found
+nothing to do. The page looks that id up in the note's own history: while it
+is the latest the result is what stands, once something newer follows it is
+said as something done earlier, and a revision number, another note's id, or
+anything else a person could put in the address says nothing.
+
+A note on record that cannot be read is said as unavailable wherever it is
+opened, its own page and the help page alike, and is never said to be off the
+record; a request for help about it is refused and sends nothing. A change in
+a note's history that cannot be read makes the note's page say the same. The
+endpoints that answer a request for help in JSON read the notes their requests
+name, once for all of them, as the two pages do.
+
+A note's changes are one line or nothing is added to them. Every write to a
+note on record, the same form again included, first reads that note's changes
+through the store's own connection, inside the transaction that reserved the
+writer, and holds them to it: the first is the first save, at revision 1, with
+what that save sent and the place the file gave it; each later change is one
+revision on, starts where the one before ended, and is what its kind does, an
+archive and a restore moving the note one way each and touching no words, an
+edit never bringing an archived note back; every snapshot is within the rules
+a note's words are held to; and the last ends at the note as it stands. Days
+and times are not compared, since a clock may run backward. The change about
+to be written is held to the same rules as the last of that line before it is
+written. A line that is not sound is refused with its cause kept, nothing is
+written and nothing is mended, and the note's page says the note cannot be read
+and gives no result. The page that offers to ask for help about a note, and the
+request itself, read the note the same way, so a note its own page cannot show
+is neither shown there nor asked about. The lists read no history, so this
+costs a list nothing.
+
+Whether a note is put away is written as 0 or 1 and read as nothing else. A row
+that holds anything else is read with the notes that wait and named there as
+one that cannot be read, so a damaged flag never takes a note off both lists
+while its own page calls it archived. A note that cannot be read is counted
+wherever her notes are counted, since it is still a note of hers that waits. A
+revision is read from a form only as these pages write it, a count from 1 in
+plain digits, because a save that asks for what already stands is answered
+before revisions are compared. The notes a request for help names are context
+for it: a read of them that fails is logged and shows each as unavailable, and
+never fails an accept or a resolve that is already written.
+
+Words are tidied on the way in and never on the way out. What a form sends is
+kept under the text rule, edges off, line endings as one kind, a blank class as
+no class. What the file holds must already be that: a row whose words, class,
+or first save are held any other way was not written by the store, is not
+quietly mended when read, and is a note that cannot be read, on the lists as on
+its own page. The same holds for types and spellings. SQLite keeps bytes put
+into a text column as bytes and turns a number put there into its digits, and
+Python would make words of the first and read `20260918` as a day and `0_1` as
+a count. So a note's row and a change's row are read column by column as what
+the store writes: text as text, a count as an integer from 1, a day and a
+moment in the one spelling it writes them, a snapshot as the JSON it wrote, a
+change's id in the one shape it gives out. Revisions, a change's place in the
+file, and a note's place among notes all start at 1, so nought or less was
+written by nothing here, and a place of nought would sort its note ahead of
+every real one. Nothing is coerced on its way to being her words. The columns
+a later step fills, the title, the kind, a parent's note, and the assignment a
+note became, are read as text when they hold something, since nothing here
+writes them yet and a note that names an assignment has left the queue. The help store reads the id of the note
+a request is about the same way: a note's id in the one spelling it writes, or
+nothing. Anything else held there is never turned into text, since corrupted
+bytes print as ordinary characters and would be handed on as an id; the request
+is kept, marked as about a note whose reference cannot be read, shown with its
+note unavailable, and answered in JSON with no id at all. The words of a day
+that could not be read, which a form carries only to be shown again, are valid
+only as a page writes them; sent any other way the form is refused whole,
+whichever button is pressed beside them. The fields that steer the date are
+held to the combinations a page renders, and the rule is the whole table: a
+form with no mark has the one button, or none for the Enter key; a form marked
+by a refused day has both buttons and carries the refused words only when they
+could be shown, which are always words that did not read as a day. So the
+button that saves without the date counts only with the mark, where it would
+otherwise drop a day on the word of a button no page showed, and refused words
+that read as a day were refused by no page. Save without the date does what it says whatever the date control
+holds beside it: no day goes to the store, and what she typed there stays on
+the form, with its mark, only so that another refusal can show it again.
+
+A note's id is a UUID and its routes take it as one path segment. A note is
+no assignment, makes no claim about a date, and is read by no model: the
+pages read notes beside the record and never into it. Turning a note into
+homework, a parent's clarification, and joining a note to homework already on
+record are not built.
 
 ## Asking for help
 

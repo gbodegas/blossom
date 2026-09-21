@@ -68,7 +68,13 @@ from blossom.intake import TEXT_MAX_LENGTH
 from blossom.noticing import Everything, read_everything
 from blossom.plan_reading import DoneMark, PlanReading, read_plan
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
-from blossom.routes.navigation import FAMILY_PAGE, address, details_href, segment
+from blossom.routes.navigation import (
+    ARCHIVED_NOTES_PAGE,
+    FAMILY_PAGE,
+    address,
+    details_href,
+    segment,
+)
 from blossom.routes.runs import (
     Graphs,
     PlanGraphBuilder,
@@ -79,6 +85,7 @@ from blossom.routes.runs import (
     tidy_thread,
 )
 from blossom.settings import CALENDAR_MARGIN
+from blossom.stores.captures import NamedCaptures
 from blossom.stores.drafts import AlreadyDecided, DraftRecord
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
 from blossom.stores.project_state import (
@@ -104,6 +111,7 @@ from blossom.views import (
     DecisionView,
     HandInRowView,
     HandInView,
+    HelpNoteView,
     HelpRequestView,
     NamedAssignmentView,
     ParentCheckpointAssignmentView,
@@ -540,9 +548,36 @@ class HelpStep(BaseModel):
     response: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
 
 
-def help_view(state: ApplicationState, request: HelpRequest) -> HelpRequestView:
-    """The request as the parent sees it, which is exactly as she sees it."""
+def notes_named_by(state: ApplicationState, requests: list[HelpRequest]) -> NamedCaptures:
+    """The notes these requests are about, in one statement for all of them, and in none
+    when no request is about a note.
+
+    The notes are context for a request and never the answer itself, and an
+    accept or a resolve is already written when they are read. So a read of
+    them that fails is logged and answered as no notes read, which shows each
+    such note as unavailable, and never fails what it is context for.
+    """
+    try:
+        return state.project_state.captures_named(
+            request.capture_id for request in requests if request.capture_id
+        )
+    except Exception:
+        logger.exception("the homework notes her requests are about could not be read")
+        return NamedCaptures({}, [])
+
+
+def help_view(
+    state: ApplicationState, request: HelpRequest, named: NamedCaptures
+) -> HelpRequestView:
+    """The request as the parent sees it, which is exactly as she sees it, with the
+    homework note it is about, when it is about one, out of ``named``, the notes read for
+    the requests being shown."""
     return HelpRequestView(
+        about_note=HelpNoteView.about(
+            request.capture_id,
+            named.notes,
+            unreadable_reference=request.capture_reference_unreadable,
+        ),
         request_id=request.request_id,
         evening=request.evening,
         asked_at=request.asked_at,
@@ -578,14 +613,11 @@ def move_request(
 
 @router.get("/help-requests")
 def help_requests(state: State) -> list[HelpRequestView]:
-    """Every request she has open, oldest first, then those resolved within two weeks."""
-    return [
-        help_view(state, request)
-        for request in [
-            *state.help_requests.open_requests(),
-            *state.help_requests.recently_resolved(),
-        ]
-    ]
+    """Every request she has open, oldest first, then those resolved within two weeks, each
+    with the note it is about, read once for all of them."""
+    asked = [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
+    named = notes_named_by(state, asked)
+    return [help_view(state, request, named) for request in asked]
 
 
 @router.post("/help-requests/{request_id}/accept")
@@ -594,7 +626,8 @@ def accept_help_request(
 ) -> HelpRequestView:
     """Take a request up, so her page says a parent is on it."""
     response = None if payload is None else payload.response
-    return help_view(state, move_request(state, request_id, "accept", response))
+    moved = move_request(state, request_id, "accept", response)
+    return help_view(state, moved, notes_named_by(state, [moved]))
 
 
 @router.post("/help-requests/{request_id}/resolve")
@@ -603,7 +636,8 @@ def resolve_help_request(
 ) -> HelpRequestView:
     """Answer a request, with a word back if given; her page shows it for two weeks."""
     response = None if payload is None else payload.response
-    return help_view(state, move_request(state, request_id, "resolve", response))
+    moved = move_request(state, request_id, "resolve", response)
+    return help_view(state, moved, notes_named_by(state, [moved]))
 
 
 # --------------------------------------------------------------------- the page
@@ -664,11 +698,17 @@ def review_page(
     records = state.drafts.review_snapshot(today)
     shown = (*records.waiting, *records.decided)
     working = next((record for record in shown if record.draft_id == records.current_id), None)
-    everything = read_everything(
-        state.project_state,
-        state.project_state,
-        also=() if working is None else working.plan_assignment_ids or (),
-    )
+    # What she added as homework notes is read beside the record, in the same snapshot,
+    # and is no part of it. The notes her requests are about come in one more statement.
+    asked = [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
+    with state.project_state.reading():
+        everything = read_everything(
+            state.project_state,
+            state.project_state,
+            also=() if working is None else working.plan_assignment_ids or (),
+        )
+        notes = state.project_state.outstanding_captures()
+        named = notes_named_by(state, asked)
     plans = {
         record.draft_id: read_a_plan(
             state,
@@ -698,8 +738,11 @@ def review_page(
             "problem": check.problem if about_a_row and check is not None else problem,
             "problem_target": check.assignment_id if about_a_row and check is not None else None,
             "reason_max_length": REASON_MAX_LENGTH,
-            "help_open": [help_view(state, r) for r in state.help_requests.open_requests()],
-            "help_resolved": [help_view(state, r) for r in state.help_requests.recently_resolved()],
+            "help_open": [help_view(state, r, named) for r in asked if r.open],
+            "help_resolved": [help_view(state, r, named) for r in asked if not r.open],
+            "homework_notes": notes.notes,
+            "homework_notes_unreadable": notes.unreadable,
+            "archived_notes_page": ARCHIVED_NOTES_PAGE,
             "note_max_length": NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
             "zone": state.clock.zone,

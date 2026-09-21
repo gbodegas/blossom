@@ -1,0 +1,13 @@
+{#
+  What she typed into a note's form, shown to copy where the form itself cannot
+  be: on the page that reads no store, and on an archived note that an edit
+  arrived behind. Every readable field is here, escaped and read only: her
+  words, the class, the day when it read, and the words of a day that did not.
+  ``kept`` is the form as she sent it. Nothing here is what is stored, and
+  nothing here saves anything.
+#}
+<label for="kept-note-words">Your note, as typed</label>
+<textarea id="kept-note-words" rows="4" readonly>{{ kept.text }}</textarea>
+{% if kept.course %}<p class="note">Class, as typed: <span class="authored-text">{{ kept.course }}</span></p>{% endif %}
+{% if kept.due_date %}<p class="note">Due date, as given: <span class="authored-text">{{ kept.due_date }}</span></p>{% endif %}
+{% if kept.date_refused %}<p class="note">Due date, as typed: <q class="authored-text">{{ kept.date_refused }}</q>, which is not a date Blossom can read.</p>{% endif %}

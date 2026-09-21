@@ -1,0 +1,18 @@
+{#
+  The homework note a request for help is about, shown beside the request on her
+  page and on the family page. A request carries the note's id and none of its
+  words, so this is the note as it stands now, which may have been edited or
+  put away since she asked, and it says so. A note that cannot be read, or is
+  not on record, is said to be that, and the request is shown all the same.
+  ``about`` is the note; ``viewer`` says whose page this is.
+#}
+{% set hers = viewer != "parent" %}
+<span class="help-about-note">
+  {% if about.unavailable %}
+    {% if hers %}Your{% else %}Her{% endif %} homework note cannot be read right now.
+  {% else %}
+    About {% if hers %}your{% else %}her{% endif %} homework note, as it stands now{% if about.archived %} (archived){% endif %}:
+    <q class="authored-text">{{ about.text }}</q>
+    <a href="{{ note_href(about.capture_id) }}">Open homework note</a>
+  {% endif %}
+</span>

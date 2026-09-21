@@ -14,8 +14,19 @@ sweep. An open request is kept until someone resolves it: a request is a
 question to a person, and a question nobody has answered is not old news.
 Nothing here counts requests or groups them by anything; a record like that
 would be about her rather than about the help.
+
+A request can be about one of her homework notes. It then carries the note's
+id and nothing of its words: the note is shown beside the request from the
+record as it stands when the page is read. The notes are in this same file,
+kept by the record's store through a connection of its own, so the name is
+checked here, on this store's connection, inside the transaction that writes
+the request and begun before the note is looked for. Nothing is written
+through two connections at once, and a name that is no note of this record
+writes nothing. Putting the note away later does not remove the reference,
+and a note that cannot be read later does not take the request with it.
 """
 
+import logging
 import sqlite3
 import threading
 from datetime import date, datetime, timedelta
@@ -25,8 +36,11 @@ from uuid import uuid4
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from blossom.captures import capture_id_from
 from blossom.clock import Clock
 from blossom.stores.paths import refuse_unsafe_path
+
+logger = logging.getLogger(__name__)
 
 HELP_RETENTION_DAYS: Final = 14
 """How long a resolved request is kept: long enough for the word back to be read."""
@@ -58,6 +72,13 @@ class HelpRequest(BaseModel):
     resolved_at: AwareDatetime | None = None
     response: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
     """The parent's word back, left when taking the request up or resolving it."""
+    capture_id: str | None = None
+    """The homework note the request is about, when it is about one. Only the id: her
+    note's words are never copied here."""
+    capture_reference_unreadable: bool = False
+    """The request is about a note, and what the file holds in the id's place is no id as
+    this store writes one. The request stands and says its note is unavailable; what the
+    column holds is never read into text, so nothing of it can reach a page or an answer."""
 
     @property
     def open(self) -> bool:
@@ -73,6 +94,22 @@ class RequestClosed(RuntimeError):
             f"request {request.request_id!r} is {request.state}, so it cannot be {wanted}"
         )
         self.request = request
+
+
+HELP_REQUEST_COLUMNS: Final = "PRAGMA table_info(help_requests)"
+INSERT_HELP_REQUEST: Final = """
+    INSERT INTO help_requests (request_id, evening, asked_at, note, state, capture_id)
+    VALUES (?, ?, ?, ?, 'requested', ?)
+"""
+NOTES_TABLE: Final = """
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'homework_captures'
+"""
+NOTE_NAMED: Final = "SELECT 1 FROM homework_captures WHERE capture_id = ?"
+
+
+class UnknownCaptureReference(LookupError):
+    """A request named a homework note the record does not have. A name like that proves
+    nothing about the page it came from, so nothing is written for it."""
 
 
 class HelpRequestsStore:
@@ -100,10 +137,17 @@ class HelpRequestsStore:
                 state TEXT NOT NULL,
                 accepted_at TEXT,
                 resolved_at TEXT,
-                response TEXT
+                response TEXT,
+                capture_id TEXT
             )
             """
         )
+        # A file from before has the table without the last column. One nullable column
+        # is added, once: every request already there reads as about no note, and a
+        # start that meets the column again adds nothing.
+        columns = {str(row[1]) for row in self._connection.execute(HELP_REQUEST_COLUMNS)}
+        if "capture_id" not in columns:
+            self._connection.execute("ALTER TABLE help_requests ADD COLUMN capture_id TEXT")
         self._connection.commit()
 
     @classmethod
@@ -120,20 +164,54 @@ class HelpRequestsStore:
         with self._lock:
             self._connection.close()
 
-    def ask(self, evening: date, note: str | None = None) -> HelpRequest:
-        """Keep one request, asked now about ``evening``."""
+    def ask(
+        self, evening: date, note: str | None = None, *, capture_id: str | None = None
+    ) -> HelpRequest:
+        """Keep one request, asked now about ``evening``, and about one note when it names one.
+
+        A name is held to the shape of a note's id before anything is read.
+        Then the writer is reserved on this store's own connection, the note
+        is looked for in the file, and the request is written, all in that
+        one transaction: the connection's own scope would begin nothing until
+        the insert, which would leave the look outside it. A name that is no
+        note of this record is ``UnknownCaptureReference`` and nothing is
+        written. Whatever the file refuses is rolled back whole.
+        """
+        name = None if capture_id is None else capture_id_from(capture_id)
         request = HelpRequest(
-            request_id=uuid4().hex, evening=evening, asked_at=self._clock.now(), note=note
+            request_id=uuid4().hex,
+            evening=evening,
+            asked_at=self._clock.now(),
+            note=note,
+            capture_id=name,
         )
-        with self._lock, self._connection:
-            self._connection.execute(
-                """
-                INSERT INTO help_requests (request_id, evening, asked_at, note, state)
-                VALUES (?, ?, ?, ?, 'requested')
-                """,
-                (request.request_id, evening.isoformat(), request.asked_at.isoformat(), note),
-            )
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                if name is not None and not self._note_on_record(name):
+                    raise UnknownCaptureReference(name)
+                self._connection.execute(
+                    INSERT_HELP_REQUEST,
+                    (
+                        request.request_id,
+                        evening.isoformat(),
+                        request.asked_at.isoformat(),
+                        note,
+                        name,
+                    ),
+                )
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
         return request
+
+    def _note_on_record(self, capture_id: str) -> bool:
+        """Whether the file holds a note of this id, read through this connection, inside the
+        caller's transaction. A file with no notes in it holds none."""
+        if self._connection.execute(NOTES_TABLE).fetchone() is None:
+            return False
+        return self._connection.execute(NOTE_NAMED, (capture_id,)).fetchone() is not None
 
     def take_back(self, request_id: str) -> bool:
         """Remove a request nobody has taken up yet. False when there is none to remove.
@@ -274,6 +352,7 @@ def request_from(row: sqlite3.Row) -> HelpRequest:
 
     note = row["note"]
     response = row["response"]
+    capture_id, unreadable = reference_from(row["capture_id"], str(row["request_id"]))
     return HelpRequest(
         request_id=str(row["request_id"]),
         evening=date.fromisoformat(str(row["evening"])),
@@ -283,4 +362,33 @@ def request_from(row: sqlite3.Row) -> HelpRequest:
         accepted_at=when(row["accepted_at"]),
         resolved_at=when(row["resolved_at"]),
         response=None if response is None else str(response),
+        capture_id=capture_id,
+        capture_reference_unreadable=unreadable,
     )
+
+
+def reference_from(held: object, request_id: str) -> tuple[str | None, bool]:
+    """The note a request is about, from what the file holds: the id, and whether something
+    is held that is no id.
+
+    Nothing held is about no note. A ``str`` that is a note's id in the one
+    spelling this store writes is that id. Anything else, bytes, other
+    words, a number, an id in capitals, was not written here. It is not
+    turned into text, since ``str`` of corrupted bytes is printable and
+    would be handed on as an id; the request is kept and marked instead,
+    and the log names the request and the type held, never the content.
+    """
+    if held is None:
+        return None, False
+    if type(held) is str:
+        try:
+            if capture_id_from(held) == held:
+                return held, False
+        except ValueError:
+            pass
+    logger.warning(
+        "help request %s holds a %s that is no note id in the place of one",
+        request_id,
+        type(held).__name__,
+    )
+    return None, True

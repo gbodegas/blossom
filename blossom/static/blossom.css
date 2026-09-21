@@ -1417,6 +1417,41 @@ main.wide {
   margin: 0.35rem 0;
 }
 
+/* Her homework notes: her own words, shown whole and wrapped however long they are. */
+.homework-note,
+.homework-notes {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.note-words {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--edge);
+}
+
+.homework-note-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.homework-note-row {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--edge);
+}
+
+.homework-note-row:first-child {
+  border-top: 0;
+}
+
+.note-details {
+  margin: 0.75rem 0;
+}
+
 /* Her To turn in list: rows that wrap whatever she wrote, and the links under the
    main controls to the places that hold what is left beside the plan. */
 .support-links {

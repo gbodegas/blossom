@@ -60,6 +60,16 @@ def assignment_anchor(assignment_id: str) -> str:
     return f"assignment-{segment(assignment_id)}"
 
 
+NOTES_PAGE: Final = "/student/homework-notes"
+NEW_NOTE_PAGE: Final = "/student/homework-notes/new"
+ARCHIVED_NOTES_PAGE: Final = "/student/homework-notes/archived"
+NOTE_ACTIONS: Final = "/student/actions/homework-notes"
+NOTES: Final = "homework-notes"
+"""The id of the place that holds her homework notes, on her week and on their own page."""
+NOTE_RESULT: Final = "note-result"
+"""The id of the place on a note's page that says what a save did, which a redirect lands on."""
+
+
 def address(path: str, fragment: str = "", **query: str | None) -> str:
     """An address on this site from a path, the query values that are not blank, and a
     fragment, each escaped by the framework."""
@@ -93,6 +103,28 @@ def todays_plan_href() -> str:
     """The address of today's plan on her week: the place, and the word that the plan was
     asked for, so the place is there to land on even when no plan is."""
     return address(WEEK_PAGE, fragment=TODAYS_PLAN, show_plan="1")
+
+
+def note_href(capture_id: str, *, fragment: str = "", **query: str | None) -> str:
+    """The address of one homework note's page. A note's id is a UUID, which needs no
+    escaping, and goes through the same escaping as any other id all the same."""
+    return address(f"{NOTES_PAGE}/{segment(capture_id)}", fragment, **query)
+
+
+def note_help_href(capture_id: str) -> str:
+    """The page that offers to ask for help about one note. Opening it sends nothing."""
+    return f"{NOTES_PAGE}/{segment(capture_id)}/help"
+
+
+def note_action(capture_id: str, step: str) -> str:
+    """The route one change to a note goes through: ``edit``, ``archive``, ``restore``, or
+    ``ask-for-help``."""
+    return f"{NOTE_ACTIONS}/{segment(capture_id)}/{step}"
+
+
+def note_anchor(capture_id: str) -> str:
+    """One DOM id, shared by a note's row and every link to it."""
+    return f"note-{segment(capture_id)}"
 
 
 def result_anchor(assignment_id: str) -> str:

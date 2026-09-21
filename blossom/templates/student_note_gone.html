@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% set page = "student" %}
+{% block title %}Blossom - Homework note{% endblock %}
+{#
+  The small page for a homework note that is not on record, or whose row
+  cannot be read right now: said plainly, with safe ways back. There is no
+  form, nothing of any other note is shown, and nothing is written.
+#}
+{% block content %}
+  {% for link in ways_back %}
+    <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
+  {% endfor %}
+  <h1>Homework note</h1>
+  <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}</p>
+{% endblock %}

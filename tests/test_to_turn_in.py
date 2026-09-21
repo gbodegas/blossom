@@ -572,7 +572,9 @@ def test_a_long_list_costs_no_more_reads_than_a_short_one(
         assert f"({count})" in shown.text
         costs.append(len(seen))
 
-    assert costs == [8, 8, 8]
+    # Her week reads her homework notes in the same snapshot: one statement more, and one
+    # however long either list is. The page of the list reads no notes.
+    assert costs == ([9, 9, 9] if where == HER_PAGE else [8, 8, 8])
 
 
 # ------------------------------------------- a result belongs to the event that made it
@@ -771,7 +773,7 @@ def test_a_result_for_an_assignment_off_the_record_is_said_only_when_its_history
     assert ESSAY_TITLE not in gone.text
     assert escape(TURNED_IN_FROM_THE_LIST) not in gone.text
     assert 'name="hand_in_id"' not in gone.text
-    assert len(seen) == 8
+    assert len(seen) == (9 if origin == "week" else 8)
     for page in (*pages, unreadable):
         assert 'id="to-turn-in-result"' not in page
         assert escape(RESULT_GONE) not in page
@@ -1362,7 +1364,7 @@ def test_a_press_already_saved_by_an_undo_that_put_turned_in_back_says_so(
     assert "hand_in_said=same" in address
     assert f"hand_in_event={put_back.event_id}" in address
     assert rows == 4
-    assert len(seen) == 8
+    assert len(seen) == (9 if origin == "week" else 8)
     assert the_result(page) == the_result(again)
     assert 'name="hand_in_id"' not in page
     if followed:

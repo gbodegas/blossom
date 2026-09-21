@@ -19,6 +19,7 @@ import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import unescape
+from html.parser import HTMLParser
 from typing import Annotated, Any, Protocol
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
@@ -443,13 +444,15 @@ def scripted_graphs(
     critic: Callable[[], list[CriticVerdict]],
     *,
     planners: list[Scripted[DailyPlan]] | None = None,
+    critics: list[Scripted[CriticVerdict]] | None = None,
 ) -> Callable[..., PlanGraphs]:
     """A replacement for the route's graphs dependency, over the app's own stores.
 
     Scripted models, and permission to start, so a run can be driven in an
     application that has no key; the models are never asked for one. Each
     planner built is added to ``planners`` when a test hands a list in, so
-    it can read how often a run asked and what it was sent.
+    it can read how often a run asked and what it was sent, and each critic
+    to ``critics`` the same way.
     """
 
     def override(
@@ -459,11 +462,10 @@ def scripted_graphs(
             asked = Scripted(*[ok(plan) for plan in planner()])
             if planners is not None:
                 planners.append(asked)
-            return plan_graph_for(
-                state,
-                planner=asked,
-                critic=Scripted(*[ok(verdict) for verdict in critic()]),
-            )
+            reviewer = Scripted(*[ok(verdict) for verdict in critic()])
+            if critics is not None:
+                critics.append(reviewer)
+            return plan_graph_for(state, planner=asked, critic=reviewer)
 
         return PlanGraphs(build=build, may_start=True)
 
@@ -650,11 +652,58 @@ def lands_on(page: str, address: str) -> str:
     return tags.get(fragment) or tags.get(unquote(fragment)) or ""
 
 
+class _FormReader(HTMLParser):
+    """Every form of a page with what each would send: inputs of every kind but the ones a
+    browser leaves out, and text areas, their values as a browser reads them."""
+
+    def __init__(self, page: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms: list[tuple[str, dict[str, str]]] = []
+        self._fields: dict[str, str] | None = None
+        self._area: str | None = None
+        self.feed(page)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        given = dict(attrs)
+        if tag == "form":
+            self._fields = {}
+            self.forms.append((given.get("action") or "", self._fields))
+        elif self._fields is None or not given.get("name") or "disabled" in given:
+            return
+        elif tag == "input" and (
+            given.get("type") not in ("radio", "checkbox", "submit") or "checked" in given
+        ):
+            self._fields[str(given["name"])] = given.get("value") or ""
+        elif tag == "textarea":
+            self._area = str(given["name"])
+            self._fields[self._area] = ""
+
+    def handle_data(self, data: str) -> None:
+        if self._area is not None and self._fields is not None:
+            self._fields[self._area] += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "textarea":
+            self._area = None
+        elif tag == "form":
+            self._fields = None
+
+
+def whole_form(html: str, action: str) -> dict[str, str]:
+    """Everything the one form with this action would send with no button pressed, hidden
+    and visible alike, read the way a browser reads the page."""
+    found = [fields for where, fields in _FormReader(html).forms if where == action]
+    assert len(found) == 1, (action, len(found))
+    return dict(found[0])
+
+
 def form_fields(html: str, action: str) -> dict[str, str]:
-    """The hidden fields of the form with this action, as the page wrote them."""
+    """The hidden fields of the form with this action, as a browser would send them back:
+    each value read out of its attribute, so what the page escaped arrives as it was."""
     start = html.index(f'action="{action}"')
     form = html[start : html.index("</form>", start)]
-    return dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form))
+    found = re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form)
+    return {name: unescape(value) for name, value in found}
 
 
 def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:
