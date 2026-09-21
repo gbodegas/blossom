@@ -52,9 +52,12 @@ With the app running as the README describes:
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
   to `/student/plans` makes one.
 - <http://127.0.0.1:8000/student/homework-notes> is her homework notes, with
-  the ones she put away under `/archived`, the form for a new one under `/new`,
-  and each note on a page of its own under its id, where asking for help about
-  it is `/help`. Reading any of them writes nothing.
+  the ones she put away under `/archived`, the ones in homework under
+  `/added`, the form for a new one under `/new`, and each note on a page of
+  its own under its id, where asking for help about it is `/help` and giving
+  it details or adding it to homework is `/add`. A parent's way to that last
+  page is <http://127.0.0.1:8000/parent/homework-notes/{id}/add>, linked from
+  the family page. Reading any of them writes nothing.
 - <http://127.0.0.1:8000/student/help-requests> lists her requests for help
   as JSON, the open ones and those resolved within two weeks; a POST there
   asks, with an optional note, and a DELETE takes one back while nobody has

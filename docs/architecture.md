@@ -265,7 +265,8 @@ week and the family page read her homework notes beside the record, inside that
 same transaction: one statement more however many notes there are, and one
 again, only when a request for help is about a note, for every such note at
 once. The notes are no part of the reading a plan, a digest, or a brief is
-made from, so none of those can hold one. It ends before
+made from, so none of those can hold one; a note added to homework reaches
+them only as the assignment it became. It ends before
 anything is rendered; while it lasts, another connection's commit waits, a
 few reads long. The file stays in rollback-journal mode with the default
 wait. The rule is only that the
@@ -926,10 +927,10 @@ moment in the one spelling it writes them, a snapshot as the JSON it wrote, a
 change's id in the one shape it gives out. Revisions, a change's place in the
 file, and a note's place among notes all start at 1, so nought or less was
 written by nothing here, and a place of nought would sort its note ahead of
-every real one. Nothing is coerced on its way to being her words. The columns
-a later step fills, the title, the kind, a parent's note, and the assignment a
-note became, are read as text when they hold something, since nothing here
-writes them yet and a note that names an assignment has left the queue. The help store reads the id of the note
+every real one. Nothing is coerced on its way to being her words. The details
+a note may be given, the title, the kind, and the note about the work, and the
+assignment a note is in, are read the same strict way and held to the limits
+an assignment's fields are held to. The help store reads the id of the note
 a request is about the same way: a note's id in the one spelling it writes, or
 nothing. Anything else held there is never turned into text, since corrupted
 bytes print as ordinary characters and would be handed on as an id; the request
@@ -950,9 +951,78 @@ the form, with its mark, only so that another refusal can show it again.
 
 A note's id is a UUID and its routes take it as one path segment. A note is
 no assignment, makes no claim about a date, and is read by no model: the
-pages read notes beside the record and never into it. Turning a note into
-homework, a parent's clarification, and joining a note to homework already on
-record are not built.
+pages read notes beside the record and never into it.
+
+### From a note to homework
+
+A note becomes homework by explicit choice, hers or a parent's, and by nothing
+else: no title, date, or class is worked out from her words, and no model is
+asked. `blossom/routes/note_details.py` holds one page in two trees,
+`/student/homework-notes/{id}/add` and `/parent/homework-notes/{id}/add`. The
+tree a press comes through is the channel it is recorded on, her report or a
+family entry, and nothing a form carries can say otherwise; who pressed is
+the sign-in, and the household while the sign-in is off. Signed in as the
+other person, a press writes nothing and is answered 403.
+
+Details are a class, a title, a day, a kind, and a note about the work, each
+optional on a note and each with who supplied it. `clarify_capture` saves them
+from the revision the page showed as one `clarify` event; a field whose value
+did not change keeps the attribution it had, so a parent pressing the button
+does not become the author of what she typed. Her words are no part of the
+form. The class is chosen from the classes homework on record names, or typed
+beside Another class; there is no catalog. The title is proposed from her
+words only when they are one line that fits a title, and is never cut to fit.
+
+`promote_capture` adds the note to homework in one transaction that reserves
+the writer before it reads: the assignment, the note's link to it, the claim
+about its date when a day was given, and the event with the decision are one
+commit, and a failure leaves none of them. The assignment's id is named from
+the note's id in a fixed namespace, never from its title or date, so the same
+form again, or a lost answer sent again, finds the link standing and writes
+nothing. Its record is marked with the way in the press came through and each
+field with whoever supplied it; no report of the school's is made up for it.
+
+Homework on record with the same class and title, paired by the rule the
+school's paste pairs by, whitespace collapsed and case kept, is never merged
+by itself. Every such assignment is a candidate whatever its date. The page
+lists them and sends back a fingerprint of the list it showed, a digest of
+each candidate's id, class, title, date, kind, and status. The store reads the
+candidates again inside its transaction: a fingerprint that differs means
+homework arrived, left, or changed since, and the choice is put again with
+409 and everything typed kept. Same homework joins the note to that assignment
+and changes nothing on it; a day the note gives is one more claim beside the
+others. Keep as a separate assignment makes the note's own. The event keeps
+the choice, the candidates it was made among, and the fingerprint.
+
+`date_claims` says where a claim came from. Its rows carry the note and the
+note's revision when a note made the claim, whether the claim still counts,
+and when it was withdrawn; the columns are added to an older file in one
+transaction, every insert names its columns, and a unique index over the
+assignment, the note, and the revision makes a repeated write add nothing.
+Readers that reconcile a date read only claims that count. A claim from a note
+carries a confidence of 0.8 because the column requires one; nothing decides
+anything by it.
+
+A school paste that names homework made from a note is held whole. Until the
+pages can ask whether the school's row is the same work, a text with such a
+row saves nothing, not that row and not the rows beside it: the review names
+the rows in the way, offers no save, and keeps the text, and a save sent
+anyway is answered 409. Homework made from a note is known by its id, since a
+parent's press marks the record a family entry and her ordinary reports on
+school homework mark nothing. The save reserves the writer and compares inside
+that transaction, so a note added through another connection between the
+review and the save is met too.
+
+A note in homework leaves the notes that wait and is listed with the others
+that are in homework. Its page says so, leads to the assignment, and says when
+the assignment is outside today's planning window. The assignment's details
+show the notes it was added from or joined by, her words as they stand with
+the day each was saved, as evidence beside the record: nothing of them is
+copied into the assignment, and changing a note afterward changes nothing
+there. Rows on her week and the family page say what a waiting note still
+needs, a class and a title, a choice, or nothing more, from the one read of
+the assignments those pages already make. Searching the record for homework
+to join a note to, changing a link, and unlinking are not built.
 
 ## Asking for help
 

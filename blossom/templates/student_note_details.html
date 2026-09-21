@@ -11,7 +11,7 @@
   Two buttons share the one form. Save details keeps what is typed on the
   note, which stays a note. Add to homework is the one confirmation: the
   fields above it are exactly what becomes the assignment, and the page says
-  that those details can be used to make a plan.
+  that those details can be used in making a plan.
 
   With homework of the same class and title on record, each is listed with
   its date, its reported status, and where it came from, and the choice is
@@ -125,7 +125,7 @@
           <p class="note" id="details-candidate-hint">Same homework joins this note to that assignment and changes nothing on it: not its title, its date, its status, or its note. A different due date given here is kept as one more source for the date. Save details does not need this choice.</p>
         {% endif %}
 
-        <p class="note">These homework details can be used to make a plan.</p>
+        <p class="note">These homework details can be used in making a plan.</p>
         <div class="actions">
           <button type="submit" class="primary">Add to homework</button>
           <button type="submit" class="secondary" formaction="{{ note_details_action(note.capture_id, family=family) }}">Save details</button>

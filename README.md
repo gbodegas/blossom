@@ -134,8 +134,26 @@ week's cards and the fold of finished work, the oldest first, and on a page
 of their own. Her parents read them on the family page, the ones she put away
 included, and cannot change one. She can ask for help about a note, and the
 request opens the note for her parents. A note is not an assignment: it is
-in no plan, and no note is ever sent to the planner. Turning a note into
-homework is a separate step that is not built yet.
+in no plan, and the words of a note are never sent to the planner.
+
+**Add it to homework.** A note becomes homework only by someone's choice.
+Its page leads to one form that shows her words, which nothing there changes,
+and asks for a class, chosen from the classes already on record or typed
+beside **Another class**, a title, an optional due date, a kind, and an
+optional note about the work. **Save details** keeps them on the note, which
+stays a note; **Add to homework** adds exactly the fields shown, once, however
+many times the form arrives. She uses that form from her pages and a parent
+from the family page, and a detail a parent gave says so. When homework with
+the same class and title is already on record, nothing is merged by itself:
+the form lists it and asks whether this is the **Same homework**, which joins
+the note to that assignment and changes nothing on it, or to **Keep as a
+separate assignment**. A note in homework leaves her waiting notes, stays
+reachable with its history, and is shown as evidence on the assignment's
+details. From then on the assignment's class, title, date, and note about the
+work reach the planner as any homework's do, the note told to it as hers. A
+school paste that names homework made from a note is held whole, saving
+nothing, until the pages can ask whether the school's row is the same work.
+Searching the record for homework to join a note to is not built yet.
 
 **Mark checked.** Where her Done stands beside a school report of Missing,
 the family page offers Mark checked, with a note for her card if a parent

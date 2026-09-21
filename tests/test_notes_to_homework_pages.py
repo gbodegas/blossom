@@ -165,7 +165,7 @@ def test_opening_the_page_writes_nothing_and_proposes_only_what_she_wrote() -> N
     for page in (first, second):
         assert re.search(r'<option value="HOMEWORK"[^>]* selected', page)
         assert f'<option value="{OTHER}"' in page
-        assert "These homework details can be used to make a plan." in page
+        assert "These homework details can be used in making a plan." in page
         assert ">Add to homework</button>" in page
         assert ">Save details</button>" in page
     assert len(after[2]) == len(before[2]) + 2
