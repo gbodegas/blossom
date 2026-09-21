@@ -2,9 +2,11 @@
   Rows of homework notes, for the page of their own and for the section on her
   week, which shows the first few and points at the rest. A row is her words
   as they stand, a class and a day when she gave them, the day it was saved,
-  and a link to the note's own page. It says the note is in no plan and
-  suggests nothing that cannot be done yet. ``rows`` are the notes in order and
-  ``shown`` is how many to show.
+  and a link to the note's own page. A note still waiting says what it needs
+  before it can be in a plan: a class and a title, a choice about homework of
+  that class and title already here, or nothing more than adding it. Nothing
+  here says the note was understood. ``rows`` are the notes in order, ``shown``
+  is how many to show, and ``remains`` says what each waiting note needs.
 #}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% if rows %}
@@ -12,7 +14,15 @@
     {% for note in rows[:shown] %}
       <li class="homework-note-row" id="{{ note_anchor(note.capture_id) }}">
         <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
-        <p class="note">{% if note.course %}<span class="authored-text">{{ note.course }}</span>. {% endif %}{% if note.due_date %}Due date given: {{ on(note.due_date) }}. {% endif %}Saved {{ on(note.created_on) }}. {% if note.archived %}Archived.{% else %}It is not in a plan yet.{% endif %}</p>
+        <p class="note">{% if note.course %}<span class="authored-text">{{ note.course }}</span>. {% endif %}{% if note.due_date %}Due date given: {{ on(note.due_date) }}. {% endif %}Saved {{ on(note.created_on) }}. {% if note.archived %}Archived.{% elif note.assignment_id %}In homework.{% else %}It is not in a plan yet.{% endif %}</p>
+        {% set needs = remains.get(note.capture_id) if remains is defined and remains else none %}
+        {% if needs == "needs" %}
+          <p class="note">Add the class and title to put this in a plan.</p>
+        {% elif needs == "choice" %}
+          <p class="note">Homework with this class and title is already here. Say whether this is the same homework.</p>
+        {% elif needs == "ready" %}
+          <p class="note">Ready to add to homework.</p>
+        {% endif %}
         <p class="note"><a class="assignment-link" href="{{ note_href(note.capture_id) }}" aria-label="Open note saved {{ on(note.created_on) }}: {{ note.text|truncate(60, true, '...') }}">Open note</a></p>
       </li>
     {% endfor %}

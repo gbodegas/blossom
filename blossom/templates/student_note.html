@@ -4,9 +4,13 @@
 {#
   One homework note: what stands now, the first words when an edit has moved
   away from them, a class and a day when she gave them, and the history of
-  every change. It says plainly that the note is in no plan. Nothing here
-  offers to make it homework or to join it to homework: those come with
-  routes of their own, and until then no page suggests they can be done.
+  every change. A note still waiting says plainly that it is in no plan, shows
+  the details it has been given with who added each when that was a parent,
+  and leads to the page that adds it to homework, in her tree for her and in
+  the family's for a parent. A note that is in homework says so, leads to the
+  assignment, and says when the assignment is outside today's planning window.
+  Searching the homework on record for a note to join has no route yet, and
+  no page offers it.
 
   What a save did is said first, at a place the address lands on. The result
   belongs to the change the save made or found, named by its id: while that
@@ -24,13 +28,14 @@
 #}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% macro by(author) %}{% if author == "student" %}by the student{% elif author == "parent" %}by a parent{% else %}in this household{% endif %}{% endmacro %}
+{% macro supplied(field) %}{% set source = note.attribution.get(field) %}{% if source and source.authored_by == "parent" %} <span class="source">added by a parent</span>{% elif source and source.authored_by == "student" and not mine %} <span class="source">added by the student</span>{% endif %}{% endmacro %}
 {% block content %}
   {% for link in ways_back %}
     <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
   {% endfor %}
   <h1>Homework note</h1>
   {% if result %}
-    <p class="note update-result" role="status" id="note-result" tabindex="-1">{{ result.said }}</p>
+    <p class="note update-result" role="status" id="note-result" tabindex="-1">{{ result.said }}{% if result.stands and in_homework and in_homework.on_record and not in_homework.in_window %} {{ out_of_the_window }}{% endif %}{% if result.stands and in_homework and in_homework.on_record %} <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>{% endif %}</p>
   {% endif %}
   {% if problem %}
     <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}{% if mine and form and not note.archived %}{% with field = form.field %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
@@ -38,12 +43,21 @@
   <section class="panel homework-note" id="{{ note_anchor(note.capture_id) }}">
     <h2 class="update-heading">{% if mine %}What you wrote{% else %}What she wrote{% endif %}</h2>
     <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
-    {% if note.course %}<p class="note">Class: <span class="authored-text">{{ note.course }}</span></p>{% endif %}
-    {% if note.due_date %}<p class="note">Due date {% if mine %}you{% else %}she{% endif %} gave: {{ on(note.due_date) }}</p>{% endif %}
+    {% if note.course %}<p class="note">Class: <span class="authored-text">{{ note.course }}</span>{{ supplied("course") }}</p>{% endif %}
+    {% if note.title %}<p class="note">Title: <span class="authored-text">{{ note.title }}</span>{{ supplied("title") }}</p>{% endif %}
+    {% if note.due_date %}<p class="note">Due date given: {{ on(note.due_date) }}{{ supplied("due_date") }}</p>{% endif %}
+    {% if note.kind and (note.title or note.note) %}<p class="note">Kind: {% if note.kind == "TASK" %}Task{% else %}Homework{% endif %}{{ supplied("kind") }}</p>{% endif %}
+    {% if note.note %}<p class="note">Note about the work: <q class="authored-text">{{ note.note }}</q>{{ supplied("note") }}</p>{% endif %}
     {% if note.archived %}
       <p class="note"><span class="pill">Archived</span> This note is archived. It is kept with its history and can be brought back.</p>
-    {% else %}
+    {% endif %}
+    {% if in_homework %}
+      <p class="note"><span class="pill">In homework</span> {% if in_homework.on_record %}This note is in homework. <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>.{% if not in_homework.in_window %} {{ out_of_the_window }}{% endif %} Changing the note does not change the assignment.{% else %}The assignment this note was added to is not on record. The note and its history are kept here.{% endif %}</p>
+    {% elif not note.archived %}
       <p class="note">Saved {{ on(note.created_on) }}{% if note.updated_on != note.created_on %}, changed {{ on(note.updated_on) }}{% endif %}. It is not in a plan yet, and it is not an assignment.</p>
+      {% if not form %}
+        <p class="note"><a href="{{ note_add_href(note.capture_id, family=not mine) }}">Add it to homework</a>{% if note.course and note.title %}. It has a class and a title, so it is ready to add.{% else %}. It needs a class and a title first, and that page asks for them.{% endif %}</p>
+      {% endif %}
     {% endif %}
     {% if note.text != note.original_text %}
       <h3 class="update-heading">First written as</h3>
@@ -94,8 +108,13 @@
       <ol class="history-list">
         {% for event in history %}
           <li>
-            {% if event.operation == "create" %}Saved{% elif event.operation == "edit" %}Changed{% elif event.operation == "archive" %}Archived{% else %}Brought back{% endif %}
+            {% if event.operation == "create" %}Saved{% elif event.operation == "edit" %}Changed{% elif event.operation == "archive" %}Archived{% elif event.operation == "restore" %}Brought back{% elif event.operation == "clarify" %}Details saved{% elif event.operation == "promote" %}Added to homework{% else %}Joined to homework already here{% endif %}
             {{ on(event.occurred_on) }}, {{ by(event.authored_by) }}.
+            {% if event.operation in ("clarify", "promote", "link") %}
+              {% if event.after.course %}<span class="note">Class: <span class="authored-text">{{ event.after.course }}</span>.</span>{% endif %}
+              {% if event.after.title %}<span class="note">Title: <span class="authored-text">{{ event.after.title }}</span>.</span>{% endif %}
+              {% if event.after.due_date %}<span class="note">Due date given: {{ on(event.after.due_date) }}.</span>{% endif %}
+            {% endif %}
             {% if event.operation in ("create", "edit") %}
               <blockquote class="authored-text note-words">{{ event.after.text }}</blockquote>
               {% if event.after.course %}<span class="note">Class: <span class="authored-text">{{ event.after.course }}</span>.</span>{% endif %}
@@ -104,7 +123,7 @@
           </li>
         {% endfor %}
       </ol>
-      <p class="note">Notes and their history are kept in the family's own file, and in any backup of it. Nothing here is sent to the school or to the planning model.</p>
+      <p class="note">Notes and their history are kept in the family's own file, and in any backup of it. Nothing here is sent to the school. The words of a note are never sent to the planning model; once a note is added to homework, the assignment's class, title, date, and note about the work are, as they are for any homework.</p>
     </details>
   </section>
 {% endblock %}

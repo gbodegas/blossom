@@ -654,13 +654,15 @@ def lands_on(page: str, address: str) -> str:
 
 class _FormReader(HTMLParser):
     """Every form of a page with what each would send: inputs of every kind but the ones a
-    browser leaves out, and text areas, their values as a browser reads them."""
+    browser leaves out, text areas, and lists, their values as a browser reads them. A
+    list sends the option marked as selected, or its first option when none is."""
 
     def __init__(self, page: str) -> None:
         super().__init__(convert_charrefs=True)
         self.forms: list[tuple[str, dict[str, str]]] = []
         self._fields: dict[str, str] | None = None
         self._area: str | None = None
+        self._list: str | None = None
         self.feed(page)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -668,8 +670,15 @@ class _FormReader(HTMLParser):
         if tag == "form":
             self._fields = {}
             self.forms.append((given.get("action") or "", self._fields))
-        elif self._fields is None or not given.get("name") or "disabled" in given:
+        elif self._fields is None or "disabled" in given:
             return
+        elif tag == "option":
+            if self._list is not None and ("selected" in given or self._list not in self._fields):
+                self._fields[self._list] = given.get("value") or ""
+        elif not given.get("name"):
+            return
+        elif tag == "select":
+            self._list = str(given["name"])
         elif tag == "input" and (
             given.get("type") not in ("radio", "checkbox", "submit") or "checked" in given
         ):
@@ -685,6 +694,8 @@ class _FormReader(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag == "textarea":
             self._area = None
+        elif tag == "select":
+            self._list = None
         elif tag == "form":
             self._fields = None
 

@@ -59,6 +59,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
 from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, basis_parts, statuses_for
+from blossom.captures import what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, Staleness, plan_updates, staleness
@@ -66,9 +67,11 @@ from blossom.hand_in import NEEDS_HAND_IN
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.noticing import Everything, read_everything
+from blossom.pairing import pair
 from blossom.plan_reading import DoneMark, PlanReading, read_plan
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.navigation import (
+    ADDED_NOTES_PAGE,
     ARCHIVED_NOTES_PAGE,
     FAMILY_PAGE,
     address,
@@ -742,7 +745,11 @@ def review_page(
             "help_resolved": [help_view(state, r, named) for r in asked if not r.open],
             "homework_notes": notes.notes,
             "homework_notes_unreadable": notes.unreadable,
+            "remains": what_remains(
+                notes.notes, {pair(item.course, item.title) for item in everything.assignments}
+            ),
             "archived_notes_page": ARCHIVED_NOTES_PAGE,
+            "added_notes_page": ADDED_NOTES_PAGE,
             "note_max_length": NOTE_MAX_LENGTH,
             "sample": state.settings.sample,
             "zone": state.clock.zone,

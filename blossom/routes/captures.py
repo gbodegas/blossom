@@ -21,8 +21,10 @@ newer follows it is said as something done earlier, on a page that shows the
 note as it stands.
 
 Nothing here makes an assignment, asks a model, or touches what a plan is made
-from. Turning a note into homework is a later step with routes of its own, and
-no page here offers it or suggests it can be done.
+from. Adding a note to homework has a page and routes of its own, which a note
+still waiting links to; the result of that is said here, on the note's page,
+with the way to the assignment, and with whether the assignment is inside
+today's planning window.
 """
 
 import logging
@@ -39,9 +41,12 @@ from blossom.captures import (
     ARCHIVE,
     CAPTURE_COURSE_MAX_LENGTH,
     CAPTURE_TEXT_MAX_LENGTH,
+    CLARIFY,
     CREATE,
     EDIT,
     HOUSEHOLD,
+    LINK,
+    PROMOTE,
     RESTORE,
     STUDENT,
     Author,
@@ -55,16 +60,21 @@ from blossom.captures import (
     CaptureNotSaved,
     CaptureUnchanged,
     NotACaptureId,
+    Remaining,
     UnknownCapture,
     UnreadableCapture,
     capture_id_from,
     new_capture_id,
+    what_remains,
 )
 from blossom.dependencies import ApplicationState
+from blossom.noticing import expect_due_date, in_week, notice_due_date
+from blossom.pairing import pair
 from blossom.reconciliation import SourceChannel
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.hand_in import accepted_at
 from blossom.routes.navigation import (
+    ADDED_NOTES_PAGE,
     ARCHIVED_NOTES_PAGE,
     NEW_NOTE_PAGE,
     NOTE_RESULT,
@@ -92,6 +102,13 @@ NOTE_EDITED: Final = "Your changes are saved. It is not in a plan yet."
 NOTE_ARCHIVED: Final = "This note is put away. You can bring it back."
 NOTE_RESTORED: Final = "This note is back on your list. It is not in a plan yet."
 NOTE_ASKED: Final = "You asked for help about this note. Your parents can see the request."
+DETAILS_SAVED: Final = "Details saved. This is still a note, and it is not in a plan yet."
+ADDED_TO_HOMEWORK: Final = "Added to homework."
+JOINED_TO_HOMEWORK: Final = (
+    "Joined to homework already here. Nothing on that assignment was changed."
+)
+ALREADY_ADDED: Final = "Already added to homework. This is the note as it stands now."
+OUT_OF_THE_WINDOW: Final = "Saved here. It is not in today's planning window."
 NOTE_SAVED_EARLIER: Final = (
     "You saved this earlier, and the note has changed since. This page shows it as it stands now."
 )
@@ -144,12 +161,19 @@ SAID: Final[dict[str, tuple[str, str | None]]] = {
     "unchanged": (NOTE_ALREADY_SAVED, None),
     "archived": (NOTE_ARCHIVED, ARCHIVE),
     "restored": (NOTE_RESTORED, RESTORE),
+    "clarified": (DETAILS_SAVED, CLARIFY),
+    "added": (ADDED_TO_HOMEWORK, PROMOTE),
+    "joined": (JOINED_TO_HOMEWORK, LINK),
+    "already": (ALREADY_ADDED, None),
 }
 """What an address says a save did, the sentence for it, and the kind of change the event
 it names must be in the note's history. A save that wrote nothing names the change it found
 standing, which may be of any kind. The server writes the address; the page believes none
 of it until the history bears it out, and an event id is not a number a person can count
 to: a revision in its place, or an id of another note's, says nothing."""
+SAID_TO_EITHER: Final = frozenset({"clarified", "added", "joined", "already", "unchanged"})
+"""The results a parent is shown too: what a save through the family's tree did, in words
+that address nobody. The rest are about changes only she can make, and are said to her."""
 
 
 @dataclass(frozen=True)
@@ -512,7 +536,7 @@ def note_page(
     note, history = found[0], list(found[1])
     viewer = viewer_of(request)
     mine = viewer != "parent"
-    result = result_of(history, said, event) if mine else None
+    result = result_of(history, said, event) if mine or said in SAID_TO_EITHER else None
     if form is not None and not form.revision:
         # A form that named no revision these pages made comes back on the note as it
         # stands, as her unsaved words: saving them again is her choice, from this page.
@@ -540,6 +564,8 @@ def note_page(
             "result": result,
             "viewer": viewer,
             "mine": mine,
+            "in_homework": in_homework(state, note),
+            "out_of_the_window": OUT_OF_THE_WINDOW,
             "ways_back": ways_back(),
             "text_max_length": CAPTURE_TEXT_MAX_LENGTH,
             "course_max_length": CAPTURE_COURSE_MAX_LENGTH,
@@ -547,6 +573,45 @@ def note_page(
         },
         status_code=status_code,
     )
+
+
+@dataclass(frozen=True)
+class InHomework:
+    """The assignment a note is in, as its page says it: whether the assignment is still on
+    record, and whether it is inside today's planning window."""
+
+    assignment_id: str
+    on_record: bool
+    in_window: bool
+
+
+def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
+    """Where a note added to homework stands today, or ``None`` for a note still waiting.
+    The assignment and the claims about its date are read in one hold of the store, and
+    the window is decided as her week decides it."""
+    if note.assignment_id is None:
+        return None
+    store = state.project_state
+    with store.reading():
+        item = store.one_assignment(note.assignment_id)
+        records = [] if item is None else store.deadline_records(note.assignment_id)
+    if item is None:
+        return InHomework(note.assignment_id, on_record=False, in_window=False)
+    noticed = notice_due_date(expect_due_date(item), records)
+    return InHomework(
+        note.assignment_id,
+        on_record=True,
+        in_window=in_week(item, noticed, state.clock.today()),
+    )
+
+
+def remains_for(state: ApplicationState, notes: list[Capture]) -> dict[str, Remaining]:
+    """What each waiting note on a list still needs, from one read of the homework on
+    record, and from no read when none of the notes waits."""
+    if not any(note.outstanding for note in notes):
+        return {}
+    on_record = {pair(item.course, item.title) for item in state.project_state.all_assignments()}
+    return what_remains(notes, on_record)
 
 
 def refusal(status_code: int, *, gone: bool = False) -> int:
@@ -589,21 +654,29 @@ def new_note(request: Request, state: State) -> HTMLResponse:
     return new_note_page(request, state, NoteForm(capture_id=new_capture_id()))
 
 
-def notes_list(request: Request, state: ApplicationState, *, archived: bool) -> HTMLResponse:
-    """One of her two lists of notes, each a single read: the ones still waiting, or the ones
-    she put away."""
+def notes_list(request: Request, state: ApplicationState, *, which: str) -> HTMLResponse:
+    """One of her three lists of notes, each a single read of the notes: the ones still
+    waiting, the ones added to homework, or the ones she put away. The waiting ones say
+    what each still needs, from one read of the homework on record."""
     store = state.project_state
-    read = store.archived_captures() if archived else store.outstanding_captures()
+    read = {
+        "waiting": store.outstanding_captures,
+        "added": store.added_captures,
+        "archived": store.archived_captures,
+    }[which]()
     return templates.TemplateResponse(
         request,
         "student_notes.html",
         {
             "notes": read.notes,
             "unreadable": read.unreadable,
-            "archived": archived,
+            "which": which,
+            "archived": which == "archived",
+            "remains": remains_for(state, read.notes),
             "viewer": viewer_of(request),
             "new_note_page": NEW_NOTE_PAGE,
             "notes_page": NOTES_PAGE,
+            "added_notes_page": ADDED_NOTES_PAGE,
             "archived_notes_page": ARCHIVED_NOTES_PAGE,
             "sample": state.settings.sample,
         },
@@ -612,14 +685,20 @@ def notes_list(request: Request, state: ApplicationState, *, archived: bool) -> 
 
 @router.get("/homework-notes", response_class=HTMLResponse, include_in_schema=False)
 def homework_notes(request: Request, state: State) -> HTMLResponse:
-    """Every note still to do something about, the first saved first. One read."""
-    return notes_list(request, state, archived=False)
+    """Every note still to do something about, the first saved first."""
+    return notes_list(request, state, which="waiting")
+
+
+@router.get("/homework-notes/added", response_class=HTMLResponse, include_in_schema=False)
+def added_notes(request: Request, state: State) -> HTMLResponse:
+    """Every note that is in homework and not put away, kept with its history."""
+    return notes_list(request, state, which="added")
 
 
 @router.get("/homework-notes/archived", response_class=HTMLResponse, include_in_schema=False)
 def archived_notes(request: Request, state: State) -> HTMLResponse:
     """Every note she put away, kept with its history. One read."""
-    return notes_list(request, state, archived=True)
+    return notes_list(request, state, which="archived")
 
 
 @router.get("/homework-notes/{capture_id}", response_class=HTMLResponse, include_in_schema=False)

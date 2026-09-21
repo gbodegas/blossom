@@ -25,7 +25,7 @@ This module holds the types and the rules. It reads no file and no clock.
 import hashlib
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Final, Literal, Protocol, Self
@@ -33,6 +33,7 @@ from typing import Final, Literal, Protocol, Self
 from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator, model_validator
 
 from blossom.authored_text import multiline, single_line
+from blossom.pairing import pair
 from blossom.reconciliation import SourceChannel
 
 CAPTURE_TEXT_MAX_LENGTH: Final = 500
@@ -559,6 +560,30 @@ def sound_history(note: Capture, events: Sequence[CaptureEvent]) -> CaptureHisto
     if last.revision != note.revision or last.after != CaptureSnapshot.of(note):
         raise UnsoundCaptureHistory(name, "the changes do not end at the note as it stands")
     return CaptureHistoryReading(tuple(events))
+
+
+Remaining = Literal["needs", "choice", "ready"]
+"""What a waiting note needs before it can be in a plan: a class and a title, a choice about
+homework of that class and title already on record, or nothing more than adding it."""
+
+
+def what_remains(
+    notes: Iterable["Capture"], on_record: Collection[tuple[str, str]]
+) -> dict[str, Remaining]:
+    """What each note still waiting needs, by its id. ``on_record`` is the class and title of
+    every assignment on record, paired by the rule the school's paste pairs by. A note that is
+    archived or in homework needs nothing and is left out. Nothing is read from her words."""
+    remains: dict[str, Remaining] = {}
+    for note in notes:
+        if not note.outstanding:
+            continue
+        if note.course is None or note.title is None:
+            remains[note.capture_id] = "needs"
+        elif pair(note.course, note.title) in on_record:
+            remains[note.capture_id] = "choice"
+        else:
+            remains[note.capture_id] = "ready"
+    return remains
 
 
 NOTE_ASSIGNMENTS: Final = uuid.UUID("c2f4a8d1-6b3e-4a97-8d05-1e7b9c3a5f42")

@@ -90,6 +90,15 @@ OUTSTANDING_CAPTURES: Final = """
 """
 """A row whose archived flag is neither 0 nor 1 is read with the notes that wait, where it
 is named as one that cannot be read, so no damaged flag takes a note off both lists."""
+ADDED_CAPTURES: Final = """
+    SELECT
+        capture_id, created_order, original_text, initial, text, course, title, due_date,
+        kind, note, attribution, created_at_utc, created_on, updated_at_utc, updated_on,
+        revision, archived, assignment_id
+    FROM homework_captures
+    WHERE archived = 0 AND assignment_id IS NOT NULL
+    ORDER BY created_order
+"""
 ARCHIVED_CAPTURES: Final = """
     SELECT
         capture_id, created_order, original_text, initial, text, course, title, due_date,
@@ -113,6 +122,15 @@ bound value. A row is decoded by position, so the four name the same columns in 
 order, which a test holds them to."""
 SNAPSHOT_FIELDS_ADDED: Final = ("title", "kind", "note", "assignment_id")
 """What a moment of a note's history gained with details and adding to homework."""
+CAPTURES_OF_ASSIGNMENT: Final = """
+    SELECT
+        capture_id, created_order, original_text, initial, text, course, title, due_date,
+        kind, note, attribution, created_at_utc, created_on, updated_at_utc, updated_on,
+        revision, archived, assignment_id
+    FROM homework_captures
+    WHERE assignment_id = ?
+    ORDER BY created_order
+"""
 NOTES_THAT_NAME_AN_ASSIGNMENT: Final = """
     SELECT capture_id, assignment_id FROM homework_captures
     WHERE assignment_id IS NOT NULL
@@ -520,6 +538,14 @@ class CaptureRecords:
                 return None
             return note, self._validated_capture_history_locked(note).events
 
+    def captures_of_assignment(self, assignment_id: str) -> CaptureReadings:
+        """The notes that are this assignment's: the one it was made from, and any joined to
+        it, the first saved first, put away or not, in one statement. An assignment's
+        details read this; nothing a plan is made from does."""
+        with self._lock:
+            rows = self._connection.execute(CAPTURES_OF_ASSIGNMENT, (assignment_id,)).fetchall()
+        return self._decoded(rows)
+
     def assignments_made_from_notes(self) -> set[str]:
         """The ids of the assignments on record that a note became, in one statement.
 
@@ -547,6 +573,11 @@ class CaptureRecords:
         """Every note still to do something about, not archived and not yet homework, the
         first saved first, in one statement."""
         return self._capture_readings(OUTSTANDING_CAPTURES)
+
+    def added_captures(self) -> CaptureReadings:
+        """Every note that is in homework and not archived, the first saved first, in one
+        statement. Such a note has left the ones that wait and is kept with its history."""
+        return self._capture_readings(ADDED_CAPTURES)
 
     def archived_captures(self) -> CaptureReadings:
         """Every archived note, the first saved first, in one statement."""

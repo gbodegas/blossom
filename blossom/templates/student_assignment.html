@@ -47,6 +47,23 @@
     <section class="evidence" id="evidence" tabindex="-1">
       <h2 class="update-heading">What is on record</h2>
       {% with due_with_year = true, facts_level = 3, part = "evidence" %}{% include "student_card_facts.html" %}{% endwith %}
+      {#
+        The homework notes this assignment was added from, or that were joined
+        to it as the same homework: her words as they stand, the day each was
+        saved, and the way to the note with its history. They are evidence
+        beside the record. Nothing of them is copied into the assignment, and
+        changing a note changes nothing here.
+      #}
+      {% if from_notes or from_notes_unreadable %}
+        <h3 class="update-heading">{% if ctx.viewer == "parent" %}From her homework note{% else %}From your homework note{% endif %}{% if from_notes|length > 1 %}s{% endif %}</h3>
+        {% for note, made_here in from_notes %}
+          <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
+          <p class="note">Saved {{ note.created_on.strftime("%B") }} {{ note.created_on.day }}, {{ note.created_on.year }}, as a homework note{% if note.archived %}, since archived{% endif %}. {% if made_here %}This assignment was added from it.{% else %}It was joined to this assignment as the same homework, which changed nothing on the assignment.{% endif %} <a href="{{ note_href(note.capture_id) }}">Open the note</a></p>
+        {% endfor %}
+        {% if from_notes_unreadable %}
+          <p class="problem">{{ from_notes_unreadable }} homework note{% if from_notes_unreadable != 1 %}s{% endif %} of this assignment cannot be read right now. Nothing was changed.</p>
+        {% endif %}
+      {% endif %}
     </section>
     {% include "student_update_history.html" %}
   </article>

@@ -122,9 +122,8 @@ def test_her_week_offers_the_way_in_and_shows_the_oldest_notes_outside_the_week(
     assert shown.index("note number 0, edited last") < shown.index("note number 1")
     assert "View all 4 homework notes" in shown
     assert "It is not in a plan yet." in shown
-    assert not [
-        words for words in ("Add it to homework", "Ready to add", "Link to") if words in shown
-    ]
+    assert shown.count("Add the class and title to put this in a plan.") == 3
+    assert not [words for words in ("Ready to add", "Link to", "Search homework") if words in shown]
     assert week.index('id="today"') < week.index('id="homework-notes"')
     assert week.index('id="homework-notes"') < week.index('class="list-heading"')
     assert "Homework notes (3)" in notes_section(fewer)

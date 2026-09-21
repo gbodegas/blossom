@@ -68,6 +68,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, statuses_for
+from blossom.captures import derived_assignment_id, what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
@@ -84,6 +85,7 @@ from blossom.noticing import (
     reconcile_dates,
     week_from,
 )
+from blossom.pairing import pair
 from blossom.plan_reading import DoneMark, PlanReading, Reader, anchor_for, read_plan
 from blossom.principals import Principal
 from blossom.reconciliation import (
@@ -1098,6 +1100,9 @@ def student_page(
             "to_turn_in_page": TO_TURN_IN_PAGE,
             "homework_notes": notes.notes,
             "homework_notes_unreadable": notes.unreadable,
+            "remains": what_remains(
+                notes.notes, {pair(item.course, item.title) for item in everything.assignments}
+            ),
             "notes_page": NOTES_PAGE,
             "new_note_page": NEW_NOTE_PAGE,
             "viewer": viewer,
@@ -1429,7 +1434,10 @@ def detail_page(
         records = [] if item is None else on_record.deadline_records(assignment_id)
         found = None if item is None else statuses_for(on_record, [assignment_id])
         turned_in = None if item is None else on_record.hand_in_readings([assignment_id])
-    if item is None or found is None or turned_in is None:
+        # The homework notes this assignment was added from or joined by: her words, kept
+        # as evidence beside the record and copied into none of it.
+        notes = None if item is None else on_record.captures_of_assignment(assignment_id)
+    if item is None or found is None or turned_in is None or notes is None:
         return gone_page(
             request, state, back, assignment_id, card=card, hand_in=hand_in, today=today
         )
@@ -1449,6 +1457,11 @@ def detail_page(
         "student_assignment.html",
         {
             "assignment": view,
+            "from_notes": [
+                (note, derived_assignment_id(note.capture_id) == assignment_id)
+                for note in notes.notes
+            ],
+            "from_notes_unreadable": len(notes.unreadable),
             "ctx": detail_context(assignment_id, back, viewer, link),
             "back": link,
             "card": card,
