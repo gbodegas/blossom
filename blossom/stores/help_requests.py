@@ -26,6 +26,7 @@ writes nothing. Putting the note away later does not remove the reference,
 and a note that cannot be read later does not take the request with it.
 """
 
+import logging
 import sqlite3
 import threading
 from datetime import date, datetime, timedelta
@@ -38,6 +39,8 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from blossom.captures import capture_id_from
 from blossom.clock import Clock
 from blossom.stores.paths import refuse_unsafe_path
+
+logger = logging.getLogger(__name__)
 
 HELP_RETENTION_DAYS: Final = 14
 """How long a resolved request is kept: long enough for the word back to be read."""
@@ -72,6 +75,10 @@ class HelpRequest(BaseModel):
     capture_id: str | None = None
     """The homework note the request is about, when it is about one. Only the id: her
     note's words are never copied here."""
+    capture_reference_unreadable: bool = False
+    """The request is about a note, and what the file holds in the id's place is no id as
+    this store writes one. The request stands and says its note is unavailable; what the
+    column holds is never read into text, so nothing of it can reach a page or an answer."""
 
     @property
     def open(self) -> bool:
@@ -345,6 +352,7 @@ def request_from(row: sqlite3.Row) -> HelpRequest:
 
     note = row["note"]
     response = row["response"]
+    capture_id, unreadable = reference_from(row["capture_id"], str(row["request_id"]))
     return HelpRequest(
         request_id=str(row["request_id"]),
         evening=date.fromisoformat(str(row["evening"])),
@@ -354,5 +362,33 @@ def request_from(row: sqlite3.Row) -> HelpRequest:
         accepted_at=when(row["accepted_at"]),
         resolved_at=when(row["resolved_at"]),
         response=None if response is None else str(response),
-        capture_id=None if row["capture_id"] is None else str(row["capture_id"]),
+        capture_id=capture_id,
+        capture_reference_unreadable=unreadable,
     )
+
+
+def reference_from(held: object, request_id: str) -> tuple[str | None, bool]:
+    """The note a request is about, from what the file holds: the id, and whether something
+    is held that is no id.
+
+    Nothing held is about no note. A ``str`` that is a note's id in the one
+    spelling this store writes is that id. Anything else, bytes, other
+    words, a number, an id in capitals, was not written here. It is not
+    turned into text, since ``str`` of corrupted bytes is printable and
+    would be handed on as an id; the request is kept and marked instead,
+    and the log names the request and the type held, never the content.
+    """
+    if held is None:
+        return None, False
+    if type(held) is str:
+        try:
+            if capture_id_from(held) == held:
+                return held, False
+        except ValueError:
+            pass
+    logger.warning(
+        "help request %s holds a %s that is no note id in the place of one",
+        request_id,
+        type(held).__name__,
+    )
+    return None, True

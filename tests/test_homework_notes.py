@@ -41,8 +41,10 @@ from blossom.routes.captures import (
     NOTE_SAVED_EARLIER,
     NOTE_TOO_LONG,
     NOTE_UNREADABLE,
+    date_controls_are_valid,
     revision_of,
 )
+from blossom.routes.forms import TOKEN_MAX_LENGTH
 from blossom.routes.navigation import (
     ARCHIVED_NOTES_PAGE,
     NEW_NOTE_PAGE,
@@ -321,7 +323,7 @@ def test_a_day_that_was_refused_is_said_on_every_later_answer_until_one_reads() 
         assert ">Save without the date</button>" in answer.text
         assert re.search(r"<details[^>]* open", answer.text)
     assert forged.status_code == 422
-    assert said_first(forged.text, NOTE_NEEDS_A_DATE_CHOICE)
+    assert said_first(forged.text, BAD_FORM)
     assert "ring" not in forged.text
     assert with_a_day.status_code == 422
     assert said_first(with_a_day.text, NOTE_TOO_LONG)
@@ -892,6 +894,61 @@ def test_a_refusal_beside_that_choice_keeps_the_day_she_typed_and_the_choice_to_
         assert plain.status_code == 422
         assert said_first(plain.text, NOTE_NEEDS_A_DATE_CHOICE)
         assert note is None
+
+
+FORGED_REFUSED_WORDS = {
+    "a control character": "bad" + chr(7) + "day",
+    "a line break": "bad" + chr(10) + "day",
+    "space around them": " friday ",
+    "more than a page ever sends": "f" * 500,
+    "nothing at all": "",
+}
+
+
+def test_the_refused_words_are_valid_only_as_these_pages_write_them() -> None:
+    marked = {"date_pending": "1"}
+    assert date_controls_are_valid({**marked, "date_refused": "friday"})
+    assert date_controls_are_valid({**marked, "date_refused": "next <b>week</b>"})
+    assert date_controls_are_valid({**marked, "date_refused": "f" * TOKEN_MAX_LENGTH})
+    assert date_controls_are_valid(marked)
+    assert date_controls_are_valid({})
+    for forged in FORGED_REFUSED_WORDS.values():
+        assert not date_controls_are_valid({**marked, "date_refused": forged}), repr(forged)
+    assert not date_controls_are_valid({"date_refused": "friday"})
+
+
+@pytest.mark.parametrize("surface", ["new", "edit"])
+@pytest.mark.parametrize("choice", ["without_date", "save", None])
+@pytest.mark.parametrize("forged", sorted(FORGED_REFUSED_WORDS))
+def test_refused_words_these_pages_never_write_are_a_form_they_did_not_make(
+    surface: str, choice: str | None, forged: str
+) -> None:
+    """The refused words are only ever shown, and a page writes them one way. Sent any other
+    way, with the button that saves without the date or with any other, the form is refused
+    whole: 422, nothing written, her words kept, and the forged words shown nowhere."""
+    with browser() as client:
+        store = state_of(client).project_state
+        action, fields = opened_form(client, surface)
+        sent = {
+            **fields,
+            "text": "Words on a forged form",
+            "due_date": "",
+            "date_pending": "1",
+            "date_refused": FORGED_REFUSED_WORDS[forged],
+        }
+        if choice is not None:
+            sent["choice"] = choice
+        before = tables(store)
+        answer = client.post(action, data=sent, headers=PAGE_HEADERS)
+        after = tables(store)
+        kept = whole_form(answer.text, action)
+
+    assert answer.status_code == 422
+    assert said_first(answer.text, BAD_FORM)
+    assert after == before
+    assert kept["text"] == "Words on a forged form"
+    assert "bad" not in answer.text.split("<main", 1)[-1].replace("Words on a forged form", "")
+    assert "ffffffffff" not in answer.text
 
 
 # ------------------------------------------------------- forms that are not whole

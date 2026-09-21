@@ -207,3 +207,47 @@ def test_putting_a_note_away_keeps_the_reference_and_a_damaged_note_loses_no_req
     )
     assert help_store.accept(asked.request_id, "on it").capture_id == name
     assert help_store.resolve(asked.request_id).capture_id == name
+
+
+@pytest.mark.parametrize(
+    "held",
+    [b"INJECTED reference", "INJECTED words", "CAPITALS", 7, 1.5],
+)
+def test_a_reference_that_is_no_id_as_the_store_writes_it_is_kept_as_unreadable_and_not_as_text(
+    tmp_path: pathlib.Path, held: object
+) -> None:
+    """The store writes a note's id one way. Anything else in that column is no reference it
+    wrote: the request is still read, it says its reference cannot be read, and nothing of
+    what the column holds leaves the store."""
+    path = tmp_path / "record.sqlite3"
+    record = practice_store(path)
+    name = new_capture_id()
+    record.create_capture(
+        name,
+        "Geometry questions 4-8",
+        None,
+        None,
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=AT,
+        today=MONDAY,
+    )
+    requests = HelpRequestsStore(sqlite3.connect(path, check_same_thread=False), fixture_clock())
+    asked = requests.ask(MONDAY, "which part?", capture_id=name)
+    value = name.upper() if held == "CAPITALS" else held
+    requests._connection.execute("UPDATE help_requests SET capture_id = ?", (value,))
+    requests._connection.commit()
+
+    read = requests.get(asked.request_id)
+    listed = requests.open_requests()
+
+    assert read is not None
+    assert (read.capture_id, read.capture_reference_unreadable) == (None, True)
+    assert read.note == "which part?"
+    assert [item.request_id for item in listed] == [asked.request_id]
+    assert "INJECTED" not in read.model_dump_json()
+    assert name.upper() not in read.model_dump_json()
+    sound = requests.ask(MONDAY, None, capture_id=name)
+    assert (sound.capture_id, sound.capture_reference_unreadable) == (name, False)
+    plain = requests.ask(MONDAY, "about no note")
+    assert (plain.capture_id, plain.capture_reference_unreadable) == (None, False)

@@ -910,7 +910,15 @@ Python would make words of the first and read `20260918` as a day and `0_1` as
 a count. So a note's row and a change's row are read column by column as what
 the store writes: text as text, a count as an integer, a day and a moment in
 the one spelling it writes them, a snapshot as the JSON it wrote. Nothing is
-coerced on its way to being her words. Save without the date does what it says whatever the date control
+coerced on its way to being her words. The help store reads the id of the note
+a request is about the same way: a note's id in the one spelling it writes, or
+nothing. Anything else held there is never turned into text, since corrupted
+bytes print as ordinary characters and would be handed on as an id; the request
+is kept, marked as about a note whose reference cannot be read, shown with its
+note unavailable, and answered in JSON with no id at all. The words of a day
+that could not be read, which a form carries only to be shown again, are valid
+only as a page writes them; sent any other way the form is refused whole,
+whichever button is pressed beside them. Save without the date does what it says whatever the date control
 holds beside it: no day goes to the store, and what she typed there stays on
 the form, with its mark, only so that another refusal can show it again.
 

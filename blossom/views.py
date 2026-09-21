@@ -375,16 +375,27 @@ class HelpNoteView(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    capture_id: str
+    capture_id: str | None
+    """The note's id, or ``None`` when the request is about a note and its reference cannot
+    be read: the note is then unavailable, and nothing of what was held is given out."""
     text: str | None = None
     archived: bool = False
     unavailable: bool = False
 
     @classmethod
-    def about(cls, capture_id: str | None, notes: Mapping[str, Capture]) -> "HelpNoteView | None":
+    def about(
+        cls,
+        capture_id: str | None,
+        notes: Mapping[str, Capture],
+        *,
+        unreadable_reference: bool = False,
+    ) -> "HelpNoteView | None":
         """The note a request names, out of the notes read for it in one batch; ``None`` for
         a request about no note. One the batch does not hold is unavailable, so whoever
-        shows a request reads the notes first: there is no way to say they were not read."""
+        shows a request reads the notes first: there is no way to say they were not read. A
+        request whose reference cannot be read is about a note all the same, and says so."""
+        if unreadable_reference:
+            return cls(capture_id=None, unavailable=True)
         if capture_id is None:
             return None
         note = notes.get(capture_id)

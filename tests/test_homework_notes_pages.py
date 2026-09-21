@@ -596,28 +596,43 @@ def test_bytes_in_a_text_column_are_never_shown_as_her_words(statement: str) -> 
         assert "cannot be read right now" in page.text
 
 
-def test_a_note_reference_held_as_bytes_shows_the_request_and_no_note() -> None:
-    """The help store keeps only the note's id. Bytes in its place name no note, so the
-    request is still shown, the note is said to be unavailable, and nothing of the bytes is."""
+@pytest.mark.parametrize("held", [b"INJECTED reference", "INJECTED words", "CAPITALS"])
+def test_a_reference_that_is_no_id_shows_the_request_and_reflects_nothing_it_holds(
+    held: object,
+) -> None:
+    """The help store keeps only the note's id, written one way. Bytes, other words, or an id
+    in capitals in its place name no note: the request is still shown, the note is said to be
+    unavailable, and what the column holds reaches no page and no JSON answer."""
     with browser() as client:
         state = state_of(client)
         name = save_note(client, "Ordinary words")
         assert ask_about(client, name, "which part?").status_code == 303
-        state.help_requests._connection.execute(
-            "UPDATE help_requests SET capture_id = ?", (b"INJECTED reference",)
-        )
+        value = name.upper() if held == "CAPITALS" else held
+        state.help_requests._connection.execute("UPDATE help_requests SET capture_id = ?", (value,))
         state.help_requests._connection.commit()
-        pages = [client.get(HER_PAGE), client.get(FAMILY)]
-        listed = client.get("/parent/help-requests")
+        asked = state.help_requests.open_requests()[0]
+        answers = [
+            client.get(HER_PAGE),
+            client.get(FAMILY),
+            client.get("/student/help-requests"),
+            client.get("/parent/help-requests"),
+            client.post(f"/parent/help-requests/{asked.request_id}/accept", json={}),
+            client.post(f"/parent/help-requests/{asked.request_id}/resolve", json={}),
+        ]
 
-    for page in pages:
-        assert page.status_code == 200
-        assert "which part?" in page.text
+    unavailable = {"capture_id": None, "text": None, "archived": False, "unavailable": True}
+    for answer in answers:
+        assert answer.status_code == 200
+        assert "which part?" in answer.text
+        assert "INJECTED" not in answer.text
+        assert name.upper() not in answer.text
+    for page in answers[:2]:
         assert "homework note cannot be read right now." in page.text
-        assert "INJECTED" not in page.text
-    assert listed.status_code == 200
-    assert listed.json()[0]["about_note"]["unavailable"] is True
-    assert listed.json()[0]["about_note"]["text"] is None
+        assert "Open homework note" not in page.text.split("which part?", 1)[1].split("</", 3)[0]
+    for listing in answers[2:4]:
+        assert listing.json()[0]["about_note"] == unavailable
+    for moved in answers[4:]:
+        assert moved.json()["about_note"] == unavailable
 
 
 # --------------------------------------------------------- what a note never does

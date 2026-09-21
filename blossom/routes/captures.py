@@ -216,12 +216,18 @@ class Prepared:
 
 def date_controls_are_valid(fields: dict[str, str]) -> bool:
     """Whether the fields that steer the date carry only what these pages send: the button
-    pressed, or none for the Enter key; the mark as written; the refused words only with it.
-    A value that is near one of these is not one of these, and nothing is trimmed into it."""
+    pressed, or none for the Enter key; the mark as written; the refused words only with it,
+    and only as a page writes them, which is what ``shown_day`` makes of a day. Words with a
+    control character, a line break, space around them, more than a page sends, or nothing
+    in them were written by no page, whichever button is pressed beside them. A value that
+    is near one of these is not one of these, and nothing is trimmed into it."""
+    refused = fields.get("date_refused")
     return (
         fields.get("choice") in (None, "save", WITHOUT_DATE)
         and fields.get("date_pending") in (None, "1")
-        and ("date_refused" not in fields or fields.get("date_pending") == "1")
+        and (
+            refused is None or (fields.get("date_pending") == "1" and shown_day(refused) == refused)
+        )
     )
 
 
@@ -243,11 +249,13 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None = Non
     another refusal of the same form shows it and offers both buttons again.
     """
     marked = "date_pending" in fields or "date_refused" in fields
+    carried = fields.get("date_refused", "")
     form = NoteForm(
         capture_id=capture_id,
         text=fields.get("text", ""),
         course=fields.get("course", ""),
-        date_refused=shown_day(fields.get("date_refused", "")) if marked else None,
+        # Shown again only as a page wrote them; forged words are not tidied into view.
+        date_refused=carried if carried and shown_day(carried) == carried else None,
         date_pending=marked,
         revision=revision,
     )

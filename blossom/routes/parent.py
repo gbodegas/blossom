@@ -573,7 +573,11 @@ def help_view(
     homework note it is about, when it is about one, out of ``named``, the notes read for
     the requests being shown."""
     return HelpRequestView(
-        about_note=HelpNoteView.about(request.capture_id, named.notes),
+        about_note=HelpNoteView.about(
+            request.capture_id,
+            named.notes,
+            unreadable_reference=request.capture_reference_unreadable,
+        ),
         request_id=request.request_id,
         evening=request.evening,
         asked_at=request.asked_at,
