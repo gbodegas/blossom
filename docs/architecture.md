@@ -873,6 +873,21 @@ a note's history that cannot be read makes the note's page say the same. The
 endpoints that answer a request for help in JSON read the notes their requests
 name, once for all of them, as the two pages do.
 
+A note's changes are one line or nothing is added to them. Every write to a
+note on record, the same form again included, first reads that note's changes
+through the store's own connection, inside the transaction that reserved the
+writer, and holds them to it: the first is the first save, at revision 1, with
+what that save sent and the place the file gave it; each later change is one
+revision on, starts where the one before ended, and is what its kind does, an
+archive and a restore moving the note one way each and touching no words, an
+edit never bringing an archived note back; every snapshot is within the rules
+a note's words are held to; and the last ends at the note as it stands. Days
+and times are not compared, since a clock may run backward. The change about
+to be written is held to the same rules as the last of that line before it is
+written. A line that is not sound is refused with its cause kept, nothing is
+written and nothing is mended, and the note's page says the note cannot be read
+and gives no result. The lists read no history, so this costs a list nothing.
+
 A note's id is a UUID and its routes take it as one path segment. A note is
 no assignment, makes no claim about a date, and is read by no model: the
 pages read notes beside the record and never into it. Turning a note into

@@ -431,18 +431,16 @@ def note_page(
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """One note's page: what stands, the first words when they differ, who supplied a class
-    or a day, the history, and for her the ways to change it. Two reads in one snapshot. A
-    note or a change of it that cannot be read is said as unavailable, never as gone.
+    or a day, the history, and for her the ways to change it. Two reads in one snapshot, and
+    the changes held to being one sound line. A note or a change of it that cannot be read,
+    or a line that is broken, is said as unavailable, never as gone, and gives no result.
 
     When the page is the answer to a refused change, ``form`` holds what she
     typed, and a note that cannot be shown does not take that with it: the
     answer is then the page that reads no store, with everything she typed.
     """
-    store = state.project_state
     try:
-        with store.reading():
-            note = store.capture(capture_id)
-            history = [] if note is None else store.capture_history(capture_id)
+        found = state.project_state.sound_capture_history(capture_id)
     except UnreadableCapture:
         if form is not None:
             return plain_failure(request, state, NOTE_UNREADABLE, form, refusal(status_code))
@@ -452,10 +450,11 @@ def note_page(
             raise
         logger.exception("the note %s could not be read to answer a refused change", capture_id)
         return plain_failure(request, state, problem or NOTE_UNREADABLE, form, refusal(status_code))
-    if note is None:
+    if found is None:
         if form is not None:
             return plain_failure(request, state, NOTE_GONE, form, refusal(status_code, gone=True))
         return gone(request, state)
+    note, history = found[0], list(found[1])
     viewer = viewer_of(request)
     mine = viewer != "parent"
     result = result_of(history, said, event) if mine else None

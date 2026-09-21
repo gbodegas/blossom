@@ -10,6 +10,7 @@ import re
 import sqlite3
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -397,6 +398,136 @@ def test_a_change_that_cannot_be_read_is_an_unreadable_note_and_never_a_crash(
         edit(store, name, "Questions 4-9", None, None, 2)
     assert store.capture(name) is not None
     assert [note.capture_id for note in store.outstanding_captures().notes] == [name]
+
+
+DAMAGE = {
+    "head that is no json": "UPDATE capture_events SET after = '{' WHERE revision = 2",
+    "earlier that is no json": "UPDATE capture_events SET after = '{' WHERE revision = 1",
+    "earlier of no kind": "UPDATE capture_events SET operation = 'guess' WHERE revision = 1",
+    "earlier on no day": "UPDATE capture_events SET occurred_on = 'someday' WHERE revision = 1",
+    "no first save": "DELETE FROM capture_events WHERE revision = 1",
+    "a revision skipped": "UPDATE capture_events SET revision = 12 WHERE revision = 2",
+    "a revision twice": "UPDATE capture_events SET revision = 1 WHERE revision = 2",
+    "a before that never stood": (
+        "UPDATE capture_events SET before = json_set(before, '$.text', 'Never stood here') "
+        "WHERE revision = 2"
+    ),
+    "a first save that began archived": (
+        "UPDATE capture_events SET after = json_set(after, '$.archived', json('true')) "
+        "WHERE revision = 1"
+    ),
+    "words too long to have been kept": (
+        "UPDATE capture_events SET after = json_set(after, '$.course', "
+        "'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc') WHERE revision = 1"
+    ),
+    "a note its changes do not end at": (
+        "UPDATE homework_captures SET text = 'Words no change made'"
+    ),
+    "a revision its changes do not end at": "UPDATE homework_captures SET revision = 3",
+    "a first save that sent something else": (
+        "UPDATE homework_captures SET initial = json_set(initial, '$.text', 'Other first words'), "
+        "original_text = 'Other first words'"
+    ),
+    "a place the file did not give": "UPDATE homework_captures SET created_order = 99",
+}
+
+
+@pytest.mark.parametrize(
+    "action", ["the same form again", "the same words", "other words", "archive"]
+)
+@pytest.mark.parametrize("damage", sorted(DAMAGE))
+def test_a_line_of_changes_that_is_not_sound_is_neither_added_to_nor_said_to_stand(
+    store: ProjectStateStore, damage: str, action: str
+) -> None:
+    """Whatever is asked of a note, its changes are read first, inside the transaction, and
+    must be one line: a first save at revision 1, each change starting where the one before
+    ended, each of its own kind, within the text rules, ending at the note as it stands. A
+    line that is not is refused with its cause, nothing is written, and nothing is mended."""
+    name = new_capture_id()
+    created(create(store, name))
+    changed(edit(store, name, "Questions 4-9", None, None, 1, on=1))
+    store._connection.execute(DAMAGE[damage])
+    store._connection.commit()
+    before = rows(store)
+
+    attempts: dict[str, Callable[[], object]] = {
+        "the same form again": lambda: create(store, name, on=2),
+        "the same words": lambda: edit(store, name, "Questions 4-9", None, None, 2, on=2),
+        "other words": lambda: edit(store, name, "Questions 4-10", None, None, 2, on=2),
+        "archive": lambda: archive(store, name, 2, on=2),
+    }
+    with pytest.raises(CaptureNotSaved) as refused:
+        attempts[action]()
+
+    assert isinstance(refused.value.__cause__, UnreadableCapture)
+    assert rows(store) == before
+    assert not store._connection.in_transaction
+    with pytest.raises(UnreadableCapture):
+        store.sound_capture_history(name)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "UPDATE capture_events SET operation = 'edit' WHERE operation = 'restore'",
+        "UPDATE capture_events SET after = json_set(after, '$.text', 'Slipped in') "
+        "WHERE operation = 'archive'",
+        "UPDATE capture_events SET operation = 'restore' WHERE operation = 'archive'",
+    ],
+)
+def test_a_change_that_is_not_what_its_kind_does_makes_the_line_unsound(
+    store: ProjectStateStore, damage: str
+) -> None:
+    """An archive and a restore move a note one way each and touch no words, and an edit
+    never brings an archived note back."""
+    name = new_capture_id()
+    created(create(store, name))
+    changed(archive(store, name, 1))
+    changed(restore(store, name, 2))
+    store._connection.execute(damage)
+    store._connection.commit()
+    before = rows(store)
+
+    attempts: tuple[Callable[[], object], ...] = (
+        lambda: restore(store, name, 3),
+        lambda: archive(store, name, 3),
+        lambda: edit(store, name, "Other words", None, None, 3),
+    )
+    for attempt in attempts:
+        with pytest.raises(CaptureNotSaved):
+            attempt()
+    assert rows(store) == before
+
+
+def test_a_sound_line_is_added_to_whatever_the_clock_does_and_a_save_that_writes_nothing_works(
+    store: ProjectStateStore,
+) -> None:
+    """Days that run backward are no fault of a line, and nothing here asks them to go on."""
+    name = new_capture_id()
+    first = create(store, name, course="Geometry", due=day(9), on=6)
+    assert isinstance(first, CaptureCreated)
+    second = changed(edit(store, name, "Questions 4-9", "Geometry", None, 1, on=4))
+    third = changed(archive(store, name, 2, on=2))
+    again = archive(store, name, 3, on=1)
+    fourth = changed(restore(store, name, 3, on=0))
+    replay = create(store, name, course="Geometry", due=day(9), on=0)
+    fifth = changed(edit(store, name, "Questions 4-10", None, None, 4, on=0))
+    reading = store.sound_capture_history(name)
+
+    assert (second.revision, third.revision, fourth.revision, fifth.revision) == (2, 3, 4, 5)
+    assert isinstance(again, CaptureUnchanged)
+    assert again.head.operation == ARCHIVE
+    assert isinstance(replay, CaptureAlreadyCreated)
+    assert replay.head.operation == RESTORE
+    assert reading is not None
+    note, changes = reading
+    assert note == fifth
+    assert [change.operation for change in changes] == [CREATE, EDIT, ARCHIVE, RESTORE, EDIT]
+    assert [change.occurred_on for change in changes] == [day(6), day(4), day(2), day(0), day(0)]
+
+
+def test_a_name_that_is_no_note_has_no_line_of_changes(store: ProjectStateStore) -> None:
+    assert store.sound_capture_history(new_capture_id()) is None
 
 
 def test_two_notes_with_the_same_words_are_two_notes(store: ProjectStateStore) -> None:

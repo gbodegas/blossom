@@ -715,6 +715,63 @@ def test_an_edit_behind_an_archive_keeps_every_field_and_leads_to_the_note(day: 
     assert (note.archived, note.text) == (True, WORDS)
 
 
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "UPDATE capture_events SET after = '{' WHERE revision = 1",
+        "UPDATE capture_events SET revision = 12 WHERE revision = 2",
+        "DELETE FROM capture_events WHERE revision = 1",
+    ],
+)
+@pytest.mark.parametrize("step", ["edit", "archive", "the same form again"])
+def test_a_note_whose_changes_are_not_one_line_takes_no_change_and_keeps_her_words(
+    damage: str, step: str
+) -> None:
+    """Through the pages: the change is refused with nothing written, the note's page says
+    it cannot be read and gives no result, and what she typed into an edit is kept."""
+    with browser() as client:
+        store = state_of(client).project_state
+        fields = new_form(client)
+        first = {"text": WORDS, "course": "", "due_date": ""}
+        send(client, fields, **first)
+        name = fields["capture_id"]
+        edit = note_action(name, "edit")
+        opened = whole_form(client.get(note_href(name, edit="1")).text, edit)
+        held = client.post(
+            edit, data={**opened, "text": "Changed once"}, headers=PAGE_HEADERS
+        ).headers["location"]
+        current = whole_form(client.get(note_href(name, edit="1")).text, edit)
+        store._connection.execute(damage)
+        store._connection.commit()
+        before = tables(store)
+
+        answer: Answer
+        if step == "edit":
+            answer = client.post(edit, data={**current, **TYPED}, headers=PAGE_HEADERS)
+        elif step == "archive":
+            answer = client.post(
+                note_action(name, "archive"), data={"revision": "2"}, headers=PAGE_HEADERS
+            )
+        else:
+            answer = send(client, fields, **first)
+        after = tables(store)
+        page = client.get(held)
+
+    assert answer.status_code == 500
+    assert answer.text.count(" autofocus") == 1
+    assert 'id="note-result"' not in answer.text
+    if step == "edit":
+        assert "UNSAVED &lt;i&gt;words&lt;/i&gt;" in answer.text
+        assert "UNSAVED &lt;b&gt;class&lt;/b&gt;" in answer.text
+    if step == "the same form again":
+        assert escape(WORDS) in answer.text
+    assert after == before
+    assert page.status_code == 200
+    assert escape(NOTE_UNREADABLE) in page.text
+    assert 'id="note-result"' not in page.text
+    assert "Changed once" not in page.text
+
+
 # ------------------------------------------------------- forms that are not whole
 
 

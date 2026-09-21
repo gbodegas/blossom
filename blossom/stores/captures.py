@@ -48,6 +48,7 @@ from blossom.captures import (
     CaptureConflict,
     CaptureCreated,
     CaptureEvent,
+    CaptureHistoryReading,
     CaptureIdTaken,
     CaptureNotSaved,
     CaptureOperation,
@@ -59,6 +60,7 @@ from blossom.captures import (
     UnreadableCapture,
     capture_id_from,
     kept_words,
+    sound_history,
 )
 from blossom.reconciliation import SourceChannel
 
@@ -127,12 +129,6 @@ CAPTURE_EVENTS: Final = """
     FROM capture_events
     WHERE capture_id = ? ORDER BY sequence
 """
-LATEST_CAPTURE_EVENT: Final = """
-    SELECT event_id, capture_id, operation, before, after, revision, occurred_at_utc,
-        occurred_on, authored_by, sequence
-    FROM capture_events
-    WHERE capture_id = ? ORDER BY sequence DESC LIMIT 1
-"""
 
 
 @dataclass(frozen=True)
@@ -187,7 +183,7 @@ def capture_from(row: tuple[object, ...]) -> Capture:
 
 
 def capture_event_from(row: tuple[object, ...]) -> CaptureEvent:
-    """One change from a row read by ``CAPTURE_EVENTS`` or ``LATEST_CAPTURE_EVENT``, or
+    """One change from a row read by ``CAPTURE_EVENTS``, or
     ``UnreadableCapture`` for the note it belongs to: a change that cannot be read makes the
     note's history unavailable, which a page says, and is never a failure of the page."""
     try:
@@ -239,6 +235,11 @@ class CaptureRecords:
     _lock: "threading.RLock"
 
     def _writing(self) -> AbstractContextManager[None]:
+        raise NotImplementedError
+
+    def reading(self) -> AbstractContextManager[None]:
+        """One snapshot of the file for as many reads as the block makes; the store of the
+        record supplies it."""
         raise NotImplementedError
 
     def _create_capture_tables(self) -> None:
@@ -314,6 +315,20 @@ class CaptureRecords:
             rows = self._connection.execute(CAPTURE_EVENTS, (name,)).fetchall()
         return [capture_event_from(row) for row in rows]
 
+    def sound_capture_history(
+        self, capture_id: str
+    ) -> tuple[Capture, tuple[CaptureEvent, ...]] | None:
+        """One note with its changes, read in one snapshot and found to be one sound line, or
+        ``None`` for a name that is no note. A note or a change that cannot be read, or a
+        line that is broken, is ``UnreadableCapture``: a page says the note is unavailable
+        and says nothing a broken line would have it say."""
+        name = capture_id_from(capture_id)
+        with self._lock, self.reading():
+            note = self._capture_locked(name)
+            if note is None:
+                return None
+            return note, self._validated_capture_history_locked(note).events
+
     def outstanding_captures(self) -> CaptureReadings:
         """Every note still to do something about, not archived and not yet homework, the
         first saved first, in one statement."""
@@ -387,9 +402,10 @@ class CaptureRecords:
                 standing = self._capture_locked(name)
                 if standing is not None:
                     same = standing.initial == words
+                    reading = self._validated_capture_history_locked(standing)
                     if not same:
                         return CaptureIdTaken(standing)
-                    return CaptureAlreadyCreated(standing, self._latest_event_locked(name))
+                    return CaptureAlreadyCreated(standing, reading.head)
                 source = FieldSource(authored_by=authored_by, channel=channel)
                 note = Capture(
                     capture_id=name,
@@ -407,7 +423,7 @@ class CaptureRecords:
                     created_order=1,
                 )
                 event = self._append_capture_event_locked(
-                    note, CREATE, None, authored_by, now=now, today=today
+                    note, CREATE, None, authored_by, (), now=now, today=today
                 )
                 assert event.sequence is not None  # noqa: S101  (the file just gave it)
                 note = note.model_copy(update={"created_order": event.sequence})
@@ -461,8 +477,9 @@ class CaptureRecords:
         try:
             with self._lock, self._writing():
                 standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
                 if standing.words == words:
-                    return CaptureUnchanged(standing, self._latest_event_locked(name))
+                    return CaptureUnchanged(standing, reading.head)
                 if standing.revision != expected_revision or standing.archived:
                     return CaptureConflict(standing)
                 source = FieldSource(authored_by=authored_by, channel=channel)
@@ -474,7 +491,9 @@ class CaptureRecords:
                         "attribution": attributed(words, standing, source),
                     }
                 )
-                return self._change_locked(standing, note, EDIT, authored_by, now=now, today=today)
+                return self._change_locked(
+                    standing, note, EDIT, authored_by, reading, now=now, today=today
+                )
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             raise CaptureNotSaved(name, error) from error
 
@@ -523,14 +542,15 @@ class CaptureRecords:
         try:
             with self._lock, self._writing():
                 standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
                 if standing.archived == archived:
-                    return CaptureUnchanged(standing, self._latest_event_locked(name))
+                    return CaptureUnchanged(standing, reading.head)
                 if standing.revision != expected_revision:
                     return CaptureConflict(standing)
                 note = standing.model_copy(update={"archived": archived})
                 operation: CaptureOperation = ARCHIVE if archived else RESTORE
                 return self._change_locked(
-                    standing, note, operation, authored_by, now=now, today=today
+                    standing, note, operation, authored_by, reading, now=now, today=today
                 )
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             raise CaptureNotSaved(name, error) from error
@@ -541,17 +561,20 @@ class CaptureRecords:
         note: Capture,
         operation: CaptureOperation,
         authored_by: Author,
+        reading: CaptureHistoryReading,
         *,
         now: datetime,
         today: date,
     ) -> CaptureChanged:
-        """Write one change and its event, inside the caller's transaction. The update names
-        the revision it was decided on, so it lands on that revision or on nothing."""
+        """Write one change and its event, inside the caller's transaction. ``reading`` is
+        the note's line of changes as that transaction read it, which the new change must
+        carry on. The update names the revision it was decided on, so it lands on that
+        revision or on nothing."""
         note = note.model_copy(
             update={"revision": standing.revision + 1, "updated_at": now, "updated_on": today}
         )
         event = self._append_capture_event_locked(
-            note, operation, standing, authored_by, now=now, today=today
+            note, operation, standing, authored_by, reading.events, now=now, today=today
         )
         written = self._connection.execute(
             UPDATE_CAPTURE,
@@ -579,12 +602,15 @@ class CaptureRecords:
         operation: CaptureOperation,
         before: Capture | None,
         authored_by: Author,
+        line: tuple[CaptureEvent, ...],
         *,
         now: datetime,
         today: date,
     ) -> CaptureEvent:
         """Append the event of one change, inside the caller's transaction, and give it the
-        place the file gave it."""
+        place the file gave it. ``line`` is the note's changes as this transaction read
+        them, empty for a first save: the new change is held to the same rules as the last
+        of that line, with the note as it will stand, before anything is written."""
         event = CaptureEvent(
             event_id=new_capture_event_id(),
             capture_id=note.capture_id,
@@ -596,6 +622,7 @@ class CaptureRecords:
             occurred_on=today,
             authored_by=authored_by,
         )
+        sound_history(note, [*line, event])
         cursor = self._connection.execute(
             INSERT_CAPTURE_EVENT,
             (
@@ -616,14 +643,14 @@ class CaptureRecords:
         row = self._connection.execute(CAPTURE_NAMED, (capture_id,)).fetchone()
         return None if row is None else capture_from(row)
 
-    def _latest_event_locked(self, capture_id: str) -> CaptureEvent:
-        """The latest change of a note, inside the caller's transaction. Every note has one,
-        since a note and its first event are written together."""
-        row = self._connection.execute(LATEST_CAPTURE_EVENT, (capture_id,)).fetchone()
-        if row is None:
-            msg = f"note {capture_id!r} has no change on record"
-            raise RuntimeError(msg)
-        return capture_event_from(row)
+    def _validated_capture_history_locked(self, standing: Capture) -> CaptureHistoryReading:
+        """A note's line of changes, read through this store's connection inside the caller's
+        transaction and found sound against the note as that transaction read it, or
+        ``UnreadableCapture``. Every write to a note on record reads this before it compares
+        or changes anything, so no broken line is added to, and a save that writes nothing
+        names the head of a line that is whole. Nothing here mends anything."""
+        rows = self._connection.execute(CAPTURE_EVENTS, (standing.capture_id,)).fetchall()
+        return sound_history(standing, [capture_event_from(row) for row in rows])
 
     def _required_capture_locked(self, capture_id: str) -> Capture:
         note = self._capture_locked(capture_id)

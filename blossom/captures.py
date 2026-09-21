@@ -23,6 +23,7 @@ This module holds the types and the rules. It reads no file and no clock.
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Final, Literal, Self
@@ -264,6 +265,115 @@ class CaptureEvent(BaseModel):
         return self
 
 
+class UnsoundCaptureHistory(UnreadableCapture):
+    """Raised when a note's changes do not make one line from its first save to the note as
+    it stands. Each row may read on its own and the line still be broken; such a note is as
+    unavailable as one whose row cannot be read, and nothing is added to the line."""
+
+    def __init__(self, capture_id: str, reason: str) -> None:
+        super().__init__(f"the changes of note {capture_id!r} are not one line: {reason}")
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class CaptureHistoryReading:
+    """A note's changes, the first save first, read and found to be one sound line."""
+
+    events: tuple[CaptureEvent, ...]
+
+    @property
+    def head(self) -> CaptureEvent:
+        """The latest change, which a save that wrote nothing names as what it found."""
+        return self.events[-1]
+
+
+def _kept_as_written(capture_id: str, snapshot: CaptureSnapshot) -> CaptureWords:
+    """A snapshot's words under the rules a note's words are held to."""
+    try:
+        words = CaptureWords(text=snapshot.text, course=snapshot.course, due_date=snapshot.due_date)
+    except ValueError as fault:
+        raise UnsoundCaptureHistory(capture_id, "a change holds words a note cannot") from fault
+    if (words.text, words.course) != (snapshot.text, snapshot.course):
+        raise UnsoundCaptureHistory(capture_id, "a change holds words not kept as written")
+    return words
+
+
+def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
+    """An archive and a restore move a note one way each and touch no words; an edit changes
+    the words of a note that is not archived and leaves it so; a first save is not archived."""
+    before, after = change.before, change.after
+    if before is None:
+        sound = not after.archived
+    else:
+        same_words = (before.text, before.course, before.due_date) == (
+            after.text,
+            after.course,
+            after.due_date,
+        )
+        moved = (before.archived, after.archived)
+        sound = {
+            EDIT: not same_words and moved == (False, False),
+            ARCHIVE: same_words and moved == (False, True),
+            RESTORE: same_words and moved == (True, False),
+        }.get(change.operation, False)
+    if not sound:
+        raise UnsoundCaptureHistory(
+            capture_id, f"revision {change.revision} is no {change.operation}"
+        )
+
+
+def sound_history(note: Capture, events: Sequence[CaptureEvent]) -> CaptureHistoryReading:
+    """A note's changes as one line, or ``UnsoundCaptureHistory``.
+
+    The first is the first save, at revision 1, with nothing before it and
+    what that save sent after it, at the place among all notes the file gave
+    it. Each later change is this note's, one revision on, in the file's
+    order, starts where the one before ended, and is what its kind does.
+    Every snapshot is within the rules a note's words are held to. The last
+    ends at the note as it stands, at its revision. Days and times are not
+    compared, since a clock may run backward and the line be sound.
+
+    A change about to be written is checked the same way, as the last of the
+    line with the note as it will stand, before anything is written.
+    """
+    name = note.capture_id
+    if not events:
+        raise UnsoundCaptureHistory(name, "there is no first save")
+    first = events[0]
+    if first.operation != CREATE or first.revision != 1:
+        raise UnsoundCaptureHistory(name, "the first change is not a first save at revision 1")
+    if _kept_as_written(name, first.after) != note.initial:
+        raise UnsoundCaptureHistory(name, "the first save is not what the note says it sent")
+    if first.sequence is not None and first.sequence != note.created_order:
+        raise UnsoundCaptureHistory(
+            name, "the note's place is not the one its first save was given"
+        )
+    previous: CaptureEvent | None = None
+    for place, change in enumerate(events, start=1):
+        if change.capture_id != name:
+            raise UnsoundCaptureHistory(name, "a change belongs to another note")
+        if change.revision != place:
+            raise UnsoundCaptureHistory(name, f"revision {place} is missing or comes twice")
+        _kept_as_written(name, change.after)
+        if previous is not None:
+            if change.operation == CREATE or change.before != previous.after:
+                raise UnsoundCaptureHistory(
+                    name, f"revision {place} does not start where the one before ended"
+                )
+            if (
+                previous.sequence is not None
+                and change.sequence is not None
+                and change.sequence <= previous.sequence
+            ):
+                raise UnsoundCaptureHistory(name, "the changes are not in the file's order")
+        _is_what_its_kind_does(name, change)
+        previous = change
+    last = events[-1]
+    if last.revision != note.revision or last.after != CaptureSnapshot.of(note):
+        raise UnsoundCaptureHistory(name, "the changes do not end at the note as it stands")
+    return CaptureHistoryReading(tuple(events))
+
+
 @dataclass(frozen=True)
 class CaptureCreated:
     """The note was saved for the first time."""
@@ -276,8 +386,9 @@ class CaptureCreated:
 class CaptureAlreadyCreated:
     """The same form was sent again: the note exists, nothing was written, and ``capture`` is
     the note as it stands now, edited or archived as it may since have been. ``head`` is the
-    latest change of the note, read in the transaction that found nothing to do, so a page
-    can say what this save found from an id only the record gives out."""
+    latest change of the note's line of changes, read and found sound in the transaction
+    that found nothing to do, so a page can say what this save found from an id only the
+    record gives out."""
 
     capture: Capture
     head: CaptureEvent
@@ -302,7 +413,8 @@ class CaptureChanged:
 @dataclass(frozen=True)
 class CaptureUnchanged:
     """What was asked for is what stands: nothing was written. ``head`` is the latest change
-    of the note, read in the transaction that found nothing to do."""
+    of the note's line of changes, read and found sound in the transaction that found
+    nothing to do."""
 
     capture: Capture
     head: CaptureEvent

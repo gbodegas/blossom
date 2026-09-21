@@ -470,7 +470,7 @@ def test_a_change_the_file_refuses_is_said_even_when_the_note_cannot_be_read_bac
             msg = "the file cannot be read"
             raise sqlite3.OperationalError(msg)
 
-        monkeypatch.setattr(store, "capture", unread)
+        monkeypatch.setattr(store, "sound_capture_history", unread)
         store._connection.set_trace_callback(seen.append)
         plain = client.post(action, data=fields, headers=PAGE_HEADERS)
         store._connection.set_trace_callback(None)
