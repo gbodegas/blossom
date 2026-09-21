@@ -405,10 +405,16 @@ class CaptureRecords:
         """One note with its changes, read in one snapshot and found to be one sound line, or
         ``None`` for a name that is no note. A note or a change that cannot be read, or a
         line that is broken, is ``UnreadableCapture``: a page says the note is unavailable
-        and says nothing a broken line would have it say."""
+        and says nothing a broken line would have it say.
+
+        This is how a page reads one note to show it, whichever page it is:
+        the note's own, the page that offers to ask for help about it, and the
+        request itself. The note is read by ``capture``, so there is one read
+        of a single note and whatever refuses it refuses this too.
+        """
         name = capture_id_from(capture_id)
         with self._lock, self.reading():
-            note = self._capture_locked(name)
+            note = self.capture(name)
             if note is None:
                 return None
             return note, self._validated_capture_history_locked(note).events

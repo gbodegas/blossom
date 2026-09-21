@@ -886,7 +886,10 @@ and times are not compared, since a clock may run backward. The change about
 to be written is held to the same rules as the last of that line before it is
 written. A line that is not sound is refused with its cause kept, nothing is
 written and nothing is mended, and the note's page says the note cannot be read
-and gives no result. The lists read no history, so this costs a list nothing.
+and gives no result. The page that offers to ask for help about a note, and the
+request itself, read the note the same way, so a note its own page cannot show
+is neither shown there nor asked about. The lists read no history, so this
+costs a list nothing.
 
 Whether a note is put away is written as 0 or 1 and read as nothing else. A row
 that holds anything else is read with the notes that wait and named there as

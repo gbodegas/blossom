@@ -13,7 +13,13 @@ from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.captures import new_capture_id
-from blossom.routes.captures import HELP_NOT_ASKED, NOTE_ASKED, NOTE_NOT_SAVED
+from blossom.routes.captures import (
+    HELP_NOT_ASKED,
+    NOTE_ASKED,
+    NOTE_GONE,
+    NOTE_NOT_SAVED,
+    NOTE_UNREADABLE,
+)
 from blossom.routes.navigation import (
     NEW_NOTE_PAGE,
     NOTE_ACTIONS,
@@ -633,6 +639,78 @@ def test_a_reference_that_is_no_id_shows_the_request_and_reflects_nothing_it_hol
         assert listing.json()[0]["about_note"] == unavailable
     for moved in answers[4:]:
         assert moved.json()["about_note"] == unavailable
+
+
+BROKEN_LINES = {
+    "a change that is no json": "UPDATE capture_events SET after = '{' WHERE revision = 1",
+    "a change of no kind": "UPDATE capture_events SET operation = 'guess' WHERE revision = 2",
+    "a revision skipped": "UPDATE capture_events SET revision = 12 WHERE revision = 2",
+    "no first save": "DELETE FROM capture_events WHERE revision = 1",
+    "a before that never stood": (
+        "UPDATE capture_events SET before = json_set(before, '$.text', 'Never stood') "
+        "WHERE revision = 2"
+    ),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(BROKEN_LINES))
+def test_a_note_its_own_page_cannot_show_is_not_shown_or_asked_about_through_help(
+    damage: str,
+) -> None:
+    """The help page and a request for help read a note as its own page does, its line of
+    changes included. A line that is damaged or broken makes the note unavailable there too:
+    no words, no form, and a request that is refused with her question kept and nothing sent."""
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        name = save_note(client, "WORDS OF THE NOTE")
+        change_note(client, name, "edit", text="WORDS OF THE NOTE, EDITED", course="", due_date="")
+        action = note_action(name, "ask-for-help")
+        opened_before = whole_form(client.get(note_help_href(name)).text, action)
+        store._connection.execute(BROKEN_LINES[damage])
+        store._connection.commit()
+
+        own_page = client.get(note_href(name))
+        opened = client.get(note_help_href(name))
+        asked = client.post(
+            action, data={**opened_before, "note": "QUESTION <b>kept</b>"}, headers=PAGE_HEADERS
+        )
+        sent = state.help_requests.open_requests()
+
+    assert escape(NOTE_UNREADABLE) in own_page.text
+    assert opened.status_code == 200
+    assert escape(NOTE_UNREADABLE) in opened.text
+    assert escape(NOTE_GONE) not in opened.text
+    assert f'action="{action}"' not in opened.text
+    assert asked.status_code == 500
+    assert asked.text.count(" autofocus") == 1
+    assert escape(NOTE_UNREADABLE) in asked.text
+    assert "QUESTION &lt;b&gt;kept&lt;/b&gt;" in asked.text
+    for answer in (opened, asked):
+        assert "WORDS OF THE NOTE" not in answer.text
+    assert sent == []
+
+
+def test_the_help_page_reads_a_sound_note_with_its_changes_in_one_snapshot() -> None:
+    with browser() as client:
+        state = state_of(client)
+        name = save_note(client, "WORDS OF THE NOTE")
+        change_note(client, name, "edit", text="WORDS OF THE NOTE, EDITED", course="", due_date="")
+        seen: list[str] = []
+        state.project_state._connection.set_trace_callback(seen.append)
+        opened = client.get(note_help_href(name))
+        state.project_state._connection.set_trace_callback(None)
+        asked = ask_about(client, name, "")
+        sent = state.help_requests.open_requests()
+
+    reads = [line for line in seen if line.lstrip().upper().startswith("SELECT")]
+    assert opened.status_code == 200
+    assert "WORDS OF THE NOTE, EDITED" in opened.text
+    assert len(reads) == 2
+    assert seen[0].upper().startswith("BEGIN")
+    assert seen[-1].upper() == "COMMIT"
+    assert asked.status_code == 303
+    assert [item.capture_id for item in sent] == [name]
 
 
 # --------------------------------------------------------- what a note never does

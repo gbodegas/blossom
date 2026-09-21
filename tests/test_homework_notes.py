@@ -897,10 +897,10 @@ def test_a_refusal_beside_that_choice_keeps_the_day_she_typed_and_the_choice_to_
 
 
 FORGED_REFUSED_WORDS = {
-    "a control character": "bad" + chr(7) + "day",
-    "a line break": "bad" + chr(10) + "day",
+    "a control character": "zig" + chr(7) + "zag",
+    "a line break": "zig" + chr(10) + "zag",
     "space around them": " friday ",
-    "more than a page ever sends": "f" * 500,
+    "more than a page ever sends": "z" * 500,
     "nothing at all": "",
 }
 
@@ -947,8 +947,10 @@ def test_refused_words_these_pages_never_write_are_a_form_they_did_not_make(
     assert said_first(answer.text, BAD_FORM)
     assert after == before
     assert kept["text"] == "Words on a forged form"
-    assert "bad" not in answer.text.split("<main", 1)[-1].replace("Words on a forged form", "")
-    assert "ffffffffff" not in answer.text
+    # Markers no id can hold: a note's id is hex, so a word made of hex letters could turn
+    # up in one by chance and fail this for no reason.
+    assert "zig" not in answer.text
+    assert "zzzzzzzzzz" not in answer.text
 
 
 # ------------------------------------------------------- forms that are not whole

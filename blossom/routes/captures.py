@@ -608,19 +608,21 @@ def one_note(
     "/homework-notes/{capture_id}/help", response_class=HTMLResponse, include_in_schema=False
 )
 def help_about_a_note(request: Request, capture_id: str, state: State) -> HTMLResponse:
-    """The page that offers to ask for help about one note. Opening it sends nothing. A
-    note on record that cannot be read is said as that, and never as not on record."""
+    """The page that offers to ask for help about one note. Opening it sends nothing. The
+    note is read as its own page reads it, its line of changes included, so a note that page
+    cannot show is not shown here either: it is said as one that cannot be read, never as
+    not on record, and no form is offered."""
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
     try:
-        note = state.project_state.capture(name)
+        found = state.project_state.sound_capture_history(name)
     except UnreadableCapture:
         return unreadable(request, state)
-    if note is None:
+    if found is None:
         return gone(request, state)
-    return help_page(request, state, note)
+    return help_page(request, state, found[0])
 
 
 def help_page(
@@ -923,7 +925,9 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     Only this, an explicit submit from her, makes a request. It carries the
     note's id and her question, never the note's words. The name is checked
     again where the request is written, in the help store's own transaction.
-    Her question is read before the note is, so no refusal loses it. A
+    Her question is read before the note is, so no refusal loses it. The
+    note is read as its own page reads it, its line of changes included, so
+    no request is sent about a note that page cannot show. A
     request the file refuses is said on the page she sent it from, made from
     the note already read, so it reads no store again. Where no note can be
     shown, since it cannot be read, left the record before or during the
@@ -938,7 +942,7 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     except NotACaptureId:
         return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
     try:
-        note = state.project_state.capture(name)
+        found = state.project_state.sound_capture_history(name)
     except UnreadableCapture:
         return help_not_sent(
             request, state, NOTE_UNREADABLE, question, name, status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -948,8 +952,9 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
         return help_not_sent(
             request, state, HELP_NOT_ASKED, question, name, status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-    if note is None:
+    if found is None:
         return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
+    note = found[0]
     if viewer_of(request) == "parent":
         return help_page(
             request,
