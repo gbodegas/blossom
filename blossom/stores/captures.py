@@ -263,13 +263,18 @@ def initial_from(raw: str) -> CaptureWords:
     return words
 
 
-def archived_from(flag: object) -> bool:
-    """Whether a note is put away, from the 0 or 1 the file holds. Anything else is no answer
-    to that, and is not read as one: ``bool`` would call every damaged value archived."""
+def held_flag(flag: object, column: str) -> bool:
+    """A yes or no as the store writes it, the integer 0 or 1. Anything else is no answer,
+    and is not read as one: ``bool`` would call every damaged value a yes."""
     if type(flag) is not int or flag not in (0, 1):
-        msg = f"the archived flag holds {flag!r}"
+        msg = f"{column} holds {flag!r}, not 0 or 1"
         raise ValueError(msg)
     return flag == 1
+
+
+def archived_from(flag: object) -> bool:
+    """Whether a note is put away, from the 0 or 1 the file holds."""
+    return held_flag(flag, "archived")
 
 
 def snapshot_from(raw: str) -> CaptureSnapshot:

@@ -39,6 +39,7 @@ from typing import Final, Literal, NamedTuple, Self, cast
 from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator, model_validator
 
 from blossom.authored_text import multiline, single_line
+from blossom.captures import capture_id_from
 from blossom.clock import Clock
 from blossom.hand_in import (
     HAND_IN_NOTE_MAX_LENGTH,
@@ -56,7 +57,13 @@ from blossom.hand_in import (
 )
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.retrieval import RetrievalResult
-from blossom.stores.captures import CaptureRecords
+from blossom.stores.captures import (
+    CaptureRecords,
+    held_count,
+    held_flag,
+    held_moment,
+    held_text_or_nothing,
+)
 from blossom.stores.paths import refuse_unsafe_path
 
 DUE_THIS_WEEK_KEY = "due_this_week"
@@ -79,14 +86,55 @@ STUDENT_REPORTS_NAMED: Final = """
 EVERY_DATE_CLAIM: Final = """
     SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in
     FROM date_claims
+    WHERE active = 1
     ORDER BY rowid
 """
 DATE_CLAIMS_NAMED: Final = """
     SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in
     FROM date_claims
-    WHERE assignment_id IN (SELECT value FROM json_each(?))
+    WHERE active = 1 AND assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY rowid
 """
+DATE_CLAIMS_OF: Final = """
+    SELECT channel, asserted_value, observed_at, confidence, seen_in
+    FROM date_claims
+    WHERE active = 1 AND assignment_id = ?
+    ORDER BY rowid
+"""
+"""What a week, a digest, a brief, and a card are made from is the claims that count. A
+claim made from a homework note can be withdrawn later; it then stays in the table as
+history and is read by ``CLAIM_HISTORY`` alone. The school's claims name no note and are
+never withdrawn."""
+CLAIM_HISTORY: Final = """
+    SELECT channel, asserted_value, observed_at, confidence, seen_in,
+        capture_id, capture_revision, active, withdrawn_at
+    FROM date_claims
+    WHERE assignment_id = ?
+    ORDER BY rowid
+"""
+DATE_CLAIM_COLUMNS_ADDED: Final = (
+    ("capture_id", "ALTER TABLE date_claims ADD COLUMN capture_id TEXT"),
+    ("capture_revision", "ALTER TABLE date_claims ADD COLUMN capture_revision INTEGER"),
+    ("active", "ALTER TABLE date_claims ADD COLUMN active INTEGER NOT NULL DEFAULT 1"),
+    ("withdrawn_at", "ALTER TABLE date_claims ADD COLUMN withdrawn_at TEXT"),
+)
+"""The columns a file from before is given, each by a whole statement of its own."""
+INSERT_DATE_CLAIM: Final = """
+    INSERT INTO date_claims (
+        assignment_id, channel, asserted_value, observed_at, confidence, seen_in
+    ) VALUES (?, ?, ?, ?, ?, ?)
+"""
+INSERT_CAPTURE_DATE_CLAIM: Final = """
+    INSERT INTO date_claims (
+        assignment_id, channel, asserted_value, observed_at, confidence, seen_in,
+        capture_id, capture_revision, active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    ON CONFLICT (assignment_id, capture_id, capture_revision)
+        WHERE capture_id IS NOT NULL DO NOTHING
+"""
+"""Every claim is written by naming its columns, so adding a column can misfile nothing.
+A claim from a note is one claim per assignment, note, and revision of the note: the same
+one sent again, after a lost answer, adds nothing."""
 EVERY_HAND_IN_EVENT: Final = """
     SELECT event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
         reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
@@ -573,7 +621,11 @@ class ProjectStateStore(CaptureRecords):
                 asserted_value TEXT NOT NULL,
                 observed_at TEXT NOT NULL,
                 confidence REAL NOT NULL,
-                seen_in TEXT
+                seen_in TEXT,
+                capture_id TEXT,
+                capture_revision INTEGER,
+                active INTEGER NOT NULL DEFAULT 1,
+                withdrawn_at TEXT
             )
             """
         )
@@ -630,7 +682,32 @@ class ProjectStateStore(CaptureRecords):
         # indexes: a start that is refused any of them leaves a file from before as it was.
         with self._writing():
             self._create_capture_tables()
+        # Where a claim came from and whether it still counts: three columns and the index
+        # that makes a note's claim one claim, together or not at all.
+        with self._writing():
+            self._upgrade_date_claims()
         self._upgrade()
+
+    def _upgrade_date_claims(self) -> None:
+        """Give the claims table the note a claim came from, the note's revision, whether
+        the claim still counts, and when it stopped, in the caller's transaction.
+
+        Additive: a file from before keeps every row, and its rows name no
+        note and count, which is what the school's claims always do. The index
+        is what makes a claim from a note one claim per assignment, note, and
+        revision. A start refused any step leaves the file as it was.
+        """
+        held = {str(row[1]) for row in self._connection.execute("PRAGMA table_info(date_claims)")}
+        for column, statement in DATE_CLAIM_COLUMNS_ADDED:
+            if column not in held:
+                self._connection.execute(statement)
+        self._connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS date_claims_capture_once
+            ON date_claims (assignment_id, capture_id, capture_revision)
+            WHERE capture_id IS NOT NULL
+            """
+        )
 
     def _create_hand_in_tables(self) -> None:
         """The hand-in table and its index, in that order, in the caller's transaction.
@@ -1806,7 +1883,7 @@ class ProjectStateStore(CaptureRecords):
 
     def _record_claims_locked(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
         self._connection.executemany(
-            "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
+            INSERT_DATE_CLAIM,
             [
                 (
                     assignment_id,
@@ -1820,23 +1897,51 @@ class ProjectStateStore(CaptureRecords):
             ],
         )
 
+    def _record_capture_claim_locked(
+        self,
+        assignment_id: str,
+        record: SourceRecord,
+        *,
+        capture_id: str,
+        capture_revision: int,
+    ) -> None:
+        """Keep a claim made from a homework note, named by the note and its revision,
+        inside the caller's transaction. The same one again adds nothing. The confidence it
+        carries is the one a family entry carries, there because the column needs a value:
+        it is no confidence of hers, scores nothing about her, is shown nowhere, and
+        settles no disagreement."""
+        self._connection.execute(
+            INSERT_CAPTURE_DATE_CLAIM,
+            (
+                assignment_id,
+                record.channel.value,
+                record.asserted_value,
+                record.observed_at.isoformat(),
+                record.confidence,
+                record.seen_in,
+                capture_id_from(capture_id),
+                held_count(capture_revision, "capture_revision"),
+            ),
+        )
+
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
-        """Every channel's claim about one assignment's due date, in the order made.
+        """Every channel's claim about one assignment's due date that counts, in the order
+        made.
 
         An empty list is a valid answer and means nothing corroborates the
         date; it is not an error.
         """
         with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT channel, asserted_value, observed_at, confidence, seen_in
-                FROM date_claims
-                WHERE assignment_id = ?
-                ORDER BY rowid
-                """,
-                (assignment_id,),
-            ).fetchall()
+            rows = self._connection.execute(DATE_CLAIMS_OF, (assignment_id,)).fetchall()
         return [source_record_from(row) for row in rows]
+
+    def claim_history(self, assignment_id: str) -> list["ClaimOnRecord"]:
+        """Every claim ever made about one assignment's due date, in the order made, with
+        the note it came from when it came from one and whether it still counts. This is
+        what an assignment's details read; nothing a plan is made from reads it."""
+        with self._lock:
+            rows = self._connection.execute(CLAIM_HISTORY, (assignment_id,)).fetchall()
+        return [claim_on_record_from(assignment_id, row) for row in rows]
 
     def deadline_records_by_assignment(
         self, assignment_ids: Iterable[str] | None = None
@@ -2024,6 +2129,45 @@ def family_check_from(row: tuple[object, ...]) -> FamilyCheck:
         checked_on=date.fromisoformat(str(row[6])),
         previous_check_id=None if row[7] is None else str(row[7]),
     )
+
+
+class UnreadableClaim(ValueError):
+    """Raised for a claim whose note, revision, or standing is held as nothing the store
+    writes. Its history is unavailable, which a page says; nothing is guessed in its place."""
+
+
+@dataclass(frozen=True)
+class ClaimOnRecord:
+    """One claim about a due date as the table holds it: the claim, the homework note and
+    revision it was made from when it was made from one, and whether it still counts."""
+
+    record: SourceRecord
+    capture_id: str | None
+    capture_revision: int | None
+    active: bool
+    withdrawn_at: datetime | None
+
+
+def claim_on_record_from(assignment_id: str, row: tuple[object, ...]) -> ClaimOnRecord:
+    """One claim with where it came from, from a row of ``CLAIM_HISTORY``. The columns that
+    name a note are read as the store writes them, and as nothing else."""
+    try:
+        record = source_record_from(row[:5])
+        note = held_text_or_nothing(row[5], "capture_id")
+        revision = None if row[6] is None else held_count(row[6], "capture_revision")
+        if (note is None) != (revision is None):
+            msg = "a claim names a note and its revision together or neither"
+            raise ValueError(msg)
+        if note is not None:
+            capture_id_from(note)
+        active = held_flag(row[7], "active")
+        stopped = None if row[8] is None else held_moment(row[8], "withdrawn_at")
+        if active and stopped is not None:
+            msg = "a claim that counts was not withdrawn"
+            raise ValueError(msg)
+    except (ValueError, TypeError) as fault:
+        raise UnreadableClaim(assignment_id) from fault
+    return ClaimOnRecord(record, note, revision, active, stopped)
 
 
 def source_record_from(row: tuple[object, ...]) -> SourceRecord:

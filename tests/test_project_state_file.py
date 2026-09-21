@@ -348,7 +348,9 @@ def test_a_batch_that_fails_leaves_nothing_of_itself_and_frees_the_file(
         with pytest.raises(RuntimeError):
             store.upsert_assignments(cut_short())
         other.execute(
-            "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO date_claims "
+            "(assignment_id, channel, asserted_value, observed_at, confidence, seen_in) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             ("assignment-other", "LMS", "2026-08-24", when.isoformat(), 0.5, None),
         )
         other.commit()
@@ -414,7 +416,9 @@ def test_a_file_from_before_is_brought_up_to_the_schema_and_keeps_its_rows(
         ("PARENT_ENTRY", "2026-08-22"),
     ]
     assert claims[0].observed_at.isoformat() == "2026-08-19T09:00:00+00:00"
-    assert unique == set()
+    # The one unique index the table has is the one that makes a note's claim one claim;
+    # the school's claims name no note, so it holds none of them to once.
+    assert unique == {"date_claims_capture_once"}
 
 
 def test_a_file_from_the_version_between_loses_its_index_and_keeps_every_observation(
@@ -653,7 +657,9 @@ def test_a_record_write_that_fails_at_the_claims_keeps_no_assignment_either(
         on_record = store.all_assignments()
         claims = store.deadline_records("assignment-essay")
         other.execute(
-            "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO date_claims "
+            "(assignment_id, channel, asserted_value, observed_at, confidence, seen_in) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             ("assignment-other", "LMS", "2026-08-24", when.isoformat(), 0.5, None),
         )
         other.commit()
