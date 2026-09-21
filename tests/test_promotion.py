@@ -10,6 +10,7 @@ a page that is behind is refused.
 
 import pathlib
 import sqlite3
+import threading
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -327,6 +328,48 @@ def test_the_same_press_again_makes_no_second_assignment(store: ProjectStateStor
     assert isinstance(again, CaptureAlreadyPromoted)
     assert again.assignment_id == derived_assignment_id(name)
     assert everything(store) == after
+
+
+def test_two_devices_adding_one_note_at_once_make_one_assignment(tmp_path: pathlib.Path) -> None:
+    """She and a parent press at the same moment, through two connections to the file: one
+    press adds the note, the other finds it added, and there is one assignment, one claim,
+    and one change."""
+    path = tmp_path / "record.sqlite3"
+    first = practice_store(path)
+    second = ProjectStateStore.open(path, fixture_clock())
+    name = note(first)
+    given = details(due=date(2026, 9, 18))
+    before = everything(first)
+    outcomes: list[object] = []
+    ready = threading.Barrier(2)
+
+    def she_adds_it() -> None:
+        ready.wait(timeout=10)
+        outcomes.append(promote(first, name, given, 1))
+
+    def a_parent_adds_it() -> None:
+        ready.wait(timeout=10)
+        outcomes.append(promote(second, name, given, 1, by=PARENT, channel=THEIRS))
+
+    threads = [threading.Thread(target=she_adds_it), threading.Thread(target=a_parent_adds_it)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert sorted(type(outcome).__name__ for outcome in outcomes) == [
+        "CaptureAlreadyPromoted",
+        "CapturePromoted",
+    ]
+    made = [
+        item
+        for item in first.all_assignments()
+        if item.assignment_id == derived_assignment_id(name)
+    ]
+    assert len(made) == 1
+    assert len(first.claim_history(derived_assignment_id(name))) == 1
+    assert [event.operation for event in first.capture_history(name)] == ["create", "promote"]
+    assert everything(first) != before
 
 
 def test_it_needs_a_class_and_a_title_and_nothing_is_made_up_for_them(
