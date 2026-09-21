@@ -830,6 +830,70 @@ def test_a_revision_written_any_other_way_is_a_form_these_pages_did_not_make(
     assert after == before
 
 
+@pytest.mark.parametrize("surface", ["new", "edit"])
+@pytest.mark.parametrize("held", ["2026-08-25", "20260825", "next week", ""])
+def test_save_without_the_date_saves_without_it_whatever_the_date_control_holds(
+    surface: str, held: str
+) -> None:
+    """The button does what it says. A day typed into the control beside it, one that reads
+    or one that does not, is not saved by the button that says it will not be."""
+    with browser() as client:
+        store = state_of(client).project_state
+        action, fields = opened_form(client, surface)
+        fields.update(text="Words for this note", course="Math")
+        refused = client.post(action, data={**fields, "due_date": "friday"}, headers=PAGE_HEADERS)
+        marked = whole_form(refused.text, action)
+        saved = client.post(
+            action,
+            data={**marked, "due_date": held, "choice": "without_date"},
+            headers=PAGE_HEADERS,
+        )
+        note = store.capture(marked.get("capture_id") or action.split("/")[-2])
+
+    assert marked["date_pending"] == "1"
+    assert saved.status_code == 303
+    assert note is not None
+    assert (note.text, note.course, note.due_date) == ("Words for this note", "Math", None)
+    assert "due_date" not in note.attribution
+
+
+@pytest.mark.parametrize("held", ["2026-08-25", "next week"])
+def test_a_refusal_beside_that_choice_keeps_the_day_she_typed_and_the_choice_to_make_again(
+    held: str,
+) -> None:
+    """Pressed with words that are refused, nothing is saved, and the form that comes back
+    still holds what she typed for the day and still offers both buttons: the plain one saves
+    a day that reads, and the other one saves without it."""
+    with browser() as client:
+        store = state_of(client).project_state
+        fields = new_form(client)
+        long_words = "w" * (CAPTURE_TEXT_MAX_LENGTH + 1)
+        refused = send(client, fields, text=WORDS, course="", due_date="friday")
+        marked = whole_form(refused.text, NOTE_ACTIONS)
+        sent = {**marked, "text": long_words, "due_date": held}
+        too_long = send(client, sent, choice="without_date")
+        returned = whole_form(too_long.text, NOTE_ACTIONS)
+        nothing_yet = tables(store)
+        plain = send(client, {**returned, "text": WORDS}, choice="save")
+        note = store.capture(fields["capture_id"])
+
+    assert too_long.status_code == 422
+    assert said_first(too_long.text, NOTE_TOO_LONG)
+    assert ">Save without the date</button>" in too_long.text
+    assert nothing_yet == ([], [])
+    if held == "2026-08-25":
+        assert returned["due_date"] == "2026-08-25"
+        assert plain.status_code == 303
+        assert note is not None
+        assert note.due_date == date(2026, 8, 25)
+    else:
+        assert (returned["due_date"], returned["date_pending"]) == ("", "1")
+        assert returned["date_refused"] == "next week"
+        assert plain.status_code == 422
+        assert said_first(plain.text, NOTE_NEEDS_A_DATE_CHOICE)
+        assert note is None
+
+
 # ------------------------------------------------------- forms that are not whole
 
 

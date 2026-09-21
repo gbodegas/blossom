@@ -125,6 +125,22 @@ class CaptureWords(BaseModel):
         return single_line(course if isinstance(course, str) else None, CAPTURE_COURSE_MAX_LENGTH)
 
 
+def words_as_held(text: str, course: str | None, due_date: date | None, *, of: str) -> CaptureWords:
+    """Words read back from the file, which holds them only as the text rule keeps them.
+
+    ``CaptureWords`` tidies what a form sends: edges off, line endings as
+    one kind, a blank class as no class. That is right on the way in and
+    wrong on the way out, where it would quietly mend a row the store never
+    wrote. Here what is held must already be what the rule keeps, or it is
+    a ``ValueError``, which a row's reader says as a note that cannot be read.
+    """
+    words = CaptureWords(text=text, course=course, due_date=due_date)
+    if (words.text, words.course) != (text, course):
+        msg = f"{of} are not held as the text rule keeps them"
+        raise ValueError(msg)
+    return words
+
+
 class NoWords(ValueError):
     """Raised when a note is sent with no words in it, which is the one thing it needs."""
 
@@ -196,7 +212,9 @@ class Capture(BaseModel):
         if self.original_text != self.initial.text:
             msg = f"note {self.capture_id!r} has first words that are not what its first save sent"
             raise ValueError(msg)
-        CaptureWords(text=self.text, course=self.course, due_date=self.due_date)
+        words_as_held(
+            self.text, self.course, self.due_date, of=f"the words of note {self.capture_id!r}"
+        )
         held = {name for name in ATTRIBUTED if getattr(self, name) is not None}
         if set(self.attribution) != held:
             msg = f"note {self.capture_id!r} does not say who supplied each optional field it holds"
@@ -288,14 +306,14 @@ class CaptureHistoryReading:
 
 
 def _kept_as_written(capture_id: str, snapshot: CaptureSnapshot) -> CaptureWords:
-    """A snapshot's words under the rules a note's words are held to."""
+    """A snapshot's words under the rules a note's words are held to, by the same check a
+    note's own row is read with."""
     try:
-        words = CaptureWords(text=snapshot.text, course=snapshot.course, due_date=snapshot.due_date)
+        return words_as_held(
+            snapshot.text, snapshot.course, snapshot.due_date, of="the words of a change"
+        )
     except ValueError as fault:
         raise UnsoundCaptureHistory(capture_id, "a change holds words a note cannot") from fault
-    if (words.text, words.course) != (snapshot.text, snapshot.course):
-        raise UnsoundCaptureHistory(capture_id, "a change holds words not kept as written")
-    return words
 
 
 def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:

@@ -293,7 +293,7 @@
     <section class="panel homework-notes" id="homework-notes" tabindex="-1">
       <h2>Homework notes ({{ homework_notes|length + homework_notes_unreadable|length }})</h2>
       {% with rows = homework_notes, shown = compact_rows %}{% include "student_notes_rows.html" %}{% endwith %}
-      {% if homework_notes|length > compact_rows %}
+      {% if homework_notes|length + homework_notes_unreadable|length > compact_rows %}
         <p class="note"><a href="{{ notes_page }}">View all {{ homework_notes|length + homework_notes_unreadable|length }} homework notes</a></p>
       {% endif %}
       {% if homework_notes_unreadable %}

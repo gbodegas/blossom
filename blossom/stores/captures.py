@@ -164,7 +164,7 @@ def capture_from(row: tuple[object, ...]) -> Capture:
             capture_id=str(row[0]),
             created_order=int(str(row[1])),
             original_text=str(row[2]),
-            initial=CaptureWords.model_validate_json(str(row[3])),
+            initial=initial_from(str(row[3])),
             text=str(row[4]),
             course=None if row[5] is None else str(row[5]),
             title=None if row[6] is None else str(row[6]),
@@ -182,6 +182,18 @@ def capture_from(row: tuple[object, ...]) -> Capture:
         )
     except (ValueError, TypeError, AttributeError) as fault:
         raise UnreadableCapture(str(row[0])) from fault
+
+
+def initial_from(raw: str) -> CaptureWords:
+    """What the first save sent, from the JSON the file holds, which must be that JSON as the
+    store writes it: the words as the text rule keeps them and the day in its one spelling.
+    Validating alone would tidy a damaged payload and compare a later repeat with the result."""
+    sent = json.loads(raw)
+    words = CaptureWords.model_validate(sent)
+    if sent != json.loads(words.model_dump_json()):
+        msg = "the first save is not held as it is written"
+        raise ValueError(msg)
+    return words
 
 
 def archived_from(flag: object) -> bool:

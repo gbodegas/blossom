@@ -899,6 +899,15 @@ before revisions are compared. The notes a request for help names are context
 for it: a read of them that fails is logged and shows each as unavailable, and
 never fails an accept or a resolve that is already written.
 
+Words are tidied on the way in and never on the way out. What a form sends is
+kept under the text rule, edges off, line endings as one kind, a blank class as
+no class. What the file holds must already be that: a row whose words, class,
+or first save are held any other way was not written by the store, is not
+quietly mended when read, and is a note that cannot be read, on the lists as on
+its own page. Save without the date does what it says whatever the date control
+holds beside it: no day goes to the store, and what she typed there stays on
+the form, with its mark, only so that another refusal can show it again.
+
 A note's id is a UUID and its routes take it as one path segment. A note is
 no assignment, makes no claim about a date, and is read by no model: the
 pages read notes beside the record and never into it. Turning a note into

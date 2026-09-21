@@ -236,6 +236,11 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None = Non
     they hold, stays marked until a day that reads replaces the refused one:
     her choice to save without it takes effect only in the save it is
     pressed for, so it is never read out of a blank day after another error.
+
+    Save without the date does what it says, whatever the date control holds
+    beside it: no day goes to the store and nothing is said about the day.
+    What she typed there is still kept on the form, with its mark, so that
+    another refusal of the same form shows it and offers both buttons again.
     """
     marked = "date_pending" in fields or "date_refused" in fields
     form = NoteForm(
@@ -246,17 +251,20 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None = Non
         date_pending=marked,
         revision=revision,
     )
+    without = fields.get("choice") == WITHOUT_DATE
     raw = fields.get("due_date", "").strip()
     if raw:
         try:
             day = date.fromisoformat(raw)
         except ValueError:
             refused = replace(form, due_date="", date_refused=shown_day(raw), date_pending=True)
-            return Prepared(refused, None, NOTE_DATE_UNREADABLE)
+            return Prepared(refused, None, None if without else NOTE_DATE_UNREADABLE)
+        if without:
+            return Prepared(replace(form, due_date=day.isoformat(), date_pending=True))
         return Prepared(
             replace(form, due_date=day.isoformat(), date_refused=None, date_pending=False), day
         )
-    if marked and fields.get("choice") != WITHOUT_DATE:
+    if marked and not without:
         return Prepared(form, None, NOTE_NEEDS_A_DATE_CHOICE)
     return Prepared(form)
 

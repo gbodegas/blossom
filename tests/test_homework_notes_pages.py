@@ -531,7 +531,7 @@ def test_a_read_of_the_notes_that_fails_never_fails_an_answer_about_a_request(
         assert f"{whose} homework note cannot be read right now." in answer.text
 
 
-@pytest.mark.parametrize("readable", [0, 1, 4])
+@pytest.mark.parametrize("readable", [0, 1, 2, 3, 4])
 def test_a_note_that_cannot_be_read_is_counted_wherever_her_notes_are_counted(
     readable: int,
 ) -> None:
@@ -553,9 +553,24 @@ def test_a_note_that_cannot_be_read_is_counted_wherever_her_notes_are_counted(
     assert f'<a href="{NOTES_PAGE}">Homework notes ({total})</a>' in week
     assert f"<h2>Homework notes ({total})</h2>" in notes_section(week)
     assert "1 homework note cannot be read right now." in notes_section(week)
-    assert ("View all 5 homework notes" in week) is (readable == 4)
+    assert (f"View all {total} homework notes" in week) is (total > 3)
+    assert ("View all" in notes_section(week)) is (total > 3)
     assert f"<h1>Homework notes ({total})</h1>" in listed
     assert "1 homework note cannot be read right now." in listed
+
+
+def test_a_row_not_held_as_the_store_writes_it_is_said_to_be_unreadable_on_every_page() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = save_note(client, "Words that will be padded")
+        store._connection.execute("UPDATE homework_captures SET text = '  PADDED WORDS  '")
+        store._connection.commit()
+        pages = [client.get(where) for where in (HER_PAGE, NOTES_PAGE, FAMILY, note_href(name))]
+
+    for page in pages:
+        assert page.status_code == 200
+        assert "cannot be read right now" in page.text
+        assert "PADDED WORDS" not in page.text
 
 
 # --------------------------------------------------------- what a note never does

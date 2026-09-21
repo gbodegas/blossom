@@ -571,6 +571,60 @@ def test_an_archived_flag_that_is_neither_0_nor_1_is_a_note_that_cannot_be_read(
     assert rows(store) == before
 
 
+NOT_AS_WRITTEN = {
+    "words with space around them": "UPDATE homework_captures SET text = '  Padded words  '",
+    "words with a carriage return": (
+        "UPDATE homework_captures SET text = 'Two' || char(13) || char(10) || 'lines'"
+    ),
+    "a class with space around it": "UPDATE homework_captures SET course = ' Geometry '",
+    "a class that is empty and not absent": "UPDATE homework_captures SET course = ''",
+    "first words with space around them": (
+        "UPDATE homework_captures SET original_text = ' ' || original_text, "
+        "initial = json_set(initial, '$.text', ' ' || json_extract(initial, '$.text'))"
+    ),
+    "a first class with space around it": (
+        "UPDATE homework_captures SET initial = json_set(initial, '$.course', ' Geometry ')"
+    ),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(NOT_AS_WRITTEN))
+def test_a_row_that_does_not_hold_words_as_the_store_writes_them_cannot_be_read(
+    store: ProjectStateStore, damage: str
+) -> None:
+    """The store writes words only as the text rule keeps them. A row that holds them any
+    other way was not written by it, and is not quietly tidied when it is read: the lists,
+    which read no history, name it as one that cannot be read, as the note's own page does."""
+    name = new_capture_id()
+    created(create(store, name, course="Geometry"))
+    store._connection.execute(NOT_AS_WRITTEN[damage])
+    store._connection.commit()
+    before = rows(store)
+
+    with pytest.raises(UnreadableCapture):
+        store.capture(name)
+    waiting = store.outstanding_captures()
+    assert (waiting.notes, waiting.unreadable) == ([], [name])
+    assert store.captures_named([name]).unreadable == [name]
+    with pytest.raises(CaptureNotSaved):
+        edit(store, name, "Other words", None, None, 1)
+    assert rows(store) == before
+
+
+def test_words_as_a_form_sends_them_are_still_tidied_on_the_way_in(
+    store: ProjectStateStore,
+) -> None:
+    """The strictness is for what the file holds. What she types is kept under the same rule
+    as before: edges off, line endings as one kind, a blank class as no class."""
+    name = new_capture_id()
+    note = created(create(store, name, "  Two\r\nlines  ", "  Geometry ", None))
+    again = create(store, name, "Two\nlines", "Geometry", None)
+
+    assert (note.text, note.course) == ("Two\nlines", "Geometry")
+    assert isinstance(again, CaptureAlreadyCreated)
+    assert store.capture(name) == note
+
+
 def test_two_notes_with_the_same_words_are_two_notes(store: ProjectStateStore) -> None:
     first = created(create(store, new_capture_id()))
     second = created(create(store, new_capture_id()))
