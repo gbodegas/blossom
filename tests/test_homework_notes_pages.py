@@ -713,6 +713,35 @@ def test_the_help_page_reads_a_sound_note_with_its_changes_in_one_snapshot() -> 
     assert [item.capture_id for item in sent] == [name]
 
 
+@pytest.mark.parametrize("with_its_first_change", [False, True])
+def test_a_note_given_a_place_ahead_of_the_first_is_shown_nowhere_and_reorders_nothing(
+    with_its_first_change: bool,
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        save_note(client, "FIRST NOTE")
+        damaged = save_note(client, "SECOND NOTE")
+        save_note(client, "THIRD NOTE")
+        store._connection.execute(
+            "UPDATE homework_captures SET created_order = 0 WHERE capture_id = ?", (damaged,)
+        )
+        if with_its_first_change:
+            store._connection.execute(
+                "UPDATE capture_events SET sequence = 0 WHERE capture_id = ?", (damaged,)
+            )
+        store._connection.commit()
+        pages = [client.get(where).text for where in (HER_PAGE, NOTES_PAGE, FAMILY)]
+        own = client.get(note_href(damaged)).text
+
+    for page in pages:
+        shown = list(dict.fromkeys(re.findall(r"FIRST NOTE|SECOND NOTE|THIRD NOTE", page)))
+        assert shown == ["FIRST NOTE", "THIRD NOTE"]
+        assert "SECOND NOTE" not in page
+        assert "1 homework note cannot be read right now." in page
+    assert "SECOND NOTE" not in own
+    assert "cannot be read right now" in own
+
+
 # --------------------------------------------------------- what a note never does
 
 

@@ -26,6 +26,7 @@ and a restore move a note and never touch its words.
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import uuid
@@ -151,6 +152,9 @@ class NamedCaptures:
     unreadable: list[str]
 
 
+EVENT_ID_AS_WRITTEN: Final = re.compile(r"note-event-[0-9a-f]{12}")
+
+
 def new_capture_event_id() -> str:
     """A stable id for one change to a note, drawn once and never reused."""
     return f"note-event-{uuid.uuid4().hex[:12]}"
@@ -172,12 +176,28 @@ def held_text_or_nothing(value: object, column: str) -> str | None:
 
 
 def held_count(value: object, column: str) -> int:
-    """A count as the store writes it, an ``int``. Text is not read as one, since Python
-    counts ``0_1`` and the file never held that."""
+    """A count as the store writes it: an ``int``, from 1. Text is not read as one, since
+    Python counts ``0_1`` and the file never held that. Nought and less are not read either:
+    revisions, a change's place in the file, and a note's place among notes all start at 1,
+    so a lower one was written by nothing here, and a place of nought would sort its note
+    ahead of every real one."""
     if type(value) is not int:
         msg = f"{column} holds {type(value).__name__}, not a count"
         raise TypeError(msg)
+    if value < 1:
+        msg = f"{column} holds {value}, and counts start at 1"
+        raise ValueError(msg)
     return value
+
+
+def held_event_id(value: object) -> str:
+    """A change's id in the one shape ``new_capture_event_id`` writes. A page looks a result
+    up by this id, so an id of any other shape is one nothing here gave out."""
+    written = held_text(value, "event_id")
+    if EVENT_ID_AS_WRITTEN.fullmatch(written) is None:
+        msg = "event_id is not in the shape the store writes"
+        raise ValueError(msg)
+    return written
 
 
 def held_day(value: object, column: str) -> date:
@@ -272,7 +292,7 @@ def capture_event_from(row: tuple[object, ...]) -> CaptureEvent:
     try:
         before = held_text_or_nothing(row[3], "before")
         return CaptureEvent(
-            event_id=held_text(row[0], "event_id"),
+            event_id=held_event_id(row[0]),
             capture_id=held_text(row[1], "capture_id"),
             operation=held_text(row[2], "operation"),  # type: ignore[arg-type]
             before=None if before is None else snapshot_from(before),

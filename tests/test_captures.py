@@ -722,6 +722,87 @@ def test_a_change_row_is_read_as_the_types_the_store_writes_or_not_at_all(
     assert rows(store) == before
 
 
+@pytest.mark.parametrize("place", [0, -5])
+@pytest.mark.parametrize("with_its_first_change", [False, True])
+def test_a_place_the_file_never_gave_moves_no_note_ahead_of_the_others(
+    store: ProjectStateStore, place: int, with_its_first_change: bool
+) -> None:
+    """The file gives places from 1. A row holding nought or less was not written by the
+    store, and would sort ahead of every real note; with its first change moved to match,
+    the line of changes would agree with it. Neither is read: the note is named as one that
+    cannot be read, the others keep their order, and it takes no write."""
+    first, damaged, third = (new_capture_id() for _ in range(3))
+    for index, name in enumerate((first, damaged, third)):
+        created(create(store, name, f"note {index}", on=index))
+    store._connection.execute(
+        "UPDATE homework_captures SET created_order = ? WHERE capture_id = ?", (place, damaged)
+    )
+    if with_its_first_change:
+        store._connection.execute(
+            "UPDATE capture_events SET sequence = ? WHERE capture_id = ?", (place, damaged)
+        )
+    store._connection.commit()
+    before = rows(store)
+
+    waiting = store.outstanding_captures()
+    assert [note.capture_id for note in waiting.notes] == [first, third]
+    assert waiting.unreadable == [damaged]
+    with pytest.raises(UnreadableCapture):
+        store.capture(damaged)
+    with pytest.raises(UnreadableCapture):
+        store.sound_capture_history(damaged)
+    with pytest.raises(CaptureNotSaved):
+        edit(store, damaged, "Other words", None, None, 1)
+    assert rows(store) == before
+
+
+NO_CHANGE_THE_STORE_WRITES = {
+    "a revision of nought": "UPDATE capture_events SET revision = 0",
+    "a revision below nought": "UPDATE capture_events SET revision = -1",
+    "a place in the file of nought": "UPDATE capture_events SET sequence = 0",
+    "a place in the file below nought": "UPDATE capture_events SET sequence = -7",
+    "an id of another shape": "UPDATE capture_events SET event_id = 'event-1'",
+    "an id in capitals": "UPDATE capture_events SET event_id = upper(event_id)",
+    "an id with space after it": "UPDATE capture_events SET event_id = event_id || ' '",
+}
+
+
+@pytest.mark.parametrize("damage", sorted(NO_CHANGE_THE_STORE_WRITES))
+def test_a_change_holding_what_the_store_never_writes_is_not_decoded(
+    store: ProjectStateStore, damage: str
+) -> None:
+    """Revisions and places in the file count from 1, and a change's id has one shape. A
+    change holding anything else is refused where it is decoded, before any rule about the
+    line of changes is asked, so no reader of a change can be handed one."""
+    name = new_capture_id()
+    created(create(store, name))
+    store._connection.execute(NO_CHANGE_THE_STORE_WRITES[damage])
+    store._connection.commit()
+    before = rows(store)
+
+    with pytest.raises(UnreadableCapture):
+        store.capture_history(name)
+    with pytest.raises(UnreadableCapture):
+        store.sound_capture_history(name)
+    with pytest.raises(CaptureNotSaved):
+        archive(store, name, 1)
+    assert rows(store) == before
+
+
+@pytest.mark.parametrize("revision", [0, -1])
+def test_a_note_with_a_revision_the_store_never_writes_is_not_read(
+    store: ProjectStateStore, revision: int
+) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    store._connection.execute("UPDATE homework_captures SET revision = ?", (revision,))
+    store._connection.commit()
+
+    with pytest.raises(UnreadableCapture):
+        store.capture(name)
+    assert store.outstanding_captures().unreadable == [name]
+
+
 def test_rows_as_the_store_writes_them_read_back_whole(store: ProjectStateStore) -> None:
     """The strict read costs a sound row nothing: every column the store writes, with a class
     and a day, an edit, an archive, and a restore, comes back as it was written."""

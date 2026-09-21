@@ -911,9 +911,15 @@ its own page. The same holds for types and spellings. SQLite keeps bytes put
 into a text column as bytes and turns a number put there into its digits, and
 Python would make words of the first and read `20260918` as a day and `0_1` as
 a count. So a note's row and a change's row are read column by column as what
-the store writes: text as text, a count as an integer, a day and a moment in
-the one spelling it writes them, a snapshot as the JSON it wrote. Nothing is
-coerced on its way to being her words. The help store reads the id of the note
+the store writes: text as text, a count as an integer from 1, a day and a
+moment in the one spelling it writes them, a snapshot as the JSON it wrote, a
+change's id in the one shape it gives out. Revisions, a change's place in the
+file, and a note's place among notes all start at 1, so nought or less was
+written by nothing here, and a place of nought would sort its note ahead of
+every real one. Nothing is coerced on its way to being her words. The columns
+a later step fills, the title, the kind, a parent's note, and the assignment a
+note became, are read as text when they hold something, since nothing here
+writes them yet and a note that names an assignment has left the queue. The help store reads the id of the note
 a request is about the same way: a note's id in the one spelling it writes, or
 nothing. Anything else held there is never turned into text, since corrupted
 bytes print as ordinary characters and would be handed on as an id; the request
