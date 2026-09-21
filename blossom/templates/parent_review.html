@@ -93,6 +93,13 @@
             <li>
               Asked {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }} at {{ ask.asked_local|clock }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
               Resolved{% if ask.response %} with <q>{{ ask.response }}</q>{% endif %}.
+              {% if ask.about_note %}
+                <p class="note">
+                  {% with about = ask.about_note, viewer = "parent" %}
+                    {% include "help_about_note.html" %}
+                  {% endwith %}
+                </p>
+              {% endif %}
             </li>
           {% endfor %}
         </ul>

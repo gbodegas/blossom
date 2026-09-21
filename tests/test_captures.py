@@ -530,6 +530,21 @@ def test_a_name_that_is_no_note_has_no_line_of_changes(store: ProjectStateStore)
     assert store.sound_capture_history(new_capture_id()) is None
 
 
+def test_the_store_of_the_record_says_how_long_it_keeps_her_notes_and_why() -> None:
+    """Its policy is prose that states the schedule and the reason, and a note is on another
+    schedule than the assignments the store also keeps: nothing takes one away."""
+    policy = ProjectStateStore.retention_policy
+    guide = (pathlib.Path(__file__).parents[1] / "docs" / "development.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "academic year" in policy
+    assert "homework notes" in policy
+    for said in ("every change", "putting one away keeps it", "nothing sweeps them", "backup"):
+        assert said in policy
+        assert said in " ".join(guide.split())
+
+
 def test_two_notes_with_the_same_words_are_two_notes(store: ProjectStateStore) -> None:
     first = created(create(store, new_capture_id()))
     second = created(create(store, new_capture_id()))

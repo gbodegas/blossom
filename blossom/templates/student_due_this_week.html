@@ -243,6 +243,11 @@
             <li>
               <strong>You asked for help</strong> at {{ ask.asked_local|clock }}
               on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
+              {% if ask.about_note %}
+                {% with about = ask.about_note %}
+                  {% include "help_about_note.html" %}
+                {% endwith %}
+              {% endif %}
               <strong>Resolved.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
             </li>
           {% endfor %}

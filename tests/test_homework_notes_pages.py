@@ -387,6 +387,63 @@ def test_a_request_for_help_that_is_refused_keeps_her_question_whatever_became_o
     assert sent == []
 
 
+def own_row(page: str, *, family: bool, resolved: bool) -> str:
+    """The one request's own row: its list item or its card, and nothing else of the page."""
+    if resolved:
+        summary = "Resolved in the last two weeks" if family else "Resolved requests"
+        rows = page.split(f"<summary>{summary}</summary>", 1)[1].split("</details>", 1)[0]
+        return rows.split("<li>", 1)[1].split("</li>", 1)[0]
+    if family:
+        return page.split('<article class="draft help-', 1)[1].split("</article>", 1)[0]
+    return page.split('<ul class="help">', 1)[1].split("</li>", 1)[0]
+
+
+@pytest.mark.parametrize("stage", ["asked", "taken up", "resolved"])
+@pytest.mark.parametrize("became", ["as saved", "edited", "archived", "unavailable"])
+def test_a_request_about_a_note_says_so_in_its_own_row_at_every_stage_on_both_pages(
+    stage: str, became: str
+) -> None:
+    """Asked with no question, so the note is all that says what the request is about. The
+    row itself is read, since the note being somewhere else on the page is not enough, and
+    each page still costs the one statement for every note its requests name."""
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        name = save_note(client)
+        assert ask_about(client, name, "").status_code == 303
+        asked = state.help_requests.open_requests()[0]
+        if became == "edited":
+            change_note(client, name, "edit", text="Edited words", course="", due_date="")
+        elif became == "archived":
+            change_note(client, name, "archive")
+        elif became == "unavailable":
+            store._connection.execute("UPDATE homework_captures SET attribution = 'no json'")
+            store._connection.commit()
+        if stage == "taken up":
+            state.help_requests.accept(asked.request_id, None)
+        elif stage == "resolved":
+            state.help_requests.resolve(asked.request_id, "We talked")
+        seen: list[str] = []
+        store._connection.set_trace_callback(seen.append)
+        pages = {False: client.get(HER_PAGE).text, True: client.get(FAMILY).text}
+        store._connection.set_trace_callback(None)
+
+    named = [line for line in seen if "json_each" in line and "homework_captures" in line]
+    assert len(named) == 2
+    for family, page in pages.items():
+        row = own_row(page, family=family, resolved=stage == "resolved")
+        whose = "her" if family else "your"
+        if became == "unavailable":
+            assert f"{whose.capitalize()} homework note cannot be read right now." in row
+            assert "Open homework note" not in row
+            continue
+        words = "Edited words" if became == "edited" else WORDS
+        assert f"About {whose} homework note, as it stands now" in row
+        assert ("(archived)" in row) is (became == "archived")
+        assert str(escape(words)) in row
+        assert f'<a href="{note_href(name)}">Open homework note</a>' in row
+
+
 # --------------------------------------------------------- what a note never does
 
 

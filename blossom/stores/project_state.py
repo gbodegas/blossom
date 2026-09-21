@@ -503,7 +503,13 @@ class ProjectStateStore(CaptureRecords):
     """
 
     name = "project_state"
-    retention_policy = "Keep structured assignment state for the academic year, then archive."
+    retention_policy = (
+        "Keep structured assignment state for the academic year, then archive. Her homework "
+        "notes are on another schedule, because a note is her own record of something she "
+        "heard and nothing else holds it: each note, its first words, and every change to it "
+        "are kept until the household removes the file. No page deletes a note, putting one "
+        "away keeps it, and nothing sweeps them, so a backup of the file holds them as well."
+    )
 
     def __init__(
         self, connection: sqlite3.Connection, clock: Clock, *, tables: bool = True
