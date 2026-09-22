@@ -47,7 +47,7 @@ from blossom.intake import (
     within_a_school_year,
 )
 from blossom.routes.parent import review_page
-from blossom.stores.project_state import AssignmentKind
+from blossom.stores.project_state import AssignmentKind, UnreadableClaim
 from blossom.templating import page_templates
 
 router = APIRouter(prefix="/parent/inbox", tags=["parent"])
@@ -93,6 +93,12 @@ HELD_BY_A_NOTE: Final = (
     "cannot yet tell the school's version from hers. The rows are named below. Take them "
     "out to save the rest, or leave this for now; the text is kept."
 )
+CLAIM_UNREADABLE: Final = (
+    "A saved claim about a date cannot be read right now, so nothing was saved. Your input "
+    "is still here."
+)
+ANSWER_KEY_MAX_LENGTH: Final = 6
+"""A card's key is a count from the reader, in plain digits; nothing longer is one."""
 CHOOSE_ONE_TYPE: Final = (
     "Two cards about the same assignment choose different types. Pick one type for it, then save."
 )
@@ -304,6 +310,94 @@ def problem_page(
     )
 
 
+@dataclass(frozen=True)
+class AnswerKept:
+    """One answer given on a review card, as unsaved input to copy: which card, whether the
+    row is the same assignment or new work, and the type chosen."""
+
+    key: str
+    occurrence: str | None
+    kind: str | None
+
+
+def answers_kept(form: Mapping[str, str]) -> list[AnswerKept]:
+    """The answers a review form carried, read by the page's own rules for a choice and by
+    its own field names, nothing else: new work or the same assignment where the card asked,
+    and a type where the select was changed from what it showed or carries a choice from a
+    page before. A card's key is plain digits. Anything else the form holds is no answer."""
+    by_key: dict[str, AnswerKept] = {}
+    types = {kind.value for kind in AssignmentKind}
+    for name, value in form.items():
+        head, _, key = name.rpartition("-")
+        if head not in ("occurrence", "kind") or not key.isdigit():
+            continue
+        if len(key) > ANSWER_KEY_MAX_LENGTH:
+            continue
+        found = by_key.get(key, AnswerKept(key, None, None))
+        if head == "occurrence":
+            if value in ("update", "new") and form.get(f"asked-{key}") == "1":
+                found = AnswerKept(key, value, found.kind)
+        elif value in types:
+            showed = form.get(f"shown-{key}", form.get(f"suggested-{key}"))
+            if form.get(f"chosen-{key}") == "1" or value != showed:
+                found = AnswerKept(key, found.occurrence, value)
+        by_key[key] = found
+    return [
+        answer
+        for _, answer in sorted(by_key.items(), key=lambda item: int(item[0]))
+        if answer.occurrence or answer.kind
+    ]
+
+
+def answers_shown(
+    occurrences: Mapping[int, str] | None, kinds: Mapping[int, AssignmentKind] | None
+) -> list[AnswerKept]:
+    """The answers a review page was made with, in the same shape."""
+    keys = sorted({*(occurrences or {}), *(kinds or {})})
+    return [
+        AnswerKept(
+            str(key),
+            (occurrences or {}).get(key),
+            None if kinds is None or key not in kinds else kinds[key].value,
+        )
+        for key in keys
+    ]
+
+
+def intake_unavailable(
+    request: Request,
+    state: ApplicationState,
+    draft: Mapping[str, str],
+    answers: list[AnswerKept],
+) -> HTMLResponse:
+    """The page for a review or a save refused because a claim about a date on record cannot
+    be read. It reads no store, tries nothing again, and says nothing was saved. It keeps
+    the text as pasted, or the entry as typed, and the answers given on the cards, to copy.
+    The way on is a press through the same reading, never a retry made here."""
+    text = draft.get("text") or None
+    entry = None
+    if text is None:
+        entry = {name: draft.get(name, "") for name in ENTRY_FIELDS}
+        entry["kind"] = dict(KIND_CHOICES).get(entry["kind"], entry["kind"])
+    return templates.TemplateResponse(
+        request,
+        "inbox_unavailable.html",
+        {
+            "problem": CLAIM_UNREADABLE,
+            "text": text,
+            "entry": entry,
+            "entry_fields": ENTRY_FIELDS,
+            "answers": answers,
+            "again": "/parent/inbox/read" if text else "/parent/inbox/enter",
+            "draft": {
+                name: value for name, value in draft.items() if name in (*ENTRY_FIELDS, "text")
+            },
+            "sample": state.settings.sample,
+        },
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
 def preview_page(
     request: Request,
     state: ApplicationState,
@@ -317,9 +411,13 @@ def preview_page(
 ) -> HTMLResponse:
     """What was read, week by week against the record as it is, with the way to save it.
     A text with a row about homework made from a homework note says so, names the rows, and
-    offers no save: the text stays to be edited."""
-    changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
-    held = held_rows(read.items, state.project_state)
+    offers no save: the text stays to be edited. A claim on record that cannot be read
+    refuses the comparison, and the page that reads no store keeps the draft."""
+    try:
+        changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+        held = held_rows(read.items, state.project_state)
+    except UnreadableClaim:
+        return intake_unavailable(request, state, draft, answers_shown(occurrences, kinds))
     if held is not None:
         notice = HELD_BY_A_NOTE
     if notice is None and conflicting_choices(changes):
@@ -417,9 +515,15 @@ async def keep_readings(request: Request, state: State) -> Response:
     read = read_draft(state, draft)
     if isinstance(read, Problem):
         return problem_page(request, state, draft, read)
-    occurrences, kinds = answers_from(form, unasked_for(state, read))
-    async with state.decision_lock:
-        kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+    # A claim on record that cannot be read refuses the comparison, before the write or
+    # inside its transaction, which is rolled back whole before anything is answered. The
+    # answer reads no store and keeps the draft and the answers given on the cards.
+    try:
+        occurrences, kinds = answers_from(form, unasked_for(state, read))
+        async with state.decision_lock:
+            kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+    except UnreadableClaim:
+        return intake_unavailable(request, state, draft, answers_kept(form))
     if isinstance(kept, Held):
         return preview_page(
             request,

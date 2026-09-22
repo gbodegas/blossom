@@ -211,6 +211,14 @@ class DetailsForm:
     """The choice among homework already on record, as sent: one of them, or separate. Whether
     it stays chosen is decided beside the rows as they stand; otherwise it is said back as
     unsaved."""
+
+    @property
+    def chosen_assignment(self) -> str | None:
+        """The assignment the choice names as the same homework, or ``None`` for no choice
+        or the choice of a separate assignment: what a page that cannot show the rows says."""
+        read = choice_from(self.candidate or None)
+        return read[1] if read is not None and read[0] == "same" else None
+
     problem: str | None = None
     field: str | None = None
     unsaved: bool = False

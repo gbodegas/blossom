@@ -23,7 +23,7 @@
 {% endif %}
 {% if kept.candidate == "separate" %}
   <p class="note">Choice, as made: keep it as a separate assignment.</p>
-{% elif kept.candidate %}
-  <p class="note">Choice, as made: the same homework as one already here.</p>
+{% elif kept.chosen_assignment %}
+  <p class="note">Choice, as made: the same homework as the assignment <span class="authored-text">{{ kept.chosen_assignment }}</span>.</p>
 {% endif %}
 {# Anything else a form sent as its choice was never kept on the form. #}

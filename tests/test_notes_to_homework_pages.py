@@ -1822,6 +1822,7 @@ DAMAGED_HISTORY = [
     ("capture_id", "not-a-note-id"),
     ("capture_revision", -1),
     ("withdrawn_at", "not a moment"),
+    ("withdrawn_at", None),
     ("active", 2),
 ]
 
@@ -2018,3 +2019,93 @@ def test_the_family_page_says_what_a_note_still_needs_and_leads_to_the_familys_f
     assert "Add the class and title to put this in a plan" in week
     assert "Ready to add to homework" in week
     assert "once a note is added to homework" in shared
+
+
+# ------------------------------------------------------------------ the kept choice
+
+
+def test_a_refused_form_that_reads_no_store_names_the_assignment_the_choice_joins() -> None:
+    """The page that cannot show the rows still says which assignment the choice names as
+    the same homework, by its id, so the choice can be made again from what is kept."""
+    with browser() as client:
+        name = save_note(client)
+        on_record(client, date(2026, 8, 21), named="review-the-same-one")
+        form = {
+            **opened(client, name),
+            **typed(due_date="2026-08-21"),
+            "candidate": "same:review-the-same-one",
+        }
+        damaged(client, name)
+        before = rows(client)
+        answer = add(client, name, form)
+        after = rows(client)
+
+    assert answer.status_code == 500
+    assert (
+        'Choice, as made: the same homework as the assignment <span class="authored-text">'
+        "review-the-same-one</span>." in answer.text
+    )
+    assert "one already here" not in answer.text
+    assert after == before
+
+
+# ------------------------------------------------------------------ the rows of work due later
+
+DATE_CLAIM_UNREADABLE = (
+    "A claim about this date cannot be read right now. The date is shown without it. "
+    "Nothing was changed."
+)
+
+
+@pytest.mark.parametrize("done", [False, True])
+@pytest.mark.parametrize("flag", [2, "broken", 0.5])
+def test_a_row_of_work_due_later_says_a_claim_about_its_date_cannot_be_read(
+    flag: object, done: bool
+) -> None:
+    """Work given out this week and due after it has a row of its own, with a date of its
+    own. A claim about that date the store did not write is said in that row, whether the
+    work is open or reported done, and once on the details; nothing is changed."""
+    with browser() as client:
+        state = state_of(client)
+        row = Assignment(
+            assignment_id="given-out-this-week",
+            course="Geometry",
+            title="Chapter review",
+            due_date=date(2026, 8, 31),
+            assigned_on=date(2026, 8, 19),
+            dependencies=[],
+            reported_submission_status="not_started",
+            origins={"record": SourceChannel.LMS},
+        )
+        state.project_state.put_on_record([row], {})
+        state.project_state.record_claims(
+            row.assignment_id,
+            [
+                SourceRecord(
+                    channel=SourceChannel.EMAIL,
+                    asserted_value="2026-08-28",
+                    observed_at=state.clock.now(),
+                    confidence=0.8,
+                    seen_in="day header",
+                )
+            ],
+        )
+        connection = state.project_state._connection
+        connection.execute(
+            "UPDATE date_claims SET active = ? WHERE assignment_id = ?", (flag, row.assignment_id)
+        )
+        connection.commit()
+        if done:
+            she_said(client, row, "done")
+        before = rows(client)
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        details = client.get(f"/student/assignments/{row.assignment_id}").text
+        after = rows(client)
+
+    assert after == before
+    assert "Assigned this week, due later" in week
+    line = week.split(f'id="assignment-{row.assignment_id}"')[1].split("</li>")[0]
+    assert "Chapter review" in line
+    assert DATE_CLAIM_UNREADABLE in line
+    assert week.count(DATE_CLAIM_UNREADABLE) == 1
+    assert details.count(DATE_CLAIM_UNREADABLE) == 1

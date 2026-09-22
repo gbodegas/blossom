@@ -369,6 +369,7 @@
           <li id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
             <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
             Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
+            {% include "student_claim_warning.html" %}
             {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
             <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
             {% include "student_hand_in_line.html" %}
@@ -385,6 +386,7 @@
               <li id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
                 <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
                 Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
+                {% include "student_claim_warning.html" %}
                 {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
                 <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
                 {% include "student_hand_in_line.html" %}

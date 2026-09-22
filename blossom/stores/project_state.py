@@ -2449,6 +2449,9 @@ def claim_on_record_from(assignment_id: str, row: tuple[object, ...]) -> ClaimOn
         if active and stopped is not None:
             msg = "a claim that counts was not withdrawn"
             raise ValueError(msg)
+        if not active and stopped is None:
+            msg = "a claim that does not count was withdrawn at some moment"
+            raise ValueError(msg)
     except (ValueError, TypeError) as fault:
         raise UnreadableClaim(assignment_id) from fault
     return ClaimOnRecord(record, note, revision, active, stopped)

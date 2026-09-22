@@ -49,9 +49,7 @@
         a date that reads as the record's. A claim that cannot be read as a
         date is listed apart and neither confirms nor contradicts anything.
       #}
-      {% if assignment.claims_unreadable %}
-        <p class="source">A claim about this date cannot be read right now. The date is shown without it. Nothing was changed.</p>
-      {% endif %}
+      {% include "student_claim_warning.html" %}
       {% if assignment.source_label %}
       {% elif assignment.deadline_confidence == "UNVERIFIED" %}
         <p class="source">

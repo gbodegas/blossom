@@ -228,6 +228,7 @@ def test_a_claim_that_was_withdrawn_is_read_by_nothing_but_the_history(
         "UPDATE date_claims SET capture_revision = 0 WHERE capture_id IS NOT NULL",
         "UPDATE date_claims SET capture_id = 'NOT-AN-ID' WHERE capture_id IS NOT NULL",
         "UPDATE date_claims SET withdrawn_at = 'then' WHERE capture_id IS NOT NULL",
+        "UPDATE date_claims SET active = 0 WHERE capture_id IS NOT NULL",
     ],
 )
 def test_what_names_a_note_is_read_as_the_store_writes_it_or_the_history_says_so(
