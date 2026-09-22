@@ -1071,8 +1071,17 @@ decided by the statement: a row that holds anything else is no claim that
 counts and no claim that was withdrawn, and is named as one that cannot be
 read. The reading a page is made from carries those names, so her week and an
 assignment's details say a claim about the date cannot be read and show the
-date without it, as they say a hand-in chain cannot be read; the strict
-readers, which the paste's comparison uses, refuse instead. The assignment's
+date without it, as they say a hand-in chain cannot be read, and so does a
+row of work due later, which shows a date of its own. The strict readers,
+which the paste's comparison uses, refuse instead, and the paste's pages meet
+that refusal at their boundary: a review or a save that meets a claim it
+cannot read, before the write or inside its transaction, which is rolled
+back whole first, is answered by a page that reads no store, says nothing was
+saved, and keeps the text as pasted or the entry as typed with the answers
+given on the cards, to copy; the one way on is the ordinary press through the
+same reading. A claim's history holds together or is unreadable: one that
+counts was withdrawn at no moment, and one that does not count was withdrawn
+at some moment. The assignment's
 details read the whole history and list the withdrawn claims apart, each with
 the day it was withdrawn and whether a note made it; a history that cannot be
 read leaves the record, her update, and her hand-in as they are, and the page
