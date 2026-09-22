@@ -903,9 +903,10 @@ is neither shown there nor asked about. The lists read no history, so this
 costs a list nothing.
 
 Whether a note is put away is written as 0 or 1 and read as nothing else. A row
-that holds anything else is read with the notes that wait and named there as
-one that cannot be read, so a damaged flag never takes a note off both lists
-while its own page calls it archived. A note that cannot be read is counted
+that holds anything else is read with the notes that wait, or with the notes in
+homework when it names an assignment, and named there as one that cannot be
+read, so a damaged flag never takes a note off every list while its own page
+calls it archived. A note that cannot be read is counted
 wherever her notes are counted, since it is still a note of hers that waits. A
 revision is read from a form only as these pages write it, a count from 1 in
 plain digits, because a save that asks for what already stands is answered
@@ -1008,11 +1009,12 @@ Homework on record with the same class and title, paired by the rule the
 school's paste pairs by, whitespace collapsed and case kept, is never merged
 by itself. Every such assignment is a candidate whatever its date.
 `blossom/candidates.py` reads each one as a person is shown it: what the record
-holds, where the record came from, what she currently says about the work with
-the day she said it, and what each school channel currently says, her account
-and the school's apart, and no report of hers said as that and never filled in
-from the record's own status. A row is written from that reading and the
-fingerprint the page sends back is made from the same one, so what is shown and
+holds, its kind included, where the record came from, what she currently says
+about the work with the day she said it, and what each school channel currently
+says, her account and the school's apart, and no report of hers said as that
+and never filled in from the record's own status. A row is written from that
+reading and the fingerprint the page sends back is made from the same one, so
+every value the fingerprint covers is one the row shows, and what is shown and
 what is compared cannot differ; moments of reading and the family's checks are
 in neither. The store is handed that reading and calls it inside its
 transaction, through its own connection: a fingerprint that differs means
@@ -1031,7 +1033,11 @@ is any one line the record keeps, the word `separate` and a colon included, so
 the prefix is taken off once and the rest is the id whole, never trimmed or
 split. Any other spelling is a form these pages did not make. A choice made
 stays chosen through a refusal about something else, while it is still one of
-the choices shown; a fresh page chooses nothing.
+the choices shown, and the fingerprint it was made on travels with it: a form
+that comes back carries the fingerprint it came with, never a fresh one beside
+an old choice, so a fact that changed in between is met by the save and the
+choice put again there. A fresh page, and a page that puts the choice again,
+carry the fingerprint of what they show; a fresh page chooses nothing.
 
 `date_claims` says where a claim came from. Its rows carry the note and the
 note's revision when a note made the claim, whether the claim still counts,
