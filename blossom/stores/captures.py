@@ -96,9 +96,12 @@ ADDED_CAPTURES: Final = """
         kind, note, attribution, created_at_utc, created_on, updated_at_utc, updated_on,
         revision, archived, assignment_id
     FROM homework_captures
-    WHERE archived = 0 AND assignment_id IS NOT NULL
+    WHERE (archived = 0 OR archived NOT IN (0, 1)) AND assignment_id IS NOT NULL
     ORDER BY created_order
 """
+"""A note in homework whose archived flag is neither 0 nor 1 is read with the notes in
+homework, where it is named as one that cannot be read, as a waiting note with such a flag
+is read with the notes that wait: a damaged flag takes a note off no list."""
 ARCHIVED_CAPTURES: Final = """
     SELECT
         capture_id, created_order, original_text, initial, text, course, title, due_date,

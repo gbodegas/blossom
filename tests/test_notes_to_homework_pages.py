@@ -65,7 +65,7 @@ from blossom.routes.note_details import (
 )
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import BAD_FORM, NOT_HERS_TO_UPDATE
-from blossom.stores.project_state import Assignment, Saved, StatusReport
+from blossom.stores.project_state import Assignment, AssignmentKind, Saved, StatusReport
 from tests.support import (
     FIXTURE_WEEK,
     HER_PAGE,
@@ -151,7 +151,11 @@ def spoken(day: date) -> str:
 
 
 def on_record(
-    client: TestClient, due: date, title: str = "Questions 4-8", named: str | None = None
+    client: TestClient,
+    due: date,
+    title: str = "Questions 4-8",
+    named: str | None = None,
+    kind: AssignmentKind = AssignmentKind.HOMEWORK,
 ) -> Assignment:
     row = Assignment(
         assignment_id=named or intake.identity("Geometry", title, due.isoformat()),
@@ -161,6 +165,7 @@ def on_record(
         dependencies=[],
         reported_submission_status="not_started",
         origins={"record": SourceChannel.LMS},
+        kind=kind,
     )
     state_of(client).project_state.put_on_record([row], {})
     return row
@@ -800,7 +805,7 @@ def test_a_candidate_says_what_she_and_the_school_currently_say_apart(family: bo
     with browser() as client:
         today = state_of(client).clock.today()
         quiet = on_record(client, date(2026, 8, 28))
-        busy = on_record(client, date(2026, 9, 4))
+        busy = on_record(client, date(2026, 9, 4), kind=AssignmentKind.TASK)
         she_said(client, busy, "done")
         school_said(client, busy, "missing", today)
         name = save_note(client)
@@ -824,9 +829,11 @@ def test_a_candidate_says_what_she_and_the_school_currently_say_apart(family: bo
     assert f"No update from {'her' if family else 'you'}" in silent
     assert "said Done" not in silent
     assert "Recorded status: not started" in silent
+    assert said.count("Kind: Task.") == 1
+    assert silent.count("Kind: Homework.") == 1
 
 
-CHANGES = ["she says done", "school says missing", "record source"]
+CHANGES = ["she says done", "school says missing", "record source", "kind"]
 
 
 @pytest.mark.parametrize("family", [False, True])
@@ -850,9 +857,11 @@ def test_a_fact_shown_about_a_candidate_that_changed_is_put_again_with_what_stan
             she_said(client, target, "done")
         elif change == "school says missing":
             school_said(client, target, "missing", today)
-        else:
+        elif change == "record source":
             moved = target.model_copy(update={"origins": {"record": SourceChannel.PARENT_ENTRY}})
             store.upsert_assignments([moved])
+        else:
+            store.upsert_assignments([target.model_copy(update={"kind": AssignmentKind.TASK})])
         before = rows(client)
         answer = add(client, name, form, family=family)
         after = rows(client)
@@ -868,6 +877,7 @@ def test_a_fact_shown_about_a_candidate_that_changed_is_put_again_with_what_stan
         "she says done": f"said Done on {spoken(today)}",
         "school says missing": f"reported missing on {spoken(today)}",
         "record source": "From the family entry",
+        "kind": "Kind: Task.",
     }[change]
     assert answer.status_code == 409, answer.headers.get("location")
     assert escape(CHOOSE_ABOUT_THESE) in answer.text
@@ -909,6 +919,59 @@ def test_a_choice_made_is_still_made_after_a_refusal_about_something_else(
     assert note is not None
     expected = target.assignment_id if which == "same" else derived_assignment_id(name)
     assert note.assignment_id == expected
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+def test_a_refusal_about_something_else_keeps_the_fingerprint_the_choice_was_made_on(
+    button: str,
+) -> None:
+    """A fact shown about a candidate changes after the page is opened. A refusal about the
+    note must not hand back a fresh fingerprint beside the old choice, or the corrected
+    press would join the note to homework whose shown facts it never saw."""
+    with browser() as client:
+        today = state_of(client).clock.today()
+        target = on_record(client, date(2026, 8, 28))
+        name = save_note(client)
+        shown = add(client, name, {**opened(client, name), **typed()})
+        form = whole_form(shown.text, note_add_action(name))
+        chosen = {**form, "candidate": choice_value(target.assignment_id)}
+        she_said(client, target, "done")
+        send = add if button == "add" else save_details
+        refused = send(client, name, {**chosen, "note": "n" * 501})
+        returned = whole_form(refused.text, note_add_action(name))
+        before = rows(client)
+        corrected = add(client, name, {**returned, "note": "A note that fits"})
+        after = rows(client)
+
+    assert shown.status_code == 409
+    assert refused.status_code == 422
+    assert returned["basis"] == form["basis"]
+    assert corrected.status_code == 409, corrected.headers.get("location")
+    assert escape(CHOOSE_ABOUT_THESE) in corrected.text
+    assert "The choice made before was not saved" in corrected.text
+    assert f"said Done on {spoken(today)}" in choice_section(corrected.text)
+    assert "candidate" not in whole_form(corrected.text, note_add_action(name))
+    assert after == before
+
+
+def test_a_form_refused_whole_for_its_fingerprint_offers_a_fresh_choice() -> None:
+    with browser() as client:
+        target = on_record(client, date(2026, 8, 28))
+        name = save_note(client)
+        shown = add(client, name, {**opened(client, name), **typed()})
+        form = whole_form(shown.text, note_add_action(name))
+        forged = {**form, "candidate": choice_value(target.assignment_id), "basis": "no-digest"}
+        before = rows(client)
+        answer = add(client, name, forged)
+        returned = whole_form(answer.text, note_add_action(name))
+        after = rows(client)
+
+    assert answer.status_code == 422
+    assert escape(BAD_FORM) in answer.text
+    assert returned["basis"] == form["basis"]
+    assert "candidate" not in returned
+    assert " checked" not in answer.text
+    assert after == before
 
 
 def test_keep_separate_makes_the_notes_own_assignment_beside_the_one_on_record() -> None:
@@ -1349,6 +1412,27 @@ def test_the_history_keeps_every_detail_of_every_change_and_says_what_each_chang
     assert "Due date given: August 21, 2026" in entries[3]
     for kept in ("Geometry", "Questions 4-8", "Later unique instruction", "Kind: Homework"):
         assert kept in entries[4], kept
+
+
+def test_a_note_in_homework_whose_flag_is_damaged_is_listed_as_one_that_cannot_be_read() -> None:
+    """A damaged flag takes a note off no list: a note in homework is read with the notes
+    added to homework, where it is named as one that cannot be read."""
+    with browser() as client:
+        store = state_of(client).project_state
+        name = save_note(client)
+        assert add(client, name, {**opened(client, name), **typed()}).status_code == 303
+        damaged(client, name)
+        added = store.added_captures()
+        waiting = store.outstanding_captures()
+        archived = store.archived_captures()
+        page = client.get(ADDED_NOTES_PAGE).text
+        waiting_page = client.get(NOTES_PAGE).text
+
+    assert (added.notes, added.unreadable) == ([], [name])
+    assert (waiting.unreadable, archived.unreadable) == ([], [])
+    assert "1 homework note cannot be read right now" in page
+    assert "Homework notes added to homework (1)" in page
+    assert "cannot be read" not in waiting_page
 
 
 # ------------------------------------------------------------------ results on a note in homework

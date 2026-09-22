@@ -14,9 +14,9 @@
   that those details can be used in making a plan.
 
   With homework of the same class and title on record, each is listed with
-  its date, what she currently says about the work, what each school channel
-  currently says, the record's own status, and where the record came from, her
-  account and the school's apart. The choice is hers or a parent's: the same
+  its date, its kind, what she currently says about the work, what each school
+  channel currently says, the record's own status, and where the record came
+  from, her account and the school's apart. The choice is hers or a parent's: the same
   homework, or a separate assignment. What a choice is sent as names its kind
   apart from the assignment's id, since an id is any text the record keeps.
   The form carries a fingerprint of everything those rows show, so a choice
@@ -142,7 +142,7 @@
             {% endif %}
             {% for item in candidates %}
               <label><input type="radio" name="candidate" value="{{ item.value }}"{% if chosen == item.value %} checked{% endif %} aria-describedby="details-candidate-{{ loop.index }}"> <span>Same homework as <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>, {% if item.due_date %}due {{ on(item.due_date) }}{% else %}no due date recorded{% endif %}</span></label>
-              <p class="note candidate-facts" id="details-candidate-{{ loop.index }}">{{ item.hers }}{% for said in item.school %} {{ said }}{% endfor %}{% if item.recorded %} {{ item.recorded }}{% endif %}{% if item.source %} {{ item.source }}{% endif %}</p>
+              <p class="note candidate-facts" id="details-candidate-{{ loop.index }}">{{ item.kind }} {{ item.hers }}{% for said in item.school %} {{ said }}{% endfor %}{% if item.recorded %} {{ item.recorded }}{% endif %}{% if item.source %} {{ item.source }}{% endif %}</p>
             {% endfor %}
             <label><input type="radio" name="candidate" value="{{ separate }}"{% if chosen == separate %} checked{% endif %}> <span>Keep as a separate assignment</span></label>
           </fieldset>

@@ -190,8 +190,13 @@ class DetailsForm:
     note: str = ""
     date_refused: str | None = None
     date_pending: bool = False
+    basis: str = ""
+    """The fingerprint of the homework the page showed, as sent and as a page writes one. A
+    form that comes back carries it on, so a choice made on facts that have since changed is
+    met by the save and put again there; nothing here tidies it into a fresh one."""
     candidate: str = ""
-    """The choice among homework already on record, as sent: one of them, or separate."""
+    """The choice among homework already on record, as sent: one of them, or separate. Kept
+    only with the fingerprint it was made on."""
     problem: str | None = None
     field: str | None = None
     unsaved: bool = False
@@ -280,6 +285,8 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None) -> P
     marked = "date_pending" in fields or "date_refused" in fields
     carried = fields.get("date_refused", "")
     sent = fields.get("candidate", "")
+    given = fields.get("basis", "")
+    basis = given if BASIS_AS_WRITTEN.fullmatch(given) else ""
     form = DetailsForm(
         capture_id=capture_id,
         revision=revision,
@@ -295,8 +302,10 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None) -> P
             else None
         ),
         date_pending=marked,
-        # A choice is kept only in the spelling a page writes one; anything else is dropped.
-        candidate=sent if sent and choice_from(sent) is not None else "",
+        basis=basis,
+        # A choice is kept only in the spelling a page writes one, and only with the
+        # fingerprint it was made on; anything else is dropped.
+        candidate=sent if basis and sent and choice_from(sent) is not None else "",
     )
     without = marked and fields.get("without_date") == "1"
     raw = fields.get("due_date", "").strip()
@@ -435,6 +444,7 @@ class CandidateRow:
     course: str
     title: str
     due_date: date | None
+    kind: str
     hers: str
     school: tuple[str, ...]
     recorded: str | None
@@ -459,6 +469,7 @@ def candidate_row(item: CandidateReading, *, family: bool) -> CandidateRow:
         course=item.course,
         title=item.title,
         due_date=item.due_date,
+        kind=f"Kind: {'Task' if item.kind == 'TASK' else 'Homework'}.",
         hers=hers,
         school=tuple(
             f"The {CHANNEL_NAMES[word.channel]} reported {word.status.replace('_', ' ')} "
@@ -538,12 +549,20 @@ def details_page(
     form: DetailsForm | None = None,
     problem: str | None = None,
     choosing: bool = False,
+    renew: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """The page with her words, the details, and the two buttons. The note is read as its own
     page reads it, its line of changes included, and the homework on record once: for the
     list of classes, and for the homework of the class and title the form gives, whose
     fingerprint the form carries back.
+
+    A fresh page carries the fingerprint of the homework it shows. A form
+    that came back carries the one it came with, so a refusal about
+    something else does not put a fresh fingerprint beside a choice made on
+    facts that have since changed: the save meets the change and puts the
+    choice again. ``renew`` is for that answer, the store having found the
+    homework changed, and gives the fingerprint of what is shown now.
 
     When the page is the answer to a refused press, ``form`` holds what was
     typed, and a note that cannot be shown does not take that with it: the
@@ -594,6 +613,7 @@ def details_page(
     rows = [candidate_row(item, family=way.family) for item in candidates]
     offered = {row.value for row in rows} | {SEPARATE}
     accepted = accepted_press(found[1])
+    carried = shown.basis if form is not None and not renew else ""
     return templates.TemplateResponse(
         request,
         "student_note_details.html",
@@ -605,13 +625,14 @@ def details_page(
             "other_class": OTHER_CLASS,
             "separate": SEPARATE,
             "candidates": rows,
-            "basis": candidate_basis(candidates),
+            "basis": carried or candidate_basis(candidates),
             "choosing": choosing,
-            # A choice made is kept through a refusal about something else, while it is
-            # still one of the choices shown. A choice put again is made again: it is said
-            # back as unsaved, and nothing is chosen for anyone.
+            # A choice made is kept through a refusal about something else, with the
+            # fingerprint it was made on, while it is still one of the choices shown. A
+            # choice put again is made again: it is said back as unsaved, and nothing is
+            # chosen for anyone.
             "chosen": shown.candidate
-            if rows and not choosing and shown.candidate in offered
+            if rows and carried and not choosing and shown.candidate in offered
             else "",
             "previous": previous_choice(shown, rows) if choosing else None,
             # What a note in homework was added with: the press that was accepted, as its
@@ -644,6 +665,7 @@ def details_or_plain(
     status_code: int,
     *,
     choosing: bool = False,
+    renew: bool = False,
 ) -> HTMLResponse:
     """The page with a refusal said first, tried once; when the page cannot be read back, the
     plain page that reads no store and keeps everything that was typed."""
@@ -656,6 +678,7 @@ def details_or_plain(
             form=form,
             problem=problem,
             choosing=choosing,
+            renew=renew,
             status_code=status_code,
         )
     except Exception:
@@ -889,6 +912,8 @@ async def add_to_homework(
         case ChoiceNeeded(candidates=found) | CandidatesChanged(candidates=found):
             # With homework of that class and title on record the choice is put, or put
             # again. With none left, the choice sent was about homework that has gone.
+            # Either way the store found the homework other than the page showed, so the
+            # page carries the fingerprint of what stands now.
             return details_or_plain(
                 request,
                 state,
@@ -898,6 +923,7 @@ async def add_to_homework(
                 CHOOSE_ABOUT_THESE if found else CHOICE_IS_PAST,
                 status.HTTP_409_CONFLICT,
                 choosing=bool(found),
+                renew=True,
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
