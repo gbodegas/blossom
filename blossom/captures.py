@@ -57,7 +57,9 @@ STUDENT: Final = "student"
 PARENT: Final = "parent"
 HOUSEHOLD: Final = "household"
 
-CaptureOperation = Literal["create", "edit", "archive", "restore", "clarify", "promote", "link"]
+CaptureOperation = Literal[
+    "create", "edit", "archive", "restore", "clarify", "promote", "link", "unlink"
+]
 CREATE: Final = "create"
 EDIT: Final = "edit"
 ARCHIVE: Final = "archive"
@@ -68,6 +70,8 @@ PROMOTE: Final = "promote"
 """The note was added to homework as an assignment of its own."""
 LINK: Final = "link"
 """The note was joined to homework already on record."""
+UNLINK: Final = "unlink"
+"""The note left the homework it was joined to and waits again; that homework stays."""
 
 CaptureKind = Literal["HOMEWORK", "TASK"]
 """The kinds an assignment has, as a note's details hold one. Written out here because this
@@ -79,9 +83,10 @@ ATTRIBUTED: Final = ("course", "title", "due_date", "kind", "note")
 DETAILS: Final = ATTRIBUTED
 """The details a note may be given so that it can become homework. Her words are not one."""
 
-PromotionChoice = Literal["new", "same", "separate"]
+PromotionChoice = Literal["new", "same", "separate", "found"]
 """What a person chose when adding a note to homework: there was no homework of that class
-and title, it is the same homework as one shown, or it is to be kept apart from those shown."""
+and title, it is the same homework as one shown, it is to be kept apart from those shown, or
+it is homework found by search, named by the one row chosen."""
 
 
 class NotACaptureId(ValueError):
@@ -456,8 +461,14 @@ class CaptureHistoryReading:
 
 
 def accepted_press(events: Sequence[CaptureEvent]) -> CaptureEvent | None:
-    """The latest change that added a note to homework or joined it to homework on record."""
-    return next((made for made in reversed(events) if made.operation in (PROMOTE, LINK)), None)
+    """The latest change that added a note to homework or joined it to homework on record,
+    unless the note was unlinked since: then there is none, and the note waits again."""
+    for made in reversed(events):
+        if made.operation == UNLINK:
+            return None
+        if made.operation in (PROMOTE, LINK):
+            return made
+    return None
 
 
 def same_press(
@@ -473,7 +484,7 @@ def same_press(
     return (
         accepted is not None
         and accepted.decision is not None
-        and accepted.operation == (LINK if choice == "same" else PROMOTE)
+        and accepted.operation == (LINK if choice in ("same", "found") else PROMOTE)
         and accepted.decision.choice == choice
         and accepted.after.assignment_id == assignment_id
         and accepted.after.details
@@ -508,14 +519,17 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
     note that is not archived. An archive and a restore move a note one way
     each. Details change details, on a note that waits: not archived, and not
     yet homework. Adding to homework and joining homework name an assignment
-    on a note that named none, with a class, a title, and a kind on the note
-    by then, may settle those details in the same act, and carry the choice
-    that was made, which is what they did: adding makes the
-    note's own assignment, by the choice of new work where nothing was shown
-    or of a separate assignment where something was; joining names one of
-    the homework that was shown, by the choice of the same. Nothing else
-    carries a choice. No change but an edit touches her words, and nothing
-    ever takes an assignment away.
+    on a note that named none, and carry the choice that was made, which is
+    what they did: adding makes the note's own assignment, by the choice of
+    new work where nothing was shown or of a separate assignment where
+    something was, with a class, a title, and a kind on the note by then,
+    which it may settle in the same act; joining names one of the homework
+    that was shown, by the choice of the same, with those three settled the
+    same way, or by the choice of homework found by search, which changes no
+    detail. Nothing else carries a choice. An unlink takes the assignment
+    away from a note that was joined and changes nothing else, so the note
+    waits again. No change but an edit touches her words, and nothing but an
+    unlink ever takes an assignment away.
     """
     before, after = change.before, change.after
     decision = change.decision
@@ -548,7 +562,18 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
             and own
             and ((choice == "new" and not shown) or (choice == "separate" and bool(shown)))
         )
-        joined = named and settled and choice == "same" and after.assignment_id in shown
+        joined = (
+            named
+            and after.assignment_id in shown
+            and ((choice == "same" and settled) or (choice == "found" and same_details))
+        )
+        left = (
+            before.assignment_id is not None
+            and after.assignment_id is None
+            and same_words
+            and same_details
+            and moved == (False, False)
+        )
         sound = {
             EDIT: not same_words and same_rest and same_link and moved == (False, False),
             ARCHIVE: same_words and same_rest and same_link and moved == (False, True),
@@ -556,6 +581,7 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
             CLARIFY: same_text and not same_details and same_link and waiting,
             PROMOTE: added,
             LINK: joined,
+            UNLINK: left,
         }.get(change.operation, False)
     if (decision is not None) != (change.operation in (PROMOTE, LINK)):
         sound = False
@@ -609,6 +635,12 @@ def sound_history(note: Capture, events: Sequence[CaptureEvent]) -> CaptureHisto
                 and change.sequence <= previous.sequence
             ):
                 raise UnsoundCaptureHistory(name, "the changes are not in the file's order")
+        if change.operation == UNLINK:
+            joined_by = accepted_press(events[: place - 1])
+            if joined_by is None or joined_by.operation != LINK:
+                raise UnsoundCaptureHistory(
+                    name, f"revision {place} unlinks a note that was not joined"
+                )
         _is_what_its_kind_does(name, change)
         previous = change
     last = events[-1]
@@ -781,3 +813,38 @@ class CaptureConflict:
     read it."""
 
     capture: Capture
+
+
+@dataclass(frozen=True)
+class CaptureUnlinked:
+    """The note left the homework it was joined to and waits again, its details kept; its
+    claims on that homework count no more, and nothing else about the homework changed."""
+
+    capture: Capture
+    event: CaptureEvent
+    assignment_id: str
+
+
+@dataclass(frozen=True)
+class CaptureAlreadyUnlinked:
+    """The press was this unlink again: nothing was written. ``head`` is the unlink."""
+
+    capture: Capture
+    head: CaptureEvent
+    assignment_id: str
+
+
+@dataclass(frozen=True)
+class CaptureNotJoined:
+    """The note is not joined to homework that was on record before it: it waits, or it made
+    an assignment of its own, which is not moved this way. Nothing was written."""
+
+    capture: Capture
+
+
+@dataclass(frozen=True)
+class HomeworkGone:
+    """The homework chosen is not on record now. Nothing was written."""
+
+    capture: Capture
+    assignment_id: str

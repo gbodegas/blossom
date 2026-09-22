@@ -44,19 +44,25 @@ from blossom.captures import (
     HOMEWORK_NOTE,
     LINK,
     PROMOTE,
+    UNLINK,
     Author,
     CandidateDecision,
     CandidateLike,
     CandidatesChanged,
     Capture,
     CaptureAlreadyPromoted,
+    CaptureAlreadyUnlinked,
     CaptureConflict,
     CaptureDetails,
+    CaptureHistoryReading,
+    CaptureNotJoined,
     CaptureNotSaved,
     CapturePromoted,
+    CaptureUnlinked,
     ChoiceNeeded,
     DetailsMissing,
     FieldSource,
+    HomeworkGone,
     PromotionChoice,
     candidate_basis,
     capture_id_from,
@@ -155,6 +161,13 @@ INSERT_CAPTURE_DATE_CLAIM: Final = """
     ON CONFLICT (assignment_id, capture_id, capture_revision)
         WHERE capture_id IS NOT NULL DO NOTHING
 """
+WITHDRAW_CAPTURE_CLAIMS: Final = """
+    UPDATE date_claims SET active = 0, withdrawn_at = ?
+    WHERE assignment_id = ? AND capture_id = ? AND active = 1
+"""
+"""Only the named note's claims on the named homework, and only those that count: the
+school's claims and another note's are never touched, and a claim withdrawn before keeps
+the moment it was."""
 """Every claim is written by naming its columns, so adding a column can misfile nothing.
 A claim from a note is one claim per assignment, note, and revision of the note: the same
 one sent again, after a lost answer, adds nothing."""
@@ -2188,6 +2201,201 @@ class ProjectStateStore(CaptureRecords):
                         capture_revision=changed.capture.revision,
                     )
                 return CapturePromoted(changed.capture, changed.event, joined, choice != "same")
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CaptureNotSaved(name, error) from error
+
+    def link_capture(
+        self,
+        capture_id: str,
+        *,
+        target: str,
+        expected_revision: int,
+        basis: str,
+        leaving: str | None = None,
+        shown: Callable[[Sequence["Assignment"]], Sequence[CandidateLike]],
+        authored_by: Author,
+        channel: SourceChannel,
+        now: datetime,
+        today: date,
+    ) -> (
+        CapturePromoted
+        | CaptureAlreadyPromoted
+        | CaptureConflict
+        | CaptureNotJoined
+        | HomeworkGone
+        | CandidatesChanged
+    ):
+        """Join a note to homework found by search, or move a joined note to other homework.
+
+        One transaction that reserves the writer before it reads. The note's
+        line of changes is checked first. With ``leaving`` unset the note must
+        wait: a note in homework whose accepted press was this one again writes
+        nothing, and any other is a conflict. With ``leaving`` set, the note
+        must be joined to that homework by a link, not by an assignment of its
+        own, which is not moved this way; the homework shown as the old one
+        must be the note's now. Either way the page's revision must be the
+        note's and the note must not be put away. The homework chosen is read
+        here, as a person was shown it, through ``shown``: gone from the
+        record, it is said so; changed in anything the row showed, the row as
+        it stands is put to the person again. Then, for a move, the note's
+        claims on the old homework are withdrawn and the unlink is written;
+        then the link, with the choice of that one row and the row as shown,
+        and a day the note gives as one more claim beside the school's. The
+        note's details are not read for any of this and none is required: the
+        homework keeps every field of its own. All of it is one commit, so a
+        move that fails leaves the note joined as it was.
+        """
+        name = capture_id_from(capture_id)
+        try:
+            with self._lock, self._writing():
+                standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
+                accepted = reading.accepted
+                if leaving is None:
+                    if standing.assignment_id is not None:
+                        if standing.assignment_id == target and same_press(
+                            accepted, standing.details, "found", target
+                        ):
+                            return CaptureAlreadyPromoted(standing, reading.head, target)
+                        return CaptureConflict(standing)
+                else:
+                    if accepted is None or accepted.operation != LINK:
+                        if self._was_moved_locked(reading, leaving, target, standing):
+                            return CaptureAlreadyPromoted(standing, reading.head, target)
+                        return CaptureNotJoined(standing)
+                    if standing.assignment_id != leaving:
+                        if self._was_moved_locked(reading, leaving, target, standing):
+                            return CaptureAlreadyPromoted(standing, reading.head, target)
+                        return CaptureConflict(standing)
+                if standing.revision != expected_revision or standing.archived:
+                    return CaptureConflict(standing)
+                item = self.one_assignment(target)
+                if item is None:
+                    return HomeworkGone(standing, target)
+                row = tuple(shown([item]))
+                if candidate_basis(row) != basis:
+                    return CandidatesChanged(standing, row)
+                if leaving is not None:
+                    self._connection.execute(
+                        WITHDRAW_CAPTURE_CLAIMS, (now.isoformat(), leaving, name)
+                    )
+                    unlinked = self._change_locked(
+                        standing,
+                        standing.model_copy(update={"assignment_id": None}),
+                        UNLINK,
+                        authored_by,
+                        reading,
+                        now=now,
+                        today=today,
+                    )
+                    standing = unlinked.capture
+                    reading = CaptureHistoryReading((*reading.events, unlinked.event))
+                note = standing.model_copy(update={"assignment_id": target})
+                changed = self._change_locked(
+                    standing,
+                    note,
+                    LINK,
+                    authored_by,
+                    reading,
+                    now=now,
+                    today=today,
+                    decision=CandidateDecision(choice="found", candidates=(target,), basis=basis),
+                )
+                if note.due_date is not None:
+                    self._record_capture_claim_locked(
+                        target,
+                        SourceRecord(
+                            channel=note.attribution["due_date"].channel,
+                            asserted_value=note.due_date.isoformat(),
+                            observed_at=now,
+                            confidence=CAPTURE_CLAIM_CONFIDENCE,
+                            seen_in=HOMEWORK_NOTE,
+                        ),
+                        capture_id=name,
+                        capture_revision=changed.capture.revision,
+                    )
+                return CapturePromoted(changed.capture, changed.event, target, False)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CaptureNotSaved(name, error) from error
+
+    @staticmethod
+    def _was_moved_locked(
+        reading: CaptureHistoryReading, leaving: str, target: str, standing: Capture
+    ) -> bool:
+        """Whether the note's line ends with this very move: an unlink from ``leaving`` and a
+        link to ``target`` by the choice of homework found, so the press is that move again."""
+        events = reading.events
+        if len(events) < 2 or standing.assignment_id != target:
+            return False
+        left, made = events[-2], events[-1]
+        return (
+            left.operation == UNLINK
+            and left.before is not None
+            and left.before.assignment_id == leaving
+            and made.operation == LINK
+            and made.decision is not None
+            and made.decision.choice == "found"
+            and made.after.assignment_id == target
+        )
+
+    def unlink_capture(
+        self,
+        capture_id: str,
+        *,
+        expected_revision: int,
+        leaving: str,
+        authored_by: Author,
+        now: datetime,
+        today: date,
+    ) -> CaptureUnlinked | CaptureAlreadyUnlinked | CaptureConflict | CaptureNotJoined:
+        """Unlink a note from homework it was joined to, so it waits again.
+
+        One transaction that reserves the writer before it reads. The note
+        must be joined by a link, not by an assignment of its own, which is
+        not unlinked; the homework shown must be the note's now, the page's
+        revision the note's, and the note not put away. A note that waits
+        whose line ends with this very unlink is that press again, and nothing
+        is written. The note's claims on that homework are withdrawn, which
+        keeps them as history with the moment; the school's claims, another
+        note's, and every field, report, and check of the homework are as they
+        were, and so are the note's own details. The unlink is one event, and
+        the history keeps the link before it.
+        """
+        name = capture_id_from(capture_id)
+        try:
+            with self._lock, self._writing():
+                standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
+                accepted = reading.accepted
+                if standing.assignment_id is None:
+                    head = reading.head
+                    if (
+                        head.operation == UNLINK
+                        and head.before is not None
+                        and head.before.assignment_id == leaving
+                        and head.revision == expected_revision + 1
+                    ):
+                        return CaptureAlreadyUnlinked(standing, head, leaving)
+                    return CaptureNotJoined(standing)
+                if accepted is None or accepted.operation != LINK:
+                    return CaptureNotJoined(standing)
+                if (
+                    standing.assignment_id != leaving
+                    or standing.revision != expected_revision
+                    or standing.archived
+                ):
+                    return CaptureConflict(standing)
+                self._connection.execute(WITHDRAW_CAPTURE_CLAIMS, (now.isoformat(), leaving, name))
+                changed = self._change_locked(
+                    standing,
+                    standing.model_copy(update={"assignment_id": None}),
+                    UNLINK,
+                    authored_by,
+                    reading,
+                    now=now,
+                    today=today,
+                )
+                return CaptureUnlinked(changed.capture, changed.event, leaving)
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             raise CaptureNotSaved(name, error) from error
 
