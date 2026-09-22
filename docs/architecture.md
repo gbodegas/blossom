@@ -1003,7 +1003,13 @@ typed twice. When the page with the form cannot be made, because the note
 cannot be read, is not on record, or the classes cannot be read, the answer is
 one page that reads no store, tries nothing again, and shows every value to
 copy, with the refusal's own status: 404 for a note that is gone, 500 for one
-that cannot be read or a file that cannot be, 422 and 403 as they were.
+that cannot be read or a file that cannot be, 422 and 403 as they were. A
+class chosen from the list that has since left the record stays the chosen
+option on the form that comes back, marked as not in the list now, and is
+refused until a class in the list is chosen or Another class is typed; a value
+that cannot be offered as a choice is shown as bounded words instead. Nothing
+puts it back among the classes, so a stale choice is never made valid by the
+page that keeps it.
 
 Homework on record with the same class and title, paired by the rule the
 school's paste pairs by, whitespace collapsed and case kept, is never merged
@@ -1032,12 +1038,14 @@ then the id, or `separate`, written and read by one pair of functions. An id
 is any one line the record keeps, the word `separate` and a colon included, so
 the prefix is taken off once and the rest is the id whole, never trimmed or
 split. Any other spelling is a form these pages did not make. A choice made
-stays chosen through a refusal about something else, while it is still one of
-the choices shown, and the fingerprint it was made on travels with it: a form
-that comes back carries the fingerprint it came with, never a fresh one beside
-an old choice, so a fact that changed in between is met by the save and the
-choice put again there. A fresh page, and a page that puts the choice again,
-carry the fingerprint of what they show; a fresh page chooses nothing.
+stands only on the facts it was made on. A form that comes back is held to the
+fingerprint it came with: when that is the fingerprint of what stands now and
+the choice is still offered, the choice stays chosen through a refusal about
+something else; otherwise, whatever the press was refused for, a field, the
+whole form, the store, or the choice itself, the choice is cleared and said
+back as unsaved beside the rows as they stand, so nobody's choice is carried
+onto facts nobody saw. Every page carries the fingerprint of what it shows,
+and a fresh page chooses nothing.
 
 `date_claims` says where a claim came from. Its rows carry the note and the
 note's revision when a note made the claim, whether the claim still counts,
