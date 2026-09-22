@@ -1305,7 +1305,8 @@ def refusing_comparison(monkeypatch: pytest.MonkeyPatch) -> None:
     """The comparison the save begins with meets a claim it cannot read."""
 
     def refuses(*args: object) -> object:
-        raise UnreadableClaim("review-damaged")
+        damaged = "review-damaged"
+        raise UnreadableClaim(damaged)
 
     monkeypatch.setattr(inbox, "unasked_for", refuses)
 
