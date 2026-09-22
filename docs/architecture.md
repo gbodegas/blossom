@@ -1003,10 +1003,16 @@ typed twice. When the page with the form cannot be made, because the note
 cannot be read, is not on record, or the classes cannot be read, the answer is
 one page that reads no store, tries nothing again, and shows every value to
 copy, with the refusal's own status: 404 for a note that is gone, 500 for one
-that cannot be read or a file that cannot be, 422 and 403 as they were. A
-class chosen from the list that has since left the record stays the chosen
-option on the form that comes back, marked as not in the list now, and is
-refused until a class in the list is chosen or Another class is typed; a value
+that cannot be read or a file that cannot be, 422 and 403 as they were. A day
+in the control beside the tick that leaves the day out is two instructions,
+and neither is taken: nothing is saved, and the form goes back with both and
+asks for one. A class chosen from the list that has since left the record
+stays the chosen option on the form that comes back, marked as not in the list
+now. When the homework of that class and title has changed since the page,
+the fingerprint says so and the store answers, 409, with what changed, and
+the class is not refused first for the list having changed. With nothing
+changed about that homework, the class is refused as one the list does not
+offer, until a class in the list is chosen or Another class is typed. A value
 that cannot be offered as a choice is shown as bounded words instead. Nothing
 puts it back among the classes, so a stale choice is never made valid by the
 page that keeps it.
@@ -1052,7 +1058,9 @@ note's revision when a note made the claim, whether the claim still counts,
 and when it was withdrawn; the columns are added to an older file in one
 transaction, every insert names its columns, and a unique index over the
 assignment, the note, and the revision makes a repeated write add nothing.
-Readers that reconcile a date read only claims that count. A claim from a note
+Readers that reconcile a date read only claims that count; the assignment's
+details read the whole history and list the withdrawn claims apart, each with
+the day it was withdrawn and whether a note made it. A claim from a note
 carries a confidence of 0.8 because the column requires one; nothing decides
 anything by it.
 
