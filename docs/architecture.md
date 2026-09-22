@@ -963,7 +963,11 @@ asked. `blossom/routes/note_details.py` holds one page in two trees,
 tree a press comes through is the channel it is recorded on, her report or a
 family entry, and nothing a form carries can say otherwise; who pressed is
 the sign-in, and the household while the sign-in is off. Signed in as the
-other person, a press writes nothing and is answered 403.
+other person, a press writes nothing and is answered 403 with what was typed
+shown back. For her pressing a family form, opened by a parent on the same
+device before she signed in, that answer needs the route, so the gate lets
+those two presses alone through to it; the family's page itself, and every
+other press under the family's tree, stay the gate's to refuse.
 
 Details are a class, a title, a day, a kind, and a note about the work, each
 optional on a note and each with who supplied it. `clarify_capture` saves them
@@ -1006,7 +1010,10 @@ copy, with the refusal's own status: 404 for a note that is gone, 500 for one
 that cannot be read or a file that cannot be, 422 and 403 as they were. A day
 in the control beside the tick that leaves the day out is two instructions,
 and neither is taken: nothing is saved, and the form goes back with both and
-asks for one. A class chosen from the list that has since left the record
+asks for one. The read that tells a class the list does not hold now from
+one whose homework changed is a precheck and nothing more: when it fails, the
+page that reads no store answers with everything typed kept, and the write is
+not tried. A class chosen from the list that has since left the record
 stays the chosen option on the form that comes back, marked as not in the list
 now. When the homework of that class and title has changed since the page,
 the fingerprint says so and the store answers, 409, with what changed, and
@@ -1058,9 +1065,18 @@ note's revision when a note made the claim, whether the claim still counts,
 and when it was withdrawn; the columns are added to an older file in one
 transaction, every insert names its columns, and a unique index over the
 assignment, the note, and the revision makes a repeated write add nothing.
-Readers that reconcile a date read only claims that count; the assignment's
+Readers that reconcile a date read only claims that count, and whether a claim
+counts is read from its row in the code, as the store writes it, 0 or 1, never
+decided by the statement: a row that holds anything else is no claim that
+counts and no claim that was withdrawn, and is named as one that cannot be
+read. The reading a page is made from carries those names, so her week and an
+assignment's details say a claim about the date cannot be read and show the
+date without it, as they say a hand-in chain cannot be read; the strict
+readers, which the paste's comparison uses, refuse instead. The assignment's
 details read the whole history and list the withdrawn claims apart, each with
-the day it was withdrawn and whether a note made it. A claim from a note
+the day it was withdrawn and whether a note made it; a history that cannot be
+read leaves the record, her update, and her hand-in as they are, and the page
+says the history is unavailable, never that there is none. A claim from a note
 carries a confidence of 0.8 because the column requires one; nothing decides
 anything by it.
 
@@ -1072,7 +1088,9 @@ anyway is answered 409. Homework made from a note is known by its id, since a
 parent's press marks the record a family entry and her ordinary reports on
 school homework mark nothing. The save reserves the writer and compares inside
 that transaction, so a note added through another connection between the
-review and the save is met too.
+review and the save is met too. Under one class and title there can be more
+than one assignment made from a note, since a second note can be kept as a
+separate assignment, and the hold names every one of them.
 
 The five details are shown by one template macro wherever they are shown: on
 the note's page, where a kind is shown whenever one is held, beside a form
@@ -1087,7 +1105,11 @@ the assignment is outside today's planning window. A change to such a note,
 an edit or bringing it back, is answered with a sentence read from the change
 itself: the note's changes are saved or it is back among the notes added to
 homework, and the assignment is unchanged. Whether the assignment is in a plan
-is nothing a note's page reads, so nothing is said of it. The assignment's details
+is nothing a note's page reads, so nothing is said of it. Whether the
+assignment is outside today's planning window is said by the paragraph about
+the assignment, and by the result of adding the note, which is the one result
+about the assignment; a result about the note's words or its place among the
+lists says nothing of the window. The assignment's details
 show the notes it was added from or joined by, her words as they stand with
 the day each was saved, as evidence beside the record: nothing of them is
 copied into the assignment, and changing a note afterward changes nothing
