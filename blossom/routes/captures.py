@@ -113,6 +113,10 @@ JOINED_TO_HOMEWORK: Final = (
 )
 ALREADY_ADDED: Final = "Already added to homework. This is the note as it stands now."
 OUT_OF_THE_WINDOW: Final = "Saved here. It is not in today's planning window."
+WINDOW_UNKNOWN: Final = (
+    "A claim about its date cannot be read right now, so whether it is in today's planning "
+    "window is not known."
+)
 NOTE_SAVED_EARLIER: Final = (
     "You saved this earlier, and the note has changed since. This page shows it as it stands now."
 )
@@ -587,6 +591,7 @@ def note_page(
             "mine": mine,
             "in_homework": in_homework(state, note),
             "out_of_the_window": OUT_OF_THE_WINDOW,
+            "window_unknown": WINDOW_UNKNOWN,
             "ways_back": ways_back(added=note.assignment_id is not None and not note.archived),
             "text_max_length": CAPTURE_TEXT_MAX_LENGTH,
             "course_max_length": CAPTURE_COURSE_MAX_LENGTH,
@@ -599,11 +604,14 @@ def note_page(
 @dataclass(frozen=True)
 class InHomework:
     """The assignment a note is in, as its page says it: whether the assignment is still on
-    record, and whether it is inside today's planning window."""
+    record, whether it is inside today's planning window, and whether a claim about its
+    date cannot be read, in which case the window is not known: the claim that cannot be
+    read may be the one that places the assignment in it."""
 
     assignment_id: str
     on_record: bool
     in_window: bool
+    claims_unreadable: bool = False
 
 
 def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
@@ -615,18 +623,15 @@ def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
     store = state.project_state
     with store.reading():
         item = store.one_assignment(note.assignment_id)
-        records = (
-            []
-            if item is None
-            else store.read_claims([note.assignment_id]).records.get(note.assignment_id, [])
-        )
-    if item is None:
+        claimed = None if item is None else store.read_claims([note.assignment_id])
+    if item is None or claimed is None:
         return InHomework(note.assignment_id, on_record=False, in_window=False)
-    noticed = notice_due_date(expect_due_date(item), records)
+    noticed = notice_due_date(expect_due_date(item), claimed.records.get(note.assignment_id, []))
     return InHomework(
         note.assignment_id,
         on_record=True,
         in_window=in_week(item, noticed, state.clock.today()),
+        claims_unreadable=note.assignment_id in claimed.unreadable,
     )
 
 

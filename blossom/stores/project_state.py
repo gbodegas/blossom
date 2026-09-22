@@ -109,19 +109,21 @@ STUDENT_REPORTS_NAMED: Final = """
     ORDER BY rowid
 """
 EVERY_DATE_CLAIM: Final = """
-    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in, active
+    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in,
+        capture_id, capture_revision, active, withdrawn_at
     FROM date_claims
     ORDER BY rowid
 """
 DATE_CLAIMS_NAMED: Final = """
-    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in, active
+    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in,
+        capture_id, capture_revision, active, withdrawn_at
     FROM date_claims
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY rowid
 """
-"""Whether a claim counts is read from each row in the code, as the store writes it, 0 or 1,
-and never decided by the statement: a row that holds anything else would otherwise leave the
-reading in silence, as if it had never been made."""
+"""Whether a claim counts is read from each row in the code, with the note and the moment
+that say how it came not to count, and never decided by the statement: a row that holds
+anything else would otherwise leave the reading in silence, as if it had never been made."""
 """What a week, a digest, a brief, and a card are made from is the claims that count. A
 claim made from a homework note can be withdrawn later; it then stays in the table as
 history and is read by ``CLAIM_HISTORY`` alone. The school's claims name no note and are
@@ -1989,14 +1991,16 @@ class ProjectStateStore(CaptureRecords):
         """The claims that count about each assignment named, or about all with none named,
         in one read, with the assignments among them that have a claim that cannot be read.
 
-        Whether a claim counts is read from its row as the store writes it, 0
-        or 1, and as nothing else. A row that holds anything else there, or
-        that cannot be read in any other column, is no claim that counts and
-        no claim that was withdrawn: it is read around, logged, and its
-        assignment is named, so a page can say its claims cannot be read and
-        nothing reads a damaged row as evidence or as the absence of it. The
-        names are bound as one value, whatever their number, and asked about
-        none the store runs no statement.
+        Each row is held to the rules the history is read by: whether a claim
+        counts is 0 or 1 and nothing else, a claim that does not count is a
+        note's and was withdrawn at some moment, and a claim that counts was
+        withdrawn at none. A row that fails them, or that cannot be read in
+        any other column, is no claim that counts and no claim that was
+        withdrawn: it is read around, logged, and its assignment is named, so
+        a page can say its claims cannot be read and nothing reads a damaged
+        row as evidence or as the absence of it. The names are bound as one
+        value, whatever their number, and asked about none the store runs no
+        statement.
         """
         wanted = None if assignment_ids is None else set(assignment_ids)
         if wanted is not None and not wanted:
@@ -2013,14 +2017,13 @@ class ProjectStateStore(CaptureRecords):
         for row in rows:
             name = str(row[0])
             try:
-                counts = held_flag(row[6], "active")
-                record = source_record_from(row[1:6])
-            except (ValueError, TypeError):
+                held = claim_on_record_from(name, row[1:])
+            except UnreadableClaim:
                 logger.warning("a claim about the due date of %s cannot be read", name)
                 unreadable.add(name)
                 continue
-            if counts:
-                records.setdefault(name, []).append(record)
+            if held.active:
+                records.setdefault(name, []).append(held.record)
         return ClaimReadings(records, frozenset(unreadable))
 
     @contextmanager
@@ -2451,6 +2454,9 @@ def claim_on_record_from(assignment_id: str, row: tuple[object, ...]) -> ClaimOn
             raise ValueError(msg)
         if not active and stopped is None:
             msg = "a claim that does not count was withdrawn at some moment"
+            raise ValueError(msg)
+        if not active and note is None:
+            msg = "a claim that came from no note is never withdrawn"
             raise ValueError(msg)
     except (ValueError, TypeError) as fault:
         raise UnreadableClaim(assignment_id) from fault

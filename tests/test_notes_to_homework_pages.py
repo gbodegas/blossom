@@ -42,6 +42,7 @@ from blossom.routes.captures import (
     NOTE_SAVED_EARLIER,
     NOTE_UNREADABLE,
     OUT_OF_THE_WINDOW,
+    WINDOW_UNKNOWN,
 )
 from blossom.routes.navigation import (
     ADDED_NOTES_PAGE,
@@ -2109,3 +2110,83 @@ def test_a_row_of_work_due_later_says_a_claim_about_its_date_cannot_be_read(
     assert DATE_CLAIM_UNREADABLE in line
     assert week.count(DATE_CLAIM_UNREADABLE) == 1
     assert details.count(DATE_CLAIM_UNREADABLE) == 1
+
+
+# ------------------------------------------------------------------ the window not known
+
+
+@pytest.mark.parametrize("due_date", ["2026-08-21", "2027-03-05"])
+@pytest.mark.parametrize("flag", [2, "broken", 0.5])
+def test_a_note_whose_claim_cannot_be_read_says_the_window_is_not_known(
+    flag: object, due_date: str
+) -> None:
+    """A claim that cannot be read may be the one that places the assignment in today's
+    window, so the page does not decide from the rest: the result of adding and the
+    paragraph beside the note say the window is not known, whatever the other claims
+    say, and never that the assignment is out of it."""
+    with browser() as client:
+        name = save_note(client)
+        answer = add(client, name, {**opened(client, name), **typed(due_date=due_date)})
+        assert answer.status_code == 303
+        made = derived_assignment_id(name)
+        connection = state_of(client).project_state._connection
+        connection.execute(
+            "UPDATE date_claims SET active = ? WHERE assignment_id = ?", (flag, made)
+        )
+        connection.commit()
+        landed = client.get(answer.headers["location"]).text
+        page = client.get(note_href(name)).text
+
+    banner = landed.split('id="note-result"')[1].split("</p>")[0]
+    assert escape(ADDED_TO_HOMEWORK) in banner
+    assert escape(WINDOW_UNKNOWN) in banner
+    assert landed.count(str(escape(WINDOW_UNKNOWN))) == 2
+    assert escape(OUT_OF_THE_WINDOW) not in landed
+    assert page.count(str(escape(WINDOW_UNKNOWN))) == 1
+    assert escape(OUT_OF_THE_WINDOW) not in page
+    assert "This note is in homework." in page
+
+
+def test_a_claim_from_the_school_that_does_not_count_is_no_withdrawal() -> None:
+    """Only a note's claim is ever withdrawn. A school claim whose flag says it does not
+    count, a moment beside it as if it had been withdrawn, is a row the store never wrote:
+    the week and the details say a claim cannot be read, and the date is shown from the
+    claims that can be."""
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        name = save_note(client)
+        assert (
+            add(client, name, {**opened(client, name), **typed(due_date="2026-08-21")}).status_code
+            == 303
+        )
+        made = derived_assignment_id(name)
+        store.record_claims(
+            made,
+            [
+                SourceRecord(
+                    channel=SourceChannel.LMS,
+                    asserted_value="2026-08-28",
+                    observed_at=state.clock.now(),
+                    confidence=0.9,
+                    seen_in="day header",
+                )
+            ],
+        )
+        store._connection.execute(
+            "UPDATE date_claims SET active = 0, withdrawn_at = ? "
+            "WHERE assignment_id = ? AND capture_id IS NULL",
+            (state.clock.now().isoformat(), made),
+        )
+        store._connection.commit()
+        before = rows(client)
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        details = client.get(f"/student/assignments/{made}").text
+        after = rows(client)
+
+    assert after == before
+    card = week.split(f'id="assignment-{made}"')[1].split("</article>")[0]
+    assert "A claim about this date cannot be read right now" in card
+    assert "Questions 4-8" in card
+    assert "A claim about this date cannot be read right now" in details
+    assert "Date history cannot be read right now" in details

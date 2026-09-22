@@ -277,7 +277,7 @@ def asked_on(form: Mapping[str, str]) -> set[int]:
     asked: set[int] = set()
     for name in form:
         head, _, number = name.rpartition("-")
-        if head == "asked" and number.isdigit():
+        if head == "asked" and review_key(number):
             asked.add(int(number))
     return asked
 

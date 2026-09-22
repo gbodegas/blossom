@@ -244,3 +244,66 @@ def test_what_names_a_note_is_read_as_the_store_writes_it_or_the_history_says_so
 
     with pytest.raises(project_state.UnreadableClaim):
         store.claim_history(PRACTICE)
+
+
+WITHDRAWN_WRONGLY = {
+    "a claim from the school that does not count": (
+        "UPDATE date_claims SET active = 0 WHERE assignment_id = ? AND capture_id IS NULL",
+        (),
+    ),
+    "a claim from the school that does not count, withdrawn at some moment": (
+        "UPDATE date_claims SET active = 0, withdrawn_at = ? "
+        "WHERE assignment_id = ? AND capture_id IS NULL",
+        ("moment",),
+    ),
+    "a note's claim that does not count and was withdrawn at no moment": (
+        "UPDATE date_claims SET active = 0 WHERE assignment_id = ? AND capture_id IS NOT NULL",
+        (),
+    ),
+    "a note's claim withdrawn with its note's revision gone": (
+        "UPDATE date_claims SET active = 0, withdrawn_at = ?, capture_revision = NULL "
+        "WHERE assignment_id = ? AND capture_id IS NOT NULL",
+        ("moment",),
+    ),
+    "a claim from the school that counts and was withdrawn at some moment": (
+        "UPDATE date_claims SET withdrawn_at = ? WHERE assignment_id = ? AND capture_id IS NULL",
+        ("moment",),
+    ),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(WITHDRAWN_WRONGLY))
+def test_a_claim_that_does_not_count_is_a_notes_withdrawn_at_some_moment_or_unreadable(
+    tmp_path: pathlib.Path, damage: str
+) -> None:
+    """Only a note's claim is ever withdrawn, and a withdrawn claim names its note, its
+    revision, and the moment. A row that says it does not count any other way, or that
+    counts and carries a moment, is held as nothing the store writes by every reader: the
+    assignment is named as one whose claims cannot be read, its sound claims are read
+    beside it, the strict readers refuse, and the other assignment is untouched."""
+    store = practice_store(tmp_path / "record.sqlite3")
+    other = "assignment-beside"
+    store.record_claims(PRACTICE, [claim("2026-09-25", SourceChannel.LMS)])
+    with store._lock, store._writing():
+        store._record_capture_claim_locked(
+            PRACTICE, claim("2026-09-18"), capture_id=new_capture_id(), capture_revision=1
+        )
+    store.record_claims(other, [claim("2026-09-30", SourceChannel.LMS)])
+    statement, moments = WITHDRAWN_WRONGLY[damage]
+    values = tuple(AT.isoformat() if value == "moment" else value for value in moments)
+    store._connection.execute(statement, (*values, PRACTICE))
+    store._connection.commit()
+
+    read = store.read_claims([PRACTICE, other])
+    everything = store.read_claims()
+
+    assert read.unreadable == frozenset({PRACTICE})
+    assert len(read.records.get(PRACTICE, [])) == 1
+    assert [item.asserted_value for item in read.records[other]] == ["2026-09-30"]
+    assert everything.unreadable == frozenset({PRACTICE})
+    with pytest.raises(project_state.UnreadableClaim):
+        store.deadline_records(PRACTICE)
+    with pytest.raises(project_state.UnreadableClaim):
+        store.claim_history(PRACTICE)
+    assert [item.asserted_value for item in store.deadline_records(other)] == ["2026-09-30"]
+    assert read_everything(store, store).claims_unavailable == frozenset({PRACTICE})

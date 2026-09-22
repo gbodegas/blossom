@@ -35,7 +35,7 @@
   {% endfor %}
   <h1>Homework note</h1>
   {% if result %}
-    <p class="note update-result" role="status" id="note-result" tabindex="-1">{{ result.said }}{% if result.stands and result.about_adding and in_homework and in_homework.on_record and not in_homework.in_window %} {{ out_of_the_window }}{% endif %}{% if result.stands and in_homework and in_homework.on_record %} <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>{% endif %}</p>
+    <p class="note update-result" role="status" id="note-result" tabindex="-1">{{ result.said }}{% if result.stands and result.about_adding and in_homework and in_homework.on_record %}{% if in_homework.claims_unreadable %} {{ window_unknown }}{% elif not in_homework.in_window %} {{ out_of_the_window }}{% endif %}{% endif %}{% if result.stands and in_homework and in_homework.on_record %} <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>{% endif %}</p>
   {% endif %}
   {% if problem %}
     <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}{% if mine and form and not note.archived %}{% with field = form.field %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
@@ -48,7 +48,7 @@
       <p class="note"><span class="pill">Archived</span> This note is archived. It is kept with its history and can be brought back.</p>
     {% endif %}
     {% if in_homework %}
-      <p class="note"><span class="pill">In homework</span> {% if in_homework.on_record %}This note is in homework. <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>.{% if not in_homework.in_window %} {{ out_of_the_window }}{% endif %} Changing the note does not change the assignment.{% else %}The assignment this note was added to is not on record. The note and its history are kept here.{% endif %}</p>
+      <p class="note"><span class="pill">In homework</span> {% if in_homework.on_record %}This note is in homework. <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>.{% if in_homework.claims_unreadable %} {{ window_unknown }}{% elif not in_homework.in_window %} {{ out_of_the_window }}{% endif %} Changing the note does not change the assignment.{% else %}The assignment this note was added to is not on record. The note and its history are kept here.{% endif %}</p>
     {% elif not note.archived %}
       <p class="note">Saved {{ on(note.created_on) }}{% if note.updated_on != note.created_on %}, changed {{ on(note.updated_on) }}{% endif %}. It is not in a plan yet, and it is not an assignment.</p>
       {% if not form %}

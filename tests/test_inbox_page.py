@@ -1430,3 +1430,32 @@ def test_a_key_the_page_could_not_have_written_is_no_answer_and_takes_nothing_do
     assert 'id="problem-summary"' in answer.text
     assert "Keep &lt;b&gt;my input&lt;/b&gt;" in answer.text
     assert "Your answers on the cards, not saved" not in answer.text
+
+
+@pytest.mark.parametrize("key", ["\u00b2", "\u00b3", "\u2074"])
+def test_a_question_marked_under_a_key_the_page_could_not_have_written_is_no_question(
+    tmp_path: pathlib.Path, key: str
+) -> None:
+    """Two names a week on; both cards ask. The first is answered and a question is marked
+    under a key of digits from elsewhere. The page comes back for the second card as it
+    would have, the first answer kept, and nothing is written."""
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data={"text": TWO_NAMES}).status_code == 303
+        shown = client.post("/parent/inbox/read", data={"text": TWO_NAMES_AGAIN})
+        form = sent_back(shown.text)
+        assert {"asked-0", "asked-1"} <= form.keys()
+        before = tables(client)
+        returned = client.post(
+            "/parent/inbox/keep", data={**form, "occurrence-0": "update", f"asked-{key}": "1"}
+        )
+        after = tables(client)
+        settled = not state_of(client).project_state._connection.in_transaction
+
+    assert returned.status_code == 200, returned.text[:300]
+    assert after == before
+    assert settled
+    assert "Reading log" in returned.text
+    assert NEEDS_ANSWER in returned.text
+    assert sent_back(returned.text)["occurrence-0"] == "update"
