@@ -769,19 +769,9 @@ def on_arrival(
     whole: bool,
 ) -> HTMLResponse | int:
     """The revision a press goes on from, or the answer to one that is refused before anything
-    it typed is weighed: by who pressed, or because the form is not one these pages make.
-    Either refusal keeps what was typed."""
+    it typed is weighed, because the form is not one these pages make. The refusal keeps
+    what was typed. Who pressed is settled before this, before the note's name is read."""
     form = ready.form
-    if not way.open_to(viewer_of(request)):
-        return details_or_plain(
-            request,
-            state,
-            form.capture_id,
-            way,
-            form,
-            way.refusal,
-            status.HTTP_403_FORBIDDEN,
-        )
     if (
         not whole
         or form.revision is None
@@ -799,6 +789,25 @@ def on_arrival(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     return form.revision
+
+
+def refused_press(
+    request: Request, state: ApplicationState, way: Way, fields: dict[str, str], capture_id: str
+) -> HTMLResponse | None:
+    """The answer to a press through the other person's tree, made before the note's name is
+    read, so what was typed is kept whether or not the name is a note's: the page with the
+    form when the note can be shown, the page that reads no store otherwise, 403 either way
+    and nothing written. ``None`` for a press by someone the tree is open to."""
+    if way.open_to(viewer_of(request)):
+        return None
+    form = prepared(fields, capture_id, revision_of(fields)).form
+    try:
+        name = capture_id_from(capture_id)
+    except NotACaptureId:
+        return plain_details(
+            request, state, form, way.refusal, status.HTTP_403_FORBIDDEN, back_to_the_note=False
+        )
+    return details_or_plain(request, state, name, way, form, way.refusal, status.HTTP_403_FORBIDDEN)
 
 
 def open_details(
@@ -821,6 +830,9 @@ async def save_details(
     """Save a note's details from the revision the page showed. Her words are no part of the
     form. The tree the press came through is the channel, and who pressed is the sign-in."""
     fields, whole = await fields_of(request, ADD_FIELDS, may_be_absent=ADD_MAY_BE_ABSENT)
+    refused = refused_press(request, state, way, fields, capture_id)
+    if refused is not None:
+        return refused
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
@@ -907,6 +919,9 @@ async def add_to_homework(
     store compares it inside its transaction.
     """
     fields, whole = await fields_of(request, ADD_FIELDS, may_be_absent=ADD_MAY_BE_ABSENT)
+    refused = refused_press(request, state, way, fields, capture_id)
+    if refused is not None:
+        return refused
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:

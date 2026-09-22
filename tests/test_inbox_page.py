@@ -1399,7 +1399,7 @@ def test_the_refusal_does_not_invent_a_choice_from_a_select_left_as_shown(
     assert ("Your answers on the cards, not saved" in answer.text) == chosen
 
 
-NOT_A_KEY = ["\u00b2", "\u00b3", "\u2074", "", "12345678", "1x"]
+NOT_A_KEY = ["\u00b2", "\u00b3", "\u2074", "", "12345678", "1x", "00", "01"]
 
 
 @pytest.mark.parametrize("key", NOT_A_KEY)
@@ -1459,3 +1459,28 @@ def test_a_question_marked_under_a_key_the_page_could_not_have_written_is_no_que
     assert "Reading log" in returned.text
     assert NEEDS_ANSWER in returned.text
     assert sent_back(returned.text)["occurrence-0"] == "update"
+
+
+@pytest.mark.parametrize("key", ["00", "01", "000"])
+def test_a_padded_spelling_of_a_cards_key_names_no_card(tmp_path: pathlib.Path, key: str) -> None:
+    """The page writes a card's key as the count is spelled. A field under a padded
+    spelling of that count is no answer for the card, on the save: both cards answered as
+    the same assignment stay updates, and no third assignment is made."""
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data={"text": TWO_NAMES}).status_code == 303
+        shown = client.post("/parent/inbox/read", data={"text": TWO_NAMES_AGAIN})
+        form = sent_back(shown.text)
+        assert {"asked-0", "asked-1"} <= form.keys()
+        answered = {**form, "occurrence-0": "update", "occurrence-1": "update"}
+        saved = client.post(
+            "/parent/inbox/keep",
+            data={**answered, f"occurrence-{key}": "new", f"kind-{key}": "TASK"},
+        )
+        rows = state_of(client).project_state.all_assignments()
+
+    assert saved.status_code == 303, saved.text[:300]
+    assert saved.headers["location"] == "/parent?added=0&updated=2&unchanged=0"
+    assert len(rows) == 2
+    assert all(row.kind is AssignmentKind.HOMEWORK for row in rows)

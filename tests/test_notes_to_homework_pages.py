@@ -2190,3 +2190,45 @@ def test_a_claim_from_the_school_that_does_not_count_is_no_withdrawal() -> None:
     assert "Questions 4-8" in card
     assert "A claim about this date cannot be read right now" in details
     assert "Date history cannot be read right now" in details
+
+
+# ------------------------------------------------------------------ a press on no note
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+@pytest.mark.parametrize("tree", ["student", "family"])
+def test_a_press_through_the_other_persons_tree_on_a_name_that_is_no_note_keeps_what_was_typed(
+    tree: str, button: str, tmp_path: pathlib.Path
+) -> None:
+    """Who pressed is settled before the note's name is read. A parent's press on her tree,
+    and her press on the family's, are refused with what was typed kept, 403 and no form,
+    whether or not the name is a note's; the person the tree is open to still meets the
+    page for a name that is no note, and nothing is written either way."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS if tree == "family" else THEIRS})
+        form = typed(
+            title="Typed <i>title</i>", note="Typed <b>note</b>", due_date="2026-08-21", kind="TASK"
+        )
+        own = "student" if tree == "family" else "parent"
+        other = "parent" if tree == "family" else "student"
+        before = rows(client)
+        refused = client.post(
+            f"/{other}/actions/homework-notes/not-a-note/{button}", data=form, headers=PAGE_HEADERS
+        )
+        no_note = client.post(
+            f"/{own}/actions/homework-notes/not-a-note/{button}", data=form, headers=PAGE_HEADERS
+        )
+        after = rows(client)
+
+    assert refused.status_code == 403, refused.text[:300]
+    assert refused.text.count(" autofocus") == 1
+    said = "Sign in as a parent" if tree == "family" else escape(NOT_HERS_TO_UPDATE)
+    assert said in refused.text
+    for kept in (*KEPT, "Kind, as chosen: Task"):
+        assert kept in refused.text, kept
+    assert not re.search(
+        r'<form[^>]*action="/(?:student|parent)/actions/homework-notes', refused.text
+    )
+    assert no_note.status_code == 404
+    assert after == before

@@ -1091,3 +1091,35 @@ def test_a_change_to_homework_whose_choice_is_not_what_it_did_makes_the_line_uns
     assert isinstance(refused.value.__cause__, UnreadableCapture)
     assert everything(store) == before
     assert not store._connection.in_transaction
+
+
+@pytest.mark.parametrize("column", ["course", "title", "kind"])
+@pytest.mark.parametrize("way", ["added", "joined"])
+def test_homework_made_from_a_note_that_lost_a_required_detail_makes_the_line_unsound(
+    store: ProjectStateStore, way: str, column: str
+) -> None:
+    """Adding to homework and joining homework need a class, a title, and a kind on the
+    note. A line whose last change names an assignment while one of them is gone, with the
+    note made to match, is not sound whatever else agrees. The note's own row refuses such
+    a note apart from the line, so the line is checked alone."""
+    name = note(store)
+    given = details()
+    if way == "added":
+        assert isinstance(promote(store, name, given, 1), CapturePromoted)
+    else:
+        target = on_record(store, due=date(2026, 9, 25))
+        basis = candidate_basis(candidate_readings(store, given))
+        made = promote(
+            store, name, given, 1, basis=basis, choice="same", target=target.assignment_id
+        )
+        assert isinstance(made, CapturePromoted)
+    held = the_note(store, name)
+    events = store.capture_history(name)
+    assert sound_history(held, events) is not None
+    damaged = held.model_copy(update={column: None})
+    last = events[-1].model_copy(update={"after": CaptureSnapshot.of(damaged)})
+
+    with pytest.raises(
+        UnsoundCaptureHistory, match=f"revision {last.revision} is no {last.operation}"
+    ):
+        sound_history(damaged, [*events[:-1], last])

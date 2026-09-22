@@ -508,8 +508,9 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
     note that is not archived. An archive and a restore move a note one way
     each. Details change details, on a note that waits: not archived, and not
     yet homework. Adding to homework and joining homework name an assignment
-    on a note that named none, may settle the details in the same act, and
-    carry the choice that was made, which is what they did: adding makes the
+    on a note that named none, with a class, a title, and a kind on the note
+    by then, may settle those details in the same act, and carry the choice
+    that was made, which is what they did: adding makes the
     note's own assignment, by the choice of new work where nothing was shown
     or of a separate assignment where something was; joining names one of
     the homework that was shown, by the choice of the same. Nothing else
@@ -539,13 +540,15 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
         moved = (before.archived, after.archived)
         waiting = moved == (False, False) and before.assignment_id is None
         named = waiting and after.assignment_id is not None and same_text
+        settled = None not in (after.course, after.title, after.kind)
         own = after.assignment_id == derived_assignment_id(capture_id)
         added = (
             named
+            and settled
             and own
             and ((choice == "new" and not shown) or (choice == "separate" and bool(shown)))
         )
-        joined = named and choice == "same" and after.assignment_id in shown
+        joined = named and settled and choice == "same" and after.assignment_id in shown
         sound = {
             EDIT: not same_words and same_rest and same_link and moved == (False, False),
             ARCHIVE: same_words and same_rest and same_link and moved == (False, True),

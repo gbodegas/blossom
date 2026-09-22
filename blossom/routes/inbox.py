@@ -205,9 +205,15 @@ def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[dateti
 
 
 def review_key(value: str) -> bool:
-    """Whether ``value`` is a card's key as the page writes one: one to six ASCII digits.
-    Digits from elsewhere, which ``int`` refuses, are no key, and neither is nothing."""
-    return 0 < len(value) <= ANSWER_KEY_MAX_LENGTH and value.isascii() and value.isdigit()
+    """Whether ``value`` is a card's key as the page writes one: one to six ASCII digits,
+    spelled as the count is. Digits from elsewhere, which ``int`` refuses, are no key;
+    neither is nothing, nor a padded spelling, which would name another field's card."""
+    return (
+        0 < len(value) <= ANSWER_KEY_MAX_LENGTH
+        and value.isascii()
+        and value.isdigit()
+        and str(int(value)) == value
+    )
 
 
 def answers_from(
