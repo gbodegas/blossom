@@ -57,6 +57,8 @@ from blossom.routes.note_details import (
     ALREADY_IN_HOMEWORK,
     CHOICE_IS_PAST,
     CHOOSE_ABOUT_THESE,
+    CLASS_NOT_OFFERED,
+    CLASS_TYPED_AND_CHOSEN,
     NOT_SAVED,
     SEPARATE,
     choice_from,
@@ -598,17 +600,22 @@ def test_a_choice_is_kept_through_a_refusal_about_something_else_and_not_when_pu
     with browser() as client:
         shown = on_record(client, date(2026, 8, 28))
         name = save_note(client)
-        form = {**opened(client, name), **typed(), "candidate": choice_value(shown.assignment_id)}
+        asked = add(client, name, {**opened(client, name), **typed()})
+        form = {
+            **whole_form(asked.text, note_add_action(name)),
+            "candidate": choice_value(shown.assignment_id),
+        }
         too_long = add(client, name, {**form, "note": "n" * 501})
         kept = whole_form(too_long.text, note_add_action(name))
         on_record(client, date(2026, 9, 4))
         put_again = add(client, name, form)
-        asked = whole_form(put_again.text, note_add_action(name))
+        asked_again = whole_form(put_again.text, note_add_action(name))
 
+    assert asked.status_code == 409
     assert too_long.status_code == 422
     assert kept["candidate"] == choice_value(shown.assignment_id)
     assert put_again.status_code == 409
-    assert "candidate" not in asked
+    assert "candidate" not in asked_again
     assert "The choice made before was not saved" in put_again.text
 
 
@@ -833,6 +840,24 @@ def test_a_candidate_says_what_she_and_the_school_currently_say_apart(family: bo
     assert silent.count("Kind: Homework.") == 1
 
 
+def test_two_candidates_alike_in_all_but_kind_are_told_apart_by_it() -> None:
+    with browser() as client:
+        on_record(client, date(2026, 8, 28), named="alike-homework")
+        on_record(client, date(2026, 8, 28), named="alike-task", kind=AssignmentKind.TASK)
+        name = save_note(client)
+        shown = add(client, name, {**opened(client, name), **typed()})
+        section = choice_section(shown.text)
+
+    assert shown.status_code == 409
+    assert radios(shown.text) == [
+        choice_value("alike-homework"),
+        choice_value("alike-task"),
+        SEPARATE,
+    ]
+    facts = re.findall(r'<p class="note candidate-facts"[^>]*>(.*?)</p>', section)
+    assert [line.split(".")[0] for line in facts] == ["Kind: Homework", "Kind: Task"]
+
+
 CHANGES = ["she says done", "school says missing", "record source", "kind"]
 
 
@@ -922,36 +947,52 @@ def test_a_choice_made_is_still_made_after_a_refusal_about_something_else(
 
 
 @pytest.mark.parametrize("button", ["add", "details"])
-def test_a_refusal_about_something_else_keeps_the_fingerprint_the_choice_was_made_on(
-    button: str,
+@pytest.mark.parametrize("refusal", ["note", "revision", "basis"])
+@pytest.mark.parametrize("which", ["same", "separate"])
+def test_a_refusal_about_something_else_clears_a_choice_whose_facts_changed_and_says_so(
+    which: str, refusal: str, button: str
 ) -> None:
-    """A fact shown about a candidate changes after the page is opened. A refusal about the
-    note must not hand back a fresh fingerprint beside the old choice, or the corrected
-    press would join the note to homework whose shown facts it never saw."""
+    """A fact shown about a candidate changes after the page is opened. Whatever the press is
+    then refused for, the choice made on the old facts is not kept chosen beside the rows as
+    they stand: it is said back as unsaved, and the corrected press is asked for a choice."""
     with browser() as client:
         today = state_of(client).clock.today()
         target = on_record(client, date(2026, 8, 28))
         name = save_note(client)
         shown = add(client, name, {**opened(client, name), **typed()})
         form = whole_form(shown.text, note_add_action(name))
-        chosen = {**form, "candidate": choice_value(target.assignment_id)}
+        chosen = radios(shown.text)[0 if which == "same" else 1]
+        sent = {**form, "candidate": chosen}
+        if refusal == "note":
+            sent["note"] = "n" * 501
+        elif refusal == "revision":
+            sent["revision"] = "invalid"
+        else:
+            sent["basis"] = "invalid"
         she_said(client, target, "done")
         send = add if button == "add" else save_details
-        refused = send(client, name, {**chosen, "note": "n" * 501})
+        refused = send(client, name, sent)
         returned = whole_form(refused.text, note_add_action(name))
         before = rows(client)
         corrected = add(client, name, {**returned, "note": "A note that fits"})
         after = rows(client)
+        again = whole_form(corrected.text, note_add_action(name))
+        chosen_again = add(client, name, {**again, "candidate": chosen, "note": "A note that fits"})
 
     assert shown.status_code == 409
     assert refused.status_code == 422
-    assert returned["basis"] == form["basis"]
+    assert " checked" not in refused.text
+    assert "candidate" not in returned
+    # The refused page carries the fingerprint of the rows as they stand, which is what the
+    # store's own answer carries when it puts the choice again.
+    assert returned["basis"] != form["basis"]
+    assert returned["basis"] == again["basis"]
+    assert "The choice made before was not saved" in refused.text
+    assert f"said Done on {spoken(today)}" in choice_section(refused.text)
     assert corrected.status_code == 409, corrected.headers.get("location")
     assert escape(CHOOSE_ABOUT_THESE) in corrected.text
-    assert "The choice made before was not saved" in corrected.text
-    assert f"said Done on {spoken(today)}" in choice_section(corrected.text)
-    assert "candidate" not in whole_form(corrected.text, note_add_action(name))
     assert after == before
+    assert chosen_again.status_code == 303, chosen_again.text
 
 
 def test_a_form_refused_whole_for_its_fingerprint_offers_a_fresh_choice() -> None:
@@ -971,7 +1012,85 @@ def test_a_form_refused_whole_for_its_fingerprint_offers_a_fresh_choice() -> Non
     assert returned["basis"] == form["basis"]
     assert "candidate" not in returned
     assert " checked" not in answer.text
+    assert "The choice made before was not saved" in answer.text
     assert after == before
+
+
+# ------------------------------------------------------------------ a class that left the list
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize("button", ["add", "details"])
+def test_a_class_chosen_from_the_list_that_left_the_record_stays_chosen_until_another_is(
+    button: str, family: bool
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        target = on_record(client, date(2026, 8, 28), title="Another title")
+        name = save_note(client)
+        page = opened(client, name, family=family)
+        sent = {**page, **typed(course_choice="Geometry", course_other="")}
+        store.upsert_assignments([target.model_copy(update={"course": "Renamed class"})])
+        before = rows(client)
+        send = add if button == "add" else save_details
+        refused = send(client, name, sent, family=family)
+        returned = whole_form(refused.text, note_add_action(name, family=family))
+        again = send(client, name, returned, family=family)
+        still = rows(client)
+        typed_in = send(
+            client,
+            name,
+            {**returned, "course_choice": OTHER, "course_other": "Geometry"},
+            family=family,
+        )
+        note = store.capture(name)
+
+    assert refused.status_code == 422
+    assert escape(CLASS_NOT_OFFERED) in refused.text
+    assert '<a href="#details-course">' in refused.text
+    assert refused.text.count(" autofocus") == 1
+    assert returned["course_choice"] == "Geometry"
+    assert "not in the list now" in refused.text
+    assert '<option value="Renamed class"' in refused.text
+    assert again.status_code == 422
+    assert still == before
+    assert typed_in.status_code == 303, typed_in.text
+    assert note is not None
+    assert note.course == "Geometry"
+
+
+def test_the_class_chosen_before_is_kept_as_written_beside_a_class_typed() -> None:
+    awkward = ('<b>Art</b> & "design" ' + "x" * 60)[:60]
+    with browser() as client:
+        store = state_of(client).project_state
+        target = on_record(client, date(2026, 8, 28), title="Another title")
+        store.upsert_assignments([target.model_copy(update={"course": awkward})])
+        name = save_note(client)
+        sent = {**opened(client, name), **typed(course_choice=awkward, course_other="Typed too")}
+        store.upsert_assignments([target.model_copy(update={"course": "Renamed class"})])
+        refused = add(client, name, sent)
+        returned = whole_form(refused.text, note_add_action(name))
+
+    assert len(awkward) == 60
+    assert refused.status_code == 422
+    assert escape(CLASS_TYPED_AND_CHOSEN) in refused.text
+    assert returned["course_choice"] == awkward
+    assert returned["course_other"] == "Typed too"
+    assert "<b>Art</b>" not in refused.text
+    assert str(escape(awkward)) in refused.text
+
+
+def test_a_class_sent_that_could_not_be_offered_is_shown_as_words() -> None:
+    with browser() as client:
+        name = save_note(client)
+        sent = {**opened(client, name), **typed(course_choice="y" * 61, course_other="")}
+        refused = add(client, name, sent)
+        returned = whole_form(refused.text, note_add_action(name))
+
+    assert refused.status_code == 422
+    assert "could not be offered as a choice" in refused.text
+    assert "y" * 61 in refused.text
+    assert returned["course_choice"] == ""
 
 
 def test_keep_separate_makes_the_notes_own_assignment_beside_the_one_on_record() -> None:
@@ -1058,6 +1177,9 @@ def test_a_choice_about_homework_that_is_not_there_adds_nothing_and_says_which_i
     assert none_here.status_code == 409
     assert escape(CHOICE_IS_PAST) in none_here.text
     assert escape(CHOOSE_ABOUT_THESE) not in none_here.text
+    assert "The choice made before was not saved" in none_here.text
+    assert "is not on record now" in none_here.text
+    assert 'id="details-candidate"' not in none_here.text
     assert whole_form(none_here.text, note_add_action(name))["title"] == "Questions 4-8"
     assert not_among.status_code == 409
     assert escape(CHOOSE_ABOUT_THESE) in not_among.text
@@ -1124,10 +1246,12 @@ def test_with_the_file_unreadable_the_plain_page_keeps_every_detail_typed(
     assert after == before
 
 
-def damaged(client: TestClient, name: str) -> None:
+def damaged(client: TestClient, name: str, flag: object = 2) -> None:
     """Make the note one that cannot be read: a flag that is neither 0 nor 1."""
     connection = state_of(client).project_state._connection
-    connection.execute("UPDATE homework_captures SET archived = 2 WHERE capture_id = ?", (name,))
+    connection.execute(
+        "UPDATE homework_captures SET archived = ? WHERE capture_id = ?", (flag, name)
+    )
     connection.commit()
 
 
@@ -1414,25 +1538,59 @@ def test_the_history_keeps_every_detail_of_every_change_and_says_what_each_chang
         assert kept in entries[4], kept
 
 
-def test_a_note_in_homework_whose_flag_is_damaged_is_listed_as_one_that_cannot_be_read() -> None:
+@pytest.mark.parametrize("flag", [2, "broken", 0.5])
+def test_a_note_in_homework_whose_flag_is_damaged_is_listed_as_one_that_cannot_be_read(
+    flag: object,
+) -> None:
     """A damaged flag takes a note off no list: a note in homework is read with the notes
-    added to homework, where it is named as one that cannot be read."""
+    added to homework, where it is named as one that cannot be read, beside the good ones,
+    and every note on record is on exactly one list."""
     with browser() as client:
         store = state_of(client).project_state
         name = save_note(client)
+        sound = save_note(client, "A second note, also added")
+        waiting_note = save_note(client, "A third note, still waiting")
         assert add(client, name, {**opened(client, name), **typed()}).status_code == 303
-        damaged(client, name)
+        assert (
+            add(client, sound, {**opened(client, sound), **typed(title="Other")}).status_code == 303
+        )
+        damaged(client, name, flag)
         added = store.added_captures()
         waiting = store.outstanding_captures()
         archived = store.archived_captures()
-        page = client.get(ADDED_NOTES_PAGE).text
-        waiting_page = client.get(NOTES_PAGE).text
+        pages = {
+            which: client.get(where).text
+            for which, where in (("waiting", NOTES_PAGE), ("added", ADDED_NOTES_PAGE))
+        }
+        pages["archived"] = client.get(NOTES_PAGE + "/archived").text
 
-    assert (added.notes, added.unreadable) == ([], [name])
-    assert (waiting.unreadable, archived.unreadable) == ([], [])
-    assert "1 homework note cannot be read right now" in page
-    assert "Homework notes added to homework (1)" in page
-    assert "cannot be read" not in waiting_page
+    assert ([note.capture_id for note in added.notes], added.unreadable) == ([sound], [name])
+    assert ([note.capture_id for note in waiting.notes], waiting.unreadable) == ([waiting_note], [])
+    assert (archived.notes, archived.unreadable) == ([], [])
+    warned = [which for which, page in pages.items() if "cannot be read right now" in page]
+    assert warned == ["added"]
+    assert "Homework notes added to homework (2)" in pages["added"]
+    assert f'href="{note_href(sound)}"' in pages["added"]
+    assert "No homework notes have been added to homework." not in pages["added"]
+
+
+def test_a_parent_signed_in_reads_the_damaged_note_among_the_notes_added(
+    tmp_path: pathlib.Path,
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        assert add(client, name, {**opened(client, name), **typed()}).status_code == 303
+        damaged(client, name, "broken")
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        added = client.get(ADDED_NOTES_PAGE)
+        waiting = client.get(NOTES_PAGE)
+
+    assert added.status_code == 200
+    assert "1 homework note cannot be read right now" in added.text
+    assert "cannot be read" not in waiting.text
 
 
 # ------------------------------------------------------------------ results on a note in homework

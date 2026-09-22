@@ -19,9 +19,13 @@
   from, her account and the school's apart. The choice is hers or a parent's: the same
   homework, or a separate assignment. What a choice is sent as names its kind
   apart from the assignment's id, since an id is any text the record keeps.
-  The form carries a fingerprint of everything those rows show, so a choice
-  made about rows that have since changed is put again with the rows as they
-  stand, the earlier choice said back as unsaved and nothing chosen for anyone.
+  The form carries a fingerprint of everything those rows show. A choice
+  stands only on the facts it was made on: a form that comes back keeps its
+  choice chosen when its fingerprint is the fingerprint of what stands now,
+  and otherwise, whatever the press was refused for, the choice is cleared and
+  said back as unsaved above the rows as they stand, with nothing chosen for
+  anyone. A class chosen from the list that has since left it stays the chosen
+  option, marked as not in the list now, until a class is chosen or typed.
 
   A refusal is said first and takes the focus as the page arrives, with no
   script, and links to the field it is about. A day that could not be read
@@ -93,14 +97,20 @@
         <input type="hidden" name="basis" value="{{ basis }}">
 
         <label for="details-course">Class</label>
-        <select id="details-course" name="course_choice" aria-describedby="{% if at == "course" %}details-problem {% endif %}details-course-hint"{% if at == "course" %} aria-invalid="true"{% endif %}>
+        <select id="details-course" name="course_choice" aria-describedby="{% if at == "course" %}details-problem {% endif %}details-course-hint{% if left and not left.option %} details-course-left{% endif %}"{% if at == "course" %} aria-invalid="true"{% endif %}>
           <option value=""{% if not form.course_choice %} selected{% endif %}>Choose a class</option>
           {% for course in courses %}
             <option value="{{ course }}"{% if form.course_choice == course %} selected{% endif %}>{{ course }}</option>
           {% endfor %}
+          {% if left and left.option %}
+            <option value="{{ left.option }}" selected>{{ left.option }} (chosen before; not in the list now)</option>
+          {% endif %}
           <option value="{{ other_class }}"{% if form.course_choice == other_class %} selected{% endif %}>Another class</option>
         </select>
         <p class="note" id="details-course-hint">Choose Another class to type one that is not in the list.</p>
+        {% if left and not left.option %}
+          <p class="note" id="details-course-left">The class chosen before{% if left.words %}, <span class="authored-text">{{ left.words }}</span>,{% endif %} is not in the list now and could not be offered as a choice{% if not left.words %}, and its words cannot be shown{% endif %}. Choose a class, or choose Another class and type it.</p>
+        {% endif %}
         <label for="details-course-other">Another class</label>
         <input type="text" id="details-course-other" name="course_other" value="{{ form.course_other }}" aria-describedby="{% if at == "course_other" %}details-problem {% endif %}details-course-other-hint"{% if at == "course_other" %} aria-invalid="true"{% endif %}>
         <p class="note" id="details-course-other-hint">One line, up to {{ course_max_length }} characters. Leave it empty when the class is in the list.</p>
@@ -134,12 +144,12 @@
         <textarea id="details-note" name="note" rows="3" aria-describedby="{% if at == "note" %}details-problem {% endif %}details-note-hint"{% if at == "note" %} aria-invalid="true"{% endif %}>{{ form.note }}</textarea>
         <p class="note" id="details-note-hint">Up to {{ note_max_length }} characters. Once the note is added to homework, this note about the work is shared with the planning model. The words above are not.</p>
 
+        {% if previous %}
+          <p class="note" id="details-previous">The choice made before was not saved: {% if previous.separate %}to keep it as a separate assignment{% elif previous.row %}the same homework as <span class="authored-text">{{ previous.row.course }}</span> &middot; <span class="authored-text">{{ previous.row.title }}</span>, {% if previous.row.due_date %}due {{ on(previous.row.due_date) }}{% else %}no due date recorded{% endif %}{% else %}the same homework as one that is not {% if candidates %}among these{% else %}on record{% endif %} now{% endif %}. {% if candidates %}What is shown has changed since, so look at it as it stands and choose again.{% else %}Homework with this class and title is not on record now, so there is no choice to make: adding it makes the note's own assignment.{% endif %}</p>
+        {% endif %}
         {% if candidates %}
           <fieldset class="choice" id="details-candidate" tabindex="-1" aria-describedby="{% if at == "candidate" %}details-problem {% endif %}details-candidate-hint">
             <legend>Homework with this class and title is already here</legend>
-            {% if previous %}
-              <p class="note">The choice made before was not saved: {% if previous.separate %}to keep it as a separate assignment{% elif previous.row %}the same homework as <span class="authored-text">{{ previous.row.course }}</span> &middot; <span class="authored-text">{{ previous.row.title }}</span>, {% if previous.row.due_date %}due {{ on(previous.row.due_date) }}{% else %}no due date recorded{% endif %}{% else %}the same homework as one that is not among these now{% endif %}. What is shown has changed since, so look at it as it stands and choose again.</p>
-            {% endif %}
             {% for item in candidates %}
               <label><input type="radio" name="candidate" value="{{ item.value }}"{% if chosen == item.value %} checked{% endif %} aria-describedby="details-candidate-{{ loop.index }}"> <span>Same homework as <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>, {% if item.due_date %}due {{ on(item.due_date) }}{% else %}no due date recorded{% endif %}</span></label>
               <p class="note candidate-facts" id="details-candidate-{{ loop.index }}">{{ item.kind }} {{ item.hers }}{% for said in item.school %} {{ said }}{% endfor %}{% if item.recorded %} {{ item.recorded }}{% endif %}{% if item.source %} {{ item.source }}{% endif %}</p>
