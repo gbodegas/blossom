@@ -1088,8 +1088,16 @@ page's own notes of what each select suggested and showed, of what was chosen,
 and of what was folded into what, with no record read; a card's key is one to
 six ASCII digits, and a field under any other key is no answer and takes
 nothing down, on the save or on that page. A claim's history holds together or is unreadable: one that
-counts was withdrawn at no moment, and one that does not count was withdrawn
-at some moment. The assignment's
+counts was withdrawn at no moment, and one that does not count is a note's
+and was withdrawn at some moment, since a claim from the school or from the
+family's own entry is never withdrawn. The readers that reconcile a date hold
+every row to those same rules and name the assignment when a row fails them,
+so a school claim whose flag says it does not count is read as nothing the
+store wrote, never as a withdrawal. A note's page says where its assignment
+stands in today's window from the claims that can be read, and when one
+cannot be, it says the window is not known rather than deciding from the
+rest, since the claim it cannot read may be the one that places the
+assignment in the window. The assignment's
 details read the whole history and list the withdrawn claims apart, each with
 the day it was withdrawn and whether a note made it; a history that cannot be
 read leaves the record, her update, and her hand-in as they are, and the page
