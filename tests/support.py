@@ -68,6 +68,7 @@ from blossom.stores.drafts import DraftRecord, DraftsStore
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
+    ClaimReadings,
     ProjectStateStore,
     Saved,
     StatusReport,
@@ -279,6 +280,10 @@ class TwoChannelSource:
             else assignment_ids
         )
         return {name: claims for name in named if (claims := self.deadline_records(name))}
+
+    def read_claims(self, assignment_ids: Iterable[str] | None = None) -> ClaimReadings:
+        """The same answers, with nothing that cannot be read."""
+        return ClaimReadings(self.deadline_records_by_assignment(assignment_ids), frozenset())
 
     def support_rules(self) -> list[SupportRule]:
         """The graph tests seed rules through the store, not the source."""

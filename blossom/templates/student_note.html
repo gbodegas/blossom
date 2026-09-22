@@ -35,7 +35,7 @@
   {% endfor %}
   <h1>Homework note</h1>
   {% if result %}
-    <p class="note update-result" role="status" id="note-result" tabindex="-1">{{ result.said }}{% if result.stands and in_homework and in_homework.on_record and not in_homework.in_window %} {{ out_of_the_window }}{% endif %}{% if result.stands and in_homework and in_homework.on_record %} <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>{% endif %}</p>
+    <p class="note update-result" role="status" id="note-result" tabindex="-1">{{ result.said }}{% if result.stands and result.about_adding and in_homework and in_homework.on_record and not in_homework.in_window %} {{ out_of_the_window }}{% endif %}{% if result.stands and in_homework and in_homework.on_record %} <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>{% endif %}</p>
   {% endif %}
   {% if problem %}
     <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ problem }}{% if mine and form and not note.archived %}{% with field = form.field %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>

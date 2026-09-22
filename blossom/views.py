@@ -209,6 +209,9 @@ class StudentAssignmentView(BaseModel):
     """Claims whose value could not be read as a date, as ``SourceRecord.spoken``
     renders them, with channels named as she reads them. Kept apart: they neither
     confirm nor contradict anything, and the page says so."""
+    claims_unreadable: bool = False
+    """Whether a claim about the date is held as nothing the store writes: neither evidence
+    nor its absence. The page says so, and the date is read without it."""
     unreadable_sources: str = ""
     """The channels behind ``unreadable``, in the page's words."""
     source_label: str = ""

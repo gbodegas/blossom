@@ -1264,7 +1264,7 @@ def held_rows(items: tuple[Reading, ...], store: ProjectStateStore) -> Held | No
     if not found:
         return None
     blocking = tuple(item for item in items if item.pair in found)
-    return Held(blocking, tuple(sorted({found[item.pair] for item in blocking})))
+    return Held(blocking, tuple(sorted({name for item in blocking for name in found[item.pair]})))
 
 
 def keep(

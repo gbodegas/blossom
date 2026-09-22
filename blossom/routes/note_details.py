@@ -132,6 +132,7 @@ DATE_NEEDS_A_CHOICE: Final = (
     "date out."
 )
 NOT_SAVED: Final = "That could not be saved, and nothing was changed. What was typed is still here."
+NOT_A_PARENTS_PRESS: Final = "Sign in as a parent to add details here. Nothing was saved."
 ALREADY_IN_HOMEWORK: Final = (
     "This note is already in homework, so nothing was saved. What it was added with is shown "
     "here, and what was typed is kept to copy."
@@ -170,6 +171,11 @@ class Way:
         """Her tree is hers and the household's; the family's is a parent's and the
         household's. Signed in as the other, a press writes nothing."""
         return viewer != ("student" if self.family else "parent")
+
+    @property
+    def refusal(self) -> str:
+        """What the other person is told: whose the form is, and that nothing was saved."""
+        return NOT_A_PARENTS_PRESS if self.family else NOT_HERS_TO_UPDATE
 
 
 HERS: Final = Way(family=False)
@@ -765,7 +771,7 @@ def on_arrival(
             form.capture_id,
             way,
             form,
-            NOT_HERS_TO_UPDATE,
+            way.refusal,
             status.HTTP_403_FORBIDDEN,
         )
     if (
@@ -922,18 +928,27 @@ async def add_to_homework(
     # at all. When the homework of that class and title has changed since the page, the
     # fingerprint says so and the store answers, 409, with what changed; with nothing changed
     # about that homework the class is refused as one the list does not offer.
-    if class_left_behind(form, courses) is not None and (
-        candidate_basis(candidate_readings(state.project_state, details)) == basis
-    ):
-        return details_or_plain(
-            request,
-            state,
-            name,
-            way,
-            replace(form, field="course"),
-            CLASS_NOT_OFFERED,
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-        )
+    if class_left_behind(form, courses) is not None:
+        # A precheck and nothing more; the comparison that decides is the store's, inside
+        # its transaction. A read that fails here is answered by the page that reads no
+        # store, with everything typed kept, and the write is not tried.
+        try:
+            unchanged = candidate_basis(candidate_readings(state.project_state, details)) == basis
+        except Exception:
+            logger.exception("the homework for a note's chosen class could not be read")
+            return plain_details(
+                request, state, form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        if unchanged:
+            return details_or_plain(
+                request,
+                state,
+                name,
+                way,
+                replace(form, field="course"),
+                CLASS_NOT_OFFERED,
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
     choice, target = choice_from(fields.get("candidate")) or ("new", None)
     try:
         async with state.decision_lock:

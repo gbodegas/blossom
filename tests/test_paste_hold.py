@@ -27,7 +27,7 @@ from blossom.captures import (
     derived_assignment_id,
     new_capture_id,
 )
-from blossom.intake import Held, Kept, Reading, by_hand, keep
+from blossom.intake import Held, Kept, Reading, by_hand, held_rows, keep
 from blossom.reconciliation import SourceChannel
 from blossom.stores.project_state import AssignmentKind, ProjectStateStore
 from tests.support import (
@@ -122,6 +122,54 @@ def test_a_paste_with_a_row_about_homework_made_from_a_note_writes_none_of_its_r
     assert answer.assignments == (made,)
     assert rows(store) == before
     assert not store._connection.in_transaction
+
+
+def test_two_notes_kept_as_separate_assignments_are_both_named_by_the_hold(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Keep as a separate assignment makes a second assignment of the same class and title
+    from a second note. A paste naming that class and title is held by both, and the review
+    names both, not whichever one a mapping kept last."""
+    store = practice_store(tmp_path / "record.sqlite3")
+    first = homework_from_a_note(store)
+    second_note = new_capture_id()
+    made = store.create_capture(
+        second_note,
+        "The same questions, from the board",
+        None,
+        None,
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=AT,
+        today=MONDAY,
+    )
+    assert isinstance(made, CaptureCreated)
+    given = CaptureDetails(course="Geometry", title="Questions 4-8", kind="HOMEWORK")
+    second = store.promote_capture(
+        second_note,
+        given,
+        expected_revision=1,
+        basis=candidate_basis(candidate_readings(store, given)),
+        candidates=reader(store),
+        choice="separate",
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=AT,
+        today=MONDAY,
+    )
+    assert isinstance(second, CapturePromoted)
+    items = (
+        entry("Geometry", "Questions 4-8", MONDAY),
+        entry("Science", "A lab report", MONDAY),
+    )
+
+    named = store.held_by_notes([("Geometry", "Questions 4-8"), ("Science", "A lab report")])
+    held = held_rows(items, store)
+
+    assert named == {("Geometry", "Questions 4-8"): tuple(sorted((first, second.assignment_id)))}
+    assert isinstance(held, Held)
+    assert held.assignments == tuple(sorted({first, second.assignment_id}))
+    assert [item.title for item in held.blocking] == ["Questions 4-8"]
 
 
 def test_a_paste_that_touches_no_such_homework_goes_on_as_it_did(tmp_path: pathlib.Path) -> None:

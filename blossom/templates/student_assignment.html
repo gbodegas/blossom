@@ -68,6 +68,9 @@
         Claims about the date that were withdrawn: history, said apart from the claims that
         count, which the record's date, the plan, and the warnings above are read from.
       #}
+      {% if claim_history_unavailable %}
+        <p class="problem">Date history cannot be read right now. The current record is shown above. Nothing was changed.</p>
+      {% endif %}
       {% if withdrawn_claims %}
         <h3 class="update-heading">Withdrawn claims about the date</h3>
         <p class="note">These count for nothing now. The date above, its warnings, and every plan are read without them.</p>

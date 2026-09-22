@@ -218,11 +218,13 @@ DETAILS: Final = ("course", "due_date")
 
 @dataclass(frozen=True)
 class NoteResult:
-    """What a save did, as a note's page says it: the sentence, and whether what it made is
-    still the latest."""
+    """What a save did, as a note's page says it: the sentence, whether what it made is
+    still the latest, and whether it is about adding the note to homework, which is the one
+    result that goes on to say where the assignment stands."""
 
     said: str
     stands: bool
+    about_adding: bool = False
 
 
 def author_of(viewer: str) -> Author:
@@ -497,7 +499,9 @@ def result_of(
     stands = history[-1].event_id == made.event_id
     if made.after.assignment_id is not None:
         sentence = SAID_OF_A_NOTE_IN_HOMEWORK.get(said, sentence)
-    return NoteResult(sentence if stands else NOTE_SAVED_EARLIER, stands)
+    return NoteResult(
+        sentence if stands else NOTE_SAVED_EARLIER, stands, about_adding=kind in (PROMOTE, LINK)
+    )
 
 
 def unreadable(
@@ -611,7 +615,11 @@ def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
     store = state.project_state
     with store.reading():
         item = store.one_assignment(note.assignment_id)
-        records = [] if item is None else store.deadline_records(note.assignment_id)
+        records = (
+            []
+            if item is None
+            else store.read_claims([note.assignment_id]).records.get(note.assignment_id, [])
+        )
     if item is None:
         return InHomework(note.assignment_id, on_record=False, in_window=False)
     noticed = notice_due_date(expect_due_date(item), records)

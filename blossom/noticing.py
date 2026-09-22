@@ -191,6 +191,9 @@ class Week:
     statuses: dict[str, AssignmentStatus] = field(default_factory=dict)
     """What stands about each assignment's work, hers and the school's, by id, read with
     the rows so a card and her update agree. An id with no entry is unreported."""
+    claims_unavailable: frozenset[str] = frozenset()
+    """The assignments with a claim about their date that cannot be read, from the same
+    reading, so a card says so."""
 
     def needs_homework(self, assignment_id: str) -> bool:
         """Whether an assignment is still work to plan: everything but a "done" of hers."""
@@ -305,6 +308,10 @@ class Everything:
     hand_ins_unavailable: frozenset[str] = frozenset()
     """The assignments whose hand-in chain does not hold. A page says that record
     cannot be read, and never that nothing is recorded."""
+    claims_unavailable: frozenset[str] = frozenset()
+    """The assignments with a claim about their date that cannot be read. Their readable
+    claims are in ``records`` as any other's; a page says a claim cannot be read, and the
+    date is read without it, never as if the row had not been made."""
 
     @property
     def ids(self) -> frozenset[str]:
@@ -339,8 +346,8 @@ def read_everything(
     with project_state.reading():
         everything = project_state.all_assignments()
         on_record = [item.assignment_id for item in everything]
-        claimed = source.deadline_records_by_assignment(on_record)
-        records = {name: list(claimed.get(name, [])) for name in on_record}
+        claimed = source.read_claims(on_record)
+        records = {name: list(claimed.records.get(name, [])) for name in on_record}
         statuses = statuses_for(project_state, [*on_record, *also])
         turned_in = project_state.hand_in_readings([*on_record, *also])
     return Everything(
@@ -349,6 +356,7 @@ def read_everything(
         statuses=statuses,
         hand_ins=turned_in.readable,
         hand_ins_unavailable=turned_in.unreadable,
+        claims_unavailable=claimed.unreadable,
     )
 
 
@@ -374,6 +382,7 @@ def week_from(everything: Everything, start: date) -> Week:
         statuses={
             item.assignment_id: everything.statuses[item.assignment_id] for item in assignments
         },
+        claims_unavailable=everything.claims_unavailable,
     )
 
 

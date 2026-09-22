@@ -109,23 +109,19 @@ STUDENT_REPORTS_NAMED: Final = """
     ORDER BY rowid
 """
 EVERY_DATE_CLAIM: Final = """
-    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in
+    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in, active
     FROM date_claims
-    WHERE active = 1
     ORDER BY rowid
 """
 DATE_CLAIMS_NAMED: Final = """
-    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in
+    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in, active
     FROM date_claims
-    WHERE active = 1 AND assignment_id IN (SELECT value FROM json_each(?))
+    WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY rowid
 """
-DATE_CLAIMS_OF: Final = """
-    SELECT channel, asserted_value, observed_at, confidence, seen_in
-    FROM date_claims
-    WHERE active = 1 AND assignment_id = ?
-    ORDER BY rowid
-"""
+"""Whether a claim counts is read from each row in the code, as the store writes it, 0 or 1,
+and never decided by the statement: a row that holds anything else would otherwise leave the
+reading in silence, as if it had never been made."""
 """What a week, a digest, a brief, and a card are made from is the claims that count. A
 claim made from a homework note can be withdrawn later; it then stays in the table as
 history and is read by ``CLAIM_HISTORY`` alone. The school's claims name no note and are
@@ -1978,14 +1974,54 @@ class ProjectStateStore(CaptureRecords):
 
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
         """Every channel's claim about one assignment's due date that counts, in the order
-        made.
+        made, or ``UnreadableClaim`` when a claim about it cannot be read.
 
         An empty list is a valid answer and means nothing corroborates the
-        date; it is not an error.
+        date; it is not an error. A caller that would rather read around a
+        damaged row and say so reads ``read_claims``.
         """
+        read = self.read_claims([assignment_id])
+        if read.unreadable:
+            raise UnreadableClaim(assignment_id)
+        return read.records.get(assignment_id, [])
+
+    def read_claims(self, assignment_ids: Iterable[str] | None = None) -> "ClaimReadings":
+        """The claims that count about each assignment named, or about all with none named,
+        in one read, with the assignments among them that have a claim that cannot be read.
+
+        Whether a claim counts is read from its row as the store writes it, 0
+        or 1, and as nothing else. A row that holds anything else there, or
+        that cannot be read in any other column, is no claim that counts and
+        no claim that was withdrawn: it is read around, logged, and its
+        assignment is named, so a page can say its claims cannot be read and
+        nothing reads a damaged row as evidence or as the absence of it. The
+        names are bound as one value, whatever their number, and asked about
+        none the store runs no statement.
+        """
+        wanted = None if assignment_ids is None else set(assignment_ids)
+        if wanted is not None and not wanted:
+            return ClaimReadings({}, frozenset())
         with self._lock:
-            rows = self._connection.execute(DATE_CLAIMS_OF, (assignment_id,)).fetchall()
-        return [source_record_from(row) for row in rows]
+            if wanted is None:
+                rows = self._connection.execute(EVERY_DATE_CLAIM).fetchall()
+            else:
+                rows = self._connection.execute(
+                    DATE_CLAIMS_NAMED, (json.dumps(sorted(wanted)),)
+                ).fetchall()
+        records: dict[str, list[SourceRecord]] = {}
+        unreadable: set[str] = set()
+        for row in rows:
+            name = str(row[0])
+            try:
+                counts = held_flag(row[6], "active")
+                record = source_record_from(row[1:6])
+            except (ValueError, TypeError):
+                logger.warning("a claim about the due date of %s cannot be read", name)
+                unreadable.add(name)
+                continue
+            if counts:
+                records.setdefault(name, []).append(record)
+        return ClaimReadings(records, frozenset(unreadable))
 
     @contextmanager
     def comparing_and_writing(self) -> Iterator[None]:
@@ -1997,20 +2033,23 @@ class ProjectStateStore(CaptureRecords):
         with self._lock, self._writing():
             yield
 
-    def held_by_notes(self, pairs: Iterable[tuple[str, str]]) -> dict[tuple[str, str], str]:
+    def held_by_notes(
+        self, pairs: Iterable[tuple[str, str]]
+    ) -> dict[tuple[str, str], tuple[str, ...]]:
         """Which of these classes and titles are the class and title of homework a note
-        became, by the rule the school's paste pairs by, and which assignment each is.
-        Empty when none is, which is every paste until a note is added to homework."""
+        became, by the rule the school's paste pairs by, and which assignments each is:
+        every one, since a second note can be kept as a separate assignment under the same
+        class and title. Empty when none is, which is every paste until a note is added to
+        homework."""
         made = self.assignments_made_from_notes()
         if not made:
             return {}
-        by_name = {
-            pair(item.course, item.title): item.assignment_id
-            for item in self.all_assignments()
-            if item.assignment_id in made
-        }
+        by_name: dict[tuple[str, str], list[str]] = {}
+        for item in self.all_assignments():
+            if item.assignment_id in made:
+                by_name.setdefault(pair(item.course, item.title), []).append(item.assignment_id)
         return {
-            name: by_name[name]
+            name: tuple(sorted(by_name[name]))
             for name in (pair(course, title) for course, title in pairs)
             if name in by_name
         }
@@ -2165,21 +2204,13 @@ class ProjectStateStore(CaptureRecords):
         Read as her chains are: with no names given, the whole table, and
         the names bound as one value. An assignment nothing was claimed about
         has no entry, which says what an empty list says from the single read.
+        A claim that cannot be read is ``UnreadableClaim``; ``read_claims``
+        is the reading that names such an assignment and goes on.
         """
-        wanted = None if assignment_ids is None else set(assignment_ids)
-        if wanted is not None and not wanted:
-            return {}
-        with self._lock:
-            if wanted is None:
-                rows = self._connection.execute(EVERY_DATE_CLAIM).fetchall()
-            else:
-                rows = self._connection.execute(
-                    DATE_CLAIMS_NAMED, (json.dumps(sorted(wanted)),)
-                ).fetchall()
-        claims: dict[str, list[SourceRecord]] = {}
-        for row in rows:
-            claims.setdefault(str(row[0]), []).append(source_record_from(row[1:]))
-        return claims
+        read = self.read_claims(assignment_ids)
+        if read.unreadable:
+            raise UnreadableClaim(sorted(read.unreadable)[0])
+        return read.records
 
     def due_between(self, start: date, end: date) -> list[Assignment]:
         """Return assignments due in ``[start, end]``, ordered by date then course.
@@ -2378,6 +2409,15 @@ def assignment_from_note(note: Capture, record_channel: SourceChannel) -> Assign
 class UnreadableClaim(ValueError):
     """Raised for a claim whose note, revision, or standing is held as nothing the store
     writes. Its history is unavailable, which a page says; nothing is guessed in its place."""
+
+
+@dataclass(frozen=True)
+class ClaimReadings:
+    """The claims that count, by assignment, and the assignments with a claim that cannot
+    be read, from one reading of the table."""
+
+    records: dict[str, list[SourceRecord]]
+    unreadable: frozenset[str]
 
 
 @dataclass(frozen=True)

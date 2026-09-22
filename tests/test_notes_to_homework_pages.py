@@ -26,7 +26,8 @@ from blossom.captures import (
     derived_assignment_id,
     new_capture_id,
 )
-from blossom.reconciliation import SourceChannel
+from blossom.reconciliation import SourceChannel, SourceRecord
+from blossom.routes import note_details
 from blossom.routes.captures import (
     ADDED_TO_HOMEWORK,
     ALREADY_ADDED,
@@ -285,6 +286,51 @@ def test_a_press_through_the_other_persons_tree_writes_nothing_and_keeps_what_wa
     assert after == before
 
 
+@pytest.mark.parametrize("button", ["add", "details"])
+def test_a_student_pressing_a_familys_form_is_refused_by_the_page_that_keeps_what_she_typed(
+    button: str, tmp_path: pathlib.Path
+) -> None:
+    """The gate keeps the family's pages from her. These two presses alone reach their route,
+    which writes nothing and answers 403 with what she typed shown back to her; the page
+    itself, and every other press under the family's tree, stay the gate's to refuse."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        form = {
+            **opened(client, name),
+            **typed(title="Only my attempted <b>title</b>", note="Only my note", kind="TASK"),
+        }
+        client.post("/sign-out")
+        anonymous = client.post(note_add_action(name, family=True), data=form, headers=PAGE_HEADERS)
+        client.post("/sign-in", data={"passphrase": HERS})
+        before = rows(client)
+        send = add if button == "add" else save_details
+        refused = send(client, name, form, family=True)
+        page = client.get(note_add_href(name, family=True), headers=PAGE_HEADERS)
+        other = client.post(
+            f"/parent/actions/homework-notes/{name}/archive", data=form, headers=PAGE_HEADERS
+        )
+        after = rows(client)
+
+    assert anonymous.status_code == 303
+    assert anonymous.headers["location"].startswith("/sign-in")
+    assert refused.status_code == 403
+    assert refused.text.count(" autofocus") == 1
+    assert "Sign in as a parent" in refused.text
+    assert "Only my attempted &lt;b&gt;title&lt;/b&gt;" in refused.text
+    assert "Only my note" in refused.text
+    assert "Kind, as chosen: Task" in refused.text
+    assert not re.search(
+        r'<form[^>]*action="/(?:student|parent)/actions/homework-notes', refused.text
+    )
+    assert page.status_code == 403
+    assert "<h1>This page is for a parent</h1>" in page.text
+    assert other.status_code == 403
+    assert "Only my note" not in other.text
+    assert after == before
+
+
 def test_a_parent_adds_a_detail_through_the_familys_tree_and_it_says_so(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -369,8 +415,10 @@ def test_an_assignment_due_outside_the_window_says_it_is_saved_and_not_in_tonigh
         answer = add(client, name, {**opened(client, name), **typed(due_date="2027-03-05")})
         landed = client.get(answer.headers["location"]).text
 
-    assert escape(ADDED_TO_HOMEWORK) in landed
-    assert escape(OUT_OF_THE_WINDOW) in landed
+    banner = landed.split('id="note-result"')[1].split("</p>")[0]
+    assert escape(ADDED_TO_HOMEWORK) in banner
+    assert escape(OUT_OF_THE_WINDOW) in banner
+    assert landed.count(str(escape(OUT_OF_THE_WINDOW))) == 2
 
 
 @pytest.mark.parametrize(
@@ -1114,6 +1162,65 @@ def test_a_class_that_left_the_list_is_held_to_the_fingerprint_and_kept_as_the_c
     assert (note.course, note.assignment_id) == ("Geometry", derived_assignment_id(name))
 
 
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize("fault", ["file", "row"])
+def test_a_failed_read_of_the_homework_for_a_class_that_left_the_list_keeps_what_was_typed(
+    fault: str, family: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read that tells a stale class from a forged one is a precheck and nothing more.
+    When it fails, the page that reads no store answers with every value kept, the write is
+    never tried, and the file is as it was."""
+    with browser() as client:
+        store = state_of(client).project_state
+        target = on_record(client, date(2026, 8, 28))
+        name = save_note(client)
+        sent = {
+            **opened(client, name, family=family),
+            **typed(
+                course_choice="Geometry",
+                course_other="",
+                note="Unsaved <b>work note</b> \N{GRINNING FACE}",
+                due_date="2026-08-25",
+                kind="TASK",
+            ),
+        }
+        store.upsert_assignments([target.model_copy(update={"course": "Renamed class"})])
+        before = rows(client)
+        tried: list[str] = []
+
+        def fails(*args: object, **kwargs: object) -> None:
+            tried.append("read")
+            if fault == "file":
+                msg = "the file refused"
+                raise sqlite3.OperationalError(msg)
+            msg = "a row that cannot be read"
+            raise ValueError(msg)
+
+        def never(*args: object, **kwargs: object) -> None:
+            tried.append("write")
+            msg = "the write must not be tried"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(note_details, "candidate_readings", fails)
+        monkeypatch.setattr(store, "promote_capture", never)
+        answer = add(client, name, sent, family=family)
+        monkeypatch.undo()
+        after = rows(client)
+
+    assert tried == ["read"]
+    assert answer.status_code == 500
+    assert answer.text.count(" autofocus") == 1
+    assert 'id="problem-summary"' in answer.text
+    assert escape(NOT_SAVED) in answer.text
+    assert str(escape(sent["note"])) in answer.text
+    assert "Class, as chosen: <span" in answer.text
+    assert "2026-08-25" in answer.text
+    assert "Kind, as chosen: Task" in answer.text
+    assert "Added to homework" not in answer.text
+    assert f'href="{note_href(name)}"' in answer.text
+    assert after == before
+
+
 @pytest.mark.parametrize("button", ["add", "details"])
 def test_a_class_not_in_the_list_with_nothing_changed_about_the_homework_is_refused(
     button: str,
@@ -1711,6 +1818,68 @@ def test_a_claim_from_a_note_that_was_withdrawn_stays_on_the_details_as_history(
     assert "Withdrawn claims about the date" in family
 
 
+DAMAGED_HISTORY = [
+    ("capture_id", "not-a-note-id"),
+    ("capture_revision", -1),
+    ("withdrawn_at", "not a moment"),
+    ("active", 2),
+]
+
+
+@pytest.mark.parametrize("return_to", ["week", "family"])
+@pytest.mark.parametrize(("column", "value"), DAMAGED_HISTORY)
+def test_a_history_of_claims_that_cannot_be_read_leaves_the_assignment_readable(
+    column: str, value: object, return_to: str
+) -> None:
+    """The withdrawn claim's row is damaged in one column. The assignment, her update, and
+    her hand-in stay readable; the page says its date history cannot be read; a sound claim
+    from the school stays in what the sources say; and nothing is changed."""
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        name = save_note(client)
+        assert (
+            add(client, name, {**opened(client, name), **typed(due_date="2026-08-21")}).status_code
+            == 303
+        )
+        made = derived_assignment_id(name)
+        store.record_claims(
+            made,
+            [
+                SourceRecord(
+                    channel=SourceChannel.LMS,
+                    asserted_value="2026-08-28",
+                    observed_at=state.clock.now(),
+                    confidence=0.9,
+                    seen_in="day header",
+                )
+            ],
+        )
+        store._connection.execute(
+            "UPDATE date_claims SET active = 0, withdrawn_at = ? WHERE capture_id = ?",
+            (state.clock.now().isoformat(), name),
+        )
+        store._connection.execute(
+            f"UPDATE date_claims SET {column} = ? WHERE capture_id = ?",  # noqa: S608
+            (value, name),
+        )
+        store._connection.commit()
+        before = rows(client)
+        details = client.get(f"/student/assignments/{made}", params={"return_to": return_to})
+        after = rows(client)
+
+    assert after == before
+    assert details.status_code == 200, details.text[:300]
+    assert "Questions 4-8" in details.text
+    assert "Date history cannot be read right now" in details.text
+    assert "Withdrawn claims about the date" not in details.text
+    assert "school portal (day header): 2026-08-28" in details.text
+    assert "Turning it in" in details.text
+    assert " autofocus" not in details.text
+    if column == "active":
+        assert "cannot be read right now" in details.text.split("What is on record")[0]
+
+
 def test_what_is_shared_names_the_kind_among_what_reaches_the_planner() -> None:
     with browser() as client:
         name = save_note(client)
@@ -1732,7 +1901,7 @@ def test_a_note_in_homework_says_the_assignment_is_unchanged_never_that_it_is_in
         target = on_record(client, date(2026, 8, 28)) if linked == "on record" else None
         name = save_note(client)
         plain = save_note(client, "A note that stays a note")
-        shown = add(client, name, {**opened(client, name), **typed()})
+        shown = add(client, name, {**opened(client, name), **typed(due_date="2027-03-05")})
         if target is not None:
             form = whole_form(shown.text, note_add_action(name))
             shown = add(client, name, {**form, "candidate": choice_value(target.assignment_id)})
@@ -1766,6 +1935,10 @@ def test_a_note_in_homework_says_the_assignment_is_unchanged_never_that_it_is_in
     for page in (edited_page, restored_page):
         assert "not in a plan yet" not in result(page)
         assert f'href="{ADDED_NOTES_PAGE}"' in page
+        # The window is said once, by the paragraph about the assignment, and not by a
+        # result that is about the note's words or its place among the lists.
+        assert escape(OUT_OF_THE_WINDOW) not in result(page)
+        assert str(escape(OUT_OF_THE_WINDOW)) in page
     assert escape(NOTE_SAVED_EARLIER) in result(earlier)
     assert escape(NOTE_EDITED) in result(unlinked_page)
     assert f'href="{note_href(name)}"' in added_list

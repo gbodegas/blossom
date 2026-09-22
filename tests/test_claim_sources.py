@@ -147,6 +147,43 @@ def test_a_claim_from_a_note_is_one_claim_however_often_it_is_sent(tmp_path: pat
     assert all(isinstance(item, ClaimOnRecord) and item.active for item in history)
 
 
+@pytest.mark.parametrize("flag", [2, "x", 0.5])
+def test_a_claim_whose_flag_is_neither_0_nor_1_is_reported_and_never_dropped_in_silence(
+    tmp_path: pathlib.Path, flag: object
+) -> None:
+    """The flag is read as the store writes it, 0 or 1, and as nothing else. A row that
+    holds anything else is not a claim that counts and not one that was withdrawn: the
+    assignment is named as one whose claims cannot be read, its sound claims are read with
+    it, and the strict readers refuse rather than read around it. The other assignment's
+    claims are untouched."""
+    store = practice_store(tmp_path / "record.sqlite3")
+    other = "assignment-beside"
+    store.record_claims(PRACTICE, [claim("2026-09-25", SourceChannel.LMS)])
+    store.record_claims(PRACTICE, [claim("2026-09-26", SourceChannel.EMAIL)])
+    store.record_claims(other, [claim("2026-09-30", SourceChannel.LMS)])
+    store._connection.execute(
+        "UPDATE date_claims SET active = ? WHERE assignment_id = ? AND channel = ?",
+        (flag, PRACTICE, SourceChannel.EMAIL.value),
+    )
+    store._connection.commit()
+
+    read = store.read_claims([PRACTICE, other])
+    everything = store.read_claims()
+
+    assert read.unreadable == frozenset({PRACTICE})
+    assert [item.channel for item in read.records[PRACTICE]] == [SourceChannel.LMS]
+    assert [item.asserted_value for item in read.records[other]] == ["2026-09-30"]
+    assert everything.unreadable == frozenset({PRACTICE})
+    with pytest.raises(project_state.UnreadableClaim):
+        store.deadline_records(PRACTICE)
+    with pytest.raises(project_state.UnreadableClaim):
+        store.deadline_records_by_assignment([PRACTICE, other])
+    assert [item.asserted_value for item in store.deadline_records(other)] == ["2026-09-30"]
+    whole = read_everything(store, store)
+    assert whole.claims_unavailable == frozenset({PRACTICE})
+    assert [item.channel for item in whole.records[PRACTICE]] == [SourceChannel.LMS]
+
+
 def test_a_claim_that_was_withdrawn_is_read_by_nothing_but_the_history(
     tmp_path: pathlib.Path,
 ) -> None:
