@@ -20,6 +20,7 @@ from blossom.routes import (
     household,
     inbox,
     note_details,
+    note_links,
     parent,
     student,
     verifier,
@@ -46,6 +47,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(captures.router)
     app.include_router(note_details.student_router)
     app.include_router(note_details.family_router)
+    app.include_router(note_links.student_router)
+    app.include_router(note_links.family_router)
     app.include_router(parent.router)
     app.include_router(inbox.router)
     app.include_router(verifier.router)

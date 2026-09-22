@@ -55,6 +55,7 @@ from blossom.captures import (
     accepted_press,
     candidate_basis,
     capture_id_from,
+    derived_assignment_id,
 )
 from blossom.dependencies import ApplicationState
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel
@@ -707,6 +708,9 @@ def details_page(
             ),
             "family": way.family,
             "may_write": way.open_to(viewer) and note.outstanding,
+            "joined": note.assignment_id is not None
+            and note.assignment_id != derived_assignment_id(note.capture_id),
+            "may_unlink": way.open_to(viewer) and not note.archived,
             "typed": form is not None,
             "not_hers": NOT_HERS_TO_UPDATE,
             "viewer": viewer,

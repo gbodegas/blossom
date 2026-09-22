@@ -146,6 +146,25 @@ def note_add_action(capture_id: str, *, family: bool = False) -> str:
     return f"{FAMILY_NOTE_ACTIONS if family else NOTE_ACTIONS}/{segment(capture_id)}/add"
 
 
+def note_search_href(capture_id: str, *, family: bool = False, **query: str | None) -> str:
+    """The page that finds homework already here by its class or title and joins a note to
+    one result, in her tree or the family's. Opening it writes nothing; the search words and
+    the page of results travel in the address."""
+    return address(
+        f"{FAMILY_NOTES_PAGE if family else NOTES_PAGE}/{segment(capture_id)}/search", "", **query
+    )
+
+
+def note_link_action(capture_id: str, *, family: bool = False) -> str:
+    """The route a note is joined to homework found by search through, or moved to it."""
+    return f"{FAMILY_NOTE_ACTIONS if family else NOTE_ACTIONS}/{segment(capture_id)}/link"
+
+
+def note_unlink_action(capture_id: str, *, family: bool = False) -> str:
+    """The route a note is unlinked from homework through."""
+    return f"{FAMILY_NOTE_ACTIONS if family else NOTE_ACTIONS}/{segment(capture_id)}/unlink"
+
+
 def note_anchor(capture_id: str) -> str:
     """One DOM id, shared by a note's row and every link to it."""
     return f"note-{segment(capture_id)}"

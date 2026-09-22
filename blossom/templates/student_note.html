@@ -48,12 +48,16 @@
       <p class="note"><span class="pill">Archived</span> This note is archived. It is kept with its history and can be brought back.</p>
     {% endif %}
     {% if in_homework %}
-      <p class="note"><span class="pill">In homework</span> {% if in_homework.on_record %}This note is in homework. <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>.{% if in_homework.claims_unreadable %} {{ window_unknown }}{% elif not in_homework.in_window %} {{ out_of_the_window }}{% endif %} Changing the note does not change the assignment.{% else %}The assignment this note was added to is not on record. The note and its history are kept here.{% endif %}</p>
+      <p class="note"><span class="pill">In homework</span> {% if in_homework.on_record %}This note is in homework. <a href="{{ details_href(in_homework.assignment_id) }}">Open the assignment</a>.{% if in_homework.claims_unreadable %} {{ window_unknown }}{% elif not in_homework.in_window %} {{ out_of_the_window }}{% endif %} Changing the note does not change the assignment.{% if in_homework.joined %} It was joined to homework that was here before it.{% endif %}{% else %}The assignment this note was added to is not on record. The note and its history are kept here.{% endif %}</p>
     {% elif not note.archived %}
       <p class="note">Saved {{ on(note.created_on) }}{% if note.updated_on != note.created_on %}, changed {{ on(note.updated_on) }}{% endif %}. It is not in a plan yet, and it is not an assignment.</p>
       {% if not form %}
         <p class="note"><a href="{{ note_add_href(note.capture_id, family=not mine) }}">Add it to homework</a>{% if note.course and note.title %}. It has a class and a title, so it is ready to add.{% else %}. It needs a class and a title first, and that page asks for them.{% endif %}</p>
+        <p class="note"><a href="{{ note_search_href(note.capture_id, family=not mine) }}">Link to homework already here</a>: find it by its class or title, whatever this note calls it.</p>
       {% endif %}
+    {% endif %}
+    {% if in_homework and in_homework.on_record and not note.archived %}
+      {% with joined = in_homework.joined, may_unlink = mine, family = not mine %}{% include "note_link_controls.html" %}{% endwith %}
     {% endif %}
     {% if note.text != note.original_text %}
       <h3 class="update-heading">First written as</h3>
@@ -104,7 +108,7 @@
       <ol class="history-list">
         {% for event in history %}
           <li>
-            {% if event.operation == "create" %}Saved{% elif event.operation == "edit" %}Changed{% elif event.operation == "archive" %}Archived{% elif event.operation == "restore" %}Brought back{% elif event.operation == "clarify" %}Details saved{% elif event.operation == "promote" %}Added to homework{% else %}Joined to homework already here{% endif %}
+            {% if event.operation == "create" %}Saved{% elif event.operation == "edit" %}Changed{% elif event.operation == "archive" %}Archived{% elif event.operation == "restore" %}Brought back{% elif event.operation == "clarify" %}Details saved{% elif event.operation == "unlink" %}Unlinked from homework{% elif event.operation == "promote" %}Added to homework{% else %}Joined to homework already here{% endif %}
             {{ on(event.occurred_on) }}, {{ by(event.authored_by) }}.
             {% if event.operation in ("clarify", "promote", "link") %}
               {# Every detail as it stood after the change, and what this change did to each. #}

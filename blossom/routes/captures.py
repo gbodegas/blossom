@@ -49,6 +49,7 @@ from blossom.captures import (
     PROMOTE,
     RESTORE,
     STUDENT,
+    UNLINK,
     Author,
     Capture,
     CaptureAlreadyCreated,
@@ -64,6 +65,7 @@ from blossom.captures import (
     UnknownCapture,
     UnreadableCapture,
     capture_id_from,
+    derived_assignment_id,
     new_capture_id,
     what_remains,
 )
@@ -112,6 +114,12 @@ JOINED_TO_HOMEWORK: Final = (
     "Joined to homework already here. Nothing on that assignment was changed."
 )
 ALREADY_ADDED: Final = "Already added to homework. This is the note as it stands now."
+LINK_CHANGED: Final = (
+    "Joined to other homework already here. Nothing on either assignment was changed."
+)
+UNLINKED: Final = (
+    "Unlinked. This note is back in Homework notes, and the homework it was joined to is unchanged."
+)
 OUT_OF_THE_WINDOW: Final = "Saved here. It is not in today's planning window."
 WINDOW_UNKNOWN: Final = (
     "A claim about its date cannot be read right now, so whether it is in today's planning "
@@ -172,6 +180,8 @@ SAID: Final[dict[str, tuple[str, str | None]]] = {
     "clarified": (DETAILS_SAVED, CLARIFY),
     "added": (ADDED_TO_HOMEWORK, PROMOTE),
     "joined": (JOINED_TO_HOMEWORK, LINK),
+    "relinked": (LINK_CHANGED, LINK),
+    "unlinked": (UNLINKED, UNLINK),
     "already": (ALREADY_ADDED, None),
 }
 """What an address says a save did, the sentence for it, and the kind of change the event
@@ -187,7 +197,9 @@ SAID_OF_A_NOTE_IN_HOMEWORK: Final = {
 note in homework is in no queue of notes, and whether its assignment is in a plan is nothing
 a note's page reads, so neither is said. The assignment is never changed by a change to a
 note, and that is said."""
-SAID_TO_EITHER: Final = frozenset({"clarified", "added", "joined", "already", "unchanged"})
+SAID_TO_EITHER: Final = frozenset(
+    {"clarified", "added", "joined", "relinked", "unlinked", "already", "unchanged"}
+)
 """The results a parent is shown too: what a save through the family's tree did, in words
 that address nobody. The rest are about changes only she can make, and are said to her."""
 
@@ -612,6 +624,9 @@ class InHomework:
     on_record: bool
     in_window: bool
     claims_unreadable: bool = False
+    joined: bool = False
+    """Whether the note was joined to homework that was on record before it, which can be
+    moved or unlinked, rather than made into an assignment of its own, which cannot."""
 
 
 def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
@@ -624,14 +639,16 @@ def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
     with store.reading():
         item = store.one_assignment(note.assignment_id)
         claimed = None if item is None else store.read_claims([note.assignment_id])
+    joined = note.assignment_id != derived_assignment_id(note.capture_id)
     if item is None or claimed is None:
-        return InHomework(note.assignment_id, on_record=False, in_window=False)
+        return InHomework(note.assignment_id, on_record=False, in_window=False, joined=joined)
     noticed = notice_due_date(expect_due_date(item), claimed.records.get(note.assignment_id, []))
     return InHomework(
         note.assignment_id,
         on_record=True,
         in_window=in_week(item, noticed, state.clock.today()),
         claims_unreadable=note.assignment_id in claimed.unreadable,
+        joined=joined,
     )
 
 

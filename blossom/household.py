@@ -337,17 +337,18 @@ def may_open(role: Principal, path: str) -> bool:
 
 
 FAMILY_PRESSES_SHE_MAY_REACH: Final = re.compile(
-    r"/parent/actions/homework-notes/[^/]+/(?:add|details)"
+    r"/parent/actions/homework-notes/[^/]+/(?:add|details|link|unlink)"
 )
-"""The two presses under the family's tree that her sign-in may reach: a form for a note's
-details opened by a parent and pressed after she signed in on the same device. Their route
-refuses her before it reads the form's words for anything, writes nothing, and answers with
-what she typed shown back to her, which the gate's refusal could not. The page itself, and
-every other press under the family's tree, stay the gate's to refuse."""
+"""The four presses under the family's tree that her sign-in may reach: a form about a note
+opened by a parent and pressed after she signed in on the same device, for its details,
+for adding it, for linking it to homework found, or for unlinking it. Their route refuses
+her before it reads the form's words for anything, writes nothing, and answers with what
+she typed shown back to her, which the gate's refusal could not. The page itself, and every
+other press under the family's tree, stay the gate's to refuse."""
 
 
 def may_press_to_be_refused(role: Principal | None, method: str, path: str) -> bool:
-    """Whether a press is one of the two above, from her sign-in."""
+    """Whether a press is one of the four above, from her sign-in."""
     return (
         role is Principal.STUDENT
         and method == "POST"

@@ -38,6 +38,10 @@
   {% if details_form is defined and details_form %}
     {% with kept = details_form %}{% include "student_note_details_kept.html" %}{% endwith %}
   {% endif %}
+  {# The search words and the choice from the page that links a note to homework found. #}
+  {% if search_form is defined and search_form %}
+    {% with kept = search_form %}{% include "student_note_search_kept.html" %}{% endwith %}
+  {% endif %}
   {% if help_question is defined and help_question %}
     <label for="kept-help-question">Your question, as typed</label>
     <textarea id="kept-help-question" rows="3" readonly>{{ help_question }}</textarea>

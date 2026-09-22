@@ -1,0 +1,16 @@
+{#
+  For a note joined to homework that was on record before it: the way to join
+  it to other homework instead, and the press that unlinks it. A note that made
+  its own assignment has neither; its link is the record of that assignment.
+  Each press carries the note's revision and the homework the page showed, and
+  the save holds it to both.
+#}
+{% if joined and may_unlink %}
+  <p class="note"><a href="{{ note_search_href(note.capture_id, family=family) }}">Change link</a>: join this note to other homework already here instead. The old link is withdrawn and the new one made together, or neither.</p>
+  <form method="post" action="{{ note_unlink_action(note.capture_id, family=family) }}" class="action">
+    <input type="hidden" name="revision" value="{{ note.revision }}">
+    <input type="hidden" name="from" value="{{ note.assignment_id }}">
+    <button type="submit" class="secondary">Unlink from this homework</button>
+  </form>
+  <p class="note">Unlinking puts this note back in Homework notes with its details kept, and withdraws only this note's date from that assignment. Nothing else on the assignment changes.</p>
+{% endif %}

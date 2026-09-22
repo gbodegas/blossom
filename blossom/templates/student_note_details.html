@@ -71,6 +71,7 @@
     <p class="note">These words stay as they are. Nothing on this page changes them, and they are not shared with the planning model.</p>
     {% if note.assignment_id %}
       <p class="note">This note is already in homework. <a href="{{ details_href(note.assignment_id) }}">Open the assignment</a>.</p>
+      {% include "note_link_controls.html" %}
     {% elif note.archived %}
       <p class="note">This note is archived. <a href="{{ note_href(note.capture_id) }}">Open the note</a> to bring it back before adding it to homework.</p>
     {% endif %}
@@ -160,6 +161,7 @@
           <p class="note" id="details-candidate-hint">Same homework joins this note to that assignment and changes nothing on it: not its title, its date, its status, or its note. A different due date given here is kept as one more source for the date. Save details does not need this choice.</p>
         {% endif %}
 
+        <p class="note"><a href="{{ note_search_href(note.capture_id, family=family) }}">Search homework already here</a> to join this note to homework named differently, instead of adding it.</p>
         <p class="note">These homework details can be used in making a plan.</p>
         <div class="actions">
           <button type="submit" class="primary">Add to homework</button>

@@ -187,7 +187,7 @@ def test_the_notes_page_offers_adding_it_and_only_what_has_a_route() -> None:
 
     assert f'href="{note_add_href(name)}"' in page
     assert ">Add it to homework</a>" in page
-    assert "Link to homework already here" not in page
+    assert ">Link to homework already here</a>" in page
     assert "Search homework" not in page
 
 
