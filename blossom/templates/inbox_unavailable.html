@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% block title %}Blossom - Nothing was saved{% endblock %}
+{#
+  The page for a review or a save the record refused because a claim about a
+  date on record cannot be read: what happened, in a sentence that takes the
+  focus as the page arrives, with no script; the text as pasted or the entry
+  as typed, to copy; the answers given on the cards, as unsaved input; and
+  the ways on. Nothing here reads the record, tries anything again, or says
+  anything was saved. The one way to try again is the ordinary press, through
+  the same reading as the first time.
+#}
+{% block content %}
+  <h1>Nothing was saved</h1>
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ problem }}</p>
+  <section class="panel">
+    {% if text %}
+      <label for="kept-paste">The text, as pasted</label>
+      <textarea id="kept-paste" rows="8" readonly>{{ text }}</textarea>
+    {% else %}
+      {% for name in entry_fields %}
+        {% if entry[name] %}
+          <p class="note">{{ name|replace("_", " ")|capitalize }}, as typed: <span class="authored-text">{{ entry[name] }}</span></p>
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {% if answers %}
+      <h2 class="update-heading">Your answers on the cards, not saved</h2>
+      <ul>
+        {% for answer in answers %}
+          <li>Card {{ answer.key }}: {% if answer.occurrence == "new" %}new work under the same name{% elif answer.occurrence == "update" %}the same assignment{% else %}no answer about the assignment{% endif %}{% if answer.kind %}; type {{ answer.kind|lower|capitalize }}{% endif %}.</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    <form method="post" action="{{ again }}" class="action">
+      {% for name, value in draft.items() %}
+        {% if name == "text" %}
+          <textarea name="text" hidden>{{ value }}</textarea>
+        {% else %}
+          <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endif %}
+      {% endfor %}
+      <button type="submit" class="secondary">Review it again</button>
+    </form>
+    <p class="return"><a href="/parent">Back to the family page</a></p>
+  </section>
+{% endblock %}

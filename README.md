@@ -85,8 +85,22 @@ it turned in and undo that choice too.
 **Homework notes.** Not every assignment makes it into the portal. She can
 jot down something she heard in class or from a classmate, in her own words.
 A class and date are optional. She can edit it, put it away, or ask for help.
-Her parents can read it but can't change it. These are still notes; turning
-one into an assignment for the planner isn't built yet.
+Her parents can read it but can't change it. A note stays a note, and out of
+every plan, until she or a parent adds it to homework.
+
+**Add it to homework.** From a note, she can open a form that shows her words
+and asks for the class, a title, and optionally a due date, a kind, and a
+note about the work; a parent can do the same from Family review. Nothing is
+guessed from what she wrote. **Save details** keeps those on the note;
+**Add to homework** makes the assignment, once, and keeps the note as
+evidence on it. Anything a parent fills in is marked as theirs. If homework
+with that class and title is already here, Blossom lists it with its date and
+what she and the school currently say about it, and asks whether this is the
+same homework or a separate assignment. It doesn't merge on its own. From
+then on the assignment goes to the planner like any other; her original words
+still don't. A school paste that names such homework waits, whole, until
+Blossom can ask whether it's the same work. That question, and searching for
+homework to join a note to, aren't built yet.
 
 **Family review.** If she asks for help, a parent can reply and mark the
 request resolved. If she says Done but the school says Missing, we can see
@@ -224,10 +238,12 @@ place of `.env.example` as described above.
 When she asks for a plan, Blossom sends the unfinished assignments and their
 date sources, her Not yet updates and notes on that work, any supplied
 household rules and system notes, and whether she has said the evening is
-too much. Homework notes and her reports about turning work in stay out of
-those requests. Later calls also include the proposed plan and feedback on
-it. Making a plan can take one to six model calls. If there's nothing left
-to schedule, it makes none. A parent's review doesn't call the model.
+too much. Her homework notes and her reports about turning work in stay out
+of those requests; a note she has added to homework goes in as the assignment
+it became, never as her words. Later calls also include the proposed plan and
+feedback on it. Making a plan can take one to six model calls. If there's
+nothing left to schedule, it makes none. A parent's review doesn't call the
+model.
 
 Blossom saves the full prompts and responses locally. The
 [development guide](docs/development.md) explains where they live, how long

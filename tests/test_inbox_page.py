@@ -13,6 +13,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
 from blossom.app import create_app
@@ -20,9 +21,11 @@ from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.household import COOKIE
 from blossom.intake import NOTE_MAX_LENGTH, TEXT_MAX_LENGTH
-from blossom.reconciliation import SourceChannel
+from blossom.reconciliation import SourceChannel, SourceRecord
+from blossom.routes import inbox
 from blossom.routes.inbox import (
     CHOOSE_ONE_TYPE,
+    CLAIM_UNREADABLE,
     FAR_DUE_DATE,
     LONG_NOTE,
     LOOK_AGAIN,
@@ -35,7 +38,7 @@ from blossom.routes.inbox import (
     TOO_LONG,
 )
 from blossom.settings import Settings
-from blossom.stores.project_state import Assignment, AssignmentKind
+from blossom.stores.project_state import Assignment, AssignmentKind, UnreadableClaim
 from tests.support import SAME_ORIGIN, fixture_settings
 
 PAGE = {"Accept": "text/html"}
@@ -1115,3 +1118,369 @@ def test_the_way_in_is_a_parents(tmp_path: pathlib.Path) -> None:
     assert hers.status_code == 403
     assert her_keep.status_code == 403
     assert her_edit.status_code == 403
+
+
+# ------------------------------------------------------------------ a claim that cannot be read
+
+
+def sent_back(page: str) -> dict[str, str]:
+    """The review form as a browser sends it back, for a paste or an entry alike: the hidden
+    fields and each select's chosen option, with the page's escaping undone."""
+    fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page))
+    for name, body in re.findall(r'<select name="([^"]+)"[^>]*>(.*?)</select>', page, re.S):
+        chosen = re.search(r'<option value="([^"]+)" selected>', body)
+        assert chosen is not None, name
+        fields[name] = chosen.group(1)
+    text = re.search(r'<textarea name="text" hidden>(.*?)</textarea>', page, re.S)
+    if text is not None:
+        fields["text"] = text.group(1)
+    return {name: html.unescape(value) for name, value in fields.items()}
+
+
+def claim_damaged(client: TestClient, title: str, flag: object = 2) -> Assignment:
+    """A claim about the date of the assignment on record under ``title``, its flag made
+    into what the store never writes, so the strict readers refuse it."""
+    state = state_of(client)
+    row = next(item for item in state.project_state.all_assignments() if item.title == title)
+    state.project_state.record_claims(
+        row.assignment_id,
+        [
+            SourceRecord(
+                channel=SourceChannel.EMAIL,
+                asserted_value="2026-09-10",
+                observed_at=state.clock.now(),
+                confidence=0.8,
+                seen_in="day header",
+            )
+        ],
+    )
+    connection = state.project_state._connection
+    connection.execute(
+        "UPDATE date_claims SET active = ? WHERE assignment_id = ?", (flag, row.assignment_id)
+    )
+    connection.commit()
+    return row
+
+
+def tables(client: TestClient) -> tuple[list[Assignment], list[tuple[object, ...]]]:
+    """The assignments on record and every row about a date's claims, as they stand."""
+    state = state_of(client)
+    claims = state.project_state._connection.execute(
+        "SELECT * FROM date_claims ORDER BY rowid"
+    ).fetchall()
+    return state.project_state.all_assignments(), [tuple(row) for row in claims]
+
+
+@pytest.mark.parametrize("flag", [2, "broken", 0.5])
+@pytest.mark.parametrize("press", ["enter", "keep"])
+def test_a_claim_that_cannot_be_read_refuses_the_entry_with_everything_typed_kept(
+    tmp_path: pathlib.Path, flag: object, press: str
+) -> None:
+    """A row about a date's claim that the store never writes refuses the entry's review and
+    its save alike. The answer reads no store, says nothing was saved, and keeps every field
+    typed, escaped, with one focused alert; the record is as it was."""
+    typed = {**ENTRY, "note": "New <b>parent note</b>", "kind": "TASK"}
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data=ENTRY).status_code == 303
+        form = dict(typed)
+        if press == "keep":
+            shown = client.post("/parent/inbox/enter", data=typed)
+            assert shown.status_code == 200, shown.text[:300]
+            form = sent_back(shown.text)
+        claim_damaged(client, ENTRY["title"], flag)
+        before = tables(client)
+        answer = client.post(f"/parent/inbox/{press}", data=form)
+        after = tables(client)
+        family = client.get("/parent", headers=PAGE)
+
+    assert answer.status_code == 500, answer.text[:300]
+    assert answer.text.count(" autofocus") == 1
+    assert CLAIM_UNREADABLE in answer.text
+    assert "New &lt;b&gt;parent note&lt;/b&gt;" in answer.text
+    for kept in ("Spanish", "Vocabulary list, unit two", "2026-09-11", "Kind, as typed"):
+        assert kept in answer.text, kept
+    assert "Task" in answer.text.split("Kind, as typed")[1].split("</p>")[0]
+    assert "saved." not in answer.text.replace("nothing was saved.", "")
+    assert after == before
+    assert family.status_code == 200
+
+
+@pytest.mark.parametrize("press", ["read", "keep"])
+def test_a_claim_that_cannot_be_read_refuses_the_paste_with_the_whole_text_kept(
+    tmp_path: pathlib.Path, press: str
+) -> None:
+    """The same refusal for a pasted text, on its review and on its save: the whole text is
+    kept as pasted, escaped, and nothing is saved."""
+    text = SUMMARY + "Keep <b>these words</b>" + chr(10)
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data={"text": SUMMARY}).status_code == 303
+        form = {"text": text}
+        if press == "keep":
+            shown = client.post("/parent/inbox/read", data=form)
+            assert shown.status_code == 200, shown.text[:300]
+            form = sent_back(shown.text)
+        claim_damaged(client, "Book Covers")
+        before = tables(client)
+        answer = client.post(f"/parent/inbox/{press}", data=form)
+        after = tables(client)
+
+    assert answer.status_code == 500, answer.text[:300]
+    assert answer.text.count(" autofocus") == 1
+    assert CLAIM_UNREADABLE in answer.text
+    shown_back = answer.text.split('<textarea id="kept-paste" rows="8" readonly>')[1]
+    assert shown_back.split("</textarea>")[0] == html.escape(text, quote=False)
+    assert after == before
+
+
+def test_the_refusal_keeps_the_answers_given_on_the_cards(tmp_path: pathlib.Path) -> None:
+    """The answers made on the review's cards, new work or the same assignment and the type
+    chosen, are said back as unsaved input beside the text."""
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data={"text": WEEKLY}).status_code == 303
+        shown = client.post("/parent/inbox/read", data={"text": WEEKLY_AGAIN})
+        assert shown.status_code == 200, shown.text[:300]
+        form = sent_back(shown.text)
+        asked = [name for name in form if name.startswith("asked-")]
+        assert len(asked) == 1, asked
+        key = asked[0].removeprefix("asked-")
+        form[f"occurrence-{key}"] = "new"
+        form[f"kind-{key}"] = "TASK"
+        claim_damaged(client, "Weekly practice")
+        answer = client.post("/parent/inbox/keep", data=form)
+
+    assert answer.status_code == 500, answer.text[:300]
+    assert f"Card {key}: new work under the same name; type Task." in answer.text
+    assert html.escape(WEEKLY_AGAIN, quote=False) in answer.text
+
+
+def test_a_claim_that_cannot_be_read_inside_the_write_rolls_it_back_and_keeps_the_entry(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal met inside the write's own transaction rolls the transaction back whole
+    before the answer is made; the connection is left outside any transaction, the record
+    is as it was, and the entry is kept."""
+    typed = {**ENTRY, "note": "Transaction <b>words</b>"}
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data=ENTRY).status_code == 303
+        shown = client.post("/parent/inbox/enter", data=typed)
+        assert shown.status_code == 200, shown.text[:300]
+        form = sent_back(shown.text)
+        store = state_of(client).project_state
+        real = store.deadline_records
+        seen: list[bool] = []
+
+        def refusing(assignment_id: str) -> list[SourceRecord]:
+            seen.append(store._connection.in_transaction)
+            if seen[-1]:
+                raise UnreadableClaim(assignment_id)
+            return real(assignment_id)
+
+        monkeypatch.setattr(store, "deadline_records", refusing)
+        before = tables(client)
+        answer = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+        settled = not store._connection.in_transaction
+
+    assert True in seen, seen
+    assert settled
+    assert answer.status_code == 500, answer.text[:300]
+    assert CLAIM_UNREADABLE in answer.text
+    assert "Transaction &lt;b&gt;words&lt;/b&gt;" in answer.text
+    assert after == before
+
+
+TWO_NAMES = "Tuesday 9/1/2026\nMath\nDue: Weekly practice:\nMath\nDue: Reading log:\n"
+TWO_NAMES_AGAIN = TWO_NAMES.replace("9/1/2026", "9/8/2026")
+
+
+def refusing_comparison(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The comparison the save begins with meets a claim it cannot read."""
+
+    def refuses(*args: object) -> object:
+        damaged = "review-damaged"
+        raise UnreadableClaim(damaged)
+
+    monkeypatch.setattr(inbox, "unasked_for", refuses)
+
+
+@pytest.mark.parametrize("choice", ["update", "new"])
+def test_the_refusal_keeps_an_answer_carried_from_an_earlier_returned_page(
+    tmp_path: pathlib.Path, choice: str
+) -> None:
+    """Two names a week on; both cards ask. The first is answered and the page comes back
+    for the second, carrying the first answer as the page's own hidden field with no
+    question beside it. The second is answered, and the save meets a claim it cannot read:
+    the page that reads no store says both answers back, as the save would have read them."""
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data={"text": TWO_NAMES}).status_code == 303
+        shown = client.post("/parent/inbox/read", data={"text": TWO_NAMES_AGAIN})
+        form = sent_back(shown.text)
+        assert {"asked-0", "asked-1"} <= form.keys()
+        returned = client.post("/parent/inbox/keep", data={**form, "occurrence-0": choice})
+        assert returned.status_code == 200, returned.text[:300]
+        sent = sent_back(returned.text)
+        assert sent["occurrence-0"] == choice
+        assert "asked-0" not in sent
+        claim_damaged(client, "Reading log")
+        before = tables(client)
+        answer = client.post("/parent/inbox/keep", data={**sent, "occurrence-1": "new"})
+        after = tables(client)
+
+    assert answer.status_code == 500, answer.text[:300]
+    assert after == before
+    first = "the same assignment" if choice == "update" else "new work under the same name"
+    assert f"Card 0: {first}." in answer.text
+    assert "Card 1: new work under the same name." in answer.text
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_the_refusal_keeps_a_folded_cards_choice_under_the_card_shown(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, edited: bool
+) -> None:
+    """Task is chosen on the second card, folded into the first; the page comes back for the
+    third card's question. The refusal says the folded card's answer back, and the type as
+    the save would read it: the card shown stands over what the folded card carried, so a
+    change back to Homework on the card shown is the one type said."""
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        preview = client.post("/parent/inbox/read", data={"text": THREE_WEEKS_OF_PRACTICE})
+        first = {**sent_back(preview.text), "occurrence-1": "update", "kind-1": "TASK"}
+        returned = client.post("/parent/inbox/keep", data=first)
+        assert returned.status_code == 200, returned.text[:300]
+        sent = {**sent_back(returned.text), "occurrence-2": "new"}
+        assert (sent["folded-1"], sent["occurrence-1"], sent["kind-0"]) == ("0", "update", "TASK")
+        if edited:
+            sent["kind-0"] = "HOMEWORK"
+        refusing_comparison(monkeypatch)
+        before = tables(client)
+        answer = client.post("/parent/inbox/keep", data=sent)
+        after = tables(client)
+
+    assert answer.status_code == 500, answer.text[:300]
+    assert after == before
+    assert "Card 1: the same assignment." in answer.text
+    assert "Card 2: new work under the same name." in answer.text
+    assert ("; type Homework." in answer.text) == edited
+    assert ("; type Task." in answer.text) == (not edited)
+
+
+@pytest.mark.parametrize("chosen", [False, True])
+def test_the_refusal_does_not_invent_a_choice_from_a_select_left_as_shown(
+    tmp_path: pathlib.Path, chosen: bool
+) -> None:
+    """An entry with no type: the review shows the suggestion. Left as shown, the select is
+    no answer and the refusal lists none; changed, it is the one answer listed."""
+    typed = {**ENTRY, "kind": "", "note": "Keep my words"}
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data=ENTRY).status_code == 303
+        shown = client.post("/parent/inbox/enter", data=typed)
+        assert shown.status_code == 200, shown.text[:300]
+        sent = sent_back(shown.text)
+        if chosen:
+            sent["kind-0"] = "TASK"
+        claim_damaged(client, ENTRY["title"])
+        answer = client.post("/parent/inbox/keep", data=sent)
+
+    assert answer.status_code == 500, answer.text[:300]
+    assert ("; type Task." in answer.text) == chosen
+    assert ("Your answers on the cards, not saved" in answer.text) == chosen
+
+
+NOT_A_KEY = ["\u00b2", "\u00b3", "\u2074", "", "12345678", "1x", "00", "01"]
+
+
+@pytest.mark.parametrize("key", NOT_A_KEY)
+@pytest.mark.parametrize("field", ["kind", "occurrence"])
+def test_a_key_the_page_could_not_have_written_is_no_answer_and_takes_nothing_down(
+    tmp_path: pathlib.Path, field: str, key: str
+) -> None:
+    """A card's key is one to six ASCII digits. A field under another key, digits from
+    elsewhere among them, is no answer: the save ignores it and goes on, and the refusal
+    that reads no store still keeps what was typed, with one focused alert."""
+    typed = {**ENTRY, "note": "Keep <b>my input</b>"}
+    stray = {f"{field}-{key}": "TASK" if field == "kind" else "new"}
+    if field == "occurrence":
+        stray[f"asked-{key}"] = "1"
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        saved = client.post("/parent/inbox/keep", data={**ENTRY, **stray})
+        claim_damaged(client, ENTRY["title"])
+        before = tables(client)
+        answer = client.post("/parent/inbox/keep", data={**typed, **stray})
+        after = tables(client)
+
+    assert saved.status_code == 303, saved.text[:300]
+    assert answer.status_code == 500, answer.text[:300]
+    assert after == before
+    assert answer.text.count(" autofocus") == 1
+    assert 'id="problem-summary"' in answer.text
+    assert "Keep &lt;b&gt;my input&lt;/b&gt;" in answer.text
+    assert "Your answers on the cards, not saved" not in answer.text
+
+
+@pytest.mark.parametrize("key", ["\u00b2", "\u00b3", "\u2074"])
+def test_a_question_marked_under_a_key_the_page_could_not_have_written_is_no_question(
+    tmp_path: pathlib.Path, key: str
+) -> None:
+    """Two names a week on; both cards ask. The first is answered and a question is marked
+    under a key of digits from elsewhere. The page comes back for the second card as it
+    would have, the first answer kept, and nothing is written."""
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data={"text": TWO_NAMES}).status_code == 303
+        shown = client.post("/parent/inbox/read", data={"text": TWO_NAMES_AGAIN})
+        form = sent_back(shown.text)
+        assert {"asked-0", "asked-1"} <= form.keys()
+        before = tables(client)
+        returned = client.post(
+            "/parent/inbox/keep", data={**form, "occurrence-0": "update", f"asked-{key}": "1"}
+        )
+        after = tables(client)
+        settled = not state_of(client).project_state._connection.in_transaction
+
+    assert returned.status_code == 200, returned.text[:300]
+    assert after == before
+    assert settled
+    assert "Reading log" in returned.text
+    assert NEEDS_ANSWER in returned.text
+    assert sent_back(returned.text)["occurrence-0"] == "update"
+
+
+@pytest.mark.parametrize("key", ["00", "01", "000"])
+def test_a_padded_spelling_of_a_cards_key_names_no_card(tmp_path: pathlib.Path, key: str) -> None:
+    """The page writes a card's key as the count is spelled. A field under a padded
+    spelling of that count is no answer for the card, on the save: both cards answered as
+    the same assignment stay updates, and no third assignment is made."""
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        assert client.post("/parent/inbox/keep", data={"text": TWO_NAMES}).status_code == 303
+        shown = client.post("/parent/inbox/read", data={"text": TWO_NAMES_AGAIN})
+        form = sent_back(shown.text)
+        assert {"asked-0", "asked-1"} <= form.keys()
+        answered = {**form, "occurrence-0": "update", "occurrence-1": "update"}
+        saved = client.post(
+            "/parent/inbox/keep",
+            data={**answered, f"occurrence-{key}": "new", f"kind-{key}": "TASK"},
+        )
+        rows = state_of(client).project_state.all_assignments()
+
+    assert saved.status_code == 303, saved.text[:300]
+    assert saved.headers["location"] == "/parent?added=0&updated=2&unchanged=0"
+    assert len(rows) == 2
+    assert all(row.kind is AssignmentKind.HOMEWORK for row in rows)

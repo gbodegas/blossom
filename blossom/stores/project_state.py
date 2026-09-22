@@ -39,6 +39,30 @@ from typing import Final, Literal, NamedTuple, Self, cast
 from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator, model_validator
 
 from blossom.authored_text import multiline, single_line
+from blossom.captures import (
+    CAPTURE_CLAIM_CONFIDENCE,
+    HOMEWORK_NOTE,
+    LINK,
+    PROMOTE,
+    Author,
+    CandidateDecision,
+    CandidateLike,
+    CandidatesChanged,
+    Capture,
+    CaptureAlreadyPromoted,
+    CaptureConflict,
+    CaptureDetails,
+    CaptureNotSaved,
+    CapturePromoted,
+    ChoiceNeeded,
+    DetailsMissing,
+    FieldSource,
+    PromotionChoice,
+    candidate_basis,
+    capture_id_from,
+    derived_assignment_id,
+    same_press,
+)
 from blossom.clock import Clock
 from blossom.hand_in import (
     HAND_IN_NOTE_MAX_LENGTH,
@@ -54,9 +78,17 @@ from blossom.hand_in import (
     HandInUndone,
     project,
 )
+from blossom.pairing import pair
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.retrieval import RetrievalResult
-from blossom.stores.captures import CaptureRecords
+from blossom.stores.captures import (
+    CaptureRecords,
+    held_count,
+    held_flag,
+    held_moment,
+    held_text_or_nothing,
+    with_details,
+)
 from blossom.stores.paths import refuse_unsafe_path
 
 DUE_THIS_WEEK_KEY = "due_this_week"
@@ -77,16 +109,55 @@ STUDENT_REPORTS_NAMED: Final = """
     ORDER BY rowid
 """
 EVERY_DATE_CLAIM: Final = """
-    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in
+    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in,
+        capture_id, capture_revision, active, withdrawn_at
     FROM date_claims
     ORDER BY rowid
 """
 DATE_CLAIMS_NAMED: Final = """
-    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in
+    SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in,
+        capture_id, capture_revision, active, withdrawn_at
     FROM date_claims
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY rowid
 """
+"""Whether a claim counts is read from each row in the code, with the note and the moment
+that say how it came not to count, and never decided by the statement: a row that holds
+anything else would otherwise leave the reading in silence, as if it had never been made."""
+"""What a week, a digest, a brief, and a card are made from is the claims that count. A
+claim made from a homework note can be withdrawn later; it then stays in the table as
+history and is read by ``CLAIM_HISTORY`` alone. The school's claims name no note and are
+never withdrawn."""
+CLAIM_HISTORY: Final = """
+    SELECT channel, asserted_value, observed_at, confidence, seen_in,
+        capture_id, capture_revision, active, withdrawn_at
+    FROM date_claims
+    WHERE assignment_id = ?
+    ORDER BY rowid
+"""
+DATE_CLAIM_COLUMNS_ADDED: Final = (
+    ("capture_id", "ALTER TABLE date_claims ADD COLUMN capture_id TEXT"),
+    ("capture_revision", "ALTER TABLE date_claims ADD COLUMN capture_revision INTEGER"),
+    ("active", "ALTER TABLE date_claims ADD COLUMN active INTEGER NOT NULL DEFAULT 1"),
+    ("withdrawn_at", "ALTER TABLE date_claims ADD COLUMN withdrawn_at TEXT"),
+)
+"""The columns a file from before is given, each by a whole statement of its own."""
+INSERT_DATE_CLAIM: Final = """
+    INSERT INTO date_claims (
+        assignment_id, channel, asserted_value, observed_at, confidence, seen_in
+    ) VALUES (?, ?, ?, ?, ?, ?)
+"""
+INSERT_CAPTURE_DATE_CLAIM: Final = """
+    INSERT INTO date_claims (
+        assignment_id, channel, asserted_value, observed_at, confidence, seen_in,
+        capture_id, capture_revision, active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    ON CONFLICT (assignment_id, capture_id, capture_revision)
+        WHERE capture_id IS NOT NULL DO NOTHING
+"""
+"""Every claim is written by naming its columns, so adding a column can misfile nothing.
+A claim from a note is one claim per assignment, note, and revision of the note: the same
+one sent again, after a lost answer, adds nothing."""
 EVERY_HAND_IN_EVENT: Final = """
     SELECT event_id, assignment_id, operation, state, next_action, note, cue_at_utc,
         reported_at_utc, reported_on, previous_event_id, undone_event_id, sequence
@@ -163,6 +234,10 @@ def normalize_note(text: str | None) -> str | None:
     return cleaned or None
 
 
+NoteBy = Literal["teacher", "parent", "student"]
+"""Whose words an assignment's note is."""
+
+
 class AssignmentKind(StrEnum):
     """What sort of work an item is, so a planner can size it.
 
@@ -205,6 +280,28 @@ class Assignment(BaseModel):
     itself, then ``note``, ``kind``, ``due_date``, and ``assigned_on`` when a channel
     supplied them. A parent's entry keeps its origin through a later paste, and a
     parent's correction of a type or a note is told from the school's text."""
+
+    @property
+    def note_by(self) -> NoteBy | None:
+        """Whose words the note is, or ``None`` with no note, so that a mark left on a record
+        with no note says nothing.
+
+        A note marked as a parent's entry is a parent's, and one marked as her
+        report is hers. Any other mark is the school's, and so is no mark at
+        all: every note kept before notes carried a mark came from the
+        school's own card, and reading those as anyone else's would put words
+        in a mouth. Her note is her account of the work and never the
+        teacher's instruction, which is why a page, a brief, and the
+        fingerprint a plan is checked against all ask here and nowhere else.
+        """
+        if not self.note:
+            return None
+        mark = self.origins.get("note")
+        if mark == SourceChannel.PARENT_ENTRY:
+            return "parent"
+        if mark == SourceChannel.STUDENT_REPORT:
+            return "student"
+        return "teacher"
 
     @field_validator("assignment_id")
     @classmethod
@@ -573,7 +670,11 @@ class ProjectStateStore(CaptureRecords):
                 asserted_value TEXT NOT NULL,
                 observed_at TEXT NOT NULL,
                 confidence REAL NOT NULL,
-                seen_in TEXT
+                seen_in TEXT,
+                capture_id TEXT,
+                capture_revision INTEGER,
+                active INTEGER NOT NULL DEFAULT 1,
+                withdrawn_at TEXT
             )
             """
         )
@@ -630,7 +731,32 @@ class ProjectStateStore(CaptureRecords):
         # indexes: a start that is refused any of them leaves a file from before as it was.
         with self._writing():
             self._create_capture_tables()
+        # Where a claim came from and whether it still counts: three columns and the index
+        # that makes a note's claim one claim, together or not at all.
+        with self._writing():
+            self._upgrade_date_claims()
         self._upgrade()
+
+    def _upgrade_date_claims(self) -> None:
+        """Give the claims table the note a claim came from, the note's revision, whether
+        the claim still counts, and when it stopped, in the caller's transaction.
+
+        Additive: a file from before keeps every row, and its rows name no
+        note and count, which is what the school's claims always do. The index
+        is what makes a claim from a note one claim per assignment, note, and
+        revision. A start refused any step leaves the file as it was.
+        """
+        held = {str(row[1]) for row in self._connection.execute("PRAGMA table_info(date_claims)")}
+        for column, statement in DATE_CLAIM_COLUMNS_ADDED:
+            if column not in held:
+                self._connection.execute(statement)
+        self._connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS date_claims_capture_once
+            ON date_claims (assignment_id, capture_id, capture_revision)
+            WHERE capture_id IS NOT NULL
+            """
+        )
 
     def _create_hand_in_tables(self) -> None:
         """The hand-in table and its index, in that order, in the caller's transaction.
@@ -858,8 +984,9 @@ class ProjectStateStore(CaptureRecords):
         reports: Mapping[str, Iterable[StatusReport]] | None = None,
     ) -> None:
         """Keep assignments, the claims about their dates, and what the school reports, in
-        one transaction, all or none, like the writes above."""
-        with self._lock, self._connection:
+        one transaction, all or none, like the writes above. A caller that compared before it
+        wrote, inside ``comparing_and_writing``, is joined and its transaction left to it."""
+        with self._lock, self._writing():
             self._upsert_assignments_locked(assignments)
             for assignment_id, records in claims.items():
                 self._record_claims_locked(assignment_id, records)
@@ -1806,7 +1933,7 @@ class ProjectStateStore(CaptureRecords):
 
     def _record_claims_locked(self, assignment_id: str, records: Iterable[SourceRecord]) -> None:
         self._connection.executemany(
-            "INSERT INTO date_claims VALUES (?, ?, ?, ?, ?, ?)",
+            INSERT_DATE_CLAIM,
             [
                 (
                     assignment_id,
@@ -1820,23 +1947,257 @@ class ProjectStateStore(CaptureRecords):
             ],
         )
 
+    def _record_capture_claim_locked(
+        self,
+        assignment_id: str,
+        record: SourceRecord,
+        *,
+        capture_id: str,
+        capture_revision: int,
+    ) -> None:
+        """Keep a claim made from a homework note, named by the note and its revision,
+        inside the caller's transaction. The same one again adds nothing. The confidence it
+        carries is the one a family entry carries, there because the column needs a value:
+        it is no confidence of hers, scores nothing about her, is shown nowhere, and
+        settles no disagreement."""
+        self._connection.execute(
+            INSERT_CAPTURE_DATE_CLAIM,
+            (
+                assignment_id,
+                record.channel.value,
+                record.asserted_value,
+                record.observed_at.isoformat(),
+                record.confidence,
+                record.seen_in,
+                capture_id_from(capture_id),
+                held_count(capture_revision, "capture_revision"),
+            ),
+        )
+
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
-        """Every channel's claim about one assignment's due date, in the order made.
+        """Every channel's claim about one assignment's due date that counts, in the order
+        made, or ``UnreadableClaim`` when a claim about it cannot be read.
 
         An empty list is a valid answer and means nothing corroborates the
-        date; it is not an error.
+        date; it is not an error. A caller that would rather read around a
+        damaged row and say so reads ``read_claims``.
         """
+        read = self.read_claims([assignment_id])
+        if read.unreadable:
+            raise UnreadableClaim(assignment_id)
+        return read.records.get(assignment_id, [])
+
+    def read_claims(self, assignment_ids: Iterable[str] | None = None) -> "ClaimReadings":
+        """The claims that count about each assignment named, or about all with none named,
+        in one read, with the assignments among them that have a claim that cannot be read.
+
+        Each row is held to the rules the history is read by: whether a claim
+        counts is 0 or 1 and nothing else, a claim that does not count is a
+        note's and was withdrawn at some moment, and a claim that counts was
+        withdrawn at none. A row that fails them, or that cannot be read in
+        any other column, is no claim that counts and no claim that was
+        withdrawn: it is read around, logged, and its assignment is named, so
+        a page can say its claims cannot be read and nothing reads a damaged
+        row as evidence or as the absence of it. The names are bound as one
+        value, whatever their number, and asked about none the store runs no
+        statement.
+        """
+        wanted = None if assignment_ids is None else set(assignment_ids)
+        if wanted is not None and not wanted:
+            return ClaimReadings({}, frozenset())
         with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT channel, asserted_value, observed_at, confidence, seen_in
-                FROM date_claims
-                WHERE assignment_id = ?
-                ORDER BY rowid
-                """,
-                (assignment_id,),
-            ).fetchall()
-        return [source_record_from(row) for row in rows]
+            if wanted is None:
+                rows = self._connection.execute(EVERY_DATE_CLAIM).fetchall()
+            else:
+                rows = self._connection.execute(
+                    DATE_CLAIMS_NAMED, (json.dumps(sorted(wanted)),)
+                ).fetchall()
+        records: dict[str, list[SourceRecord]] = {}
+        unreadable: set[str] = set()
+        for row in rows:
+            name = str(row[0])
+            try:
+                held = claim_on_record_from(name, row[1:])
+            except UnreadableClaim:
+                logger.warning("a claim about the due date of %s cannot be read", name)
+                unreadable.add(name)
+                continue
+            if held.active:
+                records.setdefault(name, []).append(held.record)
+        return ClaimReadings(records, frozenset(unreadable))
+
+    @contextmanager
+    def comparing_and_writing(self) -> Iterator[None]:
+        """Hold the store and reserve the file's writer before anything is read, for a
+        caller that compares what it has with the record and then writes. The process lock
+        keeps this process's other callers out; the reserved writer keeps another
+        connection's write from landing between the comparison and the write. Committed
+        when the block succeeds, rolled back when it fails."""
+        with self._lock, self._writing():
+            yield
+
+    def held_by_notes(
+        self, pairs: Iterable[tuple[str, str]]
+    ) -> dict[tuple[str, str], tuple[str, ...]]:
+        """Which of these classes and titles are the class and title of homework a note
+        became, by the rule the school's paste pairs by, and which assignments each is:
+        every one, since a second note can be kept as a separate assignment under the same
+        class and title. Empty when none is, which is every paste until a note is added to
+        homework."""
+        made = self.assignments_made_from_notes()
+        if not made:
+            return {}
+        by_name: dict[tuple[str, str], list[str]] = {}
+        for item in self.all_assignments():
+            if item.assignment_id in made:
+                by_name.setdefault(pair(item.course, item.title), []).append(item.assignment_id)
+        return {
+            name: tuple(sorted(by_name[name]))
+            for name in (pair(course, title) for course, title in pairs)
+            if name in by_name
+        }
+
+    def promotion_candidates(
+        self, details: CaptureDetails, *, among: Iterable["Assignment"] | None = None
+    ) -> list["Assignment"]:
+        """Homework on record with the class and title these details give: every one of
+        them, whatever its day, by the rule the school's paste pairs by. With no class or no
+        title there is nothing to pair, and no identity is made up from her words."""
+        if details.course is None or details.title is None:
+            return []
+        wanted = pair(details.course, details.title)
+        rows = self.all_assignments() if among is None else among
+        return sorted(
+            (item for item in rows if pair(item.course, item.title) == wanted),
+            key=lambda item: item.assignment_id,
+        )
+
+    def promote_capture(
+        self,
+        capture_id: str,
+        details: CaptureDetails,
+        *,
+        expected_revision: int,
+        basis: str,
+        choice: PromotionChoice,
+        target: str | None = None,
+        candidates: Callable[[CaptureDetails, Sequence["Assignment"]], Sequence[CandidateLike]],
+        authored_by: Author,
+        channel: SourceChannel,
+        now: datetime,
+        today: date,
+    ) -> (
+        CapturePromoted
+        | CaptureAlreadyPromoted
+        | CaptureConflict
+        | DetailsMissing
+        | ChoiceNeeded
+        | CandidatesChanged
+    ):
+        """Add a note to homework: as an assignment of its own, or joined to one on record.
+
+        One transaction that reserves the writer before it reads. The note's
+        line of changes is checked first. For a note already in homework the
+        press is compared with the one that was accepted, as its event keeps
+        it: the same kind of press, choice, assignment, and details are that
+        press again, and nothing is written; anything else is refused as a
+        conflict, since the assignment's id is the note's whatever a press
+        holds and proves nothing about it. The note as it has since become is
+        no part of that comparison. Otherwise the page's revision must be the note's,
+        the note must not be put away, and it must have a class, a title, and
+        a kind. Then the homework of that class and title is read here, as a
+        person is shown it, and its fingerprint must be the one the page sent:
+        homework that arrived, left, or changed in anything shown since is put
+        to the person again, so no twin is made because another connection
+        won a race, and an old page that showed no candidate is checked the
+        same way. ``candidates`` is that reading, ``blossom.candidates.reader``
+        of this store: what she and the school currently say is worked out by
+        a module that reads this one, so it is handed in, and it is called
+        here, inside the transaction, through this store's connection.
+
+        With no candidate the choice is ``new``. With any, it is ``same``,
+        naming one of them, or ``separate``. ``same`` joins the note to that
+        assignment and changes nothing about it: a day the note gives is one
+        more claim beside the school's. ``new`` and ``separate`` make the
+        note's own assignment, named from the note's id, its record marked
+        with the way in this press came through and each field with whoever
+        supplied it. The assignment, the claim, the note's link, and the event
+        with the choice are one commit. No report of the school's is made.
+        """
+        name = capture_id_from(capture_id)
+        try:
+            with self._lock, self._writing():
+                standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
+                own = derived_assignment_id(name)
+                if standing.assignment_id is not None:
+                    asked = target if choice == "same" else own
+                    if asked == standing.assignment_id and same_press(
+                        reading.accepted, details, choice, asked
+                    ):
+                        return CaptureAlreadyPromoted(
+                            standing, reading.head, standing.assignment_id
+                        )
+                    return CaptureConflict(standing)
+                if standing.revision != expected_revision or standing.archived:
+                    return CaptureConflict(standing)
+                needed = (*details.missing, *(("kind",) if details.kind is None else ()))
+                if needed:
+                    return DetailsMissing(standing, needed)
+                rows = self.all_assignments()
+                shown = tuple(candidates(details, rows))
+                if candidate_basis(shown) != basis:
+                    return CandidatesChanged(standing, shown)
+                named = tuple(item.assignment_id for item in shown)
+                fits = (
+                    (choice == "new" and not shown)
+                    or (choice == "separate" and bool(shown))
+                    or (choice == "same" and target in named)
+                )
+                if not fits:
+                    return ChoiceNeeded(standing, shown)
+                joined = target if choice == "same" and target is not None else own
+                source = FieldSource(authored_by=authored_by, channel=channel)
+                note = with_details(standing, details, source, assignment_id=joined)
+                if choice != "same":
+                    if any(item.assignment_id == own for item in rows):
+                        msg = f"the assignment {own!r} is on record and its note says it is not"
+                        raise RuntimeError(msg)
+                    self._upsert_assignments_locked([assignment_from_note(note, channel)])
+                changed = self._change_locked(
+                    standing,
+                    note,
+                    LINK if choice == "same" else PROMOTE,
+                    authored_by,
+                    reading,
+                    now=now,
+                    today=today,
+                    decision=CandidateDecision(choice=choice, candidates=named, basis=basis),
+                )
+                if note.due_date is not None:
+                    self._record_capture_claim_locked(
+                        joined,
+                        SourceRecord(
+                            channel=note.attribution["due_date"].channel,
+                            asserted_value=note.due_date.isoformat(),
+                            observed_at=now,
+                            confidence=CAPTURE_CLAIM_CONFIDENCE,
+                            seen_in=HOMEWORK_NOTE,
+                        ),
+                        capture_id=name,
+                        capture_revision=changed.capture.revision,
+                    )
+                return CapturePromoted(changed.capture, changed.event, joined, choice != "same")
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CaptureNotSaved(name, error) from error
+
+    def claim_history(self, assignment_id: str) -> list["ClaimOnRecord"]:
+        """Every claim ever made about one assignment's due date, in the order made, with
+        the note it came from when it came from one and whether it still counts. This is
+        what an assignment's details read; nothing a plan is made from reads it."""
+        with self._lock:
+            rows = self._connection.execute(CLAIM_HISTORY, (assignment_id,)).fetchall()
+        return [claim_on_record_from(assignment_id, row) for row in rows]
 
     def deadline_records_by_assignment(
         self, assignment_ids: Iterable[str] | None = None
@@ -1846,21 +2207,13 @@ class ProjectStateStore(CaptureRecords):
         Read as her chains are: with no names given, the whole table, and
         the names bound as one value. An assignment nothing was claimed about
         has no entry, which says what an empty list says from the single read.
+        A claim that cannot be read is ``UnreadableClaim``; ``read_claims``
+        is the reading that names such an assignment and goes on.
         """
-        wanted = None if assignment_ids is None else set(assignment_ids)
-        if wanted is not None and not wanted:
-            return {}
-        with self._lock:
-            if wanted is None:
-                rows = self._connection.execute(EVERY_DATE_CLAIM).fetchall()
-            else:
-                rows = self._connection.execute(
-                    DATE_CLAIMS_NAMED, (json.dumps(sorted(wanted)),)
-                ).fetchall()
-        claims: dict[str, list[SourceRecord]] = {}
-        for row in rows:
-            claims.setdefault(str(row[0]), []).append(source_record_from(row[1:]))
-        return claims
+        read = self.read_claims(assignment_ids)
+        if read.unreadable:
+            raise UnreadableClaim(sorted(read.unreadable)[0])
+        return read.records
 
     def due_between(self, start: date, end: date) -> list[Assignment]:
         """Return assignments due in ``[start, end]``, ordered by date then course.
@@ -2024,6 +2377,90 @@ def family_check_from(row: tuple[object, ...]) -> FamilyCheck:
         checked_on=date.fromisoformat(str(row[6])),
         previous_check_id=None if row[7] is None else str(row[7]),
     )
+
+
+def assignment_from_note(note: Capture, record_channel: SourceChannel) -> Assignment:
+    """The assignment a note becomes, from the note's details as they stand.
+
+    The record is marked with the way in the press came through, her page or
+    the family's. Each field is marked with whoever supplied it, which may be
+    someone else: a class she named stays hers when a parent adds the note to
+    homework. Her words are not copied anywhere; the note about the work is
+    only what the note field held. The school has said nothing about this
+    work, so its reported status is unknown and no report is made for it.
+    """
+    if note.assignment_id is None or note.course is None or note.title is None:
+        msg = f"note {note.capture_id!r} cannot be homework without an id, a class, and a title"
+        raise ValueError(msg)
+    origins = {"record": record_channel}
+    for name in ("course", "title", "due_date", "kind", "note"):
+        if getattr(note, name) is not None:
+            origins[name] = note.attribution[name].channel
+    return Assignment(
+        assignment_id=note.assignment_id,
+        course=note.course,
+        title=note.title,
+        due_date=note.due_date,
+        dependencies=[],
+        reported_submission_status="unknown",
+        kind=AssignmentKind(note.kind) if note.kind is not None else AssignmentKind.HOMEWORK,
+        note=note.note,
+        origins=origins,
+    )
+
+
+class UnreadableClaim(ValueError):
+    """Raised for a claim whose note, revision, or standing is held as nothing the store
+    writes. Its history is unavailable, which a page says; nothing is guessed in its place."""
+
+
+@dataclass(frozen=True)
+class ClaimReadings:
+    """The claims that count, by assignment, and the assignments with a claim that cannot
+    be read, from one reading of the table."""
+
+    records: dict[str, list[SourceRecord]]
+    unreadable: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ClaimOnRecord:
+    """One claim about a due date as the table holds it: the claim, the homework note and
+    revision it was made from when it was made from one, and whether it still counts."""
+
+    record: SourceRecord
+    capture_id: str | None
+    capture_revision: int | None
+    active: bool
+    withdrawn_at: datetime | None
+
+
+def claim_on_record_from(assignment_id: str, row: tuple[object, ...]) -> ClaimOnRecord:
+    """One claim with where it came from, from a row of ``CLAIM_HISTORY``. The columns that
+    name a note are read as the store writes them, and as nothing else."""
+    try:
+        record = source_record_from(row[:5])
+        note = held_text_or_nothing(row[5], "capture_id")
+        revision = None if row[6] is None else held_count(row[6], "capture_revision")
+        if (note is None) != (revision is None):
+            msg = "a claim names a note and its revision together or neither"
+            raise ValueError(msg)
+        if note is not None:
+            capture_id_from(note)
+        active = held_flag(row[7], "active")
+        stopped = None if row[8] is None else held_moment(row[8], "withdrawn_at")
+        if active and stopped is not None:
+            msg = "a claim that counts was not withdrawn"
+            raise ValueError(msg)
+        if not active and stopped is None:
+            msg = "a claim that does not count was withdrawn at some moment"
+            raise ValueError(msg)
+        if not active and note is None:
+            msg = "a claim that came from no note is never withdrawn"
+            raise ValueError(msg)
+    except (ValueError, TypeError) as fault:
+        raise UnreadableClaim(assignment_id) from fault
+    return ClaimOnRecord(record, note, revision, active, stopped)
 
 
 def source_record_from(row: tuple[object, ...]) -> SourceRecord:

@@ -14,7 +14,16 @@ from fastapi.staticfiles import StaticFiles
 
 from blossom.dependencies import create_lifespan
 from blossom.household import HouseholdGate
-from blossom.routes import captures, hand_in, household, inbox, parent, student, verifier
+from blossom.routes import (
+    captures,
+    hand_in,
+    household,
+    inbox,
+    note_details,
+    parent,
+    student,
+    verifier,
+)
 from blossom.settings import Settings, get_settings
 
 
@@ -35,6 +44,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(student.router)
     app.include_router(hand_in.router)
     app.include_router(captures.router)
+    app.include_router(note_details.student_router)
+    app.include_router(note_details.family_router)
     app.include_router(parent.router)
     app.include_router(inbox.router)
     app.include_router(verifier.router)

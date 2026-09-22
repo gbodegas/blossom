@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% set page = "parent" if family else "student" %}
+{% block title %}Blossom - Add a note to homework{% endblock %}
+{#
+  One homework note's details, and the way to add the note to homework. Her
+  words are shown above the form and are no part of it: nothing here changes
+  them, cuts them to fit a title, or sends them anywhere. The details are a
+  class, chosen from the classes homework on record names or typed beside
+  Another class, a title, a due date, a kind, and a note about the work.
+
+  Two buttons share the one form. Save details keeps what is typed on the
+  note, which stays a note. Add to homework is the one confirmation: the
+  fields above it are exactly what becomes the assignment, and the page says
+  that those details can be used in making a plan.
+
+  With homework of the same class and title on record, each is listed with
+  its date, its kind, what she currently says about the work, what each school
+  channel currently says, the record's own status, and where the record came
+  from, her account and the school's apart. The choice is hers or a parent's: the same
+  homework, or a separate assignment. What a choice is sent as names its kind
+  apart from the assignment's id, since an id is any text the record keeps.
+  The form carries a fingerprint of everything those rows show. A choice
+  stands only on the facts it was made on: a form that comes back keeps its
+  choice chosen when its fingerprint is the fingerprint of what stands now,
+  and otherwise, whatever the press was refused for, the choice is cleared and
+  said back as unsaved above the rows as they stand, with nothing chosen for
+  anyone. A class chosen from the list that has since left it stays the chosen
+  option, marked as not in the list now, until a class is chosen or typed, or
+  the fingerprint says the homework of that class changed and asks about that.
+
+  A refusal is said first and takes the focus as the page arrives, with no
+  script, and links to the field it is about. A day that could not be read
+  is said back beside the control, the form is marked, and the next save
+  needs a day that reads or the tick that leaves the due date out.
+
+  ``family`` says which tree the page is in, and with it where the form goes.
+  The one who may not write here is shown the note and told who can. A form
+  that cannot be taken, because the note was put away or added to homework in
+  the meantime or because of who pressed, is answered with what was typed and
+  chosen, shown to copy.
+  A form from a page that is behind the note comes back under its own heading,
+  below the details the note holds now, the kind among them, so what was typed
+  is set beside what is saved and replaces none of it unseen. A choice about
+  homework already here stays chosen through a refusal about something else,
+  while it is still one of the choices; a choice that is put again is made again.
+#}
+{% from "note_details_shown.html" import details_shown %}
+{% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
+{% set targets = {
+  "course": ("details-course", "Go to the class."),
+  "course_other": ("details-course-other", "Go to the class you typed."),
+  "title": ("details-title", "Go to the title."),
+  "due_date": ("details-due-date", "Go to the due date."),
+  "kind": ("details-kind", "Go to the kind."),
+  "note": ("details-note", "Go to the note."),
+  "candidate": ("details-candidate", "Go to the choice."),
+} %}
+{% set at = "candidate" if choosing else form.field %}
+{% block content %}
+  {% for link in ways_back %}
+    <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
+  {% endfor %}
+  <p class="return"><a href="{{ note_href(note.capture_id) }}">Back to the note</a></p>
+  <h1>Add a note to homework</h1>
+  {% if problem %}
+    <p class="problem" role="alert" id="details-problem" tabindex="-1" autofocus>{{ problem }}{% if may_write and at in targets %} <a href="#{{ targets[at][0] }}">{{ targets[at][1] }}</a>{% endif %}</p>
+  {% endif %}
+  <section class="panel homework-note">
+    <h2 class="update-heading">{% if family %}What she wrote{% else %}What you wrote{% endif %}</h2>
+    <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
+    <p class="note">These words stay as they are. Nothing on this page changes them, and they are not shared with the planning model.</p>
+    {% if note.assignment_id %}
+      <p class="note">This note is already in homework. <a href="{{ details_href(note.assignment_id) }}">Open the assignment</a>.</p>
+    {% elif note.archived %}
+      <p class="note">This note is archived. <a href="{{ note_href(note.capture_id) }}">Open the note</a> to bring it back before adding it to homework.</p>
+    {% endif %}
+    {% if typed and accepted %}
+      <h3 class="update-heading">What it was added with</h3>
+      {{ details_shown(accepted) }}
+      <p class="note">That is what stands. Nothing typed here changed it.</p>
+    {% elif form.unsaved %}
+      <h3 class="update-heading">Saved on the note now</h3>
+      {{ details_shown(note, attribution=note.attribution, mine=not family) }}
+      {% if not (note.course or note.title or note.due_date or note.kind or note.note) %}<p class="note">No details are saved on the note.</p>{% endif %}
+    {% endif %}
+    {% if typed and may_write is false %}
+      <h3 class="update-heading">Your unsaved details</h3>
+      <p class="note">These details were not saved. Everything typed is here to copy.</p>
+      {% with kept = form %}{% include "student_note_details_kept.html" %}{% endwith %}
+    {% endif %}
+    {% if note.assignment_id or note.archived %}
+    {% elif not may_write %}
+      <p class="note">{% if family %}Sign in as a parent to add details here.{% else %}{{ not_hers }}{% endif %}</p>
+    {% else %}
+      <form method="post" action="{{ note_add_action(note.capture_id, family=family) }}" class="report">
+        {% if form.unsaved %}<h3 class="update-heading">Your unsaved details</h3>{% else %}<h3 class="update-heading">Homework details</h3>{% endif %}
+        <input type="hidden" name="revision" value="{{ form.revision }}">
+        <input type="hidden" name="basis" value="{{ basis }}">
+
+        <label for="details-course">Class</label>
+        <select id="details-course" name="course_choice" aria-describedby="{% if at == "course" %}details-problem {% endif %}details-course-hint{% if left and not left.option %} details-course-left{% endif %}"{% if at == "course" %} aria-invalid="true"{% endif %}>
+          <option value=""{% if not form.course_choice %} selected{% endif %}>Choose a class</option>
+          {% for course in courses %}
+            <option value="{{ course }}"{% if form.course_choice == course %} selected{% endif %}>{{ course }}</option>
+          {% endfor %}
+          {% if left and left.option %}
+            <option value="{{ left.option }}" selected>{{ left.option }} (chosen before; not in the list now)</option>
+          {% endif %}
+          <option value="{{ other_class }}"{% if form.course_choice == other_class %} selected{% endif %}>Another class</option>
+        </select>
+        <p class="note" id="details-course-hint">Choose Another class to type one that is not in the list.</p>
+        {% if left and not left.option %}
+          <p class="note" id="details-course-left">The class chosen before{% if left.words %}, <span class="authored-text">{{ left.words }}</span>,{% endif %} is not in the list now and could not be offered as a choice{% if not left.words %}, and its words cannot be shown{% endif %}. Choose a class, or choose Another class and type it.</p>
+        {% endif %}
+        <label for="details-course-other">Another class</label>
+        <input type="text" id="details-course-other" name="course_other" value="{{ form.course_other }}" aria-describedby="{% if at == "course_other" %}details-problem {% endif %}details-course-other-hint"{% if at == "course_other" %} aria-invalid="true"{% endif %}>
+        <p class="note" id="details-course-other-hint">One line, up to {{ course_max_length }} characters. Leave it empty when the class is in the list.</p>
+
+        <label for="details-title">Title</label>
+        <input type="text" id="details-title" name="title" value="{{ form.title }}" aria-describedby="{% if at == "title" %}details-problem {% endif %}details-title-hint"{% if at == "title" %} aria-invalid="true"{% endif %}>
+        <p class="note" id="details-title-hint">One line, up to {{ title_max_length }} characters. Blossom does not work a title out from the note.</p>
+
+        <label for="details-due-date">Due date (optional)</label>
+        <input type="date" id="details-due-date" name="due_date" value="{{ form.due_date }}" aria-describedby="{% if at == "due_date" %}details-problem {% endif %}{% if form.date_refused %}details-date-refused {% endif %}details-date-hint"{% if at == "due_date" %} aria-invalid="true"{% endif %}>
+        {% if form.date_refused %}
+          <p class="note" id="details-date-refused">The date given was <q class="authored-text">{{ form.date_refused }}</q>, which is not a date Blossom can read.</p>
+        {% endif %}
+        <p class="note" id="details-date-hint">Leave it empty when the date is not known. Blossom never works a date out from the note.</p>
+        {% if form.date_pending %}
+          <input type="hidden" name="date_pending" value="1">
+          {% if form.date_refused %}<input type="hidden" name="date_refused" value="{{ form.date_refused }}">{% endif %}
+          <fieldset class="choice">
+            <legend>When no date can be given</legend>
+            <label><input type="checkbox" name="without_date" value="1"> <span>Leave the due date out</span></label>
+          </fieldset>
+        {% endif %}
+
+        <label for="details-kind">Kind</label>
+        <select id="details-kind" name="kind"{% if at == "kind" %} aria-describedby="details-problem" aria-invalid="true"{% endif %}>
+          <option value="HOMEWORK"{% if form.kind != "TASK" %} selected{% endif %}>Homework</option>
+          <option value="TASK"{% if form.kind == "TASK" %} selected{% endif %}>Task</option>
+        </select>
+
+        <label for="details-note">Note about the work (optional)</label>
+        <textarea id="details-note" name="note" rows="3" aria-describedby="{% if at == "note" %}details-problem {% endif %}details-note-hint"{% if at == "note" %} aria-invalid="true"{% endif %}>{{ form.note }}</textarea>
+        <p class="note" id="details-note-hint">Up to {{ note_max_length }} characters. Once the note is added to homework, this note about the work is shared with the planning model. The words above are not.</p>
+
+        {% if previous %}
+          <p class="note" id="details-previous">The choice made before was not saved: {% if previous.separate %}to keep it as a separate assignment{% elif previous.row %}the same homework as <span class="authored-text">{{ previous.row.course }}</span> &middot; <span class="authored-text">{{ previous.row.title }}</span>, {% if previous.row.due_date %}due {{ on(previous.row.due_date) }}{% else %}no due date recorded{% endif %}{% else %}the same homework as one that is not {% if candidates %}among these{% else %}on record{% endif %} now{% endif %}. {% if candidates %}What is shown has changed since, so look at it as it stands and choose again.{% else %}Homework with this class and title is not on record now, so there is no choice to make: adding it makes the note's own assignment.{% endif %}</p>
+        {% endif %}
+        {% if candidates %}
+          <fieldset class="choice" id="details-candidate" tabindex="-1" aria-describedby="{% if at == "candidate" %}details-problem {% endif %}details-candidate-hint">
+            <legend>Homework with this class and title is already here</legend>
+            {% for item in candidates %}
+              <label><input type="radio" name="candidate" value="{{ item.value }}"{% if chosen == item.value %} checked{% endif %} aria-describedby="details-candidate-{{ loop.index }}"> <span>Same homework as <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>, {% if item.due_date %}due {{ on(item.due_date) }}{% else %}no due date recorded{% endif %}</span></label>
+              <p class="note candidate-facts" id="details-candidate-{{ loop.index }}">{{ item.kind }} {{ item.hers }}{% for said in item.school %} {{ said }}{% endfor %}{% if item.recorded %} {{ item.recorded }}{% endif %}{% if item.source %} {{ item.source }}{% endif %}</p>
+            {% endfor %}
+            <label><input type="radio" name="candidate" value="{{ separate }}"{% if chosen == separate %} checked{% endif %}> <span>Keep as a separate assignment</span></label>
+          </fieldset>
+          <p class="note" id="details-candidate-hint">Same homework joins this note to that assignment and changes nothing on it: not its title, its date, its status, or its note. A different due date given here is kept as one more source for the date. Save details does not need this choice.</p>
+        {% endif %}
+
+        <p class="note">These homework details can be used in making a plan.</p>
+        <div class="actions">
+          <button type="submit" class="primary">Add to homework</button>
+          <button type="submit" class="secondary" formaction="{{ note_details_action(note.capture_id, family=family) }}">Save details</button>
+          <a class="cancel" href="{{ note_href(note.capture_id) }}">Leave it as it is</a>
+        </div>
+      </form>
+    {% endif %}
+  </section>
+{% endblock %}

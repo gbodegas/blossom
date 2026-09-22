@@ -119,8 +119,9 @@ class DraftRecord(BaseModel):
     draft made for one kind of evening is not approved for the other."""
     inputs_digest: str | None = None
     """A fingerprint of the assignments the run read for this evening's window, taken
-    when it read them: what was due, when, of what kind, with what note, and what the
-    sources said. A plan whose window reads differently now was made for other work.
+    when it read them: what was due, when, of what kind, with what note and whose words
+    the note is, and what the sources said. A plan whose window reads differently now was
+    made for other work.
     ``None`` for a draft from before plans carried one."""
     published: bool = False
     """Whether the run that made this draft has paused with it. A draft is saved

@@ -72,6 +72,9 @@ from tests.support import (
 
 WORDS = "Geometry questions 4-8, heard from a classmate"
 NOT_YET = ("Add it to homework", "Link to homework", "Ready to add", "Add the class and title")
+"""What the form for a note not yet saved never offers: there is no note to add or to join."""
+NO_ROUTE = ("Link to homework", "Search homework")
+"""What no page offers, since joining a note to homework by searching has no route."""
 
 
 def new_form(client: TestClient) -> dict[str, str]:
@@ -170,7 +173,8 @@ def test_words_alone_are_saved_and_the_result_says_it_is_in_no_plan() -> None:
     assert escape(WORDS) in page
     assert "Ask for help about this note" in page
     assert f'href="{NOTES_PAGE}"' in page
-    assert not [words for words in NOT_YET if words in page]
+    assert ">Add it to homework</a>" in page
+    assert not [words for words in NO_ROUTE if words in page]
     assert after == before
 
 

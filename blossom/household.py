@@ -336,6 +336,25 @@ def may_open(role: Principal, path: str) -> bool:
     return role is Principal.PARENT
 
 
+FAMILY_PRESSES_SHE_MAY_REACH: Final = re.compile(
+    r"/parent/actions/homework-notes/[^/]+/(?:add|details)"
+)
+"""The two presses under the family's tree that her sign-in may reach: a form for a note's
+details opened by a parent and pressed after she signed in on the same device. Their route
+refuses her before it reads the form's words for anything, writes nothing, and answers with
+what she typed shown back to her, which the gate's refusal could not. The page itself, and
+every other press under the family's tree, stay the gate's to refuse."""
+
+
+def may_press_to_be_refused(role: Principal | None, method: str, path: str) -> bool:
+    """Whether a press is one of the two above, from her sign-in."""
+    return (
+        role is Principal.STUDENT
+        and method == "POST"
+        and FAMILY_PRESSES_SHE_MAY_REACH.fullmatch(path) is not None
+    )
+
+
 def read_authority(text: str, scheme: str) -> tuple[str, int] | None:
     """A Host header or a URL's authority as hostname and port, or ``None`` when unreadable.
 
@@ -538,7 +557,7 @@ class HouseholdGate(BaseHTTPMiddleware):
                 wanted = path if not request.url.query else f"{path}?{request.url.query}"
                 return RedirectResponse(f"/sign-in?next={quote(wanted, safe='')}", status_code=303)
             return JSONResponse({"detail": "Sign in first."}, status_code=401)
-        if not may_open(role, path):
+        if not may_open(role, path) and not may_press_to_be_refused(role, request.method, path):
             if wants_a_page(request):
                 return templates.TemplateResponse(
                     request, "not_for_you.html", {"home": home_of(role)}, status_code=403

@@ -22,19 +22,33 @@ change and its event together.
 This module holds the types and the rules. It reads no file and no clock.
 """
 
+import hashlib
+import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Final, Literal, Self
+from typing import Final, Literal, Protocol, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator, model_validator
 
 from blossom.authored_text import multiline, single_line
+from blossom.pairing import pair
 from blossom.reconciliation import SourceChannel
 
 CAPTURE_TEXT_MAX_LENGTH: Final = 500
 CAPTURE_COURSE_MAX_LENGTH: Final = 60
+CAPTURE_TITLE_MAX_LENGTH: Final = 200
+CAPTURE_NOTE_MAX_LENGTH: Final = 500
+"""The limits an assignment entered by hand is held to, so a note's details fit the
+assignment they may become."""
+CAPTURE_CLAIM_CONFIDENCE: Final = 0.8
+"""The confidence a claim about a due date carries when it is made from a note. The claims
+table needs a value, and this is the one a family entry carries. It is not a confidence she
+reported and it scores nothing about her: it is shown nowhere, ranks no account, and
+settles no disagreement between dates."""
+HOMEWORK_NOTE: Final = "homework note"
+"""Where a claim made from a note says it was read."""
 
 Author = Literal["student", "parent", "household"]
 """Who made a change. ``household`` is every change made while the sign-in is off, when a
@@ -43,14 +57,31 @@ STUDENT: Final = "student"
 PARENT: Final = "parent"
 HOUSEHOLD: Final = "household"
 
-CaptureOperation = Literal["create", "edit", "archive", "restore"]
+CaptureOperation = Literal["create", "edit", "archive", "restore", "clarify", "promote", "link"]
 CREATE: Final = "create"
 EDIT: Final = "edit"
 ARCHIVE: Final = "archive"
 RESTORE: Final = "restore"
+CLARIFY: Final = "clarify"
+"""Details were added or changed, by her or by a parent. Her words are not details."""
+PROMOTE: Final = "promote"
+"""The note was added to homework as an assignment of its own."""
+LINK: Final = "link"
+"""The note was joined to homework already on record."""
 
-ATTRIBUTED: Final = ("course", "due_date")
-"""The optional fields a note accepts now, each with who supplied what stands in it."""
+CaptureKind = Literal["HOMEWORK", "TASK"]
+"""The kinds an assignment has, as a note's details hold one. Written out here because this
+module reads no store; a test holds it to the record's own kinds."""
+KINDS: Final = ("HOMEWORK", "TASK")
+
+ATTRIBUTED: Final = ("course", "title", "due_date", "kind", "note")
+"""The optional fields of a note, each with who supplied what stands in it."""
+DETAILS: Final = ATTRIBUTED
+"""The details a note may be given so that it can become homework. Her words are not one."""
+
+PromotionChoice = Literal["new", "same", "separate"]
+"""What a person chose when adding a note to homework: there was no homework of that class
+and title, it is the same homework as one shown, or it is to be kept apart from those shown."""
 
 
 class NotACaptureId(ValueError):
@@ -141,6 +172,59 @@ def words_as_held(text: str, course: str | None, due_date: date | None, *, of: s
     return words
 
 
+class CaptureDetails(BaseModel):
+    """The details a note may be given: a class, a title, a day, a kind, and a note about
+    the work. Each is optional on a note and held to the limits an assignment is held to.
+    None of them is her words, and none is worked out from her words."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    course: str | None = None
+    title: str | None = None
+    due_date: date | None = None
+    kind: CaptureKind | None = None
+    note: str | None = None
+
+    @field_validator("course", mode="before")
+    @classmethod
+    def _course_is_one_kept_line(cls, value: object) -> str | None:
+        return single_line(value if isinstance(value, str) else None, CAPTURE_COURSE_MAX_LENGTH)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _title_is_one_kept_line(cls, value: object) -> str | None:
+        return single_line(value if isinstance(value, str) else None, CAPTURE_TITLE_MAX_LENGTH)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def _note_is_kept_text(cls, value: object) -> str | None:
+        return multiline(value if isinstance(value, str) else None, CAPTURE_NOTE_MAX_LENGTH)
+
+    @property
+    def missing(self) -> tuple[str, ...]:
+        """What a note still needs before it can be homework: a class, a title, or both."""
+        return tuple(name for name in ("course", "title") if getattr(self, name) is None)
+
+
+def details_as_held(
+    course: str | None,
+    title: str | None,
+    due_date: date | None,
+    kind: str | None,
+    note: str | None,
+    *,
+    of: str,
+) -> CaptureDetails:
+    """Details read back from the file, which holds them only as the rules keep them. As
+    with her words, what is tidied on the way in is not tidied on the way out: a row held
+    any other way was not written by the store."""
+    held = CaptureDetails(course=course, title=title, due_date=due_date, kind=kind, note=note)  # type: ignore[arg-type]
+    if (held.course, held.title, held.note) != (course, title, note):
+        msg = f"{of} are not held as the text rule keeps them"
+        raise ValueError(msg)
+    return held
+
+
 class NoWords(ValueError):
     """Raised when a note is sent with no words in it, which is the one thing it needs."""
 
@@ -185,8 +269,8 @@ class Capture(BaseModel):
     title: str | None = None
     kind: str | None = None
     note: str | None = None
-    """``title``, ``kind``, and ``note`` are for the step that makes a note homework. Nothing
-    sets them yet, and nothing infers them from her words."""
+    """``title``, ``kind``, and ``note`` are details she or a parent may add so that the note
+    can become homework. Nothing infers them from her words."""
     attribution: dict[str, FieldSource] = {}
     """For each optional field that holds something, who supplied it."""
     created_at: AwareDatetime
@@ -215,6 +299,19 @@ class Capture(BaseModel):
         words_as_held(
             self.text, self.course, self.due_date, of=f"the words of note {self.capture_id!r}"
         )
+        details_as_held(
+            self.course,
+            self.title,
+            self.due_date,
+            self.kind,
+            self.note,
+            of=f"the details of note {self.capture_id!r}",
+        )
+        if self.assignment_id is not None and single_line(self.assignment_id, 200) != (
+            self.assignment_id
+        ):
+            msg = f"note {self.capture_id!r} names an assignment by no id"
+            raise ValueError(msg)
         held = {name for name in ATTRIBUTED if getattr(self, name) is not None}
         if set(self.attribution) != held:
             msg = f"note {self.capture_id!r} does not say who supplied each optional field it holds"
@@ -228,6 +325,17 @@ class Capture(BaseModel):
     def words(self) -> CaptureWords:
         """What stands now, in the shape a form sends."""
         return CaptureWords(text=self.text, course=self.course, due_date=self.due_date)
+
+    @property
+    def details(self) -> CaptureDetails:
+        """The details that stand now, in the shape a form sends."""
+        return CaptureDetails(
+            course=self.course,
+            title=self.title,
+            due_date=self.due_date,
+            kind=self.kind,  # type: ignore[arg-type]
+            note=self.note,
+        )
 
     @property
     def outstanding(self) -> bool:
@@ -244,6 +352,12 @@ class CaptureSnapshot(BaseModel):
     course: str | None = None
     due_date: date | None = None
     archived: bool = False
+    title: str | None = None
+    kind: str | None = None
+    note: str | None = None
+    assignment_id: str | None = None
+    """The last four came with details and adding to homework. A moment written before
+    them holds none, which reads as nothing in each."""
 
     @classmethod
     def of(cls, capture: Capture) -> "CaptureSnapshot":
@@ -253,7 +367,33 @@ class CaptureSnapshot(BaseModel):
             course=capture.course,
             due_date=capture.due_date,
             archived=capture.archived,
+            title=capture.title,
+            kind=capture.kind,
+            note=capture.note,
+            assignment_id=capture.assignment_id,
         )
+
+    @property
+    def words(self) -> tuple[str, str | None, date | None]:
+        """Her words with the class and day she may edit beside them."""
+        return self.text, self.course, self.due_date
+
+    @property
+    def details(self) -> tuple[object, ...]:
+        """The details, as one value to compare."""
+        return self.course, self.title, self.due_date, self.kind, self.note
+
+
+class CandidateDecision(BaseModel):
+    """What a person chose about homework of the same class and title when adding a note,
+    kept with the change: the choice, the homework that was shown, and the fingerprint of
+    what was shown, so the choice can be read later against what it was made about."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    choice: PromotionChoice
+    candidates: tuple[str, ...] = ()
+    basis: str
 
 
 class CaptureEvent(BaseModel):
@@ -274,6 +414,8 @@ class CaptureEvent(BaseModel):
     authored_by: Author
     sequence: int | None = None
     """Its place in the file's order; ``None`` until it is written."""
+    decision: CandidateDecision | None = None
+    """What was chosen about homework already on record, for a note added to homework."""
 
     @model_validator(mode="after")
     def _is_whole(self) -> Self:
@@ -304,11 +446,53 @@ class CaptureHistoryReading:
         """The latest change, which a save that wrote nothing names as what it found."""
         return self.events[-1]
 
+    @property
+    def accepted(self) -> CaptureEvent | None:
+        """The change that put the note in homework, or ``None`` for a note still waiting:
+        the press that was accepted, with the choice made and everything it carried. A
+        later press is the same press only when it is this one again, whatever has become
+        of the note's own words, class, and day since."""
+        return accepted_press(self.events)
+
+
+def accepted_press(events: Sequence[CaptureEvent]) -> CaptureEvent | None:
+    """The latest change that added a note to homework or joined it to homework on record."""
+    return next((made for made in reversed(events) if made.operation in (PROMOTE, LINK)), None)
+
+
+def same_press(
+    accepted: CaptureEvent | None,
+    details: CaptureDetails,
+    choice: PromotionChoice,
+    assignment_id: str | None,
+) -> bool:
+    """Whether a press is the accepted one again: the same kind of press, the same choice
+    about homework already on record, the same assignment, and the same five details as the
+    rules keep them. The assignment's id alone says which note and nothing about the press,
+    since every assignment made from one note has the one id."""
+    return (
+        accepted is not None
+        and accepted.decision is not None
+        and accepted.operation == (LINK if choice == "same" else PROMOTE)
+        and accepted.decision.choice == choice
+        and accepted.after.assignment_id == assignment_id
+        and accepted.after.details
+        == (details.course, details.title, details.due_date, details.kind, details.note)
+    )
+
 
 def _kept_as_written(capture_id: str, snapshot: CaptureSnapshot) -> CaptureWords:
-    """A snapshot's words under the rules a note's words are held to, by the same check a
-    note's own row is read with."""
+    """A snapshot's words and details under the rules a note's are held to, by the same
+    checks a note's own row is read with."""
     try:
+        details_as_held(
+            snapshot.course,
+            snapshot.title,
+            snapshot.due_date,
+            snapshot.kind,
+            snapshot.note,
+            of="the details of a change",
+        )
         return words_as_held(
             snapshot.text, snapshot.course, snapshot.due_date, of="the words of a change"
         )
@@ -317,23 +501,64 @@ def _kept_as_written(capture_id: str, snapshot: CaptureSnapshot) -> CaptureWords
 
 
 def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
-    """An archive and a restore move a note one way each and touch no words; an edit changes
-    the words of a note that is not archived and leaves it so; a first save is not archived."""
+    """Each kind of change does one thing and leaves the rest as it was.
+
+    A first save is not archived, holds no details but a class and a day,
+    and names no assignment. An edit changes her words, class, or day on a
+    note that is not archived. An archive and a restore move a note one way
+    each. Details change details, on a note that waits: not archived, and not
+    yet homework. Adding to homework and joining homework name an assignment
+    on a note that named none, with a class, a title, and a kind on the note
+    by then, may settle those details in the same act, and carry the choice
+    that was made, which is what they did: adding makes the
+    note's own assignment, by the choice of new work where nothing was shown
+    or of a separate assignment where something was; joining names one of
+    the homework that was shown, by the choice of the same. Nothing else
+    carries a choice. No change but an edit touches her words, and nothing
+    ever takes an assignment away.
+    """
     before, after = change.before, change.after
+    decision = change.decision
+    choice = None if decision is None else decision.choice
+    shown = () if decision is None else decision.candidates
     if before is None:
-        sound = not after.archived
-    else:
-        same_words = (before.text, before.course, before.due_date) == (
-            after.text,
-            after.course,
-            after.due_date,
+        sound = (
+            not after.archived
+            and after.assignment_id is None
+            and (after.title, after.kind, after.note) == (None, None, None)
         )
+    else:
+        same_words = before.words == after.words
+        same_text = before.text == after.text
+        same_details = before.details == after.details
+        same_rest = (before.title, before.kind, before.note) == (
+            after.title,
+            after.kind,
+            after.note,
+        )
+        same_link = before.assignment_id == after.assignment_id
         moved = (before.archived, after.archived)
+        waiting = moved == (False, False) and before.assignment_id is None
+        named = waiting and after.assignment_id is not None and same_text
+        settled = None not in (after.course, after.title, after.kind)
+        own = after.assignment_id == derived_assignment_id(capture_id)
+        added = (
+            named
+            and settled
+            and own
+            and ((choice == "new" and not shown) or (choice == "separate" and bool(shown)))
+        )
+        joined = named and settled and choice == "same" and after.assignment_id in shown
         sound = {
-            EDIT: not same_words and moved == (False, False),
-            ARCHIVE: same_words and moved == (False, True),
-            RESTORE: same_words and moved == (True, False),
+            EDIT: not same_words and same_rest and same_link and moved == (False, False),
+            ARCHIVE: same_words and same_rest and same_link and moved == (False, True),
+            RESTORE: same_words and same_rest and same_link and moved == (True, False),
+            CLARIFY: same_text and not same_details and same_link and waiting,
+            PROMOTE: added,
+            LINK: joined,
         }.get(change.operation, False)
+    if (decision is not None) != (change.operation in (PROMOTE, LINK)):
+        sound = False
     if not sound:
         raise UnsoundCaptureHistory(
             capture_id, f"revision {change.revision} is no {change.operation}"
@@ -390,6 +615,117 @@ def sound_history(note: Capture, events: Sequence[CaptureEvent]) -> CaptureHisto
     if last.revision != note.revision or last.after != CaptureSnapshot.of(note):
         raise UnsoundCaptureHistory(name, "the changes do not end at the note as it stands")
     return CaptureHistoryReading(tuple(events))
+
+
+Remaining = Literal["needs", "choice", "ready"]
+"""What a waiting note needs before it can be in a plan: a class and a title, a choice about
+homework of that class and title already on record, or nothing more than adding it."""
+
+
+def what_remains(
+    notes: Iterable["Capture"], on_record: Collection[tuple[str, str]]
+) -> dict[str, Remaining]:
+    """What each note still waiting needs, by its id. ``on_record`` is the class and title of
+    every assignment on record, paired by the rule the school's paste pairs by. A note that is
+    archived or in homework needs nothing and is left out. Nothing is read from her words."""
+    remains: dict[str, Remaining] = {}
+    for note in notes:
+        if not note.outstanding:
+            continue
+        if note.course is None or note.title is None:
+            remains[note.capture_id] = "needs"
+        elif pair(note.course, note.title) in on_record:
+            remains[note.capture_id] = "choice"
+        else:
+            remains[note.capture_id] = "ready"
+    return remains
+
+
+NOTE_ASSIGNMENTS: Final = uuid.UUID("c2f4a8d1-6b3e-4a97-8d05-1e7b9c3a5f42")
+"""The namespace an assignment made from a note is named in."""
+
+
+def derived_assignment_id(capture_id: str) -> str:
+    """The id of the assignment a note becomes: drawn from the note's own id, which never
+    changes, and from nothing that can, so the same note can only ever become the same
+    assignment, however often the press is sent and whatever its title is by then."""
+    name = capture_id_from(capture_id)
+    return f"assignment-from-note-{uuid.uuid5(NOTE_ASSIGNMENTS, name).hex[:16]}"
+
+
+class CandidateLike(Protocol):
+    """Homework on record shown as a candidate: which it is, and every value its row shows,
+    in a fixed order and spelling. ``blossom.candidates`` makes them; a page shows a row
+    from one and the fingerprint is made from the same one, so the two cannot differ."""
+
+    @property
+    def assignment_id(self) -> str:
+        """The id of the assignment shown."""
+        ...
+
+    def facts(self) -> list[object]:
+        """Every value the row shows, the id first, in a fixed order and spelling."""
+        ...
+
+
+def candidate_basis(candidates: Sequence[CandidateLike]) -> str:
+    """A fingerprint of the homework shown as candidates: which, and everything about each
+    that the page showed, what she and the school currently say and where the record came
+    from included. The page sends it back with the choice, and the save compares it with the
+    candidates as they stand inside its own transaction, so a choice made about homework that
+    has since arrived, left, or changed in anything shown is put to the person again. The
+    order the candidates came in is no part of it."""
+    shown = sorted((item.facts() for item in candidates), key=lambda facts: str(facts[0]))
+    serialized = json.dumps(shown, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class CapturePromoted:
+    """The note is homework now: an assignment of its own was made, or it was joined to one
+    already on record. ``created`` says which."""
+
+    capture: Capture
+    event: CaptureEvent
+    assignment_id: str
+    created: bool
+
+
+@dataclass(frozen=True)
+class CaptureAlreadyPromoted:
+    """The same press again: the note already names that assignment, nothing was written,
+    and ``head`` is the latest change of a line found sound."""
+
+    capture: Capture
+    head: CaptureEvent
+    assignment_id: str
+
+
+@dataclass(frozen=True)
+class DetailsMissing:
+    """The note has no class, no title, or neither, so it cannot be homework yet. Nothing is
+    made up for either, and nothing was written."""
+
+    capture: Capture
+    missing: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ChoiceNeeded:
+    """Homework of the same class and title is on record and no choice that fits it was
+    made: none at all, or one naming homework that is no candidate. Nothing was written."""
+
+    capture: Capture
+    candidates: tuple[CandidateLike, ...]
+
+
+@dataclass(frozen=True)
+class CandidatesChanged:
+    """The homework of that class and title is not what the page showed: some arrived, left,
+    or changed. Nothing was written, and ``candidates`` is what stands now."""
+
+    capture: Capture
+    candidates: tuple[CandidateLike, ...]
 
 
 @dataclass(frozen=True)

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Protocol
 
 from blossom.reconciliation import SourceRecord
-from blossom.stores.project_state import Assignment, Seed, StudentReport
+from blossom.stores.project_state import Assignment, ClaimReadings, Seed, StudentReport
 from blossom.stores.reflections import Reflection, ReflectionSubject
 from blossom.stores.support_rules import SupportRule
 
@@ -52,6 +52,11 @@ class DateClaims(Protocol):
         for each, so a reader never asks once per assignment. An assignment
         nothing was claimed about may have no entry; that is the empty list.
         """
+        ...
+
+    def read_claims(self, assignment_ids: Iterable[str] | None = None) -> ClaimReadings:
+        """The same answer, with the assignments whose claims cannot be read named apart,
+        so a page can read around a damaged row and say so instead of failing whole."""
         ...
 
 
@@ -128,6 +133,10 @@ class FixtureSource:
     def deadline_records(self, assignment_id: str) -> list[SourceRecord]:
         """The claims about one assignment's date, from the whole file read and checked."""
         return list(self.claims_by_assignment().get(assignment_id, []))
+
+    def read_claims(self, assignment_ids: Iterable[str] | None = None) -> ClaimReadings:
+        """The same, with nothing unreadable: a fixture that does not read is refused whole."""
+        return ClaimReadings(dict(self.deadline_records_by_assignment(assignment_ids)), frozenset())
 
     def deadline_records_by_assignment(
         self, assignment_ids: Iterable[str] | None = None
@@ -231,6 +240,10 @@ class LMSSource:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
 
+    def read_claims(self, assignment_ids: Iterable[str] | None = None) -> ClaimReadings:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
     def claims_by_assignment(self) -> dict[str, list[SourceRecord]]:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
@@ -262,6 +275,10 @@ class EmailSource:
     def deadline_records_by_assignment(
         self, assignment_ids: Iterable[str] | None = None
     ) -> dict[str, list[SourceRecord]]:
+        """Not implemented. See the class docstring."""
+        raise NotImplementedError
+
+    def read_claims(self, assignment_ids: Iterable[str] | None = None) -> ClaimReadings:
         """Not implemented. See the class docstring."""
         raise NotImplementedError
 

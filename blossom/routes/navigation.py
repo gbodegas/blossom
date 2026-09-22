@@ -122,6 +122,30 @@ def note_action(capture_id: str, step: str) -> str:
     return f"{NOTE_ACTIONS}/{segment(capture_id)}/{step}"
 
 
+ADDED_NOTES_PAGE: Final = "/student/homework-notes/added"
+"""The list of the notes that are in homework, where each stays reachable with its history."""
+FAMILY_NOTES_PAGE: Final = "/parent/homework-notes"
+FAMILY_NOTE_ACTIONS: Final = "/parent/actions/homework-notes"
+"""The family's way in to a note's details and to adding it to homework. Which tree a press
+comes through is what says whose way in it was; nothing a form carries does."""
+
+
+def note_add_href(capture_id: str, *, family: bool = False) -> str:
+    """The page that holds a note's details and adds it to homework, in her tree or the
+    family's. Opening it writes nothing."""
+    return f"{FAMILY_NOTES_PAGE if family else NOTES_PAGE}/{segment(capture_id)}/add"
+
+
+def note_details_action(capture_id: str, *, family: bool = False) -> str:
+    """The route a note's details are saved through."""
+    return f"{FAMILY_NOTE_ACTIONS if family else NOTE_ACTIONS}/{segment(capture_id)}/details"
+
+
+def note_add_action(capture_id: str, *, family: bool = False) -> str:
+    """The route a note is added to homework through."""
+    return f"{FAMILY_NOTE_ACTIONS if family else NOTE_ACTIONS}/{segment(capture_id)}/add"
+
+
 def note_anchor(capture_id: str) -> str:
     """One DOM id, shared by a note's row and every link to it."""
     return f"note-{segment(capture_id)}"

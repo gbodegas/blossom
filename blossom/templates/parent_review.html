@@ -112,9 +112,11 @@
     away, in the order she first saved them, as they stand now, with the first
     words when she has changed them. They are hers: nothing here changes one,
     and nothing here needs a parent's approval. A note is no assignment and is
-    in no plan; a parent who wants it planned can add the assignment the usual
-    way. Each opens on its own page, with its history, and the ones she put
-    away are a link from here.
+    in no plan until she or a parent adds it to homework. Each says what it
+    still needs for that, shows the details it has been given, and leads to
+    the family's page for adding them, where a parent's details are recorded
+    as a parent's. Each opens on its own page, with its history; the ones in
+    homework and the ones she put away are links from here.
   #}
   <section class="homework-notes" id="homework-she-added">
     <h2>Homework she added</h2>
@@ -128,14 +130,17 @@
         {% if note.text != note.original_text %}
           <p class="note">First written as: <q class="authored-text">{{ note.original_text }}</q></p>
         {% endif %}
-        {% if note.due_date %}<p class="note">Due date she gave: {{ note.due_date|long_date }}</p>{% endif %}
-        <p class="note">It is not an assignment and is in no plan. <a href="{{ note_href(note.capture_id) }}">Open homework note</a></p>
+        {% if note.title %}<p class="note">Title: <span class="authored-text">{{ note.title }}</span></p>{% endif %}
+        {% if note.due_date %}<p class="note">Due date given: {{ note.due_date|long_date }}</p>{% endif %}
+        {% set needs = remains.get(note.capture_id) %}
+        <p class="note">It is not an assignment and is in no plan. {% if needs == "needs" %}It needs a class and a title before it can be added to homework{% if note.course %}: the title is missing{% elif note.title %}: the class is missing{% endif %}.{% elif needs == "choice" %}Homework with this class and title is already here, so adding it asks whether it is the same homework.{% else %}Ready to add to homework.{% endif %}</p>
+        <p class="note"><a href="{{ note_add_href(note.capture_id, family=true) }}">Add details or add it to homework</a> &middot; <a href="{{ note_href(note.capture_id) }}">Open homework note</a></p>
       </article>
     {% endfor %}
     {% if homework_notes_unreadable %}
       <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now. Nothing was changed.</p>
     {% endif %}
-    <p class="note"><a href="{{ archived_notes_page }}">Archived homework notes</a></p>
+    <p class="note"><a href="{{ added_notes_page }}">Notes added to homework</a> &middot; <a href="{{ archived_notes_page }}">Archived homework notes</a></p>
   </section>
 
   {#

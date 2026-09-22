@@ -354,7 +354,9 @@ def test_another_writer_holding_the_file_makes_the_save_wait_or_fail_whole(
     try:
         other.execute("BEGIN IMMEDIATE")
         other.execute(
-            "INSERT INTO date_claims VALUES ('assignment-log', 'LMS', '2026-09-18', "
+            "INSERT INTO date_claims "
+            "(assignment_id, channel, asserted_value, observed_at, confidence, seen_in) "
+            "VALUES ('assignment-log', 'LMS', '2026-09-18', "
             "'2026-09-16T00:00:00+00:00', 0.9, NULL)"
         )
         store._connection.execute("PRAGMA busy_timeout = 200")

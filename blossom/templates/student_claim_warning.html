@@ -1,0 +1,9 @@
+{#
+  A claim about this assignment's date that is held as nothing the store
+  writes: neither evidence nor its absence. Said wherever a date is shown,
+  on a card, in a row of work due later, and on the details, so no row shows a
+  date as if every claim about it had been read.
+#}
+{% if assignment.claims_unreadable %}
+  <p class="source">A claim about this date cannot be read right now. The date is shown without it. Nothing was changed.</p>
+{% endif %}

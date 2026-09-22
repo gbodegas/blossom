@@ -32,12 +32,14 @@ from blossom.intake import (
     REVIEW,
     TEXT_MAX_LENGTH,
     UPDATE,
+    Held,
     Kept,
     Read,
     by_hand,
     by_week,
     changes_for,
     conflicting_choices,
+    held_rows,
     keep,
     read_text,
     spoken_day,
@@ -45,7 +47,7 @@ from blossom.intake import (
     within_a_school_year,
 )
 from blossom.routes.parent import review_page
-from blossom.stores.project_state import AssignmentKind
+from blossom.stores.project_state import AssignmentKind, UnreadableClaim
 from blossom.templating import page_templates
 
 router = APIRouter(prefix="/parent/inbox", tags=["parent"])
@@ -86,6 +88,21 @@ NEEDS_ANSWER: Final = (
     "A question above still needs your answer. Answer it, then save; what you chose on the "
     "other cards is kept."
 )
+HELD_BY_A_NOTE: Final = (
+    "Nothing was saved. Some of this is about homework she added from a note, and Blossom "
+    "cannot yet tell the school's version from hers. The rows are named below. Take them "
+    "out to save the rest, or leave this for now; the text is kept."
+)
+CLAIM_UNREADABLE: Final = (
+    "A saved claim about a date cannot be read right now, so nothing was saved. Your input "
+    "is still here."
+)
+ANSWER_KEY_MAX_LENGTH: Final = 6
+"""A card's key is a count from the reader, in plain digits; nothing longer is one."""
+ANSWER_FIELDS: Final = frozenset({"occurrence", "kind", "suggested", "shown", "chosen", "folded"})
+"""The fields the review page writes beside a card, under its key: the answers, and the
+page's own notes of what each select suggested and showed, what was chosen, and what was
+folded into what."""
 CHOOSE_ONE_TYPE: Final = (
     "Two cards about the same assignment choose different types. Pick one type for it, then save."
 )
@@ -187,6 +204,18 @@ def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[dateti
     return read_at, read_on
 
 
+def review_key(value: str) -> bool:
+    """Whether ``value`` is a card's key as the page writes one: one to six ASCII digits,
+    spelled as the count is. Digits from elsewhere, which ``int`` refuses, are no key;
+    neither is nothing, nor a padded spelling, which would name another field's card."""
+    return (
+        0 < len(value) <= ANSWER_KEY_MAX_LENGTH
+        and value.isascii()
+        and value.isdigit()
+        and str(int(value)) == value
+    )
+
+
 def answers_from(
     form: Mapping[str, str], unasked: Mapping[int, set[AssignmentKind]]
 ) -> tuple[dict[int, str], dict[int, AssignmentKind]]:
@@ -215,11 +244,11 @@ def answers_from(
     marked: set[int] = set()
     for name, value in form.items():
         head, _, number = name.rpartition("-")
-        if not number.isdigit():
+        if not review_key(number):
             continue
         if head == "occurrence" and value in (UPDATE, NEW_WORK):
             occurrences[int(number)] = value
-        elif head == "folded" and value.isdigit():
+        elif head == "folded" and review_key(value):
             folded[int(number)] = int(value)
         elif head == "chosen":
             marked.add(int(number))
@@ -254,7 +283,7 @@ def asked_on(form: Mapping[str, str]) -> set[int]:
     asked: set[int] = set()
     for name in form:
         head, _, number = name.rpartition("-")
-        if head == "asked" and number.isdigit():
+        if head == "asked" and review_key(number):
             asked.add(int(number))
     return asked
 
@@ -297,6 +326,85 @@ def problem_page(
     )
 
 
+@dataclass(frozen=True)
+class AnswerKept:
+    """One answer given on a review card, as unsaved input to copy: which card, whether the
+    row is the same assignment or new work, and the type chosen."""
+
+    key: str
+    occurrence: str | None
+    kind: str | None
+
+
+def answers_kept(form: Mapping[str, str]) -> list[AnswerKept]:
+    """The answers a review form carried, read by the one reader the save uses and with no
+    record read: the page's own notes of what each select suggested and showed, of what was
+    chosen, and of what was folded into what decide what is an answer, as they would have
+    on the save. Only the fields the page writes, under a key the page could have written,
+    are read; anything else the form holds is no answer and takes nothing else down."""
+    safe: dict[str, str] = {}
+    for name, value in form.items():
+        head, _, key = name.rpartition("-")
+        if head not in ANSWER_FIELDS or not review_key(key):
+            continue
+        if head == "folded" and not review_key(value):
+            continue
+        if head == "chosen" and value != "1":
+            continue
+        safe[name] = value
+    occurrences, kinds = answers_from(safe, {})
+    return answers_shown(occurrences, kinds)
+
+
+def answers_shown(
+    occurrences: Mapping[int, str] | None, kinds: Mapping[int, AssignmentKind] | None
+) -> list[AnswerKept]:
+    """The answers a review page was made with, in the same shape."""
+    keys = sorted({*(occurrences or {}), *(kinds or {})})
+    return [
+        AnswerKept(
+            str(key),
+            (occurrences or {}).get(key),
+            None if kinds is None or key not in kinds else kinds[key].value,
+        )
+        for key in keys
+    ]
+
+
+def intake_unavailable(
+    request: Request,
+    state: ApplicationState,
+    draft: Mapping[str, str],
+    answers: list[AnswerKept],
+) -> HTMLResponse:
+    """The page for a review or a save refused because a claim about a date on record cannot
+    be read. It reads no store, tries nothing again, and says nothing was saved. It keeps
+    the text as pasted, or the entry as typed, and the answers given on the cards, to copy.
+    The way on is a press through the same reading, never a retry made here."""
+    text = draft.get("text") or None
+    entry = None
+    if text is None:
+        entry = {name: draft.get(name, "") for name in ENTRY_FIELDS}
+        entry["kind"] = dict(KIND_CHOICES).get(entry["kind"], entry["kind"])
+    return templates.TemplateResponse(
+        request,
+        "inbox_unavailable.html",
+        {
+            "problem": CLAIM_UNREADABLE,
+            "text": text,
+            "entry": entry,
+            "entry_fields": ENTRY_FIELDS,
+            "answers": answers,
+            "again": "/parent/inbox/read" if text else "/parent/inbox/enter",
+            "draft": {
+                name: value for name, value in draft.items() if name in (*ENTRY_FIELDS, "text")
+            },
+            "sample": state.settings.sample,
+        },
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
 def preview_page(
     request: Request,
     state: ApplicationState,
@@ -306,9 +414,19 @@ def preview_page(
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
     notice: str | None = None,
+    status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
-    """What was read, week by week against the record as it is, with the way to save it."""
-    changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+    """What was read, week by week against the record as it is, with the way to save it.
+    A text with a row about homework made from a homework note says so, names the rows, and
+    offers no save: the text stays to be edited. A claim on record that cannot be read
+    refuses the comparison, and the page that reads no store keeps the draft."""
+    try:
+        changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+        held = held_rows(read.items, state.project_state)
+    except UnreadableClaim:
+        return intake_unavailable(request, state, draft, answers_shown(occurrences, kinds))
+    if held is not None:
+        notice = HELD_BY_A_NOTE
     if notice is None and conflicting_choices(changes):
         notice = CHOOSE_ONE_TYPE
     shown = [change for change in changes if change.state != FOLDED]
@@ -333,10 +451,12 @@ def preview_page(
             "draft": draft,
             "kind_choices": KIND_CHOICES,
             "notice": notice,
+            "held": held,
             "sample": state.settings.sample,
             "spoken_report": spoken_report,
             "spoken_day": spoken_day,
         },
+        status_code=status_code,
     )
 
 
@@ -402,9 +522,25 @@ async def keep_readings(request: Request, state: State) -> Response:
     read = read_draft(state, draft)
     if isinstance(read, Problem):
         return problem_page(request, state, draft, read)
-    occurrences, kinds = answers_from(form, unasked_for(state, read))
-    async with state.decision_lock:
-        kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+    # A claim on record that cannot be read refuses the comparison, before the write or
+    # inside its transaction, which is rolled back whole before anything is answered. The
+    # answer reads no store and keeps the draft and the answers given on the cards.
+    try:
+        occurrences, kinds = answers_from(form, unasked_for(state, read))
+        async with state.decision_lock:
+            kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+    except UnreadableClaim:
+        return intake_unavailable(request, state, draft, answers_kept(form))
+    if isinstance(kept, Held):
+        return preview_page(
+            request,
+            state,
+            read,
+            draft,
+            occurrences=occurrences,
+            kinds=kinds,
+            status_code=status.HTTP_409_CONFLICT,
+        )
     if not isinstance(kept, Kept):
         open_questions = {change.key for change in kept if change.state == REVIEW}
         if conflicting_choices(kept):

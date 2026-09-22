@@ -1452,6 +1452,34 @@ main.wide {
   margin: 0.75rem 0;
 }
 
+/* The choices on a note's details: the same homework or a separate assignment, and the
+   tick that leaves a due date out. The control keeps its size beside a label that wraps. */
+.homework-note .choice input[type="radio"],
+.homework-note .choice input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+}
+
+.homework-note .choice label span {
+  min-width: 0;
+}
+
+/* What she and the school currently say about a candidate, under its choice and in line
+   with its words, not with the radio. */
+.homework-note .choice .candidate-facts {
+  margin: 0 0 0.5rem 1.75rem;
+}
+
+/* The way out of a note's form sits beside its buttons and is as tall as they are. */
+.homework-note .actions .cancel {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0 0.5rem;
+}
+
 /* Her To turn in list: rows that wrap whatever she wrote, and the links under the
    main controls to the places that hold what is left beside the plan. */
 .support-links {

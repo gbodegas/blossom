@@ -68,6 +68,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, statuses_for
+from blossom.captures import derived_assignment_id, what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
@@ -84,7 +85,8 @@ from blossom.noticing import (
     reconcile_dates,
     week_from,
 )
-from blossom.plan_reading import DoneMark, PlanReading, Reader, anchor_for, read_plan
+from blossom.pairing import pair
+from blossom.plan_reading import DoneMark, PlanReading, Reader, anchor_for, long_date, read_plan
 from blossom.principals import Principal
 from blossom.reconciliation import (
     CHANNEL_NAMES,
@@ -141,6 +143,7 @@ from blossom.stores.project_state import (
     Undone,
     UnknownAssignment,
     UnknownReport,
+    UnreadableClaim,
     normalize_note,
 )
 from blossom.stores.project_state import NOTE_MAX_LENGTH as UPDATE_NOTE_MAX_LENGTH
@@ -671,6 +674,7 @@ def assignment_view(
     *,
     in_planning_window: bool = False,
     hand_in: HandInView | None = None,
+    claims_unreadable: bool = False,
 ) -> StudentAssignmentView:
     """One assignment as she sees it, with where its date came from said once per channel.
 
@@ -727,6 +731,7 @@ def assignment_view(
         readable_sources=channels_in_words(readable_channels),
         unreadable=[record.spoken() for record in unreadable],
         unreadable_sources=channels_in_words(unreadable_channels),
+        claims_unreadable=claims_unreadable,
         source_claims=list(dict.fromkeys(record.spoken() for record in records)),
         disagreement=disagreement,
         contradiction=[record.spoken() for record in readable] if noticed.contradicted else [],
@@ -734,7 +739,7 @@ def assignment_view(
         and any(record.channel in SCHOOL_CHANNELS for record in readable),
         assigned_on=assignment.assigned_on,
         note=assignment.note,
-        note_by_a_parent=assignment.origins.get("note") == SourceChannel.PARENT_ENTRY,
+        note_by=assignment.note_by,
         entered_by_a_parent=assignment.origins.get("record") == SourceChannel.PARENT_ENTRY,
         school_statements=[
             SchoolStatementView.from_report(report)
@@ -871,6 +876,7 @@ def build_student_due_this_week_view(
             notice_due_date(expect_due_date(item), records),
             found.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            claims_unreadable=item.assignment_id in found.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
         )
 
@@ -882,6 +888,7 @@ def build_student_due_this_week_view(
             shown.noticings[item.assignment_id],
             shown.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            claims_unreadable=item.assignment_id in shown.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
         )
         for item in shown.assignments
@@ -1098,6 +1105,9 @@ def student_page(
             "to_turn_in_page": TO_TURN_IN_PAGE,
             "homework_notes": notes.notes,
             "homework_notes_unreadable": notes.unreadable,
+            "remains": what_remains(
+                notes.notes, {pair(item.course, item.title) for item in everything.assignments}
+            ),
             "notes_page": NOTES_PAGE,
             "new_note_page": NEW_NOTE_PAGE,
             "viewer": viewer,
@@ -1399,6 +1409,17 @@ def gone_page(
     )
 
 
+@dataclass(frozen=True)
+class WithdrawnClaim:
+    """A claim about the date that was withdrawn, as the details list it: the claim as she
+    reads one, the household day it was withdrawn, and whether a homework note made it.
+    Nothing a plan is made from reads these."""
+
+    said: str
+    on: str | None
+    from_a_note: bool
+
+
 def detail_page(
     request: Request,
     state: ApplicationState,
@@ -1424,12 +1445,28 @@ def detail_page(
     viewer = viewer_of(request)
     today = state.clock.today()
     on_record = state.project_state
+    history_unavailable = False
     with on_record.reading():
         item = on_record.one_assignment(assignment_id)
-        records = [] if item is None else on_record.deadline_records(assignment_id)
+        # The claims that count, read around any that cannot be read, which the page says.
+        claimed = None if item is None else on_record.read_claims([assignment_id])
+        records = [] if claimed is None else claimed.records.get(assignment_id, [])
+        claims_unavailable = claimed is not None and assignment_id in claimed.unreadable
         found = None if item is None else statuses_for(on_record, [assignment_id])
         turned_in = None if item is None else on_record.hand_in_readings([assignment_id])
-    if item is None or found is None or turned_in is None:
+        # The homework notes this assignment was added from or joined by: her words, kept
+        # as evidence beside the record and copied into none of it.
+        notes = None if item is None else on_record.captures_of_assignment(assignment_id)
+        # Every claim ever made about the date, the withdrawn ones included: reconciliation
+        # above reads only the ones that count, and the details say the rest apart. A history
+        # that cannot be read leaves the record, her update, and her hand-in as they are;
+        # the page says the history is unavailable, and never that there is none.
+        try:
+            history = [] if item is None else on_record.claim_history(assignment_id)
+        except UnreadableClaim:
+            history = []
+            history_unavailable = True
+    if item is None or found is None or turned_in is None or notes is None:
         return gone_page(
             request, state, back, assignment_id, card=card, hand_in=hand_in, today=today
         )
@@ -1442,6 +1479,7 @@ def detail_page(
         found[assignment_id],
         in_planning_window=in_week(item, noticed, today),
         hand_in=turning_in,
+        claims_unreadable=claims_unavailable,
     )
     link = way_back(state, back, assignment_id, today=today)
     return templates.TemplateResponse(
@@ -1449,6 +1487,25 @@ def detail_page(
         "student_assignment.html",
         {
             "assignment": view,
+            "from_notes": [
+                (note, derived_assignment_id(note.capture_id) == assignment_id)
+                for note in notes.notes
+            ],
+            "from_notes_unreadable": len(notes.unreadable),
+            "claim_history_unavailable": history_unavailable,
+            "withdrawn_claims": [
+                WithdrawnClaim(
+                    said=claim.record.spoken(),
+                    on=(
+                        None
+                        if claim.withdrawn_at is None
+                        else long_date(claim.withdrawn_at.astimezone(state.clock.zone).date())
+                    ),
+                    from_a_note=claim.capture_id is not None,
+                )
+                for claim in history
+                if not claim.active
+            ],
             "ctx": detail_context(assignment_id, back, viewer, link),
             "back": link,
             "card": card,
