@@ -889,9 +889,13 @@ note on record, the same form again included, first reads that note's changes
 through the store's own connection, inside the transaction that reserved the
 writer, and holds them to it: the first is the first save, at revision 1, with
 what that save sent and the place the file gave it; each later change is one
-revision on, starts where the one before ended, and is what its kind does, an
-archive and a restore moving the note one way each and touching no words, an
-edit never bringing an archived note back; every snapshot is within the rules
+revision on, starts where the one before ended, and is what its kind does, a
+first save holding no details, an archive and a restore moving the note one way
+each and touching no words, an edit never bringing an archived note back,
+adding to homework making the note's own assignment by the choice of new work
+where nothing was shown or of a separate assignment where something was, and
+joining naming one of the homework that was shown by the choice of the same;
+every snapshot is within the rules
 a note's words are held to; and the last ends at the note as it stands. Days
 and times are not compared, since a clock may run backward. The change about
 to be written is held to the same rules as the last of that line before it is
@@ -1079,7 +1083,11 @@ cannot read, before the write or inside its transaction, which is rolled
 back whole first, is answered by a page that reads no store, says nothing was
 saved, and keeps the text as pasted or the entry as typed with the answers
 given on the cards, to copy; the one way on is the ordinary press through the
-same reading. A claim's history holds together or is unreadable: one that
+same reading. Those answers are read by the one reader the save uses, from the
+page's own notes of what each select suggested and showed, of what was chosen,
+and of what was folded into what, with no record read; a card's key is one to
+six ASCII digits, and a field under any other key is no answer and takes
+nothing down, on the save or on that page. A claim's history holds together or is unreadable: one that
 counts was withdrawn at no moment, and one that does not count was withdrawn
 at some moment. The assignment's
 details read the whole history and list the withdrawn claims apart, each with
