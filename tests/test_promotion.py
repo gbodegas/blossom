@@ -37,13 +37,16 @@ from blossom.captures import (
     CaptureDetails,
     CaptureNotSaved,
     CapturePromoted,
+    CaptureSnapshot,
     CaptureUnchanged,
     ChoiceNeeded,
     DetailsMissing,
     UnreadableCapture,
+    UnsoundCaptureHistory,
     candidate_basis,
     derived_assignment_id,
     new_capture_id,
+    sound_history,
 )
 from blossom.noticing import planning_digest, read_everything, week_from
 from blossom.pairing import pair
@@ -994,3 +997,97 @@ def test_a_change_written_before_details_existed_is_still_read(store: ProjectSta
     assert isinstance(clarify(store, name, details(), 1), CaptureChanged)
     assert isinstance(promote(store, name, details(), 2), CapturePromoted)
     assert store.sound_capture_history(name) is not None
+
+
+# ------------------------------------------------------------------ what a line of changes may hold
+
+FIRST_SAVE_WITH_A_DETAIL = {"title": "Held at birth", "kind": "TASK", "note": "Held at birth"}
+
+
+@pytest.mark.parametrize("column", sorted(FIRST_SAVE_WITH_A_DETAIL))
+def test_a_first_save_that_held_a_detail_makes_the_line_unsound(
+    store: ProjectStateStore, column: str
+) -> None:
+    """A first save holds no details but a class and a day. A line whose first change holds
+    a title, a kind, or a note, with the note made to match so the line still ends at it, is
+    not sound whatever else agrees: no detail is read that no change supplied. The note's
+    own row refuses such a detail too, apart from the line, so the line is checked alone."""
+    name = note(store)
+    held = the_note(store, name)
+    first = store.capture_history(name)[0]
+    assert sound_history(held, [first]) is not None
+    damaged = held.model_copy(update={column: FIRST_SAVE_WITH_A_DETAIL[column]})
+    damaged_first = first.model_copy(update={"after": CaptureSnapshot.of(damaged)})
+
+    with pytest.raises(UnsoundCaptureHistory, match="revision 1 is no create"):
+        sound_history(damaged, [damaged_first])
+
+
+NOT_WHAT_IT_DID = {
+    "added, with the choice of the same": (
+        "added",
+        "UPDATE capture_events SET decision = json_set(decision, '$.choice', 'same') "
+        "WHERE operation = 'promote'",
+    ),
+    "added as separate, with nothing to be separate from": (
+        "added",
+        "UPDATE capture_events SET decision = json_set(decision, '$.choice', 'separate') "
+        "WHERE operation = 'promote'",
+    ),
+    "added under a name that is not the note's own": (
+        "added",
+        "UPDATE capture_events SET after = json_set(after, '$.assignment_id', "
+        "'assignment-not-its-own') WHERE operation = 'promote'; "
+        "UPDATE homework_captures SET assignment_id = 'assignment-not-its-own'",
+    ),
+    "joined, with the choice of new work": (
+        "joined",
+        "UPDATE capture_events SET decision = json_set(decision, '$.choice', 'new') "
+        "WHERE operation = 'link'",
+    ),
+    "joined, with the choice of a separate assignment": (
+        "joined",
+        "UPDATE capture_events SET decision = json_set(decision, '$.choice', 'separate') "
+        "WHERE operation = 'link'",
+    ),
+    "joined to homework that was not shown": (
+        "joined",
+        "UPDATE capture_events SET decision = json_set(decision, '$.candidates', "
+        "json('[\"assignment-never-shown\"]')) WHERE operation = 'link'",
+    ),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(NOT_WHAT_IT_DID))
+def test_a_change_to_homework_whose_choice_is_not_what_it_did_makes_the_line_unsound(
+    store: ProjectStateStore, damage: str
+) -> None:
+    """Adding makes the note's own assignment, by the choice of new work where nothing was
+    shown or of a separate assignment where something was; joining names one of the
+    homework that was shown, by the choice of the same. A change whose choice, whose
+    homework shown, or whose assignment says otherwise is no such change: the line is not
+    sound, its provenance is not read, and nothing is written to the note."""
+    way, statements = NOT_WHAT_IT_DID[damage]
+    name = note(store)
+    given = details()
+    if way == "added":
+        assert isinstance(promote(store, name, given, 1), CapturePromoted)
+    else:
+        target = on_record(store, due=date(2026, 9, 25))
+        basis = candidate_basis(candidate_readings(store, given))
+        made = promote(
+            store, name, given, 1, basis=basis, choice="same", target=target.assignment_id
+        )
+        assert isinstance(made, CapturePromoted)
+    store._connection.executescript(statements)
+    store._connection.commit()
+    before = everything(store)
+
+    with pytest.raises(UnreadableCapture):
+        store.sound_capture_history(name)
+    with pytest.raises(CaptureNotSaved) as refused:
+        promote(store, name, given, 2)
+
+    assert isinstance(refused.value.__cause__, UnreadableCapture)
+    assert everything(store) == before
+    assert not store._connection.in_transaction

@@ -99,6 +99,10 @@ CLAIM_UNREADABLE: Final = (
 )
 ANSWER_KEY_MAX_LENGTH: Final = 6
 """A card's key is a count from the reader, in plain digits; nothing longer is one."""
+ANSWER_FIELDS: Final = frozenset({"occurrence", "kind", "suggested", "shown", "chosen", "folded"})
+"""The fields the review page writes beside a card, under its key: the answers, and the
+page's own notes of what each select suggested and showed, what was chosen, and what was
+folded into what."""
 CHOOSE_ONE_TYPE: Final = (
     "Two cards about the same assignment choose different types. Pick one type for it, then save."
 )
@@ -200,6 +204,12 @@ def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[dateti
     return read_at, read_on
 
 
+def review_key(value: str) -> bool:
+    """Whether ``value`` is a card's key as the page writes one: one to six ASCII digits.
+    Digits from elsewhere, which ``int`` refuses, are no key, and neither is nothing."""
+    return 0 < len(value) <= ANSWER_KEY_MAX_LENGTH and value.isascii() and value.isdigit()
+
+
 def answers_from(
     form: Mapping[str, str], unasked: Mapping[int, set[AssignmentKind]]
 ) -> tuple[dict[int, str], dict[int, AssignmentKind]]:
@@ -228,11 +238,11 @@ def answers_from(
     marked: set[int] = set()
     for name, value in form.items():
         head, _, number = name.rpartition("-")
-        if not number.isdigit():
+        if not review_key(number):
             continue
         if head == "occurrence" and value in (UPDATE, NEW_WORK):
             occurrences[int(number)] = value
-        elif head == "folded" and value.isdigit():
+        elif head == "folded" and review_key(value):
             folded[int(number)] = int(value)
         elif head == "chosen":
             marked.add(int(number))
@@ -321,32 +331,23 @@ class AnswerKept:
 
 
 def answers_kept(form: Mapping[str, str]) -> list[AnswerKept]:
-    """The answers a review form carried, read by the page's own rules for a choice and by
-    its own field names, nothing else: new work or the same assignment where the card asked,
-    and a type where the select was changed from what it showed or carries a choice from a
-    page before. A card's key is plain digits. Anything else the form holds is no answer."""
-    by_key: dict[str, AnswerKept] = {}
-    types = {kind.value for kind in AssignmentKind}
+    """The answers a review form carried, read by the one reader the save uses and with no
+    record read: the page's own notes of what each select suggested and showed, of what was
+    chosen, and of what was folded into what decide what is an answer, as they would have
+    on the save. Only the fields the page writes, under a key the page could have written,
+    are read; anything else the form holds is no answer and takes nothing else down."""
+    safe: dict[str, str] = {}
     for name, value in form.items():
         head, _, key = name.rpartition("-")
-        if head not in ("occurrence", "kind") or not key.isdigit():
+        if head not in ANSWER_FIELDS or not review_key(key):
             continue
-        if len(key) > ANSWER_KEY_MAX_LENGTH:
+        if head == "folded" and not review_key(value):
             continue
-        found = by_key.get(key, AnswerKept(key, None, None))
-        if head == "occurrence":
-            if value in ("update", "new") and form.get(f"asked-{key}") == "1":
-                found = AnswerKept(key, value, found.kind)
-        elif value in types:
-            showed = form.get(f"shown-{key}", form.get(f"suggested-{key}"))
-            if form.get(f"chosen-{key}") == "1" or value != showed:
-                found = AnswerKept(key, found.occurrence, value)
-        by_key[key] = found
-    return [
-        answer
-        for _, answer in sorted(by_key.items(), key=lambda item: int(item[0]))
-        if answer.occurrence or answer.kind
-    ]
+        if head == "chosen" and value != "1":
+            continue
+        safe[name] = value
+    occurrences, kinds = answers_from(safe, {})
+    return answers_shown(occurrences, kinds)
 
 
 def answers_shown(

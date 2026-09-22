@@ -509,12 +509,23 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
     each. Details change details, on a note that waits: not archived, and not
     yet homework. Adding to homework and joining homework name an assignment
     on a note that named none, may settle the details in the same act, and
-    carry the choice that was made; nothing else carries one. No change but
-    an edit touches her words, and nothing ever takes an assignment away.
+    carry the choice that was made, which is what they did: adding makes the
+    note's own assignment, by the choice of new work where nothing was shown
+    or of a separate assignment where something was; joining names one of
+    the homework that was shown, by the choice of the same. Nothing else
+    carries a choice. No change but an edit touches her words, and nothing
+    ever takes an assignment away.
     """
     before, after = change.before, change.after
+    decision = change.decision
+    choice = None if decision is None else decision.choice
+    shown = () if decision is None else decision.candidates
     if before is None:
-        sound = not after.archived and after.assignment_id is None
+        sound = (
+            not after.archived
+            and after.assignment_id is None
+            and (after.title, after.kind, after.note) == (None, None, None)
+        )
     else:
         same_words = before.words == after.words
         same_text = before.text == after.text
@@ -528,15 +539,22 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
         moved = (before.archived, after.archived)
         waiting = moved == (False, False) and before.assignment_id is None
         named = waiting and after.assignment_id is not None and same_text
+        own = after.assignment_id == derived_assignment_id(capture_id)
+        added = (
+            named
+            and own
+            and ((choice == "new" and not shown) or (choice == "separate" and bool(shown)))
+        )
+        joined = named and choice == "same" and after.assignment_id in shown
         sound = {
             EDIT: not same_words and same_rest and same_link and moved == (False, False),
             ARCHIVE: same_words and same_rest and same_link and moved == (False, True),
             RESTORE: same_words and same_rest and same_link and moved == (True, False),
             CLARIFY: same_text and not same_details and same_link and waiting,
-            PROMOTE: named,
-            LINK: named,
+            PROMOTE: added,
+            LINK: joined,
         }.get(change.operation, False)
-    if (change.decision is not None) != (change.operation in (PROMOTE, LINK)):
+    if (decision is not None) != (change.operation in (PROMOTE, LINK)):
         sound = False
     if not sound:
         raise UnsoundCaptureHistory(
