@@ -99,8 +99,17 @@ what she and the school currently say about it, and asks whether this is the
 same homework or a separate assignment. It doesn't merge on its own. From
 then on the assignment goes to the planner like any other; her original words
 still don't. A school paste that names such homework waits, whole, until
-Blossom can ask whether it's the same work. That question, and searching for
-homework to join a note to, aren't built yet.
+Blossom can ask whether it's the same work. That question isn't built yet.
+
+**Link to homework already here.** Sometimes the homework is already on the
+list under another name: the school's title, or a classmate's. From a note,
+she or a parent can search the homework already here by class or title, Done
+work and older work included, and join the note to one result. Nothing is
+joined by the search itself, and nothing on that assignment changes; a date
+the note gives is kept as one more source for its due date. A note joined
+that way can be moved to other homework or unlinked later, which puts it back
+among her notes with its details kept and withdraws only that note's date. A
+note that became an assignment of its own stays with it.
 
 **Family review.** If she asks for help, a parent can reply and mark the
 request resolved. If she says Done but the school says Missing, we can see

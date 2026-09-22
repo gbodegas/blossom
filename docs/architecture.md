@@ -1109,6 +1109,45 @@ says the history is unavailable, never that there is none. A claim from a note
 carries a confidence of 0.8 because the column requires one; nothing decides
 anything by it.
 
+Homework named nothing like the note is found by search. `homework_search`
+reads the course and the title of every assignment on record, Done and work
+outside the window included, and nothing else: the query is trimmed, its
+whitespace collapsed, and case-folded for the search alone, which changes
+nothing stored and nothing about how the paste pairs work, and is split into
+terms, each of which must occur in the course or in the title; no terms asks
+for search words and finds nothing; a query longer than 200 code points is
+refused, never cut. Results come in one order, course, title, due date with
+none last, then id, twenty to a page with Next and Previous, and a page number
+that names no page is refused. The search page shows each result as the
+candidate rows show homework, from the same reading, and the search joins
+nothing: each row carries its own press, with the note's revision and the
+fingerprint of that one row, and `link_capture` holds the press to both inside
+its transaction, reading the row again through the same reading, so homework
+that changed in anything shown is put to the person again and homework that
+left the record is said so. The link is a `link` change with the choice of
+homework found, naming the one row; the note needs no details of its own for
+it, and the homework keeps every field, with a day the note gives as one more
+claim. Creating a separate assignment and adding a new one stay on the
+promotion form with the complete automatic-candidate basis, so no page of
+results ever stands in for it.
+
+A note joined to homework that was on record before it can be moved or
+unlinked, from its page and from the details page, in both trees; a note that
+made its own assignment, whose id is the one drawn from the note, offers
+neither and the store refuses a press that asks. An unlink is an `unlink`
+change: the note waits again with its details kept, its claims on that
+homework are withdrawn, which keeps them as history with the moment, and
+nothing else about the homework changes; the school's claims, another note's,
+its reports, checks, and every field are as they were. The line of changes
+holds an unlink to a note that was joined by a link, and the accepted press
+stops at an unlink, so a note unlinked can be added or joined again as a new
+press. A move is an unlink and a link in one commit, checked against the
+homework the page showed as the note's own link, so a move that fails leaves
+the note joined as it was and makes no duplicate. Who pressed is settled before
+the note's name is read, as on the details page, and the gate lets her sign-in
+reach the family's link and unlink presses to be refused there with the words
+kept.
+
 A school paste that names homework made from a note is held whole. Until the
 pages can ask whether the school's row is the same work, a text with such a
 row saves nothing, not that row and not the rows beside it: the review names
