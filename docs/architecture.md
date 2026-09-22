@@ -894,8 +894,9 @@ first save holding no details, an archive and a restore moving the note one way
 each and touching no words, an edit never bringing an archived note back,
 adding to homework making the note's own assignment by the choice of new work
 where nothing was shown or of a separate assignment where something was, and
-joining naming one of the homework that was shown by the choice of the same;
-every snapshot is within the rules
+joining naming one of the homework that was shown by the choice of the same,
+each with a class, a title, and a kind on the note by then; every snapshot is
+within the rules
 a note's words are held to; and the last ends at the note as it stands. Days
 and times are not compared, since a clock may run backward. The change about
 to be written is held to the same rules as the last of that line before it is
@@ -968,7 +969,9 @@ tree a press comes through is the channel it is recorded on, her report or a
 family entry, and nothing a form carries can say otherwise; who pressed is
 the sign-in, and the household while the sign-in is off. Signed in as the
 other person, a press writes nothing and is answered 403 with what was typed
-shown back. For her pressing a family form, opened by a parent on the same
+shown back, and who pressed is settled before the note's name is read, so a
+name that is no note's changes nothing about that answer. For her pressing a
+family form, opened by a parent on the same
 device before she signed in, that answer needs the route, so the gate lets
 those two presses alone through to it; the family's page itself, and every
 other press under the family's tree, stay the gate's to refuse.
@@ -1086,8 +1089,9 @@ given on the cards, to copy; the one way on is the ordinary press through the
 same reading. Those answers are read by the one reader the save uses, from the
 page's own notes of what each select suggested and showed, of what was chosen,
 and of what was folded into what, with no record read; a card's key is one to
-six ASCII digits, and a field under any other key is no answer and takes
-nothing down, on the save or on that page. A claim's history holds together or is unreadable: one that
+six ASCII digits spelled as the count is, and a field under any other key, a
+padded spelling of a count included, is no answer and takes nothing down, on
+the save or on that page. A claim's history holds together or is unreadable: one that
 counts was withdrawn at no moment, and one that does not count is a note's
 and was withdrawn at some moment, since a claim from the school or from the
 family's own entry is never withdrawn. The readers that reconcile a date hold
