@@ -86,7 +86,7 @@ from blossom.noticing import (
     week_from,
 )
 from blossom.pairing import pair
-from blossom.plan_reading import DoneMark, PlanReading, Reader, anchor_for, read_plan
+from blossom.plan_reading import DoneMark, PlanReading, Reader, anchor_for, long_date, read_plan
 from blossom.principals import Principal
 from blossom.reconciliation import (
     CHANNEL_NAMES,
@@ -1404,6 +1404,17 @@ def gone_page(
     )
 
 
+@dataclass(frozen=True)
+class WithdrawnClaim:
+    """A claim about the date that was withdrawn, as the details list it: the claim as she
+    reads one, the household day it was withdrawn, and whether a homework note made it.
+    Nothing a plan is made from reads these."""
+
+    said: str
+    on: str | None
+    from_a_note: bool
+
+
 def detail_page(
     request: Request,
     state: ApplicationState,
@@ -1437,6 +1448,9 @@ def detail_page(
         # The homework notes this assignment was added from or joined by: her words, kept
         # as evidence beside the record and copied into none of it.
         notes = None if item is None else on_record.captures_of_assignment(assignment_id)
+        # Every claim ever made about the date, the withdrawn ones included: reconciliation
+        # above reads only the ones that count, and the details say the rest apart.
+        history = [] if item is None else on_record.claim_history(assignment_id)
     if item is None or found is None or turned_in is None or notes is None:
         return gone_page(
             request, state, back, assignment_id, card=card, hand_in=hand_in, today=today
@@ -1462,6 +1476,19 @@ def detail_page(
                 for note in notes.notes
             ],
             "from_notes_unreadable": len(notes.unreadable),
+            "withdrawn_claims": [
+                WithdrawnClaim(
+                    said=claim.record.spoken(),
+                    on=(
+                        None
+                        if claim.withdrawn_at is None
+                        else long_date(claim.withdrawn_at.astimezone(state.clock.zone).date())
+                    ),
+                    from_a_note=claim.capture_id is not None,
+                )
+                for claim in history
+                if not claim.active
+            ],
             "ctx": detail_context(assignment_id, back, viewer, link),
             "back": link,
             "card": card,

@@ -59,6 +59,8 @@ from blossom.routes.note_details import (
     CHOOSE_ABOUT_THESE,
     CLASS_NOT_OFFERED,
     CLASS_TYPED_AND_CHOSEN,
+    DATE_AND_TICK,
+    LONG_CLASS,
     NOT_SAVED,
     SEPARATE,
     choice_from,
@@ -431,6 +433,46 @@ def test_a_day_that_was_refused_is_left_out_only_when_she_says_so() -> None:
     assert nothing.outstanding
     assert chosen.status_code == 303
     assert [item.due_date for item in made] == [None]
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+def test_a_day_picked_and_the_tick_that_leaves_it_out_are_two_instructions_and_neither_is_taken(
+    button: str,
+) -> None:
+    """On a marked form the date control and the tick are both offered. Both filled, nothing
+    here picks one: nothing is saved, the day stays in the control, and the tick is asked
+    for again. Words no date control sends beside the tick are met the same way."""
+    with browser() as client:
+        store = state_of(client).project_state
+        name = save_note(client)
+        send = add if button == "add" else save_details
+        refused = send(client, name, {**opened(client, name), **typed(due_date="next friday")})
+        marked = whole_form(refused.text, note_add_action(name))
+        before = rows(client)
+        both = send(client, name, {**marked, "due_date": "2026-08-25", "without_date": "1"})
+        returned = whole_form(both.text, note_add_action(name))
+        untouched = store.capture(name)
+        forged = send(client, name, {**marked, "due_date": "not a day", "without_date": "1"})
+        after = rows(client)
+        saved = send(client, name, returned)
+        note = store.capture(name)
+
+    assert refused.status_code == 422
+    assert both.status_code == 422
+    assert both.text.count(" autofocus") == 1
+    assert escape(DATE_AND_TICK) in both.text
+    assert '<a href="#details-due-date">' in both.text
+    assert (returned["due_date"], returned["date_pending"]) == ("2026-08-25", "1")
+    assert "without_date" not in returned
+    assert untouched is not None
+    assert (untouched.due_date, untouched.title, untouched.outstanding) == (None, None, True)
+    assert forged.status_code == 422
+    assert escape(DATE_AND_TICK) in forged.text
+    assert "not a day" in forged.text
+    assert after == before
+    assert saved.status_code == 303, saved.text
+    assert note is not None
+    assert note.due_date == date(2026, 8, 25)
 
 
 def test_the_date_fields_of_this_form_are_valid_only_as_a_page_renders_them() -> None:
@@ -1020,24 +1062,31 @@ def test_a_form_refused_whole_for_its_fingerprint_offers_a_fresh_choice() -> Non
 
 
 @pytest.mark.parametrize("family", [False, True])
-@pytest.mark.parametrize("button", ["add", "details"])
-def test_a_class_chosen_from_the_list_that_left_the_record_stays_chosen_until_another_is(
-    button: str, family: bool
+def test_a_class_that_left_the_list_is_held_to_the_fingerprint_and_kept_as_the_choice(
+    family: bool,
 ) -> None:
+    """The class was chosen from the list while the homework that gave the list that class
+    was on record. Renamed since, that homework is no candidate now: the press is answered
+    by the fingerprint, 409, with what changed, the class still the chosen option and marked
+    as not in the list. Pressed again with nothing changed about that homework, the class is
+    refused as one the list does not offer; typed beside Another class, it is hers."""
     with browser() as client:
         store = state_of(client).project_state
-        target = on_record(client, date(2026, 8, 28), title="Another title")
+        target = on_record(client, date(2026, 8, 28))
         name = save_note(client)
-        page = opened(client, name, family=family)
-        sent = {**page, **typed(course_choice="Geometry", course_other="")}
+        given = typed(course_choice="Geometry", course_other="")
+        asked = add(client, name, {**opened(client, name, family=family), **given}, family=family)
+        form = {
+            **whole_form(asked.text, note_add_action(name, family=family)),
+            "candidate": choice_value(target.assignment_id),
+        }
         store.upsert_assignments([target.model_copy(update={"course": "Renamed class"})])
         before = rows(client)
-        send = add if button == "add" else save_details
-        refused = send(client, name, sent, family=family)
-        returned = whole_form(refused.text, note_add_action(name, family=family))
-        again = send(client, name, returned, family=family)
+        stale = add(client, name, form, family=family)
+        returned = whole_form(stale.text, note_add_action(name, family=family))
+        kept = add(client, name, returned, family=family)
         still = rows(client)
-        typed_in = send(
+        typed_in = add(
             client,
             name,
             {**returned, "course_choice": OTHER, "course_other": "Geometry"},
@@ -1045,18 +1094,53 @@ def test_a_class_chosen_from_the_list_that_left_the_record_stays_chosen_until_an
         )
         note = store.capture(name)
 
-    assert refused.status_code == 422
-    assert escape(CLASS_NOT_OFFERED) in refused.text
-    assert '<a href="#details-course">' in refused.text
-    assert refused.text.count(" autofocus") == 1
+    assert asked.status_code == 409
+    assert stale.status_code == 409, stale.headers.get("location")
+    assert escape(CHOICE_IS_PAST) in stale.text
+    assert "The choice made before was not saved" in stale.text
     assert returned["course_choice"] == "Geometry"
-    assert "not in the list now" in refused.text
-    assert '<option value="Renamed class"' in refused.text
-    assert again.status_code == 422
+    assert "not in the list now" in stale.text
+    assert '<option value="Renamed class"' in stale.text
+    assert "candidate" not in returned
+    assert kept.status_code == 422
+    assert escape(CLASS_NOT_OFFERED) in kept.text
+    assert '<a href="#details-course">' in kept.text
+    assert (
+        whole_form(kept.text, note_add_action(name, family=family))["course_choice"] == "Geometry"
+    )
     assert still == before
     assert typed_in.status_code == 303, typed_in.text
     assert note is not None
-    assert note.course == "Geometry"
+    assert (note.course, note.assignment_id) == ("Geometry", derived_assignment_id(name))
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+def test_a_class_not_in_the_list_with_nothing_changed_about_the_homework_is_refused(
+    button: str,
+) -> None:
+    """With no homework of that class and title on record before or since, the fingerprint
+    has nothing to say, and a class the list does not offer is refused as that, kept as the
+    chosen option to see."""
+    with browser() as client:
+        store = state_of(client).project_state
+        target = on_record(client, date(2026, 8, 28), title="Another title")
+        name = save_note(client)
+        sent = {**opened(client, name), **typed(course_choice="Geometry", course_other="")}
+        store.upsert_assignments([target.model_copy(update={"course": "Renamed class"})])
+        before = rows(client)
+        send = add if button == "add" else save_details
+        answer = send(client, name, sent)
+        returned = whole_form(answer.text, note_add_action(name))
+        after = rows(client)
+        note = store.capture(name)
+
+    assert answer.status_code == 422
+    assert escape(CLASS_NOT_OFFERED) in answer.text
+    assert returned["course_choice"] == "Geometry"
+    assert "not in the list now" in answer.text
+    assert after == before
+    assert note is not None
+    assert note.course is None
 
 
 def test_the_class_chosen_before_is_kept_as_written_beside_a_class_typed() -> None:
@@ -1088,6 +1172,7 @@ def test_a_class_sent_that_could_not_be_offered_is_shown_as_words() -> None:
         returned = whole_form(refused.text, note_add_action(name))
 
     assert refused.status_code == 422
+    assert escape(LONG_CLASS) in refused.text
     assert "could not be offered as a choice" in refused.text
     assert "y" * 61 in refused.text
     assert returned["course_choice"] == ""
@@ -1591,6 +1676,49 @@ def test_a_parent_signed_in_reads_the_damaged_note_among_the_notes_added(
     assert added.status_code == 200
     assert "1 homework note cannot be read right now" in added.text
     assert "cannot be read" not in waiting.text
+
+
+def test_a_claim_from_a_note_that_was_withdrawn_stays_on_the_details_as_history() -> None:
+    """Reconciliation reads only claims that count. The assignment's details read the whole
+    history, and say apart what was withdrawn, when, and that it came from a note."""
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        today = state.clock.today()
+        name = save_note(client)
+        assert (
+            add(client, name, {**opened(client, name), **typed(due_date="2026-08-21")}).status_code
+            == 303
+        )
+        made = derived_assignment_id(name)
+        counted = client.get(f"/student/assignments/{made}").text
+        store._connection.execute(
+            "UPDATE date_claims SET active = 0, withdrawn_at = ? WHERE capture_id = ?",
+            (state.clock.now().isoformat(), name),
+        )
+        store._connection.commit()
+        details = client.get(f"/student/assignments/{made}").text
+        family = client.get(f"/student/assignments/{made}", params={"return_to": "family"}).text
+        records = store.deadline_records(made)
+
+    assert "Withdrawn claims about the date" not in counted
+    assert records == []
+    assert "Withdrawn claims about the date" in details
+    withdrawn = details.split("Withdrawn claims about the date")[1].split("</ul>")[0]
+    assert "2026-08-21" in withdrawn
+    assert f"Withdrawn {spoken(today)}." in withdrawn
+    assert "From a homework note." in withdrawn
+    assert "Withdrawn claims about the date" in family
+
+
+def test_what_is_shared_names_the_kind_among_what_reaches_the_planner() -> None:
+    with browser() as client:
+        name = save_note(client)
+        week = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
+        page = client.get(note_href(name)).text
+
+    assert "due date, kind, and note about the work" in week
+    assert "class, title, date, kind, and note about the work are" in page
 
 
 # ------------------------------------------------------------------ results on a note in homework

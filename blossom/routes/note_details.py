@@ -123,6 +123,10 @@ DATE_UNREADABLE: Final = (
     "That date could not be read, so nothing was saved yet. Pick the date again, or tick the "
     "box to leave the due date out."
 )
+DATE_AND_TICK: Final = (
+    "A date was picked and the box that leaves the due date out was ticked. Keep one: clear "
+    "the date, or leave the box unticked. Nothing was saved."
+)
 DATE_NEEDS_A_CHOICE: Final = (
     "A date was given that could not be read. Pick a date, or tick the box to leave the due "
     "date out."
@@ -283,8 +287,10 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None) -> P
     that reads is kept in the one spelling a date control holds and clears
     the mark. One that does not is said back and marks the form, and a
     marked form with no day needs the tick that leaves the due date out; a
-    blank is never read as that. The tick counts only in the save it was
-    ticked for, so a form that comes back is never ticked.
+    blank is never read as that. A day in the control beside the tick is two
+    instructions and neither is taken: nothing is saved and the form asks
+    for one. The tick counts only in the save it was ticked for, so a form
+    that comes back is never ticked.
     """
     marked = "date_pending" in fields or "date_refused" in fields
     carried = fields.get("date_refused", "")
@@ -312,6 +318,19 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None) -> P
     )
     without = marked and fields.get("without_date") == "1"
     raw = fields.get("due_date", "").strip()
+    if raw and without:
+        # A day in the control beside the tick that leaves the day out is two instructions,
+        # and nothing here picks one: the form goes back marked, the day where it was when
+        # it reads and said back when it does not, the tick unticked, and the question put.
+        try:
+            kept = date.fromisoformat(raw).isoformat()
+        except ValueError:
+            shown = shown_day(raw)
+            said = None if shown is None or reads_as_a_day(shown) else shown
+            asked = replace(form, due_date="", date_refused=said, date_pending=True)
+        else:
+            asked = replace(form, due_date=kept, date_refused=None, date_pending=True)
+        return PreparedDetails(asked, None, DATE_AND_TICK)
     if raw:
         try:
             day = date.fromisoformat(raw)
@@ -323,9 +342,7 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None) -> P
                 date_refused=None if shown is None or reads_as_a_day(shown) else shown,
                 date_pending=True,
             )
-            return PreparedDetails(refused, None, None if without else DATE_UNREADABLE)
-        if without:
-            return PreparedDetails(replace(form, due_date=day.isoformat()))
+            return PreparedDetails(refused, None, DATE_UNREADABLE)
         return PreparedDetails(
             replace(form, due_date=day.isoformat(), date_refused=None, date_pending=False), day
         )
@@ -370,7 +387,8 @@ def read_details(
     """Hold what was sent to the rules, one problem at a time in the order of the page, and
     give the details when there is none. The form that goes back is the prepared one, so it
     holds the day whichever field is refused. Adding to homework needs a class and a title;
-    saving details does not."""
+    saving details does not. ``courses`` is the list the page offers; whether a class outside
+    it is refused is the routes' to say."""
     form = ready.form
 
     def problem(text: str, field: str) -> tuple[DetailsForm, None]:
@@ -384,9 +402,10 @@ def read_details(
         given, at = typed, "course_other"
     elif typed.strip():
         return problem(CLASS_TYPED_AND_CHOSEN, "course_other")
-    elif choice and choice not in courses:
-        return problem(CLASS_NOT_OFFERED, "course")
     else:
+        # A class chosen from the list the page showed is held to the rules a typed one is.
+        # One the list does not hold now is not refused here: the routes ask the fingerprint
+        # of the homework shown whether that homework changed, and refuse it only when not.
         given, at = choice, "course"
     try:
         course = single_line(given, CAPTURE_COURSE_MAX_LENGTH)
@@ -491,9 +510,10 @@ def candidate_row(item: CandidateReading, *, family: bool) -> CandidateRow:
 @dataclass(frozen=True)
 class ClassLeftBehind:
     """A class chosen from the list that is not in the list now: kept as the chosen option
-    when it is one line within the bound, marked as not in the list, and refused until a
-    class in the list is chosen or Another class is typed. A value that cannot be offered as
-    a choice is shown as bounded words, or said to be unshowable."""
+    when it is one line within the bound, marked as not in the list, and refused as one the
+    list does not offer unless the homework it named has changed since the page, which the
+    fingerprint says and the store answers. A value that cannot be offered as a choice is
+    shown as bounded words, or said to be unshowable."""
 
     option: str | None
     words: str | None
@@ -811,6 +831,18 @@ async def save_details(
             form.problem or BAD_FORM,
             status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
+    if class_left_behind(form, courses) is not None:
+        # Saving details asks no fingerprint, so a class the list does not offer is refused
+        # here, kept as the chosen option and marked as not in the list.
+        return details_or_plain(
+            request,
+            state,
+            name,
+            way,
+            replace(form, field="course"),
+            CLASS_NOT_OFFERED,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
     try:
         async with state.decision_lock:
             now, today = accepted_at(state)
@@ -886,6 +918,22 @@ async def add_to_homework(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     basis = fields.get("basis", "")
+    # A class the list does not hold now was on the list the page showed, or was on no page
+    # at all. When the homework of that class and title has changed since the page, the
+    # fingerprint says so and the store answers, 409, with what changed; with nothing changed
+    # about that homework the class is refused as one the list does not offer.
+    if class_left_behind(form, courses) is not None and (
+        candidate_basis(candidate_readings(state.project_state, details)) == basis
+    ):
+        return details_or_plain(
+            request,
+            state,
+            name,
+            way,
+            replace(form, field="course"),
+            CLASS_NOT_OFFERED,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
     choice, target = choice_from(fields.get("candidate")) or ("new", None)
     try:
         async with state.decision_lock:
