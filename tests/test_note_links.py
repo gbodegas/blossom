@@ -36,6 +36,7 @@ from blossom.captures import (
     HomeworkGone,
     UnsoundCaptureHistory,
     accepted_press,
+    accepted_search_press,
     candidate_basis,
     derived_assignment_id,
     new_capture_id,
@@ -623,3 +624,142 @@ def test_choosing_the_homework_the_note_is_joined_to_now_writes_nothing(
     assert isinstance(again, CaptureAlreadyPromoted)
     assert again.assignment_id == target.assignment_id
     assert tables(store) == before
+
+
+def edited(store: ProjectStateStore, name: str, revision: int, **given: object) -> None:
+    held = the_note(store, name)
+    changed = store.edit_capture(
+        name,
+        str(given.get("text", held.text)),
+        given.get("course", held.course),  # type: ignore[arg-type]
+        given.get("due", held.due_date),  # type: ignore[arg-type]
+        expected_revision=revision,
+        authored_by=STUDENT,
+        channel=HERS,
+        now=LATER,
+        today=MONDAY,
+    )
+    assert type(changed).__name__ == "CaptureChanged", changed
+
+
+# ------------------------------------------------------------------ the accepted press
+
+
+@pytest.mark.parametrize("later", ["words", "day", "put away"])
+def test_the_accepted_link_by_search_is_that_press_again_whatever_the_note_became(
+    store: ProjectStateStore, later: str
+) -> None:
+    """The press that joined the note is recognized by what it carried: the homework, the
+    row as shown, and the revision the page showed. The note's words, day, or being put
+    away since change nothing about that, and nothing is written for the press again."""
+    target = on_record(store)
+    name = note(store, due=date(2026, 9, 18))
+    basis = basis_of(store, target)
+    assert isinstance(link(store, name, target, 1, basis=basis), CapturePromoted)
+    if later == "words":
+        edited(store, name, 2, text="Other words")
+    elif later == "day":
+        edited(store, name, 2, due=date(2026, 9, 19))
+    else:
+        store.archive_capture(
+            name, expected_revision=2, authored_by=STUDENT, now=LATER, today=MONDAY
+        )
+    before = tables(store)
+
+    again = link(store, name, target, 1, basis=basis)
+    other_row = link(store, name, target, 1, basis="not what was shown")
+    other_page = link(store, name, target, 2, basis=basis)
+
+    assert isinstance(again, CaptureAlreadyPromoted)
+    assert again.assignment_id == target.assignment_id
+    assert isinstance(other_row, CaptureConflict)
+    assert isinstance(other_page, CaptureConflict)
+    assert tables(store) == before
+
+
+@pytest.mark.parametrize("later", ["words", "put away"])
+def test_the_accepted_move_is_that_press_again_whatever_the_note_became(
+    store: ProjectStateStore, later: str
+) -> None:
+    old = on_record(store)
+    new = on_record(store, course="Spanish", title="Vocabulary list, unit two")
+    elsewhere = on_record(store, title="Other work")
+    name = joined(store, old)
+    basis = basis_of(store, new)
+    assert isinstance(
+        link(store, name, new, 2, basis=basis, leaving=old.assignment_id), CapturePromoted
+    )
+    if later == "words":
+        edited(store, name, 4, text="Other words")
+    else:
+        store.archive_capture(
+            name, expected_revision=4, authored_by=STUDENT, now=LATER, today=MONDAY
+        )
+    before = tables(store)
+
+    again = link(store, name, new, 2, basis=basis, leaving=old.assignment_id)
+    other_old = link(store, name, new, 2, basis=basis, leaving=elsewhere.assignment_id)
+    other_new = link(
+        store, name, elsewhere, 2, basis=basis_of(store, elsewhere), leaving=old.assignment_id
+    )
+    first_press = link(store, name, new, 1, basis=basis)
+
+    assert isinstance(again, CaptureAlreadyPromoted)
+    assert isinstance(other_old, CaptureConflict)
+    assert isinstance(other_new, CaptureConflict)
+    assert isinstance(first_press, CaptureConflict)
+    assert tables(store) == before
+
+
+def test_an_unlink_or_another_link_since_ends_the_accepted_press(
+    store: ProjectStateStore,
+) -> None:
+    """An old press is never revived: after an unlink the note waits and the press is behind
+    it; after a link to other homework the old move is a different press."""
+    old = on_record(store)
+    new = on_record(store, course="Spanish", title="Vocabulary list, unit two")
+    third = on_record(store, title="Other work")
+    name = note(store, due=date(2026, 9, 18))
+    first = basis_of(store, old)
+    assert isinstance(link(store, name, old, 1, basis=first), CapturePromoted)
+    assert isinstance(unlink(store, name, 2, old.assignment_id), CaptureUnlinked)
+    after_unlink = tables(store)
+    replayed_link = link(store, name, old, 1, basis=first)
+    assert isinstance(replayed_link, CaptureConflict)
+    assert tables(store) == after_unlink
+    assert accepted_search_press(store.capture_history(name)) is None
+
+    assert isinstance(link(store, name, new, 3, basis=basis_of(store, new)), CapturePromoted)
+    move = basis_of(store, third)
+    assert isinstance(
+        link(store, name, third, 4, basis=move, leaving=new.assignment_id), CapturePromoted
+    )
+    press = accepted_search_press(store.capture_history(name))
+    assert press is not None
+    assert (press.target, press.left, press.revision_before, press.basis) == (
+        third.assignment_id,
+        new.assignment_id,
+        4,
+        move,
+    )
+    before = tables(store)
+    old_move = link(store, name, new, 3, basis=basis_of(store, new), leaving=old.assignment_id)
+    assert isinstance(old_move, CaptureConflict)
+    assert tables(store) == before
+
+
+def test_a_link_by_search_names_exactly_the_one_row_chosen(store: ProjectStateStore) -> None:
+    target = on_record(store)
+    name = joined(store, target)
+    held = the_note(store, name)
+    create, made = store.capture_history(name)
+    assert made.decision is not None
+    widened = made.model_copy(
+        update={
+            "decision": made.decision.model_copy(
+                update={"candidates": (target.assignment_id, "assignment-other")}
+            )
+        }
+    )
+    with pytest.raises(UnsoundCaptureHistory):
+        sound_history(held, [create, widened])

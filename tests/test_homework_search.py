@@ -140,3 +140,17 @@ def test_a_page_number_is_read_as_a_count_or_not_at_all(
     given: str | None, read: int | None
 ) -> None:
     assert page_number(given) == read
+
+
+@pytest.mark.parametrize("query", ["a" + " " * 201 + "b", "a" + chr(160) * 201 + "b"])
+def test_the_limit_follows_the_whitespace_collapse(query: str) -> None:
+    """The limit counts the query as searched, its whitespace collapsed, not as typed."""
+    assert terms_of(query) == ("a", "b")
+
+
+def test_a_query_too_long_once_collapsed_is_still_refused() -> None:
+    assert len(terms_of("q" * 100 + "   " + "q" * 99)) == 2
+    with pytest.raises(TextRefused):
+        terms_of("q" * 100 + "   " + "q" * 100)
+    with pytest.raises(TextRefused):
+        terms_of("q" * (QUERY_MAX_LENGTH + 1))

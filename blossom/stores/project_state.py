@@ -64,6 +64,7 @@ from blossom.captures import (
     FieldSource,
     HomeworkGone,
     PromotionChoice,
+    accepted_search_press,
     candidate_basis,
     capture_id_from,
     derived_assignment_id,
@@ -2228,9 +2229,13 @@ class ProjectStateStore(CaptureRecords):
         """Join a note to homework found by search, or move a joined note to other homework.
 
         One transaction that reserves the writer before it reads. The note's
-        line of changes is checked first. With ``leaving`` unset the note must
-        wait: a note in homework whose accepted press was this one again writes
-        nothing, and any other is a conflict. With ``leaving`` set, the note
+        line of changes is checked first. The press that put the note where it
+        is, as its events keep it, is this press again when it names the same
+        homework, the same row as shown, the same revision, and the same
+        homework left: then nothing is written, whatever the note's words,
+        class, or day have become since; an unlink or another link since ends
+        that. Otherwise, with ``leaving`` unset the note must wait, and a note
+        in homework is a conflict. With ``leaving`` set, the note
         must be joined to that homework by a link, not by an assignment of its
         own, which is not moved this way; the homework shown as the old one
         must be the note's now. Either way the page's revision must be the
@@ -2252,29 +2257,29 @@ class ProjectStateStore(CaptureRecords):
             with self._lock, self._writing():
                 standing = self._required_capture_locked(name)
                 reading = self._validated_capture_history_locked(standing)
+                press = accepted_search_press(reading.events)
+                if (
+                    press is not None
+                    and standing.assignment_id == target
+                    and (press.target, press.basis, press.revision_before, press.left)
+                    == (target, basis, expected_revision, leaving)
+                ):
+                    return CaptureAlreadyPromoted(standing, reading.head, target)
                 accepted = reading.accepted
                 if leaving is None:
                     if standing.assignment_id is not None:
-                        if standing.assignment_id == target and same_press(
-                            accepted, standing.details, "found", target
-                        ):
-                            return CaptureAlreadyPromoted(standing, reading.head, target)
                         return CaptureConflict(standing)
                 else:
                     if accepted is None or accepted.operation != LINK:
-                        if self._was_moved_locked(reading, leaving, target, standing):
-                            return CaptureAlreadyPromoted(standing, reading.head, target)
                         return CaptureNotJoined(standing)
                     if standing.assignment_id != leaving:
-                        if self._was_moved_locked(reading, leaving, target, standing):
-                            return CaptureAlreadyPromoted(standing, reading.head, target)
                         return CaptureConflict(standing)
+                    if target == leaving:
+                        # A move to the homework the note is joined to now is no move:
+                        # nothing is withdrawn and nothing is written.
+                        return CaptureAlreadyPromoted(standing, reading.head, target)
                 if standing.revision != expected_revision or standing.archived:
                     return CaptureConflict(standing)
-                if leaving is not None and target == leaving:
-                    # A move to the homework the note is joined to now is no move: nothing
-                    # is withdrawn and nothing is written.
-                    return CaptureAlreadyPromoted(standing, reading.head, target)
                 item = self.one_assignment(target)
                 if item is None:
                     return HomeworkGone(standing, target)
@@ -2323,26 +2328,6 @@ class ProjectStateStore(CaptureRecords):
                 return CapturePromoted(changed.capture, changed.event, target, False)
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             raise CaptureNotSaved(name, error) from error
-
-    @staticmethod
-    def _was_moved_locked(
-        reading: CaptureHistoryReading, leaving: str, target: str, standing: Capture
-    ) -> bool:
-        """Whether the note's line ends with this very move: an unlink from ``leaving`` and a
-        link to ``target`` by the choice of homework found, so the press is that move again."""
-        events = reading.events
-        if len(events) < 2 or standing.assignment_id != target:
-            return False
-        left, made = events[-2], events[-1]
-        return (
-            left.operation == UNLINK
-            and left.before is not None
-            and left.before.assignment_id == leaving
-            and made.operation == LINK
-            and made.decision is not None
-            and made.decision.choice == "found"
-            and made.after.assignment_id == target
-        )
 
     def unlink_capture(
         self,

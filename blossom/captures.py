@@ -471,6 +471,46 @@ def accepted_press(events: Sequence[CaptureEvent]) -> CaptureEvent | None:
     return None
 
 
+@dataclass(frozen=True)
+class AcceptedSearchPress:
+    """The press that joined a note to homework found by search, as its events keep it: the
+    homework named, the row as it was shown, the revision the page showed, and for a move
+    the homework left. A later press is that press again when it carries the same four,
+    whatever the note's words, class, or day have become since."""
+
+    target: str
+    basis: str
+    revision_before: int
+    left: str | None
+
+
+def accepted_search_press(events: Sequence[CaptureEvent]) -> AcceptedSearchPress | None:
+    """The press by search that put the note where it is, or ``None``: none for a note that
+    waits, one unlinked since, one joined by a candidate, or one that made its own
+    assignment. A move is its link and the unlink just before it, read together."""
+    made = accepted_press(events)
+    if (
+        made is None
+        or made.operation != LINK
+        or made.decision is None
+        or made.decision.choice != "found"
+        or made.after.assignment_id is None
+    ):
+        return None
+    place = next(index for index, event in enumerate(events) if event is made)
+    before = events[place - 1] if place > 0 else None
+    if before is not None and before.operation == UNLINK and before.before is not None:
+        return AcceptedSearchPress(
+            made.after.assignment_id,
+            made.decision.basis,
+            before.revision - 1,
+            before.before.assignment_id,
+        )
+    return AcceptedSearchPress(
+        made.after.assignment_id, made.decision.basis, made.revision - 1, None
+    )
+
+
 def same_press(
     accepted: CaptureEvent | None,
     details: CaptureDetails,
@@ -565,7 +605,10 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
         joined = (
             named
             and after.assignment_id in shown
-            and ((choice == "same" and settled) or (choice == "found" and same_details))
+            and (
+                (choice == "same" and settled)
+                or (choice == "found" and same_details and shown == (after.assignment_id,))
+            )
         )
         left = (
             before.assignment_id is not None

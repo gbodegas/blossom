@@ -147,7 +147,7 @@ def search_page(
     page: str | None = None,
     form: SearchForm | None = None,
     problem: str | None = None,
-    changed: FoundRow | None = None,
+    selected: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """The search page: the note's words, where it stands, the query, and the homework the
@@ -188,10 +188,17 @@ def search_page(
     results = None
     rows: list[FoundRow] = []
     current = None
+    chosen_row: FoundRow | None = None
+    chosen_gone = False
+    # One reading for everything the page shows: the note's own link, the page of
+    # results, and the homework chosen, read with the same rows whether or not the
+    # words still find it, so no row on the page comes from an earlier reading.
     with store.reading():
         if leaving is not None:
             current = store.one_assignment(leaving)
-        if number is None or (not terms and number != 1):
+        if refused is not None:
+            problem = problem or refused
+        elif number is None or (not terms and number != 1):
             problem = problem or NO_SUCH_PAGE
             status_code = (
                 status.HTTP_404_NOT_FOUND if status_code == status.HTTP_200_OK else status_code
@@ -203,11 +210,15 @@ def search_page(
                 status_code = (
                     status.HTTP_404_NOT_FOUND if status_code == status.HTTP_200_OK else status_code
                 )
-            else:
-                rows = [
-                    FoundRow(candidate_row(item, family=way.family), candidate_basis([item]))
-                    for item in readings_for(store, results.items)
-                ]
+        shown = list(results.items) if results is not None else []
+        beside = None
+        if selected and selected not in {item.assignment_id for item in shown}:
+            beside = store.one_assignment(selected)
+            chosen_gone = beside is None
+        readings = readings_for(store, [*shown, *([beside] if beside is not None else [])])
+        rows = [row_of(item, way) for item in readings[: len(shown)]]
+        if beside is not None:
+            chosen_row = row_of(readings[-1], way)
     hint = None
     if refused is None and not problem:
         if not terms:
@@ -244,14 +255,22 @@ def search_page(
             "results": results,
             "rows": rows,
             "pages": page_hrefs,
-            "chosen": form.target if form is not None else "",
-            "changed": changed,
+            "chosen": selected or "",
+            "chosen_row": chosen_row,
+            "chosen_gone": chosen_gone,
+            "chosen_gone_sentence": HOMEWORK_GONE,
+            "query_error": refused is not None,
             "not_hers": NOT_HERS_TO_UPDATE,
             "ways_back": ways_back(),
             "sample": state.settings.sample,
         },
         status_code=status_code,
     )
+
+
+def row_of(item: CandidateReading, way: Way) -> FoundRow:
+    """One result as the page shows it, from the page's one reading."""
+    return FoundRow(candidate_row(item, family=way.family), candidate_basis([item]))
 
 
 def plain_search(
@@ -288,7 +307,6 @@ def search_or_plain(
     form: SearchForm,
     problem: str,
     status_code: int,
-    changed: FoundRow | None = None,
 ) -> HTMLResponse:
     """The search page with a refused press said first, the search words and the choice kept,
     tried once; when that page cannot be made, or the name is no note's, the plain page that
@@ -307,7 +325,7 @@ def search_or_plain(
             page=form.page or None,
             form=form,
             problem=problem,
-            changed=changed,
+            selected=form.target or None,
             status_code=status_code,
         )
     except Exception:
@@ -353,7 +371,7 @@ async def link_to_homework(
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return gone(request, state)
+        return plain_search(request, state, form, NOTE_GONE, status.HTTP_404_NOT_FOUND)
     target = one_row(fields, "target")
     basis = one_row(fields, "basis")
     leaving = one_row(fields, "from") if fields.get("from") else None
@@ -403,27 +421,43 @@ async def link_to_homework(
             return search_or_plain(
                 request, state, way, form, HOMEWORK_GONE, status.HTTP_409_CONFLICT
             )
-        case CandidatesChanged(candidates=shown):
-            # The row as it stands now, shown on its own with a fresh press, whether or
-            # not the search words still find it. The reader handed to the store makes
-            # readings, so the row is one; anything else is shown by its name alone.
-            fresh = shown[0] if shown else None
-            row = (
-                FoundRow(candidate_row(fresh, family=way.family), candidate_basis(shown))
-                if isinstance(fresh, CandidateReading)
-                else None
-            )
+        case CandidatesChanged():
+            # The page reads the homework chosen again with its own reading and shows it
+            # as it stands then, once, with a fresh press.
             return search_or_plain(
-                request, state, way, form, HOMEWORK_CHANGED, status.HTTP_409_CONFLICT, row
+                request, state, way, form, HOMEWORK_CHANGED, status.HTTP_409_CONFLICT
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def unlink_or_plain(
+    request: Request,
+    state: ApplicationState,
+    way: Way,
+    form: SearchForm,
+    problem: str,
+    status_code: int,
+) -> HTMLResponse:
+    """The details page, where the unlink press lives, with the refusal said first and the
+    record read once for what stands now; when that page cannot be made, or the name is no
+    note's, the plain page that reads no store, with the homework the form named kept."""
+    try:
+        name = capture_id_from(form.capture_id)
+    except NotACaptureId:
+        return plain_search(request, state, form, problem, status_code)
+    try:
+        return details_page(request, state, name, way, problem=problem, status_code=status_code)
+    except Exception:
+        logger.exception("the details page could not be read back after a refused unlink")
+        return plain_search(request, state, form, problem, status_code)
 
 
 async def unlink_from_homework(
     request: Request, capture_id: str, state: ApplicationState, way: Way
 ) -> Response:
     """Unlink the note from the homework the page showed as its link, so it waits again with
-    its details kept. A refusal is said on the details page, where the press lives."""
+    its details kept. A refusal is said on the details page, where the press lives, and on
+    the page that reads no store when that one cannot be made."""
     fields, whole = await fields_of(request, UNLINK_FIELDS)
     form = form_of(capture_id, fields)
     refused = refused_press(request, state, way, form)
@@ -432,16 +466,11 @@ async def unlink_from_homework(
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
-        return gone(request, state)
+        return plain_search(request, state, form, NOTE_GONE, status.HTTP_404_NOT_FOUND)
     leaving = one_row(fields, "from")
     if not whole or form.revision is None or leaving is None:
-        return details_page(
-            request,
-            state,
-            name,
-            way,
-            problem=BAD_FORM,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return unlink_or_plain(
+            request, state, way, form, BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
         )
     try:
         async with state.decision_lock:
@@ -455,18 +484,11 @@ async def unlink_from_homework(
                 today=today,
             )
     except UnknownCapture:
-        return details_page(
-            request, state, name, way, problem=NOT_SAVED, status_code=status.HTTP_404_NOT_FOUND
-        )
+        return unlink_or_plain(request, state, way, form, NOT_SAVED, status.HTTP_404_NOT_FOUND)
     except CaptureNotSaved:
         logger.exception("note %s could not be unlinked", name)
-        return details_page(
-            request,
-            state,
-            name,
-            way,
-            problem=NOT_SAVED,
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        return unlink_or_plain(
+            request, state, way, form, NOT_SAVED, status.HTTP_500_INTERNAL_SERVER_ERROR
         )
     match outcome:
         case CaptureUnlinked(event=made):
@@ -474,18 +496,11 @@ async def unlink_from_homework(
         case CaptureAlreadyUnlinked(head=head):
             where = note_href(name, fragment=NOTE_RESULT, said="unlinked", event=head.event_id)
         case CaptureConflict():
-            return details_page(
-                request,
-                state,
-                name,
-                way,
-                problem=NOTE_CHANGED,
-                status_code=status.HTTP_409_CONFLICT,
+            return unlink_or_plain(
+                request, state, way, form, NOTE_CHANGED, status.HTTP_409_CONFLICT
             )
         case CaptureNotJoined():
-            return details_page(
-                request, state, name, way, problem=NOT_JOINED, status_code=status.HTTP_409_CONFLICT
-            )
+            return unlink_or_plain(request, state, way, form, NOT_JOINED, status.HTTP_409_CONFLICT)
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Final
 
-from blossom.authored_text import single_line
+from blossom.authored_text import TOO_LONG, TextRefused, single_line
 from blossom.stores.project_state import Assignment
 
 QUERY_MAX_LENGTH: Final = 200
@@ -33,10 +33,15 @@ def searchable(text: str) -> str:
 
 
 def terms_of(query: str) -> tuple[str, ...]:
-    """The terms a query holds, or none for a blank one. A query the rules for one line
-    refuse, too long or holding what a line cannot, is refused as ``TextRefused``."""
-    kept = single_line(query, QUERY_MAX_LENGTH)
-    return () if kept is None else tuple(searchable(kept).split())
+    """The terms a query holds, or none for a blank one. A query holding what one line
+    cannot is refused as ``TextRefused``, as is one longer than the limit once its
+    whitespace is collapsed: the limit counts the query as searched, not as typed. Nothing
+    here touches the rule saved words, classes, and titles are held to."""
+    checked = single_line(query, max(len(query), 1))
+    collapsed = " ".join((checked or "").split())
+    if len(collapsed) > QUERY_MAX_LENGTH:
+        raise TextRefused(TOO_LONG, length=len(collapsed), limit=QUERY_MAX_LENGTH)
+    return tuple(collapsed.casefold().split())
 
 
 def matches(item: Assignment, terms: Sequence[str]) -> bool:

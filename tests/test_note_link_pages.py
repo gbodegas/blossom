@@ -10,6 +10,7 @@ the note's name is read; nothing is joined by a search alone.
 """
 
 import pathlib
+import sqlite3
 from datetime import date
 
 import pytest
@@ -35,6 +36,7 @@ from blossom.routes.navigation import (
     NEW_NOTE_PAGE,
     NOTE_ACTIONS,
     NOTES_PAGE,
+    note_action,
     note_add_action,
     note_add_href,
     note_href,
@@ -414,8 +416,8 @@ def test_changing_a_link_moves_the_note_and_says_so() -> None:
         again = client.post(note_link_action(name), data=press)
         note_page = client.get(note_href(name)).text
 
-    assert "Joined now to" in page
-    assert "Summer reading log" in page.split("Joined now to")[1].split("</p>")[0]
+    assert "joined now to" in page
+    assert "Summer reading log" in page.split("joined now to")[1].split("</p>")[0]
     assert press["from"] == log.assignment_id
     assert ">Move the link here</button>" in page
     assert answer.status_code == 303
@@ -666,7 +668,7 @@ def test_the_other_persons_press_on_a_note_that_cannot_be_read_or_is_gone_keeps_
 
 def test_homework_that_changed_so_the_words_no_longer_find_it_is_still_shown_as_it_stands() -> None:
     """The row the press was held to is shown as it stands now, with a fresh press, even
-    when the search words no longer find it."""
+    when the search words find it no more."""
     with browser() as client:
         name = save_note(client)
         log = on_record(client)
@@ -678,7 +680,7 @@ def test_homework_that_changed_so_the_words_no_longer_find_it_is_still_shown_as_
         )
         store._connection.commit()
         answer = client.post(note_link_action(name), data=press)
-        shown = answer.text.split(f'id="changed-{log.assignment_id}"')[1].split("</li>")[0]
+        shown = answer.text.split(f'id="chosen-{log.assignment_id}"')[1].split("</li>")[0]
         fresh = whole_form(shown, note_link_action(name))
 
     assert answer.status_code == 409
@@ -709,3 +711,292 @@ def test_a_note_joined_to_homework_that_left_the_record_still_offers_the_correct
     assert "not on record now" in page
     assert answer.status_code == 303
     assert ">Link to homework already here</a>" in waiting
+
+
+# ------------------------------------------------------------------ second review round
+
+
+def change_note(client: TestClient, name: str, step: str, **typed: str) -> None:
+    """Her edit of the note's words, class, or day, the rest as they stand, or her archiving
+    it."""
+    page = client.get(note_href(name, edit="1") if step == "edit" else note_href(name)).text
+    action = note_action(name, step)
+    held = state_of(client).project_state.capture(name)
+    assert held is not None
+    standing = (
+        {
+            "text": held.text,
+            "course": held.course or "",
+            "due_date": "" if held.due_date is None else held.due_date.isoformat(),
+        }
+        if step == "edit"
+        else {}
+    )
+    answer = client.post(
+        action, data={**form_fields(page, action), **standing, **typed}, headers=PAGE_HEADERS
+    )
+    assert answer.status_code == 303, answer.text[:300]
+
+
+@pytest.mark.parametrize("fault", ["history", "assignments"])
+@pytest.mark.parametrize("family", [False, True])
+def test_an_unlink_refused_and_then_unreadable_lands_on_the_page_that_reads_no_store(
+    fault: str, family: bool, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The write is tried once and refused; the page that says so reads the record once
+    and fails; the answer is then the page that reads no store, 500, one focused alert, the
+    homework the form named shown as the link the form showed, and nothing changed."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client, due_date="2026-08-21")
+        if family:
+            client.post("/sign-out")
+            client.post("/sign-in", data={"passphrase": THEIRS})
+        log = on_record(client)
+        page = search(client, name, "reading", family=family)
+        pressed = client.post(
+            note_link_action(name, family=family),
+            data=press_of(page, name, log.assignment_id, family=family),
+        )
+        assert pressed.status_code == 303
+        details = client.get(note_add_href(name, family=family), headers=PAGE_HEADERS).text
+        form = unlink_press(details, name, family=family)
+        store = state_of(client).project_state
+        attempts: list[int] = []
+        reads: list[int] = []
+
+        def refusing_write(*args: object, **kwargs: object) -> object:
+            attempts.append(1)
+            cause = "the file refused"
+            raise CaptureNotSaved(name, RuntimeError(cause))
+
+        def refusing_read(*args: object, **kwargs: object) -> object:
+            reads.append(1)
+            cause = "the file refused the read"
+            raise sqlite3.OperationalError(cause)
+
+        monkeypatch.setattr(store, "unlink_capture", refusing_write)
+        monkeypatch.setattr(
+            store,
+            "sound_capture_history" if fault == "history" else "all_assignments",
+            refusing_read,
+        )
+        before = rows(client)
+        answer = client.post(
+            note_unlink_action(name, family=family), data=form, headers=PAGE_HEADERS
+        )
+        after = rows(client)
+        settled = not store._connection.in_transaction
+
+    assert answer.status_code == 500
+    assert (attempts, reads) == ([1], [1])
+    assert settled
+    assert answer.text.count(" autofocus") == 1
+    assert 'id="problem-summary"' in answer.text
+    assert escape(NOT_SAVED) in answer.text
+    assert (
+        f'Link shown on your form: <span class="authored-text">{log.assignment_id}</span>'
+        in answer.text
+    )
+    assert after == before
+
+
+@pytest.mark.parametrize("press", ["link", "unlink"])
+@pytest.mark.parametrize("family", [False, True])
+def test_a_press_on_a_name_that_is_no_note_keeps_the_words_and_the_choice(
+    press: str, family: bool, tmp_path: pathlib.Path
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": THEIRS if family else HERS})
+        data = {"revision": "1", "from": "former-target"}
+        if press == "link":
+            data.update(q="what <b>I</b> searched", page="1", target="chosen-target", basis="abc")
+        action = (note_link_action if press == "link" else note_unlink_action)(
+            "not-a-note", family=family
+        )
+        before = rows(client)
+        answer = client.post(action, data=data, headers=PAGE_HEADERS)
+        after = rows(client)
+
+    assert answer.status_code == 404
+    assert answer.text.count(" autofocus") == 1
+    assert (
+        'Link shown on your form: <span class="authored-text">former-target</span>' in answer.text
+    )
+    if press == "link":
+        assert "what &lt;b&gt;I&lt;/b&gt; searched" in answer.text
+        assert "chosen-target" in answer.text
+    assert after == before
+
+
+@pytest.mark.parametrize("later", ["course", "due_date", "archive"])
+def test_the_accepted_press_sent_again_after_the_note_changed_writes_nothing(later: str) -> None:
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        payload = press_of(search(client, name, "reading"), name, log.assignment_id)
+        assert client.post(note_link_action(name), data=payload).status_code == 303
+        if later == "archive":
+            change_note(client, name, "archive")
+        else:
+            change_note(
+                client, name, "edit", **{later: "Humanities" if later == "course" else "2026-08-23"}
+            )
+        before = rows(client)
+        again = client.post(note_link_action(name), data=payload)
+        landed = client.get(again.headers["location"]).text
+        after = rows(client)
+
+    assert again.status_code == 303
+    assert after == before
+    assert 'id="note-result"' in landed
+    assert escape(ALREADY_ADDED) in landed
+
+
+@pytest.mark.parametrize("later", ["edit", "archive"])
+def test_the_accepted_move_sent_again_after_the_note_changed_writes_nothing(later: str) -> None:
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        other = on_record(
+            client, course="Spanish", title="Vocabulary list, unit nine", due=date(2026, 8, 21)
+        )
+        joined(client, name, log)
+        payload = press_of(search(client, name, "nine"), name, other.assignment_id)
+        assert client.post(note_link_action(name), data=payload).status_code == 303
+        if later == "edit":
+            change_note(client, name, "edit", text="Later words")
+        else:
+            change_note(client, name, "archive")
+        before = rows(client)
+        again = client.post(note_link_action(name), data=payload)
+        landed = client.get(again.headers["location"]).text
+        after = rows(client)
+
+    assert again.status_code == 303
+    assert after == before
+    assert escape(ALREADY_ADDED) in landed
+
+
+def test_the_homework_chosen_is_shown_once_from_the_pages_own_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row the press was held to is read with the page, once, as it stands when the
+    page is made: not the row the refusing transaction read, and not twice when the words
+    still find it."""
+    with browser() as client:
+        name = save_note(client)
+        log = on_record(client)
+        payload = press_of(search(client, name, "reading"), name, log.assignment_id)
+        store = state_of(client).project_state
+        store.put_on_record([log.model_copy(update={"title": "First reading worksheet"})], {})
+        original = store.sound_capture_history
+        renamed: list[int] = []
+
+        def rename_before_the_page(capture_id: str) -> object:
+            found = original(capture_id)
+            if not renamed:
+                renamed.append(1)
+                store.put_on_record(
+                    [log.model_copy(update={"title": "Second reading worksheet"})], {}
+                )
+            return found
+
+        monkeypatch.setattr(store, "sound_capture_history", rename_before_the_page)
+        answer = client.post(note_link_action(name), data=payload)
+        presses = [
+            whole_form(part.split("</li>")[0], note_link_action(name))
+            for part in answer.text.split("<li id=")[1:]
+            if f'"found-{log.assignment_id}"' in part[:80]
+            or f'"chosen-{log.assignment_id}"' in part[:80]
+        ]
+
+    assert answer.status_code == 409
+    assert HOMEWORK_CHANGED in answer.text
+    assert "Second reading worksheet" in answer.text
+    assert "First reading worksheet" not in answer.text
+    assert len(presses) == 1
+    assert presses[0]["target"] == log.assignment_id
+    assert presses[0]["basis"] != payload["basis"]
+    assert "This is the homework chosen." in answer.text
+
+
+def test_the_homework_chosen_that_left_the_record_is_said_so_with_no_press() -> None:
+    with browser() as client:
+        name = save_note(client)
+        log = on_record(client)
+        payload = press_of(search(client, name, "reading"), name, log.assignment_id)
+        store = state_of(client).project_state
+        store._connection.execute(
+            "DELETE FROM assignments WHERE assignment_id = ?", (log.assignment_id,)
+        )
+        store._connection.commit()
+        answer = client.post(note_link_action(name), data=payload)
+
+    assert answer.status_code == 409
+    assert HOMEWORK_GONE in answer.text
+    assert 'id="search-chosen-gone"' in answer.text
+    assert f'"chosen-{log.assignment_id}"' not in answer.text
+    assert f'value="{log.assignment_id}"' not in answer.text
+
+
+def test_the_search_control_follows_the_servers_rule_and_names_its_error() -> None:
+    """No native limit, which counts differently from the server's; a refused query marks
+    the field, describes it by the alert, and the alert links to the field; a refusal about
+    the homework chosen marks no field."""
+    with browser() as client:
+        name = save_note(client)
+        log = on_record(client)
+        plain = search(client, name, "")
+        wide = search(client, name, chr(0x1D49C) * 200)
+        refused = client.get(note_search_href(name, q="Q" * 201), headers=PAGE_HEADERS)
+        payload = press_of(search(client, name, "reading"), name, log.assignment_id)
+        report(client, log.assignment_id, "done")
+        stale = client.post(note_link_action(name), data=payload)
+
+    field = plain.split('id="search-words"')[1].split(">")[0]
+    assert "maxlength" not in field
+    assert "Up to 200 characters." in plain
+    assert "aria-invalid" not in field
+    assert NOTHING_FOUND in wide
+    assert QUERY_REFUSED not in wide
+    assert refused.status_code == 200
+    bad = refused.text.split('id="search-words"')[1].split(">")[0]
+    assert 'aria-invalid="true"' in bad
+    assert 'aria-describedby="search-words-hint search-problem"' in bad
+    alert = refused.text.split('id="search-problem"')[1].split("</p>")[0]
+    assert 'href="#search-words">Review your search words</a>' in alert
+    assert refused.text.count(" autofocus") == 1
+    assert stale.status_code == 409
+    assert "aria-invalid" not in stale.text.split('id="search-words"')[1].split(">")[0]
+
+
+def test_a_refused_query_stays_refused_whatever_the_page_number() -> None:
+    with browser() as client:
+        name = save_note(client)
+        answer = client.get(note_search_href(name, q="Q" * 201, page="2"), headers=PAGE_HEADERS)
+
+    assert answer.status_code == 200
+    assert QUERY_REFUSED in answer.text
+    assert NO_SUCH_PAGE not in answer.text
+
+
+def test_the_search_comes_first_and_the_note_opens_from_a_disclosure() -> None:
+    """The search field and its button come before the note's words and the explanations,
+    which a native disclosure holds whole; an error stays outside the disclosure."""
+    long_words = "A long note. " * 37
+    with browser() as client:
+        name = save_note(client, text=long_words.strip())
+        page = search(client, name, "")
+        refused = client.get(note_search_href(name, q="Q" * 201), headers=PAGE_HEADERS).text
+
+    assert page.index('id="search-words"') < page.index("<details")
+    assert page.index(">Search</button>") < page.index("<details")
+    assert "<summary>Read this homework note</summary>" in page
+    assert page.index("<summary>Read this homework note</summary>") < page.index(
+        escape(long_words.strip())
+    )
+    assert "Linking the homework note saved" in page.split("<details")[0]
+    assert refused.index('id="search-problem"') < refused.index("<details")
