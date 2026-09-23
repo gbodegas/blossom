@@ -89,6 +89,7 @@ from blossom.routes.student import (
     NOT_HERS_TO_UPDATE,
     ReturnLink,
     State,
+    parent_reads,
     templates,
     viewer_of,
 )
@@ -399,16 +400,17 @@ def shown_day(raw: str) -> str | None:
         return None
 
 
-def ways_back(*, added: bool = False) -> list[ReturnLink]:
+def ways_back(request: Request, *, added: bool = False) -> list[ReturnLink]:
     """The two ways on from a note's pages, fixed addresses of this site: her notes, and
-    her week. A note in homework is on the list of those, so that is the list it goes back
-    to."""
+    her week, named for whoever reads. A note in homework is on the list of those, so that
+    is the list it goes back to."""
     notes = (
         ReturnLink(ADDED_NOTES_PAGE, "Back to notes added to homework")
         if added
         else ReturnLink(NOTES_PAGE, "Back to Homework notes")
     )
-    return [notes, ReturnLink(WEEK_PAGE, "Back to my week")]
+    week = "Back to her week" if parent_reads(request) else "Back to my week"
+    return [notes, ReturnLink(WEEK_PAGE, week)]
 
 
 def new_note_page(
@@ -427,6 +429,7 @@ def new_note_page(
             "form": form,
             "taken": taken,
             "viewer": viewer_of(request),
+            "parent": parent_reads(request),
             "not_hers": NOT_HERS_TO_UPDATE,
             "text_max_length": CAPTURE_TEXT_MAX_LENGTH,
             "course_max_length": CAPTURE_COURSE_MAX_LENGTH,
@@ -441,7 +444,7 @@ def gone(request: Request, state: ApplicationState) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "student_note_gone.html",
-        {"problem": NOTE_GONE, "ways_back": ways_back(), "sample": state.settings.sample},
+        {"problem": NOTE_GONE, "ways_back": ways_back(request), "sample": state.settings.sample},
         status_code=status.HTTP_404_NOT_FOUND,
     )
 
@@ -465,7 +468,7 @@ def plain_failure(
             "hand_in_card": None,
             "note_problem": problem,
             "note_form": form,
-            "ways_back": ways_back(),
+            "ways_back": ways_back(request),
             "sample": state.settings.sample,
         },
         status_code=status_code,
@@ -495,7 +498,7 @@ def help_not_sent(
             "note_problem": problem if mine else NOT_HERS_TO_UPDATE,
             "help_question": question if mine else "",
             "help_note": capture_id,
-            "ways_back": ways_back(),
+            "ways_back": ways_back(request),
             "sample": state.settings.sample,
         },
         status_code=status_code if mine else status.HTTP_403_FORBIDDEN,
@@ -537,7 +540,11 @@ def unreadable(
     return templates.TemplateResponse(
         request,
         "student_note_gone.html",
-        {"problem": NOTE_UNREADABLE, "ways_back": ways_back(), "sample": state.settings.sample},
+        {
+            "problem": NOTE_UNREADABLE,
+            "ways_back": ways_back(request),
+            "sample": state.settings.sample,
+        },
         status_code=status_code,
     )
 
@@ -613,7 +620,9 @@ def note_page(
             "in_homework": in_homework(state, note),
             "out_of_the_window": OUT_OF_THE_WINDOW,
             "window_unknown": WINDOW_UNKNOWN,
-            "ways_back": ways_back(added=note.assignment_id is not None and not note.archived),
+            "ways_back": ways_back(
+                request, added=note.assignment_id is not None and not note.archived
+            ),
             "text_max_length": CAPTURE_TEXT_MAX_LENGTH,
             "course_max_length": CAPTURE_COURSE_MAX_LENGTH,
             "sample": state.settings.sample,
