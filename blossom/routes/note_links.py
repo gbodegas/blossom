@@ -59,6 +59,7 @@ from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.hand_in import accepted_at
 from blossom.routes.navigation import NOTE_RESULT, note_href, note_search_href
 from blossom.routes.note_details import (
+    BASIS_AS_WRITTEN,
     HERS,
     NOT_SAVED,
     THEIRS,
@@ -99,8 +100,10 @@ OWN_ASSIGNMENT: Final = (
     "This note made an assignment of its own, and stays with it. Its link is the record of that."
 )
 
-LINK_MAY_BE_ABSENT: Final = frozenset({"from", "q", "page"})
-LINK_FIELDS: Final = LINK_MAY_BE_ABSENT | {"target", "basis", "revision"}
+LINK_MAY_BE_ABSENT: Final = frozenset({"from"})
+"""Every press the page makes carries its search words and its page, empty or not; only the
+homework left is there for a note joined already."""
+LINK_FIELDS: Final = LINK_MAY_BE_ABSENT | {"target", "basis", "revision", "q", "page"}
 UNLINK_FIELDS: Final = frozenset({"revision", "from"})
 
 
@@ -217,6 +220,10 @@ def search_page(
         rows = [row_of(item, way) for item in readings[: len(shown)]]
         if beside is not None:
             chosen_row = row_of(readings[-1], way)
+    if selected and problem in (HOMEWORK_CHANGED, HOMEWORK_GONE):
+        # The store refused on what it read; the page says the homework chosen as its own
+        # reading finds it, gone or standing, so the sentence and the rows agree.
+        problem = HOMEWORK_GONE if chosen_gone else HOMEWORK_CHANGED
     viewer = viewer_of(request)
     own = note.assignment_id is not None and not joined
     may_write = way.open_to(viewer) and not note.archived and not own
@@ -257,6 +264,8 @@ def search_page(
             "rows": rows,
             "pages": page_hrefs,
             "chosen": selected or "",
+            # What a refused press asked, kept apart from the record and from any fresh press.
+            "attempt": form if form is not None and form.unsaved else None,
             "chosen_row": chosen_row,
             "chosen_gone": chosen_gone,
             "chosen_gone_sentence": HOMEWORK_GONE,
@@ -374,7 +383,9 @@ async def link_to_homework(
     except NotACaptureId:
         return plain_search(request, state, form, NOTE_GONE, status.HTTP_404_NOT_FOUND)
     target = one_row(fields, "target")
-    basis = one_row(fields, "basis")
+    # The fingerprint is sixty-four hexadecimal digits as the page writes it; anything
+    # else is a form this page never made, not homework that changed.
+    basis = fields.get("basis", "") if BASIS_AS_WRITTEN.fullmatch(fields.get("basis", "")) else None
     leaving = one_row(fields, "from") if fields.get("from") else None
     if not whole or form.revision is None or basis is None or (fields.get("from") and not leaving):
         return search_or_plain(

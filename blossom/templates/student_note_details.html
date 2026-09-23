@@ -69,11 +69,14 @@
     <h2 class="update-heading">{% if family %}What she wrote{% else %}What you wrote{% endif %}</h2>
     <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
     <p class="note">These words stay as they are. Nothing on this page changes them, and they are not shared with the planning model.</p>
-    {% if note.assignment_id %}
-      {# A refused unlink says what it asked, apart from the link that stands. #}
-      {% if unlink_request %}
-        <p class="note">Unlink requested for <span class="authored-text">{{ unlink_request.leaving }}</span>{% if unlink_request.leaving != note.assignment_id %}, which is not the homework this note is linked to now{% endif %}. Nothing was changed.</p>
+    {# A refused unlink says what it asked, apart from the link that stands or from the note's being linked to nothing now. #}
+    {% if unlink_request %}
+      <p class="note">Unlink requested for <span class="authored-text">{{ unlink_request.leaving }}</span>{% if note.assignment_id and unlink_request.leaving != note.assignment_id %}, which is not the homework this note is linked to now{% endif %}. Nothing was changed.</p>
+      {% if not note.assignment_id %}
+        <p class="note">This note is not linked to homework now.</p>
       {% endif %}
+    {% endif %}
+    {% if note.assignment_id %}
       <p class="note">This note is already in homework. <a href="{{ details_href(note.assignment_id) }}">Open the assignment</a>.</p>
       {% include "note_link_controls.html" %}
     {% elif note.archived %}

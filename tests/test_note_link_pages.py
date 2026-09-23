@@ -11,7 +11,9 @@ the note's name is read; nothing is joined by a search alone.
 
 import pathlib
 import sqlite3
+from collections.abc import Callable
 from datetime import date
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,7 +24,9 @@ from blossom.app import create_app
 from blossom.candidates import readings_for, row_reader
 from blossom.captures import (
     STUDENT,
+    CandidatesChanged,
     CaptureNotSaved,
+    HomeworkGone,
     candidate_basis,
     derived_assignment_id,
 )
@@ -1261,3 +1265,210 @@ def test_the_search_comes_first_when_the_note_is_linked_to_long_named_homework()
     assert "moves this link" in linked
     assert page.index('id="search-linked-now"') < page.index("<details")
     assert page.count("moves this link") == 1
+
+
+# ------------------------------------------------------------------ fourth review round
+
+
+@pytest.mark.parametrize("left_out", ["q", "page"])
+def test_a_link_press_without_its_words_or_its_page_is_not_whole(left_out: str) -> None:
+    """Every link press the page makes carries the search words and the page; a form
+    without them is one this page never made, and writes nothing."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        payload = press_of(search(client, name, "reading"), name, log.assignment_id)
+        del payload[left_out]
+        before = rows(client)
+        answer = client.post(note_link_action(name), data=payload, headers=PAGE_HEADERS)
+        after = rows(client)
+
+    assert answer.status_code == 422
+    assert escape(BAD_FORM) in answer.text
+    assert after == before
+
+
+@pytest.mark.parametrize("basis", ["abc", "X" * 64, "0" * 63, "0" * 65])
+def test_a_link_press_whose_fingerprint_is_not_as_written_is_not_whole(basis: str) -> None:
+    """The fingerprint is sixty-four hexadecimal digits as the page writes it; anything else
+    is a form this page never made, refused as not whole, never read as homework changed."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        payload = {
+            **press_of(search(client, name, "reading"), name, log.assignment_id),
+            "basis": basis,
+        }
+        before = rows(client)
+        answer = client.post(note_link_action(name), data=payload, headers=PAGE_HEADERS)
+        after = rows(client)
+
+    assert answer.status_code == 422
+    assert escape(BAD_FORM) in answer.text
+    assert escape(HOMEWORK_CHANGED) not in answer.text
+    assert after == before
+
+
+@pytest.mark.parametrize("turn", ["gone after changed", "back after gone"])
+def test_the_refusal_names_the_homework_chosen_as_the_page_finds_it(
+    turn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store refuses on what it read; the page reads again. Homework that changed and
+    then left the record is said gone, and homework that was gone and is back is shown as
+    it stands now, with a fresh press: the sentence and the rows come from one reading."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        payload = press_of(search(client, name, "reading"), name, log.assignment_id)
+        store = state_of(client).project_state
+        if turn == "gone after changed":
+            store.put_on_record(
+                [log.model_copy(update={"title": "Summer reading log, week two"})], {}
+            )
+        else:
+            store._connection.execute(
+                "DELETE FROM assignments WHERE assignment_id = ?", (log.assignment_id,)
+            )
+            store._connection.commit()
+        original = cast("Callable[..., object]", store.link_capture)
+
+        def refuse_then_turn(*args: object, **kwargs: object) -> object:
+            outcome = original(*args, **kwargs)
+            if turn == "gone after changed":
+                assert isinstance(outcome, CandidatesChanged)
+                store._connection.execute(
+                    "DELETE FROM assignments WHERE assignment_id = ?", (log.assignment_id,)
+                )
+                store._connection.commit()
+            else:
+                assert isinstance(outcome, HomeworkGone)
+                store.put_on_record([log], {})
+            return outcome
+
+        monkeypatch.setattr(store, "link_capture", refuse_then_turn)
+        before = {name: rows(client)[name] for name in ("homework_captures", "capture_events")}
+        answer = client.post(note_link_action(name), data=payload, headers=PAGE_HEADERS)
+        after = {name: rows(client)[name] for name in ("homework_captures", "capture_events")}
+
+    assert answer.status_code == 409
+    assert answer.text.count(" autofocus") == 1
+    assert after == before
+    if turn == "gone after changed":
+        assert escape(HOMEWORK_GONE) in answer.text
+        assert 'id="search-chosen-gone"' in answer.text
+        assert escape(HOMEWORK_CHANGED) not in answer.text
+        assert "This is the homework chosen." not in answer.text
+    else:
+        assert escape(HOMEWORK_CHANGED) in answer.text
+        assert escape(HOMEWORK_GONE) not in answer.text
+        row = answer.text.split(f'id="found-{log.assignment_id}"')[1].split("</li>")[0]
+        assert "This is the homework chosen." in row
+        assert ">Link to this homework</button>" in row
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize("now", ["unlinked", "moved", "archived"])
+def test_a_stale_move_names_what_it_asked_apart_from_the_link_that_stands(
+    now: str, family: bool
+) -> None:
+    """A move from A to B kept on an old page, sent after the note left A from elsewhere:
+    refused, nothing written, and the page says the move asked to leave A for B apart from
+    where the note stands now and from any fresh press, whose fields are the record's."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        other = on_record(
+            client, course="Spanish", title="Vocabulary list, unit nine", due=date(2026, 8, 21)
+        )
+        joined(client, name, log)
+        stale = press_of(
+            search(client, name, "nine", family=family), name, other.assignment_id, family=family
+        )
+        assert stale["from"] == log.assignment_id
+        if now == "moved":
+            third = on_record(
+                client, course="Science", title="Lab report, unit nine", due=date(2026, 8, 22)
+            )
+            moved = press_of(
+                search(client, name, "lab", family=family), name, third.assignment_id, family=family
+            )
+            assert client.post(note_link_action(name, family=family), data=moved).status_code == 303
+        else:
+            details = client.get(note_add_href(name, family=family), headers=PAGE_HEADERS).text
+            unlinked = client.post(
+                note_unlink_action(name, family=family),
+                data=unlink_press(details, name, family=family),
+            )
+            assert unlinked.status_code == 303
+            if now == "archived":
+                change_note(client, name, "archive")
+        standing = state_of(client).project_state.capture(name)
+        assert standing is not None
+        before = rows(client)
+        refused = client.post(
+            note_link_action(name, family=family), data=stale, headers=PAGE_HEADERS
+        )
+        after = rows(client)
+
+    assert refused.status_code == 409
+    assert after == before
+    assert refused.text.count(" autofocus") == 1
+    request = refused.text.split('id="search-request"')[1].split("</p>")[0]
+    assert f'from <span class="authored-text">{log.assignment_id}</span>' in request
+    assert f'to <span class="authored-text">{other.assignment_id}</span>' in request
+    assert "This move was not saved." in request
+    row = refused.text.split(f'id="found-{other.assignment_id}"')[1].split("</li>")[0]
+    if now == "moved":
+        linked = refused.text.split('id="search-linked-now"')[1].split("</p>")[0]
+        assert "Lab report, unit nine" in linked
+        assert "This note is not linked to homework now." not in refused.text
+        fresh = whole_form(row, note_link_action(name, family=family))
+        assert (fresh["from"], fresh["revision"]) == (third.assignment_id, str(standing.revision))
+    else:
+        assert "This note is not linked to homework now." in refused.text
+        assert 'id="search-linked-now"' not in refused.text
+        if now == "unlinked":
+            fresh = whole_form(row, note_link_action(name, family=family))
+            assert "from" not in fresh
+            assert fresh["revision"] == str(standing.revision)
+        else:
+            assert "<form" not in row
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize("later", ["edit", "archive"])
+def test_a_stale_unlink_names_what_it_asked_when_the_note_is_linked_to_nothing_now(
+    later: str, family: bool
+) -> None:
+    """An unlink of A kept on an old page, sent after the note left A and was edited or put
+    away from elsewhere: refused, nothing written, the page names A as what was asked and
+    says the note is linked to nothing now, and offers no unlink press."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        joined(client, name, log)
+        details = client.get(note_add_href(name, family=family), headers=PAGE_HEADERS).text
+        stale = unlink_press(details, name, family=family)
+        assert client.post(note_unlink_action(name, family=family), data=stale).status_code == 303
+        if later == "edit":
+            change_note(client, name, "edit", text="Edited after leaving that homework")
+        else:
+            change_note(client, name, "archive")
+        before = rows(client)
+        refused = client.post(
+            note_unlink_action(name, family=family), data=stale, headers=PAGE_HEADERS
+        )
+        after = rows(client)
+
+    assert refused.status_code == 409
+    assert after == before
+    assert refused.text.count(" autofocus") == 1
+    asked = (
+        f'Unlink requested for <span class="authored-text">{log.assignment_id}</span>. '
+        "Nothing was changed."
+    )
+    assert asked in refused.text
+    assert "This note is not linked to homework now." in refused.text
+    assert "not the homework this note is linked to now" not in refused.text
+    assert ">Unlink from this homework</button>" not in refused.text
+    assert note_unlink_action(name, family=family) not in refused.text.split("<h1>")[1]

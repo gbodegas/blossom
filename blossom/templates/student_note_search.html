@@ -61,6 +61,13 @@
     {% if hint %}
       <p class="note" id="search-hint">{{ hint }}</p>
     {% endif %}
+    {% if attempt and attempt.leaving %}
+      {# What a refused move asked, apart from the link that stands and from any fresh press. #}
+      <p class="note" id="search-request">Move requested from <span class="authored-text">{{ attempt.leaving }}</span>{% if attempt.target %} to <span class="authored-text">{{ attempt.target }}</span>{% endif %}. This move was not saved.</p>
+      {% if not note.assignment_id %}
+        <p class="note">This note is not linked to homework now.</p>
+      {% endif %}
+    {% endif %}
     {% if joined %}
       {# The link that stands, whole, after the form and before any result that would change it. #}
       <p class="note" id="search-linked-now">Linked now to {% if current %}<span class="authored-text">{{ current.course }}</span> &middot; <span class="authored-text">{{ current.title }}</span>{% else %}homework that is not on record now{% endif %}. Choosing a result moves this link to it: the old link is withdrawn and the new one made together, or neither. Nothing on either assignment changes.</p>

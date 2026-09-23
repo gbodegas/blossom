@@ -854,8 +854,9 @@ which nothing changes, everything that first save sent, and for a class or a
 day who supplied it and through which way in. `capture_events` holds every
 change with what stood before and after, and who made it: the student, a
 parent, or the household when the sign-in is off; a link by search and an
-unlink also keep the way in the press came through, and a row from before
-that column reads with none. Both tables and both
+unlink also keep the way in the press came through, which the line of changes
+allows on no other change, and a row from before that column reads with none.
+Both tables and both
 indexes are made in one transaction, so a start that is refused one of them
 leaves an older file as it was. A note's place among all notes is the number
 the file gave its first event, so an edit, an archive, or a restore never
@@ -1126,7 +1127,11 @@ nothing: each row carries its own press, with the note's revision and the
 fingerprint of that one row, and `link_capture` holds the press to both inside
 its transaction, reading the row again through the same reading, so homework
 that changed in anything shown is put to the person again and homework that
-left the record is said so. The link is a `link` change with the choice of
+left the record is said so; the refusal names the homework chosen as the
+page's own reading finds it, gone or standing, so the sentence and the rows
+agree. A link press is whole only with its search words, its page, and a
+fingerprint of sixty-four hexadecimal digits as the page writes it; anything
+else is refused as not whole. The link is a `link` change with the choice of
 homework found, naming the one row, and with what the press asked: the
 revision its page showed and, for a move, the homework it left. A press sent
 again is known as that press again by what it asked and by the row as shown,
@@ -1156,8 +1161,12 @@ homework the page showed as the note's own link, so a move that fails leaves
 the note joined as it was and makes no duplicate. A refused unlink lands on the
 details page, where the press lives, saying the homework it asked to leave
 apart from the link that stands, named whole beside the unlink press it
-offers instead; a note that is gone or cannot be read takes the refusal to the
-page that reads no store, with the homework the form named kept. Who pressed
+offers instead, or apart from the note's being linked to nothing now; a
+refused move says on the search page the homework it asked to leave and the
+one it chose, apart from the link that stands and from any fresh press, whose
+fields are the record's; a note that is gone or cannot be read takes the
+refusal to the page that reads no store, with the homework the form named
+kept. Who pressed
 is settled before the note's name is read, as on the details page, and the
 gate lets her sign-in reach the family's link and unlink presses to be refused
 there with the words kept.

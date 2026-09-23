@@ -899,3 +899,31 @@ def test_a_link_and_an_unlink_keep_the_way_the_press_came_through(
     assert made.channel is SourceChannel.STUDENT_REPORT
     assert left.channel is SourceChannel.PARENT_ENTRY
     assert the_note(store, name).attribution["due_date"].channel is SourceChannel.STUDENT_REPORT
+
+
+# ------------------------------------------------------------------ the way in held to its kinds
+
+
+@pytest.mark.parametrize("operation", ["create", "edit"])
+def test_a_way_in_kept_on_a_change_that_is_no_search_or_unlink_is_unreadable(
+    store: ProjectStateStore, operation: str
+) -> None:
+    """The tree a press came through belongs to a link by search and to an unlink; a first
+    save or an edit that carries one is not one line, in the reading and in the file."""
+    target = on_record(store)
+    name = joined(store, target)
+    edited(store, name, 2, text="Later words")
+    held = the_note(store, name)
+    events = list(store.capture_history(name))
+    place = next(index for index, event in enumerate(events) if event.operation == operation)
+    events[place] = events[place].model_copy(update={"channel": SourceChannel.STUDENT_REPORT})
+    with pytest.raises(UnsoundCaptureHistory):
+        sound_history(held, events)
+
+    store._connection.execute(
+        "UPDATE capture_events SET channel = ? WHERE capture_id = ? AND operation = ?",
+        (SourceChannel.STUDENT_REPORT.value, name, operation),
+    )
+    store._connection.commit()
+    with pytest.raises(UnsoundCaptureHistory):
+        store.sound_capture_history(name)
