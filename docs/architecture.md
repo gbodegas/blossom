@@ -854,8 +854,9 @@ which nothing changes, everything that first save sent, and for a class or a
 day who supplied it and through which way in. `capture_events` holds every
 change with what stood before and after, and who made it: the student, a
 parent, or the household when the sign-in is off; a link by search and an
-unlink also keep the way in the press came through, which the line of changes
-allows on no other change, and a row from before that column reads with none.
+unlink also keep the way in the press came through, her tree or the family's,
+which the line of changes allows on no other change and never as one of the
+school's channels, and a row from before that column reads with none.
 Both tables and both
 indexes are made in one transaction, so a start that is refused one of them
 leaves an older file as it was. A note's place among all notes is the number

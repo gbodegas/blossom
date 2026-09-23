@@ -927,3 +927,48 @@ def test_a_way_in_kept_on_a_change_that_is_no_search_or_unlink_is_unreadable(
     store._connection.commit()
     with pytest.raises(UnsoundCaptureHistory):
         store.sound_capture_history(name)
+
+
+# ------------------------------------------------------------------ the way in is a person's tree
+
+
+@pytest.mark.parametrize("school", [SourceChannel.LMS, SourceChannel.EMAIL])
+def test_a_way_in_that_is_the_schools_is_never_written_and_unreadable_if_found(
+    store: ProjectStateStore, school: SourceChannel
+) -> None:
+    """The tree a press came through is hers or the family's; the school's channels name
+    no tree. A link or an unlink asked to keep one is refused before anything is written,
+    and a row that holds one, however it got there, is not one line."""
+    target = on_record(store)
+    name = joined(store, target)
+    other = on_record(store, course="Spanish", title="Vocabulary list, unit two")
+    before = tables(store)
+
+    with pytest.raises(CaptureNotSaved):
+        store.link_capture(
+            name,
+            target=other.assignment_id,
+            expected_revision=2,
+            basis=basis_of(store, other),
+            leaving=target.assignment_id,
+            shown=row_reader(store),
+            authored_by=STUDENT,
+            channel=school,
+            now=LATER,
+            today=MONDAY,
+        )
+    with pytest.raises(CaptureNotSaved):
+        unlink(store, name, 2, target.assignment_id, channel=school)
+    assert tables(store) == before
+
+    held = the_note(store, name)
+    create, made = store.capture_history(name)
+    with pytest.raises(UnsoundCaptureHistory):
+        sound_history(held, [create, made.model_copy(update={"channel": school})])
+    store._connection.execute(
+        "UPDATE capture_events SET channel = ? WHERE capture_id = ? AND operation = 'link'",
+        (school.value, name),
+    )
+    store._connection.commit()
+    with pytest.raises(UnsoundCaptureHistory):
+        store.sound_capture_history(name)

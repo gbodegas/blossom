@@ -444,9 +444,10 @@ class CaptureEvent(BaseModel):
     decision: CandidateDecision | None = None
     """What was chosen about homework already on record, for a note added to homework."""
     channel: SourceChannel | None = None
-    """The tree a press by search or an unlink came through, apart from who pressed. Kept on
-    no other change, whose tree is on the fields it supplied, and the line holds it to
-    that; a change written before this was kept reads with none."""
+    """The tree a press by search or an unlink came through, hers or the family's, apart
+    from who pressed. Kept on no other change, whose tree is on the fields it supplied, and
+    never the school's, which names no tree; the line holds it to both. A change written
+    before this was kept reads with none."""
 
     @model_validator(mode="after")
     def _is_whole(self) -> Self:
@@ -681,12 +682,22 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
         )
 
 
+PERSONS_TREES: Final = frozenset({SourceChannel.STUDENT_REPORT, SourceChannel.PARENT_ENTRY})
+"""The ways in a press can come through: her tree and the family's. The school's channels
+name what the school said, never a person's press."""
+
+
 def _way_in_is_its_kinds(capture_id: str, place: int, change: CaptureEvent) -> None:
-    """The tree a press came through is kept on a link by search and on an unlink, and on
-    nothing else: any other change that carries one is unreadable, as a change of the
-    wrong shape is."""
+    """The tree a press came through is a person's, hers or the family's, and is kept on a
+    link by search and on an unlink, and on nothing else: a change that carries the
+    school's channel, or any other change that carries one, is unreadable, as a change of
+    the wrong shape is."""
     if change.channel is None:
         return
+    if change.channel not in PERSONS_TREES:
+        raise UnsoundCaptureHistory(
+            capture_id, f"revision {place} keeps a way in that is no person's tree"
+        )
     by_search = (
         change.operation == LINK
         and change.decision is not None
