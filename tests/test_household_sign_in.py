@@ -34,7 +34,7 @@ from blossom.household import (
 )
 from blossom.principals import Principal
 from blossom.settings import PARENT_PASSPHRASE_VARIABLE, STUDENT_PASSPHRASE_VARIABLE, Settings
-from tests.support import SAME_ORIGIN, fixture_settings
+from tests.support import SAME_ORIGIN, browser, fixture_settings
 
 HERS = "quiet mornings and loud music"
 THEIRS = "the kitchen table at seven"
@@ -581,3 +581,78 @@ def test_with_no_passphrases_nothing_asks(tmp_path: pathlib.Path) -> None:
     assert ">Sign out<" not in hers.text
     assert sign_in.status_code == 303
     assert not (tmp_path / SECRET_NAME).exists()
+
+
+# ------------------------------------------------------------------ the week, for whoever reads
+
+
+def nav_of(page: str) -> str:
+    return page.split('<nav class="places"', 1)[1].split("</nav>", 1)[0]
+
+
+def test_the_week_in_the_navigation_is_named_for_whoever_reads(tmp_path: pathlib.Path) -> None:
+    """The week is hers. She reads it as her own; a parent reads it as hers on every page,
+    her pages as well as the family's. Which section the page is in decides only which link
+    is marked current."""
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        hers = client.get("/student/due-this-week", headers=PAGE)
+        her_notes = client.get("/student/homework-notes", headers=PAGE)
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs_on_her_week = client.get("/student/due-this-week", headers=PAGE)
+        theirs_on_her_notes = client.get("/student/homework-notes", headers=PAGE)
+        theirs = client.get("/parent", headers=PAGE)
+
+    for page in (hers, her_notes):
+        assert page.status_code == 200
+        assert ">My week</a>" in nav_of(page.text)
+        assert "Student week" not in nav_of(page.text)
+    for page in (theirs_on_her_week, theirs_on_her_notes, theirs):
+        assert page.status_code == 200
+        assert ">Student week</a>" in nav_of(page.text)
+        assert "My week" not in nav_of(page.text)
+    assert '<a href="/student/due-this-week" aria-current="page">Student week</a>' in nav_of(
+        theirs_on_her_week.text
+    )
+    assert '<a href="/parent" aria-current="page">Family review</a>' in nav_of(theirs.text)
+
+
+def test_with_the_sign_in_off_the_week_is_named_by_the_section() -> None:
+    """With the sign-in off nobody is known, so her pages name the week as hers to her and
+    the family's pages name it as a parent reads it, as before."""
+    with browser() as client:
+        week = client.get("/student/due-this-week", headers=PAGE)
+        review = client.get("/parent", headers=PAGE)
+
+    assert week.status_code == 200
+    assert ">My week</a>" in nav_of(week.text)
+    assert review.status_code == 200
+    assert ">Student week</a>" in nav_of(review.text)
+
+
+def test_her_week_is_headed_for_whoever_reads(tmp_path: pathlib.Path) -> None:
+    """Her week's heading and its title name the week as the navigation does: her own to her,
+    hers to a parent, and her own with the sign-in off, since the page is in her section."""
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        hers = client.get("/student/due-this-week", headers=PAGE)
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs = client.get("/student/due-this-week", headers=PAGE)
+    with browser() as client:
+        nobody_known = client.get("/student/due-this-week", headers=PAGE)
+
+    for page in (hers, nobody_known):
+        assert page.status_code == 200
+        assert "<title>Blossom - My week</title>" in page.text
+        assert "<h1>My week</h1>" in page.text
+        assert "Student week" not in page.text
+    assert theirs.status_code == 200
+    assert "<title>Blossom - Student week</title>" in theirs.text
+    assert "<h1>Student week</h1>" in theirs.text
+    assert "My week" not in theirs.text
