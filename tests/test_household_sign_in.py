@@ -631,3 +631,28 @@ def test_with_the_sign_in_off_the_week_is_named_by_the_section() -> None:
     assert ">My week</a>" in nav_of(week.text)
     assert review.status_code == 200
     assert ">Student week</a>" in nav_of(review.text)
+
+
+def test_her_week_is_headed_for_whoever_reads(tmp_path: pathlib.Path) -> None:
+    """Her week's heading and its title name the week as the navigation does: her own to her,
+    hers to a parent, and her own with the sign-in off, since the page is in her section."""
+    with TestClient(
+        create_app(household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        hers = client.get("/student/due-this-week", headers=PAGE)
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs = client.get("/student/due-this-week", headers=PAGE)
+    with browser() as client:
+        nobody_known = client.get("/student/due-this-week", headers=PAGE)
+
+    for page in (hers, nobody_known):
+        assert page.status_code == 200
+        assert "<title>Blossom - My week</title>" in page.text
+        assert "<h1>My week</h1>" in page.text
+        assert "Student week" not in page.text
+    assert theirs.status_code == 200
+    assert "<title>Blossom - Student week</title>" in theirs.text
+    assert "<h1>Student week</h1>" in theirs.text
+    assert "My week" not in theirs.text

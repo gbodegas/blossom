@@ -1,9 +1,11 @@
 {% extends "base.html" %}
 {% set page = "student" %}
-{% block title %}Blossom - {% if view.week.current %}My week{% else %}Week of {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}{% endif %}{% endblock %}
+{# The week is hers, named for whoever reads, as the navigation names it. #}
+{% set week_name = "Student week" if viewer == "parent" else "My week" %}
+{% block title %}Blossom - {% if view.week.current %}{{ week_name }}{% else %}Week of {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}{% endif %}{% endblock %}
 {% block content %}
   {% if view.week.current %}
-    <h1>My week</h1>
+    <h1>{{ week_name }}</h1>
   {% else %}
     <h1>Week of {{ view.week.start.strftime("%B") }} {{ view.week.start.day }}</h1>
   {% endif %}
