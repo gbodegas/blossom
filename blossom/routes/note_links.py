@@ -395,6 +395,20 @@ async def link_to_homework(
         return search_or_plain(
             request, state, way, form, NO_CHOICE, status.HTTP_422_UNPROCESSABLE_CONTENT
         )
+    # The words and the page the press carries are held to the search's own rules before
+    # the store is asked, so nothing is written for a context the page would refuse; what
+    # was typed is kept as typed for the page that says so.
+    try:
+        terms_of(form.query)
+    except TextRefused:
+        return search_or_plain(
+            request, state, way, form, QUERY_REFUSED, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    number = page_number(form.page)
+    if number is None or number < 1:
+        return search_or_plain(
+            request, state, way, form, NO_SUCH_PAGE, status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
     try:
         async with state.decision_lock:
             now, today = accepted_at(state)

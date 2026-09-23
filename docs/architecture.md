@@ -1129,9 +1129,15 @@ its transaction, reading the row again through the same reading, so homework
 that changed in anything shown is put to the person again and homework that
 left the record is said so; the refusal names the homework chosen as the
 page's own reading finds it, gone or standing, so the sentence and the rows
-agree. A link press is whole only with its search words, its page, and a
-fingerprint of sixty-four hexadecimal digits as the page writes it; anything
-else is refused as not whole. The link is a `link` change with the choice of
+agree, and homework chosen that left the record is said gone with the id the
+press named kept beside the sentence. A link press is whole only with its
+search words, its page, and a fingerprint of sixty-four hexadecimal digits as
+the page writes it; anything else is refused as not whole, and words or a page
+the search itself would refuse are refused before the store is asked, with
+what was typed kept and the homework chosen standing beside a fresh press
+whose context is valid. Each result's press names its homework in its
+accessible name, since the same words repeat down the list. The link is a
+`link` change with the choice of
 homework found, naming the one row, and with what the press asked: the
 revision its page showed and, for a move, the homework it left. A press sent
 again is known as that press again by what it asked and by the row as shown,

@@ -206,7 +206,7 @@ def test_the_search_reads_class_and_title_and_shows_each_result_with_enough_to_c
     assert press["revision"] == "1"
     assert len(press["basis"]) == 64
     assert "from" not in press
-    assert ">Link to this homework</button>" in page
+    assert '>Link to this homework<span class="visually-hidden"> for ' in page
     assert 'id="found-' not in by_words
     assert NOTHING_FOUND in by_words
     assert spanish.count('id="found-') == 1
@@ -428,7 +428,7 @@ def test_changing_a_link_moves_the_note_and_says_so() -> None:
     assert "already linked to homework" in page
     assert "Summer reading log" in page.split("Linked now to")[1].split("</p>")[0]
     assert press["from"] == log.assignment_id
-    assert ">Move the link here</button>" in page
+    assert '>Move the link here<span class="visually-hidden"> for ' in page
     assert answer.status_code == 303
     assert escape(LINK_CHANGED) in landed
     assert old_claims == [("2026-08-21", 1, 0)]
@@ -467,7 +467,7 @@ def test_a_note_that_made_its_own_assignment_offers_no_change_or_unlink() -> Non
     assert ">Change link</a>" not in note_page
     assert ">Unlink from this homework</button>" not in details
     assert "made an assignment of its own" in page
-    assert ">Link to this homework</button>" not in page
+    assert "Link to this homework" not in page
     assert unlinked.status_code == 409
     assert NOT_JOINED in unlinked.text
     assert after == before
@@ -630,7 +630,7 @@ def test_choosing_the_homework_the_note_is_joined_to_now_changes_nothing() -> No
         landed = client.get(answer.headers["location"]).text
         after = rows(client)
 
-    assert ">Move the link here</button>" not in row
+    assert "Move the link here" not in row
     assert "joined to this homework now" in row
     assert answer.status_code == 303
     assert escape(ALREADY_ADDED) in landed
@@ -1363,7 +1363,7 @@ def test_the_refusal_names_the_homework_chosen_as_the_page_finds_it(
         assert escape(HOMEWORK_GONE) not in answer.text
         row = answer.text.split(f'id="found-{log.assignment_id}"')[1].split("</li>")[0]
         assert "This is the homework chosen." in row
-        assert ">Link to this homework</button>" in row
+        assert '>Link to this homework<span class="visually-hidden"> for ' in row
 
 
 @pytest.mark.parametrize("family", [False, True])
@@ -1472,3 +1472,174 @@ def test_a_stale_unlink_names_what_it_asked_when_the_note_is_linked_to_nothing_n
     assert "not the homework this note is linked to now" not in refused.text
     assert ">Unlink from this homework</button>" not in refused.text
     assert note_unlink_action(name, family=family) not in refused.text.split("<h1>")[1]
+
+
+# ------------------------------------------------------------------ fifth review round
+
+
+@pytest.mark.parametrize("family", [False, True])
+def test_the_gone_homework_refusal_keeps_the_homework_chosen(family: bool) -> None:
+    """Homework chosen that left the record is said gone, with the id the press named
+    kept beside the sentence, as the page that reads no store keeps it, so the choice can
+    be told apart or copied."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        payload = press_of(
+            search(client, name, "reading", family=family), name, log.assignment_id, family=family
+        )
+        store = state_of(client).project_state
+        store._connection.execute(
+            "DELETE FROM assignments WHERE assignment_id = ?", (log.assignment_id,)
+        )
+        store._connection.commit()
+        before = rows(client)
+        answer = client.post(
+            note_link_action(name, family=family), data=payload, headers=PAGE_HEADERS
+        )
+        after = rows(client)
+
+    assert answer.status_code == 409
+    assert after == before
+    gone = answer.text.split('id="search-chosen-gone"')[1].split("</p>")[0]
+    assert escape(HOMEWORK_GONE) in gone
+    assert f'Homework chosen: <span class="authored-text">{log.assignment_id}</span>.' in gone
+    assert f'value="{log.assignment_id}"' not in answer.text
+
+
+BROKEN_CONTEXT = {
+    "q": ["x" * 201, "two\nlines", "a\x01b"],
+    "page": ["0", "-1", "01", chr(0xFF11), "1.5", "1000000", "x"],
+}
+CONTEXT_CASES = [(field, value) for field, values in BROKEN_CONTEXT.items() for value in values]
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize(("field", "value"), CONTEXT_CASES)
+def test_a_link_press_whose_words_or_page_break_the_search_rule_is_refused_before_the_write(
+    field: str, value: str, family: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The words and the page a press carries are held to the search's own rules before
+    the store is asked: refused words mark the field and keep what was typed, a page that
+    is no page is said so, the homework chosen stands beside with a fresh press whose
+    context is valid, and nothing is written."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        payload = press_of(
+            search(client, name, "reading", family=family), name, log.assignment_id, family=family
+        )
+        payload[field] = value
+        store = state_of(client).project_state
+        writes: list[int] = []
+        original = cast("Callable[..., object]", store.link_capture)
+
+        def counted(*args: object, **kwargs: object) -> object:
+            writes.append(1)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(store, "link_capture", counted)
+        before = rows(client)
+        answer = client.post(
+            note_link_action(name, family=family), data=payload, headers=PAGE_HEADERS
+        )
+        after = rows(client)
+        standing = store.capture(name)
+
+    assert standing is not None
+    assert answer.status_code == 422
+    assert after == before
+    assert writes == []
+    assert answer.text.count(" autofocus") == 1
+    alert = answer.text.split('id="search-problem"')[1].split("</p>")[0]
+    field_html = answer.text.split('id="search-words"')[1].split(">")[0]
+    chosen = answer.text.split(f'"chosen-{log.assignment_id}"')[1].split("</li>")[0]
+    fresh = whole_form(chosen, note_link_action(name, family=family))
+    if field == "q":
+        assert escape(QUERY_REFUSED) in alert
+        assert 'href="#search-words"' in alert
+        assert 'aria-invalid="true"' in field_html
+        assert str(escape(value)) in field_html
+        assert fresh["q"] == ""
+    else:
+        assert escape(NO_SUCH_PAGE) in alert
+        assert "aria-invalid" not in field_html
+        assert fresh["q"] == "reading"
+    assert (fresh["target"], fresh["revision"], fresh["page"]) == (
+        log.assignment_id,
+        str(standing.revision),
+        "1",
+    )
+    assert len(fresh["basis"]) == 64
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize(
+    ("query", "page"), [("", ""), ("a" + " " * 240 + "b", "1"), ("\U0001f642" * 200, "2")]
+)
+def test_valid_search_context_still_lets_the_homework_chosen_be_linked(
+    query: str, page: str, family: bool
+) -> None:
+    """Empty words and an empty page, words within the limit once collapsed, and two
+    hundred code points beyond the basic plane are valid context; a page the homework is
+    not on invalidates nothing, since the fingerprint and the revision are the press."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        payload = {
+            **press_of(
+                search(client, name, "reading", family=family),
+                name,
+                log.assignment_id,
+                family=family,
+            ),
+            "q": query,
+            "page": page,
+        }
+        answer = client.post(note_link_action(name, family=family), data=payload)
+        held = state_of(client).project_state.capture(name)
+
+    assert answer.status_code == 303
+    assert held is not None
+    assert held.assignment_id == log.assignment_id
+
+
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize("linked", [False, True])
+def test_each_result_press_names_its_homework_for_a_screen_reader(
+    linked: bool, family: bool
+) -> None:
+    """Two results with the same title in different classes: each press carries its
+    homework's title and class in its accessible name, hidden from sight, so a person
+    moving by controls can tell them apart; the homework chosen shown beside the results
+    names itself the same way."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        if linked:
+            joined(client, name, on_record(client))
+        science = on_record(
+            client, course="Science", title="Shared worksheet", due=date(2026, 8, 24)
+        )
+        history = on_record(
+            client, course="History", title="Shared worksheet", due=date(2026, 8, 25)
+        )
+        page = search(client, name, "shared", family=family)
+        press = press_of(page, name, science.assignment_id, family=family)
+        press["revision"] = str(int(press["revision"]) + 5)
+        beside = client.post(
+            note_link_action(name, family=family),
+            data={**press, "q": "nothing here"},
+            headers=PAGE_HEADERS,
+        )
+
+    action = "Move the link here" if linked else "Link to this homework"
+    for item in (science, history):
+        row = page.split(f'id="found-{item.assignment_id}"')[1].split("</li>")[0]
+        button = row.split("<button")[1].split("</button>")[0]
+        assert (
+            f'>{action}<span class="visually-hidden"> for Shared worksheet ({item.course})</span>'
+            in button
+        )
+    assert beside.status_code == 409
+    chosen = beside.text.split(f'"chosen-{science.assignment_id}"')[1].split("</li>")[0]
+    assert '<span class="visually-hidden"> for Shared worksheet (Science)</span>' in chosen

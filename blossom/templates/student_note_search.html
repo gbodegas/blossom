@@ -17,9 +17,9 @@
         <input type="hidden" name="target" value="{{ item.row.assignment_id }}">
         <input type="hidden" name="basis" value="{{ item.basis }}">
         {% if leaving %}<input type="hidden" name="from" value="{{ leaving }}">{% endif %}
-        <input type="hidden" name="q" value="{{ query }}">
+        <input type="hidden" name="q" value="{% if not query_error %}{{ query }}{% endif %}">
         <input type="hidden" name="page" value="{{ results.number if results else 1 }}">
-        <button type="submit" class="primary">{% if joined %}Move the link here{% else %}Link to this homework{% endif %}</button>
+        <button type="submit" class="primary">{% if joined %}Move the link here{% else %}Link to this homework{% endif %}<span class="visually-hidden"> for {{ item.row.title }} ({{ item.row.course }})</span></button>
       </form>
     {% endif %}
   </li>
@@ -36,7 +36,9 @@
   when the words still find it and beside them when they do not. A note
   joined to homework that was on record before it is moved by the same
   press; a note that made an assignment of its own, or one put away, is
-  shown the page with no press on it. Reading the page writes nothing.
+  shown the page with no press on it. Each press names its homework in its
+  accessible name, hidden from sight, since the same words repeat down the
+  list. Reading the page writes nothing.
 #}
 {% block content %}
   {% for link in ways_back %}
@@ -86,7 +88,7 @@
       {% endif %}
     </details>
     {% if chosen_gone %}
-      <p class="note" id="search-chosen-gone">{{ chosen_gone_sentence }}</p>
+      <p class="note" id="search-chosen-gone">{{ chosen_gone_sentence }} Homework chosen: <span class="authored-text">{{ chosen }}</span>.</p>
     {% elif chosen_row %}
       {# The homework chosen, read with this page, shown beside the results when the words find it no more. #}
       <h2 class="update-heading" id="search-chosen">The homework chosen, as it stands now</h2>
