@@ -1633,16 +1633,20 @@ def test_each_result_press_names_its_homework_for_a_screen_reader(
         )
 
     action = "Move the link here" if linked else "Link to this homework"
+    days = {"Science": "August 24, 2026", "History": "August 25, 2026"}
     for item in (science, history):
         row = page.split(f'id="found-{item.assignment_id}"')[1].split("</li>")[0]
         button = row.split("<button")[1].split("</button>")[0]
         assert (
-            f'>{action}<span class="visually-hidden"> for Shared worksheet ({item.course})</span>'
-            in button
+            f'>{action}<span class="visually-hidden"> for Shared worksheet ({item.course}), '
+            f"due {days[item.course]}, {item.assignment_id}</span>" in button
         )
     assert beside.status_code == 409
     chosen = beside.text.split(f'"chosen-{science.assignment_id}"')[1].split("</li>")[0]
-    assert '<span class="visually-hidden"> for Shared worksheet (Science)</span>' in chosen
+    assert (
+        '<span class="visually-hidden"> for Shared worksheet (Science), due August 24, 2026, '
+        f"{science.assignment_id}</span>"
+    ) in chosen
 
 
 # ------------------------------------------------------------------ sixth review round
@@ -1688,3 +1692,72 @@ def test_a_link_receipt_says_only_what_its_event_bears_out(family: bool) -> None
         assert 'id="note-result"' not in forged
         assert escape(JOINED_TO_HOMEWORK) not in forged
         assert escape(LINK_CHANGED) not in forged
+
+
+# ------------------------------------------------------------------ eighth review round
+
+
+def test_a_parent_reading_her_pages_is_told_about_her(tmp_path: pathlib.Path) -> None:
+    """A parent may open her search page and her details page, whose addresses are in her
+    tree; the words there are keyed on who is reading, never on the tree: the note is what
+    she wrote, and a row says what she said, not what the reader said."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client, due_date="2026-08-21")
+        on_record(client)
+        done = on_record(client, title="Reading log, unit two", due=date(2026, 6, 5))
+        report(client, done.assignment_id, "done")
+        hers_search = search(client, name, "reading")
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        parents_search = client.get(note_search_href(name, q="reading"), headers=PAGE_HEADERS)
+        parents_details = client.get(note_add_href(name), headers=PAGE_HEADERS)
+        parents_own = search(client, name, "reading", family=True)
+
+    row = hers_search.split(f'id="found-{done.assignment_id}"')[1].split("</li>")[0]
+    assert "What you wrote" in hers_search
+    assert "You said Done on" in row
+    assert parents_search.status_code == 200
+    row = parents_search.text.split(f'id="found-{done.assignment_id}"')[1].split("</li>")[0]
+    assert "What she wrote" in parents_search.text
+    assert "What you wrote" not in parents_search.text
+    assert "She said Done on" in row
+    assert "You said" not in parents_search.text
+    assert "From your report" not in parents_search.text
+    assert escape(NOT_HERS_TO_UPDATE) in parents_search.text
+    assert note_link_action(name) not in parents_search.text
+    assert parents_details.status_code == 200
+    assert "What she wrote" in parents_details.text
+    assert "What you wrote" not in parents_details.text
+    assert "What she wrote" in parents_own
+    assert "She said Done on" in parents_own
+
+
+@pytest.mark.parametrize("family", [False, True])
+def test_each_result_press_names_its_homework_by_its_day_and_its_id(family: bool) -> None:
+    """Three results with the same title in the same class, two days apart and one with no
+    day: each press names its homework's title, class, day, and id, so a person moving by
+    controls can tell every occurrence apart."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        first = on_record(client, course="Science", title="Shared worksheet", due=date(2026, 8, 24))
+        second = on_record(
+            client, course="Science", title="Shared worksheet", due=date(2026, 8, 25)
+        )
+        undated = on_record(client, course="Science", title="Shared worksheet", due=None)
+        page = search(client, name, "shared", family=family)
+
+    assert len({first.assignment_id, second.assignment_id, undated.assignment_id}) == 3
+    names = []
+    for item, day in (
+        (first, "due August 24, 2026"),
+        (second, "due August 25, 2026"),
+        (undated, "no due date recorded"),
+    ):
+        row = page.split(f'id="found-{item.assignment_id}"')[1].split("</li>")[0]
+        button = row.split("<button")[1].split("</button>")[0]
+        hidden = button.split('<span class="visually-hidden">')[1].split("</span>")[0]
+        assert hidden == f" for Shared worksheet (Science), {day}, {item.assignment_id}"
+        names.append(hidden)
+    assert len(set(names)) == 3

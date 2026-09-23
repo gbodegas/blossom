@@ -1137,7 +1137,11 @@ the page writes it; anything else is refused as not whole, and words or a page
 the search itself would refuse are refused before the store is asked, with
 what was typed kept and the homework chosen standing beside a fresh press
 whose context is valid. Each result's press names its homework in its
-accessible name, since the same words repeat down the list. The link is a
+accessible name, by title, class, day, and id, since the same words repeat
+down the list and two rows can share a title and a class. On the search page
+and the details page the words follow who is reading, never the tree the
+address is in: a parent may open her pages, and is told about her there,
+while the presses stay the tree's. The link is a
 `link` change with the choice of
 homework found, naming the one row, and with what the press asked: the
 revision its page showed and, for a move, the homework it left. A press sent

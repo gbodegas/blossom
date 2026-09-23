@@ -19,7 +19,7 @@
         {% if leaving %}<input type="hidden" name="from" value="{{ leaving }}">{% endif %}
         <input type="hidden" name="q" value="{% if not query_error %}{{ query }}{% endif %}">
         <input type="hidden" name="page" value="{{ results.number if results else 1 }}">
-        <button type="submit" class="primary">{% if joined %}Move the link here{% else %}Link to this homework{% endif %}<span class="visually-hidden"> for {{ item.row.title }} ({{ item.row.course }})</span></button>
+        <button type="submit" class="primary">{% if joined %}Move the link here{% else %}Link to this homework{% endif %}<span class="visually-hidden"> for {{ item.row.title }} ({{ item.row.course }}), {% if item.row.due_date %}due {{ on(item.row.due_date) }}{% else %}no due date recorded{% endif %}, {{ item.row.assignment_id }}</span></button>
       </form>
     {% endif %}
   </li>
@@ -37,8 +37,10 @@
   joined to homework that was on record before it is moved by the same
   press; a note that made an assignment of its own, or one put away, is
   shown the page with no press on it. Each press names its homework in its
-  accessible name, hidden from sight, since the same words repeat down the
-  list. Reading the page writes nothing.
+  accessible name, hidden from sight, by title, class, day, and id, since
+  the same words repeat down the list and two rows can share a title and a
+  class. The words follow who is reading, never the tree the address is in.
+  Reading the page writes nothing.
 #}
 {% block content %}
   {% for link in ways_back %}
@@ -76,7 +78,7 @@
     {% endif %}
     <details class="steps">
       <summary>Read this homework note</summary>
-      <h2 class="update-heading">{% if family %}What she wrote{% else %}What you wrote{% endif %}</h2>
+      <h2 class="update-heading">{% if parent %}What she wrote{% else %}What you wrote{% endif %}</h2>
       <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
       <p class="note">These words stay as they are. The search never reads them, and nothing here is shared with the planning model.</p>
       {% if own %}

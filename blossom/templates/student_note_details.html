@@ -66,7 +66,7 @@
     <p class="problem" role="alert" id="details-problem" tabindex="-1" autofocus>{{ problem }}{% if may_write and at in targets %} <a href="#{{ targets[at][0] }}">{{ targets[at][1] }}</a>{% endif %}</p>
   {% endif %}
   <section class="panel homework-note">
-    <h2 class="update-heading">{% if family %}What she wrote{% else %}What you wrote{% endif %}</h2>
+    <h2 class="update-heading">{% if parent %}What she wrote{% else %}What you wrote{% endif %}</h2>
     <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
     <p class="note">These words stay as they are. Nothing on this page changes them, and they are not shared with the planning model.</p>
     {# A refused unlink says what it asked, apart from the link that stands or from the note's being linked to nothing now. #}

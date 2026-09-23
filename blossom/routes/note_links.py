@@ -161,6 +161,11 @@ def search_page(
     A note or a line that cannot be read is said as unavailable; a name that is no note's
     is said so."""
     store = state.project_state
+    viewer = viewer_of(request)
+    # The words follow who is reading, never the tree the address is in on its own: a
+    # parent may open her pages, and is told about her there; while the sign-in is off,
+    # whoever reads the family's pages reads them as a parent, and hers as her.
+    parent = viewer == "parent" or (viewer == "anyone" and way.family)
     terms: tuple[str, ...] = ()
     refused = None
     try:
@@ -217,14 +222,13 @@ def search_page(
             beside = store.one_assignment(selected)
             chosen_gone = beside is None
         readings = readings_for(store, [*shown, *([beside] if beside is not None else [])])
-        rows = [row_of(item, way) for item in readings[: len(shown)]]
+        rows = [row_of(item, parent=parent) for item in readings[: len(shown)]]
         if beside is not None:
-            chosen_row = row_of(readings[-1], way)
+            chosen_row = row_of(readings[-1], parent=parent)
     if selected and problem in (HOMEWORK_CHANGED, HOMEWORK_GONE):
         # The store refused on what it read; the page says the homework chosen as its own
         # reading finds it, gone or standing, so the sentence and the rows agree.
         problem = HOMEWORK_GONE if chosen_gone else HOMEWORK_CHANGED
-    viewer = viewer_of(request)
     own = note.assignment_id is not None and not joined
     may_write = way.open_to(viewer) and not note.archived and not own
     hint = None
@@ -249,6 +253,7 @@ def search_page(
         {
             "note": note,
             "family": way.family,
+            "parent": parent,
             "viewer": viewer,
             "may_write": may_write,
             "joined": joined,
@@ -278,9 +283,9 @@ def search_page(
     )
 
 
-def row_of(item: CandidateReading, way: Way) -> FoundRow:
-    """One result as the page shows it, from the page's one reading."""
-    return FoundRow(candidate_row(item, family=way.family), candidate_basis([item]))
+def row_of(item: CandidateReading, *, parent: bool) -> FoundRow:
+    """One result as the page shows it, from the page's one reading, in the reader's voice."""
+    return FoundRow(candidate_row(item, parent=parent), candidate_basis([item]))
 
 
 def plain_search(

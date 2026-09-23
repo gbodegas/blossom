@@ -489,16 +489,18 @@ class CandidateRow:
     source: str | None
 
 
-def candidate_row(item: CandidateReading, *, family: bool) -> CandidateRow:
-    """The row for one reading, in her words on her pages and about her on the family's."""
+def candidate_row(item: CandidateReading, *, parent: bool) -> CandidateRow:
+    """The row for one reading, in her words for her and about her for a parent: the voice
+    follows who is reading, never the tree the page's address is in on its own, since a
+    parent may open her pages; with the sign-in off, the family's pages read as a parent's."""
     if item.work_state in WORK_STATES and item.work_reported_on is not None:
-        who = "She" if family else "You"
+        who = "She" if parent else "You"
         hers = f"{who} said {WORK_STATES[item.work_state]} on {spoken(item.work_reported_on)}."
     else:
-        hers = f"No update from {'her' if family else 'you'} on it."
+        hers = f"No update from {'her' if parent else 'you'} on it."
     source = None
     if item.record_source is SourceChannel.STUDENT_REPORT:
-        source = "From her report." if family else "From your report."
+        source = "From her report." if parent else "From your report."
     elif item.record_source is not None:
         source = f"From the {CHANNEL_NAMES[item.record_source]}."
     return CandidateRow(
@@ -690,7 +692,10 @@ def details_page(
         # A class or a title the rules will not keep names no homework; the form says so.
         candidates = []
     viewer = viewer_of(request)
-    rows = [candidate_row(item, family=way.family) for item in candidates]
+    # The words follow who is reading: a parent on any page, or whoever reads the family's
+    # pages while the sign-in is off; her pages read by her, or with it off, are hers.
+    parent = viewer == "parent" or (viewer == "anyone" and way.family)
+    rows = [candidate_row(item, parent=parent) for item in candidates]
     offered = ({row.value for row in rows} | {SEPARATE}) if rows else set()
     current = candidate_basis(candidates)
     made = form is not None and bool(shown.candidate)
@@ -721,6 +726,7 @@ def details_page(
                 None if accepted is None or note.assignment_id is None else accepted.after
             ),
             "family": way.family,
+            "parent": parent,
             "may_write": way.open_to(viewer) and note.outstanding,
             "joined": note.assignment_id is not None
             and note.assignment_id != derived_assignment_id(note.capture_id),
