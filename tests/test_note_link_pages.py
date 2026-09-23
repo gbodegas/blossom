@@ -1643,3 +1643,48 @@ def test_each_result_press_names_its_homework_for_a_screen_reader(
     assert beside.status_code == 409
     chosen = beside.text.split(f'"chosen-{science.assignment_id}"')[1].split("</li>")[0]
     assert '<span class="visually-hidden"> for Shared worksheet (Science)</span>' in chosen
+
+
+# ------------------------------------------------------------------ sixth review round
+
+
+@pytest.mark.parametrize("family", [False, True])
+def test_a_link_receipt_says_only_what_its_event_bears_out(family: bool) -> None:
+    """The address says what a save did, and the page believes it only when the event bears
+    it out: a link by search that left no homework is joined, never moved, and a move is
+    moved, never joined, whatever the address says of the same event."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        other = on_record(
+            client, course="Spanish", title="Vocabulary list, unit nine", due=date(2026, 8, 21)
+        )
+        first = press_of(
+            search(client, name, "reading", family=family), name, log.assignment_id, family=family
+        )
+        joined_where = client.post(note_link_action(name, family=family), data=first).headers[
+            "location"
+        ]
+        assert "said=joined" in joined_where
+        joined_page = client.get(joined_where, headers=PAGE_HEADERS).text
+        joined_forged = client.get(
+            joined_where.replace("said=joined", "said=relinked"), headers=PAGE_HEADERS
+        ).text
+        moved = press_of(
+            search(client, name, "nine", family=family), name, other.assignment_id, family=family
+        )
+        moved_where = client.post(note_link_action(name, family=family), data=moved).headers[
+            "location"
+        ]
+        assert "said=relinked" in moved_where
+        moved_page = client.get(moved_where, headers=PAGE_HEADERS).text
+        moved_forged = client.get(
+            moved_where.replace("said=relinked", "said=joined"), headers=PAGE_HEADERS
+        ).text
+
+    assert escape(JOINED_TO_HOMEWORK) in joined_page
+    assert escape(LINK_CHANGED) in moved_page
+    for forged in (joined_forged, moved_forged):
+        assert 'id="note-result"' not in forged
+        assert escape(JOINED_TO_HOMEWORK) not in forged
+        assert escape(LINK_CHANGED) not in forged

@@ -189,7 +189,8 @@ SAID: Final[dict[str, tuple[str, str | None]]] = {
 it names must be in the note's history. A save that wrote nothing names the change it found
 standing, which may be of any kind. The server writes the address; the page believes none
 of it until the history bears it out, and an event id is not a number a person can count
-to: a revision in its place, or an id of another note's, says nothing."""
+to: a revision in its place, or an id of another note's, says nothing. A link is joined or
+moved as its own event keeps it, whatever the address says."""
 SAID_OF_A_NOTE_IN_HOMEWORK: Final = {
     "edited": NOTE_EDITED_IN_HOMEWORK,
     "restored": NOTE_RESTORED_IN_HOMEWORK,
@@ -513,6 +514,13 @@ def result_of(
     made = next((change for change in history if change.event_id == event), None)
     if made is None or (kind is not None and made.operation != kind):
         return None
+    if kind == LINK:
+        # A link by search that left no homework is joined, never moved, and a move is
+        # moved, never joined: the event keeps which, and the address is held to it.
+        asked = None if made.decision is None else made.decision.search_press
+        moved = asked is not None and asked.leaving is not None
+        if moved != (said == "relinked"):
+            return None
     stands = history[-1].event_id == made.event_id
     if made.after.assignment_id is not None:
         sentence = SAID_OF_A_NOTE_IN_HOMEWORK.get(said, sentence)
