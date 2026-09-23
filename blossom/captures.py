@@ -537,8 +537,10 @@ def _press_is_its_own(
 ) -> None:
     """A press kept with a link is borne out by the events around it: a link on its own
     names the revision before it and left nothing; a move left the homework the unlink just
-    before it took away, and names the revision before that unlink. Anything else is
-    unreadable, as is a press kept with a change that is no link by search."""
+    before it took away, names the revision before that unlink, and is one press with it,
+    written by the same person, through the same tree, at the same moment and on the same
+    day. Anything else is unreadable, as is a press kept with a change that is no link by
+    search."""
     asked = None if change.decision is None else change.decision.search_press
     if asked is None:
         return
@@ -555,6 +557,10 @@ def _press_is_its_own(
         or previous.before.assignment_id != asked.leaving
         or previous.after.assignment_id is not None
         or asked.expected_revision != previous.revision - 1
+        or previous.authored_by != change.authored_by
+        or previous.channel != change.channel
+        or previous.occurred_at != change.occurred_at
+        or previous.occurred_on != change.occurred_on
     ):
         raise UnsoundCaptureHistory(capture_id, f"revision {place} keeps a move not its own")
 

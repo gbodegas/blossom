@@ -88,7 +88,7 @@
       <p class="note">That is what stands. Nothing typed here changed it.</p>
     {% elif form.unsaved %}
       <h3 class="update-heading">Saved on the note now</h3>
-      {{ details_shown(note, attribution=note.attribution, mine=not family) }}
+      {{ details_shown(note, attribution=note.attribution, mine=not parent) }}
       {% if not (note.course or note.title or note.due_date or note.kind or note.note) %}<p class="note">No details are saved on the note.</p>{% endif %}
     {% endif %}
     {% if typed and may_write is false %}

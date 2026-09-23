@@ -972,3 +972,51 @@ def test_a_way_in_that_is_the_schools_is_never_written_and_unreadable_if_found(
     store._connection.commit()
     with pytest.raises(UnsoundCaptureHistory):
         store.sound_capture_history(name)
+
+
+# ------------------------------------------------------------------ a move is one press
+
+
+MOVE_PAIR_DAMAGE: dict[str, dict[str, object]] = {
+    "another author": {"authored_by": "parent"},
+    "another way in": {"channel": SourceChannel.PARENT_ENTRY},
+    "another moment": {"occurred_at": LATER + timedelta(minutes=5)},
+    "another day": {"occurred_on": MONDAY + timedelta(days=1)},
+}
+
+
+@pytest.mark.parametrize("damage", sorted(MOVE_PAIR_DAMAGE))
+def test_a_move_whose_unlink_and_link_are_not_one_press_is_unreadable(
+    store: ProjectStateStore, damage: str
+) -> None:
+    """A move is one press: its unlink and its link are written together, by one person,
+    through one tree, at one moment. A line that pairs an unlink with a link differing in
+    any of these is not one line, in the reading and from the file."""
+    old = on_record(store)
+    new = on_record(store, course="Spanish", title="Vocabulary list, unit two")
+    name = joined(store, old)
+    assert isinstance(
+        link(store, name, new, 2, basis=basis_of(store, new), leaving=old.assignment_id),
+        CapturePromoted,
+    )
+    held = the_note(store, name)
+    events = list(store.capture_history(name))
+    assert store.sound_capture_history(name) is not None
+    events[-2] = events[-2].model_copy(update=MOVE_PAIR_DAMAGE[damage])
+    with pytest.raises(UnsoundCaptureHistory):
+        sound_history(held, events)
+
+    column, value = {
+        "another author": ("authored_by", "parent"),
+        "another way in": ("channel", SourceChannel.PARENT_ENTRY.value),
+        "another moment": ("occurred_at_utc", (LATER + timedelta(minutes=5)).isoformat()),
+        "another day": ("occurred_on", (MONDAY + timedelta(days=1)).isoformat()),
+    }[damage]
+    store._connection.execute(
+        f"UPDATE capture_events SET {column} = ? "  # noqa: S608
+        "WHERE capture_id = ? AND operation = 'unlink'",
+        (value, name),
+    )
+    store._connection.commit()
+    with pytest.raises(UnsoundCaptureHistory):
+        store.sound_capture_history(name)

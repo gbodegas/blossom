@@ -1149,7 +1149,9 @@ again is known as that press again by what it asked and by the row as shown,
 never by the events around it, since an unlink followed by a fresh link leaves
 the same events as a move; a link from before this was kept proves no press,
 so a press sent again for it is a conflict, and a kept press the events do not
-bear out makes the history unavailable. The note needs no details of its own
+bear out makes the history unavailable, as does a move whose unlink and link
+differ in who pressed, the tree, the moment, or the day, since a move is one
+press. The note needs no details of its own
 for the link, and the homework keeps every field, with a day the note gives as
 one more claim. The search page reads the note and its line inside the same
 reading as the results, so nothing on the page comes from another moment.
