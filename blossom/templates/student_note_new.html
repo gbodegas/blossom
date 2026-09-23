@@ -16,7 +16,7 @@
   A parent signed in is told the note is hers to write, and sees no form.
 #}
 {% block content %}
-  <p class="return"><a href="/student/due-this-week">Back to my week</a></p>
+  <p class="return"><a href="/student/due-this-week">{% if parent %}Back to her week{% else %}Back to my week{% endif %}</a></p>
   <h1>Add homework</h1>
   {% if form.problem %}
     <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ form.problem }}{% if viewer != "parent" %}{% with field = form.field %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>

@@ -78,6 +78,7 @@ from blossom.routes.student import (
     BAD_FORM,
     NOT_HERS_TO_UPDATE,
     State,
+    parent_reads,
     templates,
     viewer_of,
 )
@@ -595,7 +596,7 @@ def plain_details(
             "note_problem": problem,
             "details_form": form,
             "help_note": form.capture_id if back_to_the_note else None,
-            "ways_back": ways_back(),
+            "ways_back": ways_back(request),
             "sample": state.settings.sample,
         },
         status_code=status_code,
@@ -692,9 +693,7 @@ def details_page(
         # A class or a title the rules will not keep names no homework; the form says so.
         candidates = []
     viewer = viewer_of(request)
-    # The words follow who is reading: a parent on any page, or whoever reads the family's
-    # pages while the sign-in is off; her pages read by her, or with it off, are hers.
-    parent = viewer == "parent" or (viewer == "anyone" and way.family)
+    parent = parent_reads(request)
     rows = [candidate_row(item, parent=parent) for item in candidates]
     offered = ({row.value for row in rows} | {SEPARATE}) if rows else set()
     current = candidate_basis(candidates)
@@ -738,7 +737,7 @@ def details_page(
             "typed": form is not None,
             "not_hers": NOT_HERS_TO_UPDATE,
             "viewer": viewer,
-            "ways_back": ways_back(),
+            "ways_back": ways_back(request),
             "course_max_length": CAPTURE_COURSE_MAX_LENGTH,
             "title_max_length": CAPTURE_TITLE_MAX_LENGTH,
             "note_max_length": CAPTURE_NOTE_MAX_LENGTH,

@@ -930,6 +930,18 @@ def viewer_of(request: Request) -> str:
     return "anyone"
 
 
+def parent_reads(request: Request) -> bool:
+    """Whether a page's words are said to a parent. They follow who is reading, never the
+    tree a page's address is in on its own: a parent may open her pages and is told about
+    her there, and she reads her pages as hers. With the sign-in off nobody is known, and
+    the tree decides: a page under the family's address reads as a parent's."""
+    viewer = viewer_of(request)
+    if viewer != "anyone":
+        return viewer == "parent"
+    path = request.url.path
+    return path == FAMILY_PAGE or path.startswith(FAMILY_PAGE + "/")
+
+
 @dataclass(frozen=True)
 class CardState:
     """What one card shows beyond its record: a confirmation, its form open, or a problem.

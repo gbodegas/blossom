@@ -70,7 +70,13 @@ from blossom.routes.note_details import (
     candidate_row,
     details_page,
 )
-from blossom.routes.student import BAD_FORM, NOT_HERS_TO_UPDATE, templates, viewer_of
+from blossom.routes.student import (
+    BAD_FORM,
+    NOT_HERS_TO_UPDATE,
+    parent_reads,
+    templates,
+    viewer_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,10 +168,7 @@ def search_page(
     is said so."""
     store = state.project_state
     viewer = viewer_of(request)
-    # The words follow who is reading, never the tree the address is in on its own: a
-    # parent may open her pages, and is told about her there; while the sign-in is off,
-    # whoever reads the family's pages reads them as a parent, and hers as her.
-    parent = viewer == "parent" or (viewer == "anyone" and way.family)
+    parent = parent_reads(request)
     terms: tuple[str, ...] = ()
     refused = None
     try:
@@ -276,7 +279,7 @@ def search_page(
             "chosen_gone_sentence": HOMEWORK_GONE,
             "query_error": refused is not None,
             "not_hers": NOT_HERS_TO_UPDATE,
-            "ways_back": ways_back(),
+            "ways_back": ways_back(request),
             "sample": state.settings.sample,
         },
         status_code=status_code,
@@ -308,7 +311,7 @@ def plain_search(
             "note_problem": problem,
             "search_form": form,
             "help_note": name,
-            "ways_back": ways_back(),
+            "ways_back": ways_back(request),
             "sample": state.settings.sample,
         },
         status_code=status_code,

@@ -11,6 +11,7 @@ the note's name is read; nothing is joined by a search alone.
 
 import pathlib
 import sqlite3
+import uuid
 from collections.abc import Callable
 from datetime import date
 from typing import cast
@@ -1761,3 +1762,73 @@ def test_each_result_press_names_its_homework_by_its_day_and_its_id(family: bool
         assert hidden == f" for Shared worksheet (Science), {day}, {item.assignment_id}"
         names.append(hidden)
     assert len(set(names)) == 3
+
+
+# ------------------------------------------------------------------ the way back to her week
+
+
+def test_the_way_back_to_her_week_is_named_for_whoever_reads(tmp_path: pathlib.Path) -> None:
+    """Every note page offers the way back to her week, named for whoever reads: her own to
+    her, hers to a parent, on her pages and on the family's, on a note that is gone, and on
+    the page that reads no store."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        nowhere = note_href(str(uuid.uuid4()))
+        hers = {
+            address: client.get(address, headers=PAGE_HEADERS)
+            for address in (
+                note_href(name),
+                note_add_href(name),
+                note_search_href(name),
+                NEW_NOTE_PAGE,
+                nowhere,
+            )
+        }
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs = {
+            address: client.get(address, headers=PAGE_HEADERS)
+            for address in (
+                note_href(name),
+                note_add_href(name),
+                note_search_href(name),
+                note_add_href(name, family=True),
+                note_search_href(name, family=True),
+                NEW_NOTE_PAGE,
+                nowhere,
+            )
+        }
+        theirs["the page that reads no store"] = client.post(
+            note_link_action("not-a-note"),
+            data={
+                "revision": "1",
+                "target": "assignment-x",
+                "basis": "x" * 64,
+                "q": "",
+                "page": "",
+            },
+            headers=PAGE_HEADERS,
+        )
+
+    for address, page in hers.items():
+        assert ">Back to my week</a>" in page.text, address
+        assert "Back to her week" not in page.text, address
+    for address, page in theirs.items():
+        assert ">Back to her week</a>" in page.text, address
+        assert "Back to my week" not in page.text, address
+
+
+def test_with_the_sign_in_off_the_way_back_to_her_week_follows_the_tree() -> None:
+    """With the sign-in off nobody is known: her pages name the week as hers to her, and the
+    family's pages name it as a parent reads it."""
+    with browser() as client:
+        name = save_note(client)
+        hers = client.get(note_search_href(name), headers=PAGE_HEADERS)
+        family = client.get(note_search_href(name, family=True), headers=PAGE_HEADERS)
+        family_details = client.get(note_add_href(name, family=True), headers=PAGE_HEADERS)
+
+    assert ">Back to my week</a>" in hers.text
+    assert ">Back to her week</a>" in family.text
+    assert ">Back to her week</a>" in family_details.text
