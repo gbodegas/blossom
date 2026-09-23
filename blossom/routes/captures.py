@@ -93,6 +93,7 @@ from blossom.routes.student import (
     viewer_of,
 )
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, UnknownCaptureReference
+from blossom.stores.project_state import Assignment
 
 logger = logging.getLogger(__name__)
 
@@ -627,6 +628,8 @@ class InHomework:
     joined: bool = False
     """Whether the note was joined to homework that was on record before it, which can be
     moved or unlinked, rather than made into an assignment of its own, which cannot."""
+    current: Assignment | None = None
+    """The assignment as it stands, when it is on record, so a page can name it."""
 
 
 def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
@@ -649,6 +652,7 @@ def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
         in_window=in_week(item, noticed, state.clock.today()),
         claims_unreadable=note.assignment_id in claimed.unreadable,
         joined=joined,
+        current=item,
     )
 
 

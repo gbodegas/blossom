@@ -48,7 +48,7 @@
     <p class="problem" role="alert" id="search-problem" tabindex="-1" autofocus>{{ problem }}{% if query_error %} <a href="#search-words">Review your search words</a>{% endif %}</p>
   {% endif %}
   <section class="panel homework-note">
-    <p class="note">Linking the homework note saved {{ on(note.created_on) }}{% if own %}, which made an assignment of its own{% elif note.archived %}, which is archived{% elif joined %}, joined now to {% if current %}<span class="authored-text">{{ current.course }}</span> &middot; <span class="authored-text">{{ current.title }}</span>{% else %}homework that is not on record now{% endif %}{% else %}, not in homework yet{% endif %}.</p>
+    <p class="note">Linking the homework note saved {{ on(note.created_on) }}{% if own %}, which made an assignment of its own{% elif note.archived %}, which is archived{% elif joined %}, already linked to homework{% else %}, not in homework yet{% endif %}.</p>
     {% if not may_write and not own and not note.archived %}
       <p class="note">{% if family %}Sign in as a parent to link a note here.{% else %}{{ not_hers }}{% endif %}</p>
     {% endif %}
@@ -61,6 +61,10 @@
     {% if hint %}
       <p class="note" id="search-hint">{{ hint }}</p>
     {% endif %}
+    {% if joined %}
+      {# The link that stands, whole, after the form and before any result that would change it. #}
+      <p class="note" id="search-linked-now">Linked now to {% if current %}<span class="authored-text">{{ current.course }}</span> &middot; <span class="authored-text">{{ current.title }}</span>{% else %}homework that is not on record now{% endif %}. Choosing a result moves this link to it: the old link is withdrawn and the new one made together, or neither. Nothing on either assignment changes.</p>
+    {% endif %}
     <details class="steps">
       <summary>Read this homework note</summary>
       <h2 class="update-heading">{% if family %}What she wrote{% else %}What you wrote{% endif %}</h2>
@@ -70,9 +74,7 @@
         <p class="note"><span class="pill">In homework</span> {{ own_sentence }} <a href="{{ details_href(note.assignment_id) }}">Open the assignment</a>.</p>
       {% elif note.archived %}
         <p class="note">This note is archived. <a href="{{ note_href(note.capture_id) }}">Open the note</a> to bring it back before linking it.</p>
-      {% elif joined %}
-        <p class="note">Choosing homework in the results moves this note to it: the old link is withdrawn and the new one made together, or neither. Nothing on either assignment changes.</p>
-      {% else %}
+      {% elif not joined %}
         <p class="note">Choosing homework in the results joins this note to it and changes nothing on that assignment: not its title, its date, its status, or its note. A day the note gives is kept as one more source for the date.</p>
       {% endif %}
     </details>

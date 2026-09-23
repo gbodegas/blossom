@@ -34,6 +34,7 @@ from blossom.captures import (
     CaptureSnapshot,
     CaptureUnlinked,
     HomeworkGone,
+    SearchPress,
     UnsoundCaptureHistory,
     accepted_press,
     accepted_search_press,
@@ -123,13 +124,19 @@ def link(
 
 
 def unlink(
-    store: ProjectStateStore, name: str, revision: int, leaving: str, now: datetime = LATER
+    store: ProjectStateStore,
+    name: str,
+    revision: int,
+    leaving: str,
+    now: datetime = LATER,
+    channel: SourceChannel = HERS,
 ) -> object:
     return store.unlink_capture(
         name,
         expected_revision=revision,
         leaving=leaving,
         authored_by=STUDENT,
+        channel=channel,
         now=now,
         today=MONDAY,
     )
@@ -211,7 +218,10 @@ def test_a_note_joins_homework_found_by_search_and_changes_nothing_on_it(
     event = store.capture_history(name)[-1]
     assert event.operation == LINK
     assert event.decision == CandidateDecision(
-        choice="found", candidates=(target.assignment_id,), basis=basis_of(store, target)
+        choice="found",
+        candidates=(target.assignment_id,),
+        basis=basis_of(store, target),
+        search_press=SearchPress(expected_revision=1, leaving=None),
     )
     after = tables(store)
     assert after["assignments"] == before["assignments"]
@@ -763,3 +773,129 @@ def test_a_link_by_search_names_exactly_the_one_row_chosen(store: ProjectStateSt
     )
     with pytest.raises(UnsoundCaptureHistory):
         sound_history(held, [create, widened])
+
+
+# ------------------------------------------------------------------ the press kept with the link
+
+
+def test_a_link_after_a_separate_unlink_is_its_own_press_and_no_old_move(
+    store: ProjectStateStore,
+) -> None:
+    """Unlinking from A and then linking to B are two presses, and the link keeps what it
+    asked: no homework left, and the revision its page showed. That link sent again is
+    that press again; the move from A to B that was opened before the unlink and never
+    accepted is a different press, refused, whatever the events around it look like."""
+    old = on_record(store)
+    new = on_record(store, course="Spanish", title="Vocabulary list, unit two")
+    name = joined(store, old)
+    move_basis = basis_of(store, new)
+    assert isinstance(unlink(store, name, 2, old.assignment_id), CaptureUnlinked)
+    assert isinstance(link(store, name, new, 3, basis=move_basis), CapturePromoted)
+    press = accepted_search_press(store.capture_history(name))
+    before = tables(store)
+
+    again = link(store, name, new, 3, basis=move_basis)
+    old_move = link(store, name, new, 2, basis=move_basis, leaving=old.assignment_id)
+
+    assert press is not None
+    assert (press.target, press.left, press.revision_before) == (new.assignment_id, None, 3)
+    assert isinstance(again, CaptureAlreadyPromoted)
+    assert isinstance(old_move, CaptureConflict)
+    assert tables(store) == before
+    made = store.capture_history(name)[-1]
+    assert made.decision is not None
+    assert made.decision.search_press == SearchPress(expected_revision=3, leaving=None)
+
+
+def test_a_move_keeps_what_it_asked_with_its_link(store: ProjectStateStore) -> None:
+    old = on_record(store)
+    new = on_record(store, course="Spanish", title="Vocabulary list, unit two")
+    name = joined(store, old)
+    assert isinstance(
+        link(store, name, new, 2, basis=basis_of(store, new), leaving=old.assignment_id),
+        CapturePromoted,
+    )
+    left, made = store.capture_history(name)[-2:]
+
+    assert (left.operation, made.operation) == (UNLINK, LINK)
+    assert made.decision is not None
+    assert made.decision.search_press == SearchPress(expected_revision=2, leaving=old.assignment_id)
+
+
+PRESS_NOT_ITS_OWN = {
+    "a link that names a revision not the one before it": SearchPress(
+        expected_revision=5, leaving=None
+    ),
+    "a link that says it left homework with no unlink before it": SearchPress(
+        expected_revision=1, leaving="assignment-elsewhere"
+    ),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(PRESS_NOT_ITS_OWN))
+def test_a_press_kept_with_a_link_that_the_events_do_not_bear_out_is_unreadable(
+    store: ProjectStateStore, damage: str
+) -> None:
+    target = on_record(store)
+    name = joined(store, target)
+    held = the_note(store, name)
+    create, made = store.capture_history(name)
+    assert made.decision is not None
+    widened = made.model_copy(
+        update={
+            "decision": made.decision.model_copy(update={"search_press": PRESS_NOT_ITS_OWN[damage]})
+        }
+    )
+    with pytest.raises(UnsoundCaptureHistory):
+        sound_history(held, [create, widened])
+
+
+def test_a_link_kept_without_its_press_is_readable_and_no_press_is_proven(
+    store: ProjectStateStore,
+) -> None:
+    """A link written before the press was kept with it reads as it did. No press is proven
+    from it, so a link sent again is a conflict rather than a guess; the events are not
+    rewritten."""
+    target = on_record(store)
+    name = joined(store, target)
+    basis = basis_of(store, target)
+    store._connection.execute(
+        "UPDATE capture_events SET decision = json_remove(decision, '$.search_press') "
+        "WHERE capture_id = ? AND operation = 'link'",
+        (name,),
+    )
+    store._connection.commit()
+    before = tables(store)
+
+    events = store.capture_history(name)
+    assert store.sound_capture_history(name) is not None
+    assert events[-1].decision is not None
+    assert events[-1].decision.search_press is None
+    assert accepted_search_press(events) is None
+    assert isinstance(link(store, name, target, 1, basis=basis), CaptureConflict)
+    assert tables(store) == before
+
+
+def test_a_link_and_an_unlink_keep_the_way_the_press_came_through(
+    store: ProjectStateStore,
+) -> None:
+    """The tree a press came through is kept with its event, apart from who pressed and
+    from the note's own attribution; an event written before that was kept reads as it did,
+    with none."""
+    target = on_record(store)
+    name = note(store, due=date(2026, 9, 18))
+    assert isinstance(link(store, name, target, 1), CapturePromoted)
+    assert isinstance(
+        unlink(store, name, 2, target.assignment_id, channel=SourceChannel.PARENT_ENTRY),
+        CaptureUnlinked,
+    )
+    store._connection.execute(
+        "UPDATE capture_events SET channel = NULL WHERE capture_id = ? AND revision = 1", (name,)
+    )
+    store._connection.commit()
+
+    create, made, left = store.capture_history(name)
+    assert create.channel is None
+    assert made.channel is SourceChannel.STUDENT_REPORT
+    assert left.channel is SourceChannel.PARENT_ENTRY
+    assert the_note(store, name).attribution["due_date"].channel is SourceChannel.STUDENT_REPORT

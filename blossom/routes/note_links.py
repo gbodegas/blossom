@@ -63,6 +63,7 @@ from blossom.routes.note_details import (
     NOT_SAVED,
     THEIRS,
     CandidateRow,
+    UnlinkRequest,
     Way,
     actor,
     candidate_row,
@@ -156,27 +157,6 @@ def search_page(
     or one put away, is shown the page with no press on it. Reading the page writes nothing.
     A note or a line that cannot be read is said as unavailable; a name that is no note's
     is said so."""
-    try:
-        found_note = state.project_state.sound_capture_history(capture_id)
-    except UnreadableCapture:
-        if form is not None:
-            # A refusal of who pressed stands whatever became of the note.
-            said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
-            return plain_search(request, state, form, said or NOTE_UNREADABLE, status_code)
-        return unreadable(request, state, status_code)
-    if found_note is None:
-        if form is not None:
-            said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
-            return plain_search(request, state, form, said or NOTE_GONE, status_code)
-        return gone(request, state)
-    note = found_note[0]
-    viewer = viewer_of(request)
-    joined = note.assignment_id is not None and note.assignment_id != derived_assignment_id(
-        note.capture_id
-    )
-    own = note.assignment_id is not None and not joined
-    may_write = way.open_to(viewer) and not note.archived and not own
-    leaving = note.assignment_id if joined else None
     store = state.project_state
     terms: tuple[str, ...] = ()
     refused = None
@@ -190,10 +170,28 @@ def search_page(
     current = None
     chosen_row: FoundRow | None = None
     chosen_gone = False
-    # One reading for everything the page shows: the note's own link, the page of
-    # results, and the homework chosen, read with the same rows whether or not the
-    # words still find it, so no row on the page comes from an earlier reading.
+    # One reading for everything the page shows: the note and its line, the note's own
+    # link, the page of results, and the homework chosen, read with the same rows whether
+    # or not the words still find it, so nothing on the page comes from another reading.
     with store.reading():
+        try:
+            found_note = store.sound_capture_history(capture_id)
+        except UnreadableCapture:
+            if form is not None:
+                # A refusal of who pressed stands whatever became of the note.
+                said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
+                return plain_search(request, state, form, said or NOTE_UNREADABLE, status_code)
+            return unreadable(request, state, status_code)
+        if found_note is None:
+            if form is not None:
+                said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
+                return plain_search(request, state, form, said or NOTE_GONE, status_code)
+            return gone(request, state)
+        note = found_note[0]
+        joined = note.assignment_id is not None and note.assignment_id != derived_assignment_id(
+            note.capture_id
+        )
+        leaving = note.assignment_id if joined else None
         if leaving is not None:
             current = store.one_assignment(leaving)
         if refused is not None:
@@ -219,6 +217,9 @@ def search_page(
         rows = [row_of(item, way) for item in readings[: len(shown)]]
         if beside is not None:
             chosen_row = row_of(readings[-1], way)
+    viewer = viewer_of(request)
+    own = note.assignment_id is not None and not joined
+    may_write = way.open_to(viewer) and not note.archived and not own
     hint = None
     if refused is None and not problem:
         if not terms:
@@ -445,8 +446,25 @@ def unlink_or_plain(
         name = capture_id_from(form.capture_id)
     except NotACaptureId:
         return plain_search(request, state, form, problem, status_code)
+    asked = UnlinkRequest(form.revision, form.leaving) if form.leaving else None
+    store = state.project_state
     try:
-        return details_page(request, state, name, way, problem=problem, status_code=status_code)
+        with store.reading():
+            found = store.sound_capture_history(name)
+            if found is None:
+                return plain_search(request, state, form, problem, status_code)
+            return details_page(
+                request,
+                state,
+                name,
+                way,
+                problem=problem,
+                found=found,
+                unlink_request=asked,
+                status_code=status_code,
+            )
+    except UnreadableCapture:
+        return plain_search(request, state, form, problem, status_code)
     except Exception:
         logger.exception("the details page could not be read back after a refused unlink")
         return plain_search(request, state, form, problem, status_code)
@@ -460,9 +478,10 @@ async def unlink_from_homework(
     the page that reads no store when that one cannot be made."""
     fields, whole = await fields_of(request, UNLINK_FIELDS)
     form = form_of(capture_id, fields)
-    refused = refused_press(request, state, way, form)
-    if refused is not None:
-        return refused
+    # Who pressed is settled first, before the note's name is read, and said where the
+    # press lives: on the details page, or on the page that reads no store.
+    if not way.open_to(viewer_of(request)):
+        return unlink_or_plain(request, state, way, form, way.refusal, status.HTTP_403_FORBIDDEN)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
@@ -480,6 +499,7 @@ async def unlink_from_homework(
                 expected_revision=form.revision,
                 leaving=leaving,
                 authored_by=actor(viewer_of(request)),
+                channel=way.channel,
                 now=now,
                 today=today,
             )

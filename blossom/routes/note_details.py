@@ -43,6 +43,7 @@ from blossom.captures import (
     CaptureChanged,
     CaptureConflict,
     CaptureDetails,
+    CaptureEvent,
     CaptureNotSaved,
     CapturePromoted,
     CaptureUnchanged,
@@ -605,6 +606,15 @@ def standing_in(status_code: int, otherwise: int) -> int:
     return status_code if status_code != status.HTTP_200_OK else otherwise
 
 
+@dataclass(frozen=True)
+class UnlinkRequest:
+    """What an unlink press asked, carried through its refusal: the revision the page showed
+    and the homework it named, which the page says apart from the link that stands."""
+
+    revision: int | None
+    leaving: str
+
+
 def details_page(
     request: Request,
     state: ApplicationState,
@@ -614,6 +624,8 @@ def details_page(
     form: DetailsForm | None = None,
     problem: str | None = None,
     choosing: bool = False,
+    found: tuple[Capture, tuple[CaptureEvent, ...]] | None = None,
+    unlink_request: UnlinkRequest | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """The page with her words, the details, and the two buttons. The note is read as its own
@@ -634,12 +646,14 @@ def details_page(
     typed, and a note that cannot be shown does not take that with it: the
     answer is then the page that reads no store, with every detail kept. It
     says what became of the note, except to the one who may not write here,
-    who is told that.
+    who is told that. ``found`` is the note and its line when the caller read them
+    already, inside the reading this page then shares; ``unlink_request`` is what a
+    refused unlink asked, said apart from the link that stands.
     """
     store = state.project_state
     turned_away = status_code == status.HTTP_403_FORBIDDEN
     try:
-        found = store.sound_capture_history(capture_id)
+        found = found if found is not None else store.sound_capture_history(capture_id)
     except UnreadableCapture:
         if form is None:
             return unreadable(request, state, status_code)
@@ -711,6 +725,10 @@ def details_page(
             "joined": note.assignment_id is not None
             and note.assignment_id != derived_assignment_id(note.capture_id),
             "may_unlink": way.open_to(viewer) and not note.archived,
+            "current": next(
+                (item for item in assignments if item.assignment_id == note.assignment_id), None
+            ),
+            "unlink_request": unlink_request,
             "typed": form is not None,
             "not_hers": NOT_HERS_TO_UPDATE,
             "viewer": viewer,

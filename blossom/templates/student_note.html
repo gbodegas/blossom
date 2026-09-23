@@ -58,7 +58,7 @@
     {% endif %}
     {# The corrections go through the reader's own tree, hers or the family's, whatever became of the homework. #}
     {% if in_homework and not note.archived %}
-      {% with joined = in_homework.joined, may_unlink = true, family = not mine %}{% include "note_link_controls.html" %}{% endwith %}
+      {% with joined = in_homework.joined, may_unlink = true, family = not mine, current = in_homework.current %}{% include "note_link_controls.html" %}{% endwith %}
     {% endif %}
     {% if note.text != note.original_text %}
       <h3 class="update-heading">First written as</h3>

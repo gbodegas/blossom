@@ -853,7 +853,9 @@ makes a note into homework has to write both as one thing.
 which nothing changes, everything that first save sent, and for a class or a
 day who supplied it and through which way in. `capture_events` holds every
 change with what stood before and after, and who made it: the student, a
-parent, or the household when the sign-in is off. Both tables and both
+parent, or the household when the sign-in is off; a link by search and an
+unlink also keep the way in the press came through, and a row from before
+that column reads with none. Both tables and both
 indexes are made in one transaction, so a start that is refused one of them
 leaves an older file as it was. A note's place among all notes is the number
 the file gave its first event, so an edit, an archive, or a restore never
@@ -1125,9 +1127,17 @@ fingerprint of that one row, and `link_capture` holds the press to both inside
 its transaction, reading the row again through the same reading, so homework
 that changed in anything shown is put to the person again and homework that
 left the record is said so. The link is a `link` change with the choice of
-homework found, naming the one row; the note needs no details of its own for
-it, and the homework keeps every field, with a day the note gives as one more
-claim. Creating a separate assignment and adding a new one stay on the
+homework found, naming the one row, and with what the press asked: the
+revision its page showed and, for a move, the homework it left. A press sent
+again is known as that press again by what it asked and by the row as shown,
+never by the events around it, since an unlink followed by a fresh link leaves
+the same events as a move; a link from before this was kept proves no press,
+so a press sent again for it is a conflict, and a kept press the events do not
+bear out makes the history unavailable. The note needs no details of its own
+for the link, and the homework keeps every field, with a day the note gives as
+one more claim. The search page reads the note and its line inside the same
+reading as the results, so nothing on the page comes from another moment.
+Creating a separate assignment and adding a new one stay on the
 promotion form with the complete automatic-candidate basis, so no page of
 results ever stands in for it.
 
@@ -1143,10 +1153,14 @@ holds an unlink to a note that was joined by a link, and the accepted press
 stops at an unlink, so a note unlinked can be added or joined again as a new
 press. A move is an unlink and a link in one commit, checked against the
 homework the page showed as the note's own link, so a move that fails leaves
-the note joined as it was and makes no duplicate. Who pressed is settled before
-the note's name is read, as on the details page, and the gate lets her sign-in
-reach the family's link and unlink presses to be refused there with the words
-kept.
+the note joined as it was and makes no duplicate. A refused unlink lands on the
+details page, where the press lives, saying the homework it asked to leave
+apart from the link that stands, named whole beside the unlink press it
+offers instead; a note that is gone or cannot be read takes the refusal to the
+page that reads no store, with the homework the form named kept. Who pressed
+is settled before the note's name is read, as on the details page, and the
+gate lets her sign-in reach the family's link and unlink presses to be refused
+there with the words kept.
 
 A school paste that names homework made from a note is held whole. Until the
 pages can ask whether the school's row is the same work, a text with such a

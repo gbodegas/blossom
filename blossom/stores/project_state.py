@@ -64,6 +64,7 @@ from blossom.captures import (
     FieldSource,
     HomeworkGone,
     PromotionChoice,
+    SearchPress,
     accepted_search_press,
     candidate_basis,
     capture_id_from,
@@ -2298,6 +2299,7 @@ class ProjectStateStore(CaptureRecords):
                         reading,
                         now=now,
                         today=today,
+                        channel=channel,
                     )
                     standing = unlinked.capture
                     reading = CaptureHistoryReading((*reading.events, unlinked.event))
@@ -2310,7 +2312,15 @@ class ProjectStateStore(CaptureRecords):
                     reading,
                     now=now,
                     today=today,
-                    decision=CandidateDecision(choice="found", candidates=(target,), basis=basis),
+                    decision=CandidateDecision(
+                        choice="found",
+                        candidates=(target,),
+                        basis=basis,
+                        search_press=SearchPress(
+                            expected_revision=expected_revision, leaving=leaving
+                        ),
+                    ),
+                    channel=channel,
                 )
                 if note.due_date is not None:
                     self._record_capture_claim_locked(
@@ -2336,6 +2346,7 @@ class ProjectStateStore(CaptureRecords):
         expected_revision: int,
         leaving: str,
         authored_by: Author,
+        channel: SourceChannel,
         now: datetime,
         today: date,
     ) -> CaptureUnlinked | CaptureAlreadyUnlinked | CaptureConflict | CaptureNotJoined:
@@ -2385,6 +2396,7 @@ class ProjectStateStore(CaptureRecords):
                     reading,
                     now=now,
                     today=today,
+                    channel=channel,
                 )
                 return CaptureUnlinked(changed.capture, changed.event, leaving)
         except (sqlite3.Error, RuntimeError, ValueError) as error:

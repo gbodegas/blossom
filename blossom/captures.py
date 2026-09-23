@@ -30,7 +30,14 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Final, Literal, Protocol, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from blossom.authored_text import multiline, single_line
 from blossom.pairing import pair
@@ -389,6 +396,18 @@ class CaptureSnapshot(BaseModel):
         return self.course, self.title, self.due_date, self.kind, self.note
 
 
+class SearchPress(BaseModel):
+    """What a press by search asked, kept with the link it made: the revision its page
+    showed, and for a move the homework it left. A later press is known as that press again
+    by what it asked, never by the events around it, since two presses can leave the same
+    events behind them."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expected_revision: int = Field(strict=True, ge=1)
+    leaving: str | None = None
+
+
 class CandidateDecision(BaseModel):
     """What a person chose about homework of the same class and title when adding a note,
     kept with the change: the choice, the homework that was shown, and the fingerprint of
@@ -399,6 +418,9 @@ class CandidateDecision(BaseModel):
     choice: PromotionChoice
     candidates: tuple[str, ...] = ()
     basis: str
+    search_press: SearchPress | None = None
+    """What a press by search asked, for a link made by one; a link written before this was
+    kept has none, and no press is proven from it."""
 
 
 class CaptureEvent(BaseModel):
@@ -421,6 +443,10 @@ class CaptureEvent(BaseModel):
     """Its place in the file's order; ``None`` until it is written."""
     decision: CandidateDecision | None = None
     """What was chosen about homework already on record, for a note added to homework."""
+    channel: SourceChannel | None = None
+    """The tree a press by search or an unlink came through, apart from who pressed. Kept on
+    no other change, whose tree is on the fields it supplied; a change written before this
+    was kept reads with none."""
 
     @model_validator(mode="after")
     def _is_whole(self) -> Self:
@@ -485,30 +511,51 @@ class AcceptedSearchPress:
 
 
 def accepted_search_press(events: Sequence[CaptureEvent]) -> AcceptedSearchPress | None:
-    """The press by search that put the note where it is, or ``None``: none for a note that
-    waits, one unlinked since, one joined by a candidate, or one that made its own
-    assignment. A move is its link and the unlink just before it, read together."""
+    """The press by search that put the note where it is, as its link keeps it, or ``None``:
+    none for a note that waits, one unlinked since, one joined by a candidate, one that
+    made its own assignment, or a link written before the press was kept with it, from
+    which no press is proven, so a press sent again meets a conflict rather than a guess."""
     made = accepted_press(events)
     if (
         made is None
         or made.operation != LINK
         or made.decision is None
         or made.decision.choice != "found"
+        or made.decision.search_press is None
         or made.after.assignment_id is None
     ):
         return None
-    place = next(index for index, event in enumerate(events) if event is made)
-    before = events[place - 1] if place > 0 else None
-    if before is not None and before.operation == UNLINK and before.before is not None:
-        return AcceptedSearchPress(
-            made.after.assignment_id,
-            made.decision.basis,
-            before.revision - 1,
-            before.before.assignment_id,
-        )
+    asked = made.decision.search_press
     return AcceptedSearchPress(
-        made.after.assignment_id, made.decision.basis, made.revision - 1, None
+        made.after.assignment_id, made.decision.basis, asked.expected_revision, asked.leaving
     )
+
+
+def _press_is_its_own(
+    capture_id: str, place: int, change: CaptureEvent, previous: CaptureEvent | None
+) -> None:
+    """A press kept with a link is borne out by the events around it: a link on its own
+    names the revision before it and left nothing; a move left the homework the unlink just
+    before it took away, and names the revision before that unlink. Anything else is
+    unreadable, as is a press kept with a change that is no link by search."""
+    asked = None if change.decision is None else change.decision.search_press
+    if asked is None:
+        return
+    if change.operation != LINK or change.decision is None or change.decision.choice != "found":
+        raise UnsoundCaptureHistory(capture_id, f"revision {place} keeps a press that is no search")
+    if asked.leaving is None:
+        if asked.expected_revision != change.revision - 1:
+            raise UnsoundCaptureHistory(capture_id, f"revision {place} keeps a press not its own")
+        return
+    if (
+        previous is None
+        or previous.operation != UNLINK
+        or previous.before is None
+        or previous.before.assignment_id != asked.leaving
+        or previous.after.assignment_id is not None
+        or asked.expected_revision != previous.revision - 1
+    ):
+        raise UnsoundCaptureHistory(capture_id, f"revision {place} keeps a move not its own")
 
 
 def same_press(
@@ -685,6 +732,7 @@ def sound_history(note: Capture, events: Sequence[CaptureEvent]) -> CaptureHisto
                     name, f"revision {place} unlinks a note that was not joined"
                 )
         _is_what_its_kind_does(name, change)
+        _press_is_its_own(name, place, change, previous)
         previous = change
     last = events[-1]
     if last.revision != note.revision or last.after != CaptureSnapshot.of(note):

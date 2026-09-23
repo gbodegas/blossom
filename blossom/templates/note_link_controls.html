@@ -5,12 +5,16 @@
   Each press carries the note's revision and the homework the page showed, and
   the save holds it to both.
 #}
+{% if joined %}
+  {# The link that stands, whole, before any press that would change it. #}
+  <p class="note" id="linked-now">Linked now to {% if current %}<span class="authored-text">{{ current.course }}</span> &middot; <span class="authored-text">{{ current.title }}</span>{% else %}homework that is not on record now{% endif %} (<span class="authored-text">{{ note.assignment_id }}</span>).</p>
+{% endif %}
 {% if joined and may_unlink %}
   <p class="note"><a href="{{ note_search_href(note.capture_id, family=family) }}">Change link</a>: join this note to other homework already here instead. The old link is withdrawn and the new one made together, or neither.</p>
   <form method="post" action="{{ note_unlink_action(note.capture_id, family=family) }}" class="action">
     <input type="hidden" name="revision" value="{{ note.revision }}">
     <input type="hidden" name="from" value="{{ note.assignment_id }}">
-    <button type="submit" class="secondary">Unlink from this homework</button>
+    <button type="submit" class="secondary" aria-describedby="linked-now">Unlink from this homework</button>
   </form>
   <p class="note">Unlinking puts this note back in Homework notes with its details kept, and withdraws only this note's date from that assignment. Nothing else on the assignment changes.</p>
 {% endif %}

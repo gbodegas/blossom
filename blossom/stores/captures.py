@@ -155,18 +155,21 @@ UPDATE_CAPTURE: Final = """
 INSERT_CAPTURE_EVENT: Final = """
     INSERT INTO capture_events (
         event_id, capture_id, operation, before, after, revision, occurred_at_utc,
-        occurred_on, authored_by, decision
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        occurred_on, authored_by, decision, channel
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 CAPTURE_EVENTS: Final = """
     SELECT event_id, capture_id, operation, before, after, revision, occurred_at_utc,
-        occurred_on, authored_by, sequence, decision
+        occurred_on, authored_by, sequence, decision, channel
     FROM capture_events
     WHERE capture_id = ? ORDER BY sequence
 """
 ADD_EVENT_DECISION: Final = "ALTER TABLE capture_events ADD COLUMN decision TEXT"
 """What was chosen about homework already on record, kept with the change that added a note
 to homework. A table from before this gains the column, empty in every row it had."""
+ADD_EVENT_CHANNEL: Final = "ALTER TABLE capture_events ADD COLUMN channel TEXT"
+"""The tree a press by search or an unlink came through, kept with its event. A table from
+before this gains the column, empty in every row it had, and each such row reads with none."""
 
 
 @dataclass(frozen=True)
@@ -336,7 +339,9 @@ def decision_from(raw: str) -> CandidateDecision:
     that JSON as the store writes it."""
     held = json.loads(raw)
     decision = CandidateDecision.model_validate(held)
-    if held != json.loads(decision.model_dump_json()):
+    # A decision written before the press was kept with it holds no press, and reads as
+    # one that holds none.
+    if {"search_press": None, **held} != json.loads(decision.model_dump_json()):
         msg = "a decision is not held as it is written"
         raise ValueError(msg)
     return decision
@@ -361,6 +366,7 @@ def capture_event_from(row: tuple[object, ...]) -> CaptureEvent:
             authored_by=held_text(row[8], "authored_by"),  # type: ignore[arg-type]
             sequence=held_count(row[9], "sequence"),
             decision=None if row[10] is None else decision_from(held_text(row[10], "decision")),
+            channel=None if row[11] is None else SourceChannel(held_text(row[11], "channel")),
         )
     except (ValueError, TypeError, AttributeError) as fault:
         raise UnreadableCapture(str(row[1])) from fault
@@ -503,6 +509,8 @@ class CaptureRecords:
         }
         if "decision" not in held:
             self._connection.execute(ADD_EVENT_DECISION)
+        if "channel" not in held:
+            self._connection.execute(ADD_EVENT_CHANNEL)
 
     # ------------------------------------------------------------------ reading
 
@@ -853,11 +861,13 @@ class CaptureRecords:
         now: datetime,
         today: date,
         decision: CandidateDecision | None = None,
+        channel: SourceChannel | None = None,
     ) -> CaptureChanged:
         """Write one change and its event, inside the caller's transaction. ``reading`` is
         the note's line of changes as that transaction read it, which the new change must
         carry on. The update names the revision it was decided on, so it lands on that
-        revision or on nothing."""
+        revision or on nothing. ``channel`` is the tree a press by search or an unlink came
+        through, kept with its event."""
         note = note.model_copy(
             update={"revision": standing.revision + 1, "updated_at": now, "updated_on": today}
         )
@@ -870,6 +880,7 @@ class CaptureRecords:
             now=now,
             today=today,
             decision=decision,
+            channel=channel,
         )
         written = self._connection.execute(
             UPDATE_CAPTURE,
@@ -906,6 +917,7 @@ class CaptureRecords:
         now: datetime,
         today: date,
         decision: CandidateDecision | None = None,
+        channel: SourceChannel | None = None,
     ) -> CaptureEvent:
         """Append the event of one change, inside the caller's transaction, and give it the
         place the file gave it. ``line`` is the note's changes as this transaction read
@@ -922,6 +934,7 @@ class CaptureRecords:
             occurred_on=today,
             authored_by=authored_by,
             decision=decision,
+            channel=channel,
         )
         sound_history(note, [*line, event])
         cursor = self._connection.execute(
@@ -937,6 +950,7 @@ class CaptureRecords:
                 today.isoformat(),
                 event.authored_by,
                 None if event.decision is None else event.decision.model_dump_json(),
+                None if event.channel is None else event.channel.value,
             ),
         )
         return event.model_copy(update={"sequence": cursor.lastrowid})
