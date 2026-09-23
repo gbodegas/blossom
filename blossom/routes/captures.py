@@ -49,6 +49,7 @@ from blossom.captures import (
     PROMOTE,
     RESTORE,
     STUDENT,
+    UNLINK,
     Author,
     Capture,
     CaptureAlreadyCreated,
@@ -64,6 +65,7 @@ from blossom.captures import (
     UnknownCapture,
     UnreadableCapture,
     capture_id_from,
+    derived_assignment_id,
     new_capture_id,
     what_remains,
 )
@@ -91,6 +93,7 @@ from blossom.routes.student import (
     viewer_of,
 )
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, UnknownCaptureReference
+from blossom.stores.project_state import Assignment
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +115,12 @@ JOINED_TO_HOMEWORK: Final = (
     "Joined to homework already here. Nothing on that assignment was changed."
 )
 ALREADY_ADDED: Final = "Already added to homework. This is the note as it stands now."
+LINK_CHANGED: Final = (
+    "Joined to other homework already here. Nothing on either assignment was changed."
+)
+UNLINKED: Final = (
+    "Unlinked. This note is back in Homework notes, and the homework it was joined to is unchanged."
+)
 OUT_OF_THE_WINDOW: Final = "Saved here. It is not in today's planning window."
 WINDOW_UNKNOWN: Final = (
     "A claim about its date cannot be read right now, so whether it is in today's planning "
@@ -172,13 +181,16 @@ SAID: Final[dict[str, tuple[str, str | None]]] = {
     "clarified": (DETAILS_SAVED, CLARIFY),
     "added": (ADDED_TO_HOMEWORK, PROMOTE),
     "joined": (JOINED_TO_HOMEWORK, LINK),
+    "relinked": (LINK_CHANGED, LINK),
+    "unlinked": (UNLINKED, UNLINK),
     "already": (ALREADY_ADDED, None),
 }
 """What an address says a save did, the sentence for it, and the kind of change the event
 it names must be in the note's history. A save that wrote nothing names the change it found
 standing, which may be of any kind. The server writes the address; the page believes none
 of it until the history bears it out, and an event id is not a number a person can count
-to: a revision in its place, or an id of another note's, says nothing."""
+to: a revision in its place, or an id of another note's, says nothing. A link is joined or
+moved as its own event keeps it, whatever the address says."""
 SAID_OF_A_NOTE_IN_HOMEWORK: Final = {
     "edited": NOTE_EDITED_IN_HOMEWORK,
     "restored": NOTE_RESTORED_IN_HOMEWORK,
@@ -187,7 +199,9 @@ SAID_OF_A_NOTE_IN_HOMEWORK: Final = {
 note in homework is in no queue of notes, and whether its assignment is in a plan is nothing
 a note's page reads, so neither is said. The assignment is never changed by a change to a
 note, and that is said."""
-SAID_TO_EITHER: Final = frozenset({"clarified", "added", "joined", "already", "unchanged"})
+SAID_TO_EITHER: Final = frozenset(
+    {"clarified", "added", "joined", "relinked", "unlinked", "already", "unchanged"}
+)
 """The results a parent is shown too: what a save through the family's tree did, in words
 that address nobody. The rest are about changes only she can make, and are said to her."""
 
@@ -500,6 +514,13 @@ def result_of(
     made = next((change for change in history if change.event_id == event), None)
     if made is None or (kind is not None and made.operation != kind):
         return None
+    if kind == LINK:
+        # A link by search that left no homework is joined, never moved, and a move is
+        # moved, never joined: the event keeps which, and the address is held to it.
+        asked = None if made.decision is None else made.decision.search_press
+        moved = asked is not None and asked.leaving is not None
+        if moved != (said == "relinked"):
+            return None
     stands = history[-1].event_id == made.event_id
     if made.after.assignment_id is not None:
         sentence = SAID_OF_A_NOTE_IN_HOMEWORK.get(said, sentence)
@@ -612,6 +633,11 @@ class InHomework:
     on_record: bool
     in_window: bool
     claims_unreadable: bool = False
+    joined: bool = False
+    """Whether the note was joined to homework that was on record before it, which can be
+    moved or unlinked, rather than made into an assignment of its own, which cannot."""
+    current: Assignment | None = None
+    """The assignment as it stands, when it is on record, so a page can name it."""
 
 
 def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
@@ -624,14 +650,17 @@ def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
     with store.reading():
         item = store.one_assignment(note.assignment_id)
         claimed = None if item is None else store.read_claims([note.assignment_id])
+    joined = note.assignment_id != derived_assignment_id(note.capture_id)
     if item is None or claimed is None:
-        return InHomework(note.assignment_id, on_record=False, in_window=False)
+        return InHomework(note.assignment_id, on_record=False, in_window=False, joined=joined)
     noticed = notice_due_date(expect_due_date(item), claimed.records.get(note.assignment_id, []))
     return InHomework(
         note.assignment_id,
         on_record=True,
         in_window=in_week(item, noticed, state.clock.today()),
         claims_unreadable=note.assignment_id in claimed.unreadable,
+        joined=joined,
+        current=item,
     )
 
 

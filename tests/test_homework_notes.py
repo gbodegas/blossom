@@ -73,8 +73,9 @@ from tests.support import (
 WORDS = "Geometry questions 4-8, heard from a classmate"
 NOT_YET = ("Add it to homework", "Link to homework", "Ready to add", "Add the class and title")
 """What the form for a note not yet saved never offers: there is no note to add or to join."""
-NO_ROUTE = ("Link to homework", "Search homework")
-"""What no page offers, since joining a note to homework by searching has no route."""
+NO_ROUTE = ("Search homework",)
+"""What the note's own page never offers: the search is offered from it as the way to link
+the note to homework already here, and named as that; the details page names the search."""
 
 
 def new_form(client: TestClient) -> dict[str, str]:

@@ -1,0 +1,14 @@
+{#
+  What a press on the search page sent, when the page that holds the search
+  cannot be made: the search words and the homework chosen, to copy. Nothing
+  here reads the record.
+#}
+{% if kept.query %}
+  <p class="note">Search words, as typed: <span class="authored-text">{{ kept.query }}</span></p>
+{% endif %}
+{% if kept.target %}
+  <p class="note">Homework chosen: <span class="authored-text">{{ kept.target }}</span>.</p>
+{% endif %}
+{% if kept.leaving %}
+  <p class="note">Link shown on your form: <span class="authored-text">{{ kept.leaving }}</span></p>
+{% endif %}

@@ -102,19 +102,24 @@ def reading_of(item: Assignment, standing: AssignmentStatus | None) -> Candidate
     )
 
 
+def readings_for(store: ProjectStateStore, items: Sequence[Assignment]) -> list[CandidateReading]:
+    """These assignments as they are shown, in the order given: the rows a search shows, and
+    the one row a link to homework found by search is held to. Called inside a write's
+    transaction it reads through that transaction, which is what makes the comparison
+    there one with the write."""
+    if not items:
+        return []
+    standing = statuses_for(store, [item.assignment_id for item in items])
+    return [reading_of(item, standing.get(item.assignment_id)) for item in items]
+
+
 def candidate_readings(
     store: ProjectStateStore,
     details: CaptureDetails,
     among: Sequence[Assignment] | None = None,
 ) -> list[CandidateReading]:
-    """Every candidate for these details, as shown, in the record's order. Called inside a
-    write's transaction it reads through that transaction, which is what makes the
-    comparison there one with the write."""
-    found = store.promotion_candidates(details, among=among)
-    if not found:
-        return []
-    standing = statuses_for(store, [item.assignment_id for item in found])
-    return [reading_of(item, standing.get(item.assignment_id)) for item in found]
+    """Every candidate for these details, as shown, in the record's order."""
+    return readings_for(store, store.promotion_candidates(details, among=among))
 
 
 CandidateReader = Callable[[CaptureDetails, Sequence[Assignment]], Sequence[CandidateReading]]
@@ -125,5 +130,17 @@ def reader(store: ProjectStateStore) -> CandidateReader:
 
     def read(details: CaptureDetails, among: Sequence[Assignment]) -> Sequence[CandidateReading]:
         return candidate_readings(store, details, among)
+
+    return read
+
+
+RowReader = Callable[[Sequence[Assignment]], Sequence[CandidateReading]]
+
+
+def row_reader(store: ProjectStateStore) -> RowReader:
+    """The reading of named rows a link by search makes inside its own transaction."""
+
+    def read(items: Sequence[Assignment]) -> Sequence[CandidateReading]:
+        return readings_for(store, items)
 
     return read

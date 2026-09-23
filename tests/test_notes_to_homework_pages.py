@@ -187,7 +187,7 @@ def test_the_notes_page_offers_adding_it_and_only_what_has_a_route() -> None:
 
     assert f'href="{note_add_href(name)}"' in page
     assert ">Add it to homework</a>" in page
-    assert "Link to homework already here" not in page
+    assert ">Link to homework already here</a>" in page
     assert "Search homework" not in page
 
 
@@ -2232,3 +2232,41 @@ def test_a_press_through_the_other_persons_tree_on_a_name_that_is_no_note_keeps_
     )
     assert no_note.status_code == 404
     assert after == before
+
+
+# ------------------------------------------------------------------ who supplied a detail
+
+
+@pytest.mark.parametrize("button", ["add", "details"])
+def test_the_details_saved_on_her_note_say_who_supplied_them_to_the_reader(
+    button: str, tmp_path: pathlib.Path
+) -> None:
+    """The details saved on the note say who supplied them in the reader's terms, never the
+    tree's. A parent whose press on her details page is refused, with a form that carries no
+    revision, is shown the details saved on the note, and the ones she supplied say so; she,
+    meeting a conflict on her own page, is shown them without being told her own are hers."""
+    send = add if button == "add" else save_details
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        assert save_details(client, name, {**opened(client, name), **typed()}).status_code == 303
+        her_form = opened(client, name)
+        hers = send(client, name, {**her_form, **typed(title="Questions 9-12"), "revision": "1"})
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        without_revision = {key: value for key, value in her_form.items() if key != "revision"}
+        before = rows(client)
+        parents = send(client, name, without_revision)
+        after = rows(client)
+
+    def saved(page: str) -> str:
+        return page.split("Saved on the note now</h3>")[1].split("<h3")[0]
+
+    assert parents.status_code == 403
+    assert after == before
+    assert "Geometry" in saved(parents.text)
+    assert "added by the student" in saved(parents.text)
+    assert hers.status_code == 409
+    assert "Geometry" in saved(hers.text)
+    assert "added by the student" not in saved(hers.text)
