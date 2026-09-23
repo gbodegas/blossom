@@ -18,10 +18,19 @@ from markupsafe import escape
 
 from blossom import intake
 from blossom.app import create_app
-from blossom.captures import CaptureNotSaved, derived_assignment_id
+from blossom.candidates import readings_for
+from blossom.captures import CaptureNotSaved, candidate_basis, derived_assignment_id
 from blossom.homework_search import PAGE_SIZE
 from blossom.reconciliation import SourceChannel
-from blossom.routes.captures import JOINED_TO_HOMEWORK, LINK_CHANGED, NOTE_CHANGED, UNLINKED
+from blossom.routes.captures import (
+    ALREADY_ADDED,
+    JOINED_TO_HOMEWORK,
+    LINK_CHANGED,
+    NOTE_CHANGED,
+    NOTE_GONE,
+    NOTE_UNREADABLE,
+    UNLINKED,
+)
 from blossom.routes.navigation import (
     NEW_NOTE_PAGE,
     NOTE_ACTIONS,
@@ -553,3 +562,150 @@ def test_reading_the_search_page_and_asking_for_it_with_head_write_nothing() -> 
     assert no_note.status_code == 404
     assert after == before
     assert 'name="q"' in got.text
+
+
+# ------------------------------------------------------------------ first review round
+
+
+def test_a_parent_sees_the_corrections_on_the_note_page_through_the_familys_tree(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A parent reading a joined note's page gets Change link and Unlink, each through the
+    family's tree, and the unlink press from that page is a parent's."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        joined(client, name, log)
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        note_page = client.get(note_href(name), headers=PAGE_HEADERS).text
+        answer = client.post(
+            note_unlink_action(name, family=True),
+            data=unlink_press(note_page, name, family=True),
+        )
+        history = state_of(client).project_state.capture_history(name)
+
+    assert f'<a href="{note_search_href(name, family=True)}">Change link</a>' in note_page
+    assert f'action="{note_unlink_action(name, family=True)}"' in note_page
+    assert answer.status_code == 303
+    assert (history[-1].operation, history[-1].authored_by) == ("unlink", "parent")
+
+
+def test_choosing_the_homework_the_note_is_joined_to_now_changes_nothing() -> None:
+    """The search shows the homework the note is joined to with no press on it, and a press
+    that names it anyway writes nothing: no unlink, no link, no claim withdrawn."""
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        joined(client, name, log)
+        page = search(client, name, "reading")
+        row = page.split(f'id="found-{log.assignment_id}"')[1].split("</li>")[0]
+        store = state_of(client).project_state
+        basis = candidate_basis(readings_for(store, [log]))
+        before = rows(client)
+        answer = client.post(
+            note_link_action(name),
+            data={
+                "revision": "2",
+                "target": log.assignment_id,
+                "basis": basis,
+                "from": log.assignment_id,
+                "q": "reading",
+                "page": "1",
+            },
+        )
+        landed = client.get(answer.headers["location"]).text
+        after = rows(client)
+
+    assert ">Move the link here</button>" not in row
+    assert "joined to this homework now" in row
+    assert answer.status_code == 303
+    assert escape(ALREADY_ADDED) in landed
+    assert after == before
+
+
+def test_the_other_persons_press_on_a_note_that_cannot_be_read_or_is_gone_keeps_the_refusal(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Who pressed is settled first, whatever became of the note: the refusal is the one
+    about who pressed, with the words kept, not a sentence about the note's row."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        gone_name = save_note(client, text="Another note, soon gone")
+        log = on_record(client)
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE homework_captures SET archived = 2 WHERE capture_id = ?", (name,)
+        )
+        store._connection.execute(
+            "DELETE FROM homework_captures WHERE capture_id = ?", (gone_name,)
+        )
+        store._connection.commit()
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        data = {
+            "revision": "1",
+            "target": log.assignment_id,
+            "basis": "x" * 64,
+            "q": "Typed <b>words</b>",
+        }
+        unreadable = client.post(note_link_action(name), data=data, headers=PAGE_HEADERS)
+        gone = client.post(note_link_action(gone_name), data=data, headers=PAGE_HEADERS)
+
+    for answer in (unreadable, gone):
+        assert answer.status_code == 403
+        assert escape(NOT_HERS_TO_UPDATE) in answer.text
+        assert "Typed &lt;b&gt;words&lt;/b&gt;" in answer.text
+        assert escape(NOTE_UNREADABLE) not in answer.text
+        assert escape(NOTE_GONE) not in answer.text
+
+
+def test_homework_that_changed_so_the_words_no_longer_find_it_is_still_shown_as_it_stands() -> None:
+    """The row the press was held to is shown as it stands now, with a fresh press, even
+    when the search words no longer find it."""
+    with browser() as client:
+        name = save_note(client)
+        log = on_record(client)
+        press = press_of(search(client, name, "reading"), name, log.assignment_id)
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE assignments SET title = 'Novel study' WHERE assignment_id = ?",
+            (log.assignment_id,),
+        )
+        store._connection.commit()
+        answer = client.post(note_link_action(name), data=press)
+        shown = answer.text.split(f'id="changed-{log.assignment_id}"')[1].split("</li>")[0]
+        fresh = whole_form(shown, note_link_action(name))
+
+    assert answer.status_code == 409
+    assert HOMEWORK_CHANGED in answer.text
+    assert "Novel study" in shown
+    assert 'value="reading"' in answer.text
+    assert (fresh["target"], fresh["revision"]) == (log.assignment_id, press["revision"])
+    assert fresh["basis"] != press["basis"]
+
+
+def test_a_note_joined_to_homework_that_left_the_record_still_offers_the_corrections() -> None:
+    with browser() as client:
+        name = save_note(client, due_date="2026-08-21")
+        log = on_record(client)
+        joined(client, name, log)
+        store = state_of(client).project_state
+        store._connection.execute(
+            "DELETE FROM assignments WHERE assignment_id = ?", (log.assignment_id,)
+        )
+        store._connection.commit()
+        note_page = client.get(note_href(name)).text
+        page = search(client, name, "reading")
+        answer = client.post(note_unlink_action(name), data=unlink_press(note_page, name))
+        waiting = client.get(note_href(name)).text
+
+    assert ">Change link</a>" in note_page
+    assert f'action="{note_unlink_action(name)}"' in note_page
+    assert "not on record now" in page
+    assert answer.status_code == 303
+    assert ">Link to homework already here</a>" in waiting

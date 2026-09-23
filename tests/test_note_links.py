@@ -606,3 +606,20 @@ def test_the_accepted_press_stops_at_an_unlink(store: ProjectStateStore) -> None
     assert accepted_press(events) == events[-1]
     assert isinstance(unlink(store, name, 2, target.assignment_id), CaptureUnlinked)
     assert accepted_press(store.capture_history(name)) is None
+
+
+def test_choosing_the_homework_the_note_is_joined_to_now_writes_nothing(
+    store: ProjectStateStore,
+) -> None:
+    """A move to the homework the note is joined to already is no move: nothing is
+    withdrawn, no unlink and no link are written, and the press is answered as the one
+    that stands."""
+    target = on_record(store)
+    name = joined(store, target)
+    before = tables(store)
+
+    again = link(store, name, target, 2, leaving=target.assignment_id)
+
+    assert isinstance(again, CaptureAlreadyPromoted)
+    assert again.assignment_id == target.assignment_id
+    assert tables(store) == before

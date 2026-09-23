@@ -2234,7 +2234,9 @@ class ProjectStateStore(CaptureRecords):
         must be joined to that homework by a link, not by an assignment of its
         own, which is not moved this way; the homework shown as the old one
         must be the note's now. Either way the page's revision must be the
-        note's and the note must not be put away. The homework chosen is read
+        note's and the note must not be put away; a move to the homework the
+        note is joined to now is no move, and nothing is written for it.
+        Otherwise the homework chosen is read
         here, as a person was shown it, through ``shown``: gone from the
         record, it is said so; changed in anything the row showed, the row as
         it stands is put to the person again. Then, for a move, the note's
@@ -2269,6 +2271,10 @@ class ProjectStateStore(CaptureRecords):
                         return CaptureConflict(standing)
                 if standing.revision != expected_revision or standing.archived:
                     return CaptureConflict(standing)
+                if leaving is not None and target == leaving:
+                    # A move to the homework the note is joined to now is no move: nothing
+                    # is withdrawn and nothing is written.
+                    return CaptureAlreadyPromoted(standing, reading.head, target)
                 item = self.one_assignment(target)
                 if item is None:
                     return HomeworkGone(standing, target)

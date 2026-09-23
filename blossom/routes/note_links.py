@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from blossom.authored_text import TextRefused, single_line
-from blossom.candidates import readings_for, row_reader
+from blossom.candidates import CandidateReading, readings_for, row_reader
 from blossom.captures import (
     CandidatesChanged,
     CaptureAlreadyPromoted,
@@ -147,6 +147,7 @@ def search_page(
     page: str | None = None,
     form: SearchForm | None = None,
     problem: str | None = None,
+    changed: FoundRow | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """The search page: the note's words, where it stands, the query, and the homework the
@@ -159,11 +160,14 @@ def search_page(
         found_note = state.project_state.sound_capture_history(capture_id)
     except UnreadableCapture:
         if form is not None:
-            return plain_search(request, state, form, NOTE_UNREADABLE, status_code)
+            # A refusal of who pressed stands whatever became of the note.
+            said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
+            return plain_search(request, state, form, said or NOTE_UNREADABLE, status_code)
         return unreadable(request, state, status_code)
     if found_note is None:
         if form is not None:
-            return plain_search(request, state, form, NOTE_GONE, status_code)
+            said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
+            return plain_search(request, state, form, said or NOTE_GONE, status_code)
         return gone(request, state)
     note = found_note[0]
     viewer = viewer_of(request)
@@ -241,6 +245,7 @@ def search_page(
             "rows": rows,
             "pages": page_hrefs,
             "chosen": form.target if form is not None else "",
+            "changed": changed,
             "not_hers": NOT_HERS_TO_UPDATE,
             "ways_back": ways_back(),
             "sample": state.settings.sample,
@@ -283,6 +288,7 @@ def search_or_plain(
     form: SearchForm,
     problem: str,
     status_code: int,
+    changed: FoundRow | None = None,
 ) -> HTMLResponse:
     """The search page with a refused press said first, the search words and the choice kept,
     tried once; when that page cannot be made, or the name is no note's, the plain page that
@@ -301,6 +307,7 @@ def search_or_plain(
             page=form.page or None,
             form=form,
             problem=problem,
+            changed=changed,
             status_code=status_code,
         )
     except Exception:
@@ -385,7 +392,7 @@ async def link_to_homework(
         case CapturePromoted(event=made):
             where = note_href(name, fragment=NOTE_RESULT, said=said, event=made.event_id)
         case CaptureAlreadyPromoted(head=head):
-            where = note_href(name, fragment=NOTE_RESULT, said=said, event=head.event_id)
+            where = note_href(name, fragment=NOTE_RESULT, said="already", event=head.event_id)
         case CaptureConflict():
             return search_or_plain(
                 request, state, way, form, NOTE_CHANGED, status.HTTP_409_CONFLICT
@@ -396,9 +403,18 @@ async def link_to_homework(
             return search_or_plain(
                 request, state, way, form, HOMEWORK_GONE, status.HTTP_409_CONFLICT
             )
-        case CandidatesChanged():
+        case CandidatesChanged(candidates=shown):
+            # The row as it stands now, shown on its own with a fresh press, whether or
+            # not the search words still find it. The reader handed to the store makes
+            # readings, so the row is one; anything else is shown by its name alone.
+            fresh = shown[0] if shown else None
+            row = (
+                FoundRow(candidate_row(fresh, family=way.family), candidate_basis(shown))
+                if isinstance(fresh, CandidateReading)
+                else None
+            )
             return search_or_plain(
-                request, state, way, form, HOMEWORK_CHANGED, status.HTTP_409_CONFLICT
+                request, state, way, form, HOMEWORK_CHANGED, status.HTTP_409_CONFLICT, row
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 

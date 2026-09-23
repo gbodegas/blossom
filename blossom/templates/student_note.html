@@ -56,8 +56,9 @@
         <p class="note"><a href="{{ note_search_href(note.capture_id, family=not mine) }}">Link to homework already here</a>: find it by its class or title, whatever this note calls it.</p>
       {% endif %}
     {% endif %}
-    {% if in_homework and in_homework.on_record and not note.archived %}
-      {% with joined = in_homework.joined, may_unlink = mine, family = not mine %}{% include "note_link_controls.html" %}{% endwith %}
+    {# The corrections go through the reader's own tree, hers or the family's, whatever became of the homework. #}
+    {% if in_homework and not note.archived %}
+      {% with joined = in_homework.joined, may_unlink = true, family = not mine %}{% include "note_link_controls.html" %}{% endwith %}
     {% endif %}
     {% if note.text != note.original_text %}
       <h3 class="update-heading">First written as</h3>

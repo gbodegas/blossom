@@ -2,6 +2,25 @@
 {% set page = "parent" if family else "student" %}
 {% block title %}Blossom - Link a note to homework already here{% endblock %}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
+{% macro found_row(item, anchor) %}
+  <li id="{{ anchor }}-{{ item.row.assignment_id }}"{% if chosen == item.row.assignment_id %} class="chosen"{% endif %}>
+    <p><span class="authored-text">{{ item.row.course }}</span> &middot; <span class="authored-text">{{ item.row.title }}</span>, {% if item.row.due_date %}due {{ on(item.row.due_date) }}{% else %}no due date recorded{% endif %}</p>
+    <p class="note candidate-facts">{{ item.row.kind }} {{ item.row.hers }}{% for said in item.row.school %} {{ said }}{% endfor %}{% if item.row.recorded %} {{ item.row.recorded }}{% endif %}{% if item.row.source %} {{ item.row.source }}{% endif %}</p>
+    {% if item.row.assignment_id == leaving %}
+      <p class="note">This note is joined to this homework now.</p>
+    {% elif may_write %}
+      <form method="post" action="{{ note_link_action(note.capture_id, family=family) }}" class="action">
+        <input type="hidden" name="revision" value="{{ note.revision }}">
+        <input type="hidden" name="target" value="{{ item.row.assignment_id }}">
+        <input type="hidden" name="basis" value="{{ item.basis }}">
+        {% if leaving %}<input type="hidden" name="from" value="{{ leaving }}">{% endif %}
+        <input type="hidden" name="q" value="{{ query }}">
+        <input type="hidden" name="page" value="{{ results.number if results else 1 }}">
+        <button type="submit" class="primary">{% if joined %}Move the link here{% else %}Link to this homework{% endif %}</button>
+      </form>
+    {% endif %}
+  </li>
+{% endmacro %}
 {#
   The page that finds homework already on record by its class or title,
   however the note puts it, and joins the note to one result by a press of
@@ -46,32 +65,25 @@
     {% if hint %}
       <p class="note" id="search-hint">{{ hint }}</p>
     {% endif %}
+    {% if changed %}
+      {# The row the press was held to, as it stands now, whether or not the words still find it. #}
+      <h2 class="update-heading" id="search-changed">The homework chosen, as it stands now</h2>
+      <ol class="history-list">
+        {{ found_row(changed, "changed") }}
+      </ol>
+    {% endif %}
     {% if results and results.total %}
       <h2 class="update-heading" id="search-results">Found {{ results.total }}{% if results.last > 1 %}, page {{ results.number }} of {{ results.last }}{% endif %}</h2>
       <ol class="history-list">
         {% for item in rows %}
-          <li id="found-{{ item.row.assignment_id }}"{% if chosen == item.row.assignment_id %} class="chosen"{% endif %}>
-            <p><span class="authored-text">{{ item.row.course }}</span> &middot; <span class="authored-text">{{ item.row.title }}</span>, {% if item.row.due_date %}due {{ on(item.row.due_date) }}{% else %}no due date recorded{% endif %}</p>
-            <p class="note candidate-facts">{{ item.row.kind }} {{ item.row.hers }}{% for said in item.row.school %} {{ said }}{% endfor %}{% if item.row.recorded %} {{ item.row.recorded }}{% endif %}{% if item.row.source %} {{ item.row.source }}{% endif %}</p>
-            {% if may_write %}
-              <form method="post" action="{{ note_link_action(note.capture_id, family=family) }}" class="action">
-                <input type="hidden" name="revision" value="{{ note.revision }}">
-                <input type="hidden" name="target" value="{{ item.row.assignment_id }}">
-                <input type="hidden" name="basis" value="{{ item.basis }}">
-                {% if leaving %}<input type="hidden" name="from" value="{{ leaving }}">{% endif %}
-                <input type="hidden" name="q" value="{{ query }}">
-                <input type="hidden" name="page" value="{{ results.number }}">
-                <button type="submit" class="primary">{% if joined %}Move the link here{% else %}Link to this homework{% endif %}</button>
-              </form>
-            {% endif %}
-          </li>
+          {{ found_row(item, "found") }}
         {% endfor %}
       </ol>
       {% if pages.previous or pages.next %}
         <p class="note">{% if pages.previous %}<a href="{{ pages.previous }}">Previous page</a>{% endif %}{% if pages.previous and pages.next %} &middot; {% endif %}{% if pages.next %}<a href="{{ pages.next }}">Next page</a>{% endif %}</p>
       {% endif %}
     {% endif %}
-    {% if chosen and not rows|selectattr("row.assignment_id", "equalto", chosen)|list %}
+    {% if chosen and not changed and not rows|selectattr("row.assignment_id", "equalto", chosen)|list %}
       <p class="note">Homework chosen, not found by these words now: <span class="authored-text">{{ chosen }}</span>.</p>
     {% endif %}
     <p class="note">Nothing is joined until one of the presses above is used, and the save checks the note and the homework again as they stand then.</p>
