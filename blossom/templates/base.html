@@ -16,9 +16,12 @@
         <span class="wordmark">blossom</span>
       </a>
       {% set household = request.state.household if request is defined else none %}
+      {# The week is hers, named for whoever reads: a parent reads it as hers on every page, she
+         reads it as her own, and with the sign-in off the family's pages read as a parent's. #}
+      {% set parent_reads = household == "PARENT" or (household not in ["STUDENT", "PARENT"] and page == "parent") %}
       <nav class="places" aria-label="Pages">
         {% if not sign_in %}
-          <a href="/student/due-this-week"{% if page == "student" %} aria-current="page"{% endif %}>{% if page == "parent" %}Student week{% else %}My week{% endif %}</a>
+          <a href="/student/due-this-week"{% if page == "student" %} aria-current="page"{% endif %}>{% if parent_reads %}Student week{% else %}My week{% endif %}</a>
           {% if household != "STUDENT" %}
             <a href="/parent"{% if page == "parent" %} aria-current="page"{% endif %}>Family review</a>
           {% endif %}
