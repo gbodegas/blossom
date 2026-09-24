@@ -137,7 +137,7 @@ def answer_from(fields: dict[str, str]) -> Answer | None:
             ticked.add(int(number))
         else:
             return None
-    if not ticked <= set(words) or fields.get("none", "1") != "1":
+    if not ticked <= set(words) or fields.get("none") not in (None, "1"):
         return None
     return Answer(
         revision=int(revision),

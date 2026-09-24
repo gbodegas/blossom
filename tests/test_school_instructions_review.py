@@ -33,6 +33,8 @@ from blossom.routes.school_instructions import (
     NOT_ON_RECORD,
     NOTHING_CHOSEN,
     SAVED_AS_CHOSEN,
+    Answer,
+    answer_from,
 )
 from blossom.school_instructions import (
     InstructionChoice,
@@ -414,3 +416,19 @@ def test_an_instruction_waiting_for_review_is_named_on_the_family_page(
     assert f'<a href="{PAGE}">Review school instructions</a>' in section
     assert 'id="school-instructions-to-review"' not in settled
     assert found.texts == tuple(sorted([A, C]))
+
+
+def test_the_answer_is_read_with_none_left_out_ticked_alone_or_refused_when_malformed() -> None:
+    """A browser leaves an unticked box out of the form: a tick with no ``none`` field is an
+    answer, ``none`` alone is one, and ``none`` with any other value is no form this page
+    made."""
+    shown = {"revision": "2", "instruction-0": A, "instruction-1": B}
+
+    assert answer_from({**shown, "apply-1": "1"}) == Answer(
+        revision=2, shown=(A, B), applies=frozenset({B}), none_applies=False
+    )
+    assert answer_from({**shown, "none": "1"}) == Answer(
+        revision=2, shown=(A, B), applies=frozenset(), none_applies=True
+    )
+    assert answer_from({**shown, "apply-1": "1", "none": "on"}) is None
+    assert answer_from({**shown, "none": ""}) is None

@@ -65,14 +65,24 @@ CREATE_SCHOOL_INSTRUCTIONS: Final = """
         UNIQUE (assignment_id, text)
     )
 """
-INSTRUCTION_COLUMNS: Final = (
-    "sequence, assignment_id, text, channel, card, card_day, first_seen_at_utc, "
-    "first_seen_on, imported_by, state, settled_by, settled_at_utc, settled_on, revision"
-)
-INSERT_INSTRUCTION: Final = f"""
-    INSERT INTO school_instructions ({INSTRUCTION_COLUMNS.removeprefix("sequence, ")})
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""  # noqa: S608
+EVERY_INSTRUCTION: Final = """
+    SELECT sequence, assignment_id, text, channel, card, card_day, first_seen_at_utc,
+        first_seen_on, imported_by, state, settled_by, settled_at_utc, settled_on, revision
+    FROM school_instructions
+    ORDER BY sequence
+"""
+INSTRUCTIONS_OF: Final = """
+    SELECT sequence, assignment_id, text, channel, card, card_day, first_seen_at_utc,
+        first_seen_on, imported_by, state, settled_by, settled_at_utc, settled_on, revision
+    FROM school_instructions
+    WHERE assignment_id = ? ORDER BY sequence
+"""
+INSERT_INSTRUCTION: Final = """
+    INSERT INTO school_instructions (
+        assignment_id, text, channel, card, card_day, first_seen_at_utc, first_seen_on,
+        imported_by, state, settled_by, settled_at_utc, settled_on, revision
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
 AUTHORED_MARKS: Final = frozenset(
     {SourceChannel.PARENT_ENTRY.value, SourceChannel.STUDENT_REPORT.value}
 )
@@ -118,7 +128,7 @@ class InstructionReadings:
 
 
 def instruction_from(row: Sequence[object]) -> SchoolInstruction:
-    """One kept instruction from a row in ``INSTRUCTION_COLUMNS`` order, or
+    """One kept instruction from a row in the order ``EVERY_INSTRUCTION`` reads it, or
     ``UnreadableInstruction`` for a row this store never writes."""
     try:
         state = str(row[9])
@@ -261,11 +271,7 @@ class SchoolInstructionRecords:
     # ------------------------------------------------------------------ reading
 
     def _kept_instructions_locked(self, assignment_id: str) -> list[SchoolInstruction]:
-        rows = self._connection.execute(
-            f"SELECT {INSTRUCTION_COLUMNS} FROM school_instructions "  # noqa: S608
-            "WHERE assignment_id = ? ORDER BY sequence",
-            (assignment_id,),
-        ).fetchall()
+        rows = self._connection.execute(INSTRUCTIONS_OF, (assignment_id,)).fetchall()
         return [instruction_from(row) for row in rows]
 
     def school_instruction_readings(self, assignment_ids: Iterable[str]) -> InstructionReadings:
@@ -276,9 +282,7 @@ class SchoolInstructionRecords:
         if not wanted:
             return InstructionReadings({}, frozenset())
         with self._lock:
-            rows = self._connection.execute(
-                f"SELECT {INSTRUCTION_COLUMNS} FROM school_instructions ORDER BY sequence"  # noqa: S608
-            ).fetchall()
+            rows = self._connection.execute(EVERY_INSTRUCTION).fetchall()
         kept: dict[str, list[SchoolInstruction]] = {}
         unreadable: set[str] = set()
         for row in rows:
