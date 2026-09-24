@@ -75,6 +75,7 @@ from blossom.school_instructions import (
     InstructionsOutcome,
     InstructionsSettled,
     SchoolInstruction,
+    SubmittedChoice,
     new_texts,
     revision_of,
     settle,
@@ -742,6 +743,9 @@ class Change:
     instructions_revision: int = 0
     instructions_answer: InstructionChoice | None = None
     """The parent's choice of which instructions apply, when one was given."""
+    instructions_submitted: SubmittedChoice | None = None
+    """The answer the form sent on this card, whatever it says, contradictions included,
+    with the revision and the instructions it was made against."""
     instructions_with: int | None = None
     """The key of the card that carries this card's assignment's instructions, when that is
     another card of the same text."""
@@ -755,8 +759,14 @@ class Change:
     @property
     def instructions_question(self) -> bool:
         """Whether the card puts the question of which instructions apply: asked and not yet
-        answered, or answered, so a page returned for another question keeps the answer."""
-        return self.instructions_asked or self.instructions_answer is not None
+        answered, or answered, so a page returned for another question keeps the answer, or
+        answered against instructions that have changed since, so the parent chooses again
+        where the answer not saved is said."""
+        return (
+            self.instructions_asked
+            or self.instructions_answer is not None
+            or self.instructions_stale
+        )
 
     @property
     def instructions_shown(self) -> tuple["ShownInstruction", ...]:
@@ -789,22 +799,34 @@ class Change:
 
     @property
     def instructions_stale(self) -> bool:
-        """Whether the parent's choice was made against instructions that have changed since."""
-        return isinstance(self.instructions, InstructionChoiceStale)
+        """Whether the parent's answer was made against instructions that have changed since:
+        a choice the rule refuses as stale, or an answer that contradicts itself made against
+        another revision or another set, which is never put right onto the facts as they
+        stand now."""
+        if isinstance(self.instructions, InstructionChoiceStale):
+            return True
+        answer = self.instructions_submitted
+        return (
+            answer is not None
+            and answer.contradicts
+            and not answer.made_against(
+                self.instructions_revision, [item.text for item in self.instructions_shown]
+            )
+        )
 
     @property
     def instructions_ticked(self) -> frozenset[str]:
         """The instructions a page returned shows ticked: the parent's answer, by its words,
         never by its place, and nothing when the answer was made against instructions that
         have changed since, which are asked afresh."""
-        if self.instructions_answer is None or self.instructions_stale:
+        if self.instructions_submitted is None or self.instructions_stale:
             return frozenset()
-        return self.instructions_answer.applies
+        return self.instructions_submitted.applies
 
     @property
     def instructions_none_ticked(self) -> bool:
         """Whether a page returned shows none applying ticked, by the same rule."""
-        answer = self.instructions_answer
+        answer = self.instructions_submitted
         return answer is not None and not self.instructions_stale and answer.none_applies
 
     @property
@@ -1066,7 +1088,7 @@ def changes_for(
     *,
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
-    instruction_answers: Mapping[int, InstructionChoice] | None = None,
+    instruction_answers: Mapping[int, InstructionChoice | SubmittedChoice] | None = None,
 ) -> list[Change]:
     """Compare each reading with the record: what is new, what is known, what a paste adds.
 
@@ -1146,26 +1168,49 @@ def changes_for(
             row = _updated_row(change)
             if row is not None:
                 pending[existing.assignment_id] = row
-    return _with_instructions(changes, store, instruction_answers or {})
+    return _with_instructions(changes, store, submitted_answers(instruction_answers or {}))
+
+
+def submitted_answers(
+    answers: Mapping[int, InstructionChoice | SubmittedChoice],
+) -> dict[int, SubmittedChoice]:
+    """Answers as sent, each whole: a choice a direct caller made is the answer it sends."""
+    return {
+        key: answer
+        if isinstance(answer, SubmittedChoice)
+        else SubmittedChoice(
+            shown_revision=answer.shown_revision,
+            shown=answer.shown,
+            applies=answer.applies,
+            none_applies=answer.none_applies,
+        )
+        for key, answer in answers.items()
+    }
 
 
 def _with_instructions(
-    changes: list[Change], store: ProjectStateStore, answers: Mapping[int, InstructionChoice]
+    changes: list[Change], store: ProjectStateStore, answers: Mapping[int, SubmittedChoice]
 ) -> list[Change]:
     """Decide the school's instructions once for each assignment the text lands on.
 
     Every card that lands on one assignment, an Assigned card and a Due card
-    of it among them, gives its instructions to one decision, carried by the
-    first such card and answered there; the others point to it. A card still
-    waiting on whether it is new work lands nowhere yet, and gives nothing. The
-    kept instructions of every assignment are read in one statement.
+    of it among them, gives its instructions to one decision. The decision is
+    carried by the first card of the text that lands on the assignment, whether
+    or not that card brings an instruction of its own, and answered there; the
+    others that bring one point to it. A card still waiting on whether it is new
+    work lands nowhere yet, and gives nothing. The kept instructions of every
+    assignment are read in one statement.
     """
-    landing: dict[str, list[int]] = {}
+    landed: dict[str, list[int]] = {}
     for index, change in enumerate(changes):
         if change.state == FOLDED or change.ambiguous:
             continue
-        if change.reading.instructions:
-            landing.setdefault(change.assignment_id, []).append(index)
+        landed.setdefault(change.assignment_id, []).append(index)
+    landing = {
+        assignment_id: places
+        for assignment_id, places in landed.items()
+        if any(changes[place].reading.instructions for place in places)
+    }
     if not landing:
         return changes
     found = store.school_instruction_readings(landing)
@@ -1178,7 +1223,8 @@ def _with_instructions(
         kept = () if standing is None else standing.kept
         seen = tuple(item for place in places for item in changes[place].reading.instructions)
         first = changes[places[0]]
-        answer = answers.get(first.key)
+        submitted = answers.get(first.key)
+        answer = None if submitted is None else submitted.choice()
         changes[places[0]] = dataclasses.replace(
             first,
             instructions=settle(kept, seen, answer),
@@ -1186,9 +1232,11 @@ def _with_instructions(
             instructions_kept=kept,
             instructions_revision=revision_of(kept),
             instructions_answer=answer,
+            instructions_submitted=submitted,
         )
         for place in places[1:]:
-            changes[place] = dataclasses.replace(changes[place], instructions_with=first.key)
+            if changes[place].reading.instructions:
+                changes[place] = dataclasses.replace(changes[place], instructions_with=first.key)
     return changes
 
 
@@ -1453,7 +1501,7 @@ def keep(
     *,
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
-    instruction_answers: Mapping[int, InstructionChoice] | None = None,
+    instruction_answers: Mapping[int, InstructionChoice | SubmittedChoice] | None = None,
     imported_by: Author | None = None,
     now: datetime | None = None,
     today: date | None = None,

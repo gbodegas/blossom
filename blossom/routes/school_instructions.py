@@ -5,25 +5,38 @@ The page lists every instruction kept for the assignment, those that apply,
 those said before, and any waiting for review, each with a box, and a
 separate box for none applying. Nothing is ticked in advance, and opening
 it writes nothing. A save needs an answer, as the paste review does, and
-goes through the store's one rule with the revision the page showed: a
-choice made against instructions that changed since is refused whole, with
-the facts as they stand and the choice that was not saved; a choice that
-already stands saves nothing more. The page lives under the family's
-address, so her sign-in never reaches it; a parent does, and the household
-with the sign-in off does, from the family's own pages.
+goes through the store's one rule with the revision the page showed.
+
+An answer that is not saved is never lost and never moved onto other facts.
+It is read whole before anything touches the store, contradictions included.
+When the instructions changed since the page it was made on, it is said in
+words as not saved, beside the facts as they stand, and nothing is ticked;
+when they did not, its own ticks come back to be put right. A save the file
+refuses is tried once, never again, and answered from one normal reading of
+the record, or, when that fails too, by a page that reads no store and shows
+the answer as it was sent. A save that lands returns to the page with what it
+did, bound to the revision it was accepted at, so the page claims a choice
+applies only while that revision is the one that stands.
+
+The page lives under the family's address, so her sign-in never reaches it;
+a parent does, and the household with the sign-in off does, from the family's
+own pages.
 """
 
+import hashlib
+import hmac
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import date
-from typing import Final
+from typing import Final, Literal
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from blossom.dependencies import ApplicationState
-from blossom.intake import TEXT_MAX_LENGTH
-from blossom.routes.inbox import State, review_key
+from blossom.routes.inbox import State
+from blossom.routes.instruction_answers import review_answer
 from blossom.routes.navigation import (
     details_href,
     instructions_action_href,
@@ -31,11 +44,11 @@ from blossom.routes.navigation import (
 )
 from blossom.routes.student import viewer_of
 from blossom.school_instructions import (
-    InstructionChoice,
-    InstructionChoiceStale,
     InstructionsSettled,
     InstructionsStanding,
+    InstructionsUnchanged,
     SchoolInstruction,
+    SubmittedChoice,
 )
 from blossom.stores.project_state import Assignment
 from blossom.stores.school_instructions import InstructionsForNoAssignment, UnreadableInstruction
@@ -50,6 +63,14 @@ SAVED_AS_CHOSEN: Final = (
     "Saved. The instructions chosen apply now, and the others are kept as history."
 )
 ALREADY_STOOD: Final = "Nothing changed: the school's instructions already stood as chosen."
+SAVED_SINCE_CHANGED: Final = (
+    "That choice was saved, and the school's instructions for this assignment have changed "
+    "since. They are shown below as they stand now."
+)
+STOOD_SINCE_CHANGED: Final = (
+    "That choice already stood when it was sent, and the school's instructions for this "
+    "assignment have changed since. They are shown below as they stand now."
+)
 NOTHING_CHOSEN: Final = (
     "Choose the instructions that apply now, or that none applies. Nothing was saved."
 )
@@ -72,21 +93,77 @@ INSTRUCTIONS_UNREADABLE: Final = (
     "The school's instructions for this assignment cannot be read right now, so they are not "
     "shown and nothing can be saved."
 )
+NOT_SAVED: Final = (
+    "The choice could not be saved: the file refused it. Nothing was saved, and the choice is "
+    "shown below as it was sent."
+)
 
 STANDINGS: Final = {
     "current": "Applies now.",
     "history": "Earlier, does not apply now.",
     "awaiting": "Waiting for review.",
 }
+RESULT: Final = "result"
+"""The id of the paragraph a save's redirect lands on."""
+
+ResultKind = Literal["saved", "stood"]
+
+
+def result_token(assignment_id: str, kind: ResultKind, revision: int) -> str:
+    """What a save carries to the page it returns to: what it did, the revision it was
+    accepted at, and a check that ties both to this assignment, so a token made for another
+    assignment, or made up, says nothing."""
+    return f"{kind}.{revision}.{_check(assignment_id, kind, revision)}"
+
+
+def _check(assignment_id: str, kind: str, revision: int) -> str:
+    return hashlib.sha256(f"{assignment_id}\n{kind}\n{revision}".encode()).hexdigest()[:16]
+
+
+def result_of(assignment_id: str, token: str | None) -> tuple[ResultKind, int] | None:
+    """What a save did and the revision it was accepted at, from the address, or ``None``
+    for anything the save did not write for this assignment."""
+    if not token:
+        return None
+    kind, _, rest = token.partition(".")
+    revision, _, check = rest.partition(".")
+    if kind not in ("saved", "stood") or not (
+        revision.isascii() and revision.isdigit() and 0 < len(revision) <= 9
+    ):
+        return None
+    number = int(revision)
+    if str(number) != revision or not hmac.compare_digest(
+        check, _check(assignment_id, kind, number)
+    ):
+        return None
+    return ("saved" if kind == "saved" else "stood"), number
+
+
+def result_said(result: tuple[ResultKind, int] | None, revision: int) -> str | None:
+    """What the page says of a save it was returned to: that the choice applies only while
+    the revision it was accepted at still stands, and that it has changed since when a
+    later one stands. A revision the record has not reached says nothing."""
+    if result is None:
+        return None
+    kind, accepted = result
+    if accepted == revision:
+        return SAVED_AS_CHOSEN if kind == "saved" else ALREADY_STOOD
+    if accepted < revision:
+        return SAVED_SINCE_CHANGED if kind == "saved" else STOOD_SINCE_CHANGED
+    return None
 
 
 def context_of(item: SchoolInstruction) -> str:
     """Where an instruction was read, as the page says it beside its standing. A card's day
-    says where it was read, never when the teacher wrote it."""
+    says where it was read, never when the teacher wrote it. An instruction kept by a save
+    with no card to say where was read somewhere not known; one with no moment of its own
+    came from the old note field."""
     if item.card_day is not None:
         return f"Read on the school's card for {spoken_month_day(item.card_day)}."
     if item.state == "awaiting":
         return "Found in the old note field after the upgrade, so where it was read is not known."
+    if item.first_seen_at is not None:
+        return "Where it was read is not known."
     return "Kept from the note saved before the school's instructions were kept apart."
 
 
@@ -98,53 +175,13 @@ def spoken_month_day(day: date) -> str:
 @dataclass(frozen=True)
 class ShownRow:
     """One box on the page: the instruction's words, what the page says of it, and whether it
-    comes ticked, which only a page returned with the parent's own ticks does."""
+    comes ticked, which only a page returned with the parent's own ticks, made against what
+    stands, does."""
 
     number: int
     text: str
     said: str
     ticked: bool
-
-
-@dataclass(frozen=True)
-class Answer:
-    """What the form said: the revision and the words it showed, the words ticked, and none."""
-
-    revision: int
-    shown: tuple[str, ...]
-    applies: frozenset[str]
-    none_applies: bool
-
-
-def answer_from(fields: dict[str, str]) -> Answer | None:
-    """The form's answer, or ``None`` for a form this page did not make: a revision that is
-    not a count, a box or words under a number that is no number the page writes, words
-    missing for a box, or words too long for any instruction."""
-    revision = fields.get("revision", "")
-    if not (revision.isascii() and revision.isdigit() and len(revision) <= 9):
-        return None
-    words: dict[int, str] = {}
-    ticked: set[int] = set()
-    for name, value in fields.items():
-        head, _, number = name.partition("-")
-        if name in ("revision", "none"):
-            continue
-        if not review_key(number):
-            return None
-        if head == "instruction" and len(value) <= TEXT_MAX_LENGTH:
-            words[int(number)] = value
-        elif head == "apply" and value == "1":
-            ticked.add(int(number))
-        else:
-            return None
-    if not ticked <= set(words) or fields.get("none") not in (None, "1"):
-        return None
-    return Answer(
-        revision=int(revision),
-        shown=tuple(words[number] for number in sorted(words)),
-        applies=frozenset(words[number] for number in ticked),
-        none_applies="none" in fields,
-    )
 
 
 async def form_of(request: Request) -> dict[str, str] | None:
@@ -173,27 +210,47 @@ def reading_of(
     return item, found.readable.get(assignment_id), True
 
 
+def sent(submitted: SubmittedChoice | None) -> SubmittedChoice | None:
+    """The answer to say as not saved: one that chose something, some or none."""
+    if submitted is None or not (submitted.applies or submitted.none_applies):
+        return None
+    return submitted
+
+
 def review_page(
     request: Request,
     state: ApplicationState,
     assignment_id: str,
     *,
-    ticked: frozenset[str] = frozenset(),
-    none_ticked: bool = False,
-    not_saved: Answer | None = None,
-    notice: str | None = None,
+    submitted: SubmittedChoice | None = None,
     problem: str | None = None,
     status_code: int = status.HTTP_200_OK,
+    failed: bool = False,
+    result: tuple[ResultKind, int] | None = None,
 ) -> HTMLResponse:
-    """The page as the record stands now. A page returned for a problem shows the parent's
-    own ticks only when they were made against what stands; otherwise the choice that was
-    not saved is said in words, beside the facts."""
+    """The page as the record stands now, from one reading of it.
+
+    ``submitted`` is an answer that was not saved, and ``problem`` and
+    ``status_code`` what to say of it when it was made against what stands;
+    when it was not, the page says the instructions changed, gives no tick
+    back, and says the answer in words. ``failed`` is a save the file refused,
+    whose answer is said in words either way. ``result`` is what a save did,
+    said only as far as the revision it was accepted at still stands.
+    """
     item, standing, readable = reading_of(state, assignment_id)
+    pressed = submitted is not None or (problem is not None and status_code >= 400)
+    back = details_href(assignment_id, return_to="family")
     if item is None:
         return templates.TemplateResponse(
             request,
             "school_instructions_review.html",
-            {"item": None, "problem": NOT_ON_RECORD, "back": "/parent"},
+            {
+                "item": None,
+                "problem": NOT_ON_RECORD,
+                "pressed": pressed,
+                "not_saved": sent(submitted),
+                "back": "/parent",
+            },
             status_code=status.HTTP_404_NOT_FOUND,
         )
     if not readable:
@@ -203,19 +260,36 @@ def review_page(
             {
                 "item": item,
                 "problem": INSTRUCTIONS_UNREADABLE,
-                "back": details_href(assignment_id, return_to="family"),
+                "pressed": pressed,
+                "not_saved": sent(submitted),
+                "back": back,
             },
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     kept = () if standing is None else standing.kept
+    revision = 0 if standing is None else standing.revision
+    ticked: frozenset[str] = frozenset()
+    none_ticked = False
+    not_saved = None
+    if submitted is not None:
+        if not submitted.made_against(revision, [row.text for row in kept]):
+            # Made against instructions that changed since: nothing it ticked comes back on a
+            # form carrying the revision that stands, and the parent chooses again.
+            not_saved = sent(submitted)
+            if not failed:
+                problem, status_code = CHANGED_SINCE_OPENED, status.HTTP_409_CONFLICT
+        else:
+            ticked, none_ticked = submitted.applies, submitted.none_applies
+            if failed:
+                not_saved = sent(submitted)
     rows = [
         ShownRow(
             number=number,
-            text=kept_item.text,
-            said=f"{STANDINGS[kept_item.state]} {context_of(kept_item)}",
-            ticked=kept_item.text in ticked,
+            text=row.text,
+            said=f"{STANDINGS[row.state]} {context_of(row)}",
+            ticked=row.text in ticked,
         )
-        for number, kept_item in enumerate(kept)
+        for number, row in enumerate(kept)
     ]
     return templates.TemplateResponse(
         request,
@@ -223,16 +297,68 @@ def review_page(
         {
             "item": item,
             "rows": rows,
-            "revision": 0 if standing is None else standing.revision,
+            "revision": revision,
             "none_ticked": none_ticked,
             "not_saved": not_saved,
-            "notice": notice,
+            "notice": None if pressed else result_said(result, revision),
             "problem": problem,
+            "pressed": pressed,
             "action": instructions_action_href(assignment_id),
+            "back": back,
+        },
+        status_code=status_code,
+    )
+
+
+def plain_page(
+    request: Request,
+    assignment_id: str,
+    submitted: SubmittedChoice | None,
+    problem: str,
+    status_code: int,
+) -> HTMLResponse:
+    """The page when the record cannot be read back: what happened, the answer as it was
+    sent, and the ways on. Nothing here reads the store, offers a save, or claims one."""
+    return templates.TemplateResponse(
+        request,
+        "school_instructions_review.html",
+        {
+            "item": None,
+            "plain": True,
+            "problem": problem,
+            "pressed": True,
+            "not_saved": sent(submitted),
             "back": details_href(assignment_id, return_to="family"),
         },
         status_code=status_code,
     )
+
+
+def page_or_plain(
+    request: Request,
+    state: ApplicationState,
+    assignment_id: str,
+    submitted: SubmittedChoice | None,
+    problem: str,
+    status_code: int,
+    *,
+    failed: bool = False,
+) -> HTMLResponse:
+    """The page with a refusal said first, read once; when the record cannot be read back,
+    the plain page that reads no store and keeps the answer as it was sent."""
+    try:
+        return review_page(
+            request,
+            state,
+            assignment_id,
+            submitted=submitted,
+            problem=problem,
+            status_code=status_code,
+            failed=failed,
+        )
+    except Exception:
+        logger.exception("the review of school instructions could not be read back")
+        return plain_page(request, assignment_id, submitted, problem, status_code)
 
 
 @router.get(
@@ -241,12 +367,12 @@ def review_page(
     include_in_schema=False,
 )
 def review(
-    request: Request, assignment_id: str, state: State, saved: str | None = None
+    request: Request, assignment_id: str, state: State, result: str | None = None
 ) -> Response:
-    """The review, as the record stands. Nothing here writes. ``saved`` is what the save just
-    did, which the server chose and the address only carries: any other word says nothing."""
-    notice = {"1": SAVED_AS_CHOSEN, "0": ALREADY_STOOD}.get(saved or "")
-    return review_page(request, state, assignment_id, notice=notice)
+    """The review, as the record stands. Nothing here writes. ``result`` is what a save just
+    did, which the save wrote and the address only carries; a value it did not write for this
+    assignment says nothing."""
+    return review_page(request, state, assignment_id, result=result_of(assignment_id, result))
 
 
 @router.post(
@@ -257,47 +383,36 @@ def review(
 async def choose(request: Request, assignment_id: str, state: State) -> Response:
     """Save which instructions apply, or that none does, against the revision shown.
 
-    A form this page did not make, nothing ticked, or a box beside none
-    writes nothing and returns the page. The choice is saved through the
-    store's rule under the decision lock: settled, or already standing, it
-    returns to the review; made against instructions that changed since, it
-    is refused whole. Who chose is a parent signed in, or the household
-    with the sign-in off.
+    The answer is read whole before the store is touched. A form this page
+    did not make, nothing ticked, or a box beside none writes nothing and
+    returns the page. The choice is saved through the store's rule under the
+    decision lock, once; a refusal of the file, an assignment gone, or
+    instructions that cannot be read are answered after the lock is let go,
+    with the answer kept. Settled, or already standing, it returns to the
+    review with the revision it was accepted at. Who chose is a parent signed
+    in, or the household with the sign-in off.
     """
     fields = await form_of(request)
-    answer = None if fields is None else answer_from(fields)
-    if answer is None:
-        return review_page(
+    submitted = None if fields is None else review_answer(fields)
+    if submitted is None:
+        return page_or_plain(
             request,
             state,
             assignment_id,
-            problem=FORM_UNREADABLE,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            None,
+            FORM_UNREADABLE,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    if answer.applies and answer.none_applies:
-        return review_page(
+    choice = submitted.choice()
+    if choice is None:
+        return page_or_plain(
             request,
             state,
             assignment_id,
-            ticked=answer.applies,
-            none_ticked=True,
-            problem=CHOICES_CONTRADICT,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            submitted,
+            CHOICES_CONTRADICT if submitted.contradicts else NOTHING_CHOSEN,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    if not answer.applies and not answer.none_applies:
-        return review_page(
-            request,
-            state,
-            assignment_id,
-            problem=NOTHING_CHOSEN,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        )
-    choice = InstructionChoice(
-        shown_revision=answer.revision,
-        shown=answer.shown,
-        applies=answer.applies,
-        none_applies=answer.none_applies,
-    )
     now, today = state.project_state.instruction_moment()
     try:
         async with state.decision_lock:
@@ -310,21 +425,43 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
                 today=today,
             )
     except UnreadableInstruction:
-        logger.warning("school instructions unreadable at a review save")
-        return review_page(request, state, assignment_id)
-    if isinstance(outcome, InstructionsForNoAssignment):
-        return review_page(request, state, assignment_id)
-    if isinstance(outcome, InstructionChoiceStale):
-        return review_page(
+        return page_or_plain(
             request,
             state,
             assignment_id,
-            not_saved=answer,
-            problem=CHANGED_SINCE_OPENED,
-            status_code=status.HTTP_409_CONFLICT,
+            submitted,
+            INSTRUCTIONS_UNREADABLE,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-    saved = "1" if isinstance(outcome, InstructionsSettled) else "0"
+    except sqlite3.Error:
+        logger.exception("a choice of school instructions could not be saved")
+        return page_or_plain(
+            request,
+            state,
+            assignment_id,
+            submitted,
+            NOT_SAVED,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            failed=True,
+        )
+    if isinstance(outcome, InstructionsForNoAssignment):
+        return page_or_plain(
+            request, state, assignment_id, submitted, NOT_ON_RECORD, status.HTTP_404_NOT_FOUND
+        )
+    if isinstance(outcome, InstructionsSettled):
+        token = result_token(assignment_id, "saved", outcome.revision)
+    elif isinstance(outcome, InstructionsUnchanged):
+        token = result_token(assignment_id, "stood", outcome.revision)
+    else:
+        return page_or_plain(
+            request,
+            state,
+            assignment_id,
+            submitted,
+            CHANGED_SINCE_OPENED,
+            status.HTTP_409_CONFLICT,
+        )
     return RedirectResponse(
-        instructions_review_href(assignment_id, saved=saved),
+        instructions_review_href(assignment_id, result=token),
         status_code=status.HTTP_303_SEE_OTHER,
     )

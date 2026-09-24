@@ -549,6 +549,33 @@ def state_of(client: TestClient) -> ApplicationState:
     return state
 
 
+def store_of(client: TestClient) -> ProjectStateStore:
+    """The record's store the application on this client holds."""
+    return state_of(client).project_state
+
+
+def client_for(settings: Settings) -> TestClient:
+    """The application on these settings as its own pages reach it: every form from this
+    origin, and no redirect followed."""
+    return TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN)
+
+
+def signed_in(client: TestClient, passphrase: str) -> None:
+    """Sign in on this client with a passphrase that must open the door."""
+    came_in = client.post("/sign-in", data={"passphrase": passphrase})
+    assert came_in.status_code == 303, came_in.text
+
+
+def as_a_browser_sends(form: Mapping[str, str]) -> dict[str, str]:
+    """A form as a browser submits it: every line break in a name or a value, a line feed or
+    a carriage return alone, sent as a carriage return and a line feed."""
+
+    def crlf(text: str) -> str:
+        return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+
+    return {crlf(name): crlf(value) for name, value in form.items()}
+
+
 class PathAsServed:
     """The path as a real server hands it to the application: the raw path, its escapes
     undone once.

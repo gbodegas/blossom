@@ -10,12 +10,14 @@ and a school note found there later is kept for review, never decided.
 import json
 import pathlib
 import sqlite3
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import (
+    INSTRUCTION_MAX_LENGTH,
+    WIRE_MAX_LENGTH,
     Card,
     InstructionChoice,
     InstructionChoiceStale,
@@ -27,13 +29,18 @@ from blossom.school_instructions import (
     InstructionsUnchanged,
     SchoolInstruction,
     carried_state,
+    from_wire,
     settle,
     standing_of,
+    to_wire,
 )
 from blossom.stores.project_state import Assignment, ProjectStateStore, Seed
 from blossom.stores.school_instructions import (
+    INSTRUCTIONS_OF,
     InstructionsForNoAssignment,
     SchoolInstructionsNeedAChoice,
+    UnreadableInstruction,
+    instruction_from,
 )
 from tests.support import fixture_clock, practice_store
 
@@ -604,3 +611,286 @@ def test_a_note_beside_an_instruction_that_cannot_be_read_stays_and_the_rest_mov
     assert (plain.note, plain.origins.get("note")) == (None, None)
     assert found.readable["plain"].texts == (B,)
     assert found.readable["plain"].current[0].channel == SourceChannel.EMAIL
+
+
+# ------------------------------------------------------------------ the words on the wire
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "One line.",
+        "First paragraph.\nSecond paragraph.",
+        "A line as a browser sent it.\r\nAnd the next.",
+        'Say "only the odd ones" and it\'s done.',
+        "Draw the \U0001f33c by <b>Friday</b> & bring it.",
+    ],
+)
+def test_the_words_travel_on_the_wire_exactly(words: str) -> None:
+    """Carried as one JSON string in ASCII, the words hold no line break a browser could
+    rewrite, and come back as they left, every character included."""
+    carried = to_wire(words)
+
+    assert carried.isascii()
+    assert "\n" not in carried
+    assert "\r" not in carried
+    assert from_wire(carried) == words
+    assert from_wire(carried.replace("\n", "\r\n")) == words
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "plain words",
+        "123",
+        '["a list"]',
+        '""',
+        '"   "',
+        '"\\ud800"',
+        '"a" and more',
+        ' "leading space"',
+        '"' + "a" * (INSTRUCTION_MAX_LENGTH + 1) + '"',
+        '"' + "\\u0061" * (WIRE_MAX_LENGTH // 6) + '"',
+    ],
+    ids=[
+        "no-json",
+        "a-number",
+        "a-list",
+        "empty",
+        "blank",
+        "half-a-pair",
+        "text-after",
+        "space-before",
+        "too-many-words",
+        "too-long-on-the-wire",
+    ],
+)
+def test_a_value_the_page_did_not_write_is_no_words(value: str) -> None:
+    assert from_wire(value) is None
+
+
+# ------------------------------------------------------------------ a choice of words not there
+
+
+def test_a_choice_of_words_neither_kept_nor_new_is_refused_and_a_true_retry_still_stands() -> None:
+    """With every instruction retired, a choice of words never kept cannot stand, so it is
+    never taken for a result that already stands; a choice whose whole result stands is
+    still nothing new, whatever revision it names."""
+    retired = [kept(A, "history", 3, 1), kept(B, "history", 3, 2)]
+
+    unknown = settle(retired, [], choose(3, (A, B, "Never kept."), "Never kept."))
+    retried = settle(retired, [], choose(1, (A, B), none=True))
+
+    assert isinstance(unknown, InstructionChoiceStale)
+    assert retried == InstructionsUnchanged(3)
+
+
+# ------------------------------------------------------------------ what the store writes and reads
+
+
+@pytest.mark.parametrize(
+    ("text", "channel"),
+    [
+        ("", SourceChannel.LMS),
+        ("   ", SourceChannel.LMS),
+        ("a" * (INSTRUCTION_MAX_LENGTH + 1), SourceChannel.LMS),
+        ("\ud800", SourceChannel.LMS),
+        ("Fine words.", SourceChannel.STUDENT_REPORT),
+        ("Fine words.", SourceChannel.PARENT_ENTRY),
+    ],
+    ids=["empty", "blank", "too-many-words", "half-a-pair", "her-report", "a-parents-entry"],
+)
+def test_an_instruction_is_the_schools_words_or_nothing(text: str, channel: SourceChannel) -> None:
+    with pytest.raises(ValueError, match="instruction"):
+        InstructionSeen(text, channel)
+
+
+def test_the_store_refuses_before_it_writes_what_it_could_not_read_back(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A moment without its offset, a day that is a moment, or someone the store does not
+    know is refused before the transaction begins, for a new row and for a change to a kept
+    one alike, and the file is left as it was with nothing held open."""
+    store = practice_store(tmp_path / "record.sqlite3")
+    name = target(store)
+    before = table_rows(store, "school_instructions")
+    naive = datetime(2026, 9, 23, 22, 0)  # noqa: DTZ001 - a moment without its offset
+    for moment, day, who in (
+        (naive, TODAY, "parent"),
+        (NOW, NOW, "parent"),
+        (NOW, TODAY, "teacher"),
+    ):
+        with pytest.raises(ValueError, match="school instruction"):
+            store.settle_school_instructions(
+                name,
+                [seen(A)],
+                None,
+                authored_by=who,  # type: ignore[arg-type]
+                now=moment,
+                today=day,
+            )
+        assert not store._connection.in_transaction
+    assert table_rows(store, "school_instructions") == before
+
+    store.settle_school_instructions(
+        name, [seen(A)], None, authored_by="parent", now=NOW, today=TODAY
+    )
+    kept_rows = table_rows(store, "school_instructions")
+    with pytest.raises(ValueError, match="school instruction"):
+        store.settle_school_instructions(
+            name,
+            [seen(B, "due")],
+            choose(1, (A, B), B),
+            authored_by="parent",
+            now=naive,
+            today=TODAY,
+        )
+
+    assert table_rows(store, "school_instructions") == kept_rows
+    assert not store._connection.in_transaction
+
+
+def test_a_moment_is_written_in_utc_and_read_back_as_the_same_moment(
+    tmp_path: pathlib.Path,
+) -> None:
+    store = practice_store(tmp_path / "record.sqlite3")
+    name = target(store)
+    evening = datetime(2026, 9, 23, 15, 0, tzinfo=timezone(timedelta(hours=-7)))
+
+    store.settle_school_instructions(
+        name, [seen(A)], None, authored_by="parent", now=evening, today=TODAY
+    )
+    written = store._connection.execute(
+        "SELECT first_seen_at_utc FROM school_instructions"
+    ).fetchone()[0]
+
+    assert written == "2026-09-23T22:00:00+00:00"
+    assert readings(store, name).current[0].first_seen_at == evening
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("revision", 1.5),
+        ("revision", 0),
+        ("revision", -1),
+        ("text", ""),
+        ("text", "   "),
+        ("text", b"\xff"),
+        ("channel", "STUDENT_REPORT"),
+        ("channel", "PARENT_ENTRY"),
+        ("channel", b"LMS"),
+        ("card", "late"),
+        ("card_day", "2026-9-1"),
+        ("card_day", "20260901"),
+        ("first_seen_at_utc", "2026-09-23T22:00:00"),
+        ("first_seen_on", 20260923),
+        ("state", b"current"),
+        ("imported_by", "teacher"),
+        ("settled_by", "school"),
+    ],
+)
+def test_a_row_the_store_never_writes_makes_only_its_assignment_unavailable(
+    tmp_path: pathlib.Path, column: str, value: object
+) -> None:
+    """Every value is read as the type the store wrote it, and nothing is made to fit: the
+    damaged row's assignment is unavailable, the other reads as it was, and what is said of
+    the damage never holds the school's words."""
+    store = practice_store(tmp_path / "record.sqlite3")
+    first, second = sorted(row.assignment_id for row in store.all_assignments())
+    for name, words in ((first, A), (second, B)):
+        store.settle_school_instructions(
+            name, [seen(words)], None, authored_by="parent", now=NOW, today=TODAY
+        )
+    store._connection.execute(
+        f"UPDATE school_instructions SET {column} = ? WHERE assignment_id = ?",  # noqa: S608
+        (value, first),
+    )
+    store._connection.commit()
+
+    found = store.school_instruction_readings([first, second])
+    row = store._connection.execute(INSTRUCTIONS_OF, (first,)).fetchone()
+    with pytest.raises(UnreadableInstruction) as refused:
+        instruction_from(row)
+
+    assert found.unreadable == frozenset({first})
+    assert found.readable[second].texts == (B,)
+    assert A not in str(refused.value)
+
+
+def test_the_bulk_reading_asks_the_file_only_for_the_assignments_named(
+    tmp_path: pathlib.Path,
+) -> None:
+    store = practice_store(tmp_path / "record.sqlite3")
+    first, second = sorted(row.assignment_id for row in store.all_assignments())
+    for name, words in ((first, A), (second, B)):
+        store.settle_school_instructions(
+            name, [seen(words)], None, authored_by="parent", now=NOW, today=TODAY
+        )
+    statements: list[str] = []
+    store._connection.set_trace_callback(statements.append)
+
+    found = store.school_instruction_readings([first])
+
+    store._connection.set_trace_callback(None)
+    asked = [text for text in statements if "FROM school_instructions" in text]
+    assert len(asked) == 1
+    assert f"json_each('[\"{first}\"]')" in asked[0]
+    assert set(found.readable) == {first}
+
+
+# ------------------------------------------------------------------ blank notes from before
+
+
+def test_a_blank_school_note_is_no_instruction_and_never_stops_a_start(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A blank school note says nothing: it stays in the field as it was, a start and every
+    start after it go on, and the school notes with words move once, line breaks and all."""
+    path = old_file(
+        tmp_path,
+        [
+            ("empty", "", None),
+            ("spaces", "   ", "LMS"),
+            ("words", "Line one.\nLine two.", "EMAIL"),
+            ("hers", "Her own words.", "STUDENT_REPORT"),
+            ("none", None, None),
+        ],
+    )
+    first = ProjectStateStore.open(path, fixture_clock())
+    after_first = {name: table_rows(first, name) for name in ("assignments", "school_instructions")}
+    first.close()
+
+    second = ProjectStateStore.open(path, fixture_clock())
+    rows = {row.assignment_id: row for row in second.all_assignments()}
+    found = second.school_instruction_readings(list(rows))
+    after_second = {
+        name: table_rows(second, name) for name in ("assignments", "school_instructions")
+    }
+
+    assert after_second == after_first
+    assert (rows["empty"].note, rows["spaces"].note) == ("", "   ")
+    assert rows["words"].note is None
+    assert rows["hers"].note == "Her own words."
+    assert set(found.readable) == {"words"}
+    assert found.readable["words"].texts == ("Line one.\nLine two.",)
+    assert found.readable["words"].current[0].channel is SourceChannel.EMAIL
+
+
+def test_a_blank_seed_note_is_no_instruction(tmp_path: pathlib.Path) -> None:
+    seed = Seed(
+        assignments=[
+            a_row("empty", "", None),
+            a_row("spaces", "  ", SourceChannel.LMS),
+            a_row("words", A, None),
+        ],
+        claims={},
+        student_reports=[],
+    )
+
+    store = ProjectStateStore.initialize(tmp_path / "blank.sqlite3", fixture_clock(), lambda: seed)
+    rows = {row.assignment_id: row for row in store.all_assignments()}
+    found = store.school_instruction_readings(list(rows))
+
+    assert set(found.readable) == {"words"}
+    assert (rows["empty"].note, rows["spaces"].note) == ("", "  ")

@@ -13,6 +13,8 @@ silent difference. A form that fails to validate comes back with every
 field as it was, the failing field named, and the section open.
 """
 
+import logging
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -47,13 +49,15 @@ from blossom.intake import (
     spoken_report,
     within_a_school_year,
 )
+from blossom.routes.instruction_answers import paste_answers, review_key
 from blossom.routes.parent import review_page
 from blossom.routes.student import viewer_of
-from blossom.school_instructions import InstructionChoice
+from blossom.school_instructions import SubmittedChoice
 from blossom.stores.project_state import AssignmentKind, UnreadableClaim
 from blossom.stores.school_instructions import UnreadableInstruction
 from blossom.templating import page_templates
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/parent/inbox", tags=["parent"])
 templates = page_templates()
 State = Annotated[ApplicationState, Depends(get_application_state)]
@@ -113,7 +117,14 @@ CHANGED_SINCE_SHOWN: Final = (
     "The school's instructions saved for an assignment here changed since this review was "
     "shown, so nothing was saved. Look at them again before saving."
 )
-ANSWER_KEY_MAX_LENGTH: Final = 6
+INSTRUCTION_FORM_UNREADABLE: Final = (
+    "The answers about the school's instructions could not be read, so nothing was saved. "
+    "Look at them again below."
+)
+STORE_REFUSED: Final = (
+    "The text could not be saved: the file refused it. Nothing of it was saved; the text and "
+    "the answers given on the cards are below."
+)
 """A card's key is a count from the reader, in plain digits; nothing longer is one."""
 ANSWER_FIELDS: Final = frozenset({"occurrence", "kind", "suggested", "shown", "chosen", "folded"})
 """The fields the review page writes beside a card, under its key: the answers, and the
@@ -220,18 +231,6 @@ def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[dateti
     return read_at, read_on
 
 
-def review_key(value: str) -> bool:
-    """Whether ``value`` is a card's key as the page writes one: one to six ASCII digits,
-    spelled as the count is. Digits from elsewhere, which ``int`` refuses, are no key;
-    neither is nothing, nor a padded spelling, which would name another field's card."""
-    return (
-        0 < len(value) <= ANSWER_KEY_MAX_LENGTH
-        and value.isascii()
-        and value.isdigit()
-        and str(int(value)) == value
-    )
-
-
 def answers_from(
     form: Mapping[str, str], unasked: Mapping[int, set[AssignmentKind]]
 ) -> tuple[dict[int, str], dict[int, AssignmentKind]]:
@@ -293,56 +292,6 @@ def answers_from(
     return occurrences, chosen
 
 
-def instruction_answers_from(
-    form: Mapping[str, str],
-) -> tuple[dict[int, InstructionChoice], dict[int, frozenset[str]], set[int]]:
-    """The parent's choices of which of the school's instructions apply, card by card.
-
-    The page writes, on the card that carries an assignment's instructions,
-    the revision it showed them at, each instruction's words in the order
-    shown, a box for each, and a separate box for none applying. A card with a
-    box ticked, or with none ticked on purpose, is answered; a card with
-    nothing ticked is no answer. A box beside none, or a box for no words the
-    page wrote, contradicts itself and is no answer either. Each such card is
-    handed back with the words ticked on it, and the cards with none ticked,
-    so the page can say so and show them as they came.
-    """
-    revisions: dict[int, int] = {}
-    words: dict[int, dict[int, str]] = {}
-    ticked: dict[int, set[int]] = {}
-    none: set[int] = set()
-    for name, value in form.items():
-        parts = name.split("-")
-        if len(parts) == 2 and parts[0] == "instructions" and review_key(parts[1]):
-            if value.isascii() and value.isdigit() and len(value) <= 9:
-                revisions[int(parts[1])] = int(value)
-        elif len(parts) == 2 and parts[0] == "none" and review_key(parts[1]) and value == "1":
-            none.add(int(parts[1]))
-        elif len(parts) == 3 and review_key(parts[1]) and review_key(parts[2]):
-            if parts[0] == "instruction":
-                words.setdefault(int(parts[1]), {})[int(parts[2])] = value
-            elif parts[0] == "apply" and value == "1":
-                ticked.setdefault(int(parts[1]), set()).add(int(parts[2]))
-    answers: dict[int, InstructionChoice] = {}
-    contradicted: dict[int, frozenset[str]] = {}
-    for key, revision in revisions.items():
-        shown = words.get(key, {})
-        chosen = ticked.get(key, set())
-        if not chosen <= set(shown) or (chosen and key in none):
-            contradicted[key] = frozenset(shown[place] for place in chosen if place in shown)
-            continue
-        if not chosen and key not in none:
-            continue
-        order = tuple(shown[place] for place in sorted(shown))
-        answers[key] = InstructionChoice(
-            shown_revision=revision,
-            shown=order,
-            applies=frozenset(shown[place] for place in chosen),
-            none_applies=key in none,
-        )
-    return answers, contradicted, none & set(contradicted)
-
-
 def asked_on(form: Mapping[str, str]) -> set[int]:
     """The cards the page put a question to, which the page sends back beside them; a
     question on any other card is one the record raised since the page was made."""
@@ -395,14 +344,19 @@ def problem_page(
 @dataclass(frozen=True)
 class AnswerKept:
     """One answer given on a review card, as unsaved input to copy: which card, whether the
-    row is the same assignment or new work, and the type chosen."""
+    row is the same assignment or new work, the type chosen, and which of the school's
+    instructions were ticked to apply, or that none does."""
 
     key: str
     occurrence: str | None
     kind: str | None
+    instructions: tuple[str, ...] = ()
+    none_applies: bool = False
 
 
-def answers_kept(form: Mapping[str, str]) -> list[AnswerKept]:
+def answers_kept(
+    form: Mapping[str, str], instructions: Mapping[int, SubmittedChoice] | None = None
+) -> list[AnswerKept]:
     """The answers a review form carried, read by the one reader the save uses and with no
     record read: the page's own notes of what each select suggested and showed, of what was
     chosen, and of what was folded into what decide what is an answer, as they would have
@@ -419,19 +373,30 @@ def answers_kept(form: Mapping[str, str]) -> list[AnswerKept]:
             continue
         safe[name] = value
     occurrences, kinds = answers_from(safe, {})
-    return answers_shown(occurrences, kinds)
+    return answers_shown(occurrences, kinds, instructions)
 
 
 def answers_shown(
-    occurrences: Mapping[int, str] | None, kinds: Mapping[int, AssignmentKind] | None
+    occurrences: Mapping[int, str] | None,
+    kinds: Mapping[int, AssignmentKind] | None,
+    instructions: Mapping[int, SubmittedChoice] | None = None,
 ) -> list[AnswerKept]:
-    """The answers a review page was made with, in the same shape."""
-    keys = sorted({*(occurrences or {}), *(kinds or {})})
+    """The answers a review page was made with, in the same shape: an answer about the
+    school's instructions by the words ticked, read off the wire before anything was
+    written, so a page that reads no store can still say them."""
+    chosen = {
+        key: answer
+        for key, answer in (instructions or {}).items()
+        if answer.applies or answer.none_applies
+    }
+    keys = sorted({*(occurrences or {}), *(kinds or {}), *chosen})
     return [
         AnswerKept(
             str(key),
             (occurrences or {}).get(key),
             None if kinds is None or key not in kinds else kinds[key].value,
+            tuple(sorted(chosen[key].applies)) if key in chosen else (),
+            key in chosen and chosen[key].none_applies,
         )
         for key in keys
     ]
@@ -481,16 +446,22 @@ def preview_page(
     *,
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
-    instruction_answers: Mapping[int, InstructionChoice] | None = None,
-    contradicted: Mapping[int, frozenset[str]] | None = None,
-    none_ticked: set[int] | None = None,
+    instruction_answers: Mapping[int, SubmittedChoice] | None = None,
+    refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """What was read, week by week against the record as it is, with the way to save it.
     A text with a row about homework made from a homework note says so, names the rows, and
     offers no save: the text stays to be edited. A claim on record that cannot be read
-    refuses the comparison, and the page that reads no store keeps the draft."""
+    refuses the comparison, and the page that reads no store keeps the draft.
+
+    ``refused`` says the page comes back for an answer about the school's
+    instructions that was not saved: ``contradict``, ``malformed``, or
+    ``stale``. When an answer on any card was made against instructions that
+    changed since, from this reading of the record, the page says so first,
+    with a 409, whatever else was wrong. The summary takes the focus and links
+    to the first question it is about."""
     try:
         changes = changes_for(
             read.items,
@@ -501,11 +472,34 @@ def preview_page(
         )
         held = held_rows(read.items, state.project_state)
     except UnreadableClaim:
-        return intake_unavailable(request, state, draft, answers_shown(occurrences, kinds))
+        return intake_unavailable(
+            request, state, draft, answers_shown(occurrences, kinds, instruction_answers)
+        )
     except UnreadableInstruction:
         return intake_unavailable(
-            request, state, draft, answers_shown(occurrences, kinds), INSTRUCTION_UNREADABLE
+            request,
+            state,
+            draft,
+            answers_shown(occurrences, kinds, instruction_answers),
+            INSTRUCTION_UNREADABLE,
         )
+    problem_target = None
+    if refused is not None:
+        stale = [change.key for change in changes if change.instructions_stale]
+        asked = [change.key for change in changes if change.instructions_question]
+        contradicting = [
+            change.key
+            for change in changes
+            if change.instructions_submitted is not None
+            and change.instructions_submitted.contradicts
+        ]
+        if stale:
+            notice, status_code = CHANGED_SINCE_SHOWN, status.HTTP_409_CONFLICT
+            problem_target = stale[0]
+        elif refused == "contradict" and contradicting:
+            problem_target = contradicting[0]
+        elif asked:
+            problem_target = asked[0]
     if held is not None:
         notice = HELD_BY_A_NOTE
     if notice is None and conflicting_choices(changes):
@@ -536,11 +530,45 @@ def preview_page(
             "sample": state.settings.sample,
             "spoken_report": spoken_report,
             "spoken_day": spoken_day,
-            "contradicted": contradicted or {},
-            "none_ticked": none_ticked or set(),
+            "problem_target": problem_target,
         },
         status_code=status_code,
     )
+
+
+def preview_or_recovery(
+    request: Request,
+    state: ApplicationState,
+    read: Read,
+    draft: Mapping[str, str],
+    kept_answers: list[AnswerKept],
+    *,
+    occurrences: Mapping[int, str] | None = None,
+    kinds: Mapping[int, AssignmentKind] | None = None,
+    instruction_answers: Mapping[int, SubmittedChoice] | None = None,
+    refused: str | None = None,
+    notice: str | None = None,
+    status_code: int = status.HTTP_200_OK,
+) -> HTMLResponse:
+    """The review page once more after a save that did not land; when the file cannot be
+    read back either, the page that reads no store, with the text and the answers as they
+    were sent. Nothing is tried again."""
+    try:
+        return preview_page(
+            request,
+            state,
+            read,
+            draft,
+            occurrences=occurrences,
+            kinds=kinds,
+            instruction_answers=instruction_answers,
+            refused=refused,
+            notice=notice,
+            status_code=status_code,
+        )
+    except sqlite3.Error:
+        logger.exception("the paste review could not be read back")
+        return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
 
 
 async def submitted(request: Request) -> dict[str, str]:
@@ -605,15 +633,22 @@ async def keep_readings(request: Request, state: State) -> Response:
     read = read_draft(state, draft)
     if isinstance(read, Problem):
         return problem_page(request, state, draft, read)
+    # Every answer about the school's instructions is read from the fields as sent, before
+    # any is collapsed, and kept, contradictions included, in words a page that reads no
+    # store can show: all of it before anything touches the store.
+    read_answers = paste_answers((await request.form()).multi_items())
+    instruction_answers = read_answers.answers
+    kept_answers = answers_kept(form, instruction_answers)
     # A claim on record that cannot be read refuses the comparison, before the write or
     # inside its transaction, which is rolled back whole before anything is answered. The
-    # answer reads no store and keeps the draft and the answers given on the cards.
-    instruction_answers, contradicted, none_ticked = instruction_answers_from(form)
+    # answer reads no store and keeps the draft and the answers given on the cards; so does
+    # a write the file refuses, which is never tried again.
     try:
         occurrences, kinds = answers_from(form, unasked_for(state, read))
-        if contradicted:
-            # Boxes that contradict each other are no answer, and nothing of the text is
-            # written until they are put right; every choice made comes back as made.
+        contradicted = any(answer.contradicts for answer in instruction_answers.values())
+        if read_answers.malformed or contradicted:
+            # Nothing of the text is written until the answers are put right; each comes back
+            # as made when it was made against what stands, and in words when it was not.
             return preview_page(
                 request,
                 state,
@@ -622,9 +657,12 @@ async def keep_readings(request: Request, state: State) -> Response:
                 occurrences=occurrences,
                 kinds=kinds,
                 instruction_answers=instruction_answers,
-                contradicted=contradicted,
-                none_ticked=none_ticked,
-                notice=INSTRUCTIONS_CONTRADICT,
+                refused="malformed" if read_answers.malformed else "contradict",
+                notice=(
+                    INSTRUCTION_FORM_UNREADABLE
+                    if read_answers.malformed
+                    else INSTRUCTIONS_CONTRADICT
+                ),
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
         now, today = moment_of(state, draft)
@@ -640,27 +678,33 @@ async def keep_readings(request: Request, state: State) -> Response:
                 today=today,
             )
     except UnreadableClaim:
-        return intake_unavailable(request, state, draft, answers_kept(form))
+        return intake_unavailable(request, state, draft, kept_answers)
     except UnreadableInstruction:
-        return intake_unavailable(request, state, draft, answers_kept(form), INSTRUCTION_UNREADABLE)
+        return intake_unavailable(request, state, draft, kept_answers, INSTRUCTION_UNREADABLE)
+    except sqlite3.Error:
+        logger.exception("a paste could not be saved")
+        return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
     if isinstance(kept, ChangedSinceShown):
-        return preview_page(
+        return preview_or_recovery(
             request,
             state,
             read,
             draft,
+            kept_answers,
             occurrences=occurrences,
             kinds=kinds,
             instruction_answers=instruction_answers,
+            refused="stale",
             notice=CHANGED_SINCE_SHOWN,
             status_code=status.HTTP_409_CONFLICT,
         )
     if isinstance(kept, Held):
-        return preview_page(
+        return preview_or_recovery(
             request,
             state,
             read,
             draft,
+            kept_answers,
             occurrences=occurrences,
             kinds=kinds,
             status_code=status.HTTP_409_CONFLICT,
@@ -673,11 +717,12 @@ async def keep_readings(request: Request, state: State) -> Response:
             notice = NEEDS_ANSWER
         else:
             notice = LOOK_AGAIN
-        return preview_page(
+        return preview_or_recovery(
             request,
             state,
             read,
             draft,
+            kept_answers,
             occurrences=occurrences,
             kinds=kinds,
             instruction_answers=instruction_answers,

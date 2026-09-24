@@ -81,11 +81,11 @@ def address(path: str, fragment: str = "", **query: str | None) -> str:
     return str(made.replace(fragment=fragment) if fragment else made)
 
 
-def instructions_review_href(assignment_id: str, *, saved: str | None = None) -> str:
-    """The address of the review of one assignment's school instructions, with what a save
-    just did when it did."""
+def instructions_review_href(assignment_id: str, *, result: str | None = None) -> str:
+    """The address of the review of one assignment's school instructions; with ``result``,
+    what a save just did, landing on the words that say it."""
     made = f"{INSTRUCTIONS_REVIEW}/{segment(assignment_id)}"
-    return made + (f"?saved={saved}" if saved else "")
+    return made if not result else address(made, fragment="result", result=result)
 
 
 def instructions_action_href(assignment_id: str) -> str:

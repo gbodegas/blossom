@@ -3,6 +3,9 @@ fingerprint a plan is checked against. Those said before and any waiting for rev
 neither: a plan is made from what applies, and only a change in what applies is a change.
 """
 
+import json
+import pathlib
+import sqlite3
 import uuid
 from datetime import UTC, date, datetime
 
@@ -23,6 +26,7 @@ from blossom.noticing import (
 )
 from blossom.plan_checks import PlanVerification
 from blossom.reconciliation import SourceChannel
+from blossom.routes.navigation import instructions_action_href, instructions_review_href
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED
@@ -38,14 +42,17 @@ from tests.support import (
     ESSAY_ID,
     FIXTURE_WEEK,
     HER_PAGE,
+    PAGE_HEADERS,
     PLAN_DATE,
     Scripted,
     accepting,
     browser,
+    dissent,
     fixture_week_plan,
     human_text,
     scripted_graphs,
     state_of,
+    whole_form,
 )
 
 A = "Outline three causes before drafting."
@@ -154,12 +161,17 @@ def test_each_instruction_that_applies_is_put_once_in_the_one_order_and_nothing_
 
 
 def test_one_instruction_reads_as_a_moved_note_did() -> None:
-    """A single instruction that applies is put as the teacher's note always was, so a
-    record moved at the upgrade gives the planner the same words under the same name."""
+    """A single instruction that applies is put as the teacher's note always was, where it
+    always went, so a record moved at the upgrade gives the planner the same words under the
+    same name."""
     moved = assignments_block([work()], {}, school_instructions={NAME: (A,)})
-    before = assignments_block([work(A, SourceChannel.LMS)], {})
+    plain = assignments_block([work()], {})
+    as_a_note_was = plain.replace(
+        ">Canal essay</assignment>", f' teacher_wrote="{A}">Canal essay</assignment>'
+    )
 
-    assert moved == before
+    assert moved == as_a_note_was
+    assert moved != plain
 
 
 def test_the_system_prompts_say_there_can_be_several_and_their_order_means_nothing() -> None:
@@ -295,3 +307,122 @@ def test_a_run_tells_both_models_only_what_applies() -> None:
         assert B not in text
         assert C not in text
         assert "teacher_wrote_2" not in text
+
+
+# ------------------------------------------------------------------ a school note no one chose
+
+
+def test_a_school_note_no_one_chose_reaches_no_brief_and_no_fingerprint() -> None:
+    """A school note left in the old note field is no instruction anyone chose: neither
+    model is told it, as the teacher's or otherwise, and it changes no fingerprint. That the
+    instructions cannot be read still does."""
+    unreviewed = "Unreviewed words from before."
+    with_it = week_with(row=work(unreviewed, SourceChannel.LMS))
+    with_other = week_with(row=work("Other unreviewed words.", None))
+    without = week_with()
+    unavailable = Week(
+        assignments=[work()],
+        records={},
+        noticings={},
+        statuses={},
+        instructions_unavailable=frozenset({NAME}),
+    )
+
+    for text in briefs(with_it):
+        assert unreviewed not in text
+        assert "teacher_wrote" not in text
+    assert planning_digest(with_it) == planning_digest(with_other) == planning_digest(without)
+    assert planning_digest(unavailable) != planning_digest(without)
+
+
+def run_paths(tmp_path: pathlib.Path) -> dict[str, str]:
+    return {
+        "BLOSSOM_DATABASE_PATH": str(tmp_path / "blossom.sqlite3"),
+        "BLOSSOM_CHECKPOINT_PATH": str(tmp_path / "checkpoints.sqlite3"),
+        "BLOSSOM_TRACE_PATH": str(tmp_path / "traces.sqlite3"),
+    }
+
+
+def test_a_run_never_tells_either_model_a_school_note_no_one_chose_until_one_does(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A kept instruction cannot be read, so the start leaves a school note in the old field.
+    A plan made then, sent back once by the critic, tells neither model the note, first or
+    in revision. Once the instruction can be read, the next start keeps the note for review;
+    a parent chooses it on the review, and the next plan tells each model it once."""
+    unreviewed = "Unreviewed words from before."
+    paths = run_paths(tmp_path)
+    with browser(key=True, **paths) as client:
+        store = state_of(client).project_state
+        store.settle_school_instructions(
+            ESSAY_ID,
+            [InstructionSeen(A, SourceChannel.LMS), InstructionSeen(B, SourceChannel.LMS)],
+            InstructionChoice(0, (A, B), frozenset({A})),
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+    connection = sqlite3.connect(paths["BLOSSOM_DATABASE_PATH"])
+    with connection:
+        connection.execute("UPDATE school_instructions SET state = 'bent' WHERE text = ?", (B,))
+        connection.execute(
+            "UPDATE assignments SET note = ?, origins = ? WHERE assignment_id = ?",
+            (unreviewed, json.dumps({"note": "LMS"}), ESSAY_ID),
+        )
+    connection.close()
+
+    planners: list[Scripted] = []  # type: ignore[type-arg]
+    critics: list[Scripted] = []  # type: ignore[type-arg]
+    with browser(key=True, **paths) as client:
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [fixture_week_plan(), fixture_week_plan()],
+            lambda: [dissent(), accepting()],
+            planners=planners,
+            critics=critics,
+        )
+        planned = client.post("/student/actions/plan")
+        left = state_of(client).project_state.one_assignment(ESSAY_ID)
+    told = [human_text(brief) for asked in (*planners, *critics) for brief in asked.briefs]
+
+    assert planned.status_code == 303
+    assert left is not None
+    assert left.note == unreviewed
+    assert [len(asked.briefs) for asked in (*planners, *critics)] == [2, 2]
+    for text in told:
+        assert unreviewed not in text
+        assert "teacher_wrote" not in text
+
+    connection = sqlite3.connect(paths["BLOSSOM_DATABASE_PATH"])
+    with connection:
+        connection.execute("UPDATE school_instructions SET state = 'history' WHERE text = ?", (B,))
+    connection.close()
+    again: list[Scripted] = []  # type: ignore[type-arg]
+    critics_again: list[Scripted] = []  # type: ignore[type-arg]
+    with browser(key=True, **paths) as client:
+        store = state_of(client).project_state
+        waiting = store.school_instruction_readings([ESSAY_ID]).readable[ESSAY_ID].awaiting
+        page = client.get(instructions_review_href(ESSAY_ID), headers=PAGE_HEADERS).text
+        form = whole_form(page, instructions_action_href(ESSAY_ID))
+        for number, words in enumerate(
+            item.text
+            for item in store.school_instruction_readings([ESSAY_ID]).readable[ESSAY_ID].kept
+        ):
+            if words in (A, unreviewed):
+                form[f"apply-{number}"] = "1"
+        chosen = client.post(instructions_action_href(ESSAY_ID), data=form)
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [fixture_week_plan()],
+            lambda: [accepting()],
+            planners=again,
+            critics=critics_again,
+        )
+        planned_again = client.post("/student/actions/plan")
+    told_again = [human_text(brief) for asked in (*again, *critics_again) for brief in asked.briefs]
+
+    assert [item.text for item in waiting] == [unreviewed]
+    assert chosen.status_code == 303
+    assert planned_again.status_code == 303
+    assert len(told_again) == 2
+    for text in told_again:
+        assert text.count(unreviewed) == 1
+        assert text.count(A) == 1

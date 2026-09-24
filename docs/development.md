@@ -404,24 +404,32 @@ with where it was read; nothing is ticked in advance, and "No school
 instruction applies now" is its own answer. Nothing of the text is saved
 until every such question is answered, and whatever is not chosen is kept as
 history, so nothing the school said is lost. All the cards about one
-assignment in one text are one question, asked once. A choice made on a page
-the instructions have changed under since, from another tab or a retry, is
-refused whole, with the choice that was not saved shown beside the
-instructions as they stand now; a choice that already stands saves nothing
-more.
+assignment in one text are one question, asked once, on the first card of the
+text that lands on it. A choice made on a page the instructions have changed
+under since, from another tab or a retry, is refused whole, with the choice
+that was not saved said in words beside the instructions as they stand now and
+nothing ticked, so it is never carried onto facts it was not made against; a
+choice that already stands saves nothing more. The instructions' words travel
+in the form encoded, so a browser's line endings never change them.
 
-Her card and the assignment's details show the instructions that apply as
-"From the school", in the order of their words, which means nothing else,
-with any said before, or waiting for review, in a fold beneath. The page
-says these are the school's words, and that which of them apply is the
-family's choice, which changes neither the school's record nor her own
-updates. The family's reading of the details offers "Review school
-instructions", where a parent, or the household with the sign-in off, can
-restore an earlier instruction, retire one, settle one waiting for review,
-or say none applies; opening it writes nothing, and it saves by the same
-rule as the paste. She reads the instructions and never the control. A note
-typed by a parent shows as "A parent wrote", and the planner is told whose
-words a note is, and the school's instructions that apply as the teacher's.
+Her card, the assignment's details, the lists of work due later, and the
+family page's rows show the instructions that apply as "From the school", in
+the order of their words, which means nothing else, with any said before, or
+waiting for review, in a fold beneath. The page says these are the school's
+words, and that which of them apply is the family's choice, which changes
+neither the school's record nor her own updates. The family's reading of the
+details, and the family page's rows, offer "Review school instructions",
+where a parent, or the household with the sign-in off, can restore an earlier
+instruction, retire one, settle one waiting for review, or say none applies;
+opening it writes nothing, and it saves by the same rule as the paste. A save
+returns to the page with what it did, said as standing only while nothing has
+changed since. A save the file refuses is tried once, never again, and the
+answer that was not saved is shown, from the record read once more or, when
+that fails too, from a page that reads nothing. She reads the instructions
+and never the control. A note typed by a parent shows as "A parent wrote",
+and the planner is told whose words a note is, and the school's instructions
+that apply as the teacher's; a school note left in the old note field, which
+no one chose, is shown apart as not yet reviewed and never reaches a plan.
 The record keeps where each fact came from, the row itself, its note, its due
 and assigned dates, and its type, so her page can say "Entered by a parent";
 a parent's typed note fills the note or replaces the saved one.

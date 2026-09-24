@@ -12,7 +12,7 @@
 #}
 {% block content %}
   <h1>Nothing was saved</h1>
-  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ problem }}</p>
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ problem }}{% if answers %} <a href="#kept-answers">See the answers given.</a>{% endif %}</p>
   <section class="panel">
     {% if text %}
       <label for="kept-paste">The text, as pasted</label>
@@ -25,10 +25,10 @@
       {% endfor %}
     {% endif %}
     {% if answers %}
-      <h2 class="update-heading">Your answers on the cards, not saved</h2>
+      <h2 class="update-heading" id="kept-answers" tabindex="-1">Your answers on the cards, not saved</h2>
       <ul>
         {% for answer in answers %}
-          <li>Card {{ answer.key }}: {% if answer.occurrence == "new" %}new work under the same name{% elif answer.occurrence == "update" %}the same assignment{% else %}no answer about the assignment{% endif %}{% if answer.kind %}; type {{ answer.kind|lower|capitalize }}{% endif %}.</li>
+          <li>Card {{ answer.key }}: {% if answer.occurrence == "new" %}new work under the same name{% elif answer.occurrence == "update" %}the same assignment{% else %}no answer about the assignment{% endif %}{% if answer.kind %}; type {{ answer.kind|lower|capitalize }}{% endif %}.{% if answer.instructions or answer.none_applies %} The school's instructions chosen to apply: {% for text in answer.instructions %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% if answer.none_applies %}{% if answer.instructions %}, and {% endif %}that none applies{% endif %}.{% endif %}</li>
         {% endfor %}
       </ul>
     {% endif %}

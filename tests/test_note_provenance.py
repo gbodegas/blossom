@@ -74,15 +74,17 @@ def test_her_note_is_put_to_a_model_as_hers_and_never_as_the_teachers() -> None:
     text = assignments_block(
         [
             hers,
-            work("Cite two sources.", SourceChannel.LMS, "assignment-essay"),
+            work(None, None, "assignment-essay"),
             work("Signed on Sunday.", SourceChannel.PARENT_ENTRY, "assignment-syllabus"),
         ],
         {},
+        school_instructions={"assignment-essay": ("Cite two sources.",)},
     )
 
     assert 'student_noted="Heard in class, pages 12 to 14."' in text
     assert text.count("student_noted=") == 1
     assert text.count("teacher_wrote=") == 1
+    assert 'teacher_wrote="Cite two sources."' in text
     assert text.count("parent_wrote=") == 1
     assert "Heard in class" not in text.split("student_noted=")[0]
     for system in (PLANNER_SYSTEM, CRITIC_SYSTEM):

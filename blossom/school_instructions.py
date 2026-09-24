@@ -18,17 +18,20 @@ a change back is still known as older. A choice that already stands in full
 is nothing new, whatever revision it names.
 
 This module is the rule and nothing else: no database, no clock, no page.
+Beside it is the one way an instruction's words travel in a form, so what a
+browser sends back names exactly the words that are kept.
 """
 
+import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Final, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from blossom.captures import Author
-from blossom.reconciliation import SourceChannel
+from blossom.reconciliation import SCHOOL_CHANNELS, SourceChannel
 
 InstructionState = Literal["current", "history", "awaiting"]
 """Current applies now; history was said and does not apply; awaiting is a school note
@@ -38,6 +41,43 @@ Card = Literal["assigned", "due"]
 STATES: Final = frozenset({"current", "history", "awaiting"})
 CARDS: Final = frozenset({"assigned", "due"})
 CarriedState = Literal["nothing", "current", "awaiting"]
+INSTRUCTION_MAX_LENGTH: Final = 40_000
+"""The longest an instruction is: no longer than the longest text a paste may be."""
+WIRE_MAX_LENGTH: Final = 12 * INSTRUCTION_MAX_LENGTH + 2
+"""The longest an instruction's words are in a form: every character at its longest
+escape, a character beyond the basic plane as two escaped halves, and the two quotes."""
+
+
+def instruction_words(text: object) -> bool:
+    """Whether a value can be an instruction's words: text with something in it that is not
+    white space, no longer than an instruction may be, and writable as it is."""
+    if not isinstance(text, str) or not text.strip() or len(text) > INSTRUCTION_MAX_LENGTH:
+        return False
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def to_wire(text: str) -> str:
+    """An instruction's words as a form carries them: one JSON string in ASCII. A browser
+    turns every line break it sends into a carriage return and a line feed; the words on
+    the wire hold no line break, no quote, and nothing beyond ASCII, so they come back as
+    they left, line endings, quotes, and every character included."""
+    return json.dumps(text, ensure_ascii=True)
+
+
+def from_wire(value: str) -> str | None:
+    """The words a form carried, exactly, or ``None`` for a value the page did not write: one
+    that is too long, is no JSON string, or decodes to no instruction's words."""
+    if len(value) > WIRE_MAX_LENGTH or not value.startswith('"') or not value.endswith('"'):
+        return None
+    try:
+        text = json.loads(value)
+    except ValueError:
+        return None
+    return text if instruction_words(text) else None
 
 
 @dataclass(frozen=True)
@@ -52,11 +92,19 @@ class InstructionSeen:
     card_day: date | None = None
 
     def __post_init__(self) -> None:
-        if not self.text.strip():
-            msg = "an instruction has words"
+        if not instruction_words(self.text):
+            msg = "an instruction has words, and no more than an instruction may hold"
+            raise ValueError(msg)
+        if self.channel is not None and self.channel not in SCHOOL_CHANNELS:
+            msg = "an instruction is the school's: from the portal, the email, or not known"
             raise ValueError(msg)
         if self.card is not None and self.card not in CARDS:
-            msg = f"an instruction is read under an assigned or a due card, not {self.card!r}"
+            msg = "an instruction is read under an assigned or a due card"
+            raise ValueError(msg)
+        if self.card_day is not None and (
+            not isinstance(self.card_day, date) or isinstance(self.card_day, datetime)
+        ):
+            msg = "a card's day is a day"
             raise ValueError(msg)
 
 
@@ -119,8 +167,54 @@ class InstructionChoice:
 
 
 @dataclass(frozen=True)
+class SubmittedChoice:
+    """An answer as a form sent it, whatever it says: the revision and the instructions it
+    was made against, those ticked, and whether none applying was ticked.
+
+    It is kept whole even when it contradicts itself or answers nothing, so a
+    page returned can say what was sent, and can tell whether it was made
+    against what stands before it gives any tick back: a tick made against
+    instructions that have changed since is never put on a form carrying the
+    revision that stands now.
+    """
+
+    shown_revision: int
+    shown: tuple[str, ...]
+    applies: frozenset[str] = field(default_factory=frozenset)
+    none_applies: bool = False
+
+    @property
+    def contradicts(self) -> bool:
+        """Whether it ticks some instructions and that none applies."""
+        return self.none_applies and bool(self.applies)
+
+    @property
+    def answers(self) -> bool:
+        """Whether it is a choice: some apply, or none does, and not both."""
+        return bool(self.applies) != self.none_applies
+
+    def choice(self) -> "InstructionChoice | None":
+        """The choice it makes, or ``None`` when it makes none."""
+        if not self.answers:
+            return None
+        return InstructionChoice(
+            shown_revision=self.shown_revision,
+            shown=self.shown,
+            applies=self.applies,
+            none_applies=self.none_applies,
+        )
+
+    def made_against(self, revision: int, texts: Iterable[str]) -> bool:
+        """Whether it was made against these instructions at this revision."""
+        return self.shown_revision == revision and set(self.shown) == set(texts)
+
+
+@dataclass(frozen=True)
 class InstructionsUnchanged:
-    """Nothing new: no new text, and any choice given already stands in full."""
+    """Nothing new: no new text, and any choice given already stands in full. ``revision``
+    is the revision that stands, the one the outcome was decided against."""
+
+    revision: int = 0
 
 
 @dataclass(frozen=True)
@@ -185,8 +279,9 @@ def settle(
 
     With no choice: nothing new is nothing; the first text, with nothing kept
     and no other new text beside it, applies; anything else needs a choice. A
-    choice that already stands in full, every new text kept and every state as
-    chosen, is nothing new. Otherwise the choice must have been made against
+    choice of words neither kept nor new is refused. A choice that already
+    stands in full, every new text kept and every state as chosen, is nothing
+    new. Otherwise the choice must have been made against
     the revision that stands and against exactly the instructions it would
     place, kept and new; then every new text is kept, applying when chosen and
     as history when not, and every kept row takes the state chosen for it.
@@ -195,16 +290,21 @@ def settle(
     revision = revision_of(kept)
     if choice is None:
         if not fresh:
-            return InstructionsUnchanged()
+            return InstructionsUnchanged(revision)
         if not kept and len(fresh) == 1:
             return InstructionsSettled(((fresh[0], "current"),), (), revision + 1)
         return InstructionsNeedAChoice(tuple(kept), fresh, revision)
+    # A choice of words that are neither kept nor new in this text asks for something that
+    # cannot stand, so it is never taken for a result that already stands.
+    available = {item.text for item in kept} | {item.text for item in fresh}
+    if not choice.applies <= available:
+        return InstructionChoiceStale(tuple(kept), revision)
     wanted = {
         text: ("current" if text in choice.applies else "history")
         for text in [*(item.text for item in kept), *(item.text for item in fresh)]
     }
     if not fresh and all(item.state == wanted[item.text] for item in kept):
-        return InstructionsUnchanged()
+        return InstructionsUnchanged(revision)
     if choice.shown_revision != revision or set(choice.shown) != set(wanted):
         return InstructionChoiceStale(tuple(kept), revision)
     inserted: tuple[tuple[InstructionSeen, InstructionState], ...] = tuple(

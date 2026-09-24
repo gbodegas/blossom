@@ -214,24 +214,40 @@ def test_the_planner_is_told_the_kind_the_assigned_date_and_an_unknown_due_date(
 
 
 def test_the_planner_is_told_whose_words_a_note_is() -> None:
-    """A teacher's instruction and a parent's guidance are different things to plan around,
-    and the record says which a note is; a note with no origin is read as the teacher's."""
-    teachers = ESSAY.model_copy(
-        update={"note": "Cite two sources.", "origins": {"note": SourceChannel.LMS}}
-    )
+    """A teacher's instruction and a parent's guidance are different things to plan around:
+    the school's instructions that apply are put as the teacher's, and a parent's note as a
+    parent's. A school note left in the old note field, marked or not, is no instruction
+    anyone chose, and is not put at all."""
     parents = SYLLABUS.model_copy(
         update={"note": "Signed on Sunday.", "origins": {"note": SourceChannel.PARENT_ENTRY}}
     )
-    unmarked = ESSAY.model_copy(
-        update={"assignment_id": "assignment-reading", "note": "Read chapter two."}
+    reading = ESSAY.model_copy(update={"assignment_id": "assignment-reading"})
+    left_marked = ESSAY.model_copy(
+        update={
+            "assignment_id": "assignment-left",
+            "note": "Left in the field.",
+            "origins": {"note": SourceChannel.LMS},
+        }
     )
-    text = assignments_block([teachers, parents, unmarked], {})
+    left_unmarked = ESSAY.model_copy(
+        update={"assignment_id": "assignment-left-unmarked", "note": "Left unmarked."}
+    )
+    text = assignments_block(
+        [ESSAY, parents, reading, left_marked, left_unmarked],
+        {},
+        school_instructions={
+            ESSAY.assignment_id: ("Cite two sources.",),
+            "assignment-reading": ("Read chapter two.",),
+        },
+    )
 
     assert 'teacher_wrote="Cite two sources."' in text
     assert 'parent_wrote="Signed on Sunday."' in text
     assert 'teacher_wrote="Read chapter two."' in text
     assert text.count("parent_wrote=") == 1
     assert text.count("teacher_wrote=") == 2
+    assert "Left in the field." not in text
+    assert "Left unmarked." not in text
 
 
 def test_the_critic_is_told_which_assignments_have_no_date() -> None:

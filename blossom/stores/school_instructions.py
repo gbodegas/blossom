@@ -20,8 +20,8 @@ import threading
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Final, cast
+from datetime import UTC, date, datetime
+from typing import Final, NoReturn, cast
 
 from blossom.captures import Author
 from blossom.clock import Clock
@@ -39,6 +39,7 @@ from blossom.school_instructions import (
     InstructionState,
     SchoolInstruction,
     carried_state,
+    instruction_words,
     revision_of,
     settle,
     standing_of,
@@ -65,10 +66,11 @@ CREATE_SCHOOL_INSTRUCTIONS: Final = """
         UNIQUE (assignment_id, text)
     )
 """
-EVERY_INSTRUCTION: Final = """
+INSTRUCTIONS_NAMED: Final = """
     SELECT sequence, assignment_id, text, channel, card, card_day, first_seen_at_utc,
         first_seen_on, imported_by, state, settled_by, settled_at_utc, settled_on, revision
     FROM school_instructions
+    WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY sequence
 """
 INSTRUCTIONS_OF: Final = """
@@ -90,6 +92,24 @@ AUTHORED_MARKS: Final = frozenset(
 mark, and no mark at all, says the note is the school's, as the ``note_by`` rule reads it."""
 SCHOOL_MARKS: Final = frozenset({SourceChannel.LMS.value, SourceChannel.EMAIL.value})
 AUTHORS: Final = frozenset({"student", "parent", "household"})
+COLUMNS: Final = (
+    "sequence",
+    "assignment_id",
+    "text",
+    "channel",
+    "card",
+    "card_day",
+    "first_seen_at_utc",
+    "first_seen_on",
+    "imported_by",
+    "state",
+    "settled_by",
+    "settled_at_utc",
+    "settled_on",
+    "revision",
+)
+"""The columns a row is read in, for saying which one cannot be read without saying what
+it holds."""
 
 
 class UnreadableInstruction(ValueError):
@@ -127,40 +147,125 @@ class InstructionReadings:
     unreadable: frozenset[str]
 
 
-def instruction_from(row: Sequence[object]) -> SchoolInstruction:
-    """One kept instruction from a row in the order ``EVERY_INSTRUCTION`` reads it, or
-    ``UnreadableInstruction`` for a row this store never writes."""
+def written_moment(moment: datetime) -> str:
+    """A moment as this store writes it: in UTC, with its offset."""
+    return moment.astimezone(UTC).isoformat()
+
+
+def _day(value: object) -> date | None:
+    """A day this store wrote, as ``YYYY-MM-DD``, or ``None`` for anything else."""
+    if type(value) is not str:
+        return None
     try:
-        state = str(row[9])
-        card = None if row[4] is None else str(row[4])
-        if state not in STATES or (card is not None and card not in CARDS):
-            msg = f"instruction {row[0]!r} holds {state!r} and {card!r}"
-            raise UnreadableInstruction(msg)
-        for who in (row[8], row[10]):
-            if who is not None and str(who) not in AUTHORS:
-                msg = f"instruction {row[0]!r} names {who!r}"
-                raise UnreadableInstruction(msg)
-        return SchoolInstruction(
-            sequence=int(cast(int, row[0])),
-            assignment_id=str(row[1]),
-            text=str(row[2]),
-            channel=None if row[3] is None else SourceChannel(str(row[3])),
-            card=cast(Card | None, card),
-            card_day=None if row[5] is None else date.fromisoformat(str(row[5])),
-            first_seen_at=None if row[6] is None else datetime.fromisoformat(str(row[6])),
-            first_seen_on=None if row[7] is None else date.fromisoformat(str(row[7])),
-            imported_by=cast(Author | None, None if row[8] is None else str(row[8])),
-            state=cast(InstructionState, state),
-            settled_by=cast(Author | None, None if row[10] is None else str(row[10])),
-            settled_at=None if row[11] is None else datetime.fromisoformat(str(row[11])),
-            settled_on=None if row[12] is None else date.fromisoformat(str(row[12])),
-            revision=int(cast(int, row[13])),
-        )
-    except UnreadableInstruction:
-        raise
-    except (ValueError, TypeError) as error:
-        msg = f"instruction {row[0]!r} cannot be read: {error}"
-        raise UnreadableInstruction(msg) from error
+        day = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return day if day.isoformat() == value else None
+
+
+def _moment(value: object) -> datetime | None:
+    """A moment this store wrote, with its offset, or ``None`` for anything else."""
+    if type(value) is not str:
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if moment.tzinfo is None or moment.isoformat() != value:
+        return None
+    return moment
+
+
+def instruction_from(row: Sequence[object]) -> SchoolInstruction:
+    """One kept instruction from a row in the order the store reads it, or
+    ``UnreadableInstruction`` for a row this store never writes.
+
+    Every value is taken as the type the store wrote, and nothing is made to
+    fit: a count that is not a whole number, a revision below one, words that
+    are blank or bytes, a source that is not the school's, a day or a moment
+    in another spelling, each makes the row unreadable rather than a fact. What
+    is said names the row and the column, never the words it holds.
+    """
+    if len(row) != len(COLUMNS):
+        msg = "an instruction row has another shape than the store writes"
+        raise UnreadableInstruction(msg)
+    values = dict(zip(COLUMNS, row, strict=True))
+    sequence = values["sequence"]
+    where = f"instruction {sequence}" if type(sequence) is int else "an instruction"
+
+    def refuse(column: str) -> NoReturn:
+        msg = f"{where} holds a {column} this store never writes"
+        raise UnreadableInstruction(msg)
+
+    if type(sequence) is not int:
+        refuse("sequence")
+    if type(values["assignment_id"]) is not str or not values["assignment_id"]:
+        refuse("assignment_id")
+    if not instruction_words(values["text"]):
+        refuse("text")
+    channel = values["channel"]
+    if channel is not None and (type(channel) is not str or channel not in SCHOOL_MARKS):
+        refuse("channel")
+    card = values["card"]
+    if card is not None and (type(card) is not str or card not in CARDS):
+        refuse("card")
+    state = values["state"]
+    if type(state) is not str or state not in STATES:
+        refuse("state")
+    for column in ("imported_by", "settled_by"):
+        who = values[column]
+        if who is not None and (type(who) is not str or who not in AUTHORS):
+            refuse(column)
+    days: dict[str, date | None] = {}
+    for column in ("card_day", "first_seen_on", "settled_on"):
+        days[column] = None if values[column] is None else _day(values[column])
+        if values[column] is not None and days[column] is None:
+            refuse(column)
+    moments: dict[str, datetime | None] = {}
+    for column in ("first_seen_at_utc", "settled_at_utc"):
+        moments[column] = None if values[column] is None else _moment(values[column])
+        if values[column] is not None and moments[column] is None:
+            refuse(column)
+    revision = values["revision"]
+    if type(revision) is not int or revision < 1:
+        refuse("revision")
+    return SchoolInstruction(
+        sequence=sequence,
+        assignment_id=values["assignment_id"],
+        text=cast(str, values["text"]),
+        channel=None if channel is None else SourceChannel(channel),
+        card=cast(Card | None, card),
+        card_day=days["card_day"],
+        first_seen_at=moments["first_seen_at_utc"],
+        first_seen_on=days["first_seen_on"],
+        imported_by=cast(Author | None, values["imported_by"]),
+        state=cast(InstructionState, state),
+        settled_by=cast(Author | None, values["settled_by"]),
+        settled_at=moments["settled_at_utc"],
+        settled_on=days["settled_on"],
+        revision=revision,
+    )
+
+
+def held_to_the_reader(values: Sequence[object]) -> None:
+    """Refuse, before it is written, a row the reader would refuse: ``values`` are a row's
+    columns after its sequence, as the store is about to write them."""
+    try:
+        instruction_from((1, *values))
+    except UnreadableInstruction as refused:
+        msg = f"a school instruction is not written as it could not be read back: {refused}"
+        raise ValueError(msg) from refused
+
+
+def check_moment(now: object, today: object) -> None:
+    """Refuse a moment without its offset, or a day that is not a day, before anything is
+    written with them."""
+    if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+        msg = "a school instruction is written with a moment that carries its offset"
+        raise ValueError(msg)
+    if not isinstance(today, date) or isinstance(today, datetime):
+        msg = "a school instruction is written with a household day"
+        raise ValueError(msg)
 
 
 class SchoolInstructionRecords:
@@ -185,7 +290,8 @@ class SchoolInstructionRecords:
         say how many were moved.
 
         A note is the school's when its mark is not a parent's entry or her
-        report, no mark included, as the ``note_by`` rule has always read it.
+        report, no mark included, as the ``note_by`` rule has always read it. A
+        blank note is no instruction and stays where it is.
         Each is placed by the startup rule: nothing new when its text is kept,
         applying when nothing is kept, and awaiting a parent's review beside
         what is kept otherwise. Its words and the school channel its mark names
@@ -202,6 +308,10 @@ class SchoolInstructionRecords:
         moving: list[tuple[str, str, dict[str, object]]] = []
         unmoved = 0
         for assignment_id, note, raw in rows:
+            if type(note) is not str or not note.strip():
+                # A blank note says nothing, so it is no instruction: it stays in the field as
+                # it was, and nothing is made up from it.
+                continue
             try:
                 origins = {} if raw is None else json.loads(str(raw))
             except ValueError:
@@ -276,19 +386,20 @@ class SchoolInstructionRecords:
 
     def school_instruction_readings(self, assignment_ids: Iterable[str]) -> InstructionReadings:
         """The kept instructions of these assignments, in one statement however many are asked
-        about. An assignment with a row that cannot be read is named as unavailable, and one
-        with nothing kept is not among the readable."""
+        about, and only theirs. An assignment with a row that cannot be read is named as
+        unavailable, and one with nothing kept is not among the readable."""
         wanted = set(assignment_ids)
         if not wanted:
             return InstructionReadings({}, frozenset())
         with self._lock:
-            rows = self._connection.execute(EVERY_INSTRUCTION).fetchall()
+            rows = self._connection.execute(
+                INSTRUCTIONS_NAMED, (json.dumps(sorted(wanted)),)
+            ).fetchall()
         kept: dict[str, list[SchoolInstruction]] = {}
         unreadable: set[str] = set()
         for row in rows:
-            name = str(row[1])
-            if name not in wanted:
-                continue
+            # The statement names the assignments asked about, so every row is one of them.
+            name = cast(str, row[1])
             try:
                 kept.setdefault(name, []).append(instruction_from(row))
             except UnreadableInstruction:
@@ -315,7 +426,13 @@ class SchoolInstructionRecords:
         today: date,
     ) -> InstructionsOutcome | InstructionsForNoAssignment:
         """Keep these readings for one assignment, with this choice or none, in one
-        transaction that reserves the writer before it reads."""
+        transaction that reserves the writer before it reads. A moment without its offset,
+        a day that is not a day, or someone the store does not know is refused before the
+        transaction begins, and nothing is written."""
+        check_moment(now, today)
+        if authored_by is not None and authored_by not in AUTHORS:
+            msg = "a school instruction is written by a parent, the household, or her"
+            raise ValueError(msg)
         with self._lock, self._writing():
             return self._settle_instructions_locked(
                 assignment_id, seen, choice, authored_by=authored_by, now=now, today=today
@@ -355,20 +472,33 @@ class SchoolInstructionRecords:
                     today=today,
                 )
             for row, state in outcome.changed:
+                settled = (
+                    state,
+                    chooser,
+                    written_moment(now),
+                    today.isoformat(),
+                    outcome.revision,
+                )
+                held_to_the_reader(
+                    (
+                        row.assignment_id,
+                        row.text,
+                        None if row.channel is None else row.channel.value,
+                        row.card,
+                        None if row.card_day is None else row.card_day.isoformat(),
+                        None if row.first_seen_at is None else written_moment(row.first_seen_at),
+                        None if row.first_seen_on is None else row.first_seen_on.isoformat(),
+                        row.imported_by,
+                        *settled,
+                    )
+                )
                 self._connection.execute(
                     """
                     UPDATE school_instructions
                     SET state = ?, settled_by = ?, settled_at_utc = ?, settled_on = ?, revision = ?
                     WHERE sequence = ?
                     """,
-                    (
-                        state,
-                        chooser,
-                        now.isoformat(),
-                        today.isoformat(),
-                        outcome.revision,
-                        row.sequence,
-                    ),
+                    (*settled, row.sequence),
                 )
         return outcome
 
@@ -384,24 +514,25 @@ class SchoolInstructionRecords:
         now: datetime | None,
         today: date | None,
     ) -> None:
-        self._connection.execute(
-            INSERT_INSTRUCTION,
-            (
-                assignment_id,
-                item.text,
-                None if item.channel is None else item.channel.value,
-                item.card,
-                None if item.card_day is None else item.card_day.isoformat(),
-                None if now is None else now.isoformat(),
-                None if today is None else today.isoformat(),
-                imported_by,
-                state,
-                settled_by,
-                None if settled_by is None or now is None else now.isoformat(),
-                None if settled_by is None or today is None else today.isoformat(),
-                revision,
-            ),
+        values = (
+            assignment_id,
+            item.text,
+            None if item.channel is None else item.channel.value,
+            item.card,
+            None if item.card_day is None else item.card_day.isoformat(),
+            None if now is None else written_moment(now),
+            None if today is None else today.isoformat(),
+            imported_by,
+            state,
+            settled_by,
+            None if settled_by is None or now is None else written_moment(now),
+            None if settled_by is None or today is None else today.isoformat(),
+            revision,
         )
+        # Nothing is written that the reader would refuse; the caller's transaction is
+        # rolled back whole when a row is refused here.
+        held_to_the_reader(values)
+        self._connection.execute(INSERT_INSTRUCTION, values)
 
     def _keep_note_as_instruction_locked(
         self,
@@ -443,6 +574,7 @@ class SchoolInstructionRecords:
 
 
 def school_note(note: str | None, origins: Mapping[str, object]) -> bool:
-    """Whether an assignment's note is the school's, by the ``note_by`` rule: a note whose
-    mark is neither a parent's entry nor her report, no mark included."""
-    return note is not None and origins.get("note") not in AUTHORED_MARKS
+    """Whether an assignment's note is the school's instruction, by the ``note_by`` rule: a
+    note with words in it whose mark is neither a parent's entry nor her report, no mark
+    included. A blank note is no instruction, and is written as it was given."""
+    return note is not None and bool(note.strip()) and origins.get("note") not in AUTHORED_MARKS

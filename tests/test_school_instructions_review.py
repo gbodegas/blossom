@@ -16,11 +16,12 @@ import sqlite3
 from datetime import UTC, date, datetime
 from html import unescape
 
+import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.app import create_app
 from blossom.reconciliation import SourceChannel
+from blossom.routes.instruction_answers import review_answer
 from blossom.routes.navigation import (
     details_href,
     instructions_action_href,
@@ -30,16 +31,20 @@ from blossom.routes.school_instructions import (
     ALREADY_STOOD,
     CHANGED_SINCE_OPENED,
     CHOICES_CONTRADICT,
+    INSTRUCTIONS_UNREADABLE,
     NOT_ON_RECORD,
+    NOT_SAVED,
     NOTHING_CHOSEN,
     SAVED_AS_CHOSEN,
-    Answer,
-    answer_from,
+    SAVED_SINCE_CHANGED,
+    result_token,
 )
 from blossom.school_instructions import (
     InstructionChoice,
     InstructionSeen,
     InstructionsStanding,
+    SubmittedChoice,
+    to_wire,
 )
 from blossom.settings import Settings
 from blossom.stores.project_state import ProjectStateStore
@@ -49,11 +54,13 @@ from tests.support import (
     HERS,
     PAGE_HEADERS,
     PLAN_DATE,
-    SAME_ORIGIN,
     THEIRS,
+    as_a_browser_sends,
+    client_for,
     fixture_settings,
+    signed_in,
     signed_in_household,
-    state_of,
+    store_of,
     whole_form,
 )
 
@@ -76,17 +83,12 @@ def open_household(tmp_path: pathlib.Path) -> Settings:
     )
 
 
-def client_for(settings: Settings) -> TestClient:
-    return TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN)
-
-
-def signed_in(client: TestClient, passphrase: str) -> None:
-    came_in = client.post("/sign-in", data={"passphrase": passphrase})
-    assert came_in.status_code == 303, came_in.text
-
-
-def store_of(client: TestClient) -> ProjectStateStore:
-    return state_of(client).project_state
+def lands_on_result(location: str, kind: str) -> bool:
+    """Whether a save's redirect names this result for the essay and lands on it."""
+    return (
+        re.fullmatch(rf"{re.escape(PAGE)}\?result={kind}\.\d+\.[0-9a-f]{{16}}#result", location)
+        is not None
+    )
 
 
 def a_current_b_earlier(store: ProjectStateStore) -> None:
@@ -210,7 +212,7 @@ def test_restoring_an_earlier_one_retires_the_current_and_settles_the_awaiting(
         landed = client.get(saved.headers["location"], headers=PAGE_HEADERS)
 
     assert saved.status_code == 303
-    assert saved.headers["location"] == f"{PAGE}?saved=1"
+    assert lands_on_result(saved.headers["location"], "saved")
     assert found.texts == (B,)
     assert sorted(item.text for item in found.history) == sorted([A, C])
     assert found.awaiting == ()
@@ -284,14 +286,16 @@ def test_an_old_form_after_a_change_back_is_refused_and_one_asking_what_stands_i
 
     assert refused.status_code == 409
     assert str(escape(CHANGED_SINCE_OPENED)) in refused.text
-    not_saved = re.search(r'<p class="problem" id="not-saved">(.*?)</p>', refused.text, re.S)
+    not_saved = re.search(
+        r'<p class="problem" id="not-saved" tabindex="-1">(.*?)</p>', refused.text, re.S
+    )
     assert not_saved is not None
     assert [unescape(text) for text in re.findall(r"<q[^>]*>(.*?)</q>", not_saved.group(1))] == [B]
     assert whole_form(refused.text, ACTION)["revision"] == "4"
     assert not any(on for _, on, _ in boxes(refused.text))
     assert after_refused == before
     assert stood.status_code == 303
-    assert stood.headers["location"] == f"{PAGE}?saved=0"
+    assert lands_on_result(stood.headers["location"], "stood")
     assert after_stood == before
     assert found.texts == (A,)
     assert found.revision == 4
@@ -309,9 +313,9 @@ def test_a_retry_after_saving_saves_nothing_more(tmp_path: pathlib.Path) -> None
         after_again = tables(client)
         landed = client.get(again.headers["location"], headers=PAGE_HEADERS)
 
-    assert first.headers["location"] == f"{PAGE}?saved=1"
+    assert lands_on_result(first.headers["location"], "saved")
     assert again.status_code == 303
-    assert again.headers["location"] == f"{PAGE}?saved=0"
+    assert lands_on_result(again.headers["location"], "stood")
     assert after_again == after_first
     assert str(escape(ALREADY_STOOD)) in landed.text
 
@@ -422,13 +426,438 @@ def test_the_answer_is_read_with_none_left_out_ticked_alone_or_refused_when_malf
     """A browser leaves an unticked box out of the form: a tick with no ``none`` field is an
     answer, ``none`` alone is one, and ``none`` with any other value is no form this page
     made."""
-    shown = {"revision": "2", "instruction-0": A, "instruction-1": B}
+    shown = {"revision": "2", "instruction-0": to_wire(A), "instruction-1": to_wire(B)}
 
-    assert answer_from({**shown, "apply-1": "1"}) == Answer(
-        revision=2, shown=(A, B), applies=frozenset({B}), none_applies=False
+    assert review_answer({**shown, "apply-1": "1"}) == SubmittedChoice(
+        shown_revision=2, shown=(A, B), applies=frozenset({B}), none_applies=False
     )
-    assert answer_from({**shown, "none": "1"}) == Answer(
-        revision=2, shown=(A, B), applies=frozenset(), none_applies=True
+    assert review_answer({**shown, "none": "1"}) == SubmittedChoice(
+        shown_revision=2, shown=(A, B), applies=frozenset(), none_applies=True
     )
-    assert answer_from({**shown, "apply-1": "1", "none": "on"}) is None
-    assert answer_from({**shown, "none": ""}) is None
+    assert review_answer({**shown, "apply-1": "1", "none": "on"}) is None
+    assert review_answer({**shown, "none": ""}) is None
+
+
+# ------------------------------------------------------------ the words as a browser sends them
+
+MULTI = "First paragraph.\nSecond paragraph."
+QUOTED = 'Say "only the odd ones" \U0001f33c.\nThen stop.'
+
+
+def multiline_kept(store: ProjectStateStore) -> None:
+    """MULTI was said first and is kept as history; QUOTED applies."""
+    store.settle_school_instructions(
+        ESSAY_ID,
+        [InstructionSeen(MULTI, SourceChannel.LMS)],
+        None,
+        authored_by="parent",
+        now=NOW,
+        today=TODAY,
+    )
+    store.settle_school_instructions(
+        ESSAY_ID,
+        [InstructionSeen(QUOTED, SourceChannel.LMS)],
+        InstructionChoice(1, (MULTI, QUOTED), frozenset({QUOTED})),
+        authored_by="parent",
+        now=NOW,
+        today=TODAY,
+    )
+
+
+@pytest.mark.parametrize("choice", ["the-earlier-one", "the-one-that-applies", "none"])
+def test_a_browser_sends_multiline_instructions_back_as_they_were(
+    tmp_path: pathlib.Path, choice: str
+) -> None:
+    """A browser sends every line break as a carriage return and a line feed; the words ride
+    on the wire, so the choice is saved as made, and the same submission again stands."""
+    with client_for(open_household(tmp_path)) as client:
+        multiline_kept(store_of(client))
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        picked = {"the-earlier-one": MULTI, "the-one-that-applies": QUOTED}.get(choice)
+        form = the_form(page, picked) if picked else the_form(page, none=True)
+        sent = as_a_browser_sends(form)
+        first = client.post(ACTION, data=sent)
+        after_first = tables(client)
+        again = client.post(ACTION, data=sent)
+        after_again = tables(client)
+        found = standing(client)
+
+    assert lands_on_result(
+        first.headers["location"], "stood" if choice == "the-one-that-applies" else "saved"
+    )
+    assert lands_on_result(again.headers["location"], "stood")
+    assert after_again == after_first
+    assert found.texts == (() if picked is None else (picked,))
+    assert sorted(item.text for item in found.kept) == sorted([MULTI, QUOTED])
+
+
+# ------------------------------------------------------------------ a contradiction gone stale
+
+
+@pytest.mark.parametrize("elsewhere", ["another-chosen", "a-change-back"])
+def test_a_contradiction_made_against_changed_instructions_is_not_put_right_onto_them(
+    tmp_path: pathlib.Path, elsewhere: str
+) -> None:
+    """A applies and B was said before; the page ticks A and that none applies. Before it is
+    sent, B is chosen elsewhere, or B and then A again. The page says the instructions
+    changed, says the answer as not saved, and ticks nothing, so undoing the contradiction
+    alone chooses nothing, and what was chosen elsewhere stands."""
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        a_current_b_earlier(store)
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        old = the_form(page, A, none=True)
+        picks = (
+            [frozenset({B})] if elsewhere == "another-chosen" else [frozenset({B}), frozenset({A})]
+        )
+        for number, pick in enumerate(picks):
+            store.settle_school_instructions(
+                ESSAY_ID,
+                [],
+                InstructionChoice(2 + number, (A, B), pick),
+                authored_by="parent",
+                now=NOW,
+                today=TODAY,
+            )
+        chosen_elsewhere = standing(client).texts
+        refused = client.post(ACTION, data=old)
+        fresh = whole_form(refused.text, ACTION)
+        corrected = client.post(ACTION, data=fresh)
+        found = standing(client)
+
+    not_saved = re.search(
+        r'<p class="problem" id="not-saved" tabindex="-1">(.*?)</p>', refused.text, re.S
+    )
+    assert refused.status_code == 409
+    assert str(escape(CHANGED_SINCE_OPENED)) in refused.text
+    assert not_saved is not None
+    assert (
+        unescape(not_saved.group(1))
+        == "Not saved: "
+        + f'<q class="authored-text">{A}</q>'
+        + ", and that no school instruction applies"
+    )
+    assert not any(on for _, on, _ in boxes(refused.text))
+    assert 'name="none" value="1" checked' not in refused.text
+    assert not any(name.startswith(("apply-", "none")) for name in fresh)
+    assert corrected.status_code == 422
+    assert str(escape(NOTHING_CHOSEN)) in corrected.text
+    assert found.texts == chosen_elsewhere
+
+
+# ------------------------------------------------------------------ a choice that is not saved
+
+MARKED_UP = "Use the <b>blue</b> sheet.\nNot the red one."
+
+
+@pytest.mark.parametrize("failure", ["write", "write-then-read", "unreadable", "missing"])
+def test_a_choice_not_saved_is_kept_whole_and_tried_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """A write the file refuses, a reading back that fails too, instructions that cannot be
+    read, or an assignment gone: the choice is said as not saved, its words shown as written,
+    with the focus on what happened and a way to what is there. The write is tried once, the
+    page read back once at most, and the page that reads no store reads nothing."""
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        store.settle_school_instructions(
+            ESSAY_ID,
+            [InstructionSeen(A, SourceChannel.LMS)],
+            None,
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+        store.settle_school_instructions(
+            ESSAY_ID,
+            [InstructionSeen(MARKED_UP, SourceChannel.LMS)],
+            InstructionChoice(1, (A, MARKED_UP), frozenset({A})),
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+        form = the_form(client.get(PAGE, headers=PAGE_HEADERS).text, MARKED_UP)
+        tries: list[str] = []
+
+        def refuse_the_write(*_: object, **__: object) -> None:
+            tries.append("write")
+            if failure == "write-then-read":
+                monkeypatch.setattr(store, "one_assignment", refuse_the_reading)
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        def refuse_the_reading(*_: object, **__: object) -> None:
+            tries.append("read")
+            msg = "the disk refused again"
+            raise sqlite3.OperationalError(msg)
+
+        if failure.startswith("write"):
+            monkeypatch.setattr(store, "settle_school_instructions", refuse_the_write)
+        elif failure == "unreadable":
+            store._connection.execute(
+                "UPDATE school_instructions SET state = 'bent' WHERE text = ?", (MARKED_UP,)
+            )
+            store._connection.commit()
+        else:
+            store._connection.execute(
+                "DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,)
+            )
+            store._connection.commit()
+        before = tables(client)
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+        answer = client.post(ACTION, data=form)
+        store._connection.set_trace_callback(None)
+        after = tables(client)
+
+    summary = re.search(
+        r'<p class="problem" role="alert" id="problem-summary"[^>]*>(.*?)</p>', answer.text, re.S
+    )
+    assert (
+        answer.status_code
+        == {"write": 500, "write-then-read": 500, "unreadable": 500, "missing": 404}[failure]
+    )
+    assert after == before
+    assert (
+        '<q class="authored-text">Use the &lt;b&gt;blue&lt;/b&gt; sheet.\nNot the red one.</q>'
+        in answer.text
+    )
+    assert 'id="not-saved"' in answer.text
+    assert answer.text.count("autofocus") == 1
+    assert summary is not None
+    target = re.search(r'<a href="#([^"]+)">', summary.group(1))
+    assert target is not None
+    assert f'id="{target.group(1)}"' in answer.text
+    if failure == "write":
+        assert tries == ["write"]
+        assert str(escape(NOT_SAVED)) in answer.text
+        assert target.group(1) == "instruction-choice"
+        assert [text for text, on, _ in boxes(answer.text) if on] == [MARKED_UP]
+    if failure == "write-then-read":
+        assert tries == ["write", "read"]
+        assert f'action="{ACTION}"' not in answer.text
+        assert target.group(1) == "not-saved"
+        assert sum(text.startswith("BEGIN") for text in statements) == 1
+    if failure == "unreadable":
+        assert str(escape(INSTRUCTIONS_UNREADABLE)) in answer.text
+        assert f'action="{ACTION}"' not in answer.text
+    if failure == "missing":
+        assert str(escape(NOT_ON_RECORD)) in answer.text
+
+
+# ------------------------------------------------------------------ what a save says afterward
+
+
+def test_a_result_says_a_choice_applies_only_while_its_revision_stands(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        a_current_b_earlier(store)
+        saved = client.post(ACTION, data=the_form(client.get(PAGE, headers=PAGE_HEADERS).text, B))
+        where = saved.headers["location"]
+        landed = client.get(where, headers=PAGE_HEADERS).text
+        visited_again = client.get(where, headers=PAGE_HEADERS).text
+        store.settle_school_instructions(
+            ESSAY_ID,
+            [],
+            InstructionChoice(3, (A, B), frozenset({A})),
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+        after_another = client.get(where, headers=PAGE_HEADERS).text
+        store.settle_school_instructions(
+            ESSAY_ID,
+            [],
+            InstructionChoice(4, (A, B), frozenset({B})),
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+        after_a_change_back = client.get(where, headers=PAGE_HEADERS).text
+
+    assert lands_on_result(where, "saved")
+    for page in (landed, visited_again):
+        assert str(escape(SAVED_AS_CHOSEN)) in page
+        assert '<p class="note" role="status" id="result" tabindex="-1">' in page
+        assert "autofocus" not in page
+    for page in (after_another, after_a_change_back):
+        assert str(escape(SAVED_AS_CHOSEN)) not in page
+        assert str(escape(SAVED_SINCE_CHANGED)) in page
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        "?saved=1",
+        "?saved=0",
+        "?result=saved.3.0000000000000000",
+        "?result=saved.3",
+        "?result=kept.3.0000000000000000",
+        "?result=" + result_token("assignment-another-one", "saved", 3),
+        "?result=" + result_token(ESSAY_ID, "saved", 9),
+    ],
+    ids=[
+        "an-old-flag",
+        "the-other-old-flag",
+        "a-made-up-check",
+        "no-check",
+        "a-made-up-kind",
+        "another-assignments",
+        "a-revision-not-reached",
+    ],
+)
+def test_a_result_the_save_did_not_write_says_nothing(tmp_path: pathlib.Path, result: str) -> None:
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        a_current_b_earlier(store)
+        store.settle_school_instructions(
+            ESSAY_ID,
+            [],
+            InstructionChoice(2, (A, B), frozenset({B})),
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+        page = client.get(PAGE + result, headers=PAGE_HEADERS).text
+
+    assert 'id="result"' not in page
+    assert str(escape(SAVED_AS_CHOSEN)) not in page
+    assert str(escape(ALREADY_STOOD)) not in page
+
+
+# ------------------------------------------------------------------ words never kept
+
+
+def test_a_choice_of_words_never_kept_is_refused_and_claims_nothing(tmp_path: pathlib.Path) -> None:
+    """Every instruction is retired; the form names words never kept and ticks them. Nothing
+    stands to match, so nothing is claimed and nothing is written."""
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        a_current_b_earlier(store)
+        store.settle_school_instructions(
+            ESSAY_ID,
+            [],
+            InstructionChoice(2, (A, B), frozenset(), True),
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+        form = whole_form(client.get(PAGE, headers=PAGE_HEADERS).text, ACTION)
+        form["instruction-0"] = to_wire("Never kept.")
+        form["apply-0"] = "1"
+        before = tables(client)
+        refused = client.post(ACTION, data=form)
+        after = tables(client)
+
+    assert refused.status_code == 409
+    assert str(escape(CHANGED_SINCE_OPENED)) in refused.text
+    assert str(escape(ALREADY_STOOD)) not in refused.text
+    assert after == before
+
+
+# ------------------------------------------------------------------ where the focus lands
+
+
+@pytest.mark.parametrize(
+    "refusal", ["nothing-ticked", "contradiction", "stale", "unreadable", "missing"]
+)
+def test_a_refused_choice_puts_the_focus_on_one_summary_that_leads_to_what_is_there(
+    tmp_path: pathlib.Path, refusal: str
+) -> None:
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        a_current_b_earlier(store)
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        form = {
+            "nothing-ticked": the_form(page),
+            "contradiction": the_form(page, B, none=True),
+        }.get(refusal, the_form(page, B))
+        if refusal == "stale":
+            store.settle_school_instructions(
+                ESSAY_ID,
+                [],
+                InstructionChoice(2, (A, B), frozenset({B})),
+                authored_by="parent",
+                now=NOW,
+                today=TODAY,
+            )
+            store.settle_school_instructions(
+                ESSAY_ID,
+                [],
+                InstructionChoice(3, (A, B), frozenset({A})),
+                authored_by="parent",
+                now=NOW,
+                today=TODAY,
+            )
+        if refusal == "unreadable":
+            store._connection.execute("UPDATE school_instructions SET state = 'bent'")
+            store._connection.commit()
+        if refusal == "missing":
+            store._connection.execute(
+                "DELETE FROM assignments WHERE assignment_id = ?", (ESSAY_ID,)
+            )
+            store._connection.commit()
+        refused = client.post(ACTION, data=form)
+
+    summary = re.search(
+        r'<p class="problem" role="alert" id="problem-summary"[^>]*>(.*?)</p>', refused.text, re.S
+    )
+    assert refused.text.count("autofocus") == 1
+    assert summary is not None
+    assert 'tabindex="-1" autofocus' in summary.group(0)
+    target = re.search(r'<a href="#([^"]+)">', summary.group(1))
+    assert target is not None
+    assert f'id="{target.group(1)}"' in refused.text
+    if refusal in ("nothing-ticked", "contradiction", "stale"):
+        assert target.group(1) == "instruction-choice"
+        assert (
+            'id="instruction-choice" tabindex="-1" aria-describedby="problem-summary"'
+            in refused.text
+        )
+    else:
+        assert target.group(1) == "not-saved"
+
+
+def test_an_ordinary_visit_asks_for_no_focus(tmp_path: pathlib.Path) -> None:
+    with client_for(open_household(tmp_path)) as client:
+        a_current_b_earlier(store_of(client))
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        gone = client.get(instructions_review_href("assignment-nowhere"), headers=PAGE_HEADERS).text
+
+    assert "autofocus" not in page
+    assert "autofocus" not in gone
+
+
+# ------------------------------------------------------------------ where an instruction was read
+
+
+def test_where_an_instruction_was_read_is_said_as_far_as_it_is_known(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An instruction a save kept with no card is from somewhere not known; one carried from
+    the old note field says so; one read on a card names the card's day."""
+    carried = open_household(tmp_path / "carried")
+    (tmp_path / "carried").mkdir()
+    with client_for(carried):
+        pass
+    with_awaiting(carried, C)
+    with client_for(carried) as client:
+        from_the_field = client.get(PAGE, headers=PAGE_HEADERS).text
+    (tmp_path / "saved").mkdir()
+    with client_for(open_household(tmp_path / "saved")) as client:
+        store_of(client).settle_school_instructions(
+            ESSAY_ID,
+            [InstructionSeen(A, SourceChannel.LMS)],
+            None,
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+        cardless = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    assert boxes(from_the_field)[0][2] == (
+        "Applies now. Kept from the note saved before the school's instructions were kept apart."
+    )
+    assert boxes(cardless)[0][2] == "Applies now. Where it was read is not known."

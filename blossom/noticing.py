@@ -224,6 +224,9 @@ def monday_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
+AUTHORED: Final = frozenset({"parent", "student"})
+"""Whose notes are guidance a plan is made from: a parent's and hers."""
+
 PLANNING_DIGEST: Final = uuid.UUID("6f1ef033-6648-4683-b6e9-1dd419f420b5")
 """The namespace a week's fingerprint is drawn from. A namespace of its own for each
 shape the fingerprint has had, so a draft fingerprinted under an earlier one reads as
@@ -239,10 +242,11 @@ def canonical_active_input(week: Week) -> list[dict[str, object]]:
     that the fingerprint is drawn from.
 
     For each assignment she has not reported done, by id: its course, title,
-    due and assigned dates, kind, note and whose words it is, which the
-    planner is told and which is nothing when there is no note, and
-    reported status; the school's instructions that apply, in the one
-    order, or nothing when they cannot be read; whether she has said "not
+    due and assigned dates, kind, her note or a parent's and whose words it
+    is, which the planner is told and which is nothing when there is none, a
+    school note left in the old note field included, and reported status; the
+    school's instructions that apply, in the one order, or nothing when they
+    cannot be read; whether she has said "not
     yet" and what she wrote with it; and each claim about its date,
     channel, value, and where it was read, sorted. Left out: when a claim or
     a report was made, which report it was, how sure a claim was, her
@@ -263,8 +267,10 @@ def canonical_active_input(week: Week) -> list[dict[str, object]]:
                 "due": None if item.due_date is None else item.due_date.isoformat(),
                 "assigned": None if item.assigned_on is None else item.assigned_on.isoformat(),
                 "kind": item.kind.value,
-                "note": item.note,
-                "note_by": item.note_by,
+                # A school note left in the old note field is no one's choice and no
+                # guidance: only her note or a parent's is hashed, with whose it is.
+                "note": item.note if item.note_by in AUTHORED else None,
+                "note_by": item.note_by if item.note_by in AUTHORED else None,
                 "school_instructions": (
                     None
                     if item.assignment_id in week.instructions_unavailable

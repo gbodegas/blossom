@@ -173,7 +173,10 @@ def assignments_block(
     ``school_instructions`` are the school's instructions that apply to each,
     by id, in the one order; each is put once, as the teacher's, where a
     teacher's note always went, so one instruction reads as a moved note did.
-    Those said before and any waiting for review are never passed here.
+    Those said before and any waiting for review are never passed here, and
+    neither is a school note left in the old note field, which no one chose to
+    apply: the teacher's words reach a model only as instructions that apply.
+    Her note and a parent's are put under their own names.
     """
     lines = []
     said_by_her = student_reports or {}
@@ -190,10 +193,6 @@ def assignments_block(
         if item.assigned_on is not None:
             attributes["assigned"] = item.assigned_on.isoformat()
         teachers = list(applying.get(item.assignment_id, ()))
-        if item.note and (item.note_by or "teacher") == "teacher" and item.note not in teachers:
-            # A school note still in the old field, beside a kept instruction that could
-            # not be read at the upgrade: the teacher's words all the same, put once.
-            teachers.append(item.note)
         for name, words in zip(teacher_names(len(teachers)), teachers, strict=True):
             attributes[name] = words
         if item.note and (item.note_by or "teacher") != "teacher":

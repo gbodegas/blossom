@@ -1073,8 +1073,12 @@ def test_several_cards_about_one_saved_row_compose_into_one_row(
         (date(2026, 9, 15), "2026-09-15"),
     ]
     assert [change.state for change in asked] == [KNOWN, REVIEW, REVIEW]
-    assert [change.state for change in answered] == [KNOWN, CLAIMED, CLAIMED]
-    assert answered[1].label == "Saved; adds the due date and the school's instructions"
+    # The first card of the assignment carries its one decision about the school's
+    # instructions, the words the second card brought among them.
+    assert [change.state for change in answered] == [CLAIMED, CLAIMED, CLAIMED]
+    assert answered[0].label == "Saved; adds the school's instructions"
+    assert answered[1].instructions_with == answered[0].key
+    assert answered[1].label == "Saved; adds the due date"
     assert answered[2].label == "Saved; adds the due date and the assigned date"
     assert kept == Kept(added=0, updated=1, unchanged=0)
     assert len(rows) == 1

@@ -5,46 +5,53 @@
   Which of the school's instructions for one assignment apply, chosen by
   the family. Every instruction kept is listed with how it stands and where
   it was read; nothing comes ticked but the parent's own ticks on a page
-  returned for a problem. A choice not saved because the instructions
-  changed is said in words beside the facts as they stand now.
+  returned for a problem with an answer made against what stands. An answer
+  made against instructions that changed since, or one the file refused, is
+  said in words as not saved. The words travel in the form as the page wrote
+  them on the wire, so a browser's line endings never change them.
+
+  A refused press puts the focus on one summary, with no script, which links
+  to the choices when the page offers them and to the answer not saved when
+  it does not. A save's redirect lands on its result, which says the choice
+  applies only while the revision it was accepted at stands. The plain page,
+  made when the record cannot be read back, reads no store and offers no save.
 #}
 {% block content %}
-  <p class="return"><a href="{{ back }}">{% if item %}Back to the assignment{% else %}Return to Family review{% endif %}</a></p>
+  <p class="return"><a href="{{ back }}">{% if item or plain %}Back to the assignment{% else %}Return to Family review{% endif %}</a></p>
   <h1>Review school instructions</h1>
   {% if item %}
     <p class="course authored-text">{{ item.course }}</p>
     <p><strong class="authored-text">{{ item.title }}</strong>{% if item.due_date %}, due {{ item.due_date|long_date }}{% endif %}</p>
   {% endif %}
   {% if notice %}
-    <p class="note" role="status">{{ notice }}</p>
+    <p class="note" role="status" id="result" tabindex="-1">{{ notice }} <a href="{{ back }}">Back to the assignment</a></p>
   {% endif %}
+  {% set choosing = item and rows is defined and rows %}
   {% if problem %}
-    <p class="problem" role="alert">{{ problem }}</p>
+    <p class="problem" role="alert" id="problem-summary"{% if pressed %} tabindex="-1" autofocus{% endif %}>{{ problem }}{% if pressed %}{% if choosing %} <a href="#instruction-choice">Review the choices.</a>{% elif not_saved %} <a href="#not-saved">See the choice not saved.</a>{% endif %}{% endif %}</p>
   {% endif %}
   {% if not_saved %}
-    <p class="problem" id="not-saved">Not saved: {% if not_saved.none_applies %}no school instruction applies.{% else %}{% for text in not_saved.applies|sort %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</p>
+    <p class="problem" id="not-saved" tabindex="-1">Not saved: {% for text in not_saved.applies|sort %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% if not_saved.none_applies %}{% if not_saved.applies %}, and {% endif %}that no school instruction applies{% endif %}</p>
   {% endif %}
-  {% if item and rows is defined %}
-    {% if rows %}
-      <p class="helper">These are the school's words. Which of them apply is the family's choice; the school's record is not changed, and neither is anything she wrote. The ones not chosen are kept as history.</p>
-      <form method="post" action="{{ action }}">
-        <input type="hidden" name="revision" value="{{ revision }}">
+  {% if choosing %}
+    <p class="helper">These are the school's words. Which of them apply is the family's choice; the school's record is not changed, and neither is anything she wrote. The ones not chosen are kept as history.</p>
+    <form method="post" action="{{ action }}">
+      <input type="hidden" name="revision" value="{{ revision }}">
+      {% for row in rows %}
+        <input type="hidden" name="instruction-{{ row.number }}" value="{{ row.text|wire }}">
+      {% endfor %}
+      <fieldset class="choice instructions" id="instruction-choice" tabindex="-1"{% if problem and pressed %} aria-describedby="problem-summary"{% endif %}>
+        <legend>Which of the school's instructions apply now?</legend>
         {% for row in rows %}
-          <input type="hidden" name="instruction-{{ row.number }}" value="{{ row.text }}">
+          <label><input type="checkbox" name="apply-{{ row.number }}" value="1"{% if row.ticked %} checked{% endif %}> <span><q class="authored-text">{{ row.text }}</q> <span class="source">{{ row.said }}</span></span></label>
         {% endfor %}
-        <fieldset class="choice instructions">
-          <legend>Which of the school's instructions apply now?</legend>
-          {% for row in rows %}
-            <label><input type="checkbox" name="apply-{{ row.number }}" value="1"{% if row.ticked %} checked{% endif %}> <span><q class="authored-text">{{ row.text }}</q> <span class="source">{{ row.said }}</span></span></label>
-          {% endfor %}
-          <label><input type="checkbox" name="none" value="1"{% if none_ticked %} checked{% endif %}> <span>No school instruction applies now</span></label>
-        </fieldset>
-        <div class="actions">
-          <button type="submit" class="primary">Save which apply</button>
-        </div>
-      </form>
-    {% else %}
-      <p>No instruction from the school is saved for this assignment.</p>
-    {% endif %}
+        <label><input type="checkbox" name="none" value="1"{% if none_ticked %} checked{% endif %}> <span>No school instruction applies now</span></label>
+      </fieldset>
+      <div class="actions">
+        <button type="submit" class="primary">Save which apply</button>
+      </div>
+    </form>
+  {% elif item and rows is defined %}
+    <p>No instruction from the school is saved for this assignment.</p>
   {% endif %}
 {% endblock %}

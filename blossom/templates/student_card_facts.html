@@ -166,44 +166,11 @@
       {% endfor %}
       {% set read_by_a_parent = (viewer is defined and viewer == "parent") or (ctx is defined and ctx.viewer == "parent") %}
       {#
-        The school's instructions, apart from anyone's note: those that apply, in
-        the one order, then, folded, those said before and any waiting for a
-        parent's review. Which apply is the family's choice, and says so; the
-        control is on the family's reading of the details only.
+        The school's instructions and anyone's note, apart, through the one part
+        every page that lists the assignment shares; the control is on the
+        family's reading of the details only.
       #}
-      {% if assignment.school_instructions or assignment.earlier_instructions or assignment.awaiting_instructions or assignment.instructions_unreadable %}
-        <div class="school-instructions">
-          {% for text in assignment.school_instructions %}
-            <p class="from-teacher">From the school: <q class="authored-text">{{ text }}</q></p>
-          {% endfor %}
-          {% if assignment.instructions_unreadable %}
-            <p class="source">The school's instructions for this assignment cannot be read right now, so they are not shown.</p>
-          {% elif not assignment.school_instructions %}
-            <p class="source">No instruction from the school applies now.</p>
-          {% endif %}
-          {% if assignment.earlier_instructions or assignment.awaiting_instructions %}
-            <details class="earlier-instructions">
-              <summary>{% if assignment.awaiting_instructions %}Instructions from the school waiting for review, and earlier ones{% else %}Earlier instructions from the school{% endif %}</summary>
-              <ul>
-                {% for text in assignment.awaiting_instructions %}
-                  <li><q class="authored-text">{{ text }}</q> <span class="source">Waiting for a parent's review; it does not apply until then.</span></li>
-                {% endfor %}
-                {% for text in assignment.earlier_instructions %}
-                  <li><q class="authored-text">{{ text }}</q> <span class="source">Earlier; does not apply now.</span></li>
-                {% endfor %}
-              </ul>
-            </details>
-          {% endif %}
-          <p class="source">These are the school's words. Which of them apply is chosen by the family; the choice changes neither the school's record nor {% if read_by_a_parent %}her{% else %}your{% endif %} own updates.</p>
-          {% if instructions_review is defined and instructions_review and not assignment.instructions_unreadable %}
-            <p class="support-links"><a href="{{ instructions_review }}">Review school instructions</a></p>
-          {% endif %}
-        </div>
-      {% endif %}
-      {% if assignment.note %}
-        {# Whose words the note is, said to whoever reads it. Hers are hers: never the teacher's. #}
-        <p class="from-teacher">{% if assignment.note_by == "parent" %}A parent wrote{% elif assignment.note_by == "student" %}{% if read_by_a_parent %}She wrote{% else %}You wrote{% endif %}{% else %}From the teacher{% endif %}: <q>{{ assignment.note }}</q></p>
-      {% endif %}
+      {% with words = assignment.words, to_a_parent = read_by_a_parent, review_href = (instructions_review if instructions_review is defined else none) %}{% include "school_words.html" %}{% endwith %}
       {% if assignment.entered_by_a_parent %}
         <p class="source">Entered by a parent.</p>
       {% endif %}

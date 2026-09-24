@@ -123,6 +123,8 @@ from blossom.views import (
     PlanRunView,
     RunView,
     SchoolStatementView,
+    SchoolWordsView,
+    school_words,
 )
 
 logger = logging.getLogger(__name__)
@@ -804,7 +806,18 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
     """
     rows = everything.assignments
     statuses = everything.statuses
-    views = {item.assignment_id: update_view(item, statuses[item.assignment_id]) for item in rows}
+    views = {
+        item.assignment_id: update_view(
+            item,
+            statuses[item.assignment_id],
+            school_words(
+                item,
+                everything.instructions.get(item.assignment_id),
+                item.assignment_id in everything.instructions_unavailable,
+            ),
+        )
+        for item in rows
+    }
     check = [view for view in views.values() if statuses[view.assignment_id].needs_a_check]
     shown = {view.assignment_id for view in check}
 
@@ -910,8 +923,11 @@ def turning_in(everything: Everything, today: date) -> list[HandInRowView]:
     ]
 
 
-def update_view(item: Assignment, status: AssignmentStatus) -> AssignmentUpdateView:
-    """One row of the section: her account, the school's, and the family's check, read apart.
+def update_view(
+    item: Assignment, status: AssignmentStatus, words: SchoolWordsView | None = None
+) -> AssignmentUpdateView:
+    """One row of the section: her account, the school's, and the family's check, read apart,
+    with the school's instructions and anyone's note as her pages show them.
 
     The last check a parent marked stays on the row whatever happened to
     the facts since. While it stands against them, the row says it was
@@ -960,6 +976,7 @@ def update_view(item: Assignment, status: AssignmentStatus) -> AssignmentUpdateV
         check=status.check_the_school_record,
         basis=status.check_basis,
         check_head_id=status.check_head_id,
+        words=SchoolWordsView() if words is None else words,
         checked=standing is not None,
         checked_on=None if standing is None else standing.checked_on,
         check_note=None if standing is None else standing.note,

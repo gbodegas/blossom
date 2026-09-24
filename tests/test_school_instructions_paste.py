@@ -11,24 +11,37 @@ another revision, or beside a stale card, writes nothing of the paste.
 import html
 import pathlib
 import re
+import sqlite3
 from datetime import UTC, date, datetime
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.intake import ChangedSinceShown, keep, read_text
-from blossom.routes.inbox import CHANGED_SINCE_SHOWN, INSTRUCTIONS_CONTRADICT
+from blossom.routes.inbox import (
+    CHANGED_SINCE_SHOWN,
+    INSTRUCTION_FORM_UNREADABLE,
+    INSTRUCTIONS_CONTRADICT,
+    STORE_REFUSED,
+)
 from blossom.school_instructions import (
     InstructionChoice,
     InstructionSeen,
     InstructionsStanding,
+    to_wire,
 )
 from blossom.settings import Settings
 from blossom.stores.project_state import ProjectStateStore
-from tests.support import SAME_ORIGIN, Answer, fixture_settings
+from tests.support import (
+    SAME_ORIGIN,
+    Answer,
+    as_a_browser_sends,
+    fixture_settings,
+    store_of,
+)
 
 A = "Patterns, if-then statements, first proofs."
 B = "Patterns and if-then statements only."
@@ -91,15 +104,13 @@ def client_in(tmp_path: pathlib.Path) -> TestClient:
     )
 
 
-def store_of(client: TestClient) -> ProjectStateStore:
-    state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
-    return state.project_state
-
-
 def review_form(page: str) -> dict[str, str]:
     """The review form as a browser sends it back untouched: hidden fields, each select's
     chosen option, each ticked box, and the text."""
-    fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page))
+    fields = {
+        name: html.unescape(value)
+        for name, value in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page)
+    }
     for name, body in re.findall(r'<select name="([^"]+)"[^>]*>(.*?)</select>', page, re.S):
         chosen = re.search(r'<option value="([^"]+)" selected>', body)
         assert chosen is not None, name
@@ -511,3 +522,304 @@ def test_two_cards_said_to_be_the_same_homework_are_one_question_on_the_first(
     assert kept.status_code == 303
     assert found.texts == ("Use a pencil.",)
     assert [item.text for item in found.history] == ["Show your work."]
+
+
+# ------------------------------------------------------------ the words as a browser sends them
+
+MULTI_A = "Patterns, if-then statements, first proofs.\nShow each step."
+MULTI_B = 'Only the "if-then" part.\nSkip the proofs \U0001f33c.'
+
+
+@pytest.mark.parametrize("choice", ["saved", "new", "none"])
+def test_a_browser_sends_multiline_instructions_back_as_they_were(
+    tmp_path: pathlib.Path, choice: str
+) -> None:
+    """A browser sends every line break as a carriage return and a line feed. The words ride
+    on the wire, so a saved instruction, a new one, or none applying is saved as chosen, the
+    words kept exactly as the school wrote them, and the same submission again adds nothing."""
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK.replace(A, MULTI_A))
+        page = client.post(
+            "/parent/inbox/read", data={"text": DUE_WEEK_CHANGED.replace(B, MULTI_B)}
+        ).text
+        shown = boxes(page, "0")
+        picked = {"saved": MULTI_A, "new": MULTI_B}.get(choice)
+        answer = {"none-0": "1"} if picked is None else {f"apply-0-{shown.index(picked)}": "1"}
+        sent = as_a_browser_sends({**review_form(page), **answer})
+        first = client.post("/parent/inbox/keep", data=sent)
+        after_first = tables(client)
+        again = client.post("/parent/inbox/keep", data=sent)
+        after_again = tables(client)
+        found = standing(client)
+
+    assert sorted(shown) == sorted([MULTI_A, MULTI_B])
+    assert first.status_code == 303
+    assert again.status_code == 303
+    assert again.headers["location"].endswith("added=0&updated=0&unchanged=1")
+    assert after_again == after_first
+    assert found.texts == (() if picked is None else (picked,))
+    assert sorted(item.text for item in found.kept) == sorted([MULTI_A, MULTI_B])
+
+
+# ------------------------------------------------------------------ a contradiction gone stale
+
+
+@pytest.mark.parametrize("elsewhere", ["another-chosen", "a-change-back"])
+def test_a_contradiction_made_against_changed_instructions_is_not_put_right_onto_them(
+    tmp_path: pathlib.Path, elsewhere: str
+) -> None:
+    """The page ticks A and that none applies, which contradict; before it is sent, the
+    instructions change elsewhere. The page says they changed, says the answer as not saved,
+    and ticks nothing, so undoing the contradiction alone chooses nothing, and what was
+    chosen elsewhere stands."""
+    third = DUE_WEEK_CHANGED.replace(B, "Third instruction.")
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        saved(client, DUE_WEEK_CHANGED, **{"apply-0-0": "1"})
+        page = client.post("/parent/inbox/read", data={"text": third}).text
+        form = review_form(page)
+        key = form_key(form)
+        shown = boxes(page, key)
+        old = {**form, f"apply-{key}-{shown.index(A)}": "1", f"none-{key}": "1"}
+        store = store_of(client)
+        head = standing(client)
+        name = head.current[0].assignment_id
+        picks = (
+            [frozenset({B})] if elsewhere == "another-chosen" else [frozenset({B}), frozenset({A})]
+        )
+        for number, pick in enumerate(picks):
+            store.settle_school_instructions(
+                name,
+                [],
+                InstructionChoice(head.revision + number, (A, B), pick),
+                authored_by="parent",
+                now=datetime(2026, 9, 24, 20, 0, tzinfo=UTC),
+                today=date(2026, 9, 24),
+            )
+        chosen_elsewhere = standing(client).texts
+        refused = client.post("/parent/inbox/keep", data=old)
+        fresh = review_form(refused.text)
+        corrected = client.post("/parent/inbox/keep", data=fresh)
+        found = standing(client)
+
+    assert refused.status_code == 409
+    assert str(escape(CHANGED_SINCE_SHOWN)) in refused.text
+    assert unsaved(refused.text, key) == [A]
+    assert "that no school instruction applies" in refused.text
+    assert ticked(refused.text, key) == []
+    assert f'name="none-{key}" value="1" checked' not in refused.text
+    assert not any(name.startswith(("apply-", "none-")) for name in fresh)
+    assert corrected.status_code == 200
+    assert found.texts == chosen_elsewhere
+
+
+# ------------------------------------------------------------------ a paste the file refuses
+
+
+@pytest.mark.parametrize(
+    "failure", ["before-the-instructions", "during-the-instructions", "unreadable"]
+)
+def test_a_paste_not_saved_keeps_the_text_and_every_answer_and_is_tried_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """A write the file refuses, before or while the school's instructions are written, or
+    instructions that cannot be read, leave the whole text unsaved: the page that reads no
+    store keeps the text and the words chosen, markup and line breaks shown as written, with
+    the focus on what happened. Nothing is tried again, and nothing is read after."""
+    words = "Use the <b>blue</b> sheet.\nNot the red one."
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        page = client.post(
+            "/parent/inbox/read", data={"text": DUE_WEEK_CHANGED.replace(B, words)}
+        ).text
+        form = {**review_form(page), f"apply-0-{boxes(page, '0').index(words)}": "1"}
+        store = store_of(client)
+        calls: list[str] = []
+
+        def refuse(*_: object, **__: object) -> None:
+            calls.append(failure)
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        if failure == "before-the-instructions":
+            monkeypatch.setattr(store, "put_on_record", refuse)
+        elif failure == "during-the-instructions":
+            monkeypatch.setattr(store, "settle_school_instructions", refuse)
+        else:
+            store._connection.execute("UPDATE school_instructions SET state = 'bent'")
+            store._connection.commit()
+        before = tables(client)
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+        answer = client.post("/parent/inbox/keep", data=form)
+        store._connection.set_trace_callback(None)
+        left_open = store._connection.in_transaction
+        after = tables(client)
+
+    # The write is rolled back, or the refusing read came before any write began; either way
+    # the page that answers reads nothing after it.
+    last = statements[-1].strip().upper()
+    assert answer.status_code == 500
+    assert after == before
+    assert not left_open
+    assert calls == ([] if failure == "unreadable" else [failure])
+    if failure == "unreadable":
+        assert "FROM SCHOOL_INSTRUCTIONS" in last
+    else:
+        assert last == "ROLLBACK"
+    assert answer.text.count("autofocus") == 1
+    assert '<a href="#kept-answers">' in answer.text
+    assert 'id="kept-answers"' in answer.text
+    assert (
+        '<q class="authored-text">Use the &lt;b&gt;blue&lt;/b&gt; sheet.\nNot the red one.</q>'
+        in answer.text
+    )
+    if failure != "unreadable":
+        assert str(escape(STORE_REFUSED)) in answer.text
+
+
+# ------------------------------------------------------------------ fields the page did not write
+
+
+def keep_as_sent(client: TestClient, fields: list[tuple[str, str]]) -> Answer:
+    return client.post(
+        "/parent/inbox/keep",
+        content=urlencode(fields),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+
+@pytest.mark.parametrize("before", [True, False], ids=["first", "last"])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [("instructions-0", "1")],
+        [("instruction-0-0", to_wire(A))],
+        [("apply-0-1", "0")],
+        [("none-0", "1"), ("none-0", "1")],
+        [("apply-0-7", "1")],
+        [("apply-0", "1")],
+        [("instruction-0-01", to_wire("Bring a calculator."))],
+        [("instruction-0-2", "Words not on the wire.")],
+        [("none-0", "yes")],
+    ],
+    ids=[
+        "the-revision-twice",
+        "the-words-twice",
+        "a-box-twice",
+        "none-twice",
+        "a-box-without-words",
+        "a-name-the-page-never-writes",
+        "a-padded-place",
+        "words-not-on-the-wire",
+        "none-ticked-another-way",
+    ],
+)
+def test_instruction_fields_the_page_did_not_write_refuse_the_whole_paste(
+    tmp_path: pathlib.Path, extra: list[tuple[str, str]], before: bool
+) -> None:
+    """Whichever of the fields comes first, a field of the instruction question sent twice,
+    under a name the page never writes, or with a value it never writes refuses the paste
+    whole, with nothing written; the paste comes back to be answered again."""
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        form = list({**review_form(page), "apply-0-1": "1"}.items())
+        fields = [*extra, *form] if before else [*form, *extra]
+        start = tables(client)
+        answer = keep_as_sent(client, fields)
+        after = tables(client)
+
+    assert answer.status_code == 422
+    assert str(escape(INSTRUCTION_FORM_UNREADABLE)) in answer.text
+    assert after == start
+
+
+def test_a_file_in_place_of_an_instructions_words_refuses_the_whole_paste(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        form = {**review_form(page), "apply-0-1": "1"}
+        words = form.pop("instruction-0-1")
+        start = tables(client)
+        answer = client.post(
+            "/parent/inbox/keep",
+            data=form,
+            files={"instruction-0-1": ("words.txt", words.encode(), "text/plain")},
+        )
+        after = tables(client)
+
+    assert answer.status_code == 422
+    assert after == start
+
+
+# ------------------------------------------------------------------ where the question is asked
+
+WEEKLY_KEPT = "Tuesday 9/1/2026\nMath\nDue: Weekly practice:\nShow your work.\n"
+WEEKLY_FIRST_BARE = (
+    "Tuesday 9/8/2026\nMath\nDue: Weekly practice:\n"
+    "Monday 9/14/2026\nMath\nAssigned: Weekly practice: (Due:09/15/2026)\nUse a pencil.\n"
+)
+
+
+def test_the_question_is_asked_on_the_first_card_of_the_assignment_even_with_no_words_of_its_own(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The first card of the text that lands on the assignment brings no instruction; the one
+    after it brings a new one. The question is asked on the first card, and the second points
+    to it."""
+    with client_in(tmp_path) as client:
+        saved(client, WEEKLY_KEPT)
+        page = client.post("/parent/inbox/read", data={"text": WEEKLY_FIRST_BARE}).text
+        same = {"occurrence-0": "update", "occurrence-1": "update"}
+        asked = client.post("/parent/inbox/keep", data={**review_form(page), **same})
+
+    assert asked.status_code == 200
+    assert form_key(review_form(asked.text)) == "0"
+    assert sorted(boxes(asked.text, "0")) == ["Show your work.", "Use a pencil."]
+    assert asked.text.count("which apply now?") == 1
+    assert "shown on the first card for this assignment" in asked.text
+
+
+# ------------------------------------------------------------------ where the focus lands
+
+
+@pytest.mark.parametrize("refusal", ["contradiction", "stale"])
+def test_a_refused_answer_puts_the_focus_on_one_summary_linked_to_its_question(
+    tmp_path: pathlib.Path, refusal: str
+) -> None:
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        form = {**review_form(page), "apply-0-1": "1"}
+        if refusal == "contradiction":
+            form["none-0"] = "1"
+        else:
+            store = store_of(client)
+            name = next(
+                row.assignment_id for row in store.all_assignments() if row.title == "Q1 Check 3"
+            )
+            store.settle_school_instructions(
+                name,
+                [InstructionSeen("Bring a calculator.", None)],
+                InstructionChoice(1, (A, "Bring a calculator."), frozenset({A})),
+                authored_by="parent",
+                now=datetime(2026, 9, 24, 20, 0, tzinfo=UTC),
+                today=date(2026, 9, 24),
+            )
+        refused = client.post("/parent/inbox/keep", data=form)
+
+    summary = re.search(
+        r'<p class="problem" role="alert" id="problem-summary"[^>]*>(.*?)</p>', refused.text, re.S
+    )
+    assert refused.status_code == (422 if refusal == "contradiction" else 409)
+    assert refused.text.count("autofocus") == 1
+    assert summary is not None
+    assert 'tabindex="-1" autofocus' in summary.group(0)
+    assert '<a href="#instructions-question-0">' in summary.group(1)
+    assert (
+        'id="instructions-question-0" tabindex="-1" aria-describedby="problem-summary"'
+        in refused.text
+    )

@@ -173,6 +173,7 @@ from blossom.views import (
     UpdateHistoryRowView,
     WeekView,
     WorkloadSignalView,
+    school_words,
 )
 
 logger = logging.getLogger(__name__)
@@ -744,14 +745,7 @@ def assignment_view(
         assigned_on=assignment.assigned_on,
         note=assignment.note,
         note_by=assignment.note_by,
-        school_instructions=[] if instructions is None else list(instructions.texts),
-        earlier_instructions=(
-            [] if instructions is None else [item.text for item in instructions.history]
-        ),
-        awaiting_instructions=(
-            [] if instructions is None else [item.text for item in instructions.awaiting]
-        ),
-        instructions_unreadable=instructions_unreadable,
+        words=school_words(assignment, instructions, instructions_unreadable),
         entered_by_a_parent=assignment.origins.get("record") == SourceChannel.PARENT_ENTRY,
         school_statements=[
             SchoolStatementView.from_report(report)
