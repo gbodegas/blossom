@@ -488,6 +488,33 @@ def test_a_move_cut_short_leaves_the_file_as_it_was_and_the_next_start_completes
     assert len(table_rows(store, "school_instructions")) == 2
 
 
+def test_a_note_the_move_did_not_keep_is_never_cleared(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The move checks that every note it is about to clear is kept, exactly once, before it
+    clears any: a keep that wrote nothing stops the start, and every note stays where it
+    was."""
+    from blossom.stores import school_instructions as module
+
+    path = old_file(tmp_path, LEGACY)
+
+    def keep_nothing(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(module.SchoolInstructionRecords, "_insert_instruction_locked", keep_nothing)
+    with pytest.raises(RuntimeError, match="not kept once"):
+        ProjectStateStore.open(path, fixture_clock())
+    monkeypatch.undo()
+    raw = sqlite3.connect(path)
+    notes = raw.execute(
+        "SELECT assignment_id, note FROM assignments ORDER BY assignment_id"
+    ).fetchall()
+    raw.close()
+
+    assert ("marked", A) in notes
+    assert ("unmarked", C) in notes
+
+
 @pytest.mark.parametrize(
     ("before", "found", "expected_current", "expected_awaiting"),
     [
