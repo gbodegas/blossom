@@ -235,6 +235,17 @@ class StudentAssignmentView(BaseModel):
     """What the teacher wrote under the card, as the portal shows it, or what a parent
     typed, or what she wrote on work she added; ``note_by`` says whose words it is."""
     note_by: NoteBy | None = None
+    school_instructions: list[str] = []
+    """The school's instructions that apply now, in the one order, by their words: the
+    school's own words, kept apart from anyone's note, and chosen to apply by the family."""
+    earlier_instructions: list[str] = []
+    """The school's instructions kept as history, in the order kept."""
+    awaiting_instructions: list[str] = []
+    """School notes found in the old note field after the upgrade, waiting for a parent's
+    review, in the order kept. They apply to nothing until a parent says so."""
+    instructions_unreadable: bool = False
+    """Whether a kept instruction cannot be read; the page says so, and never that none
+    is kept."""
     entered_by_a_parent: bool = False
     """Whether the assignment itself came from a parent's entry rather than the school."""
     school_statements: list[SchoolStatementView] = []

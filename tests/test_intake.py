@@ -26,6 +26,7 @@ from blossom.intake import (
     REVIEW,
     UPDATE,
     Change,
+    ChangedSinceShown,
     Held,
     Kept,
     Reading,
@@ -122,6 +123,17 @@ def by_pair(items: tuple[Reading, ...]) -> dict[tuple[str, str], Reading]:
     return {item.pair: item for item in items}
 
 
+def words(item: Reading) -> tuple[str, ...]:
+    """The school's instructions a reading carries, by their words, in the order read."""
+    return tuple(said.text for said in item.instructions)
+
+
+def applying(store: ProjectStateStore, assignment_id: str) -> tuple[str, ...]:
+    """The words of the school's instructions that apply to an assignment on record."""
+    found = store.school_instruction_readings([assignment_id]).readable.get(assignment_id)
+    return () if found is None else found.texts
+
+
 def test_the_three_week_summary_yields_every_card_and_every_date_where_it_belongs() -> None:
     """Twelve assignments from twenty-one cards, nine of them assigned, with the due dates
     the cards give and each instruction under the one card it was written under."""
@@ -141,9 +153,9 @@ def test_the_three_week_summary_yields_every_card_and_every_date_where_it_belong
         date(2026, 9, 11),
         date(2026, 9, 15),
     }
-    notebook = [item for item in read.items if item.note and "math notebook" in item.note]
+    notebook = [item for item in read.items if any("math notebook" in w for w in words(item))]
     assert [item.title for item in notebook] == ["PR1 U2.3 Pg 40 #1-9"]
-    syllabus = [item for item in read.items if item.note and "syllabus" in item.note]
+    syllabus = [item for item in read.items if any("syllabus" in w for w in words(item))]
     assert [(item.course, item.title) for item in syllabus] == [("Religion", "Syllabus Due")]
     covers = items["08 Geometry", "Book Covers"]
     assert (covers.due_date, covers.assigned_on) == (date(2026, 9, 8), date(2026, 9, 3))
@@ -170,10 +182,10 @@ def test_bullets_line_endings_and_download_line_breaks_read_the_same() -> None:
 
     for other in (starred, bare, crlf, broken):
         assert other.unread == ()
-        assert [(item.pair, item.due_date, item.note) for item in other.items] == [
-            (item.pair, item.due_date, item.note) for item in plain.items
+        assert [(item.pair, item.due_date, words(item)) for item in other.items] == [
+            (item.pair, item.due_date, words(item)) for item in plain.items
         ]
-    assert kept.items[0].note == "Use C:\\\\art\\\\poster."
+    assert words(kept.items[0]) == ("Use C:\\\\art\\\\poster.",)
 
 
 def test_the_homework_page_is_read_with_the_course_on_its_own_line() -> None:
@@ -184,9 +196,10 @@ def test_the_homework_page_is_read_with_the_course_on_its_own_line() -> None:
     assert set(items) == {("08 Geometry", "Book Covers"), ("Humanities", "Reading check")}
     covers = items["08 Geometry", "Book Covers"]
     assert covers.assigned_on == date(2026, 9, 1)
-    assert covers.note == "Cover both books with paper."
+    assert words(covers) == ("Cover both books with paper.",)
+    assert covers.note is None
     assert [said.seen_in for said in covers.claims] == [OWN_LINE, DAY_HEADER]
-    assert items["Humanities", "Reading check"].note is None
+    assert words(items["Humanities", "Reading check"]) == ()
 
 
 def test_a_line_shaped_like_a_card_that_does_not_read_as_one_is_never_a_note() -> None:
@@ -216,7 +229,7 @@ Do it neatly.
         (11, "Do it neatly."),
     ]
     assert set(items) == {("Math", "Practice")}
-    assert items["Math", "Practice"].note is None
+    assert words(items["Math", "Practice"]) == ()
 
 
 def test_the_heading_under_a_card_is_the_teachers_words_and_a_long_paste_reads_whole() -> None:
@@ -230,8 +243,8 @@ Homework for tomorrow: cover both books with paper.
     many = read_text("\n".join(["A stray line"] * 20_000), now=NOW, today=TODAY)
 
     assert read.unread == ()
-    assert by_pair(read.items)["08 Geometry", "Book Covers"].note == (
-        "Homework for tomorrow: cover both books with paper."
+    assert words(by_pair(read.items)["08 Geometry", "Book Covers"]) == (
+        "Homework for tomorrow: cover both books with paper.",
     )
     assert [item.line for item in many.unread] == list(range(1, 20_001))
 
@@ -250,7 +263,9 @@ Two colors at least.
 """
     read = read_text(text, now=NOW, today=TODAY)
 
-    assert read.items[0].note == "Use the big paper.\nTwo colors at least."
+    assert [(said.text, said.card, said.card_day) for said in read.items[0].instructions] == [
+        ("Use the big paper.\nTwo colors at least.", "assigned", date(2026, 9, 8))
+    ]
 
 
 def test_the_missing_email_is_a_report_with_its_day_and_never_a_due_date() -> None:
@@ -313,7 +328,7 @@ def test_the_emails_day_comes_only_from_its_date_line() -> None:
     assert report_day(header) == (date(2026, 9, 8), EMAIL_DATE_LINE)
     assert report_day(forwarded) == (date(2026, 9, 8), EMAIL_DATE_LINE)
     assert report_day(under_a_card) == (TODAY, PASTE_DAY)
-    assert read_text(under_a_card, now=NOW, today=TODAY).items[0].note == "Date: Sep 8, 2026"
+    assert words(read_text(under_a_card, now=NOW, today=TODAY).items[0]) == ("Date: Sep 8, 2026",)
     assert report_day(after_the_reports) == (TODAY, PASTE_DAY)
     assert [item.text for item in read_text(header, now=NOW, today=TODAY).unread] == [
         "09/09 Spanish - A: Homework: Vocabulary list Grade: Complete"
@@ -457,8 +472,9 @@ def test_what_the_record_lacks_is_filled_and_a_note_follows_a_stated_policy(
     tmp_path: pathlib.Path,
 ) -> None:
     """A row typed without dates takes the pasted due and assigned dates as its own; the
-    school's note fills an empty note and replaces the school's earlier note; a parent's
-    note replaces any and is never replaced by the school's; a parent's type is theirs."""
+    school's words are kept as its instructions, apart from the note, and a different one
+    asks which apply and saves nothing until answered; a parent's typed note fills the note
+    and leaves the school's instructions as they are; a parent's type is theirs."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:
         typed = by_hand(
@@ -476,6 +492,7 @@ def test_what_the_record_lacks_is_filled_and_a_note_follows_a_stated_policy(
         sketch = {(i.course, i.title): i for i in store.all_assignments()}[
             "Art", "Sketchbook, three pages"
         ]
+        after_page = applying(store, sketch.assignment_id)
         revised = read_text(
             "Tuesday 9/8/2026\nArt\nAssigned: Sketchbook, three pages: (Due:09/18/2026)\n"
             "Pencil or ink.\n",
@@ -483,7 +500,8 @@ def test_what_the_record_lacks_is_filled_and_a_note_follows_a_stated_policy(
             today=TODAY,
         )
         updated_note = changes_for(revised.items, store)
-        keep(revised.items, store)
+        unanswered = keep(revised.items, store)
+        after_unanswered = applying(store, sketch.assignment_id)
         parent_note = by_hand(
             "Art",
             "Sketchbook, three pages",
@@ -501,32 +519,41 @@ def test_what_the_record_lacks_is_filled_and_a_note_follows_a_stated_policy(
             "Art", "Sketchbook, three pages"
         ]
         remembered = changes_for(page.items, store)
+        at_the_end = applying(store, sketch.assignment_id)
     finally:
         store.close()
 
-    assert filled[0].label == "Saved; adds the due date, the assigned date and the note"
+    assert (
+        filled[0].label
+        == "Saved; adds the due date, the assigned date and the school's instructions"
+    )
     assert "The record has no due date of its own" in filled[0].effect
     assert sketch.due_date == date(2026, 9, 18)
     assert sketch.assigned_on == date(2026, 9, 8)
-    assert sketch.note == "Pencil only."
+    assert sketch.note is None
+    assert after_page == ("Pencil only.",)
     assert sketch.origins["record"] is SourceChannel.PARENT_ENTRY
     assert sketch.origins["due_date"] is SourceChannel.LMS
-    assert sketch.origins["note"] is SourceChannel.LMS
+    assert "note" not in sketch.origins
     assert sketch.origins["assigned_on"] is SourceChannel.LMS
-    assert updated_note[0].note_change == "update"
-    assert "The school's note replaces the school's earlier note." in updated_note[0].effect
-    assert replaces[0].note_change == "update"
-    assert "Your note replaces the saved note." in replaces[0].effect
-    assert kind_chosen[0].note_change == "kept"
+    assert updated_note[0].state == REVIEW
+    assert updated_note[0].instructions_asked
+    assert updated_note[0].note_change is None
+    assert "differ from what is saved" in updated_note[0].effect
+    assert isinstance(unanswered, list)
+    assert after_unanswered == ("Pencil only.",)
+    assert replaces[0].note_change == "fill"
+    assert "The note is saved." in replaces[0].effect
+    assert kind_chosen[0].note_change is None
     assert kind_chosen[0].new_kind is AssignmentKind.TASK
-    assert "The saved note stands" in kind_chosen[0].effect
     assert after.kind is AssignmentKind.TASK
     assert after.origins["kind"] is SourceChannel.PARENT_ENTRY
     assert after.origins["note"] is SourceChannel.PARENT_ENTRY
     assert after.note == "Use the sketchbook from last year."
+    assert at_the_end == ("Pencil only.",)
     assert remembered[0].kind is AssignmentKind.TASK
     assert remembered[0].state == KNOWN
-    assert "The saved note stands" in remembered[0].effect
+    assert remembered[0].effect == "Nothing changes."
 
 
 WEEK_ONE = "Homework for Wren\n- 09/07/2026 - Monday\nMath - Due: Weekly practice:\n"
@@ -743,7 +770,9 @@ def test_a_type_chosen_on_any_card_about_one_assignment_is_the_assignments(
         after_replay = store.all_assignments()
     finally:
         store.close()
-    outcomes: dict[str, tuple[Kept | Held | list[Change], list[Assignment]]] = {}
+    outcomes: dict[
+        str, tuple[Kept | Held | ChangedSinceShown | list[Change], list[Assignment]]
+    ] = {}
     for name, kinds in {
         "chosen on the first": {0: AssignmentKind.TASK},
         "chosen on the second": {1: AssignmentKind.TASK},
@@ -1006,6 +1035,9 @@ def test_several_cards_about_one_saved_row_compose_into_one_row(
         kept = keep(cards, store, occurrences={1: UPDATE, 2: UPDATE})
         rows = store.all_assignments()
         claims = store.deadline_records(rows[0].assignment_id)
+        instructions = store.school_instruction_readings([rows[0].assignment_id]).readable[
+            rows[0].assignment_id
+        ]
     finally:
         store.close()
     store = ProjectStateStore.open(path, fixture_clock())
@@ -1029,6 +1061,9 @@ def test_several_cards_about_one_saved_row_compose_into_one_row(
             keep(cards, refusing, occurrences={1: UPDATE, 2: UPDATE})
         untouched = refusing.all_assignments()
         untouched_claims = refusing.deadline_records(untouched[0].assignment_id)
+        untouched_instructions = refusing.school_instruction_readings(
+            [untouched[0].assignment_id]
+        ).readable
     finally:
         refusing.close()
 
@@ -1039,14 +1074,16 @@ def test_several_cards_about_one_saved_row_compose_into_one_row(
     ]
     assert [change.state for change in asked] == [KNOWN, REVIEW, REVIEW]
     assert [change.state for change in answered] == [KNOWN, CLAIMED, CLAIMED]
-    assert answered[1].label == "Saved; adds the due date and the note"
+    assert answered[1].label == "Saved; adds the due date and the school's instructions"
     assert answered[2].label == "Saved; adds the due date and the assigned date"
     assert kept == Kept(added=0, updated=1, unchanged=0)
     assert len(rows) == 1
     assert (rows[0].due_date, rows[0].assigned_on) == (date(2026, 9, 15), date(2026, 9, 14))
-    assert rows[0].note == "Teacher instruction."
+    assert rows[0].note is None
+    assert instructions.texts == ("Teacher instruction.",)
+    assert instructions.current[0].channel is SourceChannel.LMS
     assert rows[0].origins["due_date"] is SourceChannel.LMS
-    assert rows[0].origins["note"] is SourceChannel.LMS
+    assert "note" not in rows[0].origins
     assert [(said.asserted_value, said.seen_in) for said in claims] == [
         ("2026-09-01", DAY_HEADER),
         ("2026-09-08", DAY_HEADER),
@@ -1058,6 +1095,7 @@ def test_several_cards_about_one_saved_row_compose_into_one_row(
     assert claims_after_replay == claims
     assert [(row.due_date, row.note) for row in untouched] == [(date(2026, 9, 1), None)]
     assert len(untouched_claims) == 1
+    assert untouched_instructions == {}
 
 
 MISSING_LINE = "09/09 Math - A: Homework: Practice Grade: Missing\n"
@@ -1073,7 +1111,15 @@ def test_each_field_keeps_the_channel_that_gave_it_whatever_the_order(
     email's, and only the record's own origin says which named it first."""
     email_first = MISSING_LINE + "\n" + PAGE_CARD
     page_first = PAGE_CARD + "\n" + MISSING_LINE
-    outcomes: dict[str, tuple[Assignment, list[SourceChannel], list[SourceChannel]]] = {}
+    outcomes: dict[
+        str,
+        tuple[
+            Assignment,
+            list[SourceChannel],
+            list[SourceChannel],
+            list[tuple[str, SourceChannel | None]],
+        ],
+    ] = {}
     for name, texts in {
         "email first": [email_first],
         "page first": [page_first],
@@ -1090,10 +1136,12 @@ def test_each_field_keeps_the_channel_that_gave_it_whatever_the_order(
         store = ProjectStateStore.open(path, fixture_clock())
         try:
             row = store.all_assignments()[0]
+            found = store.school_instruction_readings([row.assignment_id]).readable
             outcomes[name] = (
                 row,
                 [said.channel for said in store.deadline_records(row.assignment_id)],
                 [report.channel for report in store.status_reports(row.assignment_id)],
+                [(said.text, said.channel) for said in found[row.assignment_id].current],
             )
         finally:
             store.close()
@@ -1101,15 +1149,16 @@ def test_each_field_keeps_the_channel_that_gave_it_whatever_the_order(
 
     assert mixed.origin is SourceChannel.EMAIL
     assert mixed.origin_of("due_date") is SourceChannel.LMS
-    assert mixed.origin_of("note") is SourceChannel.LMS
-    for name, (row, claim_channels, report_channels) in outcomes.items():
+    assert [said.channel for said in mixed.instructions] == [SourceChannel.LMS]
+    for name, (row, claim_channels, report_channels, applying_now) in outcomes.items():
         assert row.due_date == date(2026, 9, 10), name
         assert row.assigned_on == date(2026, 9, 8), name
-        assert row.note == "Bring the packet.", name
+        assert row.note is None, name
+        assert applying_now == [("Bring the packet.", SourceChannel.LMS)], name
         assert row.reported_submission_status == "missing", name
         assert row.origins["due_date"] is SourceChannel.LMS, name
         assert row.origins["assigned_on"] is SourceChannel.LMS, name
-        assert row.origins["note"] is SourceChannel.LMS, name
+        assert "note" not in row.origins, name
         assert claim_channels == [SourceChannel.LMS], name
         assert report_channels == [SourceChannel.EMAIL], name
     assert outcomes["email first"][0].origins["record"] is SourceChannel.EMAIL
@@ -1175,11 +1224,11 @@ def test_two_savings_of_one_text_at_once_add_nothing_twice(tmp_path: pathlib.Pat
     read = read_text(THREE_WEEKS, now=NOW, today=TODAY)
     released = threading.Barrier(2)
 
-    def one_saving(_: int) -> Kept | Held | list[Change]:
+    def one_saving(_: int) -> Kept | Held | ChangedSinceShown | list[Change]:
         released.wait()
         return keep(read.items, store)
 
-    def one_answer(_: int) -> Kept | Held | list[Change]:
+    def one_answer(_: int) -> Kept | Held | ChangedSinceShown | list[Change]:
         released.wait()
         return keep(readings(WEEK_TWO), store, occurrences={0: NEW_WORK})
 

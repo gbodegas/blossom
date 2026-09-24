@@ -32,6 +32,7 @@ from blossom.intake import (
     REVIEW,
     TEXT_MAX_LENGTH,
     UPDATE,
+    ChangedSinceShown,
     Held,
     Kept,
     Read,
@@ -47,7 +48,10 @@ from blossom.intake import (
     within_a_school_year,
 )
 from blossom.routes.parent import review_page
+from blossom.routes.student import viewer_of
+from blossom.school_instructions import InstructionChoice
 from blossom.stores.project_state import AssignmentKind, UnreadableClaim
+from blossom.stores.school_instructions import UnreadableInstruction
 from blossom.templating import page_templates
 
 router = APIRouter(prefix="/parent/inbox", tags=["parent"])
@@ -96,6 +100,18 @@ HELD_BY_A_NOTE: Final = (
 CLAIM_UNREADABLE: Final = (
     "A saved claim about a date cannot be read right now, so nothing was saved. Your input "
     "is still here."
+)
+INSTRUCTION_UNREADABLE: Final = (
+    "The school's saved instructions for an assignment here cannot be read right now, so "
+    "nothing was saved. Your input is still here."
+)
+INSTRUCTIONS_CONTRADICT: Final = (
+    "Choose the school's instructions that apply, or that none applies, not both. Nothing was "
+    "saved; your choices are still here."
+)
+CHANGED_SINCE_SHOWN: Final = (
+    "The school's instructions saved for an assignment here changed since this review was "
+    "shown, so nothing was saved. Look at them again before saving."
 )
 ANSWER_KEY_MAX_LENGTH: Final = 6
 """A card's key is a count from the reader, in plain digits; nothing longer is one."""
@@ -277,6 +293,56 @@ def answers_from(
     return occurrences, chosen
 
 
+def instruction_answers_from(
+    form: Mapping[str, str],
+) -> tuple[dict[int, InstructionChoice], dict[int, frozenset[str]], set[int]]:
+    """The parent's choices of which of the school's instructions apply, card by card.
+
+    The page writes, on the card that carries an assignment's instructions,
+    the revision it showed them at, each instruction's words in the order
+    shown, a box for each, and a separate box for none applying. A card with a
+    box ticked, or with none ticked on purpose, is answered; a card with
+    nothing ticked is no answer. A box beside none, or a box for no words the
+    page wrote, contradicts itself and is no answer either. Each such card is
+    handed back with the words ticked on it, and the cards with none ticked,
+    so the page can say so and show them as they came.
+    """
+    revisions: dict[int, int] = {}
+    words: dict[int, dict[int, str]] = {}
+    ticked: dict[int, set[int]] = {}
+    none: set[int] = set()
+    for name, value in form.items():
+        parts = name.split("-")
+        if len(parts) == 2 and parts[0] == "instructions" and review_key(parts[1]):
+            if value.isascii() and value.isdigit() and len(value) <= 9:
+                revisions[int(parts[1])] = int(value)
+        elif len(parts) == 2 and parts[0] == "none" and review_key(parts[1]) and value == "1":
+            none.add(int(parts[1]))
+        elif len(parts) == 3 and review_key(parts[1]) and review_key(parts[2]):
+            if parts[0] == "instruction":
+                words.setdefault(int(parts[1]), {})[int(parts[2])] = value
+            elif parts[0] == "apply" and value == "1":
+                ticked.setdefault(int(parts[1]), set()).add(int(parts[2]))
+    answers: dict[int, InstructionChoice] = {}
+    contradicted: dict[int, frozenset[str]] = {}
+    for key, revision in revisions.items():
+        shown = words.get(key, {})
+        chosen = ticked.get(key, set())
+        if not chosen <= set(shown) or (chosen and key in none):
+            contradicted[key] = frozenset(shown[place] for place in chosen if place in shown)
+            continue
+        if not chosen and key not in none:
+            continue
+        order = tuple(shown[place] for place in sorted(shown))
+        answers[key] = InstructionChoice(
+            shown_revision=revision,
+            shown=order,
+            applies=frozenset(shown[place] for place in chosen),
+            none_applies=key in none,
+        )
+    return answers, contradicted, none & set(contradicted)
+
+
 def asked_on(form: Mapping[str, str]) -> set[int]:
     """The cards the page put a question to, which the page sends back beside them; a
     question on any other card is one the record raised since the page was made."""
@@ -376,11 +442,13 @@ def intake_unavailable(
     state: ApplicationState,
     draft: Mapping[str, str],
     answers: list[AnswerKept],
+    problem: str = CLAIM_UNREADABLE,
 ) -> HTMLResponse:
-    """The page for a review or a save refused because a claim about a date on record cannot
-    be read. It reads no store, tries nothing again, and says nothing was saved. It keeps
-    the text as pasted, or the entry as typed, and the answers given on the cards, to copy.
-    The way on is a press through the same reading, never a retry made here."""
+    """The page for a review or a save refused because a claim about a date on record, or a
+    saved instruction of the school's, cannot be read. It reads no store, tries nothing
+    again, and says nothing was saved. It keeps the text as pasted, or the entry as typed,
+    and the answers given on the cards, to copy. The way on is a press through the same
+    reading, never a retry made here."""
     text = draft.get("text") or None
     entry = None
     if text is None:
@@ -390,7 +458,7 @@ def intake_unavailable(
         request,
         "inbox_unavailable.html",
         {
-            "problem": CLAIM_UNREADABLE,
+            "problem": problem,
             "text": text,
             "entry": entry,
             "entry_fields": ENTRY_FIELDS,
@@ -413,6 +481,9 @@ def preview_page(
     *,
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
+    instruction_answers: Mapping[int, InstructionChoice] | None = None,
+    contradicted: Mapping[int, frozenset[str]] | None = None,
+    none_ticked: set[int] | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -421,10 +492,20 @@ def preview_page(
     offers no save: the text stays to be edited. A claim on record that cannot be read
     refuses the comparison, and the page that reads no store keeps the draft."""
     try:
-        changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+        changes = changes_for(
+            read.items,
+            state.project_state,
+            occurrences=occurrences,
+            kinds=kinds,
+            instruction_answers=instruction_answers,
+        )
         held = held_rows(read.items, state.project_state)
     except UnreadableClaim:
         return intake_unavailable(request, state, draft, answers_shown(occurrences, kinds))
+    except UnreadableInstruction:
+        return intake_unavailable(
+            request, state, draft, answers_shown(occurrences, kinds), INSTRUCTION_UNREADABLE
+        )
     if held is not None:
         notice = HELD_BY_A_NOTE
     if notice is None and conflicting_choices(changes):
@@ -455,6 +536,8 @@ def preview_page(
             "sample": state.settings.sample,
             "spoken_report": spoken_report,
             "spoken_day": spoken_day,
+            "contradicted": contradicted or {},
+            "none_ticked": none_ticked or set(),
         },
         status_code=status_code,
     )
@@ -525,12 +608,53 @@ async def keep_readings(request: Request, state: State) -> Response:
     # A claim on record that cannot be read refuses the comparison, before the write or
     # inside its transaction, which is rolled back whole before anything is answered. The
     # answer reads no store and keeps the draft and the answers given on the cards.
+    instruction_answers, contradicted, none_ticked = instruction_answers_from(form)
     try:
         occurrences, kinds = answers_from(form, unasked_for(state, read))
+        if contradicted:
+            # Boxes that contradict each other are no answer, and nothing of the text is
+            # written until they are put right; every choice made comes back as made.
+            return preview_page(
+                request,
+                state,
+                read,
+                draft,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                contradicted=contradicted,
+                none_ticked=none_ticked,
+                notice=INSTRUCTIONS_CONTRADICT,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        now, today = moment_of(state, draft)
         async with state.decision_lock:
-            kept = keep(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
+            kept = keep(
+                read.items,
+                state.project_state,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                imported_by="parent" if viewer_of(request) == "parent" else "household",
+                now=now,
+                today=today,
+            )
     except UnreadableClaim:
         return intake_unavailable(request, state, draft, answers_kept(form))
+    except UnreadableInstruction:
+        return intake_unavailable(request, state, draft, answers_kept(form), INSTRUCTION_UNREADABLE)
+    if isinstance(kept, ChangedSinceShown):
+        return preview_page(
+            request,
+            state,
+            read,
+            draft,
+            occurrences=occurrences,
+            kinds=kinds,
+            instruction_answers=instruction_answers,
+            notice=CHANGED_SINCE_SHOWN,
+            status_code=status.HTTP_409_CONFLICT,
+        )
     if isinstance(kept, Held):
         return preview_page(
             request,
@@ -550,7 +674,14 @@ async def keep_readings(request: Request, state: State) -> Response:
         else:
             notice = LOOK_AGAIN
         return preview_page(
-            request, state, read, draft, occurrences=occurrences, kinds=kinds, notice=notice
+            request,
+            state,
+            read,
+            draft,
+            occurrences=occurrences,
+            kinds=kinds,
+            instruction_answers=instruction_answers,
+            notice=notice,
         )
     return RedirectResponse(
         f"/parent?added={kept.added}&updated={kept.updated}&unchanged={kept.unchanged}",

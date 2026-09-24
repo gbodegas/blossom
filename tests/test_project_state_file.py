@@ -605,7 +605,13 @@ def test_a_row_written_without_a_note_or_origins_keeps_the_saved_ones(
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:
         store.put_on_record(
-            [a_row("Pencil only.", {"record": SourceChannel.LMS, "note": SourceChannel.LMS})], {}
+            [
+                a_row(
+                    "Pencil only.",
+                    {"record": SourceChannel.LMS, "note": SourceChannel.PARENT_ENTRY},
+                )
+            ],
+            {},
         )
         store.put_on_record([a_row(None, {})], {})
         kept = store.all_assignments()[0]
@@ -618,7 +624,7 @@ def test_a_row_written_without_a_note_or_origins_keeps_the_saved_ones(
         store.close()
 
     assert kept.note == "Pencil only."
-    assert kept.origins == {"record": SourceChannel.LMS, "note": SourceChannel.LMS}
+    assert kept.origins == {"record": SourceChannel.LMS, "note": SourceChannel.PARENT_ENTRY}
     assert replaced.note == "Ink."
     assert replaced.origins["note"] is SourceChannel.PARENT_ENTRY
 

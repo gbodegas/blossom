@@ -113,11 +113,11 @@ def test_the_fingerprint_carries_whose_words_a_note_is_and_nothing_about_a_note_
     assert canonical_active_input(no_note_with_a_mark)[0]["note_by"] is None
 
 
-def test_the_fingerprint_has_a_namespace_of_its_own_for_this_shape() -> None:
-    """A fixed constant, written down, and not the one from before: a plan fingerprinted
-    under the earlier shape reads as changed once and is asked for again."""
-    assert uuid.UUID("7d1e6a34-2c9b-4f58-a0d7-93b5e1c8f264") == PLANNING_DIGEST
-    assert PLANNING_DIGEST != BEFORE_THIS
+def test_the_fingerprint_has_left_the_namespaces_of_the_shapes_before() -> None:
+    """The shape that said whose words a note is had a namespace of its own, and so did
+    the one before it; the fingerprint is drawn from neither now, so a plan fingerprinted
+    under either reads as changed once and is asked for again."""
+    assert PLANNING_DIGEST not in (uuid.UUID("7d1e6a34-2c9b-4f58-a0d7-93b5e1c8f264"), BEFORE_THIS)
 
 
 def test_the_page_says_whose_words_a_note_is_to_whoever_reads_it() -> None:
@@ -155,14 +155,21 @@ def test_the_page_says_whose_words_a_note_is_to_whoever_reads_it() -> None:
     assert "You wrote: <q>Heard in class, pages 12 to 14.</q>" in pages[first.assignment_id]
     assert "From the teacher" not in pages[first.assignment_id].split("Heard in class")[0][-80:]
     assert "A parent wrote: <q>Signed on Sunday.</q>" in pages[second.assignment_id]
-    assert "From the teacher: <q>Cite two sources.</q>" in pages[third.assignment_id]
+    assert (
+        'From the school: <q class="authored-text">Cite two sources.</q>'
+        in pages[third.assignment_id]
+    )
 
 
 def as_fingerprinted_before(week: Week) -> str:
     """The week's fingerprint in the shape and the namespace from before this one."""
     rows = []
     for row in canonical_active_input(week):
-        earlier = {name: value for name, value in row.items() if name != "note_by"}
+        earlier = {
+            name: value
+            for name, value in row.items()
+            if name not in ("note_by", "school_instructions")
+        }
         earlier["note_by_a_parent"] = row["note_by"] == "parent"
         rows.append(earlier)
     serialized = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

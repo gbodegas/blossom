@@ -48,6 +48,13 @@ before anything is saved. Pasting the same work again doesn't create
 duplicates, and dates that disagree keep their sources. I built this around
 our school's formats; anything it can't read is left for us to check.
 
+**The school's instructions.** The teacher's words under each card are kept as
+the school's, apart from any note she or a parent writes. When a paste brings
+instructions that differ from the saved ones, Blossom asks which apply now and
+keeps the rest as history, so nothing the school said is lost. A parent can
+change that choice later from the assignment. Plans use only the instructions
+that apply.
+
 **Plan today.** She can ask for an evening plan, with time set aside for work
 and a reason for each choice. Blossom checks the plan and can ask for up to
 two revisions. The saved plan opens on her page, with links to the work and

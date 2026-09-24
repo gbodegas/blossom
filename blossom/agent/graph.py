@@ -204,6 +204,9 @@ class PlanState(TypedDict):
     ``assignments`` and held against the plan by the checks."""
     student_reports: NotRequired[dict[str, StudentReport]]
     """Her standing report on each assignment in ``assignments`` that has one."""
+    school_instructions: NotRequired[dict[str, list[str]]]
+    """The school's instructions that apply to each assignment in ``assignments`` that has
+    any, in the one order, frozen with the rest of the reading."""
     confidence: NotRequired[dict[str, SourceConfidence]]
     noticings: NotRequired[list[Noticing]]
     too_much: NotRequired[bool]
@@ -265,6 +268,7 @@ def build_plan_graph(
             "confidence": state.get("confidence", {}),
             "noticings": state.get("noticings", []),
             "student_reports": state.get("student_reports", {}),
+            "school_instructions": state.get("school_instructions", {}),
             "support_rules": state.get("support_rules", []),
             "reflections": state.get("reflections", []),
         }
@@ -290,6 +294,12 @@ def build_plan_graph(
                 if name not in left_out
             },
             "noticings": [week.noticings[item.assignment_id] for item in active],
+            "school_instructions": {
+                item.assignment_id: list(standing.texts)
+                for item in active
+                if (standing := week.instructions.get(item.assignment_id)) is not None
+                and standing.texts
+            },
             # Taken as the week is read, so a change between a reading and
             # the draft reads as a change too.
             "inputs_digest": planning_digest(week),

@@ -36,8 +36,9 @@ its "Missing" email, pasted by a parent, and for one assignment typed by hand.
 It reads line shapes, not a model, in one pass over the lines: into
 assignments, into each channel's claim about a due date with where the claim
 was read, so the reconciliation treats a pasted page as it treats a fixture,
-into the teacher's note under a card, and into what the school reports about
-an assignment's status, a fact of its own kept with who reported it and the
+into the teacher's instruction under each card, one observation per card
+with the card and its day, and into what the school reports about an
+assignment's status, a fact of its own kept with who reported it and the
 day. A line shaped like a card that does not read as one is text for review,
 never a teacher's words. The reader writes nothing. `blossom/routes/inbox.py`
 compares what was read with the record as it is, row by row, matched by
@@ -54,17 +55,30 @@ reports held twice for one day to the first. A recorded due date is replaced by 
 paste only when a parent says the assignment moved; each fact on a row carries
 its origin, the portal, the email, or a parent, so the pages can say whose
 it is, each field with the channel that gave it when a text mixes the email
-and the portal. A note is the teacher's, a parent's, or hers, and the record
-says which in one place, `Assignment.note_by`: marked as a parent's entry it
-is a parent's, marked as her report it is hers, and any other mark or none is
-the school's, since every note kept before notes carried a mark came from the
-school's card. The pages say it to whoever reads, and both models are told
-it, hers as `student_noted`: her account of work she added, never the
-teacher's instruction. A plan carries a fingerprint of the week it was made
-from, the reported status and whose words each note is included, and a
-waiting plan whose week reads differently is stale on both pages and refused
-at approval; a decided plan is history. With no note there is no hand to
-name, so a mark alone changes no fingerprint. The fingerprint is drawn from a
+and the portal. A note is a parent's or hers, and the record says which in
+one place, `Assignment.note_by`: marked as a parent's entry it is a
+parent's, marked as her report it is hers, and any other mark or none is the
+school's, since every note kept before notes carried a mark came from the
+school's card. A school note is never kept in the note field. The school's
+instructions live in `school_instructions`, `blossom/school_instructions.py`
+holds their rule, and the store applies it in one place for the paste, a
+seed, and every other caller: a text already kept is nothing new, the first
+applies, and anything else needs a choice, made against the revision it was
+shown, which rises with every change, so a form made before a change and a
+change back is still refused. A write that needs a choice and has none
+writes nothing, and names that outcome. The first start after the upgrade
+moves every school note out of the field, verified before the field is
+cleared, in one transaction. The pages say whose words each is to whoever
+reads, and both models are told it, hers as `student_noted`, a parent's as
+`parent_wrote`, and each of the school's instructions that apply as
+`teacher_wrote`, `teacher_wrote_2`, and on, in the order of their words,
+which means nothing. A plan carries a fingerprint of the week it was made
+from, the reported status, whose words each note is, and the words of the
+school's instructions that apply included, and a waiting plan whose week
+reads differently is stale on both pages and refused at approval; a decided
+plan is history. With no note there is no hand to name, so a mark alone
+changes no fingerprint, and an instruction said before or waiting for review
+changes none either. The fingerprint is drawn from a
 fixed namespace, one for each shape it has had; a plan that was waiting when
 the shape changed reads as changed once and is asked for again, and nothing
 asks a model for it. Saving and deciding share the decision lock, so a decision is
@@ -257,10 +271,11 @@ and, inside it, one read transaction, `ProjectStateStore.reading()`: the lock
 keeps this process's other callers out, and the transaction keeps the file as
 it was at the first read, since the drafts, her signals, and her requests
 write the same file through connections of their own. The reading is at most
-six read statements however much the record holds, between the statement
-that begins the transaction and the one that ends it: the claims and her
-hand-in events are each asked for once and not once per assignment, and a
-reader asked about no assignments runs none, so an empty record costs two. Her
+seven read statements however much the record holds, between the statement
+that begins the transaction and the one that ends it: the claims, her
+hand-in events, and the school's instructions are each asked for once and
+not once per assignment, and a reader asked about no assignments runs none,
+so an empty record costs two. Her
 week and the family page read her homework notes beside the record, inside that
 same transaction: one statement more however many notes there are, and one
 again, only when a request for help is about a note, for every such note at

@@ -76,6 +76,7 @@ from blossom.routes.navigation import (
     FAMILY_PAGE,
     address,
     details_href,
+    instructions_review_href,
     segment,
 )
 from blossom.routes.runs import (
@@ -764,6 +765,13 @@ def review_page(
             "text_max_length": TEXT_MAX_LENGTH,
             "entry_note_max_length": ENTRY_NOTE_MAX_LENGTH,
             "updates": assignment_updates(everything, today),
+            "instructions_to_review": [
+                (item, everything.instructions[item.assignment_id].awaiting)
+                for item in everything.assignments
+                if item.assignment_id in everything.instructions
+                and everything.instructions[item.assignment_id].awaiting
+            ],
+            "instructions_review_href": instructions_review_href,
             "check": check,
             "check_note_max_length": CHECK_NOTE_MAX_LENGTH,
             "check_routes": check_actions,

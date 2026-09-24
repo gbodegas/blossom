@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% set page = "parent" %}
+{% block title %}Blossom - Review school instructions{% endblock %}
+{#
+  Which of the school's instructions for one assignment apply, chosen by
+  the family. Every instruction kept is listed with how it stands and where
+  it was read; nothing comes ticked but the parent's own ticks on a page
+  returned for a problem. A choice not saved because the instructions
+  changed is said in words beside the facts as they stand now.
+#}
+{% block content %}
+  <p class="return"><a href="{{ back }}">{% if item %}Back to the assignment{% else %}Return to Family review{% endif %}</a></p>
+  <h1>Review school instructions</h1>
+  {% if item %}
+    <p class="course"><span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>{% if item.due_date %}, due {{ item.due_date|long_date }}{% endif %}</p>
+  {% endif %}
+  {% if notice %}
+    <p class="note" role="status">{{ notice }}</p>
+  {% endif %}
+  {% if problem %}
+    <p class="problem" role="alert">{{ problem }}</p>
+  {% endif %}
+  {% if not_saved %}
+    <p class="problem" id="not-saved">Not saved: {% if not_saved.none_applies %}no school instruction applies{% else %}{% for text in not_saved.applies|sort %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.</p>
+  {% endif %}
+  {% if item and rows is defined %}
+    {% if rows %}
+      <p class="helper">These are the school's words. Which of them apply is the family's choice; the school's record is not changed, and neither is anything she wrote. The ones not chosen are kept as history.</p>
+      <form method="post" action="{{ action }}">
+        <input type="hidden" name="revision" value="{{ revision }}">
+        {% for row in rows %}
+          <input type="hidden" name="instruction-{{ row.number }}" value="{{ row.text }}">
+        {% endfor %}
+        <fieldset class="choice instructions">
+          <legend>Which of the school's instructions apply now?</legend>
+          {% for row in rows %}
+            <label><input type="checkbox" name="apply-{{ row.number }}" value="1"{% if row.ticked %} checked{% endif %}> <span><q class="authored-text">{{ row.text }}</q> <span class="source">{{ row.said }}</span></span></label>
+          {% endfor %}
+          <label><input type="checkbox" name="none" value="1"{% if none_ticked %} checked{% endif %}> <span>No school instruction applies now</span></label>
+        </fieldset>
+        <div class="actions">
+          <button type="submit" class="primary">Save which apply</button>
+        </div>
+      </form>
+    {% else %}
+      <p>No instruction from the school is saved for this assignment.</p>
+    {% endif %}
+  {% endif %}
+{% endblock %}

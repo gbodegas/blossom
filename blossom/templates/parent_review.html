@@ -108,6 +108,29 @@
   </section>
 
   {#
+    School instructions waiting for review: school notes found in the old note
+    field after the upgrade, beside instructions already kept, which the record
+    cannot say which version of Blossom wrote. None of them applies, and none
+    reaches a plan, until a parent chooses; each assignment links straight to
+    its review.
+  #}
+  {% if instructions_to_review %}
+    <section class="panel" id="school-instructions-to-review">
+      <h2>School instructions to review</h2>
+      <p class="helper">These were found in the old note field after the upgrade. None of them applies until you choose.</p>
+      <ul>
+        {% for item, waiting in instructions_to_review %}
+          <li>
+            <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>:
+            {% for instruction in waiting %}<q class="authored-text">{{ instruction.text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}.
+            <a href="{{ instructions_review_href(item.assignment_id) }}">Review school instructions</a>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {#
     Homework she added: the notes she wrote down to remember and has not put
     away, in the order she first saved them, as they stand now, with the first
     words when she has changed them. They are hers: nothing here changes one,

@@ -134,6 +134,8 @@
               <p class="effect" data-base="{{ change.effect_base }}">{{ change.effect }}</p>
               {% if change.state == "review" %}
                 <input type="hidden" name="asked-{{ change.key }}" value="1">
+              {% endif %}
+              {% if change.ambiguous %}
                 <fieldset class="choice">
                   <legend>Which is it?</legend>
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment, its due date changed</label>
@@ -154,8 +156,39 @@
                 </select>
               </label>
               <p class="helper">Task: a form to sign, supplies to bring, or similar. {% if change.on_record %}As saved; change it if it is wrong.{% else %}Suggested from the title; change it if it is wrong.{% endif %}</p>
+              {% if change.instructions_question %}
+                {# One question for the assignment, whichever cards of the text brought its instructions. #}
+                <input type="hidden" name="instructions-{{ change.key }}" value="{{ change.instructions_revision }}">
+                {% for item in change.instructions_shown %}
+                  <input type="hidden" name="instruction-{{ change.key }}-{{ loop.index0 }}" value="{{ item.text }}">
+                {% endfor %}
+                <fieldset class="choice instructions">
+                  <legend>The school's instructions for {{ reading.title }}: which apply now?</legend>
+                  {% if change.instructions_stale and change.instructions_answer %}
+                    {% set unsaved = change.instructions_answer %}
+                    <p class="problem" id="instructions-problem-{{ change.key }}">Not saved, since what is saved changed: {% if unsaved.none_applies %}no school instruction applies{% else %}{% for text in unsaved.applies|sort %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.</p>
+                  {% endif %}
+                  <p class="helper">These are the school's words. Which of them apply is the family's choice, and the school's record is not changed. The ones not chosen are kept as history.</p>
+                  {% for item in change.instructions_shown %}
+                    <label><input type="checkbox" name="apply-{{ change.key }}-{{ loop.index0 }}" value="1"{% if item.text in change.instructions_ticked or item.text in contradicted.get(change.key, ()) %} checked{% endif %}> <span><q class="authored-text">{{ item.text }}</q> <span class="source">{% if item.standing == "current" %}Saved, applies now{% elif item.standing == "history" %}Saved earlier, does not apply{% elif item.standing == "awaiting" %}Waiting for review{% else %}New in this text{% endif %}{% if item.card_day %}. Read on the school's card for {{ item.card_day.strftime("%B") }} {{ item.card_day.day }}{% endif %}.</span></span></label>
+                  {% endfor %}
+                  <label><input type="checkbox" name="none-{{ change.key }}" value="1"{% if change.instructions_none_ticked or change.key in none_ticked %} checked{% endif %}> <span>No school instruction applies now</span></label>
+                </fieldset>
+              {% elif change.instructions_with is not none %}
+                <p class="source">The school's instructions under this card are shown on the first card for this assignment.</p>
+              {% else %}
+                {#
+                  No question: the card that carries the assignment's instructions lists
+                  each one the text gives, once, with how it stands. A card that lands on
+                  no assignment yet shows what it read.
+                #}
+                {% for item in (change.instructions_read if change.instructions is not none else reading.instructions) %}
+                  {% set standing = item.standing if change.instructions is not none else "" %}
+                  <p class="from-teacher">From the school: <q class="authored-text">{{ item.text }}</q>{% if standing or item.card_day %} <span class="source">{% if standing == "current" %}Saved, applies now.{% elif standing == "history" %}Saved earlier, does not apply.{% elif standing == "awaiting" %}Waiting for review.{% elif standing == "new" %}New in this text; it applies.{% endif %}{% if standing and item.card_day %} {% endif %}{% if item.card_day %}Read on the school's card for {{ item.card_day.strftime("%B") }} {{ item.card_day.day }}.{% endif %}</span>{% endif %}</p>
+                {% endfor %}
+              {% endif %}
               {% if reading.note %}
-                <p class="from-teacher">{% if reading.origin == "PARENT_ENTRY" %}Your note{% else %}From the teacher{% endif %}: <q>{{ reading.note }}</q></p>
+                <p class="from-teacher">Your note: <q>{{ reading.note }}</q></p>
               {% endif %}
               {% for report in reading.reports %}
                 <p class="source">{{ spoken_report(report) }}</p>
