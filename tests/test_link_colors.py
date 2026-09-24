@@ -1,4 +1,5 @@
-"""The color a link ends up with, worked out from the stylesheet and the pages as rendered.
+"""The color a link ends up with, and the height of the link to an assignment's details,
+worked out from the stylesheet and the pages as rendered.
 
 No browser runs in these tests, so the cascade is resolved here, for the part
 of CSS the stylesheet uses on links: compound selectors of a type, classes,
@@ -12,6 +13,10 @@ inherited, because a browser's own stylesheet colors every link directly, so
 a link that no rule of the page's stylesheet reaches is drawn in the browser's
 blue, or purple once visited. That is what `None` means below, and what these
 tests hold the pages clear of.
+
+A link is inline unless a rule lays it out otherwise, and an inline box takes no
+minimum height, so the link to the details is as tall as a control only where
+the cascade gives it a box of its own and a minimum height of 44 pixels.
 """
 
 import re
@@ -220,9 +225,10 @@ ROOT_FONT_PX = 16
 
 class UnreadMedia(AssertionError):
     """A part of the stylesheet this resolver cannot evaluate: a media feature it does not
-    know, a nested media query, another at-rule with rules in it, or a custom property
-    set inside a media query. Raised, and never guessed at, since a guess either way
-    could let a link through that some screen leaves to the browser's color."""
+    know, a nested media query, another at-rule with rules in it, a custom property set
+    inside a media query, or a length in a unit it does not read. Raised, and never
+    guessed at, since a guess either way could let a link through that some screen
+    leaves to the browser's color or draws shorter than a control."""
 
 
 @dataclass(frozen=True)
@@ -280,6 +286,10 @@ class Sheet:
     the media condition it sits under, ``None`` for a rule that holds everywhere."""
     backgrounds: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
     """The same for each rule that sets a background, by either property's name."""
+    displays: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    """The same for each rule that sets how an element is laid out."""
+    heights: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    """The same for each rule that sets a minimum height."""
 
 
 def blocks(css: str) -> list[tuple[str, str]]:
@@ -300,11 +310,12 @@ def blocks(css: str) -> list[tuple[str, str]]:
 
 
 def read_sheet(css: str) -> Sheet:
-    """Every rule that sets ``color``, in source order, each with the media condition it sits
-    under, and the sheet's custom properties. A rule inside a media query applies only
-    where the query holds, so a link whose only color comes from one is still the
-    browser's color on every other screen; ``color_of`` is asked about one screen at a
-    time. Font faces and keyframes hold no rules for elements and are passed over."""
+    """Every rule that sets ``color``, a background, ``display``, or ``min-height``, in source
+    order, each with the media condition it sits under, and the sheet's custom
+    properties. A rule inside a media query applies only where the query holds, so a
+    link whose only color comes from one is still the browser's color on every other
+    screen; ``color_of`` is asked about one screen at a time. Font faces and keyframes
+    hold no rules for elements and are passed over."""
     sheet = Sheet()
     plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
     order = 0
@@ -340,6 +351,10 @@ def read_sheet(css: str) -> Sheet:
                 for name in ("background", "background-color"):
                     if name in declared:
                         sheet.backgrounds.append((selector(head), declared[name], order, media))
+                if "display" in declared:
+                    sheet.displays.append((selector(head), declared["display"], order, media))
+                if "min-height" in declared:
+                    sheet.heights.append((selector(head), declared["min-height"], order, media))
 
     read(plain, None)
     return sheet
@@ -710,3 +725,137 @@ def test_the_darker_action_color_clears_every_tint_and_the_usual_one_does_not() 
             assert contrast(usual, panel) < 4.5, (tint, under)
     for under in (("canvas",), ("canvas", "surface-strong")):
         assert contrast(usual, drawn(sheet, *under)) >= 4.5, under
+
+
+# ------------------------------------------------------------- as tall as a control
+
+
+ALGEBRA_ID = "assignment-algebra-set"
+LOG_ID = "assignment-reading-log"
+TOUCH_HEIGHT_PX = 44
+"""The least height of a control on the pages, a button's or a link's: 2.75rem at the root size."""
+BOXED = frozenset({"block", "inline-block", "flex", "inline-flex", "grid", "inline-grid"})
+"""The layouts that give a link a box of its own, which a minimum height applies to."""
+PLACES = frozenset(
+    {
+        "a card",
+        "a card she reports done",
+        "a row due later",
+        "a row due later she reports done",
+        "the card shown apart",
+    }
+)
+"""Every place on her week that holds the link to an assignment's details."""
+CARDS = PLACES - {"a row due later", "a row due later she reports done"}
+ROWS = PLACES - CARDS
+DETAILS_RULE = (
+    ".details-link a,\na.details-link {\n  display: inline-flex;\n  align-items: center;\n"
+    "  min-height: 2.75rem;\n  margin: 0;\n}"
+)
+HER_WEEKS: dict[str, str] = {}
+
+
+@pytest.fixture
+def her_weeks() -> dict[str, str]:
+    """Her week with the essay and the algebra set reported done, and an earlier week whose
+    address names the reading log, which is outside it. Kept once rendered, as ``rendered`` is."""
+    if HER_WEEKS:
+        return HER_WEEKS
+    with browser() as client:
+        report(client, ESSAY_ID, "done")
+        report(client, ALGEBRA_ID, "done")
+        HER_WEEKS.update(
+            {
+                "her week": client.get(HER_PAGE, headers=PAGE_HEADERS).text,
+                "an earlier week": client.get(
+                    HER_PAGE, params={"week": "2026-08-10", "show": LOG_ID}, headers=PAGE_HEADERS
+                ).text,
+            }
+        )
+    return HER_WEEKS
+
+
+def details_links(pages: dict[str, str]) -> list[Element]:
+    return [
+        link for page in pages.values() for link in links_in(page) if link.text.strip() == "Details"
+    ]
+
+
+def place_of(link: Element) -> str:
+    """Where a link stands on her week, read from the elements above it."""
+    above = link.ancestors()
+    if any("apart" in item.classes for item in above):
+        return "the card shown apart"
+    group = "a row due later" if any("assigned" in item.classes for item in above) else "a card"
+    folded = any(item.tag == "details" and "reported-done" in item.classes for item in above)
+    return f"{group} she reports done" if folded else group
+
+
+def height_px(value: str) -> float:
+    """A minimum height in CSS pixels. An em follows the element's own font size, which is not
+    worked out here, so only pixels and root ems are read."""
+    found = re.fullmatch(r"(\d*\.?\d+)(px|rem)", value.strip())
+    if found is None:
+        raise UnreadMedia(value)
+    return float(found.group(1)) * (1 if found.group(2) == "px" else ROOT_FONT_PX)
+
+
+def short_of_a_control(sheet: Sheet, link: Element, view: View) -> bool:
+    """Whether ``link`` on ``view`` is left inline, or given a box with no minimum height or a
+    minimum under a control's."""
+    display = winning(sheet.displays, sheet, link, "link", view)
+    least = winning(sheet.heights, sheet, link, "link", view)
+    return display not in BOXED or least is None or height_px(least) < TOUCH_HEIGHT_PX
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_every_details_link_is_as_tall_as_a_control(her_weeks: dict[str, str], width: int) -> None:
+    """In every place on her week, at each width, with or without less motion: 44 pixels."""
+    sheet = read_sheet(stylesheet())
+    found = details_links(her_weeks)
+
+    assert {place_of(link) for link in found} == PLACES
+    for view in (View(width), View(width, reduced_motion=True)):
+        for link in found:
+            where = (place_of(link), link.attributes["aria-label"], view)
+            assert not short_of_a_control(sheet, link, view), where
+
+
+@pytest.mark.parametrize(
+    ("becomes", "short", "fine_up_to"),
+    [
+        pytest.param(
+            DETAILS_RULE.replace(".details-link a,", ".details-link b,"),
+            CARDS,
+            0,
+            id="the-cards-selector-broken",
+        ),
+        pytest.param(
+            DETAILS_RULE.replace("a.details-link {", "b.details-link {"),
+            ROWS,
+            0,
+            id="the-rows-selector-broken",
+        ),
+        pytest.param(
+            DETAILS_RULE.replace("inline-flex", "inline"), PLACES, 0, id="laid-out-inline"
+        ),
+        pytest.param(DETAILS_RULE.replace("2.75rem", "1.5rem"), PLACES, 0, id="too-short"),
+        pytest.param(
+            f"@media (max-width: 30rem) {{\n{DETAILS_RULE}\n}}", PLACES, 480, id="only-on-a-phone"
+        ),
+    ],
+)
+def test_the_height_check_fails_when_the_details_rule_stops_doing_its_work(
+    her_weeks: dict[str, str], becomes: str, short: frozenset[str], fine_up_to: int
+) -> None:
+    """Each link the broken rule leaves is short of a control, on every screen it leaves it."""
+    css = stylesheet()
+    assert css.count(DETAILS_RULE) == 1
+    sheet = read_sheet(css.replace(DETAILS_RULE, becomes))
+    found = details_links(her_weeks)
+
+    assert {place_of(link) for link in found} == PLACES
+    for link in found:
+        for width in WIDTHS:
+            expected = place_of(link) in short and width > fine_up_to
+            assert short_of_a_control(sheet, link, View(width)) == expected, (place_of(link), width)
