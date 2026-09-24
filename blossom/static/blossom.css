@@ -720,9 +720,14 @@ a.assignment-link:focus-visible {
   font-size: 0.92rem;
 }
 
+/* The link to the details keeps its small type and is as tall as the buttons, on its
+   own line on a card and at the end of a row due later. */
+.details-link a,
 a.details-link {
-  display: inline-block;
-  margin: 0.25rem 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  margin: 0;
 }
 
 .plan-heading {
