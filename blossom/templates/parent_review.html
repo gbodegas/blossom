@@ -122,8 +122,8 @@
         {% for item, waiting in instructions_to_review %}
           <li>
             <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>:
-            {% for instruction in waiting %}<q class="authored-text">{{ instruction.text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}.
-            <a href="{{ instructions_review_href(item.assignment_id) }}">Review school instructions</a>
+            {% for instruction in waiting %}<q class="authored-text">{{ instruction.text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}
+            <p class="support-links"><a href="{{ instructions_review_href(item.assignment_id) }}">Review school instructions</a></p>
           </li>
         {% endfor %}
       </ul>

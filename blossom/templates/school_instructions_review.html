@@ -12,7 +12,8 @@
   <p class="return"><a href="{{ back }}">{% if item %}Back to the assignment{% else %}Return to Family review{% endif %}</a></p>
   <h1>Review school instructions</h1>
   {% if item %}
-    <p class="course"><span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>{% if item.due_date %}, due {{ item.due_date|long_date }}{% endif %}</p>
+    <p class="course authored-text">{{ item.course }}</p>
+    <p><strong class="authored-text">{{ item.title }}</strong>{% if item.due_date %}, due {{ item.due_date|long_date }}{% endif %}</p>
   {% endif %}
   {% if notice %}
     <p class="note" role="status">{{ notice }}</p>
@@ -21,7 +22,7 @@
     <p class="problem" role="alert">{{ problem }}</p>
   {% endif %}
   {% if not_saved %}
-    <p class="problem" id="not-saved">Not saved: {% if not_saved.none_applies %}no school instruction applies{% else %}{% for text in not_saved.applies|sort %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.</p>
+    <p class="problem" id="not-saved">Not saved: {% if not_saved.none_applies %}no school instruction applies.{% else %}{% for text in not_saved.applies|sort %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</p>
   {% endif %}
   {% if item and rows is defined %}
     {% if rows %}

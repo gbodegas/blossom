@@ -166,7 +166,7 @@
                   <legend>The school's instructions for {{ reading.title }}: which apply now?</legend>
                   {% if change.instructions_stale and change.instructions_answer %}
                     {% set unsaved = change.instructions_answer %}
-                    <p class="problem" id="instructions-problem-{{ change.key }}">Not saved, since what is saved changed: {% if unsaved.none_applies %}no school instruction applies{% else %}{% for text in unsaved.applies|sort %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.</p>
+                    <p class="problem" id="instructions-problem-{{ change.key }}">Not saved, since what is saved changed: {% if unsaved.none_applies %}no school instruction applies.{% else %}{% for text in unsaved.applies|sort %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</p>
                   {% endif %}
                   <p class="helper">These are the school's words. Which of them apply is the family's choice, and the school's record is not changed. The ones not chosen are kept as history.</p>
                   {% for item in change.instructions_shown %}

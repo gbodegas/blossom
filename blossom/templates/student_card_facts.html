@@ -196,7 +196,7 @@
           {% endif %}
           <p class="source">These are the school's words. Which of them apply is chosen by the family; the choice changes neither the school's record nor {% if read_by_a_parent %}her{% else %}your{% endif %} own updates.</p>
           {% if instructions_review is defined and instructions_review and not assignment.instructions_unreadable %}
-            <p><a href="{{ instructions_review }}">Review school instructions</a></p>
+            <p class="support-links"><a href="{{ instructions_review }}">Review school instructions</a></p>
           {% endif %}
         </div>
       {% endif %}
