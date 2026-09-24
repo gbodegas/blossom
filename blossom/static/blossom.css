@@ -1560,6 +1560,14 @@ main.wide {
   margin: 0.35rem 0 0;
 }
 
+/* The link that ends the hand-in line keeps its place in the sentence, its type, and its
+   color, and is as tall as the buttons. */
+.hand-in-line a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+}
+
 /* Work she has reported done folds under the active cards; the cards inside
    keep their shape. */
 details.reported-done {

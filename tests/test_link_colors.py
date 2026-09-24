@@ -1,4 +1,4 @@
-"""The color a link ends up with, and the height of the link to an assignment's details,
+"""The color a link ends up with, and the height of the links to an assignment's details,
 worked out from the stylesheet and the pages as rendered.
 
 No browser runs in these tests, so the cascade is resolved here, for the part
@@ -15,8 +15,9 @@ blue, or purple once visited. That is what `None` means below, and what these
 tests hold the pages clear of.
 
 A link is inline unless a rule lays it out otherwise, and an inline box takes no
-minimum height, so the link to the details is as tall as a control only where
-the cascade gives it a box of its own and a minimum height of 44 pixels.
+minimum height, so a link to the details is as tall as a control only where
+the cascade gives it a box of its own and a minimum height of 44 pixels. The
+one that ends the hand-in line's sentence takes a box that stays in the line.
 """
 
 import re
@@ -736,6 +737,12 @@ TOUCH_HEIGHT_PX = 44
 """The least height of a control on the pages, a button's or a link's: 2.75rem at the root size."""
 BOXED = frozenset({"block", "inline-block", "flex", "inline-flex", "grid", "inline-grid"})
 """The layouts that give a link a box of its own, which a minimum height applies to."""
+IN_THE_LINE = frozenset({"inline-block", "inline-flex", "inline-grid"})
+"""The boxed layouts that keep a link in the line of words around it."""
+TO_THE_DETAILS = {"Details": BOXED, "Turning it in": IN_THE_LINE}
+"""Each link on her week to an assignment's details, by its words, with the layouts it may take:
+any box of its own for Details, and for Turning it in, at the end of the hand-in line, a box
+that keeps it in the sentence."""
 PLACES = frozenset(
     {
         "a card",
@@ -745,12 +752,15 @@ PLACES = frozenset(
         "the card shown apart",
     }
 )
-"""Every place on her week that holds the link to an assignment's details."""
+"""Every place on her week that holds the links to an assignment's details."""
 CARDS = PLACES - {"a row due later", "a row due later she reports done"}
 ROWS = PLACES - CARDS
 DETAILS_RULE = (
     ".details-link a,\na.details-link {\n  display: inline-flex;\n  align-items: center;\n"
     "  min-height: 2.75rem;\n  margin: 0;\n}"
+)
+HAND_IN_RULE = (
+    ".hand-in-line a {\n  display: inline-flex;\n  align-items: center;\n  min-height: 2.75rem;\n}"
 )
 HER_WEEKS: dict[str, str] = {}
 
@@ -775,9 +785,9 @@ def her_weeks() -> dict[str, str]:
     return HER_WEEKS
 
 
-def details_links(pages: dict[str, str]) -> list[Element]:
+def links_named(pages: dict[str, str], words: str) -> list[Element]:
     return [
-        link for page in pages.values() for link in links_in(page) if link.text.strip() == "Details"
+        link for page in pages.values() for link in links_in(page) if link.text.strip() == words
     ]
 
 
@@ -800,25 +810,28 @@ def height_px(value: str) -> float:
     return float(found.group(1)) * (1 if found.group(2) == "px" else ROOT_FONT_PX)
 
 
-def short_of_a_control(sheet: Sheet, link: Element, view: View) -> bool:
-    """Whether ``link`` on ``view`` is left inline, or given a box with no minimum height or a
-    minimum under a control's."""
+def short_of_a_control(sheet: Sheet, link: Element, view: View, layouts: frozenset[str]) -> bool:
+    """Whether ``link`` on ``view`` is in none of ``layouts``, as an inline link always is, or
+    has no minimum height or one under a control's."""
     display = winning(sheet.displays, sheet, link, "link", view)
     least = winning(sheet.heights, sheet, link, "link", view)
-    return display not in BOXED or least is None or height_px(least) < TOUCH_HEIGHT_PX
+    return display not in layouts or least is None or height_px(least) < TOUCH_HEIGHT_PX
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-def test_every_details_link_is_as_tall_as_a_control(her_weeks: dict[str, str], width: int) -> None:
+@pytest.mark.parametrize("words", list(TO_THE_DETAILS))
+def test_every_link_to_the_details_is_as_tall_as_a_control(
+    her_weeks: dict[str, str], words: str, width: int
+) -> None:
     """In every place on her week, at each width, with or without less motion: 44 pixels."""
     sheet = read_sheet(stylesheet())
-    found = details_links(her_weeks)
+    found = links_named(her_weeks, words)
 
     assert {place_of(link) for link in found} == PLACES
     for view in (View(width), View(width, reduced_motion=True)):
         for link in found:
             where = (place_of(link), link.attributes["aria-label"], view)
-            assert not short_of_a_control(sheet, link, view), where
+            assert not short_of_a_control(sheet, link, view, TO_THE_DETAILS[words]), where
 
 
 @pytest.mark.parametrize(
@@ -852,10 +865,41 @@ def test_the_height_check_fails_when_the_details_rule_stops_doing_its_work(
     css = stylesheet()
     assert css.count(DETAILS_RULE) == 1
     sheet = read_sheet(css.replace(DETAILS_RULE, becomes))
-    found = details_links(her_weeks)
+    found = links_named(her_weeks, "Details")
 
     assert {place_of(link) for link in found} == PLACES
     for link in found:
         for width in WIDTHS:
             expected = place_of(link) in short and width > fine_up_to
-            assert short_of_a_control(sheet, link, View(width)) == expected, (place_of(link), width)
+            is_short = short_of_a_control(sheet, link, View(width), BOXED)
+            assert is_short == expected, (place_of(link), width)
+
+
+@pytest.mark.parametrize(
+    ("becomes", "fine_up_to"),
+    [
+        pytest.param(
+            HAND_IN_RULE.replace(".hand-in-line a {", ".hand-in-line b {"), 0, id="selector-broken"
+        ),
+        pytest.param(HAND_IN_RULE.replace("inline-flex", "inline"), 0, id="laid-out-inline"),
+        pytest.param(HAND_IN_RULE.replace("inline-flex", "flex"), 0, id="out-of-its-sentence"),
+        pytest.param(HAND_IN_RULE.replace("2.75rem", "1.5rem"), 0, id="too-short"),
+        pytest.param(
+            f"@media (max-width: 30rem) {{\n{HAND_IN_RULE}\n}}", 480, id="only-on-a-phone"
+        ),
+    ],
+)
+def test_the_height_check_fails_when_the_hand_in_rule_stops_doing_its_work(
+    her_weeks: dict[str, str], becomes: str, fine_up_to: int
+) -> None:
+    """Every Turning it in link is short of a control on each screen the broken rule leaves it."""
+    css = stylesheet()
+    assert css.count(HAND_IN_RULE) == 1
+    sheet = read_sheet(css.replace(HAND_IN_RULE, becomes))
+    found = links_named(her_weeks, "Turning it in")
+
+    assert {place_of(link) for link in found} == PLACES
+    for link in found:
+        for width in WIDTHS:
+            is_short = short_of_a_control(sheet, link, View(width), IN_THE_LINE)
+            assert is_short == (width > fine_up_to), (place_of(link), width)
