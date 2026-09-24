@@ -309,8 +309,8 @@ every form read as from elsewhere.
 ### Upgrading and rolling back
 
 An upgrade can move data the older version does not read, as the one that
-kept the school's instructions apart from the note field did. Before
-upgrading:
+kept the school's instructions apart from the note field did: it moved every
+school note whole, however long. Before upgrading:
 
 1. Stop Blossom.
 2. With it stopped, check that no `blossom.sqlite3-journal` file sits beside
@@ -403,14 +403,20 @@ the school's instructions apply now, listing the saved ones and the new, each
 with where it was read; nothing is ticked in advance, and "No school
 instruction applies now" is its own answer. Nothing of the text is saved
 until every such question is answered, and whatever is not chosen is kept as
-history, so nothing the school said is lost. All the cards about one
+history, so nothing the school said is lost. Saved with such a question left
+unanswered, the page puts the focus on a summary that names it, and keeps
+every answer given on the other cards. All the cards about one
 assignment in one text are one question, asked once, on the first card of the
 text that lands on it. A choice made on a page the instructions have changed
 under since, from another tab or a retry, is refused whole, with the choice
 that was not saved said in words beside the instructions as they stand now and
 nothing ticked, so it is never carried onto facts it was not made against; a
-choice that already stands saves nothing more. The instructions' words travel
-in the form encoded, so a browser's line endings never change them.
+choice that already stands saves nothing more. A form the page did not
+write, a field sent twice among them, is refused whole, and what it chose
+that can be read is said back as the parent's unsaved choice, with nothing
+ticked. The instructions' words travel in the form encoded, so a browser's
+line endings never change them; an instruction longer than any paste, kept
+from before, travels by its row.
 
 Her card, the assignment's details, the lists of work due later, and the
 family page's rows show the instructions that apply as "From the school", in
@@ -423,7 +429,9 @@ where a parent, or the household with the sign-in off, can restore an earlier
 instruction, retire one, settle one waiting for review, or say none applies;
 opening it writes nothing, and it saves by the same rule as the paste. A save
 returns to the page with what it did, said as standing only while nothing has
-changed since. A save the file refuses is tried once, never again, and the
+changed since, and signed by the running Blossom, so an address worked out by
+hand, or one from before a restart, says nothing; a save that none applies
+says so in its own words. A save the file refuses is tried once, never again, and the
 answer that was not saved is shown, from the record read once more or, when
 that fails too, from a page that reads nothing. She reads the instructions
 and never the control. A note typed by a parent shows as "A parent wrote",

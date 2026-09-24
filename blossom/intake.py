@@ -775,7 +775,7 @@ class Change:
         new = new_texts(self.instructions_kept, self.instructions_seen)
         return (
             *(
-                ShownInstruction(item.text, item.state, item.card, item.card_day)
+                ShownInstruction(item.text, item.state, item.card, item.card_day, item.sequence)
                 for item in self.instructions_kept
             ),
             *(ShownInstruction(item.text, "new", item.card, item.card_day) for item in new),
@@ -1023,13 +1023,14 @@ class Change:
 @dataclass(frozen=True)
 class ShownInstruction:
     """One instruction as the question lists it: its words, whether it is kept and how it
-    stands or is new in this text, and the card it was first read under. The card's day is
-    where it was read, never when the teacher wrote it."""
+    stands or is new in this text, the card it was first read under, and its row when it is
+    kept. The card's day is where it was read, never when the teacher wrote it."""
 
     text: str
     standing: str
     card: str | None
     card_day: date | None
+    sequence: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1200,6 +1201,14 @@ def _with_instructions(
     others that bring one point to it. A card still waiting on whether it is new
     work lands nowhere yet, and gives nothing. The kept instructions of every
     assignment are read in one statement.
+
+    Every answer given on a card that lands on the assignment is one answer to
+    its question, rows put back in their words against what is kept. An answer
+    naming a row not kept here was made against other facts. An answer that
+    ticks an instruction and that none applies, or answers that differ, is no
+    choice the rule can take: the question stays open and nothing is written.
+    No answer at all leaves the rule to decide, the first instruction of new
+    work standing as it always does.
     """
     landed: dict[str, list[int]] = {}
     for index, change in enumerate(changes):
@@ -1221,16 +1230,32 @@ def _with_instructions(
     for assignment_id, places in landing.items():
         standing = found.readable.get(assignment_id)
         kept = () if standing is None else standing.kept
+        revision = revision_of(kept)
         seen = tuple(item for place in places for item in changes[place].reading.instructions)
         first = changes[places[0]]
-        submitted = answers.get(first.key)
-        answer = None if submitted is None else submitted.choice()
+        given = [answers[changes[place].key] for place in places if changes[place].key in answers]
+        read = [answer.resolved(kept) for answer in given]
+        submitted = given[0] if given else None
+        answer = None
+        outcome: InstructionsOutcome
+        if not given:
+            outcome = settle(kept, seen, None)
+        elif any(item is None for item in read):
+            outcome = InstructionChoiceStale(tuple(kept), revision)
+        else:
+            answered = [item for item in read if item is not None]
+            submitted = next((item for item in answered if item.contradicts), answered[0])
+            if submitted.contradicts or len(set(answered)) > 1:
+                outcome = InstructionsNeedAChoice(tuple(kept), new_texts(kept, seen), revision)
+            else:
+                answer = submitted.choice()
+                outcome = settle(kept, seen, answer)
         changes[places[0]] = dataclasses.replace(
             first,
-            instructions=settle(kept, seen, answer),
+            instructions=outcome,
             instructions_seen=seen,
             instructions_kept=kept,
-            instructions_revision=revision_of(kept),
+            instructions_revision=revision,
             instructions_answer=answer,
             instructions_submitted=submitted,
         )

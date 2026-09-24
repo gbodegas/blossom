@@ -20,7 +20,7 @@ import threading
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Final, NoReturn, cast
 
 from blossom.captures import Author
@@ -164,14 +164,14 @@ def _day(value: object) -> date | None:
 
 
 def _moment(value: object) -> datetime | None:
-    """A moment this store wrote, with its offset, or ``None`` for anything else."""
+    """A moment this store wrote, in UTC with its offset, or ``None`` for anything else."""
     if type(value) is not str:
         return None
     try:
         moment = datetime.fromisoformat(value)
     except ValueError:
         return None
-    if moment.tzinfo is None or moment.isoformat() != value:
+    if moment.utcoffset() != timedelta(0) or moment.isoformat() != value:
         return None
     return moment
 
@@ -298,9 +298,9 @@ class SchoolInstructionRecords:
         are kept, with no moment or person made up. The move is checked, every
         note kept exactly once, before the old field and its mark are cleared;
         any failure undoes the whole of it with the caller's transaction. A row
-        whose origins cannot be read is left as it was, and so is a note beside
-        a kept instruction that cannot be read, so a start is never refused
-        over it.
+        whose origins cannot be read, or whose note mark is not text, is left as
+        it was, and so is a note beside a kept instruction that cannot be read,
+        so a start is never refused over it.
         """
         rows = self._connection.execute(
             "SELECT assignment_id, note, origins FROM assignments WHERE note IS NOT NULL"
@@ -319,6 +319,10 @@ class SchoolInstructionRecords:
             if not isinstance(origins, dict):
                 continue
             mark = origins.get("note")
+            if mark is not None and type(mark) is not str:
+                # A mark that is not text says nothing that can be read, so the note stays
+                # where it is, as a row whose origins cannot be read does.
+                continue
             if mark in AUTHORED_MARKS:
                 continue
             if mark is not None and mark not in SCHOOL_MARKS:

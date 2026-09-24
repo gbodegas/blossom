@@ -167,13 +167,18 @@
                 {# One question for the assignment, whichever cards of the text brought its instructions. #}
                 <input type="hidden" name="instructions-{{ change.key }}" value="{{ change.instructions_revision }}">
                 {% for item in change.instructions_shown %}
-                  <input type="hidden" name="instruction-{{ change.key }}-{{ loop.index0 }}" value="{{ item.text|wire }}">
+                  {% if item.sequence is not none and item.text is not in_words %}
+                    <input type="hidden" name="row-{{ change.key }}-{{ loop.index0 }}" value="{{ item.sequence }}">
+                  {% else %}
+                    <input type="hidden" name="instruction-{{ change.key }}-{{ loop.index0 }}" value="{{ item.text|wire }}">
+                  {% endif %}
                 {% endfor %}
                 <fieldset class="choice instructions" id="instructions-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
                   <legend>The school's instructions for {{ reading.title }}: which apply now?</legend>
-                  {% set unsaved = change.instructions_submitted %}
-                  {% if change.instructions_stale and unsaved and (unsaved.applies or unsaved.none_applies) %}
-                    <p class="problem" id="instructions-problem-{{ change.key }}">Not saved, since what is saved changed: {% for text in unsaved.applies|sort %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% if unsaved.none_applies %}{% if unsaved.applies %}, and {% endif %}that no school instruction applies.{% endif %}</p>
+                  {% if change.key in unsaved_on %}
+                    {% set why = unsaved_on[change.key][0] %}
+                    <h3 class="update-heading">Your unsaved choice</h3>
+                    <p class="problem" id="instructions-problem-{{ change.key }}">{% if why == "stale" %}Not saved, since what is saved changed{% else %}Not saved, since the answer could not be read{% endif %}: {% with said = unsaved_on[change.key][1] %}{% include "instructions_said_back.html" %}{% endwith %}</p>
                   {% endif %}
                   <p class="helper">These are the school's words. Which of them apply is the family's choice, and the school's record is not changed. The ones not chosen are kept as history.</p>
                   {% for item in change.instructions_shown %}

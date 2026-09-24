@@ -19,7 +19,11 @@ is nothing new, whatever revision it names.
 
 This module is the rule and nothing else: no database, no clock, no page.
 Beside it is the one way an instruction's words travel in a form, so what a
-browser sends back names exactly the words that are kept.
+browser sends back names exactly the words that are kept. Words are words
+however long: a note kept from before the school's instructions were kept
+apart had no limit, and moves whole. A form carries in words only what a
+paste can bring; a longer instruction kept from before travels by its row,
+and is put back in its words against what is kept.
 """
 
 import json
@@ -42,7 +46,9 @@ STATES: Final = frozenset({"current", "history", "awaiting"})
 CARDS: Final = frozenset({"assigned", "due"})
 CarriedState = Literal["nothing", "current", "awaiting"]
 INSTRUCTION_MAX_LENGTH: Final = 40_000
-"""The longest an instruction is: no longer than the longest text a paste may be."""
+"""The longest instruction a form carries in its words: the longest text a paste may be, so
+every instruction a paste brings travels in its words. A longer one kept from before travels
+by its row."""
 WIRE_MAX_LENGTH: Final = 12 * INSTRUCTION_MAX_LENGTH + 2
 """The longest an instruction's words are in a form: every character at its longest
 escape, a character beyond the basic plane as two escaped halves, and the two quotes."""
@@ -50,14 +56,21 @@ escape, a character beyond the basic plane as two escaped halves, and the two qu
 
 def instruction_words(text: object) -> bool:
     """Whether a value can be an instruction's words: text with something in it that is not
-    white space, no longer than an instruction may be, and writable as it is."""
-    if not isinstance(text, str) or not text.strip() or len(text) > INSTRUCTION_MAX_LENGTH:
+    white space, and writable as it is. Its length is not limited here: a note kept from
+    before the instructions were kept apart had no limit, and is kept whole."""
+    if not isinstance(text, str) or not text.strip():
         return False
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:
         return False
     return True
+
+
+def travels_in_words(text: str) -> bool:
+    """Whether a form carries these words as they are: they fit in a paste. A longer
+    instruction, kept from before, travels by its row."""
+    return len(text) <= INSTRUCTION_MAX_LENGTH
 
 
 def to_wire(text: str) -> str:
@@ -70,14 +83,14 @@ def to_wire(text: str) -> str:
 
 def from_wire(value: str) -> str | None:
     """The words a form carried, exactly, or ``None`` for a value the page did not write: one
-    that is too long, is no JSON string, or decodes to no instruction's words."""
+    that is too long, is no JSON string, or decodes to no words a form carries."""
     if len(value) > WIRE_MAX_LENGTH or not value.startswith('"') or not value.endswith('"'):
         return None
     try:
         text = json.loads(value)
     except ValueError:
         return None
-    return text if instruction_words(text) else None
+    return text if instruction_words(text) and travels_in_words(text) else None
 
 
 @dataclass(frozen=True)
@@ -93,7 +106,7 @@ class InstructionSeen:
 
     def __post_init__(self) -> None:
         if not instruction_words(self.text):
-            msg = "an instruction has words, and no more than an instruction may hold"
+            msg = "an instruction has words that can be written as they are"
             raise ValueError(msg)
         if self.channel is not None and self.channel not in SCHOOL_CHANNELS:
             msg = "an instruction is the school's: from the portal, the email, or not known"
@@ -175,26 +188,53 @@ class SubmittedChoice:
     page returned can say what was sent, and can tell whether it was made
     against what stands before it gives any tick back: a tick made against
     instructions that have changed since is never put on a form carrying the
-    revision that stands now.
+    revision that stands now. A kept instruction too long to travel in its
+    words is named by its row, in ``rows`` and ``applies_rows``, until the
+    answer is put back in words against what is kept.
     """
 
     shown_revision: int
     shown: tuple[str, ...]
     applies: frozenset[str] = field(default_factory=frozenset)
     none_applies: bool = False
+    rows: tuple[int, ...] = ()
+    applies_rows: frozenset[int] = field(default_factory=frozenset)
 
     @property
     def contradicts(self) -> bool:
         """Whether it ticks some instructions and that none applies."""
-        return self.none_applies and bool(self.applies)
+        return self.none_applies and bool(self.applies or self.applies_rows)
 
     @property
     def answers(self) -> bool:
         """Whether it is a choice: some apply, or none does, and not both."""
-        return bool(self.applies) != self.none_applies
+        return bool(self.applies or self.applies_rows) != self.none_applies
+
+    def resolved(self, kept: Iterable[SchoolInstruction]) -> "SubmittedChoice | None":
+        """The answer with every row it names put back in that row's words, or ``None`` when it
+        names a row not kept here, or the same words twice. A kept row's words never change,
+        so the words a row names now are the words it was shown with."""
+        if not self.rows:
+            return self
+        words = {item.sequence: item.text for item in kept}
+        if not set(self.rows) <= words.keys():
+            return None
+        shown = (*self.shown, *(words[row] for row in self.rows))
+        if len(set(shown)) != len(shown):
+            return None
+        return SubmittedChoice(
+            shown_revision=self.shown_revision,
+            shown=shown,
+            applies=self.applies | {words[row] for row in self.applies_rows},
+            none_applies=self.none_applies,
+        )
 
     def choice(self) -> "InstructionChoice | None":
-        """The choice it makes, or ``None`` when it makes none."""
+        """The choice it makes, or ``None`` when it makes none. An answer that names rows is
+        put back in words first."""
+        if self.rows:
+            msg = "an answer that names kept rows is put back in their words before it chooses"
+            raise ValueError(msg)
         if not self.answers:
             return None
         return InstructionChoice(
@@ -205,8 +245,9 @@ class SubmittedChoice:
         )
 
     def made_against(self, revision: int, texts: Iterable[str]) -> bool:
-        """Whether it was made against these instructions at this revision."""
-        return self.shown_revision == revision and set(self.shown) == set(texts)
+        """Whether it was made against these instructions at this revision; an answer that
+        still names rows is put back in words first, and until then says it was not."""
+        return not self.rows and self.shown_revision == revision and set(self.shown) == set(texts)
 
 
 @dataclass(frozen=True)

@@ -10,22 +10,28 @@ goes through the store's one rule with the revision the page showed.
 An answer that is not saved is never lost and never moved onto other facts.
 It is read whole before anything touches the store, contradictions included.
 When the instructions changed since the page it was made on, it is said in
-words as not saved, beside the facts as they stand, and nothing is ticked;
-when they did not, its own ticks come back to be put right. A save the file
-refuses is tried once, never again, and answered from one normal reading of
-the record, or, when that fails too, by a page that reads no store and shows
-the answer as it was sent. A save that lands returns to the page with what it
-did, bound to the revision it was accepted at, so the page claims a choice
-applies only while that revision is the one that stands.
+words as the parent's unsaved choice, beside the facts as they stand, and
+nothing is ticked; when they did not, its own ticks come back to be put right.
+A form the page did not write is refused whole, and what it chose that can be
+read is said back the same way, with nothing ticked. A save the file refuses
+is tried once, never again, and answered from one normal reading of the
+record, or, when that fails too, by a page that reads no store and shows the
+answer as it was sent. A save that lands returns to the page with what it
+did, bound to the revision it was accepted at and signed by the running
+process, so the page claims a choice applies only while that revision is the
+one that stands, and says nothing of a result it did not sign.
+
+A kept instruction longer than any paste travels in the form by its row, and
+is put back in its words from what is kept before the choice is saved.
 
 The page lives under the family's address, so her sign-in never reaches it;
 a parent does, and the household with the sign-in off does, from the family's
 own pages.
 """
 
-import hashlib
 import hmac
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import date
@@ -36,7 +42,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from blossom.dependencies import ApplicationState
 from blossom.routes.inbox import State
-from blossom.routes.instruction_answers import review_answer
+from blossom.routes.instruction_answers import (
+    SaidBack,
+    UnsavedChoice,
+    review_answers,
+    said_back,
+)
 from blossom.routes.navigation import (
     details_href,
     instructions_action_href,
@@ -63,6 +74,10 @@ SAVED_AS_CHOSEN: Final = (
     "Saved. The instructions chosen apply now, and the others are kept as history."
 )
 ALREADY_STOOD: Final = "Nothing changed: the school's instructions already stood as chosen."
+SAVED_NONE_APPLIES: Final = (
+    "Saved. No school instruction applies now. The instructions are kept as history."
+)
+STOOD_NONE_APPLIES: Final = "Nothing changed. No school instruction applies now."
 SAVED_SINCE_CHANGED: Final = (
     "That choice was saved, and the school's instructions for this assignment have changed "
     "since. They are shown below as they stand now."
@@ -105,48 +120,60 @@ STANDINGS: Final = {
 }
 RESULT: Final = "result"
 """The id of the paragraph a save's redirect lands on."""
+RESULT_SHAPE: Final = re.compile(r"(saved|stood)\.(0|[1-9][0-9]{0,8})\.([0-9a-f]{16})")
+"""The one shape a save writes: what it did, the revision as the count is spelled, and the
+check as sixteen lower-case hexadecimal digits."""
+RESULT_MAX_LENGTH: Final = 32
 
 ResultKind = Literal["saved", "stood"]
 
 
-def result_token(assignment_id: str, kind: ResultKind, revision: int) -> str:
+def result_token(key: bytes, assignment_id: str, kind: ResultKind, revision: int) -> str:
     """What a save carries to the page it returns to: what it did, the revision it was
-    accepted at, and a check that ties both to this assignment, so a token made for another
-    assignment, or made up, says nothing."""
-    return f"{kind}.{revision}.{_check(assignment_id, kind, revision)}"
+    accepted at, and a check signed with the running process's key that ties both to this
+    assignment, so a token made for another assignment, worked out from the address, or
+    signed before a restart says nothing."""
+    return f"{kind}.{revision}.{_check(key, assignment_id, kind, revision)}"
 
 
-def _check(assignment_id: str, kind: str, revision: int) -> str:
-    return hashlib.sha256(f"{assignment_id}\n{kind}\n{revision}".encode()).hexdigest()[:16]
+def _check(key: bytes, assignment_id: str, kind: str, revision: int) -> str:
+    signed = f"{assignment_id}\n{kind}\n{revision}".encode()
+    return hmac.new(key, signed, "sha256").hexdigest()[:16]
 
 
-def result_of(assignment_id: str, token: str | None) -> tuple[ResultKind, int] | None:
+def result_of(key: bytes, assignment_id: str, token: str | None) -> tuple[ResultKind, int] | None:
     """What a save did and the revision it was accepted at, from the address, or ``None``
-    for anything the save did not write for this assignment."""
-    if not token:
+    for anything the running process did not sign for this assignment. The whole token is
+    held to the one shape a save writes before its check is compared, so any other
+    character, length, or spelling says nothing."""
+    if token is None or len(token) > RESULT_MAX_LENGTH:
         return None
-    kind, _, rest = token.partition(".")
-    revision, _, check = rest.partition(".")
-    if kind not in ("saved", "stood") or not (
-        revision.isascii() and revision.isdigit() and 0 < len(revision) <= 9
-    ):
+    shape = RESULT_SHAPE.fullmatch(token)
+    if shape is None:
         return None
+    kind, revision, check = shape.groups()
     number = int(revision)
-    if str(number) != revision or not hmac.compare_digest(
-        check, _check(assignment_id, kind, number)
-    ):
+    if not hmac.compare_digest(check, _check(key, assignment_id, kind, number)):
         return None
     return ("saved" if kind == "saved" else "stood"), number
 
 
-def result_said(result: tuple[ResultKind, int] | None, revision: int) -> str | None:
-    """What the page says of a save it was returned to: that the choice applies only while
-    the revision it was accepted at still stands, and that it has changed since when a
-    later one stands. A revision the record has not reached says nothing."""
+def result_said(
+    result: tuple[ResultKind, int] | None, standing: InstructionsStanding | None
+) -> str | None:
+    """What the page says of a save it was returned to: what the save did, only while the
+    revision it was accepted at still stands, and in its own words when what stands is that
+    no instruction applies; that the instructions have changed since, when a later revision
+    stands. A revision the record has not reached says nothing."""
     if result is None:
         return None
     kind, accepted = result
+    revision = 0 if standing is None else standing.revision
     if accepted == revision:
+        # Said from what stands, and only once the revision it was accepted at is the one
+        # that stands.
+        if standing is None or not standing.current:
+            return SAVED_NONE_APPLIES if kind == "saved" else STOOD_NONE_APPLIES
         return SAVED_AS_CHOSEN if kind == "saved" else ALREADY_STOOD
     if accepted < revision:
         return SAVED_SINCE_CHANGED if kind == "saved" else STOOD_SINCE_CHANGED
@@ -174,26 +201,15 @@ def spoken_month_day(day: date) -> str:
 
 @dataclass(frozen=True)
 class ShownRow:
-    """One box on the page: the instruction's words, what the page says of it, and whether it
-    comes ticked, which only a page returned with the parent's own ticks, made against what
-    stands, does."""
+    """One box on the page: the instruction's words, its row, what the page says of it, and
+    whether it comes ticked, which only a page returned with the parent's own ticks, made
+    against what stands, does."""
 
     number: int
+    sequence: int
     text: str
     said: str
     ticked: bool
-
-
-async def form_of(request: Request) -> dict[str, str] | None:
-    """The form's fields, each once and each text, or ``None`` when a field came twice or was
-    a file: not a form this page made."""
-    form = await request.form()
-    fields: dict[str, str] = {}
-    for name, value in form.multi_items():
-        if name in fields or not isinstance(value, str):
-            return None
-        fields[name] = value
-    return fields
 
 
 def reading_of(
@@ -210,11 +226,14 @@ def reading_of(
     return item, found.readable.get(assignment_id), True
 
 
-def sent(submitted: SubmittedChoice | None) -> SubmittedChoice | None:
-    """The answer to say as not saved: one that chose something, some or none."""
-    if submitted is None or not (submitted.applies or submitted.none_applies):
-        return None
-    return submitted
+def account_of(
+    submitted: SubmittedChoice | None, unsaved: UnsavedChoice | None
+) -> UnsavedChoice | None:
+    """What an answer that was not saved chose: the choice read from a form the page did not
+    write, or the readable answer itself."""
+    if unsaved is not None:
+        return unsaved
+    return None if submitted is None else UnsavedChoice.of(submitted)
 
 
 def review_page(
@@ -223,6 +242,7 @@ def review_page(
     assignment_id: str,
     *,
     submitted: SubmittedChoice | None = None,
+    unsaved: UnsavedChoice | None = None,
     problem: str | None = None,
     status_code: int = status.HTTP_200_OK,
     failed: bool = False,
@@ -233,12 +253,15 @@ def review_page(
     ``submitted`` is an answer that was not saved, and ``problem`` and
     ``status_code`` what to say of it when it was made against what stands;
     when it was not, the page says the instructions changed, gives no tick
-    back, and says the answer in words. ``failed`` is a save the file refused,
-    whose answer is said in words either way. ``result`` is what a save did,
-    said only as far as the revision it was accepted at still stands.
+    back, and says the answer in words. ``unsaved`` is what a form the page
+    did not write chose, said in words with nothing ticked. ``failed`` is a
+    save the file refused, whose answer is said in words either way.
+    ``result`` is what a save did, said only as far as the revision it was
+    accepted at still stands.
     """
     item, standing, readable = reading_of(state, assignment_id)
-    pressed = submitted is not None or (problem is not None and status_code >= 400)
+    account = account_of(submitted, unsaved)
+    pressed = account is not None or (problem is not None and status_code >= 400)
     back = details_href(assignment_id, return_to="family")
     if item is None:
         return templates.TemplateResponse(
@@ -248,7 +271,7 @@ def review_page(
                 "item": None,
                 "problem": NOT_ON_RECORD,
                 "pressed": pressed,
-                "not_saved": sent(submitted),
+                "not_saved": said_back(account, None),
                 "back": "/parent",
             },
             status_code=status.HTTP_404_NOT_FOUND,
@@ -261,7 +284,7 @@ def review_page(
                 "item": item,
                 "problem": INSTRUCTIONS_UNREADABLE,
                 "pressed": pressed,
-                "not_saved": sent(submitted),
+                "not_saved": said_back(account, None),
                 "back": back,
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -270,21 +293,27 @@ def review_page(
     revision = 0 if standing is None else standing.revision
     ticked: frozenset[str] = frozenset()
     none_ticked = False
-    not_saved = None
-    if submitted is not None:
-        if not submitted.made_against(revision, [row.text for row in kept]):
+    not_saved: SaidBack | None = None
+    answer = None if submitted is None else submitted.resolved(kept)
+    if unsaved is not None:
+        # A form the page did not write: what it chose is said back, and nothing is ticked, so
+        # the next save is a choice made afresh on the facts as they stand.
+        not_saved = said_back(unsaved, kept)
+    elif submitted is not None:
+        if answer is None or not answer.made_against(revision, [row.text for row in kept]):
             # Made against instructions that changed since: nothing it ticked comes back on a
             # form carrying the revision that stands, and the parent chooses again.
-            not_saved = sent(submitted)
+            not_saved = said_back(account, kept)
             if not failed:
                 problem, status_code = CHANGED_SINCE_OPENED, status.HTTP_409_CONFLICT
         else:
-            ticked, none_ticked = submitted.applies, submitted.none_applies
+            ticked, none_ticked = answer.applies, answer.none_applies
             if failed:
-                not_saved = sent(submitted)
+                not_saved = said_back(UnsavedChoice.of(answer), kept)
     rows = [
         ShownRow(
             number=number,
+            sequence=row.sequence,
             text=row.text,
             said=f"{STANDINGS[row.state]} {context_of(row)}",
             ticked=row.text in ticked,
@@ -300,7 +329,7 @@ def review_page(
             "revision": revision,
             "none_ticked": none_ticked,
             "not_saved": not_saved,
-            "notice": None if pressed else result_said(result, revision),
+            "notice": None if pressed else result_said(result, standing),
             "problem": problem,
             "pressed": pressed,
             "action": instructions_action_href(assignment_id),
@@ -313,12 +342,13 @@ def review_page(
 def plain_page(
     request: Request,
     assignment_id: str,
-    submitted: SubmittedChoice | None,
+    account: UnsavedChoice | None,
     problem: str,
     status_code: int,
 ) -> HTMLResponse:
     """The page when the record cannot be read back: what happened, the answer as it was
-    sent, and the ways on. Nothing here reads the store, offers a save, or claims one."""
+    sent, and the ways on. Nothing here reads the store, offers a save, or claims one; a
+    kept instruction the answer named by its row is counted, since its words are not read."""
     return templates.TemplateResponse(
         request,
         "school_instructions_review.html",
@@ -327,7 +357,7 @@ def plain_page(
             "plain": True,
             "problem": problem,
             "pressed": True,
-            "not_saved": sent(submitted),
+            "not_saved": said_back(account, None),
             "back": details_href(assignment_id, return_to="family"),
         },
         status_code=status_code,
@@ -342,6 +372,7 @@ def page_or_plain(
     problem: str,
     status_code: int,
     *,
+    unsaved: UnsavedChoice | None = None,
     failed: bool = False,
 ) -> HTMLResponse:
     """The page with a refusal said first, read once; when the record cannot be read back,
@@ -352,13 +383,16 @@ def page_or_plain(
             state,
             assignment_id,
             submitted=submitted,
+            unsaved=unsaved,
             problem=problem,
             status_code=status_code,
             failed=failed,
         )
     except Exception:
         logger.exception("the review of school instructions could not be read back")
-        return plain_page(request, assignment_id, submitted, problem, status_code)
+        return plain_page(
+            request, assignment_id, account_of(submitted, unsaved), problem, status_code
+        )
 
 
 @router.get(
@@ -370,9 +404,14 @@ def review(
     request: Request, assignment_id: str, state: State, result: str | None = None
 ) -> Response:
     """The review, as the record stands. Nothing here writes. ``result`` is what a save just
-    did, which the save wrote and the address only carries; a value it did not write for this
-    assignment says nothing."""
-    return review_page(request, state, assignment_id, result=result_of(assignment_id, result))
+    did, which the save wrote and the address only carries; a value this process did not sign
+    for this assignment says nothing."""
+    return review_page(
+        request,
+        state,
+        assignment_id,
+        result=result_of(state.result_key, assignment_id, result),
+    )
 
 
 @router.post(
@@ -383,17 +422,19 @@ def review(
 async def choose(request: Request, assignment_id: str, state: State) -> Response:
     """Save which instructions apply, or that none does, against the revision shown.
 
-    The answer is read whole before the store is touched. A form this page
+    The answer is read whole before the store is touched. A form the page
     did not make, nothing ticked, or a box beside none writes nothing and
-    returns the page. The choice is saved through the store's rule under the
-    decision lock, once; a refusal of the file, an assignment gone, or
-    instructions that cannot be read are answered after the lock is let go,
-    with the answer kept. Settled, or already standing, it returns to the
-    review with the revision it was accepted at. Who chose is a parent signed
-    in, or the household with the sign-in off.
+    returns the page, with what the form chose said back. A kept instruction
+    named by its row is put back in its words from what is kept. The choice
+    is saved through the store's rule under the decision lock, once; a
+    refusal of the file, an assignment gone, or instructions that cannot be
+    read are answered after the lock is let go, with the answer kept.
+    Settled, or already standing, it returns to the review with the revision
+    it was accepted at. Who chose is a parent signed in, or the household
+    with the sign-in off.
     """
-    fields = await form_of(request)
-    submitted = None if fields is None else review_answer(fields)
+    read = review_answers((await request.form()).multi_items())
+    submitted = read.answer
     if submitted is None:
         return page_or_plain(
             request,
@@ -402,7 +443,45 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
             None,
             FORM_UNREADABLE,
             status.HTTP_422_UNPROCESSABLE_CONTENT,
+            unsaved=read.unsaved,
         )
+    if submitted.rows:
+        # A kept row's words never change, so the words its row names now are the words the
+        # parent was shown; a row not kept for this assignment is no form this page wrote.
+        try:
+            _, standing, readable = reading_of(state, assignment_id)
+        except sqlite3.Error:
+            logger.exception("the rows a choice named could not be read")
+            return page_or_plain(
+                request,
+                state,
+                assignment_id,
+                submitted,
+                NOT_SAVED,
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                failed=True,
+            )
+        if not readable:
+            return page_or_plain(
+                request,
+                state,
+                assignment_id,
+                submitted,
+                INSTRUCTIONS_UNREADABLE,
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        resolved = submitted.resolved(() if standing is None else standing.kept)
+        if resolved is None:
+            return page_or_plain(
+                request,
+                state,
+                assignment_id,
+                None,
+                FORM_UNREADABLE,
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                unsaved=read.unsaved,
+            )
+        submitted = resolved
     choice = submitted.choice()
     if choice is None:
         return page_or_plain(
@@ -449,9 +528,9 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
             request, state, assignment_id, submitted, NOT_ON_RECORD, status.HTTP_404_NOT_FOUND
         )
     if isinstance(outcome, InstructionsSettled):
-        token = result_token(assignment_id, "saved", outcome.revision)
+        token = result_token(state.result_key, assignment_id, "saved", outcome.revision)
     elif isinstance(outcome, InstructionsUnchanged):
-        token = result_token(assignment_id, "stood", outcome.revision)
+        token = result_token(state.result_key, assignment_id, "stood", outcome.revision)
     else:
         return page_or_plain(
             request,

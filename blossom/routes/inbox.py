@@ -15,7 +15,7 @@ field as it was, the failing field named, and the section open.
 
 import logging
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Annotated, Final
@@ -34,6 +34,7 @@ from blossom.intake import (
     REVIEW,
     TEXT_MAX_LENGTH,
     UPDATE,
+    Change,
     ChangedSinceShown,
     Held,
     Kept,
@@ -49,7 +50,13 @@ from blossom.intake import (
     spoken_report,
     within_a_school_year,
 )
-from blossom.routes.instruction_answers import paste_answers, review_key
+from blossom.routes.instruction_answers import (
+    SaidBack,
+    UnsavedChoice,
+    paste_answers,
+    review_key,
+    said_back,
+)
 from blossom.routes.parent import review_page
 from blossom.routes.student import viewer_of
 from blossom.school_instructions import SubmittedChoice
@@ -96,6 +103,7 @@ NEEDS_ANSWER: Final = (
     "A question above still needs your answer. Answer it, then save; what you chose on the "
     "other cards is kept."
 )
+CHOOSE_INSTRUCTIONS: Final = "Choose which school instructions apply. Nothing was saved."
 HELD_BY_A_NOTE: Final = (
     "Nothing was saved. Some of this is about homework she added from a note, and Blossom "
     "cannot yet tell the school's version from hers. The rows are named below. Take them "
@@ -345,17 +353,21 @@ def problem_page(
 class AnswerKept:
     """One answer given on a review card, as unsaved input to copy: which card, whether the
     row is the same assignment or new work, the type chosen, and which of the school's
-    instructions were ticked to apply, or that none does."""
+    instructions were ticked to apply, or that none does. ``unshown`` counts the kept
+    instructions ticked by their row, whose words a page that reads no store cannot say."""
 
     key: str
     occurrence: str | None
     kind: str | None
     instructions: tuple[str, ...] = ()
     none_applies: bool = False
+    unshown: int = 0
 
 
 def answers_kept(
-    form: Mapping[str, str], instructions: Mapping[int, SubmittedChoice] | None = None
+    form: Mapping[str, str],
+    instructions: Mapping[int, SubmittedChoice] | None = None,
+    unsaved: Mapping[int, UnsavedChoice] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review form carried, read by the one reader the save uses and with no
     record read: the page's own notes of what each select suggested and showed, of what was
@@ -373,21 +385,26 @@ def answers_kept(
             continue
         safe[name] = value
     occurrences, kinds = answers_from(safe, {})
-    return answers_shown(occurrences, kinds, instructions)
+    return answers_shown(occurrences, kinds, instructions, unsaved)
 
 
 def answers_shown(
     occurrences: Mapping[int, str] | None,
     kinds: Mapping[int, AssignmentKind] | None,
     instructions: Mapping[int, SubmittedChoice] | None = None,
+    unsaved: Mapping[int, UnsavedChoice] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review page was made with, in the same shape: an answer about the
     school's instructions by the words ticked, read off the wire before anything was
-    written, so a page that reads no store can still say them."""
+    written, so a page that reads no store can still say them; what a card whose answer
+    could not be read chose, the same way; and a kept instruction ticked by its row,
+    counted."""
+    chosen = {key: UnsavedChoice.of(answer) for key, answer in (instructions or {}).items()}
+    chosen.update(unsaved or {})
     chosen = {
         key: answer
-        for key, answer in (instructions or {}).items()
-        if answer.applies or answer.none_applies
+        for key, answer in chosen.items()
+        if answer.applies or answer.rows or answer.none_applies
     }
     keys = sorted({*(occurrences or {}), *(kinds or {}), *chosen})
     return [
@@ -397,9 +414,34 @@ def answers_shown(
             None if kinds is None or key not in kinds else kinds[key].value,
             tuple(sorted(chosen[key].applies)) if key in chosen else (),
             key in chosen and chosen[key].none_applies,
+            len(chosen[key].rows) if key in chosen else 0,
         )
         for key in keys
     ]
+
+
+def unsaved_on(
+    changes: Sequence[Change], unsaved: Mapping[int, UnsavedChoice]
+) -> dict[int, tuple[str, SaidBack]]:
+    """What each question says back as the parent's unsaved choice, and why: what a card
+    whose answer could not be read chose, or an answer made against instructions that
+    changed since, in words, with the kept instructions this reading found."""
+    said: dict[int, tuple[str, SaidBack]] = {}
+    for change in changes:
+        if not change.instructions_question:
+            continue
+        account = None
+        why = "unreadable"
+        if change.key in unsaved:
+            account = said_back(unsaved[change.key], change.instructions_kept)
+        elif change.instructions_stale and change.instructions_submitted is not None:
+            why = "stale"
+            account = said_back(
+                UnsavedChoice.of(change.instructions_submitted), change.instructions_kept
+            )
+        if account is not None:
+            said[change.key] = (why, account)
+    return said
 
 
 def intake_unavailable(
@@ -447,6 +489,7 @@ def preview_page(
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
     instruction_answers: Mapping[int, SubmittedChoice] | None = None,
+    unsaved: Mapping[int, UnsavedChoice] | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -457,11 +500,13 @@ def preview_page(
     refuses the comparison, and the page that reads no store keeps the draft.
 
     ``refused`` says the page comes back for an answer about the school's
-    instructions that was not saved: ``contradict``, ``malformed``, or
-    ``stale``. When an answer on any card was made against instructions that
-    changed since, from this reading of the record, the page says so first,
-    with a 409, whatever else was wrong. The summary takes the focus and links
-    to the first question it is about."""
+    instructions that was not saved: ``contradict``, ``malformed``, ``stale``,
+    or ``unanswered``, a question left without an answer. ``unsaved`` is what
+    each card whose answer could not be read chose, said back on its question
+    as the parent's unsaved choice, with nothing ticked. When an answer on any
+    card was made against instructions that changed since, from this reading of
+    the record, the page says so first, with a 409, whatever else was wrong. The
+    summary takes the focus and links to the first question it is about."""
     try:
         changes = changes_for(
             read.items,
@@ -473,20 +518,23 @@ def preview_page(
         held = held_rows(read.items, state.project_state)
     except UnreadableClaim:
         return intake_unavailable(
-            request, state, draft, answers_shown(occurrences, kinds, instruction_answers)
+            request, state, draft, answers_shown(occurrences, kinds, instruction_answers, unsaved)
         )
     except UnreadableInstruction:
         return intake_unavailable(
             request,
             state,
             draft,
-            answers_shown(occurrences, kinds, instruction_answers),
+            answers_shown(occurrences, kinds, instruction_answers, unsaved),
             INSTRUCTION_UNREADABLE,
         )
+    said = unsaved_on(changes, unsaved or {})
     problem_target = None
     if refused is not None:
         stale = [change.key for change in changes if change.instructions_stale]
         asked = [change.key for change in changes if change.instructions_question]
+        unanswered = [change.key for change in changes if change.instructions_asked]
+        unreadable = [key for key, (why, _) in said.items() if why == "unreadable"]
         contradicting = [
             change.key
             for change in changes
@@ -498,6 +546,10 @@ def preview_page(
             problem_target = stale[0]
         elif refused == "contradict" and contradicting:
             problem_target = contradicting[0]
+        elif refused == "unanswered" and unanswered:
+            problem_target = unanswered[0]
+        elif refused == "malformed" and unreadable:
+            problem_target = unreadable[0]
         elif asked:
             problem_target = asked[0]
     if held is not None:
@@ -531,6 +583,7 @@ def preview_page(
             "spoken_report": spoken_report,
             "spoken_day": spoken_day,
             "problem_target": problem_target,
+            "unsaved_on": said,
         },
         status_code=status_code,
     )
@@ -546,6 +599,7 @@ def preview_or_recovery(
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
     instruction_answers: Mapping[int, SubmittedChoice] | None = None,
+    unsaved: Mapping[int, UnsavedChoice] | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -562,6 +616,7 @@ def preview_or_recovery(
             occurrences=occurrences,
             kinds=kinds,
             instruction_answers=instruction_answers,
+            unsaved=unsaved,
             refused=refused,
             notice=notice,
             status_code=status_code,
@@ -638,7 +693,7 @@ async def keep_readings(request: Request, state: State) -> Response:
     # store can show: all of it before anything touches the store.
     read_answers = paste_answers((await request.form()).multi_items())
     instruction_answers = read_answers.answers
-    kept_answers = answers_kept(form, instruction_answers)
+    kept_answers = answers_kept(form, instruction_answers, read_answers.unsaved)
     # A claim on record that cannot be read refuses the comparison, before the write or
     # inside its transaction, which is rolled back whole before anything is answered. The
     # answer reads no store and keeps the draft and the answers given on the cards; so does
@@ -657,6 +712,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 occurrences=occurrences,
                 kinds=kinds,
                 instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
                 refused="malformed" if read_answers.malformed else "contradict",
                 notice=(
                     INSTRUCTION_FORM_UNREADABLE
@@ -711,10 +767,14 @@ async def keep_readings(request: Request, state: State) -> Response:
         )
     if not isinstance(kept, Kept):
         open_questions = {change.key for change in kept if change.state == REVIEW}
-        if conflicting_choices(kept):
+        # A question about the school's instructions left without an answer: the page says
+        # so first, with the focus on it, and every answer given elsewhere stays as given.
+        unanswered = any(change.instructions_asked for change in kept)
+        conflicting = conflicting_choices(kept)
+        if conflicting:
             notice = CHOOSE_ONE_TYPE
         elif open_questions <= asked_on(form):
-            notice = NEEDS_ANSWER
+            notice = CHOOSE_INSTRUCTIONS if unanswered else NEEDS_ANSWER
         else:
             notice = LOOK_AGAIN
         return preview_or_recovery(
@@ -726,6 +786,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             occurrences=occurrences,
             kinds=kinds,
             instruction_answers=instruction_answers,
+            refused="unanswered" if unanswered and not conflicting else None,
             notice=notice,
         )
     return RedirectResponse(

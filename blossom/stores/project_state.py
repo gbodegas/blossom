@@ -1931,8 +1931,11 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
                         held = json.loads(str(saved[1]))
                     except ValueError:
                         held = {}
-                    if isinstance(held, dict) and held.get("note") in AUTHORED_MARKS:
-                        origins["note"] = SourceChannel(str(held["note"]))
+                    held_mark = held.get("note") if isinstance(held, dict) else None
+                    # A mark that is not text is read as none, as origins that cannot be
+                    # read are.
+                    if type(held_mark) is str and held_mark in AUTHORED_MARKS:
+                        origins["note"] = SourceChannel(held_mark)
                 assignment = given.model_copy(update={"note": None, "origins": origins})
             self._connection.execute(
                 """

@@ -1,0 +1,10 @@
+{#
+  An answer about the school's instructions that was not saved, in words: the
+  words it chose, in the one order; any kept instruction it chose that this
+  page cannot put in words, counted; and that none applies, when it chose
+  that. ``said`` is what the route made of the answer; nothing here reads
+  anything else.
+#}
+{%- for text in said.words %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}
+{%- if said.unshown %}{% if said.words %}, {% endif %}{% if said.unshown == 1 %}an instruction kept for this assignment, too long to repeat here{% else %}{{ said.unshown }} instructions kept for this assignment, too long to repeat here{% endif %}{% endif %}
+{%- if said.none_applies %}{% if said.words or said.unshown %}, and {% endif %}that no school instruction applies{% endif %}

@@ -33,6 +33,7 @@ from blossom.school_instructions import (
     settle,
     standing_of,
     to_wire,
+    travels_in_words,
 )
 from blossom.stores.project_state import Assignment, ProjectStateStore, Seed
 from blossom.stores.school_instructions import (
@@ -693,12 +694,11 @@ def test_a_choice_of_words_neither_kept_nor_new_is_refused_and_a_true_retry_stil
     [
         ("", SourceChannel.LMS),
         ("   ", SourceChannel.LMS),
-        ("a" * (INSTRUCTION_MAX_LENGTH + 1), SourceChannel.LMS),
         ("\ud800", SourceChannel.LMS),
         ("Fine words.", SourceChannel.STUDENT_REPORT),
         ("Fine words.", SourceChannel.PARENT_ENTRY),
     ],
-    ids=["empty", "blank", "too-many-words", "half-a-pair", "her-report", "a-parents-entry"],
+    ids=["empty", "blank", "half-a-pair", "her-report", "a-parents-entry"],
 )
 def test_an_instruction_is_the_schools_words_or_nothing(text: str, channel: SourceChannel) -> None:
     with pytest.raises(ValueError, match="instruction"):
@@ -784,6 +784,8 @@ def test_a_moment_is_written_in_utc_and_read_back_as_the_same_moment(
         ("card_day", "2026-9-1"),
         ("card_day", "20260901"),
         ("first_seen_at_utc", "2026-09-23T22:00:00"),
+        ("first_seen_at_utc", "2026-09-23T23:00:00+01:00"),
+        ("settled_at_utc", "2026-09-23T17:00:00-05:00"),
         ("first_seen_on", 20260923),
         ("state", b"current"),
         ("imported_by", "teacher"),
@@ -894,3 +896,109 @@ def test_a_blank_seed_note_is_no_instruction(tmp_path: pathlib.Path) -> None:
 
     assert set(found.readable) == {"words"}
     assert (rows["empty"].note, rows["spaces"].note) == ("", "  ")
+
+
+# ------------------------------------------------------------------ marks the store cannot read
+
+
+@pytest.mark.parametrize("mark", [[], {"LMS": 1}, 7], ids=["a-list", "an-object", "a-number"])
+def test_a_note_mark_that_is_no_text_leaves_its_note_and_never_stops_a_start(
+    tmp_path: pathlib.Path, mark: object
+) -> None:
+    """The origins can be read and their note mark cannot: the note stays where it is, with its
+    origins as they were, and the start goes on to move every other school note."""
+    path = old_file(tmp_path, [("bent", A, None), ("plain", B, "EMAIL")])
+    bent = json.dumps({"record": "LMS", "note": mark})
+    connection = sqlite3.connect(path)
+    with connection:
+        connection.execute(
+            "UPDATE assignments SET origins = ? WHERE assignment_id = 'bent'", (bent,)
+        )
+    connection.close()
+
+    store = ProjectStateStore.open(path, fixture_clock())
+    left = store._connection.execute(
+        "SELECT note, origins FROM assignments WHERE assignment_id = 'bent'"
+    ).fetchone()
+    found = store.school_instruction_readings(["bent", "plain"])
+
+    assert left == (A, bent)
+    assert found.readable.keys() == {"plain"}
+    assert found.readable["plain"].texts == (B,)
+
+
+def test_a_school_note_written_over_a_note_mark_that_is_no_text_is_kept(
+    tmp_path: pathlib.Path,
+) -> None:
+    store = practice_store(tmp_path / "record.sqlite3")
+    name = target(store)
+    store._connection.execute(
+        "UPDATE assignments SET note = ?, origins = ? WHERE assignment_id = ?",
+        ("Old words.", json.dumps({"note": []}), name),
+    )
+    store._connection.commit()
+
+    store.put_on_record([a_row(name, C, SourceChannel.LMS)], {})
+
+    assert readings(store, name).texts == (C,)
+
+
+# ------------------------------------------------------------------ notes longer than a paste
+
+LONGEST_PASTE = [INSTRUCTION_MAX_LENGTH, INSTRUCTION_MAX_LENGTH + 1]
+
+
+@pytest.mark.parametrize("length", LONGEST_PASTE, ids=["as-long-as-a-paste", "longer"])
+def test_a_school_note_longer_than_a_paste_moves_whole_once_beside_an_ordinary_one(
+    tmp_path: pathlib.Path, length: int
+) -> None:
+    """A note had no length of its own before the school's instructions were kept apart. One
+    as long as a paste, or longer, moves whole with its channel, beside an ordinary one; the
+    field is cleared once it is kept, and a second start adds nothing."""
+    words = "x" * (length - 1) + "."
+    path = old_file(tmp_path, [("long", words, "LMS"), ("plain", B, None)])
+    first = ProjectStateStore.open(path, fixture_clock())
+    found = first.school_instruction_readings(["long", "plain"]).readable
+    moved = first.one_assignment("long")
+    after_first = {name: table_rows(first, name) for name in ("assignments", "school_instructions")}
+    first.close()
+
+    second = ProjectStateStore.open(path, fixture_clock())
+    after_second = {
+        name: table_rows(second, name) for name in ("assignments", "school_instructions")
+    }
+
+    assert found["long"].texts == (words,)
+    assert found["long"].current[0].channel is SourceChannel.LMS
+    assert found["plain"].texts == (B,)
+    assert moved is not None
+    assert moved.note is None
+    assert after_second == after_first
+
+
+@pytest.mark.parametrize("length", LONGEST_PASTE, ids=["as-long-as-a-paste", "longer"])
+def test_a_seed_note_longer_than_a_paste_is_kept_whole(tmp_path: pathlib.Path, length: int) -> None:
+    words = "y" * length
+    seed = Seed(
+        assignments=[a_row("long", words, SourceChannel.EMAIL), a_row("plain", A, None)],
+        claims={},
+        student_reports=[],
+    )
+
+    store = ProjectStateStore.initialize(tmp_path / "seed.sqlite3", fixture_clock(), lambda: seed)
+    found = store.school_instruction_readings(["long", "plain"]).readable
+
+    assert found["long"].texts == (words,)
+    assert found["long"].current[0].channel is SourceChannel.EMAIL
+    assert found["plain"].texts == (A,)
+
+
+def test_only_words_a_paste_can_bring_travel_in_a_form_in_words() -> None:
+    """An instruction is the school's words however long a note from before held them; a form
+    carries in words only those that fit in a paste, and never longer ones."""
+    longer = "z" * (INSTRUCTION_MAX_LENGTH + 1)
+
+    assert InstructionSeen(longer, SourceChannel.LMS).text == longer
+    assert travels_in_words("z" * INSTRUCTION_MAX_LENGTH)
+    assert not travels_in_words(longer)
+    assert from_wire(to_wire(longer)) is None
