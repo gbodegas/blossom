@@ -542,7 +542,7 @@ def test_a_contradiction_made_against_changed_instructions_is_not_put_right_onto
     assert not_saved is not None
     assert (
         unescape(not_saved.group(1))
-        == "Not saved: "
+        == "Not saved, since what is saved changed: "
         + f'<q class="authored-text">{A}</q>'
         + ", and that no school instruction applies"
     )
@@ -1253,3 +1253,76 @@ def test_a_choice_by_reference_the_page_cannot_read_back_is_said_as_unread(
     else:
         assert not_saved_words(refused.text) == []
         assert "2 instructions selected by reference; their text could not be read" in said.group(1)
+
+
+# ------------------------------------------------------------------ a stale choice unanswered
+
+
+def not_saved_line(page: str) -> str:
+    said = re.search(r'<p class="problem" id="not-saved"[^>]*>(.*?)</p>', page, re.S)
+    assert said is not None
+    return unescape(said.group(1))
+
+
+@pytest.mark.parametrize("choice", ["one", "none"])
+def test_a_stale_choice_stays_through_unanswered_saves_until_a_fresh_one_is_made(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, choice: str
+) -> None:
+    """B is chosen in one tab; another saves B and then A. The first tab's save is refused as
+    stale and its choice is shown again, with why, through unanswered saves, a form that
+    cannot be read, and a reading that fails. Nothing is written until a fresh choice, which
+    replaces it and saves; the old form still changes nothing."""
+    words = f'<q class="authored-text">{B}</q>' if choice == "one" else ""
+    words += "that no school instruction applies" if choice == "none" else ""
+    line = "Not saved, since what is saved changed: " + words
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        a_current_b_earlier(store)
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        old = the_form(page, B) if choice == "one" else the_form(page, none=True)
+        for number, pick in enumerate([frozenset({B}), frozenset({A})]):
+            store.settle_school_instructions(
+                ESSAY_ID,
+                [],
+                InstructionChoice(2 + number, (A, B), pick),
+                authored_by="parent",
+                now=NOW,
+                today=TODAY,
+            )
+        before = tables(client)
+        refused = client.post(ACTION, data=old)
+        again = client.post(ACTION, data=whole_form(refused.text, ACTION))
+        bent = post_as_sent(
+            client, damaged(whole_form(again.text, ACTION), "a-field-the-page-never-writes")
+        )
+        after = tables(client)
+
+        def refuse_the_reading(*_: object, **__: object) -> None:
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "one_assignment", refuse_the_reading)
+        failed = client.post(ACTION, data=whole_form(again.text, ACTION))
+        monkeypatch.undo()
+        both = client.post(ACTION, data=the_form(again.text, B, none=True))
+        fresh = client.post(ACTION, data=the_form(again.text, A, B))
+        chosen = standing(client).texts
+        stale = client.post(ACTION, data=old)
+        found = standing(client)
+
+    assert refused.status_code == 409
+    assert again.status_code == bent.status_code == failed.status_code == 422
+    assert after == before
+    assert str(escape(NOTHING_CHOSEN)) in again.text
+    assert str(escape(FORM_UNREADABLE)) in bent.text
+    for shown in (refused.text, again.text, bent.text, failed.text):
+        assert not_saved_line(shown) == line
+        assert not any(on for _, on, _ in boxes(shown))
+        assert 'name="none" value="1" checked' not in shown
+    assert f'action="{ACTION}"' not in failed.text
+    assert both.status_code == 422
+    assert 'id="not-saved"' not in both.text
+    assert fresh.status_code == 303
+    assert set(chosen) == {A, B}
+    assert stale.status_code == 409
+    assert found.texts == chosen

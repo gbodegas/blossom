@@ -13,7 +13,8 @@ When the instructions changed since the page it was made on, it is said in
 words as the parent's unsaved choice, beside the facts as they stand, and
 nothing is ticked; when they did not, its own ticks come back to be put right.
 A form the page did not write is refused whole, and what it chose that can be
-read is said back the same way, with nothing ticked. A save the file refuses
+read is said back the same way, with nothing ticked. A choice said back is
+carried in the form, with why, and shown again until a fresh one is made. A save the file refuses
 is tried once, never again, and answered from one normal reading of the
 record, or, when that fails too, by a page that reads no store and shows the
 answer as it was sent. A save that lands returns to the page with what it
@@ -43,6 +44,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from blossom.dependencies import ApplicationState
 from blossom.routes.inbox import State
 from blossom.routes.instruction_answers import (
+    CarriedAccount,
     SaidBack,
     UnsavedChoice,
     review_answers,
@@ -236,6 +238,16 @@ def account_of(
     return None if submitted is None else UnsavedChoice.of(submitted)
 
 
+def carried_or(
+    said: SaidBack | None, why: str | None, carried: CarriedAccount | None
+) -> tuple[SaidBack | None, str | None]:
+    """What the page says as not saved, and why: this answer's own account, or, when it has
+    none, the one the page before showed and the form carried."""
+    if said is None and carried is not None and carried.said:
+        return carried.said[0], carried.why
+    return said, why
+
+
 def review_page(
     request: Request,
     state: ApplicationState,
@@ -243,6 +255,7 @@ def review_page(
     *,
     submitted: SubmittedChoice | None = None,
     unsaved: UnsavedChoice | None = None,
+    carried: CarriedAccount | None = None,
     problem: str | None = None,
     status_code: int = status.HTTP_200_OK,
     failed: bool = False,
@@ -256,12 +269,14 @@ def review_page(
     back, and says the answer in words. ``unsaved`` is what a form the page
     did not write chose, said in words with nothing ticked. ``failed`` is a
     save the file refused, whose answer is said in words either way.
-    ``result`` is what a save did, said only as far as the revision it was
-    accepted at still stands.
+    ``carried`` is a choice the page before showed as not saved, shown again
+    when this answer has nothing of its own to say. ``result`` is what a save
+    did, said only as far as the revision it was accepted at still stands.
     """
     item, standing, readable = reading_of(state, assignment_id)
     account = account_of(submitted, unsaved)
     pressed = account is not None or (problem is not None and status_code >= 400)
+    said, why = carried_or(said_back(account, None), None, carried)
     back = details_href(assignment_id, return_to="family")
     if item is None:
         return templates.TemplateResponse(
@@ -271,7 +286,8 @@ def review_page(
                 "item": None,
                 "problem": NOT_ON_RECORD,
                 "pressed": pressed,
-                "not_saved": said_back(account, None),
+                "not_saved": said,
+                "not_saved_why": why,
                 "back": "/parent",
             },
             status_code=status.HTTP_404_NOT_FOUND,
@@ -284,7 +300,8 @@ def review_page(
                 "item": item,
                 "problem": INSTRUCTIONS_UNREADABLE,
                 "pressed": pressed,
-                "not_saved": said_back(account, None),
+                "not_saved": said,
+                "not_saved_why": why,
                 "back": back,
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -294,22 +311,24 @@ def review_page(
     ticked: frozenset[str] = frozenset()
     none_ticked = False
     not_saved: SaidBack | None = None
+    why = None
     answer = None if submitted is None else submitted.resolved(kept)
     if unsaved is not None:
         # A form the page did not write: what it chose is said back, and nothing is ticked, so
         # the next save is a choice made afresh on the facts as they stand.
-        not_saved = said_back(unsaved, kept)
+        not_saved, why = said_back(unsaved, kept), "unreadable"
     elif submitted is not None:
         if answer is None or not answer.made_against(revision, [row.text for row in kept]):
             # Made against instructions that changed since: nothing it ticked comes back on a
             # form carrying the revision that stands, and the parent chooses again.
-            not_saved = said_back(account, kept)
+            not_saved, why = said_back(account, kept), "stale"
             if not failed:
                 problem, status_code = CHANGED_SINCE_OPENED, status.HTTP_409_CONFLICT
         else:
             ticked, none_ticked = answer.applies, answer.none_applies
             if failed:
-                not_saved = said_back(UnsavedChoice.of(answer), kept)
+                not_saved, why = said_back(UnsavedChoice.of(answer), kept), "failed"
+    not_saved, why = carried_or(not_saved, why, carried)
     rows = [
         ShownRow(
             number=number,
@@ -329,6 +348,7 @@ def review_page(
             "revision": revision,
             "none_ticked": none_ticked,
             "not_saved": not_saved,
+            "not_saved_why": why,
             "notice": None if pressed else result_said(result, standing),
             "problem": problem,
             "pressed": pressed,
@@ -345,11 +365,13 @@ def plain_page(
     account: UnsavedChoice | None,
     problem: str,
     status_code: int,
+    carried: CarriedAccount | None = None,
 ) -> HTMLResponse:
     """The page when the record cannot be read back: what happened, the answer as it was
-    sent, and the ways on. Nothing here reads the store, offers a save, or claims one; an
-    instruction the answer selected by reference to a row is counted, since its text is not
-    read."""
+    sent, or the choice the form carried when it chose nothing, and the ways on. Nothing
+    here reads the store, offers a save, or claims one; an instruction selected by
+    reference to a row is counted, since its text is not read."""
+    said, why = carried_or(said_back(account, None), None, carried)
     return templates.TemplateResponse(
         request,
         "school_instructions_review.html",
@@ -358,7 +380,8 @@ def plain_page(
             "plain": True,
             "problem": problem,
             "pressed": True,
-            "not_saved": said_back(account, None),
+            "not_saved": said,
+            "not_saved_why": why,
             "back": details_href(assignment_id, return_to="family"),
         },
         status_code=status_code,
@@ -374,6 +397,7 @@ def page_or_plain(
     status_code: int,
     *,
     unsaved: UnsavedChoice | None = None,
+    carried: CarriedAccount | None = None,
     failed: bool = False,
 ) -> HTMLResponse:
     """The page with a refusal said first, read once; when the record cannot be read back,
@@ -385,6 +409,7 @@ def page_or_plain(
             assignment_id,
             submitted=submitted,
             unsaved=unsaved,
+            carried=carried,
             problem=problem,
             status_code=status_code,
             failed=failed,
@@ -392,7 +417,7 @@ def page_or_plain(
     except Exception:
         logger.exception("the review of school instructions could not be read back")
         return plain_page(
-            request, assignment_id, account_of(submitted, unsaved), problem, status_code
+            request, assignment_id, account_of(submitted, unsaved), problem, status_code, carried
         )
 
 
@@ -436,6 +461,7 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
     """
     read = review_answers((await request.form()).multi_items())
     submitted = read.answer
+    carried = read.carried
     if submitted is None:
         return page_or_plain(
             request,
@@ -445,6 +471,7 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
             FORM_UNREADABLE,
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             unsaved=read.unsaved,
+            carried=carried,
         )
     if submitted.rows:
         # A kept row's words never change, so the words its row names now are the words the
@@ -461,6 +488,7 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
                 NOT_SAVED,
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
                 failed=True,
+                carried=carried,
             )
         if not readable:
             return page_or_plain(
@@ -470,6 +498,7 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
                 submitted,
                 INSTRUCTIONS_UNREADABLE,
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
+                carried=carried,
             )
         resolved = submitted.resolved(() if standing is None else standing.kept)
         if resolved is None:
@@ -481,6 +510,7 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
                 FORM_UNREADABLE,
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 unsaved=read.unsaved,
+                carried=carried,
             )
         submitted = resolved
     choice = submitted.choice()
@@ -492,6 +522,7 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
             submitted,
             CHOICES_CONTRADICT if submitted.contradicts else NOTHING_CHOSEN,
             status.HTTP_422_UNPROCESSABLE_CONTENT,
+            carried=carried,
         )
     now, today = state.project_state.instruction_moment()
     try:

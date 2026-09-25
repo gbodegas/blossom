@@ -177,14 +177,14 @@
                   <h3 class="update-heading">Your unsaved choice{% if account.said|length > 1 %}s{% endif %}</h3>
                   <p class="problem" id="instructions-problem-{{ change.key }}">{% if account.why == "stale" %}Not saved, since what is saved changed{% elif account.why == "differ" %}Not saved, since the cards for this assignment answer differently{% elif account.why == "waiting" %}Not saved, since it was chosen before this card's homework was known{% else %}Not saved, since the answer could not be read{% endif %}: {% for item in account.said %}{% with said = item %}{% include "instructions_said_back.html" %}{% endwith %}{% if not loop.last %}; {% endif %}{% endfor %}</p>
                   {% if account.review %}<p class="support-links"><a href="{{ account.review }}">Review school instructions</a></p>{% endif %}
-                  {% if account.why == "waiting" %}
-                    {# Carried to say back until the card is answered; never read as an answer. #}
-                    {% for item in account.said %}
-                      {% for text in item.words %}<input type="hidden" name="waiting-{{ change.key }}-{{ loop.index0 }}" value="{{ text|wire }}">{% endfor %}
-                      {% if item.unshown %}<input type="hidden" name="waiting_unshown-{{ change.key }}" value="{{ item.unshown }}">{% endif %}
-                      {% if item.none_applies %}<input type="hidden" name="waiting_none-{{ change.key }}" value="1">{% endif %}
-                    {% endfor %}
-                  {% endif %}
+                  {# Carried to show again until the card has a fresh choice; never read as an answer. #}
+                  <input type="hidden" name="unsaved_why-{{ change.key }}" value="{{ account.why }}">
+                  {% for item in account.said %}
+                    {% set answer = loop.index0 %}
+                    {% for text in item.words %}<input type="hidden" name="unsaved-{{ change.key }}-{{ answer }}-{{ loop.index0 }}" value="{{ text|wire }}">{% endfor %}
+                    {% if item.unshown %}<input type="hidden" name="unsaved_unshown-{{ change.key }}-{{ answer }}" value="{{ item.unshown }}">{% endif %}
+                    {% if item.none_applies %}<input type="hidden" name="unsaved_none-{{ change.key }}-{{ answer }}" value="1">{% endif %}
+                  {% endfor %}
                 </div>
               {% endif %}
               {% if change.instructions_question %}

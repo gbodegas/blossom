@@ -8,7 +8,8 @@
   returned for a problem with an answer made against what stands. An answer
   made against instructions that changed since, one the file refused, or
   what a form the page did not write chose, is said in words as the
-  parent's unsaved choice. The words travel in the form as the page wrote
+  parent's unsaved choice, with why. It is carried in the form and shown
+  again until a fresh choice is made. The words travel in the form as the page wrote
   them on the wire, so a browser's line endings never change them; a kept
   instruction longer than any paste travels by its row.
 
@@ -34,12 +35,19 @@
   {% endif %}
   {% if not_saved %}
     <h2 class="update-heading">Your unsaved choice</h2>
-    <p class="problem" id="not-saved" tabindex="-1">Not saved: {% with said = not_saved %}{% include "instructions_said_back.html" %}{% endwith %}</p>
+    <p class="problem" id="not-saved" tabindex="-1">Not saved{% if not_saved_why == "stale" %}, since what is saved changed{% elif not_saved_why == "unreadable" %}, since the answer could not be read{% endif %}: {% with said = not_saved %}{% include "instructions_said_back.html" %}{% endwith %}</p>
   {% endif %}
   {% if choosing %}
     <p class="helper">These are the school's words. Which of them apply is the family's choice; the school's record is not changed, and neither is anything she wrote. The ones not chosen are kept as history.</p>
     <form method="post" action="{{ action }}">
       <input type="hidden" name="revision" value="{{ revision }}">
+      {% if not_saved %}
+        {# Carried to show again until a fresh choice is made; never read as an answer. #}
+        <input type="hidden" name="unsaved_why-0" value="{{ not_saved_why or "failed" }}">
+        {% for text in not_saved.words %}<input type="hidden" name="unsaved-0-0-{{ loop.index0 }}" value="{{ text|wire }}">{% endfor %}
+        {% if not_saved.unshown %}<input type="hidden" name="unsaved_unshown-0-0" value="{{ not_saved.unshown }}">{% endif %}
+        {% if not_saved.none_applies %}<input type="hidden" name="unsaved_none-0-0" value="1">{% endif %}
+      {% endif %}
       {% for row in rows %}
         {% if row.text is in_words %}
           <input type="hidden" name="instruction-{{ row.number }}" value="{{ row.text|wire }}">

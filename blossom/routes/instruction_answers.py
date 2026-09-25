@@ -188,71 +188,94 @@ def said_back(
     return SaidBack(ordered, unshown, unsaved.none_applies)
 
 
-WAITING_HEADS: Final = frozenset({"waiting", "waiting_unshown", "waiting_none"})
+@dataclass(frozen=True)
+class CarriedAccount:
+    """A choice a page showed as not saved, carried in its form to be shown again: why it was
+    not saved, and each answer as the page said it. It is shown and nothing else: it carries
+    no revision, and nothing is ever saved from it."""
+
+    why: str
+    said: tuple[SaidBack, ...]
 
 
-def waiting_choices(items: Iterable[tuple[str, object]]) -> dict[int, SaidBack]:
-    """What each card says back of a choice made before it was known which homework the card
-    is, as the paste review carries it: ``waiting-<card>-<place>`` for each instruction's
-    words on the wire, ``waiting_unshown-<card>`` for how many were selected by reference,
-    and ``waiting_none-<card>`` when none applying was chosen.
+CARRIED_HEADS: Final = frozenset({"unsaved", "unsaved_why", "unsaved_unshown", "unsaved_none"})
+CARRIED_WHY: Final = frozenset({"stale", "differ", "waiting", "unreadable", "failed"})
 
-    It is said back and nothing else: it carries no revision, and nothing is
-    ever saved from it. The first text value of each field is read; what
-    cannot be read is left out, and nothing is made up in its place.
+
+def carried_accounts(items: Iterable[tuple[str, object]]) -> dict[int, CarriedAccount]:
+    """The choices each card carries from a page that showed them as not saved:
+    ``unsaved_why-<card>`` for why, and for each answer ``unsaved-<card>-<answer>-<place>``
+    for each instruction's words on the wire, ``unsaved_unshown-<card>-<answer>`` for how
+    many were selected by reference, and ``unsaved_none-<card>-<answer>`` when none applying
+    was chosen. The family's review of one assignment writes its one account as card 0.
+
+    The first text value of each field is read; what cannot be read is left
+    out, and nothing is made up in its place. A card with no reason the page
+    gives carries nothing.
     """
-    words: dict[int, list[str]] = {}
-    unshown: dict[int, int] = {}
-    none: set[int] = set()
+    why: dict[int, str] = {}
+    words: dict[tuple[int, int], list[str]] = {}
+    unshown: dict[tuple[int, int], int] = {}
+    none: set[tuple[int, int]] = set()
     seen: set[str] = set()
     for name, value in items:
         head, _, rest = name.partition("-")
-        if head not in WAITING_HEADS or name in seen or not isinstance(value, str):
+        if head not in CARRIED_HEADS or name in seen or not isinstance(value, str):
             continue
         seen.add(name)
         parts = rest.split("-")
-        if not review_key(parts[0]):
+        if not all(review_key(part) for part in parts):
             continue
-        card = int(parts[0])
-        if head == "waiting" and len(parts) == 2 and review_key(parts[1]):
+        numbers = tuple(int(part) for part in parts)
+        if head == "unsaved_why" and len(numbers) == 1 and value in CARRIED_WHY:
+            why[numbers[0]] = value
+        elif head == "unsaved" and len(numbers) == 3:
             text = from_wire(value)
             if text is not None:
-                words.setdefault(card, []).append(text)
-        elif head == "waiting_unshown" and len(parts) == 1:
+                words.setdefault((numbers[0], numbers[1]), []).append(text)
+        elif head == "unsaved_unshown" and len(numbers) == 2:
             count = count_of(value, KEY_MAX_LENGTH)
             if count is not None:
-                unshown[card] = count
-        elif head == "waiting_none" and len(parts) == 1 and value == "1":
-            none.add(card)
-    return {
-        card: SaidBack(
-            tuple(sorted(dict.fromkeys(words.get(card, [])))),
-            unshown.get(card, 0),
-            card in none,
-        )
-        for card in sorted({*words, *unshown, *none})
-    }
+                unshown[(numbers[0], numbers[1])] = count
+        elif head == "unsaved_none" and len(numbers) == 2 and value == "1":
+            none.add((numbers[0], numbers[1]))
+    said: dict[int, list[SaidBack]] = {}
+    for card, answer in sorted({*words, *unshown, *none}):
+        if card in why:
+            said.setdefault(card, []).append(
+                SaidBack(
+                    tuple(sorted(dict.fromkeys(words.get((card, answer), [])))),
+                    unshown.get((card, answer), 0),
+                    (card, answer) in none,
+                )
+            )
+    return {card: CarriedAccount(why[card], tuple(answers)) for card, answers in said.items()}
 
 
 @dataclass(frozen=True)
 class ReadReview:
     """What the family's review form said: its answer, when every field is one the page
-    writes, and what it chose, to say back when it is not."""
+    writes, what it chose, to say back when it is not, and the choice the page carried as
+    not saved, unless this form makes a choice of its own."""
 
     answer: SubmittedChoice | None
     unsaved: UnsavedChoice
+    carried: CarriedAccount | None = None
 
 
 def review_answers(items: Iterable[tuple[str, object]]) -> ReadReview:
     """The answer on the family's review of one assignment, read from every field as sent. That
     page writes ``revision``, ``instruction-<place>`` or ``row-<place>``, ``apply-<place>``,
-    and ``none``, and nothing else. A field sent twice, a file, or a name the page never
-    writes makes the form no answer; the first text value of each field is still read for
-    what it chose."""
+    and ``none``, and the carried choice's fields, read apart. A field sent twice, a file, or
+    a name the page never writes makes the form no answer; the first text value of each
+    field is still read for what it chose."""
+    items = list(items)
     fields = AnswerFields()
     seen: set[str] = set()
     whole = True
     for name, value in items:
+        if name.partition("-")[0] in CARRIED_HEADS:
+            continue
         if name in seen or not isinstance(value, str):
             whole = False
             continue
@@ -270,7 +293,11 @@ def review_answers(items: Iterable[tuple[str, object]]) -> ReadReview:
             fields.ticks[place] = value
         else:
             whole = False
-    return ReadReview(answer_of(fields) if whole else None, unsaved_of(fields))
+    answer = answer_of(fields) if whole else None
+    unsaved = unsaved_of(fields)
+    chooses = unsaved.chooses or (answer is not None and UnsavedChoice.of(answer).chooses)
+    carried = None if chooses else carried_accounts(items).get(0)
+    return ReadReview(answer, unsaved, carried)
 
 
 def review_answer(fields: Mapping[str, str]) -> SubmittedChoice | None:

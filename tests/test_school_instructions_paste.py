@@ -1948,3 +1948,86 @@ def test_a_paste_held_by_a_note_keeps_the_choices_when_the_reading_fails(
     kept = html.unescape(failed.text.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0])
     assert failed.status_code == 500
     assert "Show each step." in kept
+
+
+# ------------------------------------------------------------------ a stale choice unanswered
+
+RESUBMISSION = "Tuesday 9/1/2026\nMath\nDue: Resubmission check:\n"
+
+
+def resubmission_standing(client: TestClient) -> InstructionsStanding:
+    store = store_of(client)
+    rows = [row for row in store.all_assignments() if row.title == "Resubmission check"]
+    assert len(rows) == 1
+    return store.school_instruction_readings([rows[0].assignment_id]).readable[
+        rows[0].assignment_id
+    ]
+
+
+@pytest.mark.parametrize("choice", ["none", "one"])
+def test_a_stale_choice_stays_through_unanswered_saves_until_a_fresh_one_is_made(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, choice: str
+) -> None:
+    """A choice refused because the instructions changed since is shown again, with why,
+    through saves that leave the fresh question unanswered, a form that cannot be read, and
+    a reading that fails; nothing is written, and a fresh choice replaces it and saves."""
+    words = "that no school instruction applies" if choice == "none" else "Include a graph."
+    with client_in(tmp_path) as client:
+        saved(client, RESUBMISSION + "Show the calculation.\n")
+        page = client.post("/parent/inbox/read", data={"text": RESUBMISSION + "Include a graph.\n"})
+        key = the_question_on(page.text)
+        answer = (
+            {f"none-{key}": "1"}
+            if choice == "none"
+            else {f"apply-{key}-{boxes(page.text, key).index('Include a graph.')}": "1"}
+        )
+        table = client.post("/parent/inbox/read", data={"text": RESUBMISSION + "Use the table.\n"})
+        other = the_question_on(table.text)
+        kept = client.post(
+            "/parent/inbox/keep",
+            data={
+                **review_form(table.text),
+                f"apply-{other}-{boxes(table.text, other).index('Show the calculation.')}": "1",
+            },
+        )
+        start = tables(client)
+        refused = client.post("/parent/inbox/keep", data={**review_form(page.text), **answer})
+        again = client.post("/parent/inbox/keep", data=review_form(refused.text))
+        asked = the_question_on(again.text)
+        bent = keep_as_sent(client, [*review_form(again.text).items(), (f"none-{asked}", "yes")])
+        after = tables(client)
+        store = store_of(client)
+
+        def refuse(*_: object, **__: object) -> None:
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "all_assignments", refuse)
+        failed = client.post("/parent/inbox/keep", data=review_form(again.text))
+        monkeypatch.undo()
+        graph = f"apply-{asked}-{boxes(again.text, asked).index('Include a graph.')}"
+        both = client.post(
+            "/parent/inbox/keep", data={**review_form(again.text), graph: "1", f"none-{asked}": "1"}
+        )
+        fresh = client.post("/parent/inbox/keep", data={**review_form(again.text), graph: "1"})
+        found = resubmission_standing(client)
+
+    assert kept.status_code == 303
+    assert refused.status_code == 409
+    assert again.status_code == 200
+    assert bent.status_code == 422
+    assert after == start
+    for shown in (refused.text, again.text, bent.text):
+        assert words in said_back_on(shown, key)
+        assert "Not saved, since what is saved changed" in said_back_on(shown, key)
+        assert ticked(shown, the_question_on(shown)) == []
+        assert 'value="1" checked' not in shown
+    assert str(escape(CHOOSE_INSTRUCTIONS)) in again.text
+    kept_words = html.unescape(failed.text.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0])
+    assert failed.status_code == 500
+    assert ("none applies" if choice == "none" else words) in kept_words
+    assert both.status_code == 422
+    assert str(escape(INSTRUCTIONS_CONTRADICT)) in both.text
+    assert f'id="instructions-problem-{asked}"' not in both.text
+    assert fresh.status_code == 303
+    assert found.texts == ("Include a graph.",)
