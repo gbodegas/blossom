@@ -1568,6 +1568,18 @@ main.wide {
   min-height: 2.75rem;
 }
 
+/* The title that leads a row of her To turn in list or of the family page's updates, the
+   family page's link to adding assignments, and the line of links under the homework notes
+   keep their place in the line, their type, and their color, and are as tall as the buttons. */
+.to-turn-in-row a.assignment-link,
+.assignment-updates a.assignment-link,
+.lead-action a,
+.homework-notes > .note a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+}
+
 /* Work she has reported done folds under the active cards; the cards inside
    keep their shape. */
 details.reported-done {

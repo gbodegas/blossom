@@ -1,5 +1,5 @@
-"""The color a link ends up with, and the height of the links to an assignment's details,
-worked out from the stylesheet and the pages as rendered.
+"""The color a link ends up with, and the height of the links held to a control's, worked
+out from the stylesheet and the pages as rendered.
 
 No browser runs in these tests, so the cascade is resolved here, for the part
 of CSS the stylesheet uses on links: compound selectors of a type, classes,
@@ -17,23 +17,35 @@ tests hold the pages clear of.
 A link is inline unless a rule lays it out otherwise, and an inline box takes no
 minimum height, so a link to the details is as tall as a control only where
 the cascade gives it a box of its own and a minimum height of 44 pixels. The
-one that ends the hand-in line's sentence takes a box that stays in the line.
+one that ends the hand-in line's sentence takes a box that stays in the line,
+and so do the titles that lead the rows of her To turn in list and of the
+family page's updates, the family page's link to adding assignments, and the
+line of links under the homework notes.
 """
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 
 import pytest
 
+from blossom.hand_in import NEEDS_HAND_IN, HandInSaved
+from blossom.reconciliation import SourceChannel
+from blossom.routes.navigation import NEW_NOTE_PAGE, NOTE_ACTIONS, TO_TURN_IN_PAGE
 from blossom.settings import REPOSITORY_ROOT
 from tests.support import (
     ESSAY_ID,
     HER_PAGE,
     PAGE_HEADERS,
+    PLAN_DATE,
     browser,
+    form_fields,
+    hidden,
     planned,
     report,
+    school_said,
+    state_of,
     walkthrough,
 )
 
@@ -903,3 +915,205 @@ def test_the_height_check_fails_when_the_hand_in_rule_stops_doing_its_work(
         for width in WIDTHS:
             is_short = short_of_a_control(sheet, link, View(width), IN_THE_LINE)
             assert is_short == (width > fine_up_to), (place_of(link), width)
+
+
+SCIENCE_ID = "assignment-science-fair-proposal"
+COVER_ID = "assignment-textbook-cover"
+QUIZ_ID = "assignment-vocabulary-quiz"
+HER_ROWS = frozenset({"a row of her To turn in list"})
+UPDATES = frozenset(
+    {
+        "a row worth checking together",
+        "a row checked recently",
+        "a recent update",
+        "a school report",
+        "a row turning work in",
+    }
+)
+"""Each group of the family page's updates, and the rows of what she says about turning work in."""
+LEAD = frozenset({"the way to adding assignments"})
+UNDER_THE_NOTES = frozenset({"the line under the homework notes"})
+LISTED = HER_ROWS | UPDATES | LEAD | UNDER_THE_NOTES
+LIST_PLACES = frozenset(
+    {
+        ("her week", "a row of her To turn in list"),
+        ("her week", "the line under the homework notes"),
+        ("her To turn in list", "a row of her To turn in list"),
+        *(("the family page", place) for place in UPDATES | LEAD | UNDER_THE_NOTES),
+    }
+)
+"""Every page and place that holds a link the lists rule is for."""
+LISTS_RULE = (
+    ".to-turn-in-row a.assignment-link,\n.assignment-updates a.assignment-link,\n"
+    ".lead-action a,\n.homework-notes > .note a {\n  display: inline-flex;\n"
+    "  align-items: center;\n  min-height: 2.75rem;\n}"
+)
+LISTS: dict[str, str] = {}
+
+
+@pytest.fixture
+def lists() -> dict[str, str]:
+    """Her week, her To turn in list, and the family page, with two assignments still to turn in,
+    four homework notes, and a row in every group of the updates. Kept once rendered, as
+    ``rendered`` is."""
+    if LISTS:
+        return LISTS
+    with browser() as client:
+        store = state_of(client).project_state
+        for name in (ESSAY_ID, ALGEBRA_ID, COVER_ID):
+            report(client, name, "done")
+        for name in (ESSAY_ID, ALGEBRA_ID, QUIZ_ID):
+            store.record_status_reports(
+                name, [school_said("missing", SourceChannel.EMAIL, PLAN_DATE)]
+            )
+        family = client.get("/parent", headers=PAGE_HEADERS).text
+        row = family[family.index(f'id="update-{ESSAY_ID}"') :]
+        checked = client.post(
+            f"/parent/actions/checks/{ESSAY_ID}/mark",
+            data={
+                "basis": hidden(row, "basis"),
+                "expected_check_id": hidden(row, "expected_check_id"),
+                "note": "",
+            },
+            headers=PAGE_HEADERS,
+        )
+        assert checked.status_code == 303, checked.text[:400]
+        for name in (SCIENCE_ID, LOG_ID):
+            kept = store.record_hand_in(
+                name,
+                NEEDS_HAND_IN,
+                None,
+                None,
+                expected_head=None,
+                now=datetime(2026, 8, 19, 21, 0, tzinfo=UTC),
+                today=PLAN_DATE,
+            )
+            assert isinstance(kept, HandInSaved), kept
+        for number in range(1, 5):
+            fields = form_fields(client.get(NEW_NOTE_PAGE).text, NOTE_ACTIONS)
+            saved = client.post(
+                NOTE_ACTIONS,
+                data={
+                    **fields,
+                    "text": f"Geometry questions, page {number}",
+                    "course": "",
+                    "due_date": "",
+                },
+                headers=PAGE_HEADERS,
+            )
+            assert saved.status_code == 303, saved.text[:400]
+        LISTS.update(
+            {
+                "her week": client.get(HER_PAGE, headers=PAGE_HEADERS).text,
+                "her To turn in list": client.get(TO_TURN_IN_PAGE, headers=PAGE_HEADERS).text,
+                "the family page": client.get("/parent", headers=PAGE_HEADERS).text,
+            }
+        )
+    return LISTS
+
+
+def list_place(link: Element) -> str | None:
+    """Where a link the lists rule is for stands, read from the elements above it, or ``None``
+    for any other link."""
+    above = link.ancestors()
+    marks = {name for item in above for name in item.classes}
+    line = link.parent
+    if (
+        line is not None
+        and "note" in line.classes
+        and line.parent is not None
+        and "homework-notes" in line.parent.classes
+    ):
+        return "the line under the homework notes"
+    if "lead-action" in marks:
+        return "the way to adding assignments"
+    if "assignment-link" not in link.classes:
+        return None
+    if "to-turn-in-row" in marks:
+        return "a row of her To turn in list"
+    if "assignment-updates" not in marks:
+        return None
+    if any(item.attributes.get("id") == "turning-work-in" for item in above):
+        return "a row turning work in"
+    if "checked-recently" in marks:
+        return "a row checked recently"
+    if any(item.tag == "details" for item in above):
+        return "a recent update"
+    return "a row worth checking together" if "needs-review" in marks else "a school report"
+
+
+def links_in_the_lists(pages: dict[str, str]) -> list[tuple[str, str, Element]]:
+    """Each link the lists rule is for, with its page and its place."""
+    return [
+        (name, place, link)
+        for name, page in pages.items()
+        for link in links_in(page)
+        if (place := list_place(link)) is not None
+    ]
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_every_title_and_line_of_links_in_the_lists_is_as_tall_as_a_control(
+    lists: dict[str, str], width: int
+) -> None:
+    """In every place, at each width, with or without less motion: 44 pixels, in its line."""
+    sheet = read_sheet(stylesheet())
+    found = links_in_the_lists(lists)
+
+    assert {(name, place) for name, place, _ in found} == LIST_PLACES
+    for view in (View(width), View(width, reduced_motion=True)):
+        for name, place, link in found:
+            where = (name, place, link.text.strip(), view)
+            assert not short_of_a_control(sheet, link, view, IN_THE_LINE), where
+
+
+@pytest.mark.parametrize(
+    ("becomes", "short", "fine_up_to"),
+    [
+        pytest.param(
+            LISTS_RULE.replace(".to-turn-in-row a.", ".to-turn-in-row b."),
+            HER_ROWS,
+            0,
+            id="her-rows-selector-broken",
+        ),
+        pytest.param(
+            LISTS_RULE.replace(".assignment-updates a.", ".assignment-updates b."),
+            UPDATES,
+            0,
+            id="the-updates-selector-broken",
+        ),
+        pytest.param(
+            LISTS_RULE.replace(".lead-action a,", ".lead-action b,"),
+            LEAD,
+            0,
+            id="the-lead-selector-broken",
+        ),
+        pytest.param(
+            LISTS_RULE.replace(".note a {", ".note b {"),
+            UNDER_THE_NOTES,
+            0,
+            id="the-notes-selector-broken",
+        ),
+        pytest.param(LISTS_RULE.replace("inline-flex", "inline"), LISTED, 0, id="laid-out-inline"),
+        pytest.param(LISTS_RULE.replace("inline-flex", "flex"), LISTED, 0, id="out-of-its-line"),
+        pytest.param(LISTS_RULE.replace("2.75rem", "1.5rem"), LISTED, 0, id="too-short"),
+        pytest.param(
+            f"@media (max-width: 30rem) {{\n{LISTS_RULE}\n}}", LISTED, 480, id="only-on-a-phone"
+        ),
+    ],
+)
+def test_the_height_check_fails_when_the_lists_rule_stops_doing_its_work(
+    lists: dict[str, str], becomes: str, short: frozenset[str], fine_up_to: int
+) -> None:
+    """Exactly the links the broken rule leaves fall short of a control, where it leaves them."""
+    css = stylesheet()
+    assert css.count(LISTS_RULE) == 1
+    sheet = read_sheet(css.replace(LISTS_RULE, becomes))
+    found = links_in_the_lists(lists)
+
+    assert {(name, place) for name, place, _ in found} == LIST_PLACES
+    for name, place, link in found:
+        for width in WIDTHS:
+            expected = place in short and width > fine_up_to
+            is_short = short_of_a_control(sheet, link, View(width), IN_THE_LINE)
+            assert is_short == expected, (name, place, width)
