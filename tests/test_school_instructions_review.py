@@ -1104,6 +1104,26 @@ def test_a_form_that_cannot_be_read_whole_says_back_the_choice_it_could_read(
     assert refused.text.count("autofocus") == 1
 
 
+@pytest.mark.parametrize("kept", [False, True], ids=["nothing-kept", "instructions-kept"])
+def test_a_choice_that_names_no_instruction_writes_nothing(
+    tmp_path: pathlib.Path, kept: bool
+) -> None:
+    """The page writes no form without an instruction to show, so that none applies with
+    nothing shown is no answer."""
+    with client_for(open_household(tmp_path)) as client:
+        if kept:
+            a_current_b_earlier(store_of(client))
+        before = tables(client)
+        refused = client.post(
+            ACTION, data={"revision": "2" if kept else "0", "none": "1"}, headers=PAGE_HEADERS
+        )
+        after = tables(client)
+
+    assert refused.status_code == 422
+    assert after == before
+    assert str(escape(FORM_UNREADABLE)) in refused.text
+
+
 def test_a_box_whose_words_cannot_be_read_is_never_said(tmp_path: pathlib.Path) -> None:
     with client_for(open_household(tmp_path)) as client:
         marked_up_earlier(store_of(client))

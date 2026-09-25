@@ -1194,8 +1194,8 @@ def answers_to_no_question(
     """The cards an answer about the school's instructions is given on where the review page
     puts no such question, from ``changes`` read with no answer given: a card the text does
     not have; a card that lands on an assignment with no decision; a card of an assignment
-    that needs a choice that carries its decision neither now nor in ``shown``; and a
-    decision that needs no choice, where the answer would write anything.
+    that needs a choice that did not ask it in ``shown``, even where it carries the decision
+    now; and a decision that needs no choice, where the answer would write anything.
 
     ``shown`` is the text as the page read it, before the answers to which homework a
     card is that were given on it: a card that asked there answers its assignment's
@@ -1227,6 +1227,10 @@ def answers_to_no_question(
             if change is None or (change.instructions_asked and into is None and key not in asked):
                 never.add(key)
                 continue
+        elif change.instructions_asked and key not in asked:
+            # The page asked which homework this card is, and nothing about its instructions.
+            never.add(key)
+            continue
         if isinstance(change.instructions, InstructionsNeedAChoice):
             continue
         resolved = answer.resolved(change.instructions_kept)

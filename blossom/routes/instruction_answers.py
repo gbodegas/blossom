@@ -9,9 +9,10 @@ fields as written and a ticked box as ``1``; an unticked box is left out of
 the form, and that is no answer about it, never a malformed one. Anything else
 is not a form the page made: a field sent twice, a file in place of text, a
 name the page never writes, words that do not decode, a revision or a row not
-spelled as the page spells a count, a box ticked with another value, or a box
-for words the page did not write. Such a question is no answer, and the form
-is refused whole before anything is written.
+spelled as the page spells a count, a box ticked with another value, a box
+for words the page did not write, or a question that shows no instruction.
+Such a question is no answer, and the form is refused whole before anything
+is written.
 
 A readable answer is kept whole even when it contradicts itself, so the page
 returned can show what was sent, and can tell whether it was made against the
@@ -66,9 +67,9 @@ class AnswerFields:
 
 def answer_of(fields: AnswerFields) -> SubmittedChoice | None:
     """One question's answer as it was sent, or ``None`` when its fields are not ones the page
-    writes. Words are read off the wire exactly and a row as the count the page wrote; the
-    same words or row twice, a place with both, a box for neither, and any value but ``1``
-    on a box are no answer."""
+    writes. Words are read off the wire exactly and a row as the count the page wrote; no
+    instruction shown, the same words or row twice, a place with both, a box for neither,
+    and any value but ``1`` on a box are no answer."""
     revision = None if fields.revision is None else count_of(fields.revision, REVISION_MAX_LENGTH)
     if revision is None:
         return None
@@ -86,6 +87,9 @@ def answer_of(fields: AnswerFields) -> SubmittedChoice | None:
         rows[int(place)] = row
     shown = tuple(words[place] for place in sorted(words))
     shown_rows = tuple(rows[place] for place in sorted(rows))
+    if not shown and not shown_rows:
+        # The page asks only when there is an instruction to show.
+        return None
     if len(set(shown)) != len(shown) or len(set(shown_rows)) != len(shown_rows):
         return None
     applies: set[str] = set()

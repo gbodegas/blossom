@@ -1682,6 +1682,57 @@ def test_an_answer_refused_on_a_card_never_asked_is_said_back_as_not_saved(
     assert unsaved(refused.text, "1") == [PENCIL]
 
 
+@pytest.mark.parametrize("which", ["update", "new"])
+@pytest.mark.parametrize("choice", ["none", "one"])
+def test_a_choice_sent_beside_the_answer_to_which_homework_it_is_is_refused(
+    tmp_path: pathlib.Path, which: str, choice: str
+) -> None:
+    """The page asks only which homework the card is; a choice added beside that answer is
+    refused, even where the card then asks which instructions apply."""
+    with client_in(tmp_path) as client:
+        saved(client, CHECK_5_LATER)
+        page = client.post("/parent/inbox/read", data={"text": CHECK_5}).text
+        form = {**review_form(page), "occurrence-0": which}
+        asked = client.post("/parent/inbox/keep", data=form).text
+        words = boxes(asked, "0")
+        added = {
+            "instructions-0": "0",
+            **{f"instruction-0-{place}": to_wire(text) for place, text in enumerate(words)},
+            **(
+                {"none-0": "1"}
+                if choice == "none"
+                else {f"apply-0-{words.index('Show each step.')}": "1"}
+            ),
+        }
+        start = tables(client)
+        refused = client.post("/parent/inbox/keep", data={**form, **added})
+        after = tables(client)
+
+    assert 'name="which-0"' in page
+    assert 'name="instructions-0"' not in page
+    assert the_question_on(asked) == "0"
+    assert refused.status_code == 422
+    assert after == start
+    assert ticked(refused.text, "0") == []
+
+
+def test_an_answer_that_shows_no_instruction_refuses_the_paste(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": CHECK_5}).text
+        key = the_question_on(page)
+        form = {
+            name: value
+            for name, value in review_form(page).items()
+            if not name.startswith(f"instruction-{key}-")
+        }
+        start = tables(client)
+        refused = client.post("/parent/inbox/keep", data={**form, f"none-{key}": "1"})
+        after = tables(client)
+
+    assert refused.status_code == 422
+    assert after == start
+
+
 # ------------------------------------------------------------------ a card folded into another
 
 PRACTICE = (
