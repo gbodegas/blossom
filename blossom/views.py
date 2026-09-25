@@ -275,8 +275,9 @@ class StudentAssignmentView(BaseModel):
     """Whether a school channel is among those; only then is the contradiction a banner."""
     assigned_on: date | None = None
     note: str | None = None
-    """What the teacher wrote under the card, as the portal shows it, or what a parent
-    typed, or what she wrote on work she added; ``note_by`` says whose words it is."""
+    """What a parent typed, or what she wrote on work she added; ``note_by`` says whose
+    words it is. The school's instructions are in ``words``, which also shows a school note
+    still left here apart, as not yet reviewed."""
     note_by: NoteBy | None = None
     words: SchoolWordsView = Field(default_factory=SchoolWordsView)
     """The school's instructions, those that apply and the rest, and the note, apart."""

@@ -292,9 +292,9 @@ class Assignment(BaseModel):
     assigned_on: date | None = None
     kind: AssignmentKind = AssignmentKind.HOMEWORK
     note: str | None = None
-    """What the teacher wrote under the card, as the portal shows it, or what a parent
-    typed with the assignment: an instruction about the work, kept with the assignment
-    because it is part of it. ``origins`` says which."""
+    """What a parent typed with the assignment, or what she wrote on work she added;
+    ``origins`` says which. The school's instructions are kept in their own table, and a
+    school note still here is one not yet moved there."""
     origins: dict[str, SourceChannel] = {}
     """Where each of the row's facts came from, by field: ``record`` for the row
     itself, then ``note``, ``kind``, ``due_date``, and ``assigned_on`` when a channel
