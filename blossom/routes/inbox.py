@@ -39,6 +39,7 @@ from blossom.intake import (
     Held,
     Kept,
     Read,
+    answers_to_no_question,
     by_hand,
     by_week,
     changes_for,
@@ -700,8 +701,14 @@ async def keep_readings(request: Request, state: State) -> Response:
     # a write the file refuses, which is never tried again.
     try:
         occurrences, kinds = answers_from(form, unasked_for(state, read))
+        # An answer where the page puts no such question is no form the page wrote.
+        never_put = answers_to_no_question(
+            changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds),
+            instruction_answers,
+        )
+        unreadable = read_answers.malformed or bool(never_put)
         contradicted = any(answer.contradicts for answer in instruction_answers.values())
-        if read_answers.malformed or contradicted:
+        if unreadable or contradicted:
             # Nothing of the text is written until the answers are put right; each comes back
             # as made when it was made against what stands, and in words when it was not.
             return preview_page(
@@ -711,14 +718,14 @@ async def keep_readings(request: Request, state: State) -> Response:
                 draft,
                 occurrences=occurrences,
                 kinds=kinds,
-                instruction_answers=instruction_answers,
+                instruction_answers={
+                    key: answer
+                    for key, answer in instruction_answers.items()
+                    if key not in never_put
+                },
                 unsaved=read_answers.unsaved,
-                refused="malformed" if read_answers.malformed else "contradict",
-                notice=(
-                    INSTRUCTION_FORM_UNREADABLE
-                    if read_answers.malformed
-                    else INSTRUCTIONS_CONTRADICT
-                ),
+                refused="malformed" if unreadable else "contradict",
+                notice=INSTRUCTION_FORM_UNREADABLE if unreadable else INSTRUCTIONS_CONTRADICT,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
         now, today = moment_of(state, draft)

@@ -14,8 +14,8 @@ apply, made against the revision of the assignment's instructions that the
 chooser was shown. A new text is always kept, as history when not chosen, so
 keeping what applies never loses what the school said. Every change to the
 kept instructions takes the next revision, so a form made before a change and
-a change back is still known as older. A choice that already stands in full
-is nothing new, whatever revision it names.
+a change back is still known as older. A choice that names what is kept and
+asks for what already stands is nothing new, whatever revision it names.
 
 This module is the rule and nothing else: no database, no clock, no page.
 Beside it is the one way an instruction's words travel in a form, so what a
@@ -321,8 +321,9 @@ def settle(
     With no choice: nothing new is nothing; the first text, with nothing kept
     and no other new text beside it, applies; anything else needs a choice. A
     choice of words neither kept nor new is refused. A choice that already
-    stands in full, every new text kept and every state as chosen, is nothing
-    new. Otherwise the choice must have been made against
+    stands in full, naming exactly what is kept, with nothing new and every
+    state as chosen, is nothing new. Otherwise the choice must have been made
+    against
     the revision that stands and against exactly the instructions it would
     place, kept and new; then every new text is kept, applying when chosen and
     as history when not, and every kept row takes the state chosen for it.
@@ -344,7 +345,11 @@ def settle(
         text: ("current" if text in choice.applies else "history")
         for text in [*(item.text for item in kept), *(item.text for item in fresh)]
     }
-    if not fresh and all(item.state == wanted[item.text] for item in kept):
+    if (
+        not fresh
+        and set(choice.shown) == set(wanted)
+        and all(item.state == wanted[item.text] for item in kept)
+    ):
         return InstructionsUnchanged(revision)
     if choice.shown_revision != revision or set(choice.shown) != set(wanted):
         return InstructionChoiceStale(tuple(kept), revision)

@@ -1069,3 +1069,92 @@ def test_a_long_instruction_kept_from_before_is_asked_beside_a_new_one_by_its_ro
     assert answer.status_code == 303
     assert final.texts == (LONG_NOTE,)
     assert [item.text for item in final.history] == [B]
+
+
+# ------------------------------------------------------------------ a question the page never put
+
+PENCIL = "Use a pencil."
+WORK = "Show your work."
+
+
+@pytest.mark.parametrize("where", ["new-work", "saved-work", "another-card", "no-such-card"])
+def test_an_answer_to_a_question_the_page_never_put_refuses_the_paste(
+    tmp_path: pathlib.Path, where: str
+) -> None:
+    """An answer about the school's instructions where the page put no such question, a new
+    assignment's only instruction, one saved already, a card whose assignment's question is
+    on its first card, or a card the text does not have, is no form the page wrote: the paste
+    is refused whole, and nothing is written."""
+    with client_in(tmp_path) as client:
+        text = ASSIGNED_WEEK
+        extra: dict[str, str] = {}
+        if where == "new-work":
+            extra = {"instructions-0": "0", "instruction-0-0": to_wire(A), "none-0": "1"}
+        elif where == "saved-work":
+            saved(client, ASSIGNED_WEEK)
+            extra = {"instructions-0": "1", "instruction-0-0": to_wire(A), "none-0": "1"}
+        elif where == "another-card":
+            saved(client, WEEKLY_KEPT)
+            text = WEEKLY_FIRST_BARE
+            extra = {
+                "occurrence-0": "update",
+                "occurrence-1": "update",
+                "instructions-1": "1",
+                "instruction-1-0": to_wire(WORK),
+                "instruction-1-1": to_wire(PENCIL),
+                "apply-1-1": "1",
+            }
+        else:
+            extra = {"instructions-7": "0", "instruction-7-0": to_wire(A), "apply-7-0": "1"}
+        page = client.post("/parent/inbox/read", data={"text": text}).text
+        start = tables(client)
+        answer = client.post("/parent/inbox/keep", data={**review_form(page), **extra})
+        after = tables(client)
+
+    assert answer.status_code == 422
+    assert str(escape(INSTRUCTION_FORM_UNREADABLE)) in answer.text
+    assert after == start
+
+
+def test_the_same_answer_sent_twice_saves_once_and_then_nothing_more(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A double press: the second finds its answer standing and saves nothing more, though
+    the text would not put the question it answered again."""
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        form = {**review_form(page), f"apply-0-{boxes(page, '0').index(B)}": "1"}
+        first = client.post("/parent/inbox/keep", data=form)
+        after_first = tables(client)
+        second = client.post("/parent/inbox/keep", data=form)
+        after_second = tables(client)
+        final = standing(client)
+
+    assert first.status_code == 303
+    assert second.status_code == 303
+    assert second.headers["location"] == "/parent?added=0&updated=0&unchanged=1"
+    assert after_second == after_first
+    assert final.texts == (B,)
+
+
+FAR_DUE = "Homework for Wren\n- 11/05/2026 - Thursday\n07 Algebra - Due: Q1 Check 3:\n"
+
+
+def test_an_answer_on_a_card_that_lands_nowhere_yet_is_not_refused(tmp_path: pathlib.Path) -> None:
+    """The page asked which instructions apply on a new assignment's card; before the save, a
+    row under the same name was saved due weeks away, so the card now asks whether it is the
+    same work. Its answer about the instructions is not refused: the page asks the new
+    question, and nothing is saved."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": BOTH_CARDS}).text
+        form = {**review_form(page), "apply-0-0": "1"}
+        saved(client, FAR_DUE)
+        start = tables(client)
+        answer = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+
+    assert answer.status_code == 200
+    assert 'name="occurrence-0"' in answer.text
+    assert str(escape(INSTRUCTION_FORM_UNREADABLE)) not in answer.text
+    assert after == start

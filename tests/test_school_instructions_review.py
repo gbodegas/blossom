@@ -1192,3 +1192,26 @@ def test_a_long_instruction_kept_from_before_is_chosen_through_the_page_by_its_r
     assert final.texts == (LONG_NOTE,)
     assert "instruction-0" in ordinary_form
     assert ordinary.status_code == 303
+
+
+# ------------------------------------------------------------------ nothing new, named in full
+
+
+def test_a_form_naming_words_never_kept_is_never_taken_for_a_choice_that_stands(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The form asks for what stands, and names beside it words never kept: it was made
+    against other facts, so nothing is claimed, nothing is written, and the choice is said
+    back as not saved."""
+    with client_for(open_household(tmp_path)) as client:
+        a_current_b_earlier(store_of(client))
+        form = the_form(client.get(PAGE, headers=PAGE_HEADERS).text, A)
+        form["instruction-2"] = to_wire("Never kept.")
+        before = tables(client)
+        answer = client.post(ACTION, data=form, headers=PAGE_HEADERS)
+        after = tables(client)
+
+    assert answer.status_code == 409
+    assert str(escape(CHANGED_SINCE_OPENED)) in answer.text
+    assert str(escape(ALREADY_STOOD)) not in answer.text
+    assert after == before

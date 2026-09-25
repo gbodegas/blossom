@@ -243,18 +243,17 @@ def canonical_active_input(week: Week) -> list[dict[str, object]]:
 
     For each assignment she has not reported done, by id: its course, title,
     due and assigned dates, kind, her note or a parent's and whose words it
-    is, which the planner is told and which is nothing when there is none, a
-    school note left in the old note field included, and reported status; the
-    school's instructions that apply, in the one order, or nothing when they
-    cannot be read; whether she has said "not
-    yet" and what she wrote with it; and each claim about its date,
-    channel, value, and where it was read, sorted. Left out: when a claim or
-    a report was made, which report it was, how sure a claim was, her
-    history, anything about work reported done, which is out of what a plan
-    is built on, and of the school's instructions everything but the words
-    of those that apply: their channel, card, card day, when and by whom
-    they were pasted or chosen, those said before, and any waiting for
-    review.
+    is, which the planner is told, or nothing when there is none, and
+    reported status; the school's instructions that apply, in the one order,
+    or nothing when they cannot be read; whether she has said "not yet" and
+    what she wrote with it; and each claim about its date, channel, value,
+    and where it was read, sorted. Left out: a school note left in the old
+    note field, which no one chose; when a claim or a report was made, which
+    report it was, how sure a claim was, her history, anything about work
+    reported done, which is out of what a plan is built on, and of the
+    school's instructions everything but the words of those that apply:
+    their channel, card, card day, when and by whom they were pasted or
+    chosen, those said before, and any waiting for review.
     """
     rows: list[dict[str, object]] = []
     for item in sorted(week.active(), key=lambda item: item.assignment_id):

@@ -1002,3 +1002,18 @@ def test_only_words_a_paste_can_bring_travel_in_a_form_in_words() -> None:
     assert travels_in_words("z" * INSTRUCTION_MAX_LENGTH)
     assert not travels_in_words(longer)
     assert from_wire(to_wire(longer)) is None
+
+
+# ------------------------------------------------------------------ nothing new, named in full
+
+
+def test_a_choice_that_stands_is_nothing_new_only_when_it_names_what_is_kept() -> None:
+    """A retry that names every kept instruction and asks for what stands is nothing new,
+    whatever revision it names; one that names words never kept, or leaves a kept one out,
+    was made against other facts, and is refused as stale."""
+    rows = [kept(A, "current", 2, 1), kept(B, "history", 2, 2)]
+
+    assert settle(rows, [], choose(9, (A, B), A)) == InstructionsUnchanged(2)
+    assert isinstance(settle(rows, [], choose(9, (A, B, C), A)), InstructionChoiceStale)
+    assert isinstance(settle(rows, [], choose(2, (A, B, C), A)), InstructionChoiceStale)
+    assert isinstance(settle(rows, [], choose(2, (A,), A)), InstructionChoiceStale)

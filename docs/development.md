@@ -412,9 +412,9 @@ under since, from another tab or a retry, is refused whole, with the choice
 that was not saved said in words beside the instructions as they stand now and
 nothing ticked, so it is never carried onto facts it was not made against; a
 choice that already stands saves nothing more. A form the page did not
-write, a field sent twice among them, is refused whole, and what it chose
-that can be read is said back as the parent's unsaved choice, with nothing
-ticked. The instructions' words travel in the form encoded, so a browser's
+write, a field sent twice among them, or an answer to a question the page did
+not put, is refused whole, and what it chose that can be read is said back as
+the parent's unsaved choice, with nothing ticked. The instructions' words travel in the form encoded, so a browser's
 line endings never change them; an instruction longer than any paste, kept
 from before, travels by its row.
 

@@ -58,7 +58,7 @@ heading's first name is read as nothing and never kept.
 import dataclasses
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
@@ -1187,6 +1187,41 @@ def submitted_answers(
         )
         for key, answer in answers.items()
     }
+
+
+def answers_to_no_question(
+    changes: Sequence[Change], answers: Mapping[int, SubmittedChoice]
+) -> frozenset[int]:
+    """The cards an answer about the school's instructions is given on where the review page
+    puts no such question, from ``changes`` read with no answer given: a card the text does
+    not have; a card that lands on an assignment and does not carry its decision; and a
+    decision that needs no choice, where the answer would write anything.
+
+    A choice needed when the page was read is still needed now unless an
+    instruction was kept since; then an answer sent again finds what it asks for
+    standing, and any other finds the facts changed. So an answer that would write
+    where no choice is needed was never an answer to a question the page put. A
+    card that lands nowhere yet carries no decision, and nothing reads its answer.
+    """
+    decided = {change.key: change for change in changes if change.instructions is not None}
+    unlanded = {change.key for change in changes if change.state == FOLDED or change.ambiguous}
+    never: set[int] = set()
+    for key, answer in answers.items():
+        if key in unlanded:
+            continue
+        change = decided.get(key)
+        if change is None:
+            never.add(key)
+            continue
+        if isinstance(change.instructions, InstructionsNeedAChoice):
+            continue
+        resolved = answer.resolved(change.instructions_kept)
+        choice = None if resolved is None else resolved.choice()
+        if choice is not None and isinstance(
+            settle(change.instructions_kept, change.instructions_seen, choice), InstructionsSettled
+        ):
+            never.add(key)
+    return frozenset(never)
 
 
 def _with_instructions(
