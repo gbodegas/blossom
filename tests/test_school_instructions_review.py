@@ -1346,3 +1346,66 @@ def test_a_stale_choice_stays_through_unanswered_saves_until_a_fresh_one_is_made
     assert set(chosen) == {A, B}
     assert stale.status_code == 409
     assert found.texts == chosen
+
+
+# ------------------------------------------------------------------ a long choice carried
+
+
+def long_words(length: int) -> str:
+    return "Long instruction: " + "x" * (length - len("Long instruction: "))
+
+
+@pytest.mark.parametrize("length", [INSTRUCTION_MAX_LENGTH, INSTRUCTION_MAX_LENGTH + 1])
+@pytest.mark.parametrize("mixed", [False, True], ids=["alone", "with-a-short-one"])
+def test_a_long_instruction_chosen_on_an_old_form_stays_shown_until_a_fresh_choice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, length: int, mixed: bool
+) -> None:
+    """A kept instruction of any length, chosen on a form made before another tab saved none,
+    is shown as not saved through unanswered saves, a form that cannot be read, and a
+    reading that fails; nothing is written, and a fresh choice replaces it and saves."""
+    words = long_words(length)
+    picks = (words, A) if mixed else (words,)
+    settings = open_household(tmp_path)
+    with client_for(settings) as client:
+        if mixed:
+            a_current_b_earlier(store_of(client))
+    with_awaiting(settings, words)
+    with client_for(settings) as client:
+        store = store_of(client)
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        old = the_form(page, *picks)
+        other = client.post(ACTION, data=the_form(page, none=True))
+        before = tables(client)
+        refused = client.post(ACTION, data=old)
+        again = client.post(ACTION, data=whole_form(refused.text, ACTION))
+        bent = post_as_sent(
+            client, damaged(whole_form(again.text, ACTION), "a-field-the-page-never-writes")
+        )
+        after = tables(client)
+
+        def refuse_the_reading(*_: object, **__: object) -> None:
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "one_assignment", refuse_the_reading)
+        failed = client.post(ACTION, data=whole_form(again.text, ACTION))
+        monkeypatch.undo()
+        fresh = client.post(ACTION, data=the_form(again.text, words))
+        found = standing(client)
+
+    assert other.status_code == 303
+    assert refused.status_code == 409
+    assert again.status_code == bent.status_code == 422
+    assert failed.status_code >= 400
+    assert f'action="{ACTION}"' not in failed.text
+    assert after == before
+    for shown in (refused.text, again.text, bent.text):
+        assert not_saved_line(shown).startswith("Not saved, since what is saved changed: ")
+        assert not_saved_words(shown) == sorted(picks)
+        assert not any(on for _, on, _ in boxes(shown))
+    unread = "one instruction selected by reference; its text could not be read"
+    assert (words in not_saved_line(failed.text)) == (length == INSTRUCTION_MAX_LENGTH)
+    assert (unread in not_saved_line(failed.text)) == (length > INSTRUCTION_MAX_LENGTH)
+    assert (A in not_saved_line(failed.text)) == mixed
+    assert fresh.status_code == 303
+    assert found.texts == (words,)

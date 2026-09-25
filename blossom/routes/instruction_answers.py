@@ -26,7 +26,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
-from blossom.school_instructions import SchoolInstruction, SubmittedChoice, from_wire
+from blossom.school_instructions import (
+    SchoolInstruction,
+    SubmittedChoice,
+    from_wire,
+    travels_in_words,
+)
 
 KEY_MAX_LENGTH: Final = 6
 REVISION_MAX_LENGTH: Final = 9
@@ -164,11 +169,28 @@ def unsaved_of(fields: AnswerFields) -> UnsavedChoice:
 class SaidBack:
     """An answer not saved as a page says it: its words in the one order, how many
     instructions it selected by reference to a row whose text this page could not read, and
-    whether it chose that none applies."""
+    whether it chose that none applies. ``rows`` gives the kept row of each of its words too
+    long to travel in a form, so the form can carry it by that row."""
 
     words: tuple[str, ...]
     unshown: int
     none_applies: bool
+    rows: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def row_of(self) -> dict[str, int]:
+        """The kept row of each of its words that travels by its row."""
+        return dict(self.rows)
+
+
+def by_reference(
+    words: Iterable[str], kept: Sequence[SchoolInstruction] | None
+) -> tuple[tuple[str, int], ...]:
+    """Each of these words too long to travel in a form, with the row it is kept under."""
+    by_text = {} if kept is None else {item.text: item.sequence for item in kept}
+    return tuple(
+        (text, by_text[text]) for text in words if not travels_in_words(text) and text in by_text
+    )
 
 
 def said_back(
@@ -189,7 +211,28 @@ def said_back(
     ordered = tuple(sorted(dict.fromkeys(words)))
     if not ordered and not unshown and not unsaved.none_applies:
         return None
-    return SaidBack(ordered, unshown, unsaved.none_applies)
+    return SaidBack(ordered, unshown, unsaved.none_applies, by_reference(ordered, kept))
+
+
+@dataclass(frozen=True)
+class CarriedAnswer:
+    """One answer a form carries as not saved: the words it chose, the kept rows it chose by
+    reference, how many the page before could not read, and whether none applying was."""
+
+    words: tuple[str, ...]
+    rows: tuple[int, ...]
+    unshown: int
+    none_applies: bool
+
+    def said(self, kept: Sequence[SchoolInstruction] | None) -> SaidBack:
+        """The answer as a page says it, each row in its words from ``kept``, the instructions
+        kept for the card's assignment. A row this page can't place there is counted."""
+        by_row = {} if kept is None else {item.sequence: item.text for item in kept}
+        words = tuple(
+            sorted(dict.fromkeys([*self.words, *(by_row[r] for r in self.rows if r in by_row)]))
+        )
+        unread = sum(1 for row in self.rows if row not in by_row)
+        return SaidBack(words, self.unshown + unread, self.none_applies, by_reference(words, kept))
 
 
 @dataclass(frozen=True)
@@ -199,17 +242,25 @@ class CarriedAccount:
     no revision, and nothing is ever saved from it."""
 
     why: str
-    said: tuple[SaidBack, ...]
+    answers: tuple[CarriedAnswer, ...]
+
+    def said(self, kept: Sequence[SchoolInstruction] | None) -> tuple[SaidBack, ...]:
+        """Each answer as a page says it, with the instructions kept for the card's assignment
+        as this page read them, or ``None`` when it read none."""
+        return tuple(answer.said(kept) for answer in self.answers)
 
 
-CARRIED_HEADS: Final = frozenset({"unsaved", "unsaved_why", "unsaved_unshown", "unsaved_none"})
+CARRIED_HEADS: Final = frozenset(
+    {"unsaved", "unsaved_row", "unsaved_why", "unsaved_unshown", "unsaved_none"}
+)
 CARRIED_WHY: Final = frozenset({"stale", "differ", "waiting", "unreadable", "failed"})
 
 
 def carried_accounts(items: Iterable[tuple[str, object]]) -> dict[int, CarriedAccount]:
     """The choices each card carries from a page that showed them as not saved:
     ``unsaved_why-<card>`` for why, and for each answer ``unsaved-<card>-<answer>-<place>``
-    for each instruction's words on the wire, ``unsaved_unshown-<card>-<answer>`` for how
+    for each instruction's words on the wire, ``unsaved_row-<card>-<answer>-<place>`` for
+    the row of one too long to travel in words, ``unsaved_unshown-<card>-<answer>`` for how
     many were selected by reference, and ``unsaved_none-<card>-<answer>`` when none applying
     was chosen. The family's review of one assignment writes its one account as card 0.
 
@@ -219,6 +270,7 @@ def carried_accounts(items: Iterable[tuple[str, object]]) -> dict[int, CarriedAc
     """
     why: dict[int, str] = {}
     words: dict[tuple[int, int], list[str]] = {}
+    rows: dict[tuple[int, int], list[int]] = {}
     unshown: dict[tuple[int, int], int] = {}
     none: set[tuple[int, int]] = set()
     seen: set[str] = set()
@@ -237,18 +289,23 @@ def carried_accounts(items: Iterable[tuple[str, object]]) -> dict[int, CarriedAc
             text = from_wire(value)
             if text is not None:
                 words.setdefault((numbers[0], numbers[1]), []).append(text)
+        elif head == "unsaved_row" and len(numbers) == 3:
+            row = count_of(value, ROW_MAX_LENGTH)
+            if row is not None:
+                rows.setdefault((numbers[0], numbers[1]), []).append(row)
         elif head == "unsaved_unshown" and len(numbers) == 2:
             count = count_of(value, KEY_MAX_LENGTH)
             if count is not None:
                 unshown[(numbers[0], numbers[1])] = count
         elif head == "unsaved_none" and len(numbers) == 2 and value == "1":
             none.add((numbers[0], numbers[1]))
-    said: dict[int, list[SaidBack]] = {}
-    for card, answer in sorted({*words, *unshown, *none}):
+    said: dict[int, list[CarriedAnswer]] = {}
+    for card, answer in sorted({*words, *rows, *unshown, *none}):
         if card in why:
             said.setdefault(card, []).append(
-                SaidBack(
+                CarriedAnswer(
                     tuple(sorted(dict.fromkeys(words.get((card, answer), [])))),
+                    tuple(dict.fromkeys(rows.get((card, answer), []))),
                     unshown.get((card, answer), 0),
                     (card, answer) in none,
                 )

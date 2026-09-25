@@ -59,7 +59,7 @@ and the portal. A note is a parent's or hers, and the record says which in
 one place, `Assignment.note_by`: marked as a parent's entry it is a
 parent's, marked as her report it is hers, and any other mark or none is the
 school's, since every note kept before notes carried a mark came from the
-school's card. A school note is never kept in the note field. The school's
+school's card. New school notes never go in the note field. The school's
 instructions live in `school_instructions`, `blossom/school_instructions.py`
 holds their rule, and the store applies it in one place for the paste, a
 seed, and every other caller: a text already kept is nothing new, the first
@@ -68,8 +68,10 @@ shown, which rises with every change, so a form made before a change and a
 change back is still refused. A write that needs a choice and has none
 writes nothing, and names that outcome. The first start after the upgrade
 moves every school note out of the field, verified before the field is
-cleared, in one transaction. The pages say whose words each is to whoever
-reads, and both models are told it, hers as `student_noted`, a parent's as
+cleared, in one transaction. It leaves a note where it is when the row's
+marks, or the instructions already kept for it, can't be read, so a start is
+never refused over it. The pages say whose words each is to whoever reads,
+and both models are told it, hers as `student_noted`, a parent's as
 `parent_wrote`, and each of the school's instructions that apply as
 `teacher_wrote`, `teacher_wrote_2`, and on, in the order of their words,
 which means nothing. A plan carries a fingerprint of the week it was made

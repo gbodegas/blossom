@@ -34,6 +34,7 @@ import hmac
 import logging
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Final, Literal
@@ -239,12 +240,16 @@ def account_of(
 
 
 def carried_or(
-    said: SaidBack | None, why: str | None, carried: CarriedAccount | None
+    said: SaidBack | None,
+    why: str | None,
+    carried: CarriedAccount | None,
+    kept: Sequence[SchoolInstruction] | None = None,
 ) -> tuple[SaidBack | None, str | None]:
     """What the page says as not saved, and why: this answer's own account, or, when it has
-    none, the one the page before showed and the form carried."""
-    if said is None and carried is not None and carried.said:
-        return carried.said[0], carried.why
+    none, the one the page before showed and the form carried, its rows put in their words
+    from ``kept`` when this page read the assignment's instructions."""
+    if said is None and carried is not None and carried.answers:
+        return carried.said(kept)[0], carried.why
     return said, why
 
 
@@ -328,7 +333,7 @@ def review_page(
             ticked, none_ticked = answer.applies, answer.none_applies
             if failed:
                 not_saved, why = said_back(UnsavedChoice.of(answer), kept), "failed"
-    not_saved, why = carried_or(not_saved, why, carried)
+    not_saved, why = carried_or(not_saved, why, carried, kept)
     rows = [
         ShownRow(
             number=number,

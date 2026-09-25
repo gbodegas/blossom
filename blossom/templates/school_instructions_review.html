@@ -44,7 +44,7 @@
       {% if not_saved %}
         {# Carried to show again until a fresh choice is made; never read as an answer. #}
         <input type="hidden" name="unsaved_why-0" value="{{ not_saved_why or "failed" }}">
-        {% for text in not_saved.words %}<input type="hidden" name="unsaved-0-0-{{ loop.index0 }}" value="{{ text|wire }}">{% endfor %}
+        {% for text in not_saved.words %}{% if text is in_words %}<input type="hidden" name="unsaved-0-0-{{ loop.index0 }}" value="{{ text|wire }}">{% elif text in not_saved.row_of %}<input type="hidden" name="unsaved_row-0-0-{{ loop.index0 }}" value="{{ not_saved.row_of[text] }}">{% endif %}{% endfor %}
         {% if not_saved.unshown %}<input type="hidden" name="unsaved_unshown-0-0" value="{{ not_saved.unshown }}">{% endif %}
         {% if not_saved.none_applies %}<input type="hidden" name="unsaved_none-0-0" value="1">{% endif %}
       {% endif %}

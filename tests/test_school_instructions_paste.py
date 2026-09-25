@@ -32,8 +32,9 @@ from blossom.routes.inbox import (
     STORE_REFUSED,
     unsaved_on,
 )
-from blossom.routes.navigation import instructions_review_href
+from blossom.routes.navigation import instructions_action_href, instructions_review_href
 from blossom.school_instructions import (
+    INSTRUCTION_MAX_LENGTH,
     InstructionChoice,
     InstructionSeen,
     InstructionsStanding,
@@ -49,6 +50,7 @@ from tests.support import (
     fixture_settings,
     homework_from_a_note,
     store_of,
+    whole_form,
 )
 
 A = "Patterns, if-then statements, first proofs."
@@ -1684,29 +1686,45 @@ def test_an_answer_refused_on_a_card_never_asked_is_said_back_as_not_saved(
 
 @pytest.mark.parametrize("which", ["update", "new"])
 @pytest.mark.parametrize("choice", ["none", "one"])
+@pytest.mark.parametrize("marks", ["kept", "removed", "renamed", "none-left", "forged"])
 def test_a_choice_sent_beside_the_answer_to_which_homework_it_is_is_refused(
-    tmp_path: pathlib.Path, which: str, choice: str
+    tmp_path: pathlib.Path, which: str, choice: str, marks: str
 ) -> None:
     """The page asks only which homework the card is; a choice added beside that answer is
-    refused, even where the card then asks which instructions apply."""
+    refused, even where the card then asks which instructions apply, and whatever becomes of
+    the marks the page wrote. The page that asks it saves the same choice, once."""
     with client_in(tmp_path) as client:
         saved(client, CHECK_5_LATER)
         page = client.post("/parent/inbox/read", data={"text": CHECK_5}).text
         form = {**review_form(page), "occurrence-0": which}
         asked = client.post("/parent/inbox/keep", data=form).text
         words = boxes(asked, "0")
+        pick = (
+            {"none-0": "1"}
+            if choice == "none"
+            else {f"apply-0-{words.index('Show each step.')}": "1"}
+        )
         added = {
-            "instructions-0": "0",
-            **{f"instruction-0-{place}": to_wire(text) for place, text in enumerate(words)},
-            **(
-                {"none-0": "1"}
-                if choice == "none"
-                else {f"apply-0-{words.index('Show each step.')}": "1"}
-            ),
+            name: value
+            for name, value in review_form(asked).items()
+            if name.partition("-")[0] in ("instructions", "instruction", "row")
         }
+        sent = {**form, **added, **pick}
+        if marks != "kept":
+            sent.pop("which-0")
+        if marks == "renamed":
+            sent["which-00"] = "1"
+        if marks == "none-left":
+            sent.pop("made_with")
+        if marks == "forged":
+            sent["made_with"] = f"0:{which}.0123456789abcdef"
         start = tables(client)
-        refused = client.post("/parent/inbox/keep", data={**form, **added})
+        refused = client.post("/parent/inbox/keep", data=sent)
         after = tables(client)
+        answered = client.post("/parent/inbox/keep", data={**review_form(asked), **pick})
+        saved_once = tables(client)
+        again = client.post("/parent/inbox/keep", data={**review_form(asked), **pick})
+        final = tables(client)
 
     assert 'name="which-0"' in page
     assert 'name="instructions-0"' not in page
@@ -1714,6 +1732,9 @@ def test_a_choice_sent_beside_the_answer_to_which_homework_it_is_is_refused(
     assert refused.status_code == 422
     assert after == start
     assert ticked(refused.text, "0") == []
+    assert answered.status_code == again.status_code == 303
+    assert saved_once != start
+    assert final == saved_once
 
 
 def test_an_answer_that_shows_no_instruction_refuses_the_paste(tmp_path: pathlib.Path) -> None:
@@ -2082,3 +2103,119 @@ def test_a_stale_choice_stays_through_unanswered_saves_until_a_fresh_one_is_made
     assert f'id="instructions-problem-{asked}"' not in both.text
     assert fresh.status_code == 303
     assert found.texts == ("Include a graph.",)
+
+
+# ------------------------------------------------------------------ a long choice carried
+
+
+def long_words(length: int) -> str:
+    return "Long instruction: " + "x" * (length - len("Long instruction: "))
+
+
+@pytest.mark.parametrize("length", [INSTRUCTION_MAX_LENGTH, INSTRUCTION_MAX_LENGTH + 1])
+@pytest.mark.parametrize("mixed", [False, True], ids=["alone", "with-a-short-one"])
+def test_a_long_saved_instruction_chosen_on_an_old_page_stays_shown_until_a_fresh_choice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, length: int, mixed: bool
+) -> None:
+    """A saved instruction of any length, chosen on a page made before another tab saved,
+    is shown as not saved through unanswered saves, a form that cannot be read, and a
+    reading that fails; nothing is written, and a fresh choice replaces it and saves."""
+    words = long_words(length)
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK.replace(A + "\n", ""))
+        store = store_of(client)
+        row = next(item for item in store.all_assignments() if item.title == "Q1 Check 3")
+        store.put_on_record(
+            [
+                row.model_copy(
+                    update={"note": words, "origins": {**row.origins, "note": SourceChannel.LMS}}
+                )
+            ],
+            {},
+        )
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        picks = (words, B) if mixed else (words,)
+        old = {**review_form(page), **{f"apply-0-{boxes(page, '0').index(p)}": "1" for p in picks}}
+        review = instructions_review_href(row.assignment_id)
+        action = instructions_action_href(row.assignment_id)
+        other = client.post(
+            action, data={**whole_form(client.get(review).text, action), "none": "1"}
+        )
+        start = tables(client)
+        refused = client.post("/parent/inbox/keep", data=old)
+        again = client.post("/parent/inbox/keep", data=review_form(refused.text))
+        bent = keep_as_sent(client, [*review_form(again.text).items(), ("none-0", "yes")])
+        after = tables(client)
+
+        def refuse(*_: object, **__: object) -> None:
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "all_assignments", refuse)
+        failed = client.post("/parent/inbox/keep", data=review_form(again.text))
+        monkeypatch.undo()
+        fresh = client.post(
+            "/parent/inbox/keep",
+            data={**review_form(again.text), f"apply-0-{boxes(again.text, '0').index(B)}": "1"},
+        )
+        found = standing(client)
+
+    assert other.status_code == 303
+    assert refused.status_code == 409
+    assert again.status_code == 200
+    assert bent.status_code == 422
+    assert after == start
+    for shown in (refused.text, again.text, bent.text):
+        assert "Not saved, since what is saved changed" in said_back_on(shown, "0")
+        assert unsaved(shown, "0") == sorted(picks)
+        assert ticked(shown, "0") == []
+    kept = html.unescape(failed.text.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0])
+    assert failed.status_code == 500
+    assert (words in kept) == (length == INSTRUCTION_MAX_LENGTH)
+    assert ("one instruction selected by reference" in kept) == (length > INSTRUCTION_MAX_LENGTH)
+    assert (B in kept) == mixed
+    assert fresh.status_code == 303
+    assert found.texts == (B,)
+
+
+# ------------------------------------------------------------------ a carried choice folded
+
+
+@pytest.mark.parametrize("choice", ["none", "one"])
+def test_a_choice_carried_on_a_card_that_folds_is_shown_on_the_card_it_joins(
+    tmp_path: pathlib.Path, choice: str
+) -> None:
+    """A choice shown as not saved on the second card of the practice sheet stays shown on
+    the first card once the second is folded into it, through another unanswered save;
+    nothing is written, and a fresh choice on the first card saves."""
+    words = "that no school instruction applies" if choice == "none" else PRACTICE_SHOWN[0]
+    with client_in(tmp_path) as client:
+        read = client.post("/parent/inbox/read", data={"text": PRACTICE}).text
+        apart = client.post(
+            "/parent/inbox/keep", data={**review_form(read), "occurrence-1": "new"}
+        ).text
+        pick = {"none-1": "1"} if choice == "none" else {"apply-1-0": "1"}
+        start = tables(client)
+        bad = client.post(
+            "/parent/inbox/keep", data={**review_form(apart), **pick, "instructions-1": "bad"}
+        )
+        folded = client.post(
+            "/parent/inbox/keep", data={**review_form(bad.text), "occurrence-1": "update"}
+        )
+        again = client.post("/parent/inbox/keep", data=review_form(folded.text))
+        after = tables(client)
+        fresh = client.post(
+            "/parent/inbox/keep",
+            data={**review_form(again.text), "apply-0-0": "1"},
+        )
+
+    assert 'name="instructions-1"' in apart
+    assert bad.status_code == 422
+    assert words in said_back_on(bad.text, "1")
+    assert folded.status_code == again.status_code == 200
+    for shown in (folded.text, again.text):
+        assert the_question_on(shown) == "0"
+        assert words in said_back_on(shown, "0")
+        assert ticked(shown, "0") == []
+    assert after == start
+    assert fresh.status_code == 303

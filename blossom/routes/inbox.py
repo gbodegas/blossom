@@ -13,6 +13,8 @@ silent difference. A form that fails to validate comes back with every
 field as it was, the failing field named, and the section open.
 """
 
+import hmac
+import json
 import logging
 import sqlite3
 from collections.abc import Mapping, Sequence
@@ -247,6 +249,42 @@ def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[dateti
     return read_at, read_on
 
 
+MADE_WITH: Final = "made_with"
+"""The field where a review page writes the answers to which homework each card is that it
+was made with, signed, so a save can tell a question the page asked from one a form claims."""
+
+
+def made_with_field(
+    key: bytes, draft: Mapping[str, str], occurrences: Mapping[int, str] | None
+) -> str:
+    """The answers to which homework each card is that a page was made with, and a check
+    signed with the running process's key that ties them to the page's draft."""
+    answers = ",".join(f"{card}:{value}" for card, value in sorted((occurrences or {}).items()))
+    return f"{answers}.{_made_with_check(key, draft, answers)}"
+
+
+def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> dict[int, str]:
+    """The answers to which homework each card is that the page was made with, as it signed
+    them. A form without that field, or with one this process didn't sign for this draft,
+    is read as a page made before any such answer was given."""
+    answers, _, check = form.get(MADE_WITH, "").rpartition(".")
+    expected = _made_with_check(key, draft, answers)
+    if not hmac.compare_digest(check.encode("utf-8"), expected.encode("utf-8")):
+        return {}
+    made: dict[int, str] = {}
+    for part in filter(None, answers.split(",")):
+        card, _, value = part.partition(":")
+        made[int(card)] = value
+    return made
+
+
+def _made_with_check(key: bytes, draft: Mapping[str, str], answers: str) -> str:
+    # A browser sends a textarea's line breaks as CRLF and drops its first line break.
+    words = {name: value.replace("\r\n", "\n").strip() for name, value in draft.items()}
+    signed = json.dumps([sorted(words.items()), answers]).encode("utf-8")
+    return hmac.new(key, signed, "sha256").hexdigest()[:16]
+
+
 def answers_from(
     form: Mapping[str, str], unasked: Mapping[int, set[AssignmentKind]]
 ) -> tuple[dict[int, str], dict[int, AssignmentKind]]:
@@ -308,14 +346,13 @@ def answers_from(
     return occurrences, chosen
 
 
-def asked_on(form: Mapping[str, str], mark: str = "asked") -> set[int]:
+def asked_on(form: Mapping[str, str]) -> set[int]:
     """The cards the page put a question to, which the page sends back beside them; a
-    question on any other card is one the record raised since the page was made. With
-    ``which`` for ``mark``, the cards the page asked which homework they are."""
+    question on any other card is one the record raised since the page was made."""
     asked: set[int] = set()
     for name in form:
         head, _, number = name.rpartition("-")
-        if head == mark and review_key(number):
+        if head == "asked" and review_key(number):
             asked.add(int(number))
     return asked
 
@@ -420,12 +457,13 @@ def answers_shown(
         if answer.chooses
     }
     for key, account in (carried or {}).items():
+        answers = account.said(None)
         chosen.setdefault(
             key,
             SaidBack(
-                tuple(sorted({text for said in account.said for text in said.words})),
-                sum(said.unshown for said in account.said),
-                any(said.none_applies for said in account.said),
+                tuple(sorted({text for said in answers for text in said.words})),
+                sum(said.unshown for said in answers),
+                any(said.none_applies for said in answers),
             ),
         )
     chosen = {
@@ -467,9 +505,9 @@ def unsaved_on(
     words, with the kept instructions this reading found. A choice made on a card before it
     was known which homework the card is, given now or carried from before, is said with no
     kept instruction read for it, since no row it names can be placed. A card with nothing
-    new to say shows again the choice it carries from the page before, with its reason.
-    Where the assignment's question is not put, the account names the page that reviews
-    its instructions."""
+    new to say shows again the choice it carries from the page before, with its reason, and
+    the choice each card folded into it carries. Where the assignment's question is not
+    put, the account names the page that reviews its instructions."""
     carriers = {
         change.assignment_id: change for change in changes if change.instructions is not None
     }
@@ -482,11 +520,11 @@ def unsaved_on(
         if change.state == FOLDED:
             continue
         carrier = None if change.ambiguous else carriers.get(change.assignment_id)
+        kept = None if carrier is None else carrier.instructions_kept
         # A folded card isn't shown, so what couldn't be read on it is said on its anchor.
         unread = [key for key in (change.key, *folded.get(change.key, ())) if key in unsaved]
         if unread:
             why = "unreadable"
-            kept = None if carrier is None else carrier.instructions_kept
             answers = [said_back(unsaved[key], kept) for key in unread]
         elif change.ambiguous:
             why = "waiting"
@@ -500,8 +538,13 @@ def unsaved_on(
                 for answer in change.instructions_unsaved
             ]
         accounts = tuple(account for account in answers if account is not None)
-        if not accounts and carried is not None and change.key in carried:
-            why, accounts = carried[change.key].why, carried[change.key].said
+        if not accounts and carried is not None:
+            # A folded card isn't shown, so the choice it carries is shown on its anchor.
+            keys = (change.key, *folded.get(change.key, ()))
+            held = [carried[key] for key in keys if key in carried]
+            if held:
+                why = held[0].why
+                accounts = tuple(said for account in held for said in account.said(kept))
         if not accounts:
             continue
         review = None
@@ -668,6 +711,7 @@ def preview_page(
             "to_save": to_save,
             "unread": read.unread,
             "draft": draft,
+            "made_with": made_with_field(state.result_key, draft, occurrences),
             "kind_choices": KIND_CHOICES,
             "notice": notice,
             "held": held,
@@ -804,18 +848,13 @@ async def keep_readings(request: Request, state: State) -> Response:
     try:
         occurrences, kinds = answers_from(form, unasked_for(state, read))
         # An answer where the page puts no such question is no form the page wrote. The page
-        # as it was read, before the answers given on it to which homework a card is, says
+        # as it was made, with the answers to which homework a card is that it signed, says
         # where it put the question.
         changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
-        which = asked_on(form, "which")
+        page_made = made_with(state.result_key, form, draft)
         shown = changes
-        if which:
-            shown = changes_for(
-                read.items,
-                state.project_state,
-                occurrences={key: value for key, value in occurrences.items() if key not in which},
-                kinds=kinds,
-            )
+        if page_made != occurrences:
+            shown = changes_for(read.items, state.project_state, occurrences=page_made, kinds=kinds)
         never_put = answers_to_no_question(changes, instruction_answers, shown)
         unreadable = read_answers.malformed or bool(never_put)
         contradicted = any(answer.contradicts for answer in instruction_answers.values())
