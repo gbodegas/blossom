@@ -411,10 +411,15 @@ text that lands on it. A choice made on a page the instructions have changed
 under since, from another tab or a retry, is refused whole, with the choice
 that was not saved said in words beside the instructions as they stand now and
 nothing ticked, so it is never carried onto facts it was not made against; a
-choice that already stands saves nothing more. A form the page did not
+choice that already stands saves nothing more. The answers on every card of
+one assignment, one that ticks nothing among them, are each checked the same
+way before any is taken with another, and answers that ask for different
+things choose nothing and are said back as not saved. A form the page did not
 write, a field sent twice among them, or an answer to a question the page did
 not put, is refused whole, and what it chose that can be read is said back as
-the parent's unsaved choice, with nothing ticked. The instructions' words travel in the form encoded, so a browser's
+the parent's unsaved choice on its card, with nothing ticked, even when the
+text puts no question there now; the card then offers "Review school
+instructions". The instructions' words travel in the form encoded, so a browser's
 line endings never change them; an instruction longer than any paste, kept
 from before, travels by its row.
 
@@ -433,7 +438,9 @@ changed since, and signed by the running Blossom, so an address worked out by
 hand, or one from before a restart, says nothing; a save that none applies
 says so in its own words. A save the file refuses is tried once, never again, and the
 answer that was not saved is shown, from the record read once more or, when
-that fails too, from a page that reads nothing. She reads the instructions
+that fails too, from a page that reads nothing, which says a choice made by
+reference to a row was selected by reference and that its text could not be
+read. She reads the instructions
 and never the control. A note typed by a parent shows as "A parent wrote",
 and the planner is told whose words a note is, and the school's instructions
 that apply as the teacher's; a school note left in the old note field, which

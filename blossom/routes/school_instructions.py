@@ -347,8 +347,9 @@ def plain_page(
     status_code: int,
 ) -> HTMLResponse:
     """The page when the record cannot be read back: what happened, the answer as it was
-    sent, and the ways on. Nothing here reads the store, offers a save, or claims one; a
-    kept instruction the answer named by its row is counted, since its words are not read."""
+    sent, and the ways on. Nothing here reads the store, offers a save, or claims one; an
+    instruction the answer selected by reference to a row is counted, since its text is not
+    read."""
     return templates.TemplateResponse(
         request,
         "school_instructions_review.html",

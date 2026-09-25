@@ -1215,3 +1215,41 @@ def test_a_form_naming_words_never_kept_is_never_taken_for_a_choice_that_stands(
     assert str(escape(CHANGED_SINCE_OPENED)) in answer.text
     assert str(escape(ALREADY_STOOD)) not in answer.text
     assert after == before
+
+
+# ------------------------------------------------------------------ a choice by reference, unread
+
+
+@pytest.mark.parametrize("rows", [1, 2])
+def test_a_choice_by_reference_the_page_cannot_read_back_is_said_as_unread(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, rows: int
+) -> None:
+    """Boxes ticked by reference to a row, in a form that cannot be read whole, and a record that
+    cannot be read back: the page that reads no store says what was selected by reference and
+    that its text could not be read, and claims nothing about the assignment."""
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        a_current_b_earlier(store)
+        form = {**the_form(client.get(PAGE, headers=PAGE_HEADERS).text, A, B), "revision": "bad"}
+        for place in range(rows):
+            form.pop(f"instruction-{place}")
+            form[f"row-{place}"] = str(999999 - place)
+
+        def refuse_the_reading(*_: object, **__: object) -> None:
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "one_assignment", refuse_the_reading)
+        refused = client.post(ACTION, data=form, headers=PAGE_HEADERS)
+
+    said = re.search(r'<p class="problem" id="not-saved"[^>]*>(.*?)</p>', refused.text, re.S)
+    assert refused.status_code == 422
+    assert f'action="{ACTION}"' not in refused.text
+    assert said is not None
+    assert "kept for this assignment" not in refused.text
+    if rows == 1:
+        assert not_saved_words(refused.text) == [B]
+        assert "one instruction selected by reference; its text could not be read" in said.group(1)
+    else:
+        assert not_saved_words(refused.text) == []
+        assert "2 instructions selected by reference; their text could not be read" in said.group(1)

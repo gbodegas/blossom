@@ -22,10 +22,11 @@
   {#
     A page returned for an answer about the school's instructions puts the
     focus on its summary, with no script, which links to the first question
-    it is about; any other notice is said as before.
+    it is about, or to the choice said back on a card that puts no question
+    now; any other notice is said as before.
   #}
-  {% if notice and problem_target is not none %}
-    <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ notice }} <a href="#instructions-question-{{ problem_target }}">Go to the question.</a></p>
+  {% if notice and refused is not none %}
+    <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ notice }}{% if problem_link %} <a href="#{{ problem_link[0] }}">{{ problem_link[1] }}</a>{% endif %}</p>
   {% elif notice %}
     <p class="problem" role="alert">{{ notice }}</p>
   {% endif %}
@@ -163,6 +164,19 @@
                 </select>
               </label>
               <p class="helper">Task: a form to sign, supplies to bring, or similar. {% if change.on_record %}As saved; change it if it is wrong.{% else %}Suggested from the title; change it if it is wrong.{% endif %}</p>
+              {% if change.key in unsaved_on %}
+                {#
+                  What was chosen and not saved, said back whether or not the card puts
+                  the question now; where it puts none, the assignment's instructions can
+                  be reviewed on their own page.
+                #}
+                {% set account = unsaved_on[change.key] %}
+                <div id="instructions-unsaved-{{ change.key }}" tabindex="-1">
+                  <h3 class="update-heading">Your unsaved choice{% if account.said|length > 1 %}s{% endif %}</h3>
+                  <p class="problem" id="instructions-problem-{{ change.key }}">{% if account.why == "stale" %}Not saved, since what is saved changed{% elif account.why == "differ" %}Not saved, since the cards for this assignment answer differently{% else %}Not saved, since the answer could not be read{% endif %}: {% for item in account.said %}{% with said = item %}{% include "instructions_said_back.html" %}{% endwith %}{% if not loop.last %}; {% endif %}{% endfor %}</p>
+                  {% if account.review %}<p class="support-links"><a href="{{ account.review }}">Review school instructions</a></p>{% endif %}
+                </div>
+              {% endif %}
               {% if change.instructions_question %}
                 {# One question for the assignment, whichever cards of the text brought its instructions. #}
                 <input type="hidden" name="instructions-{{ change.key }}" value="{{ change.instructions_revision }}">
@@ -175,11 +189,6 @@
                 {% endfor %}
                 <fieldset class="choice instructions" id="instructions-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
                   <legend>The school's instructions for {{ reading.title }}: which apply now?</legend>
-                  {% if change.key in unsaved_on %}
-                    {% set why = unsaved_on[change.key][0] %}
-                    <h3 class="update-heading">Your unsaved choice</h3>
-                    <p class="problem" id="instructions-problem-{{ change.key }}">{% if why == "stale" %}Not saved, since what is saved changed{% else %}Not saved, since the answer could not be read{% endif %}: {% with said = unsaved_on[change.key][1] %}{% include "instructions_said_back.html" %}{% endwith %}</p>
-                  {% endif %}
                   <p class="helper">These are the school's words. Which of them apply is the family's choice, and the school's record is not changed. The ones not chosen are kept as history.</p>
                   {% for item in change.instructions_shown %}
                     <label><input type="checkbox" name="apply-{{ change.key }}-{{ loop.index0 }}" value="1"{% if item.text in change.instructions_ticked %} checked{% endif %}> <span><q class="authored-text">{{ item.text }}</q> <span class="source">{% if item.standing == "current" %}Saved, applies now{% elif item.standing == "history" %}Saved earlier, does not apply{% elif item.standing == "awaiting" %}Waiting for review{% else %}New in this text{% endif %}{% if item.card_day %}. Read on the school's card for {{ item.card_day.strftime("%B") }} {{ item.card_day.day }}{% endif %}.</span></span></label>

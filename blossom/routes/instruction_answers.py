@@ -153,9 +153,9 @@ def unsaved_of(fields: AnswerFields) -> UnsavedChoice:
 
 @dataclass(frozen=True)
 class SaidBack:
-    """An answer not saved as a page says it: its words in the one order, how many kept
-    instructions it chose that this page cannot put in words, and whether it chose that none
-    applies."""
+    """An answer not saved as a page says it: its words in the one order, how many
+    instructions it selected by reference to a row whose text this page could not read, and
+    whether it chose that none applies."""
 
     words: tuple[str, ...]
     unshown: int

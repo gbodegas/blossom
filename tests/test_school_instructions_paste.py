@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.intake import ChangedSinceShown, Kept, keep, read_text
+from blossom.intake import Change, ChangedSinceShown, Held, Kept, keep, read_text
 from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import (
     CHANGED_SINCE_SHOWN,
@@ -28,7 +28,9 @@ from blossom.routes.inbox import (
     INSTRUCTION_FORM_UNREADABLE,
     INSTRUCTIONS_CONTRADICT,
     STORE_REFUSED,
+    unsaved_on,
 )
+from blossom.routes.navigation import instructions_review_href
 from blossom.school_instructions import (
     InstructionChoice,
     InstructionSeen,
@@ -957,10 +959,11 @@ def test_a_card_that_cannot_be_read_says_back_its_choice_and_leaves_the_other_as
         refused = keep_as_sent(client, with_damage(page, answered_on_both(page), damage))
         after = tables(client)
 
-    first = refused.text.split('id="instructions-question-0"', 1)[1].split("</fieldset>", 1)[0]
+    account = refused.text.split('id="instructions-unsaved-0"', 1)[1]
+    account = account.split('id="instructions-question-0"', 1)[0]
     assert refused.status_code == 422
     assert after == start
-    assert '<h3 class="update-heading">Your unsaved choice</h3>' in first
+    assert '<h3 class="update-heading">Your unsaved choice</h3>' in account
     assert unsaved(refused.text, "0") == [A]
     assert ticked(refused.text, "0") == []
     assert ticked(refused.text, "1") == [GUIDE_NEW]
@@ -1158,3 +1161,326 @@ def test_an_answer_on_a_card_that_lands_nowhere_yet_is_not_refused(tmp_path: pat
     assert 'name="occurrence-0"' in answer.text
     assert str(escape(INSTRUCTION_FORM_UNREADABLE)) not in answer.text
     assert after == start
+
+
+# ------------------------------------------------------------------ every answer on the cards
+
+
+def weekly(store: ProjectStateStore) -> str:
+    """The id of the weekly practice, the one assignment the weekly texts land on."""
+    (row,) = [item for item in store.all_assignments() if item.title == "Weekly practice"]
+    return row.assignment_id
+
+
+def pencil_said_since(client: TestClient) -> str:
+    """The weekly practice saved with one instruction, then another said beside it and kept
+    as history, at revision 2."""
+    saved(client, WEEKLY_KEPT)
+    store = store_of(client)
+    name = weekly(store)
+    store.settle_school_instructions(
+        name,
+        [InstructionSeen(PENCIL, SourceChannel.LMS)],
+        InstructionChoice(1, (WORK, PENCIL), frozenset({WORK})),
+        authored_by="parent",
+        now=KEEP_NOW,
+        today=KEEP_TODAY,
+    )
+    return name
+
+
+def none_chosen_since(store: ProjectStateStore, name: str) -> None:
+    store.settle_school_instructions(
+        name,
+        [],
+        InstructionChoice(2, (WORK, PENCIL), none_applies=True),
+        authored_by="parent",
+        now=KEEP_NOW,
+        today=KEEP_TODAY,
+    )
+
+
+def keep_both(
+    store: ProjectStateStore, answers: dict[int, SubmittedChoice]
+) -> Kept | Held | ChangedSinceShown | list[Change]:
+    """The weekly practice's two cards, both said to be the saved homework, kept with these
+    answers by a caller other than the page."""
+    reading = read_text(WEEKLY_TWICE, now=KEEP_NOW, today=KEEP_TODAY)
+    return keep(
+        reading.items,
+        store,
+        occurrences={0: "update", 1: "update"},
+        instruction_answers=answers,
+        imported_by="parent",
+        now=KEEP_NOW,
+        today=KEEP_TODAY,
+    )
+
+
+@pytest.mark.parametrize("old_first", [True, False], ids=["old-answer-first", "old-answer-last"])
+def test_an_answer_made_before_the_last_change_on_either_card_refuses_the_whole_text(
+    tmp_path: pathlib.Path, old_first: bool
+) -> None:
+    """Two cards of one assignment each carry an answer, one made before the choice that stands
+    and one after it. Whichever card has the old one, nothing is written, what changed is
+    handed back, and no box comes back ticked."""
+    with client_in(tmp_path) as client:
+        name = pencil_said_since(client)
+        store = store_of(client)
+        none_chosen_since(store, name)
+        old = SubmittedChoice(2, (WORK, PENCIL), frozenset({PENCIL}))
+        fresh = SubmittedChoice(3, (WORK, PENCIL), none_applies=True)
+        answers = {0: old, 1: fresh} if old_first else {0: fresh, 1: old}
+        before = tables(client)
+        outcome = keep_both(store, answers)
+        after = tables(client)
+
+    assert isinstance(outcome, ChangedSinceShown)
+    assert after == before
+    (carrier,) = [change for change in outcome.changes if change.instructions is not None]
+    assert carrier.instructions_stale
+    assert carrier.instructions_revision == 3
+    assert carrier.instructions_ticked == frozenset()
+    assert not carrier.instructions_none_ticked
+    assert carrier.instructions_unsaved == (answers[0], answers[1])
+
+
+@pytest.mark.parametrize("same", [False, True], ids=["answers-differ", "one-answer-twice"])
+def test_answers_on_two_cards_that_differ_choose_neither_and_are_kept_to_say_back(
+    tmp_path: pathlib.Path, same: bool
+) -> None:
+    """Both answers are made against what stands and ask for different things: nothing is
+    written, the question stays open with nothing ticked, and both are kept to say back as not
+    saved. The same answer on both cards is one answer, and it is saved."""
+    with client_in(tmp_path) as client:
+        saved(client, WEEKLY_KEPT)
+        store = store_of(client)
+        pencil = SubmittedChoice(1, (WORK, PENCIL), frozenset({PENCIL}))
+        none = SubmittedChoice(1, (WORK, PENCIL), none_applies=True)
+        before = tables(client)
+        outcome = keep_both(store, {0: pencil, 1: pencil if same else none})
+        after = tables(client)
+        found = store.school_instruction_readings([weekly(store)]).readable[weekly(store)]
+
+    if same:
+        assert isinstance(outcome, Kept)
+        assert found.texts == (PENCIL,)
+    else:
+        assert isinstance(outcome, list)
+        assert after == before
+        (carrier,) = [change for change in outcome if change.instructions is not None]
+        account = unsaved_on(outcome, {})[carrier.key]
+        assert carrier.instructions_asked
+        assert carrier.instructions_answer is None
+        assert carrier.instructions_ticked == frozenset()
+        assert not carrier.instructions_none_ticked
+        assert carrier.instructions_unsaved == (pencil, none)
+        assert account.why == "differ"
+        assert [(said.words, said.none_applies) for said in account.said] == [
+            ((PENCIL,), False),
+            ((), True),
+        ]
+
+
+def test_answers_on_two_cards_that_ask_for_what_stands_are_one_answer_and_nothing_new(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Both cards ask for what stands, one made before the last save and one after it: they
+    ask for the same thing, so they are one answer, and nothing new is written."""
+    with client_in(tmp_path) as client:
+        name = pencil_said_since(client)
+        store = store_of(client)
+        none_chosen_since(store, name)
+        before = tables(client)["school_instructions"]
+        outcome = keep_both(
+            store,
+            {
+                0: SubmittedChoice(2, (WORK, PENCIL), none_applies=True),
+                1: SubmittedChoice(3, (WORK, PENCIL), none_applies=True),
+            },
+        )
+        after = tables(client)["school_instructions"]
+
+    assert isinstance(outcome, Kept)
+    assert after == before
+
+
+@pytest.mark.parametrize("beside", [False, True], ids=["alone", "beside-an-answer-made-since"])
+def test_an_answer_that_ticks_nothing_made_before_the_last_change_is_refused(
+    tmp_path: pathlib.Path, beside: bool
+) -> None:
+    """An answer that ticks nothing, made before another instruction was kept elsewhere, was
+    made against other facts: alone or beside an answer made since, nothing is written and
+    what changed is handed back."""
+    with client_in(tmp_path) as client:
+        saved(client, WEEKLY_KEPT)
+        store = store_of(client)
+        blank = SubmittedChoice(1, (WORK, PENCIL))
+        store.settle_school_instructions(
+            weekly(store),
+            [InstructionSeen(PENCIL, SourceChannel.LMS)],
+            InstructionChoice(1, (WORK, PENCIL), frozenset({WORK})),
+            authored_by="parent",
+            now=KEEP_NOW,
+            today=KEEP_TODAY,
+        )
+        answers = {0: blank}
+        if beside:
+            answers[1] = SubmittedChoice(2, (WORK, PENCIL), frozenset({WORK}))
+        before = tables(client)
+        outcome = keep_both(store, answers)
+        after = tables(client)
+
+    assert isinstance(outcome, ChangedSinceShown)
+    assert after == before
+
+
+def test_a_page_refused_for_an_old_answer_and_sent_back_as_returned_saves_no_old_choice(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A page made before the choice that stands comes back with answers on both cards, the old
+    one on the first: nothing is written, and the page it returns, sent back as it is, saves
+    nothing of the old choice."""
+    with client_in(tmp_path) as client:
+        name = pencil_said_since(client)
+        store = store_of(client)
+        page = client.post("/parent/inbox/read", data={"text": WEEKLY_TWICE}).text
+        form = {**review_form(page), "occurrence-0": "update", "occurrence-1": "update"}
+        none_chosen_since(store, name)
+        for key, (revision, tick) in {0: ("2", "apply-0-1"), 1: ("3", "none-1")}.items():
+            form[f"instructions-{key}"] = revision
+            form[f"instruction-{key}-0"] = to_wire(WORK)
+            form[f"instruction-{key}-1"] = to_wire(PENCIL)
+            form[tick] = "1"
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data=form)
+        after_refusal = tables(client)
+        again = client.post("/parent/inbox/keep", data=review_form(refused.text))
+        found = store.school_instruction_readings([name]).readable[name]
+
+    assert refused.status_code in (409, 422)
+    assert after_refusal == before
+    assert ticked(refused.text, "0") == []
+    assert again.status_code == 303
+    assert found.texts == ()
+
+
+# ------------------------------------------------------------------ a choice whose question is gone
+
+
+@pytest.mark.parametrize("damage", ["a-revision-not-a-count", "the-revision-twice"])
+@pytest.mark.parametrize("since", ["kept-as-history", "then-none-applies"])
+def test_a_choice_not_saved_is_said_back_after_its_question_is_gone(
+    tmp_path: pathlib.Path, damage: str, since: str
+) -> None:
+    """B was chosen on a page; another tab then kept the text with A applying, so the text asks
+    nothing about the instructions. The page's form comes back damaged: nothing is written, the
+    choice of B is still said back as not saved, the focus is on a summary that leads to it,
+    and the way to review the instructions is offered beside it."""
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        form = {**review_form(page), f"apply-0-{boxes(page, '0').index(B)}": "1"}
+        saved(client, DUE_WEEK_CHANGED, **{f"apply-0-{boxes(page, '0').index(A)}": "1"})
+        head = standing(client)
+        name = head.kept[0].assignment_id
+        if since == "then-none-applies":
+            store_of(client).settle_school_instructions(
+                name,
+                [],
+                InstructionChoice(head.revision, (A, B), none_applies=True),
+                authored_by="parent",
+                now=KEEP_NOW,
+                today=KEEP_TODAY,
+            )
+        before = tables(client)
+        refused = keep_as_sent(client, with_damage(page, form, damage))
+        after = tables(client)
+
+    account = refused.text.split('id="instructions-unsaved-0" tabindex="-1">', 1)[1]
+    account = account.split("</div>", 1)[0]
+    summary = re.search(
+        r'<p class="problem" role="alert" id="problem-summary"[^>]*>(.*?)</p>', refused.text, re.S
+    )
+    assert refused.status_code == 422
+    assert after == before
+    assert 'name="instructions-0"' not in refused.text
+    assert '<h3 class="update-heading">Your unsaved choice</h3>' in account
+    assert unsaved(refused.text, "0") == [B]
+    assert "Not saved, since the answer could not be read" in account
+    assert f'<a href="{instructions_review_href(name)}">Review school instructions</a>' in account
+    assert " checked>" not in refused.text
+    assert refused.text.count("autofocus") == 1
+    assert summary is not None
+    assert 'tabindex="-1" autofocus' in summary.group(0)
+    assert '<a href="#instructions-unsaved-0">See the choice not saved.</a>' in summary.group(1)
+    assert "#instructions-question-" not in refused.text
+
+
+# ------------------------------------------------------------------ a choice by reference, unread
+
+
+@pytest.mark.parametrize("rows", [1, 2])
+def test_a_choice_by_reference_the_paste_cannot_read_back_is_said_as_unread(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, rows: int
+) -> None:
+    """Boxes ticked by reference to a row, in a form that cannot be read whole, and a record that
+    cannot be read back: the page that reads no store says what was selected by reference and
+    that its text could not be read, and claims nothing about the assignment."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": BOTH_CARDS}).text
+        form = {**review_form(page), "instructions-0": "bad"}
+        for place in range(rows):
+            form.pop(f"instruction-0-{place}")
+            form[f"row-0-{place}"] = str(999999 - place)
+            form[f"apply-0-{place}"] = "1"
+        store = store_of(client)
+
+        def refuse(*_: object, **__: object) -> None:
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "all_assignments", refuse)
+        refused = client.post("/parent/inbox/keep", data=form)
+
+    kept = html.unescape(refused.text.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0])
+    assert refused.status_code == 500
+    assert "kept for this assignment" not in refused.text
+    if rows == 1:
+        assert "one instruction selected by reference; its text could not be read" in kept
+    else:
+        assert "2 instructions selected by reference; their text could not be read" in kept
+
+
+def test_a_choice_by_reference_the_page_can_read_is_said_back_in_its_words(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A form that cannot be read whole chose a long instruction kept from before, by its row:
+    the page reads what is kept and says the choice back in its words."""
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK.replace(A + "\n", ""))
+        store = store_of(client)
+        row = next(item for item in store.all_assignments() if item.title == "Q1 Check 3")
+        store.put_on_record(
+            [
+                row.model_copy(
+                    update={
+                        "note": LONG_NOTE,
+                        "origins": {**row.origins, "note": SourceChannel.LMS},
+                    }
+                )
+            ],
+            {},
+        )
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        place = boxes(page, "0").index(LONG_NOTE)
+        form = {**review_form(page), f"apply-0-{place}": "1", "instructions-0": "bad"}
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+
+    assert f"row-0-{place}" in form
+    assert refused.status_code == 422
+    assert after == before
+    assert unsaved(refused.text, "0") == [LONG_NOTE]
+    assert "selected by reference" not in refused.text

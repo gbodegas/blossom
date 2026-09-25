@@ -77,6 +77,7 @@ from blossom.school_instructions import (
     SchoolInstruction,
     SubmittedChoice,
     new_texts,
+    overtaken,
     revision_of,
     settle,
 )
@@ -744,8 +745,13 @@ class Change:
     instructions_answer: InstructionChoice | None = None
     """The parent's choice of which instructions apply, when one was given."""
     instructions_submitted: SubmittedChoice | None = None
-    """The answer the form sent on this card, whatever it says, contradictions included,
-    with the revision and the instructions it was made against."""
+    """The one answer given for the assignment, whatever it says, contradictions included,
+    with the revision and the instructions it was made against, when it was made against
+    what stands; a page returned shows it as made."""
+    instructions_unsaved: tuple[SubmittedChoice, ...] = ()
+    """The answers given for the assignment that are said back as not saved and never shown
+    as made: those made against instructions that have changed since, or answers on its
+    cards that ask for different things, one for each thing asked for, in card order."""
     instructions_with: int | None = None
     """The key of the card that carries this card's assignment's instructions, when that is
     another card of the same text."""
@@ -799,20 +805,10 @@ class Change:
 
     @property
     def instructions_stale(self) -> bool:
-        """Whether the parent's answer was made against instructions that have changed since:
-        a choice the rule refuses as stale, or an answer that contradicts itself made against
-        another revision or another set, which is never put right onto the facts as they
-        stand now."""
-        if isinstance(self.instructions, InstructionChoiceStale):
-            return True
-        answer = self.instructions_submitted
-        return (
-            answer is not None
-            and answer.contradicts
-            and not answer.made_against(
-                self.instructions_revision, [item.text for item in self.instructions_shown]
-            )
-        )
+        """Whether an answer given for the assignment, on any of its cards, was made against
+        instructions that have changed since; none of them is put right onto the facts as
+        they stand now."""
+        return isinstance(self.instructions, InstructionChoiceStale)
 
     @property
     def instructions_ticked(self) -> frozenset[str]:
@@ -1237,13 +1233,16 @@ def _with_instructions(
     work lands nowhere yet, and gives nothing. The kept instructions of every
     assignment are read in one statement.
 
-    Every answer given on a card that lands on the assignment is one answer to
-    its question, rows put back in their words against what is kept. An answer
-    naming a row not kept here was made against other facts. An answer that
-    ticks an instruction and that none applies, or answers that differ, is no
-    choice the rule can take: the question stays open and nothing is written.
-    No answer at all leaves the rule to decide, the first instruction of new
-    work standing as it always does.
+    Every answer given on a card that lands on the assignment answers its
+    question, rows put back in their words against what is kept, and each is
+    checked against what stands before any is taken with another: a row not
+    kept here, a choice the rule refuses as stale, or an answer that makes no
+    choice made against another revision or another set, on any card, leaves
+    the whole assignment stale. Answers that ask for different things choose
+    nothing: the question stays open, nothing is written, and each is kept to
+    say back. One answer that ticks an instruction and that none applies is no
+    choice either. No answer at all leaves the rule to decide, the first
+    instruction of new work standing as it always does.
     """
     landed: dict[str, list[int]] = {}
     for index, change in enumerate(changes):
@@ -1270,20 +1269,29 @@ def _with_instructions(
         first = changes[places[0]]
         given = [answers[changes[place].key] for place in places if changes[place].key in answers]
         read = [answer.resolved(kept) for answer in given]
-        submitted = given[0] if given else None
-        answer = None
+        # One answer for each thing asked for, the first card's; one naming a row not kept
+        # here is said as it was sent.
+        asked_for: dict[tuple[frozenset[str], frozenset[int], bool], SubmittedChoice] = {}
+        for sent, item in zip(given, read, strict=True):
+            said = sent if item is None else item
+            asked_for.setdefault((said.applies, said.applies_rows, said.none_applies), said)
+        requests = tuple(asked_for.values())
+        submitted: SubmittedChoice | None = None
+        answer: InstructionChoice | None = None
+        unsaved: tuple[SubmittedChoice, ...] = ()
         outcome: InstructionsOutcome
-        if not given:
-            outcome = settle(kept, seen, None)
-        elif any(item is None for item in read):
+        if any(item is None or overtaken(kept, seen, item) for item in read):
             outcome = InstructionChoiceStale(tuple(kept), revision)
+            unsaved = requests
+        elif len(requests) > 1:
+            outcome = InstructionsNeedAChoice(tuple(kept), new_texts(kept, seen), revision)
+            unsaved = requests
         else:
-            answered = [item for item in read if item is not None]
-            submitted = next((item for item in answered if item.contradicts), answered[0])
-            if submitted.contradicts or len(set(answered)) > 1:
+            submitted = requests[0] if requests else None
+            if submitted is not None and submitted.contradicts:
                 outcome = InstructionsNeedAChoice(tuple(kept), new_texts(kept, seen), revision)
             else:
-                answer = submitted.choice()
+                answer = None if submitted is None else submitted.choice()
                 outcome = settle(kept, seen, answer)
         changes[places[0]] = dataclasses.replace(
             first,
@@ -1293,6 +1301,7 @@ def _with_instructions(
             instructions_revision=revision,
             instructions_answer=answer,
             instructions_submitted=submitted,
+            instructions_unsaved=unsaved,
         )
         for place in places[1:]:
             if changes[place].reading.instructions:

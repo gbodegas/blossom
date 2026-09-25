@@ -58,6 +58,7 @@ from blossom.routes.instruction_answers import (
     review_key,
     said_back,
 )
+from blossom.routes.navigation import instructions_review_href
 from blossom.routes.parent import review_page
 from blossom.routes.student import viewer_of
 from blossom.school_instructions import SubmittedChoice
@@ -354,8 +355,9 @@ def problem_page(
 class AnswerKept:
     """One answer given on a review card, as unsaved input to copy: which card, whether the
     row is the same assignment or new work, the type chosen, and which of the school's
-    instructions were ticked to apply, or that none does. ``unshown`` counts the kept
-    instructions ticked by their row, whose words a page that reads no store cannot say."""
+    instructions were ticked to apply, or that none does. ``unshown`` counts the
+    instructions ticked by reference to a row, whose text a page that reads no store cannot
+    read."""
 
     key: str
     occurrence: str | None
@@ -398,8 +400,8 @@ def answers_shown(
     """The answers a review page was made with, in the same shape: an answer about the
     school's instructions by the words ticked, read off the wire before anything was
     written, so a page that reads no store can still say them; what a card whose answer
-    could not be read chose, the same way; and a kept instruction ticked by its row,
-    counted."""
+    could not be read chose, the same way; and an instruction ticked by reference to a
+    row, counted."""
     chosen = {key: UnsavedChoice.of(answer) for key, answer in (instructions or {}).items()}
     chosen.update(unsaved or {})
     chosen = {
@@ -421,27 +423,50 @@ def answers_shown(
     ]
 
 
+@dataclass(frozen=True)
+class UnsavedAccount:
+    """What a card says back of answers about the school's instructions that were not saved:
+    why, each answer as the page says it, and where the assignment's instructions can be
+    reviewed when no question about them is put."""
+
+    why: str
+    said: tuple[SaidBack, ...]
+    review: str | None = None
+
+
 def unsaved_on(
     changes: Sequence[Change], unsaved: Mapping[int, UnsavedChoice]
-) -> dict[int, tuple[str, SaidBack]]:
-    """What each question says back as the parent's unsaved choice, and why: what a card
-    whose answer could not be read chose, or an answer made against instructions that
-    changed since, in words, with the kept instructions this reading found."""
-    said: dict[int, tuple[str, SaidBack]] = {}
+) -> dict[int, UnsavedAccount]:
+    """What each card shown says back as the parent's unsaved choice, and why, whether or not
+    it puts the question now: what a card whose answer could not be read chose, answers made
+    against instructions that changed since, and answers that ask for different things, in
+    words, with the kept instructions this reading found. Where the assignment's question is
+    not put, the account names the page that reviews its instructions."""
+    carriers = {
+        change.assignment_id: change for change in changes if change.instructions is not None
+    }
+    said: dict[int, UnsavedAccount] = {}
     for change in changes:
-        if not change.instructions_question:
+        if change.state == FOLDED:
             continue
-        account = None
-        why = "unreadable"
+        carrier = None if change.ambiguous else carriers.get(change.assignment_id)
         if change.key in unsaved:
-            account = said_back(unsaved[change.key], change.instructions_kept)
-        elif change.instructions_stale and change.instructions_submitted is not None:
-            why = "stale"
-            account = said_back(
-                UnsavedChoice.of(change.instructions_submitted), change.instructions_kept
-            )
-        if account is not None:
-            said[change.key] = (why, account)
+            why = "unreadable"
+            kept = None if carrier is None else carrier.instructions_kept
+            answers = [said_back(unsaved[change.key], kept)]
+        else:
+            why = "stale" if change.instructions_stale else "differ"
+            answers = [
+                said_back(UnsavedChoice.of(answer), change.instructions_kept)
+                for answer in change.instructions_unsaved
+            ]
+        accounts = tuple(account for account in answers if account is not None)
+        if not accounts:
+            continue
+        review = None
+        if carrier is not None and carrier.instructions_kept and not carrier.instructions_question:
+            review = instructions_review_href(carrier.assignment_id)
+        said[change.key] = UnsavedAccount(why, accounts, review)
     return said
 
 
@@ -503,11 +528,13 @@ def preview_page(
     ``refused`` says the page comes back for an answer about the school's
     instructions that was not saved: ``contradict``, ``malformed``, ``stale``,
     or ``unanswered``, a question left without an answer. ``unsaved`` is what
-    each card whose answer could not be read chose, said back on its question
-    as the parent's unsaved choice, with nothing ticked. When an answer on any
-    card was made against instructions that changed since, from this reading of
-    the record, the page says so first, with a 409, whatever else was wrong. The
-    summary takes the focus and links to the first question it is about."""
+    each card whose answer could not be read chose, said back on its card as
+    the parent's unsaved choice, whether or not the card puts the question now,
+    with nothing ticked. When an answer on any card was made against
+    instructions that changed since, from this reading of the record, the page
+    says so first, with a 409, whatever else was wrong. The summary of a
+    refusal takes the focus and links to the first question it is about, or,
+    where that card puts no question now, to the choice said back on it."""
     try:
         changes = changes_for(
             read.items,
@@ -531,28 +558,37 @@ def preview_page(
         )
     said = unsaved_on(changes, unsaved or {})
     problem_target = None
+    problem_link = None
     if refused is not None:
         stale = [change.key for change in changes if change.instructions_stale]
         asked = [change.key for change in changes if change.instructions_question]
         unanswered = [change.key for change in changes if change.instructions_asked]
-        unreadable = [key for key, (why, _) in said.items() if why == "unreadable"]
+        unreadable = [key for key, account in said.items() if account.why == "unreadable"]
         contradicting = [
             change.key
             for change in changes
             if change.instructions_submitted is not None
             and change.instructions_submitted.contradicts
         ]
+        target = None
         if stale:
             notice, status_code = CHANGED_SINCE_SHOWN, status.HTTP_409_CONFLICT
-            problem_target = stale[0]
+            target = stale[0]
         elif refused == "contradict" and contradicting:
-            problem_target = contradicting[0]
+            target = contradicting[0]
         elif refused == "unanswered" and unanswered:
-            problem_target = unanswered[0]
+            target = unanswered[0]
         elif refused == "malformed" and unreadable:
-            problem_target = unreadable[0]
+            target = unreadable[0]
         elif asked:
-            problem_target = asked[0]
+            target = asked[0]
+        # The link names only what the page shows: the question, or the choice said back on a
+        # card that puts none now.
+        if target in asked:
+            problem_target = target
+            problem_link = (f"instructions-question-{target}", "Go to the question.")
+        elif target in said:
+            problem_link = (f"instructions-unsaved-{target}", "See the choice not saved.")
     if held is not None:
         notice = HELD_BY_A_NOTE
     if notice is None and conflicting_choices(changes):
@@ -583,7 +619,9 @@ def preview_page(
             "sample": state.settings.sample,
             "spoken_report": spoken_report,
             "spoken_day": spoken_day,
+            "refused": refused,
             "problem_target": problem_target,
+            "problem_link": problem_link,
             "unsaved_on": said,
         },
         status_code=status_code,

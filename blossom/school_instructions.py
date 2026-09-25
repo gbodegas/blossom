@@ -364,6 +364,19 @@ def settle(
     return InstructionsSettled(inserted, changed, revision + 1)
 
 
+def overtaken(
+    kept: Sequence[SchoolInstruction], seen: Sequence[InstructionSeen], answer: SubmittedChoice
+) -> bool:
+    """Whether an answer, its rows put back in words, was made against instructions other than
+    those that stand: a choice the rule refuses as stale, or an answer that makes no choice,
+    ticking nothing or contradicting itself, made against another revision or another set."""
+    choice = answer.choice()
+    if choice is not None:
+        return isinstance(settle(kept, seen, choice), InstructionChoiceStale)
+    shown = [*(item.text for item in kept), *(item.text for item in new_texts(kept, seen))]
+    return not answer.made_against(revision_of(kept), shown)
+
+
 def carried_state(kept: Sequence[SchoolInstruction], text: str) -> CarriedState:
     """Where a school note in the old note field goes, at the move or found there later: it
     is nothing new when its text is kept already, it applies when nothing is kept, and it
