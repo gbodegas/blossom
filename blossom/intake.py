@@ -1203,14 +1203,16 @@ def answers_to_no_question(
     is still needed now unless an instruction was kept since; then an answer sent
     again finds what it asks for standing, and any other finds the facts changed. So
     an answer that would write where no choice is needed was never an answer to a
-    question the page put. A card that lands nowhere yet carries no decision, and
-    nothing reads its answer here.
+    question the page put. A card folded into another answers for the assignment it
+    joins: where that assignment's question is asked, its answer is checked with the
+    others there; where none is, it meets the same check. A card that lands nowhere
+    yet carries no decision, and nothing reads its answer here.
     """
     decided = {change.key: change for change in changes if change.instructions is not None}
     carriers = {change.assignment_id: change for change in decided.values()}
     cards = {change.key: change for change in changes}
     asked = {change.key for change in shown if change.instructions_asked}
-    unlanded = {change.key for change in changes if change.state == FOLDED or change.ambiguous}
+    unlanded = {change.key for change in changes if change.ambiguous}
     never: set[int] = set()
     for key, answer in answers.items():
         if key in unlanded:
@@ -1218,8 +1220,11 @@ def answers_to_no_question(
         change = decided.get(key)
         if change is None:
             card = cards.get(key)
+            into = None if card is None else card.folded_into
+            if into is not None:
+                card = cards.get(into)
             change = None if card is None else carriers.get(card.assignment_id)
-            if change is None or (change.instructions_asked and key not in asked):
+            if change is None or (change.instructions_asked and into is None and key not in asked):
                 never.add(key)
                 continue
         if isinstance(change.instructions, InstructionsNeedAChoice):

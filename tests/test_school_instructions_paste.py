@@ -25,6 +25,7 @@ from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import (
     CHANGED_SINCE_SHOWN,
     CHOOSE_INSTRUCTIONS,
+    HELD_BY_A_NOTE,
     IDENTIFY_FIRST,
     INSTRUCTION_FORM_UNREADABLE,
     INSTRUCTIONS_CONTRADICT,
@@ -46,6 +47,7 @@ from tests.support import (
     Answer,
     as_a_browser_sends,
     fixture_settings,
+    homework_from_a_note,
     store_of,
 )
 
@@ -1779,3 +1781,170 @@ def test_a_folded_card_that_answers_differently_through_the_page_saves_nothing(
     assert answer.status_code == 200
     assert "Not saved, since the cards for this assignment answer differently" in answer.text
     assert nothing == []
+
+
+# ------------------------------------------------------------------ an answer never asked for
+
+PRACTICE_TWICE = (
+    "Tuesday 9/1/2026\nMath\nDue: Practice sheet:\nShow each step.\n"
+    "Tuesday 9/15/2026\nMath\nDue: Practice sheet:\nShow each step.\n"
+)
+
+
+@pytest.mark.parametrize("on", ["0", "1"], ids=["on-the-card-shown", "on-the-folded-card"])
+def test_an_unasked_answer_on_any_card_is_refused_and_the_page_as_sent_saves(
+    tmp_path: pathlib.Path, on: str
+) -> None:
+    """The one instruction of new work needs no choice, so the page asks none; an answer
+    that would retire it is refused whether it is sent on the card shown or on the card
+    folded into it."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": PRACTICE_TWICE}).text
+        form = {**review_form(page), "occurrence-1": "update"}
+        start = tables(client)
+        refused = client.post(
+            "/parent/inbox/keep",
+            data={
+                **form,
+                f"instructions-{on}": "0",
+                f"instruction-{on}-0": to_wire("Show each step."),
+                f"none-{on}": "1",
+            },
+        )
+        after = tables(client)
+        kept = client.post("/parent/inbox/keep", data=form)
+        store = store_of(client)
+        (row,) = store.all_assignments()
+        found = store.school_instruction_readings([row.assignment_id]).readable[row.assignment_id]
+
+    assert not any(name.startswith("instructions-") for name in form)
+    assert refused.status_code == 422
+    assert "that no school instruction applies" in said_back_on(refused.text, "0")
+    assert after == start
+    assert kept.status_code == 303
+    assert found.texts == ("Show each step.",)
+
+
+# ------------------------------------------------------------------ a carried choice unanswered
+
+
+@pytest.mark.parametrize("which", ["new", "update"])
+@pytest.mark.parametrize("choice", ["none", "one"])
+def test_a_carried_choice_stays_until_a_fresh_one_is_made(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, which: str, choice: str
+) -> None:
+    """Once the card is known, the question is asked afresh with nothing ticked; saves that
+    leave it unanswered, a form that cannot be read, and a reading that fails all keep the
+    choice carried from before, and nothing is written."""
+    words = "that no school instruction applies" if choice == "none" else "Show each step."
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": CHECK_5}).text
+        key = the_question_on(page)
+        answer = (
+            {f"none-{key}": "1"}
+            if choice == "none"
+            else {f"apply-{key}-{boxes(page, key).index('Show each step.')}": "1"}
+        )
+        saved(client, CHECK_5_LATER)
+        start = tables(client)
+        returned = client.post("/parent/inbox/keep", data={**review_form(page), **answer})
+        answered = client.post(
+            "/parent/inbox/keep", data={**review_form(returned.text), f"occurrence-{key}": which}
+        )
+        again = client.post("/parent/inbox/keep", data=review_form(answered.text))
+        asked = the_question_on(again.text)
+        bent = keep_as_sent(client, [*review_form(again.text).items(), (f"none-{asked}", "yes")])
+        after = tables(client)
+        store = store_of(client)
+
+        def refuse(*_: object, **__: object) -> None:
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "all_assignments", refuse)
+        failed = client.post("/parent/inbox/keep", data=review_form(again.text))
+
+    assert answered.status_code == again.status_code == 200
+    assert bent.status_code == 422
+    assert after == start
+    for shown in (answered.text, again.text, bent.text):
+        assert words in said_back_on(shown, key)
+        assert "Not saved, since it was chosen before" in said_back_on(shown, key)
+        assert ticked(shown, the_question_on(shown)) == []
+        assert 'value="1" checked' not in shown
+    kept = html.unescape(failed.text.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0])
+    assert failed.status_code == 500
+    assert ("none applies" if choice == "none" else words) in kept
+
+
+# ------------------------------------------------------------------ a paste held by a note
+
+CHECK_5_AND_A_FORM = CHECK_5 + "10/01/2026 - Thursday\nScience - Due: Lab safety form:\n"
+CHECK_5_ASSIGNED = (
+    "09/23/2026 - Wednesday\n07 Algebra - Assigned: Q1 Check 5: (Due:10/01/2026)\nShow each step.\n"
+)
+
+
+@pytest.mark.parametrize("since", ["unchanged", "changed"])
+@pytest.mark.parametrize("choice", ["none", "one"])
+def test_a_paste_held_by_a_note_keeps_the_choices_on_its_other_cards(
+    tmp_path: pathlib.Path, choice: str, since: str
+) -> None:
+    """Homework made from a note since the page was read holds the whole paste; the choice on
+    another card comes back ticked when its instructions still stand as shown, and is said
+    back as not saved, with nothing ticked, when they changed."""
+    words = "that no school instruction applies" if choice == "none" else "Show each step."
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": CHECK_5_AND_A_FORM}).text
+        key = the_question_on(page)
+        answer = (
+            {f"none-{key}": "1"}
+            if choice == "none"
+            else {f"apply-{key}-{boxes(page, key).index('Show each step.')}": "1"}
+        )
+        if since == "changed":
+            saved(client, CHECK_5_ASSIGNED)
+        homework_from_a_note(store_of(client), course="Science", title="Lab safety form")
+        before = tables(client)
+        held = client.post("/parent/inbox/keep", data={**review_form(page), **answer})
+        after = tables(client)
+
+    assert held.status_code == 409
+    assert str(escape(HELD_BY_A_NOTE)) in held.text
+    assert after == before
+    carrier = the_question_on(held.text)
+    if since == "changed":
+        assert ticked(held.text, carrier) == []
+        assert 'value="1" checked' not in held.text
+        assert words in said_back_on(held.text, carrier)
+    elif choice == "none":
+        assert f'name="none-{carrier}" value="1" checked' in held.text
+    else:
+        assert ticked(held.text, carrier) == ["Show each step."]
+
+
+def test_a_paste_held_by_a_note_keeps_the_choices_when_the_reading_fails(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": CHECK_5_AND_A_FORM}).text
+        key = the_question_on(page)
+        answer = {f"apply-{key}-{boxes(page, key).index('Show each step.')}": "1"}
+        store = store_of(client)
+        homework_from_a_note(store, course="Science", title="Lab safety form")
+
+        def refuse(*_: object, **__: object) -> None:
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        def keep_then_fail(*args: object, **kwargs: object) -> object:
+            outcome = keep(*args, **kwargs)  # type: ignore[arg-type]
+            monkeypatch.setattr(store, "all_assignments", refuse)
+            return outcome
+
+        monkeypatch.setattr("blossom.routes.inbox.keep", keep_then_fail)
+        failed = client.post("/parent/inbox/keep", data={**review_form(page), **answer})
+
+    kept = html.unescape(failed.text.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0])
+    assert failed.status_code == 500
+    assert "Show each step." in kept

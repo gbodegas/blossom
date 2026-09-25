@@ -128,6 +128,11 @@ class UnsavedChoice:
             tuple(sorted(answer.applies)), tuple(sorted(answer.applies_rows)), answer.none_applies
         )
 
+    @property
+    def chooses(self) -> bool:
+        """Whether anything was ticked: some instruction, or that none applies."""
+        return bool(self.applies or self.rows or self.none_applies)
+
 
 def unsaved_of(fields: AnswerFields) -> UnsavedChoice:
     """What a question chose, read from the first text value of each of its fields: a box

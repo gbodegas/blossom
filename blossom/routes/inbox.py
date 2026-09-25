@@ -415,6 +415,7 @@ def answers_shown(
     chosen = {
         key: SaidBack(tuple(sorted(answer.applies)), len(answer.rows), answer.none_applies)
         for key, answer in made.items()
+        if answer.chooses
     }
     for key, said in (waiting or {}).items():
         chosen.setdefault(key, said)
@@ -462,15 +463,21 @@ def unsaved_on(
     carriers = {
         change.assignment_id: change for change in changes if change.instructions is not None
     }
+    folded: dict[int, list[int]] = {}
+    for change in changes:
+        if change.folded_into is not None:
+            folded.setdefault(change.folded_into, []).append(change.key)
     said: dict[int, UnsavedAccount] = {}
     for change in changes:
         if change.state == FOLDED:
             continue
         carrier = None if change.ambiguous else carriers.get(change.assignment_id)
-        if change.key in unsaved:
+        # A folded card isn't shown, so what couldn't be read on it is said on its anchor.
+        unread = [key for key in (change.key, *folded.get(change.key, ())) if key in unsaved]
+        if unread:
             why = "unreadable"
             kept = None if carrier is None else carrier.instructions_kept
-            answers = [said_back(unsaved[change.key], kept)]
+            answers = [said_back(unsaved[key], kept) for key in unread]
         elif change.ambiguous:
             why = "waiting"
             answers = [
@@ -773,12 +780,10 @@ async def keep_readings(request: Request, state: State) -> Response:
     fields = (await request.form()).multi_items()
     read_answers = paste_answers(fields)
     instruction_answers = read_answers.answers
-    # A choice carried from before its card was known is said back until the card is answered.
-    waiting = {
-        key: said
-        for key, said in waiting_choices(fields).items()
-        if key not in instruction_answers and key not in read_answers.unsaved
-    }
+    # A choice carried from before its card was known is said back until a new one is ticked.
+    made = {key: UnsavedChoice.of(answer) for key, answer in instruction_answers.items()}
+    chosen = {key for key, answer in {**made, **read_answers.unsaved}.items() if answer.chooses}
+    waiting = {key: said for key, said in waiting_choices(fields).items() if key not in chosen}
     kept_answers = answers_kept(form, instruction_answers, read_answers.unsaved, waiting)
     # A claim on record that cannot be read refuses the comparison, before the write or
     # inside its transaction, which is rolled back whole before anything is answered. The
@@ -869,6 +874,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             kept_answers,
             occurrences=occurrences,
             kinds=kinds,
+            instruction_answers=instruction_answers,
             waiting=waiting,
             status_code=status.HTTP_409_CONFLICT,
         )
