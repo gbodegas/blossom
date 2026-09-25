@@ -170,17 +170,24 @@ class SaidBack:
     """An answer not saved as a page says it: its words in the one order, how many
     instructions it selected by reference to a row whose text this page could not read, and
     whether it chose that none applies. ``rows`` gives the kept row of each of its words too
-    long to travel in a form, so the form can carry it by that row."""
+    long to travel in a form, so the form can carry it by that row; ``unread_rows`` holds the
+    rows it chose whose text this page could not read, so a later page can."""
 
     words: tuple[str, ...]
     unshown: int
     none_applies: bool
     rows: tuple[tuple[str, int], ...] = ()
+    unread_rows: tuple[int, ...] = ()
 
     @property
     def row_of(self) -> dict[str, int]:
         """The kept row of each of its words that travels by its row."""
         return dict(self.rows)
+
+    @property
+    def counted(self) -> int:
+        """How many it selected by reference with no row left to carry."""
+        return self.unshown - len(self.unread_rows)
 
 
 def by_reference(
@@ -202,16 +209,16 @@ def said_back(
     if unsaved is None:
         return None
     words = list(unsaved.applies)
-    unshown = 0
+    unread: tuple[int, ...] = ()
     if kept is None:
-        unshown = len(unsaved.rows)
+        unread = unsaved.rows
     else:
         by_row = {item.sequence: item.text for item in kept}
         words.extend(by_row[row] for row in unsaved.rows if row in by_row)
     ordered = tuple(sorted(dict.fromkeys(words)))
-    if not ordered and not unshown and not unsaved.none_applies:
+    if not ordered and not unread and not unsaved.none_applies:
         return None
-    return SaidBack(ordered, unshown, unsaved.none_applies, by_reference(ordered, kept))
+    return SaidBack(ordered, len(unread), unsaved.none_applies, by_reference(ordered, kept), unread)
 
 
 @dataclass(frozen=True)
@@ -226,13 +233,20 @@ class CarriedAnswer:
 
     def said(self, kept: Sequence[SchoolInstruction] | None) -> SaidBack:
         """The answer as a page says it, each row in its words from ``kept``, the instructions
-        kept for the card's assignment. A row this page can't place there is counted."""
+        kept for the card's assignment. A row this page can't place there is counted, and
+        carried on by its row, so it is put in its words once the card's assignment is known."""
         by_row = {} if kept is None else {item.sequence: item.text for item in kept}
         words = tuple(
             sorted(dict.fromkeys([*self.words, *(by_row[r] for r in self.rows if r in by_row)]))
         )
-        unread = sum(1 for row in self.rows if row not in by_row)
-        return SaidBack(words, self.unshown + unread, self.none_applies, by_reference(words, kept))
+        unread = tuple(row for row in self.rows if row not in by_row)
+        return SaidBack(
+            words,
+            self.unshown + len(unread),
+            self.none_applies,
+            by_reference(words, kept),
+            unread,
+        )
 
 
 @dataclass(frozen=True)

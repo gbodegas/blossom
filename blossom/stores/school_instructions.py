@@ -181,7 +181,7 @@ def instruction_from(row: Sequence[object]) -> SchoolInstruction:
     ``UnreadableInstruction`` for a row this store never writes.
 
     Every value is taken as the type the store wrote, and nothing is made to
-    fit: a count that is not a whole number, a revision below one, words that
+    fit: a count that is not a whole number, a row id or revision below one, words that
     are blank or bytes, a source that is not the school's, a day or a moment
     in another spelling, each makes the row unreadable rather than a fact. What
     is said names the row and the column, never the words it holds.
@@ -197,7 +197,7 @@ def instruction_from(row: Sequence[object]) -> SchoolInstruction:
         msg = f"{where} holds a {column} this store never writes"
         raise UnreadableInstruction(msg)
 
-    if type(sequence) is not int:
+    if type(sequence) is not int or sequence < 1:
         refuse("sequence")
     if type(values["assignment_id"]) is not str or not values["assignment_id"]:
         refuse("assignment_id")

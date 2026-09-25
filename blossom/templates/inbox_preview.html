@@ -184,7 +184,8 @@
                   {% for item in account.said %}
                     {% set answer = loop.index0 %}
                     {% for text in item.words %}{% if text is in_words %}<input type="hidden" name="unsaved-{{ change.key }}-{{ answer }}-{{ loop.index0 }}" value="{{ text|wire }}">{% elif text in item.row_of %}<input type="hidden" name="unsaved_row-{{ change.key }}-{{ answer }}-{{ loop.index0 }}" value="{{ item.row_of[text] }}">{% endif %}{% endfor %}
-                    {% if item.unshown %}<input type="hidden" name="unsaved_unshown-{{ change.key }}-{{ answer }}" value="{{ item.unshown }}">{% endif %}
+                    {% for row in item.unread_rows %}<input type="hidden" name="unsaved_row-{{ change.key }}-{{ answer }}-{{ item.words|length + loop.index0 }}" value="{{ row }}">{% endfor %}
+                    {% if item.counted %}<input type="hidden" name="unsaved_unshown-{{ change.key }}-{{ answer }}" value="{{ item.counted }}">{% endif %}
                     {% if item.none_applies %}<input type="hidden" name="unsaved_none-{{ change.key }}-{{ answer }}" value="1">{% endif %}
                   {% endfor %}
                 </div>

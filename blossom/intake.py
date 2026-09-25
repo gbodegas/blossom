@@ -1189,16 +1189,18 @@ def submitted_answers(
 def answers_to_no_question(
     changes: Sequence[Change],
     answers: Mapping[int, SubmittedChoice],
-    shown: Sequence[Change] = (),
+    asked: Mapping[int, tuple[int, str]] | None = None,
 ) -> frozenset[int]:
     """The cards an answer about the school's instructions is given on where the review page
     puts no such question, from ``changes`` read with no answer given: a card the text does
     not have; a card that lands on an assignment with no decision; a card of an assignment
-    that needs a choice that did not ask it in ``shown``, even where it carries the decision
-    now; and a decision that needs no choice, where the answer would write anything.
+    that needs a choice that did not ask it in ``asked``, even where it carries the decision
+    now; a card that asked at another revision or about another assignment; and a decision
+    that needs no choice, where the answer would write anything.
 
-    ``shown`` is the text as the page read it, before the answers to which homework a
-    card is that were given on it: a card that asked there answers its assignment's
+    ``asked`` holds each card the page asked on, as the page signed it, with the revision
+    it showed and the assignment it asked about, so a question the record raised since
+    the page was made has no answer on it. A card that asked answers its assignment's
     question, on whichever card it is put now. A choice needed when the page was read
     is still needed now unless an instruction was kept since; then an answer sent
     again finds what it asks for standing, and any other finds the facts changed. So
@@ -1211,12 +1213,23 @@ def answers_to_no_question(
     decided = {change.key: change for change in changes if change.instructions is not None}
     carriers = {change.assignment_id: change for change in decided.values()}
     cards = {change.key: change for change in changes}
-    asked = {change.key for change in shown if change.instructions_asked}
+    asked = asked or {}
     unlanded = {change.key for change in changes if change.ambiguous}
     never: set[int] = set()
     for key, answer in answers.items():
         if key in unlanded:
             continue
+        if key in asked:
+            # A choice stays with the assignment it was asked about; a card that chooses
+            # nothing may be said to be other homework since.
+            revision, assignment = asked[key]
+            card = cards.get(key)
+            if card is not None and card.folded_into is not None:
+                card = cards.get(card.folded_into)
+            elsewhere = card is None or card.assignment_id != assignment
+            if answer.shown_revision != revision or (answer.answers and elsewhere):
+                never.add(key)
+                continue
         change = decided.get(key)
         if change is None:
             card = cards.get(key)

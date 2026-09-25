@@ -18,7 +18,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Annotated, Final
 
@@ -250,32 +250,50 @@ def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[dateti
 
 
 MADE_WITH: Final = "made_with"
-"""The field where a review page writes the answers to which homework each card is that it
-was made with, signed, so a save can tell a question the page asked from one a form claims."""
+"""The field where a review page writes what it was made with, signed: the answers to which
+homework each card is, and each question it asked about the school's instructions, so a save
+can tell a question the page asked from one a form claims."""
+
+
+@dataclass(frozen=True)
+class PageMade:
+    """What a review page was made with, as it signed it: the answers to which homework each
+    card is, and for each card that asked which of the school's instructions apply, the
+    revision it showed and the assignment it asked about."""
+
+    occurrences: dict[int, str] = field(default_factory=dict)
+    asked: dict[int, tuple[int, str]] = field(default_factory=dict)
 
 
 def made_with_field(
-    key: bytes, draft: Mapping[str, str], occurrences: Mapping[int, str] | None
+    key: bytes,
+    draft: Mapping[str, str],
+    occurrences: Mapping[int, str] | None,
+    asked: Mapping[int, tuple[int, str]] | None = None,
 ) -> str:
-    """The answers to which homework each card is that a page was made with, and a check
-    signed with the running process's key that ties them to the page's draft."""
+    """What a page was made with, and a check signed with the running process's key that
+    ties it to the page's draft."""
     answers = ",".join(f"{card}:{value}" for card, value in sorted((occurrences or {}).items()))
-    return f"{answers}.{_made_with_check(key, draft, answers)}"
+    questions = json.dumps(sorted([card, *question] for card, question in (asked or {}).items()))
+    made = f"{answers};{questions}"
+    return f"{made}.{_made_with_check(key, draft, made)}"
 
 
-def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> dict[int, str]:
-    """The answers to which homework each card is that the page was made with, as it signed
-    them. A form without that field, or with one this process didn't sign for this draft,
-    is read as a page made before any such answer was given."""
-    answers, _, check = form.get(MADE_WITH, "").rpartition(".")
-    expected = _made_with_check(key, draft, answers)
+def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> PageMade:
+    """What the page was made with, as it signed it. A form without that field, or with one
+    this process didn't sign for this draft, is read as a page made before any answer to
+    which homework a card is, and one that asked nothing about the school's instructions."""
+    made, _, check = form.get(MADE_WITH, "").rpartition(".")
+    expected = _made_with_check(key, draft, made)
     if not hmac.compare_digest(check.encode("utf-8"), expected.encode("utf-8")):
-        return {}
-    made: dict[int, str] = {}
+        return PageMade()
+    answers, _, questions = made.partition(";")
+    occurrences: dict[int, str] = {}
     for part in filter(None, answers.split(",")):
         card, _, value = part.partition(":")
-        made[int(card)] = value
-    return made
+        occurrences[int(card)] = value
+    asked = {card: (revision, assignment) for card, revision, assignment in json.loads(questions)}
+    return PageMade(occurrences, asked)
 
 
 def _made_with_check(key: bytes, draft: Mapping[str, str], answers: str) -> str:
@@ -711,7 +729,16 @@ def preview_page(
             "to_save": to_save,
             "unread": read.unread,
             "draft": draft,
-            "made_with": made_with_field(state.result_key, draft, occurrences),
+            "made_with": made_with_field(
+                state.result_key,
+                draft,
+                occurrences,
+                {
+                    change.key: (change.instructions_revision, change.assignment_id)
+                    for change in shown
+                    if change.instructions_question
+                },
+            ),
             "kind_choices": KIND_CHOICES,
             "notice": notice,
             "held": held,
@@ -847,15 +874,11 @@ async def keep_readings(request: Request, state: State) -> Response:
     # a write the file refuses, which is never tried again.
     try:
         occurrences, kinds = answers_from(form, unasked_for(state, read))
-        # An answer where the page puts no such question is no form the page wrote. The page
-        # as it was made, with the answers to which homework a card is that it signed, says
-        # where it put the question.
+        # An answer where the page puts no such question is no form the page wrote. The
+        # questions the page signed say where it asked, and at which revision.
         changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
         page_made = made_with(state.result_key, form, draft)
-        shown = changes
-        if page_made != occurrences:
-            shown = changes_for(read.items, state.project_state, occurrences=page_made, kinds=kinds)
-        never_put = answers_to_no_question(changes, instruction_answers, shown)
+        never_put = answers_to_no_question(changes, instruction_answers, page_made.asked)
         unreadable = read_answers.malformed or bool(never_put)
         contradicted = any(answer.contradicts for answer in instruction_answers.values())
         if unreadable or contradicted:

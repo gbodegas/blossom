@@ -1754,6 +1754,88 @@ def test_an_answer_that_shows_no_instruction_refuses_the_paste(tmp_path: pathlib
     assert after == start
 
 
+def question_fields(page: str) -> dict[str, str]:
+    """The fields a page writes for its question about the school's instructions."""
+    return {
+        name: value
+        for name, value in review_form(page).items()
+        if name.partition("-")[0] in ("instructions", "instruction", "row")
+    }
+
+
+@pytest.mark.parametrize("pick", ["none", "one"])
+def test_an_answer_to_a_question_raised_after_the_page_was_made_is_refused(
+    tmp_path: pathlib.Path, pick: str
+) -> None:
+    """A page that asked nothing about the school's instructions can't answer a question
+    another tab's save raised since; the page that asks it saves the same answer once."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": ASSIGNED_WEEK}).text
+        original = review_form(page)
+        other = saved(client, DUE_WEEK_CHANGED)
+        fresh = client.post("/parent/inbox/read", data={"text": ASSIGNED_WEEK}).text
+        choice = (
+            {"none-0": "1"} if pick == "none" else {f"apply-0-{boxes(fresh, '0').index(A)}": "1"}
+        )
+        start = tables(client)
+        refused = client.post(
+            "/parent/inbox/keep", data={**original, **question_fields(fresh), **choice}
+        )
+        after = tables(client)
+        unchanged = client.post("/parent/inbox/keep", data=original)
+        answered = client.post("/parent/inbox/keep", data={**review_form(fresh), **choice})
+        saved_once = tables(client)
+        again = client.post("/parent/inbox/keep", data={**review_form(fresh), **choice})
+        final = tables(client)
+
+    assert 'name="instructions-0"' not in page
+    assert other.status_code == 303
+    assert the_question_on(fresh) == "0"
+    assert refused.status_code == 422
+    assert after == start
+    assert ticked(refused.text, "0") == []
+    assert "Not saved, since the answer could not be read" in said_back_on(refused.text, "0")
+    assert unchanged.status_code == 200
+    assert answered.status_code == again.status_code == 303
+    assert saved_once != start
+    assert final == saved_once
+
+
+def test_an_answer_sent_at_a_revision_its_page_did_not_show_is_refused(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A page that asked at one revision can't send the revision another tab's save made
+    since; sent as the page wrote it, the answer is refused as stale."""
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        choice = {f"apply-0-{boxes(page, '0').index(B)}": "1"}
+        store = store_of(client)
+        row = next(item for item in store.all_assignments() if item.title == "Q1 Check 3")
+        review = instructions_review_href(row.assignment_id)
+        action = instructions_action_href(row.assignment_id)
+        other = client.post(
+            action, data={**whole_form(client.get(review).text, action), "none": "1"}
+        )
+        fresh = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        start = tables(client)
+        crafted = client.post(
+            "/parent/inbox/keep",
+            data={**review_form(page), **question_fields(fresh), **choice},
+        )
+        after = tables(client)
+        stale = client.post("/parent/inbox/keep", data={**review_form(page), **choice})
+        final = tables(client)
+
+    assert other.status_code == 303
+    assert review_form(page)["instructions-0"] != review_form(fresh)["instructions-0"]
+    assert crafted.status_code == 422
+    assert after == start
+    assert ticked(crafted.text, "0") == []
+    assert stale.status_code == 409
+    assert final == start
+
+
 # ------------------------------------------------------------------ a card folded into another
 
 PRACTICE = (
@@ -2178,6 +2260,91 @@ def test_a_long_saved_instruction_chosen_on_an_old_page_stays_shown_until_a_fres
     assert found.texts == (B,)
 
 
+@pytest.mark.parametrize("length", [INSTRUCTION_MAX_LENGTH, INSTRUCTION_MAX_LENGTH + 1])
+@pytest.mark.parametrize("mixed", [False, True], ids=["alone", "with-a-short-one"])
+def test_a_long_choice_carried_through_the_question_of_which_homework_keeps_its_words(
+    tmp_path: pathlib.Path, length: int, mixed: bool
+) -> None:
+    """A long saved instruction shown as not saved, then carried through a page that asks
+    which homework the card is, is shown in its words again once the card is the same
+    assignment; nothing is written and nothing is ticked on the way."""
+    words = long_words(length)
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK.replace(A + "\n", ""))
+        store = store_of(client)
+        row = next(item for item in store.all_assignments() if item.title == "Q1 Check 3")
+        store.put_on_record(
+            [
+                row.model_copy(
+                    update={"note": words, "origins": {**row.origins, "note": SourceChannel.LMS}}
+                )
+            ],
+            {},
+        )
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        picks = (words, B) if mixed else (words,)
+        old = {**review_form(page), **{f"apply-0-{boxes(page, '0').index(p)}": "1" for p in picks}}
+        review = instructions_review_href(row.assignment_id)
+        action = instructions_action_href(row.assignment_id)
+        client.post(action, data={**whole_form(client.get(review).text, action), "none": "1"})
+        refused = client.post("/parent/inbox/keep", data=old)
+        moved = saved(client, FAR_DUE, **{"occurrence-0": "update"})
+        start = tables(client)
+        which = client.post("/parent/inbox/keep", data=review_form(refused.text))
+        same = client.post(
+            "/parent/inbox/keep", data={**review_form(which.text), "occurrence-0": "update"}
+        )
+        again = client.post("/parent/inbox/keep", data=review_form(same.text))
+        after = tables(client)
+
+    assert refused.status_code == 409
+    assert moved.status_code == 303
+    assert which.status_code == 200
+    assert 'name="occurrence-0"' in which.text
+    assert ("unsaved_row-0-0-" in which.text) == (length > INSTRUCTION_MAX_LENGTH)
+    for shown in (same.text, again.text):
+        assert unsaved(shown, "0") == sorted(picks)
+        assert "could not be read" not in said_back_on(shown, "0")
+        assert ticked(shown, "0") == []
+    assert same.status_code == again.status_code == 200
+    assert after == start
+
+
+def test_a_long_choice_made_before_the_question_of_which_homework_keeps_its_words(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A long saved instruction chosen on a card that then asks which homework it is is shown
+    in its words once the card is the same assignment; nothing is written on the way."""
+    words = long_words(INSTRUCTION_MAX_LENGTH + 1)
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK.replace(A + "\n", ""))
+        store = store_of(client)
+        row = next(item for item in store.all_assignments() if item.title == "Q1 Check 3")
+        store.put_on_record(
+            [
+                row.model_copy(
+                    update={"note": words, "origins": {**row.origins, "note": SourceChannel.LMS}}
+                )
+            ],
+            {},
+        )
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        old = {**review_form(page), f"apply-0-{boxes(page, '0').index(words)}": "1"}
+        saved(client, FAR_DUE, **{"occurrence-0": "update"})
+        start = tables(client)
+        which = client.post("/parent/inbox/keep", data=old)
+        same = client.post(
+            "/parent/inbox/keep", data={**review_form(which.text), "occurrence-0": "update"}
+        )
+        after = tables(client)
+
+    assert which.status_code == same.status_code == 200
+    assert "unsaved_row-0-0-" in which.text
+    assert unsaved(same.text, "0") == [words]
+    assert ticked(same.text, "0") == []
+    assert after == start
+
+
 # ------------------------------------------------------------------ a carried choice folded
 
 
@@ -2218,4 +2385,33 @@ def test_a_choice_carried_on_a_card_that_folds_is_shown_on_the_card_it_joins(
         assert words in said_back_on(shown, "0")
         assert ticked(shown, "0") == []
     assert after == start
+    assert fresh.status_code == 303
+
+
+def test_a_choice_asked_about_other_homework_is_refused_when_its_card_folds(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A choice made on a card asked about as new work isn't saved onto the assignment the
+    card is said to be in the same save; the page that asks about that assignment saves."""
+    with client_in(tmp_path) as client:
+        read = client.post("/parent/inbox/read", data={"text": PRACTICE}).text
+        apart = client.post(
+            "/parent/inbox/keep", data={**review_form(read), "occurrence-1": "new"}
+        ).text
+        start = tables(client)
+        moved = client.post(
+            "/parent/inbox/keep",
+            data={**review_form(apart), "occurrence-1": "update", "apply-1-0": "1"},
+        )
+        after = tables(client)
+        fresh = client.post(
+            "/parent/inbox/keep", data={**review_form(moved.text), "apply-0-0": "1"}
+        )
+
+    assert 'name="instructions-0"' in apart
+    assert 'name="instructions-1"' in apart
+    assert moved.status_code == 422
+    assert after == start
+    assert ticked(moved.text, "0") == []
+    assert PRACTICE_SHOWN[0] in said_back_on(moved.text, "0")
     assert fresh.status_code == 303

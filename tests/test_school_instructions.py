@@ -797,6 +797,8 @@ def test_a_moment_is_written_in_utc_and_read_back_as_the_same_moment(
 @pytest.mark.parametrize(
     ("column", "value"),
     [
+        ("sequence", 0),
+        ("sequence", -1),
         ("revision", 1.5),
         ("revision", 0),
         ("revision", -1),

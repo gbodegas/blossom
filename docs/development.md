@@ -420,12 +420,14 @@ not put, is refused whole, and what it chose that can be read is said back as
 the parent's unsaved choice on its card, with nothing ticked, even when the
 text puts no question there now; the card then offers "Review school
 instructions". The page signs the answers to which homework each card is that
-it was made with, so a save knows which questions it really asked; a form
-without that signature, or one from before a restart, is read as a page made
-before those answers. The instructions' words travel in the form encoded, so a
-browser's line endings never change them; an instruction longer than any
-paste, kept from before, travels by its row, in a choice shown as not saved
-too.
+it was made with, and each question it asked about the school's instructions
+with the revision and assignment it showed, so a save knows which questions it
+really asked. A form without that signature, or one from before a restart, is
+read as a page made before those answers that asked nothing. The instructions'
+words travel in the form encoded, so a browser's line endings never change
+them; an instruction longer than any paste, kept from before, travels by its
+row, in a choice shown as not saved too, even while its card waits on which
+homework it is.
 
 Her card, the assignment's details, the lists of work due later, and the
 family page's rows show the instructions that apply as "From the school", in
