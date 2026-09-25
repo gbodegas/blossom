@@ -549,7 +549,7 @@ class SchoolInstructionRecords:
         """A school note written with an assignment, kept as the school's instruction: by the
         startup rule when a blank file is seeded, and by the ordinary rule otherwise, which
         refuses the whole write when a new text needs a choice."""
-        channel = None if mark is None else SourceChannel(str(mark))
+        channel = SourceChannel(mark) if isinstance(mark, str) and mark in SCHOOL_MARKS else None
         if initial:
             kept = self._kept_instructions_locked(assignment_id)
             state = carried_state(kept, note)
@@ -579,6 +579,8 @@ class SchoolInstructionRecords:
 
 def school_note(note: str | None, origins: Mapping[str, object]) -> bool:
     """Whether an assignment's note is the school's instruction, by the ``note_by`` rule: a
-    note with words in it whose mark is neither a parent's entry nor her report, no mark
-    included. A blank note is no instruction, and is written as it was given."""
-    return note is not None and bool(note.strip()) and origins.get("note") not in AUTHORED_MARKS
+    note with words in it whose mark, read as none when it is not text, is neither a parent's
+    entry nor her report. A blank note is no instruction, and is written as it was given."""
+    mark = origins.get("note")
+    authored = isinstance(mark, str) and mark in AUTHORED_MARKS
+    return note is not None and bool(note.strip()) and not authored

@@ -751,7 +751,8 @@ class Change:
     instructions_unsaved: tuple[SubmittedChoice, ...] = ()
     """The answers given for the assignment that are said back as not saved and never shown
     as made: those made against instructions that have changed since, or answers on its
-    cards that ask for different things, one for each thing asked for, in card order."""
+    cards that ask for different things, one for each thing asked for, in card order; or,
+    on a card still waiting on which homework it is, the answer given on it."""
     instructions_with: int | None = None
     """The key of the card that carries this card's assignment's instructions, when that is
     another card of the same text."""
@@ -1186,20 +1187,29 @@ def submitted_answers(
 
 
 def answers_to_no_question(
-    changes: Sequence[Change], answers: Mapping[int, SubmittedChoice]
+    changes: Sequence[Change],
+    answers: Mapping[int, SubmittedChoice],
+    shown: Sequence[Change] = (),
 ) -> frozenset[int]:
     """The cards an answer about the school's instructions is given on where the review page
     puts no such question, from ``changes`` read with no answer given: a card the text does
-    not have; a card that lands on an assignment and does not carry its decision; and a
+    not have; a card that lands on an assignment with no decision; a card of an assignment
+    that needs a choice that carries its decision neither now nor in ``shown``; and a
     decision that needs no choice, where the answer would write anything.
 
-    A choice needed when the page was read is still needed now unless an
-    instruction was kept since; then an answer sent again finds what it asks for
-    standing, and any other finds the facts changed. So an answer that would write
-    where no choice is needed was never an answer to a question the page put. A
-    card that lands nowhere yet carries no decision, and nothing reads its answer.
+    ``shown`` is the text as the page read it, before the answers to which homework a
+    card is that were given on it: a card that asked there answers its assignment's
+    question, on whichever card it is put now. A choice needed when the page was read
+    is still needed now unless an instruction was kept since; then an answer sent
+    again finds what it asks for standing, and any other finds the facts changed. So
+    an answer that would write where no choice is needed was never an answer to a
+    question the page put. A card that lands nowhere yet carries no decision, and
+    nothing reads its answer here.
     """
     decided = {change.key: change for change in changes if change.instructions is not None}
+    carriers = {change.assignment_id: change for change in decided.values()}
+    cards = {change.key: change for change in changes}
+    asked = {change.key for change in shown if change.instructions_asked}
     unlanded = {change.key for change in changes if change.state == FOLDED or change.ambiguous}
     never: set[int] = set()
     for key, answer in answers.items():
@@ -1207,8 +1217,11 @@ def answers_to_no_question(
             continue
         change = decided.get(key)
         if change is None:
-            never.add(key)
-            continue
+            card = cards.get(key)
+            change = None if card is None else carriers.get(card.assignment_id)
+            if change is None or (change.instructions_asked and key not in asked):
+                never.add(key)
+                continue
         if isinstance(change.instructions, InstructionsNeedAChoice):
             continue
         resolved = answer.resolved(change.instructions_kept)
@@ -1230,25 +1243,34 @@ def _with_instructions(
     carried by the first card of the text that lands on the assignment, whether
     or not that card brings an instruction of its own, and answered there; the
     others that bring one point to it. A card still waiting on whether it is new
-    work lands nowhere yet, and gives nothing. The kept instructions of every
-    assignment are read in one statement.
+    work lands nowhere yet, and gives nothing; an answer given on it is kept to
+    say back, never read. The kept instructions of every assignment are read in
+    one statement.
 
-    Every answer given on a card that lands on the assignment answers its
-    question, rows put back in their words against what is kept, and each is
-    checked against what stands before any is taken with another: a row not
-    kept here, a choice the rule refuses as stale, or an answer that makes no
-    choice made against another revision or another set, on any card, leaves
-    the whole assignment stale. Answers that ask for different things choose
-    nothing: the question stays open, nothing is written, and each is kept to
-    say back. One answer that ticks an instruction and that none applies is no
-    choice either. No answer at all leaves the rule to decide, the first
-    instruction of new work standing as it always does.
+    Every answer given on a card that lands on the assignment, or on a card
+    folded into one, answers its question, rows put back in their words
+    against what is kept, and each is checked against what stands before any
+    is taken with another: a row not kept here, a choice the rule refuses as
+    stale, or an answer that makes no choice made against another revision or
+    another set, on any card, leaves the whole assignment stale. Answers that
+    ask for different things choose nothing: the question stays open, nothing
+    is written, and each is kept to say back. One answer that ticks an
+    instruction and that none applies is no choice either. No answer at all
+    leaves the rule to decide, the first instruction of new work standing as
+    it always does.
     """
     landed: dict[str, list[int]] = {}
+    folded: dict[int, list[int]] = {}
     for index, change in enumerate(changes):
-        if change.state == FOLDED or change.ambiguous:
-            continue
-        landed.setdefault(change.assignment_id, []).append(index)
+        if change.folded_into is not None:
+            folded.setdefault(change.folded_into, []).append(change.key)
+        elif change.ambiguous:
+            if change.key in answers:
+                changes[index] = dataclasses.replace(
+                    change, instructions_unsaved=(answers[change.key],)
+                )
+        else:
+            landed.setdefault(change.assignment_id, []).append(index)
     landing = {
         assignment_id: places
         for assignment_id, places in landed.items()
@@ -1267,7 +1289,9 @@ def _with_instructions(
         revision = revision_of(kept)
         seen = tuple(item for place in places for item in changes[place].reading.instructions)
         first = changes[places[0]]
-        given = [answers[changes[place].key] for place in places if changes[place].key in answers]
+        keys = [changes[place].key for place in places]
+        keys += [key for card in keys for key in folded.get(card, [])]
+        given = [answers[key] for key in keys if key in answers]
         read = [answer.resolved(kept) for answer in given]
         # One answer for each thing asked for, the first card's; one naming a row not kept
         # here is said as it was sent.

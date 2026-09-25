@@ -144,7 +144,9 @@
                 <input type="hidden" name="asked-{{ change.key }}" value="1">
               {% endif %}
               {% if change.ambiguous %}
-                <fieldset class="choice">
+                {# The page notes the cards it asks which homework they are, so a save can tell an answer given here from one it was read with. #}
+                <input type="hidden" name="which-{{ change.key }}" value="1">
+                <fieldset class="choice" id="occurrence-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
                   <legend>Which is it?</legend>
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment, its due date changed</label>
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
@@ -173,8 +175,16 @@
                 {% set account = unsaved_on[change.key] %}
                 <div id="instructions-unsaved-{{ change.key }}" tabindex="-1">
                   <h3 class="update-heading">Your unsaved choice{% if account.said|length > 1 %}s{% endif %}</h3>
-                  <p class="problem" id="instructions-problem-{{ change.key }}">{% if account.why == "stale" %}Not saved, since what is saved changed{% elif account.why == "differ" %}Not saved, since the cards for this assignment answer differently{% else %}Not saved, since the answer could not be read{% endif %}: {% for item in account.said %}{% with said = item %}{% include "instructions_said_back.html" %}{% endwith %}{% if not loop.last %}; {% endif %}{% endfor %}</p>
+                  <p class="problem" id="instructions-problem-{{ change.key }}">{% if account.why == "stale" %}Not saved, since what is saved changed{% elif account.why == "differ" %}Not saved, since the cards for this assignment answer differently{% elif account.why == "waiting" %}Not saved, since it was chosen before this card's homework was known{% else %}Not saved, since the answer could not be read{% endif %}: {% for item in account.said %}{% with said = item %}{% include "instructions_said_back.html" %}{% endwith %}{% if not loop.last %}; {% endif %}{% endfor %}</p>
                   {% if account.review %}<p class="support-links"><a href="{{ account.review }}">Review school instructions</a></p>{% endif %}
+                  {% if account.why == "waiting" %}
+                    {# Carried to say back until the card is answered; never read as an answer. #}
+                    {% for item in account.said %}
+                      {% for text in item.words %}<input type="hidden" name="waiting-{{ change.key }}-{{ loop.index0 }}" value="{{ text|wire }}">{% endfor %}
+                      {% if item.unshown %}<input type="hidden" name="waiting_unshown-{{ change.key }}" value="{{ item.unshown }}">{% endif %}
+                      {% if item.none_applies %}<input type="hidden" name="waiting_none-{{ change.key }}" value="1">{% endif %}
+                    {% endfor %}
+                  {% endif %}
                 </div>
               {% endif %}
               {% if change.instructions_question %}

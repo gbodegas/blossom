@@ -177,7 +177,7 @@ def test_one_instruction_reads_as_a_moved_note_did() -> None:
 def test_the_system_prompts_say_there_can_be_several_and_their_order_means_nothing() -> None:
     for system in (PLANNER_SYSTEM, CRITIC_SYSTEM):
         assert "teacher_wrote_2" in system
-        assert "order means nothing" in system
+        assert "numbering and order mean nothing" in system
 
 
 def test_only_a_change_in_what_applies_changes_the_fingerprint() -> None:

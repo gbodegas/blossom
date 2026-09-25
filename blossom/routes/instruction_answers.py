@@ -183,6 +183,52 @@ def said_back(
     return SaidBack(ordered, unshown, unsaved.none_applies)
 
 
+WAITING_HEADS: Final = frozenset({"waiting", "waiting_unshown", "waiting_none"})
+
+
+def waiting_choices(items: Iterable[tuple[str, object]]) -> dict[int, SaidBack]:
+    """What each card says back of a choice made before it was known which homework the card
+    is, as the paste review carries it: ``waiting-<card>-<place>`` for each instruction's
+    words on the wire, ``waiting_unshown-<card>`` for how many were selected by reference,
+    and ``waiting_none-<card>`` when none applying was chosen.
+
+    It is said back and nothing else: it carries no revision, and nothing is
+    ever saved from it. The first text value of each field is read; what
+    cannot be read is left out, and nothing is made up in its place.
+    """
+    words: dict[int, list[str]] = {}
+    unshown: dict[int, int] = {}
+    none: set[int] = set()
+    seen: set[str] = set()
+    for name, value in items:
+        head, _, rest = name.partition("-")
+        if head not in WAITING_HEADS or name in seen or not isinstance(value, str):
+            continue
+        seen.add(name)
+        parts = rest.split("-")
+        if not review_key(parts[0]):
+            continue
+        card = int(parts[0])
+        if head == "waiting" and len(parts) == 2 and review_key(parts[1]):
+            text = from_wire(value)
+            if text is not None:
+                words.setdefault(card, []).append(text)
+        elif head == "waiting_unshown" and len(parts) == 1:
+            count = count_of(value, KEY_MAX_LENGTH)
+            if count is not None:
+                unshown[card] = count
+        elif head == "waiting_none" and len(parts) == 1 and value == "1":
+            none.add(card)
+    return {
+        card: SaidBack(
+            tuple(sorted(dict.fromkeys(words.get(card, [])))),
+            unshown.get(card, 0),
+            card in none,
+        )
+        for card in sorted({*words, *unshown, *none})
+    }
+
+
 @dataclass(frozen=True)
 class ReadReview:
     """What the family's review form said: its answer, when every field is one the page

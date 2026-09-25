@@ -346,6 +346,32 @@ def test_her_note_and_a_parents_note_stay_in_the_note_field(
     assert store.school_instruction_readings(["mine"]).readable == {}
 
 
+@pytest.mark.parametrize("writer", ["put_on_record", "upsert_assignments"])
+@pytest.mark.parametrize(
+    "mark", [["LMS"], {"LMS": 1}, 5, "PORTAL"], ids=["list", "dict", "number", "no-channel"]
+)
+def test_a_note_mark_that_names_no_channel_is_read_as_none(
+    tmp_path: pathlib.Path, mark: object, writer: str
+) -> None:
+    """A school note whose mark is not text, or names no channel, is kept as the school's
+    instruction with no channel, as a note with no mark is."""
+    store = practice_store(tmp_path / "record.sqlite3")
+    row = a_row("check-3", A, None)
+    bent = row.model_copy(update={"origins": {**row.origins, "note": mark}})
+
+    if writer == "put_on_record":
+        store.put_on_record([bent], {})
+    else:
+        store.upsert_assignments([bent])
+    standing = readings(store, "check-3")
+    saved = store.one_assignment("check-3")
+
+    assert standing.texts == (A,)
+    assert standing.current[0].channel is None
+    assert saved is not None
+    assert (saved.note, saved.origins.get("note")) == (None, None)
+
+
 def test_a_school_note_written_over_her_note_keeps_hers_and_its_mark(
     tmp_path: pathlib.Path,
 ) -> None:
