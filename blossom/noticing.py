@@ -38,6 +38,7 @@ from blossom.reconciliation import (
     ReconciliationResult,
     SourceRecord,
 )
+from blossom.school_instructions import InstructionsStanding
 from blossom.sources import DateClaims
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN, Assignment, ProjectStateStore
 
@@ -194,6 +195,11 @@ class Week:
     claims_unavailable: frozenset[str] = frozenset()
     """The assignments with a claim about their date that cannot be read, from the same
     reading, so a card says so."""
+    instructions: dict[str, InstructionsStanding] = field(default_factory=dict)
+    """The school's instructions kept for each assignment in the week, by id, from the same
+    reading. An id with no entry has none kept."""
+    instructions_unavailable: frozenset[str] = frozenset()
+    """The assignments whose kept instructions cannot be read, so a card says so."""
 
     def needs_homework(self, assignment_id: str) -> bool:
         """Whether an assignment is still work to plan: everything but a "done" of hers."""
@@ -218,12 +224,17 @@ def monday_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-PLANNING_DIGEST: Final = uuid.UUID("7d1e6a34-2c9b-4f58-a0d7-93b5e1c8f264")
+AUTHORED: Final = frozenset({"parent", "student"})
+"""Whose notes are guidance a plan is made from: a parent's and hers."""
+
+PLANNING_DIGEST: Final = uuid.UUID("6f1ef033-6648-4683-b6e9-1dd419f420b5")
 """The namespace a week's fingerprint is drawn from. A namespace of its own for each
 shape the fingerprint has had, so a draft fingerprinted under an earlier one reads as
-stale rather than as unchanged. This one is the shape that says whose words a note is;
-the one before it said only whether a parent wrote it. A plan that was waiting when the
-shape changed reads as changed once and is asked for again. Nothing asks a model for it."""
+stale rather than as unchanged. This one is the shape that carries the school's
+instructions that apply, apart from the note; the one before it, ``7d1e6a34``, said
+whose words a note is, and the one before that only whether a parent wrote it. A plan
+that was waiting when the shape changed reads as changed once and is asked for again.
+Nothing asks a model for it."""
 
 
 def canonical_active_input(week: Week) -> list[dict[str, object]]:
@@ -231,14 +242,18 @@ def canonical_active_input(week: Week) -> list[dict[str, object]]:
     that the fingerprint is drawn from.
 
     For each assignment she has not reported done, by id: its course, title,
-    due and assigned dates, kind, note and whose words it is, which the
-    planner is told and which is nothing when there is no note, and
-    reported status; whether she has said "not yet"
-    and what she wrote with it; and each claim about its date, channel,
-    value, and where it was read, sorted. Left out: when a claim or a report
-    was made, which report it was, how sure a claim was, her history, and
-    anything about work reported done, which is out of what a plan is built
-    on.
+    due and assigned dates, kind, her note or a parent's and whose words it
+    is, which the planner is told, or nothing when there is none, and
+    reported status; the school's instructions that apply, in the one order,
+    or nothing when they cannot be read; whether she has said "not yet" and
+    what she wrote with it; and each claim about its date, channel, value,
+    and where it was read, sorted. Left out: a school note left in the old
+    note field, which no one chose; when a claim or a report was made, which
+    report it was, how sure a claim was, her history, anything about work
+    reported done, which is out of what a plan is built on, and of the
+    school's instructions everything but the words of those that apply:
+    their channel, card, card day, when and by whom they were pasted or
+    chosen, those said before, and any waiting for review.
     """
     rows: list[dict[str, object]] = []
     for item in sorted(week.active(), key=lambda item: item.assignment_id):
@@ -251,8 +266,17 @@ def canonical_active_input(week: Week) -> list[dict[str, object]]:
                 "due": None if item.due_date is None else item.due_date.isoformat(),
                 "assigned": None if item.assigned_on is None else item.assigned_on.isoformat(),
                 "kind": item.kind.value,
-                "note": item.note,
-                "note_by": item.note_by,
+                # A school note left in the old note field is no one's choice and no
+                # guidance: only her note or a parent's is hashed, with whose it is.
+                "note": item.note if item.note_by in AUTHORED else None,
+                "note_by": item.note_by if item.note_by in AUTHORED else None,
+                "school_instructions": (
+                    None
+                    if item.assignment_id in week.instructions_unavailable
+                    else list(standing.texts)
+                    if (standing := week.instructions.get(item.assignment_id)) is not None
+                    else []
+                ),
                 "reported_status": item.reported_submission_status,
                 "student_status": None if said is None else said.status,
                 "student_note": None if said is None else said.note,
@@ -312,6 +336,13 @@ class Everything:
     """The assignments with a claim about their date that cannot be read. Their readable
     claims are in ``records`` as any other's; a page says a claim cannot be read, and the
     date is read without it, never as if the row had not been made."""
+    instructions: dict[str, InstructionsStanding] = field(default_factory=dict)
+    """The school's instructions kept for each assignment on record, by id, apart from
+    anyone's own note: those that apply, those said before, and any waiting for a parent's
+    review. An id with no entry has none kept."""
+    instructions_unavailable: frozenset[str] = frozenset()
+    """The assignments with a kept instruction that cannot be read. A page says so, and
+    never that none is kept."""
 
     @property
     def ids(self) -> frozenset[str]:
@@ -335,9 +366,9 @@ def read_everything(
     them comes from the same batch: the school's reports, and her hand-in
     events, which stay in the file when an assignment leaves the record.
 
-    The cost is at most six reads however much the record holds, the claims
-    and her hand-in events among them each asked for once and not once per
-    assignment. It is fewer for a
+    The cost is at most seven reads however much the record holds, the
+    claims, her hand-in events, and the school's instructions among them each
+    asked for once and not once per assignment. It is fewer for a
     record that holds nothing, since a reader asked about no assignments runs
     no statement. What comes back is plain lists and mappings with nothing
     left open, so the transaction is over before anything is rendered or a
@@ -350,6 +381,7 @@ def read_everything(
         records = {name: list(claimed.records.get(name, [])) for name in on_record}
         statuses = statuses_for(project_state, [*on_record, *also])
         turned_in = project_state.hand_in_readings([*on_record, *also])
+        instructions = project_state.school_instruction_readings(on_record)
     return Everything(
         assignments=everything,
         records=records,
@@ -357,6 +389,8 @@ def read_everything(
         hand_ins=turned_in.readable,
         hand_ins_unavailable=turned_in.unreadable,
         claims_unavailable=claimed.unreadable,
+        instructions=instructions.readable,
+        instructions_unavailable=instructions.unreadable,
     )
 
 
@@ -383,6 +417,12 @@ def week_from(everything: Everything, start: date) -> Week:
             item.assignment_id: everything.statuses[item.assignment_id] for item in assignments
         },
         claims_unavailable=everything.claims_unavailable,
+        instructions={
+            item.assignment_id: everything.instructions[item.assignment_id]
+            for item in assignments
+            if item.assignment_id in everything.instructions
+        },
+        instructions_unavailable=everything.instructions_unavailable,
     )
 
 

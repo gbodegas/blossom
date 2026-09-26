@@ -108,6 +108,29 @@
   </section>
 
   {#
+    School instructions waiting for review: school notes found in the old note
+    field after the upgrade, beside instructions already kept, which the record
+    cannot say which version of Blossom wrote. None of them applies, and none
+    reaches a plan, until a parent chooses; each assignment links straight to
+    its review.
+  #}
+  {% if instructions_to_review %}
+    <section class="panel" id="school-instructions-to-review">
+      <h2>School instructions to review</h2>
+      <p class="helper">These were found in the old note field after the upgrade. None of them applies until you choose.</p>
+      <ul>
+        {% for item, waiting in instructions_to_review %}
+          <li>
+            <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>:
+            {% for instruction in waiting %}<q class="authored-text">{{ instruction.text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}
+            <p class="support-links"><a href="{{ instructions_review_href(item.assignment_id) }}">Review school instructions</a></p>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {#
     Homework she added: the notes she wrote down to remember and has not put
     away, in the order she first saved them, as they stand now, with the first
     words when she has changed them. They are hers: nothing here changes one,
@@ -222,6 +245,7 @@
             {% for statement in item.school_statements %}
               <p>The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}</p>
             {% endfor %}
+            {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
             {% if item.hand_in %}
               <p class="note">Turning it in: {{ turned_in_words(item.hand_in) }} Her own report, which decides nothing here.</p>
             {% endif %}
@@ -258,6 +282,7 @@
                 {% for statement in item.school_statements %}
                   The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}
                 {% endfor %}
+                {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
                 {{ checked_line(item) }}
               </li>
             {% endfor %}
@@ -278,6 +303,7 @@
                 {% for statement in item.school_statements %}
                   The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}
                 {% endfor %}
+                {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
                 {{ check_on_record(item) }}
               </li>
             {% endfor %}
@@ -298,6 +324,7 @@
               </p>
             {% endfor %}
             {% if item.status or item.cleared_on %}<p class="note">{{ her_update(item) }}</p>{% endif %}
+            {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
             {{ check_on_record(item) }}
           </article>
         {% endfor %}

@@ -109,6 +109,7 @@ from blossom.routes.navigation import (
     address,
     assignment_anchor,
     details_href,
+    instructions_review_href,
     read_return,
     result_anchor,
     safe_default,
@@ -124,6 +125,7 @@ from blossom.routes.runs import (
     require_work,
     run_plan,
 )
+from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
 from blossom.stores.drafts import DraftRecord
@@ -171,6 +173,7 @@ from blossom.views import (
     UpdateHistoryRowView,
     WeekView,
     WorkloadSignalView,
+    school_words,
 )
 
 logger = logging.getLogger(__name__)
@@ -675,6 +678,8 @@ def assignment_view(
     in_planning_window: bool = False,
     hand_in: HandInView | None = None,
     claims_unreadable: bool = False,
+    instructions: InstructionsStanding | None = None,
+    instructions_unreadable: bool = False,
 ) -> StudentAssignmentView:
     """One assignment as she sees it, with where its date came from said once per channel.
 
@@ -740,6 +745,7 @@ def assignment_view(
         assigned_on=assignment.assigned_on,
         note=assignment.note,
         note_by=assignment.note_by,
+        words=school_words(assignment, instructions, instructions_unreadable),
         entered_by_a_parent=assignment.origins.get("record") == SourceChannel.PARENT_ENTRY,
         school_statements=[
             SchoolStatementView.from_report(report)
@@ -878,6 +884,8 @@ def build_student_due_this_week_view(
             in_planning_window=item.assignment_id in in_window,
             claims_unreadable=item.assignment_id in found.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
+            instructions=found.instructions.get(item.assignment_id),
+            instructions_unreadable=item.assignment_id in found.instructions_unavailable,
         )
 
     # Never filter here; see the module docstring.
@@ -890,6 +898,8 @@ def build_student_due_this_week_view(
             in_planning_window=item.assignment_id in in_window,
             claims_unreadable=item.assignment_id in shown.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
+            instructions=found.instructions.get(item.assignment_id),
+            instructions_unreadable=item.assignment_id in found.instructions_unavailable,
         )
         for item in shown.assignments
     ]
@@ -1469,6 +1479,8 @@ def detail_page(
         # The homework notes this assignment was added from or joined by: her words, kept
         # as evidence beside the record and copied into none of it.
         notes = None if item is None else on_record.captures_of_assignment(assignment_id)
+        # The school's instructions, kept apart from anyone's own note.
+        instructions = on_record.school_instruction_readings([assignment_id])
         # Every claim ever made about the date, the withdrawn ones included: reconciliation
         # above reads only the ones that count, and the details say the rest apart. A history
         # that cannot be read leaves the record, her update, and her hand-in as they are;
@@ -1492,8 +1504,13 @@ def detail_page(
         in_planning_window=in_week(item, noticed, today),
         hand_in=turning_in,
         claims_unreadable=claims_unavailable,
+        instructions=instructions.readable.get(assignment_id),
+        instructions_unreadable=assignment_id in instructions.unreadable,
     )
     link = way_back(state, back, assignment_id, today=today)
+    # Which of the school's instructions apply is the family's to choose: a parent's, or the
+    # household's with the sign-in off when it came from the family's pages. She reads them.
+    family_chooses = viewer == "parent" or (viewer == "anyone" and back.target == "family")
     return templates.TemplateResponse(
         request,
         "student_assignment.html",
@@ -1519,6 +1536,9 @@ def detail_page(
                 if not claim.active
             ],
             "ctx": detail_context(assignment_id, back, viewer, link),
+            "instructions_review": (
+                instructions_review_href(assignment_id) if family_chooses else None
+            ),
             "back": link,
             "card": card,
             "hand_in_card": hand_in,

@@ -58,19 +58,36 @@ heading's first name is read as nothing and never kept.
 import dataclasses
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
+from blossom.captures import Author
 from blossom.pairing import pair as pair  # the one rule, kept where both askers share it
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel, SourceRecord
+from blossom.school_instructions import (
+    Card,
+    InstructionChoice,
+    InstructionChoiceStale,
+    InstructionSeen,
+    InstructionsNeedAChoice,
+    InstructionsOutcome,
+    InstructionsSettled,
+    SchoolInstruction,
+    SubmittedChoice,
+    new_texts,
+    overtaken,
+    revision_of,
+    settle,
+)
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
     ProjectStateStore,
     StatusReport,
 )
+from blossom.stores.school_instructions import UnreadableInstruction
 
 PORTAL_CONFIDENCE: Final = 0.9
 """The portal's own page, pasted whole: the school's word, as it wrote it."""
@@ -205,7 +222,11 @@ class Reading:
     origin: SourceChannel
     """Which channel the reading came from: the portal, the school's email, or a parent."""
     note: str | None = None
-    """What the teacher wrote under the card, or what a parent typed, as written."""
+    """What a parent typed with an entry, as written: a parent's own note. The school's
+    words under a card are never a note; they are ``instructions``."""
+    instructions: tuple[InstructionSeen, ...] = ()
+    """The teacher's instruction under each card the assignment was read from, once per
+    text, each with the card it was under and that card's day."""
     reports: tuple[StatusReport, ...] = ()
     """What the school reports about the assignment's status, with the day."""
     at_line: int | None = None
@@ -369,8 +390,9 @@ class _Draft:
     assigned_on: date | None = None
     claims: list[SourceRecord] = field(default_factory=list)
     reports: list[StatusReport] = field(default_factory=list)
-    notes: list[list[str]] = field(default_factory=list)
-    """The instruction under each card the item was seen on, one block per card."""
+    notes: list[tuple[Card, date | None, list[str]]] = field(default_factory=list)
+    """The instruction under each card the item was seen on, one block per card, with the
+    card it was under, assigned or due, and that card's day."""
     occurrence: str | None = None
     field_origins: dict[str, SourceChannel] = field(default_factory=dict)
     """The channel that gave each dated field, which the portal's cards do; the draft's own
@@ -387,15 +409,13 @@ class _Draft:
             self.reports.append(report)
 
     def reading(self) -> Reading:
-        blocks: list[str] = []
-        for lines in self.notes:
+        # Each card's instruction is its own, the same words under two cards once: an
+        # instruction is read under a card, and cards are the portal's.
+        instructions: list[InstructionSeen] = []
+        for card, day, lines in self.notes:
             block = "\n".join(lines)
-            if block and block not in blocks:
-                blocks.append(block)
-        origins = dict(self.field_origins)
-        if blocks:
-            # An instruction is read under a card, and cards are the portal's.
-            origins["note"] = SourceChannel.LMS
+            if block and all(item.text != block for item in instructions):
+                instructions.append(InstructionSeen(block, SourceChannel.LMS, card, day))
         return Reading(
             course=self.course,
             title=self.title,
@@ -404,11 +424,11 @@ class _Draft:
             kind=kind_of(self.title),
             claims=tuple(self.claims),
             origin=self.origin,
-            note="\n".join(blocks) or None,
+            instructions=tuple(instructions),
             reports=tuple(self.reports),
             at_line=self.at_line,
             occurrence=self.occurrence,
-            field_origins=origins,
+            field_origins=dict(self.field_origins),
         )
 
 
@@ -528,7 +548,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             if draft.assigned_on is None and day is not None:
                 draft.assigned_on = day
                 draft.field_origins["assigned_on"] = SourceChannel.LMS
-            draft.notes.append([])
+            draft.notes.append(("assigned", day, []))
             last = draft
             continue
         if due := DUE_LINE.match(body):
@@ -542,7 +562,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             if draft.due_date is None:
                 draft.due_date = day
                 draft.field_origins["due_date"] = SourceChannel.LMS
-            draft.notes.append([])
+            draft.notes.append(("due", day, []))
             last = draft
             continue
         if LOOKS_STRUCTURAL.match(line):
@@ -556,7 +576,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             last = None
             continue
         if last is not None:
-            last.notes[-1].append(line)
+            last.notes[-1][2].append(line)
             continue
         unread.append(Unread(number, line))
     items = tuple(draft.reading() for rounds in drafts.values() for draft in rounds)
@@ -668,7 +688,6 @@ KNOWN: Final = "known"
 CLAIMED: Final = "claimed"
 REVIEW: Final = "review"
 FOLDED: Final = "folded"
-NOTE_STANDS: Final = "The saved note stands; the pasted one differs and is not saved."
 
 
 @dataclass(frozen=True)
@@ -688,9 +707,9 @@ class Change:
     due date."""
     fills_assigned_on: bool
     note_change: str | None
-    """``fill`` when the record has no note and the reading has one; ``update`` when the
-    school's text replaces the school's earlier text; ``kept`` when the saved note
-    stands and the pasted one differs; ``None`` when there is nothing to say."""
+    """``fill`` when the record has no note and a parent typed one; ``update`` when a
+    parent's typed note replaces the saved one; ``None`` when there is nothing to say. The
+    school's words are never a note: they are its instructions, decided apart."""
     kind: AssignmentKind
     """The kind the row will have: the reader's suggestion, or the parent's choice."""
     kind_by_parent: bool
@@ -715,6 +734,97 @@ class Change:
     folded_into: int | None = None
     """The key of the card this one was folded into, as the parent said; such a card is
     not shown, saves nothing of its own, and its answers travel with the page."""
+    instructions: InstructionsOutcome | None = None
+    """What keeping the school's instructions would do to the assignment this card lands
+    on, decided once for every card of the text that lands there, and carried by the
+    first of them; ``None`` on every other card, and on a card with none."""
+    instructions_seen: tuple[InstructionSeen, ...] = ()
+    """Every instruction the text gives the assignment, from every card that lands there."""
+    instructions_kept: tuple[SchoolInstruction, ...] = ()
+    instructions_revision: int = 0
+    instructions_answer: InstructionChoice | None = None
+    """The parent's choice of which instructions apply, when one was given."""
+    instructions_submitted: SubmittedChoice | None = None
+    """The one answer given for the assignment, whatever it says, contradictions included,
+    with the revision and the instructions it was made against, when it was made against
+    what stands; a page returned shows it as made."""
+    instructions_unsaved: tuple[SubmittedChoice, ...] = ()
+    """The answers given for the assignment that are said back as not saved and never shown
+    as made: those made against instructions that have changed since, or answers on its
+    cards that ask for different things, one for each thing asked for, in card order; or,
+    on a card still waiting on which homework it is, the answer given on it."""
+    instructions_with: int | None = None
+    """The key of the card that carries this card's assignment's instructions, when that is
+    another card of the same text."""
+
+    @property
+    def instructions_asked(self) -> bool:
+        """Whether the school's instructions need the parent's choice before anything is
+        saved."""
+        return isinstance(self.instructions, InstructionsNeedAChoice)
+
+    @property
+    def instructions_question(self) -> bool:
+        """Whether the card puts the question of which instructions apply: asked and not yet
+        answered, or answered, so a page returned for another question keeps the answer, or
+        answered against instructions that have changed since, so the parent chooses again
+        where the answer not saved is said."""
+        return (
+            self.instructions_asked
+            or self.instructions_answer is not None
+            or self.instructions_stale
+        )
+
+    @property
+    def instructions_shown(self) -> tuple["ShownInstruction", ...]:
+        """The instructions the question lists: those kept, in the order kept, then those new
+        in this text, in the order read. The page's boxes follow this order."""
+        new = new_texts(self.instructions_kept, self.instructions_seen)
+        return (
+            *(
+                ShownInstruction(item.text, item.state, item.card, item.card_day, item.sequence)
+                for item in self.instructions_kept
+            ),
+            *(ShownInstruction(item.text, "new", item.card, item.card_day) for item in new),
+        )
+
+    @property
+    def instructions_read(self) -> tuple["ShownInstruction", ...]:
+        """What the text says of the school's instructions where no question is put: each
+        instruction it gives the assignment, once, under the card this text shows it on,
+        with how it stands, or ``new`` when this text brings it."""
+        standing = {item.text: item.state for item in self.instructions_kept}
+        read: dict[str, ShownInstruction] = {}
+        for item in self.instructions_seen:
+            read.setdefault(
+                item.text,
+                ShownInstruction(
+                    item.text, standing.get(item.text, "new"), item.card, item.card_day
+                ),
+            )
+        return tuple(read.values())
+
+    @property
+    def instructions_stale(self) -> bool:
+        """Whether an answer given for the assignment, on any of its cards, was made against
+        instructions that have changed since; none of them is put right onto the facts as
+        they stand now."""
+        return isinstance(self.instructions, InstructionChoiceStale)
+
+    @property
+    def instructions_ticked(self) -> frozenset[str]:
+        """The instructions a page returned shows ticked: the parent's answer, by its words,
+        never by its place, and nothing when the answer was made against instructions that
+        have changed since, which are asked afresh."""
+        if self.instructions_submitted is None or self.instructions_stale:
+            return frozenset()
+        return self.instructions_submitted.applies
+
+    @property
+    def instructions_none_ticked(self) -> bool:
+        """Whether a page returned shows none applying ticked, by the same rule."""
+        answer = self.instructions_submitted
+        return answer is not None and not self.instructions_stale and answer.none_applies
 
     @property
     def suggested(self) -> AssignmentKind:
@@ -761,6 +871,8 @@ class Change:
             parts.append("the note")
         if self.new_kind is not None:
             parts.append("the type")
+        if isinstance(self.instructions, InstructionsSettled):
+            parts.append("the school's instructions")
         return tuple(parts)
 
     @property
@@ -769,7 +881,7 @@ class Change:
         into another, else ``new``, ``claimed``, or ``known``."""
         if self.folded_into is not None:
             return FOLDED
-        if self.ambiguous:
+        if self.ambiguous or self.instructions_asked or self.instructions_stale:
             return REVIEW
         if self.on_record is None or self.occurrence == NEW_WORK:
             return NEW
@@ -830,6 +942,22 @@ class Change:
     @property
     def effect_base(self) -> str:
         """What saving does apart from the type, which the page rewrites as the select changes."""
+        if self.state == REVIEW and not self.ambiguous:
+            if self.instructions_stale:
+                return (
+                    "The school's instructions saved for this assignment changed after the "
+                    "review was shown, so the choice made here was not saved. Choose again from "
+                    "what is saved now."
+                )
+            what = (
+                "The school's instructions here differ from what is saved."
+                if self.instructions_kept
+                else "This text gives more than one instruction from the school."
+            )
+            return (
+                f"{what} Choose which apply now; the ones not chosen are kept as history, and "
+                "nothing the school said is lost."
+            )
         if self.state == REVIEW:
             where = (
                 "The saved assignment is due"
@@ -844,10 +972,10 @@ class Change:
         if self.state == FOLDED:
             return "Folded into the card for the same assignment, as you said."
         if self.state == NEW:
-            return "Saved as a new assignment."
+            return " ".join(
+                part for part in ("Saved as a new assignment.", self.instructions_effect) if part
+            )
         if self.state == KNOWN:
-            if self.note_change == "kept":
-                return f"Nothing changes. {NOTE_STANDS}"
             return "Nothing changes."
         parts = []
         if self.fills_due_date:
@@ -872,16 +1000,51 @@ class Change:
             parts.append("The assigned date is filled in.")
         if self.note_change == "fill":
             parts.append("The note is saved.")
-        elif (
-            self.note_change == "update"
-            and self.reading.origin_of("note") == SourceChannel.PARENT_ENTRY
-        ):
-            parts.append("Your note replaces the saved note.")
         elif self.note_change == "update":
-            parts.append("The school's note replaces the school's earlier note.")
-        elif self.note_change == "kept":
-            parts.append(NOTE_STANDS)
+            parts.append("Your note replaces the saved note.")
+        if self.instructions_effect:
+            parts.append(self.instructions_effect)
         return " ".join(parts)
+
+    @property
+    def instructions_effect(self) -> str:
+        """What saving does with the school's instructions, in one sentence; empty when it
+        does nothing with them."""
+        if not isinstance(self.instructions, InstructionsSettled):
+            return ""
+        if self.instructions_answer is None:
+            return "The school's instruction is saved, apart from anyone's own note."
+        return "The school's instructions are saved as chosen, apart from anyone's own note."
+
+
+@dataclass(frozen=True)
+class ShownInstruction:
+    """One instruction as the question lists it: its words, whether it is kept and how it
+    stands or is new in this text, the card it was first read under, and its row when it is
+    kept. The card's day is where it was read, never when the teacher wrote it."""
+
+    text: str
+    standing: str
+    card: str | None
+    card_day: date | None
+    sequence: int | None = None
+
+
+@dataclass(frozen=True)
+class ChangedSinceShown:
+    """Nothing was saved: a choice on the page was made against instructions that changed
+    since the page was made. The changes as they stand now come back, to look at again."""
+
+    changes: list["Change"]
+
+
+@dataclass(frozen=True)
+class NotAsked:
+    """Nothing was saved: an answer about the school's instructions came on a card where the
+    signed page asked no such question, checked against the record as the save found it.
+    ``cards`` are those cards."""
+
+    cards: frozenset[int]
 
 
 class _Seen:
@@ -932,6 +1095,7 @@ def changes_for(
     *,
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
+    instruction_answers: Mapping[int, InstructionChoice | SubmittedChoice] | None = None,
 ) -> list[Change]:
     """Compare each reading with the record: what is new, what is known, what a paste adds.
 
@@ -950,10 +1114,10 @@ def changes_for(
     otherwise never replaced by a paste; a different date is a claim beside
     it, which the page shows as a disagreement, and a record with no due
     date takes the pasted one as its own. The assigned date is filled in
-    when the record has none. The note is filled in when the record has
-    none; a parent's note replaces any saved note, the school's note
-    replaces the school's earlier note, and the school's never replaces a
-    parent's. ``kinds`` are the parent's choices of type on the page; a
+    when the record has none. A parent's typed note fills the note or
+    replaces the saved one; the school's words are never a note, and are
+    kept as its instructions by the store's rule, once for each assignment
+    the text lands on. ``kinds`` are the parent's choices of type on the page; a
     type typed with an entry is the parent's choice as well, and one left
     unchosen there is no choice. Several cards
     about one saved row compose: each is measured against the row as the
@@ -1011,6 +1175,192 @@ def changes_for(
             row = _updated_row(change)
             if row is not None:
                 pending[existing.assignment_id] = row
+    return _with_instructions(changes, store, submitted_answers(instruction_answers or {}))
+
+
+def submitted_answers(
+    answers: Mapping[int, InstructionChoice | SubmittedChoice],
+) -> dict[int, SubmittedChoice]:
+    """Answers as sent, each whole: a choice a direct caller made is the answer it sends."""
+    return {
+        key: answer
+        if isinstance(answer, SubmittedChoice)
+        else SubmittedChoice(
+            shown_revision=answer.shown_revision,
+            shown=answer.shown,
+            applies=answer.applies,
+            none_applies=answer.none_applies,
+        )
+        for key, answer in answers.items()
+    }
+
+
+def answers_to_no_question(
+    changes: Sequence[Change],
+    answers: Mapping[int, SubmittedChoice],
+    asked: Mapping[int, tuple[int, str]] | None = None,
+) -> frozenset[int]:
+    """The cards an answer about the school's instructions is given on where the review page
+    puts no such question, from ``changes`` read with no answer given: a card the text does
+    not have; a card that lands on an assignment with no decision; a card of an assignment
+    that needs a choice that did not ask it in ``asked``, even where it carries the decision
+    now; a card that asked at another revision or about another assignment; and a decision
+    that needs no choice, where the answer would write anything.
+
+    ``asked`` holds each card the page asked on, as the page signed it, with the revision
+    it showed and the assignment it asked about, so a question the record raised since
+    the page was made has no answer on it. A card that asked answers its assignment's
+    question, on whichever card it is put now. A choice needed when the page was read
+    is still needed now unless an instruction was kept since; then an answer sent
+    again finds what it asks for standing, and any other finds the facts changed. So
+    an answer that would write where no choice is needed was never an answer to a
+    question the page put. A card folded into another answers for the assignment it
+    joins, and only where the page asked on that card: a question the fold raises is
+    one the page never asked. A card that lands nowhere yet carries no decision, and
+    nothing reads its answer here.
+    """
+    decided = {change.key: change for change in changes if change.instructions is not None}
+    carriers = {change.assignment_id: change for change in decided.values()}
+    cards = {change.key: change for change in changes}
+    asked = asked or {}
+    unlanded = {change.key for change in changes if change.ambiguous}
+    never: set[int] = set()
+    for key, answer in answers.items():
+        if key in unlanded:
+            continue
+        if key in asked:
+            # A choice stays with the assignment it was asked about; a card that chooses
+            # nothing may be said to be other homework since.
+            revision, assignment = asked[key]
+            card = cards.get(key)
+            if card is not None and card.folded_into is not None:
+                card = cards.get(card.folded_into)
+            elsewhere = card is None or card.assignment_id != assignment
+            if answer.shown_revision != revision or (answer.answers and elsewhere):
+                never.add(key)
+                continue
+        change = decided.get(key)
+        if change is None:
+            card = cards.get(key)
+            into = None if card is None else card.folded_into
+            if into is not None:
+                card = cards.get(into)
+            change = None if card is None else carriers.get(card.assignment_id)
+            if change is None or (change.instructions_asked and key not in asked):
+                never.add(key)
+                continue
+        elif change.instructions_asked and key not in asked:
+            # The page asked which homework this card is, and nothing about its instructions.
+            never.add(key)
+            continue
+        if isinstance(change.instructions, InstructionsNeedAChoice):
+            continue
+        resolved = answer.resolved(change.instructions_kept)
+        choice = None if resolved is None else resolved.choice()
+        if choice is not None and isinstance(
+            settle(change.instructions_kept, change.instructions_seen, choice), InstructionsSettled
+        ):
+            never.add(key)
+    return frozenset(never)
+
+
+def _with_instructions(
+    changes: list[Change], store: ProjectStateStore, answers: Mapping[int, SubmittedChoice]
+) -> list[Change]:
+    """Decide the school's instructions once for each assignment the text lands on.
+
+    Every card that lands on one assignment, an Assigned card and a Due card
+    of it among them, gives its instructions to one decision. The decision is
+    carried by the first card of the text that lands on the assignment, whether
+    or not that card brings an instruction of its own, and answered there; the
+    others that bring one point to it. A card still waiting on whether it is new
+    work lands nowhere yet, and gives nothing; an answer given on it is kept to
+    say back, never read. The kept instructions of every assignment are read in
+    one statement.
+
+    Every answer given on a card that lands on the assignment, or on a card
+    folded into one, answers its question, rows put back in their words
+    against what is kept, and each is checked against what stands before any
+    is taken with another: a row not kept here, a choice the rule refuses as
+    stale, or an answer that makes no choice made against another revision or
+    another set, on any card, leaves the whole assignment stale. Answers that
+    ask for different things choose nothing: the question stays open, nothing
+    is written, and each is kept to say back. One answer that ticks an
+    instruction and that none applies is no choice either. No answer at all
+    leaves the rule to decide, the first instruction of new work standing as
+    it always does.
+    """
+    landed: dict[str, list[int]] = {}
+    folded: dict[int, list[int]] = {}
+    for index, change in enumerate(changes):
+        if change.folded_into is not None:
+            folded.setdefault(change.folded_into, []).append(change.key)
+        elif change.ambiguous:
+            if change.key in answers:
+                changes[index] = dataclasses.replace(
+                    change, instructions_unsaved=(answers[change.key],)
+                )
+        else:
+            landed.setdefault(change.assignment_id, []).append(index)
+    landing = {
+        assignment_id: places
+        for assignment_id, places in landed.items()
+        if any(changes[place].reading.instructions for place in places)
+    }
+    if not landing:
+        return changes
+    found = store.school_instruction_readings(landing)
+    for assignment_id in landing:
+        if assignment_id in found.unreadable:
+            msg = f"the school's instructions for {assignment_id!r} cannot be read"
+            raise UnreadableInstruction(msg)
+    for assignment_id, places in landing.items():
+        standing = found.readable.get(assignment_id)
+        kept = () if standing is None else standing.kept
+        revision = revision_of(kept)
+        seen = tuple(item for place in places for item in changes[place].reading.instructions)
+        first = changes[places[0]]
+        keys = [changes[place].key for place in places]
+        keys += [key for card in keys for key in folded.get(card, [])]
+        given = [answers[key] for key in keys if key in answers]
+        read = [answer.resolved(kept) for answer in given]
+        # One answer for each thing asked for, the first card's; one naming a row not kept
+        # here is said as it was sent.
+        asked_for: dict[tuple[frozenset[str], frozenset[int], bool], SubmittedChoice] = {}
+        for sent, item in zip(given, read, strict=True):
+            said = sent if item is None else item
+            asked_for.setdefault((said.applies, said.applies_rows, said.none_applies), said)
+        requests = tuple(asked_for.values())
+        submitted: SubmittedChoice | None = None
+        answer: InstructionChoice | None = None
+        unsaved: tuple[SubmittedChoice, ...] = ()
+        outcome: InstructionsOutcome
+        if any(item is None or overtaken(kept, seen, item) for item in read):
+            outcome = InstructionChoiceStale(tuple(kept), revision)
+            unsaved = requests
+        elif len(requests) > 1:
+            outcome = InstructionsNeedAChoice(tuple(kept), new_texts(kept, seen), revision)
+            unsaved = requests
+        else:
+            submitted = requests[0] if requests else None
+            if submitted is not None and submitted.contradicts:
+                outcome = InstructionsNeedAChoice(tuple(kept), new_texts(kept, seen), revision)
+            else:
+                answer = None if submitted is None else submitted.choice()
+                outcome = settle(kept, seen, answer)
+        changes[places[0]] = dataclasses.replace(
+            first,
+            instructions=outcome,
+            instructions_seen=seen,
+            instructions_kept=kept,
+            instructions_revision=revision,
+            instructions_answer=answer,
+            instructions_submitted=submitted,
+            instructions_unsaved=unsaved,
+        )
+        for place in places[1:]:
+            if changes[place].reading.instructions:
+                changes[place] = dataclasses.replace(changes[place], instructions_with=first.key)
     return changes
 
 
@@ -1137,6 +1487,11 @@ def _folded(
         return dataclasses.replace(anchor, choices_conflict=True)
     first = anchor.reading
     notes = [note for note in (first.note, reading.note) if note]
+    instructions = first.instructions + tuple(
+        item
+        for item in reading.instructions
+        if all(item.text != other.text for other in first.instructions)
+    )
     origins = {**reading.field_origins, **first.field_origins}
     origins["due_date"] = reading.origin_of("due_date")
     if first.assigned_on is None and reading.assigned_on is not None:
@@ -1147,6 +1502,7 @@ def _folded(
         assigned_on=first.assigned_on or reading.assigned_on,
         claims=first.claims + reading.claims,
         note="\n".join(dict.fromkeys(notes)) or None,
+        instructions=instructions,
         reports=first.reports + reading.reports,
         field_origins=origins,
     )
@@ -1224,15 +1580,11 @@ def _match(rows: list[Assignment], reading: Reading) -> Assignment | None:
 
 
 def _note_change(existing: Assignment, reading: Reading) -> str | None:
+    """What a parent's typed note does to the saved note. Only a parent's entry carries a
+    note; the reader keeps the school's words as instructions, never as one."""
     if not reading.note or reading.note == existing.note:
         return None
-    if existing.note is None:
-        return "fill"
-    if reading.origin_of("note") == SourceChannel.PARENT_ENTRY:
-        return "update"
-    if existing.origins.get("note", SourceChannel.LMS) == SourceChannel.LMS:
-        return "update"
-    return "kept"
+    return "fill" if existing.note is None else "update"
 
 
 @dataclass(frozen=True)
@@ -1273,7 +1625,12 @@ def keep(
     *,
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
-) -> Kept | Held | list[Change]:
+    instruction_answers: Mapping[int, InstructionChoice | SubmittedChoice] | None = None,
+    asked: Mapping[int, tuple[int, str]] | None = None,
+    imported_by: Author | None = None,
+    now: datetime | None = None,
+    today: date | None = None,
+) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
     """Compare and write as one: save what the record lacks, and say what changed.
 
     The comparison and the write happen while the store is held for this
@@ -1290,12 +1647,43 @@ def keep(
     where a text is held: if any row carries the class and title of homework
     made from a homework note, nothing of the whole text is written, not the
     rows beside it either, and the rows in the way are handed back.
+
+    The school's instructions are decided once for each assignment, in the
+    same transaction: a new instruction that needs a choice leaves the whole
+    text unsaved with the question open, and a choice made against
+    instructions that changed since the page was made leaves it unsaved with
+    what changed handed back, whichever card it is on. ``imported_by`` is who
+    pasted, kept apart from the school channel the words came from.
+
+    ``asked`` holds the questions about the school's instructions that a signed
+    page asked. When it's given, the answers are checked against it again here,
+    since another connection can change which assignment a card lands on
+    after the page's own check; an answer to a question the page never
+    asked leaves the whole text unsaved.
     """
     with store.comparing_and_writing():
+        if asked is not None:
+            never_put = answers_to_no_question(
+                changes_for(items, store, occurrences=occurrences, kinds=kinds),
+                submitted_answers(instruction_answers or {}),
+                asked,
+            )
+            if never_put:
+                return NotAsked(never_put)
         held = held_rows(items, store)
         if held is not None:
             return held
-        changes = changes_for(items, store, occurrences=occurrences, kinds=kinds)
+        changes = changes_for(
+            items,
+            store,
+            occurrences=occurrences,
+            kinds=kinds,
+            instruction_answers=instruction_answers,
+        )
+        # A choice made against instructions that have changed is refused before any other
+        # question is put again, so a page returned never shows it as still made.
+        if any(change.instructions_stale for change in changes):
+            return ChangedSinceShown(changes)
         if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):
             return changes
         rows: dict[str, Assignment] = {}
@@ -1325,6 +1713,24 @@ def keep(
             claims.setdefault(change.assignment_id, []).extend(change.new_claims)
             reports.setdefault(change.assignment_id, []).extend(change.new_reports)
         store.put_on_record(rows.values(), claims, reports)
+        moment = store.instruction_moment()
+        for change in changes:
+            if not isinstance(change.instructions, InstructionsSettled):
+                continue
+            settled = store.settle_school_instructions(
+                change.assignment_id,
+                change.instructions_seen,
+                change.instructions_answer,
+                authored_by=imported_by,
+                now=now or moment[0],
+                today=today or moment[1],
+            )
+            if not isinstance(settled, InstructionsSettled):
+                # Decided a moment ago in this same transaction, so nothing can have come
+                # between; a different outcome means something is wrong, and nothing of the
+                # text is kept.
+                msg = f"the school's instructions for {change.assignment_id!r} moved under the save"
+                raise RuntimeError(msg)
     return Kept(
         added=len(added),
         updated=len(updated - added),

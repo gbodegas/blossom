@@ -19,6 +19,7 @@ project state need not be.
 
 import asyncio
 import logging
+import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
@@ -109,6 +110,10 @@ class ApplicationState:
     all the same."""
     attempts: SignInAttempts = field(default_factory=SignInAttempts)
     """Wrong passphrases counted per device, so guessing is slowed; empty at every start."""
+    result_key: bytes = field(default_factory=lambda: secrets.token_bytes(32))
+    """The key that signs what a save carries to the page it returns to, and the answers a
+    paste review was made with, drawn afresh at every start and never written anywhere: a
+    result worked out from the address, or one signed before a restart, says nothing."""
 
     def close(self) -> None:
         """Release resources held for the lifetime of the application."""

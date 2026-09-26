@@ -166,12 +166,17 @@ def test_a_paste_is_reviewed_week_by_week_and_saved_only_when_asked(
     covers = article_for(shown.text, "<h2>Book Covers</h2>")
     assert "Due Tuesday, September 8, 2026" in covers
     assert '<span class="source">Assigned Thursday, September 3, 2026</span>' in covers
-    assert (
-        '<p class="effect" data-base="Saved as a new assignment.">Saved as a new assignment.</p>'
-        in (covers)
+    effect = (
+        "Saved as a new assignment. The school&#39;s instruction is saved, apart from "
+        "anyone&#39;s own note."
     )
+    assert f'<p class="effect" data-base="{effect}">{effect}</p>' in covers
     assert '<option value="TASK" selected>Task</option>' in covers
-    assert "From the teacher: <q>Cover both books with paper.</q>" in covers
+    assert (
+        'From the school: <q class="authored-text">Cover both books with paper.</q> '
+        '<span class="source">New in this text; it applies. Read on the school\'s card for '
+        "September 3.</span>"
+    ) in covers
     assert "school portal (the assignment&#39;s own line): 2026-09-08" in covers
     assert "Read from line 4 of the text." in covers
     assert '<textarea name="text" hidden>' in shown.text
@@ -183,7 +188,7 @@ def test_a_paste_is_reviewed_week_by_week_and_saved_only_when_asked(
     assert kept.headers["location"] == "/parent?added=3&updated=0&unchanged=0"
     assert "3 added, 0 updated, 0 unchanged." in family
     assert "Book Covers" in hers
-    assert "From the teacher: <q>Cover both books with paper.</q>" in hers
+    assert 'From the school: <q class="authored-text">Cover both books with paper.</q>' in hers
     assert "Reported status:" not in article_for(hers, "Book Covers")
     assert "Entered by a parent." not in hers
     assert "Binder, labeled dividers and lined paper check" in hers
@@ -968,8 +973,8 @@ def test_a_text_with_the_email_and_the_page_keeps_the_teachers_words_as_the_teac
     tmp_path: pathlib.Path,
 ) -> None:
     """The email names the assignment first; the portal's card dates it and carries the
-    instruction. Her page says the note is the teacher's and never that a parent entered
-    the assignment."""
+    instruction. Her page shows it as the school's words and never says that a parent
+    wrote it or entered the assignment."""
     mixed = (
         "Assignments:\n09/09 Math - A: Homework: Practice Grade: Missing\n\n"
         "Tuesday 9/8/2026\nMath\nAssigned: Practice: (Due:09/10/2026)\nBring the packet.\n"
@@ -982,7 +987,7 @@ def test_a_text_with_the_email_and_the_page_keeps_the_teachers_words_as_the_teac
 
     assert kept.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
     card = article_for(hers, "<h2>Practice</h2>")
-    assert "From the teacher: <q>Bring the packet.</q>" in card
+    assert 'From the school: <q class="authored-text">Bring the packet.</q>' in card
     assert "<strong>The school reports this missing.</strong>" in card
     assert "Due Thursday, September 10" in card
     assert "A parent wrote" not in card

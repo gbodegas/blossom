@@ -19,7 +19,15 @@
     and a question the record cannot settle is asked before anything is
     written.
   #}
-  {% if notice %}
+  {#
+    A page returned for an answer about the school's instructions puts the
+    focus on its summary, with no script, which links to the first question
+    it is about, or to the choice said back on a card that puts no question
+    now; any other notice is said as before.
+  #}
+  {% if notice and refused is not none %}
+    <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ notice }}{% if problem_link %} <a href="#{{ problem_link[0] }}">{{ problem_link[1] }}</a>{% endif %}</p>
+  {% elif notice %}
     <p class="problem" role="alert">{{ notice }}</p>
   {% endif %}
   {#
@@ -59,6 +67,8 @@
         <input type="hidden" name="{{ name }}" value="{{ value }}">
       {% endif %}
     {% endfor %}
+    {# The answers to which homework each card is that this page was made with, signed, so a save knows which questions it asked. #}
+    <input type="hidden" name="made_with" value="{{ made_with }}">
 
     <div class="review-main">
       {% if unread %}
@@ -134,7 +144,11 @@
               <p class="effect" data-base="{{ change.effect_base }}">{{ change.effect }}</p>
               {% if change.state == "review" %}
                 <input type="hidden" name="asked-{{ change.key }}" value="1">
-                <fieldset class="choice">
+              {% endif %}
+              {% if change.ambiguous %}
+                {# The page notes the cards it asks which homework they are. #}
+                <input type="hidden" name="which-{{ change.key }}" value="1">
+                <fieldset class="choice" id="occurrence-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
                   <legend>Which is it?</legend>
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment, its due date changed</label>
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
@@ -154,8 +168,61 @@
                 </select>
               </label>
               <p class="helper">Task: a form to sign, supplies to bring, or similar. {% if change.on_record %}As saved; change it if it is wrong.{% else %}Suggested from the title; change it if it is wrong.{% endif %}</p>
+              {% if change.key in unsaved_on %}
+                {#
+                  What was chosen and not saved, said back whether or not the card puts
+                  the question now; where it puts none, the assignment's instructions can
+                  be reviewed on their own page.
+                #}
+                {% set account = unsaved_on[change.key] %}
+                <div id="instructions-unsaved-{{ change.key }}" tabindex="-1">
+                  <h3 class="update-heading">Your unsaved choice{% if account.said|length > 1 %}s{% endif %}</h3>
+                  <p class="problem" id="instructions-problem-{{ change.key }}">{% if account.why == "stale" %}Not saved, since what is saved changed{% elif account.why == "differ" %}Not saved, since the cards for this assignment answer differently{% elif account.why == "waiting" %}Not saved, since it was chosen before this card's homework was known{% else %}Not saved, since the answer could not be read{% endif %}: {% for item in account.said %}{% with said = item %}{% include "instructions_said_back.html" %}{% endwith %}{% if not loop.last %}; {% endif %}{% endfor %}</p>
+                  {% if account.review %}<p class="support-links"><a href="{{ account.review }}">Review school instructions</a></p>{% endif %}
+                  {# Carried to show again until the card has a fresh choice; never read as an answer. #}
+                  <input type="hidden" name="unsaved_why-{{ change.key }}" value="{{ account.why }}">
+                  {% for item in account.said %}
+                    {% set answer = loop.index0 %}
+                    {% for text in item.words %}{% if text is in_words %}<input type="hidden" name="unsaved-{{ change.key }}-{{ answer }}-{{ loop.index0 }}" value="{{ text|wire }}">{% elif text in item.row_of %}<input type="hidden" name="unsaved_row-{{ change.key }}-{{ answer }}-{{ loop.index0 }}" value="{{ item.row_of[text] }}">{% endif %}{% endfor %}
+                    {% for row in item.unread_rows %}<input type="hidden" name="unsaved_row-{{ change.key }}-{{ answer }}-{{ item.words|length + loop.index0 }}" value="{{ row }}">{% endfor %}
+                    {% if item.counted %}<input type="hidden" name="unsaved_unshown-{{ change.key }}-{{ answer }}" value="{{ item.counted }}">{% endif %}
+                    {% if item.none_applies %}<input type="hidden" name="unsaved_none-{{ change.key }}-{{ answer }}" value="1">{% endif %}
+                  {% endfor %}
+                </div>
+              {% endif %}
+              {% if change.instructions_question %}
+                {# One question for the assignment, whichever cards of the text brought its instructions. #}
+                <input type="hidden" name="instructions-{{ change.key }}" value="{{ change.instructions_revision }}">
+                {% for item in change.instructions_shown %}
+                  {% if item.sequence is not none and item.text is not in_words %}
+                    <input type="hidden" name="row-{{ change.key }}-{{ loop.index0 }}" value="{{ item.sequence }}">
+                  {% else %}
+                    <input type="hidden" name="instruction-{{ change.key }}-{{ loop.index0 }}" value="{{ item.text|wire }}">
+                  {% endif %}
+                {% endfor %}
+                <fieldset class="choice instructions" id="instructions-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
+                  <legend>The school's instructions for {{ reading.title }}: which apply now?</legend>
+                  <p class="helper">These are the school's words. Which of them apply is the family's choice, and the school's record is not changed. The ones not chosen are kept as history.</p>
+                  {% for item in change.instructions_shown %}
+                    <label><input type="checkbox" name="apply-{{ change.key }}-{{ loop.index0 }}" value="1"{% if item.text in change.instructions_ticked %} checked{% endif %}> <span><q class="authored-text">{{ item.text }}</q> <span class="source">{% if item.standing == "current" %}Saved, applies now{% elif item.standing == "history" %}Saved earlier, does not apply{% elif item.standing == "awaiting" %}Waiting for review{% else %}New in this text{% endif %}{% if item.card_day %}. Read on the school's card for {{ item.card_day.strftime("%B") }} {{ item.card_day.day }}{% endif %}.</span></span></label>
+                  {% endfor %}
+                  <label><input type="checkbox" name="none-{{ change.key }}" value="1"{% if change.instructions_none_ticked %} checked{% endif %}> <span>No school instruction applies now</span></label>
+                </fieldset>
+              {% elif change.instructions_with is not none %}
+                <p class="source">The school's instructions under this card are shown on the first card for this assignment.</p>
+              {% else %}
+                {#
+                  No question: the card that carries the assignment's instructions lists
+                  each one the text gives, once, with how it stands. A card that lands on
+                  no assignment yet shows what it read.
+                #}
+                {% for item in (change.instructions_read if change.instructions is not none else reading.instructions) %}
+                  {% set standing = item.standing if change.instructions is not none else "" %}
+                  <p class="from-teacher">From the school: <q class="authored-text">{{ item.text }}</q>{% if standing or item.card_day %} <span class="source">{% if standing == "current" %}Saved, applies now.{% elif standing == "history" %}Saved earlier, does not apply.{% elif standing == "awaiting" %}Waiting for review.{% elif standing == "new" %}New in this text; it applies.{% endif %}{% if standing and item.card_day %} {% endif %}{% if item.card_day %}Read on the school's card for {{ item.card_day.strftime("%B") }} {{ item.card_day.day }}.{% endif %}</span>{% endif %}</p>
+                {% endfor %}
+              {% endif %}
               {% if reading.note %}
-                <p class="from-teacher">{% if reading.origin == "PARENT_ENTRY" %}Your note{% else %}From the teacher{% endif %}: <q>{{ reading.note }}</q></p>
+                <p class="from-teacher">Your note: <q>{{ reading.note }}</q></p>
               {% endif %}
               {% for report in reading.reports %}
                 <p class="source">{{ spoken_report(report) }}</p>

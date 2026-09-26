@@ -14,7 +14,7 @@ call for that policy layer.
 from collections.abc import Mapping, Sequence
 from datetime import date
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from blossom.agent.steps import StepRecord, describe_outcome
 from blossom.assignment_status import HistoryRow
@@ -23,9 +23,52 @@ from blossom.drafts import Decision, DraftStatus
 from blossom.hand_in import HandInProjection
 from blossom.intake import spoken_report
 from blossom.reconciliation import CHANNEL_NAMES, SourceConfidence
+from blossom.school_instructions import InstructionsStanding
 from blossom.stores.drafts import DraftRecord, RunRecord
 from blossom.stores.help_requests import HelpState
-from blossom.stores.project_state import AssignmentKind, NoteBy, StatusReport
+from blossom.stores.project_state import Assignment, AssignmentKind, NoteBy, StatusReport
+
+
+class SchoolWordsView(BaseModel):
+    """What the school said about one assignment and what anyone of the family wrote on it,
+    kept apart, as every page that lists the assignment shows them.
+
+    ``current`` are the school's instructions that apply, in the one order;
+    ``earlier`` those said before, and ``awaiting`` those waiting for a
+    parent's review, in the order kept; ``unreadable`` says they cannot be
+    read, and then none is shown. ``note`` is her note or a parent's, with
+    ``note_by``; a school note left in the old note field is shown apart, as
+    not yet reviewed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    current: list[str] = []
+    earlier: list[str] = []
+    awaiting: list[str] = []
+    unreadable: bool = False
+    note: str | None = None
+    note_by: NoteBy | None = None
+
+    @property
+    def any_instruction(self) -> bool:
+        """Whether there is anything of the school's to say, that none can be read included."""
+        return bool(self.current or self.earlier or self.awaiting or self.unreadable)
+
+
+def school_words(
+    item: Assignment, standing: InstructionsStanding | None, unreadable: bool
+) -> SchoolWordsView:
+    """The school's words and anyone's note on one assignment, from one reading."""
+    shown = None if unreadable else standing
+    return SchoolWordsView(
+        current=[] if shown is None else list(shown.texts),
+        earlier=[] if shown is None else [row.text for row in shown.history],
+        awaiting=[] if shown is None else [row.text for row in shown.awaiting],
+        unreadable=unreadable,
+        note=item.note or None,
+        note_by=item.note_by if item.note else None,
+    )
 
 
 class SchoolStatementView(BaseModel):
@@ -232,9 +275,12 @@ class StudentAssignmentView(BaseModel):
     """Whether a school channel is among those; only then is the contradiction a banner."""
     assigned_on: date | None = None
     note: str | None = None
-    """What the teacher wrote under the card, as the portal shows it, or what a parent
-    typed, or what she wrote on work she added; ``note_by`` says whose words it is."""
+    """What a parent typed, or what she wrote on work she added; ``note_by`` says whose
+    words it is. The school's instructions are in ``words``, which also shows a school note
+    still left here apart, as not yet reviewed."""
     note_by: NoteBy | None = None
+    words: SchoolWordsView = Field(default_factory=SchoolWordsView)
+    """The school's instructions, those that apply and the rest, and the note, apart."""
     entered_by_a_parent: bool = False
     """Whether the assignment itself came from a parent's entry rather than the school."""
     school_statements: list[SchoolStatementView] = []
@@ -305,6 +351,9 @@ class AssignmentUpdateView(BaseModel):
     check_head_id: str | None = None
     """The last check event under the assignment, carried by the form so a check lands on
     the record the page showed; ``None`` when there is none."""
+    words: SchoolWordsView = Field(default_factory=SchoolWordsView)
+    """The school's instructions for it and anyone's note on it, apart, as her pages show
+    them."""
     checked: bool = False
     """Whether a check stands against the facts as they are."""
     checked_on: date | None = None

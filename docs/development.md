@@ -147,8 +147,12 @@ Three files under `.local/` outlive a restart:
   Missing, a chain of events per assignment in a table of its own. A third
   table, `hand_in_events`, holds what she says about turning work in, from
   an assignment's details: a chain of events per assignment, read by her
-  pages and the family page and by nothing that plans. A file from before
-  any of them gains the tables on the first start.
+  pages and the family page and by nothing that plans. A fourth,
+  `school_instructions`, holds the school's instructions for each
+  assignment, apart from anyone's note: each one's words once, where it was
+  first read, who pasted it, and whether it applies now, was said before,
+  or waits for a parent's review. A file from before any of them gains the
+  tables on the first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   A draft is its text and, in a nullable `plan_snapshot` column, the plan as
@@ -302,6 +306,31 @@ server either: the origin check compares the scheme and address the server
 itself was reached by, and a proxy that ended TLS ahead of it would make
 every form read as from elsewhere.
 
+### Upgrading and rolling back
+
+An upgrade can move data the older version does not read, as the one that
+kept the school's instructions apart from the note field did: it moved every
+school note whole, however long. Before upgrading:
+
+1. Stop Blossom.
+2. With it stopped, check that no `blossom.sqlite3-journal` file sits beside
+   the database; if one does, start and stop the current version once so it
+   finishes what it was doing.
+3. Copy `blossom.sqlite3` to a dated name in the same folder, such as
+   `blossom-2026-09-23.sqlite3`, or make the copy with SQLite's own
+   `.backup` command. Keep the copy until the new version has been trusted
+   for a while.
+
+To roll back, stop the new version, set its `blossom.sqlite3` aside under
+another name, copy the dated file back to `blossom.sqlite3`, and start the
+older version. Anything saved after the upgrade is not in that copy.
+
+Running the older version on the upgraded file is not a rollback. It cannot
+see the moved instructions: assignments show no school instruction, and
+nothing tells the planner about them. A school note it saves is found by the
+next start of the newer version and, beside instructions already kept, waits
+for a parent's review.
+
 ## Adding assignments
 
 The family page has a fold, "Add assignments", with the two ways in. The
@@ -326,7 +355,7 @@ what saving would do. New work is saved as new. A date that differs from the
 saved one is shown beside it, "Saved due date" and "Pasted due date", and is
 saved as evidence beside the saved date, which stays, so her page can say
 the sources disagree. A record with no due date takes the pasted one; an
-assigned date or a note the record lacks is filled in. Work that comes round
+assigned date the record lacks is filled in. Work that comes round
 again under the same name, a weekly practice named again a week or more
 from the saved date, or twice in one text a week or more apart, is not
 merged in silence: the card asks whether it is the same assignment with its
@@ -348,8 +377,8 @@ included, and says whether the question is one it put or one the record
 raised since. The card shown for
 an assignment decides its type: a change made on it, a change back to what
 the reader suggested included, stands over any choice a folded card carried. Several cards about one saved assignment in one text compose: the
-date one moves, the note another adds, and the assigned date a third fills
-all reach the one row, every date observation with them, and the count on
+date one moves, the instruction another brings, and the assigned date a
+third fills all reach the one row, every date observation with them, and the count on
 return says how many assignments changed, not how many cards. The Save
 button counts a question waiting for an answer as a save. "Save N assignments" writes all of it
 in one step and returns to the family page with what was added, updated, and
@@ -364,14 +393,67 @@ like a day or a card that does not read as one, ``(Due:TBD)`` for instance,
 is listed there and never taken for a teacher's words, and it ends the card
 before it.
 
-The teacher's instruction under a card is kept with the assignment, line
-breaks and all, and shown on her card as "From the teacher"; a note typed by
-a parent shows as "A parent wrote", and the planner is told whose words a
-note is. The record keeps where each fact came
-from, the row itself, its note, its due and assigned dates, and its type, so
-her page can say "Entered by a parent" and the review page can say whose
-note stands: a parent's note replaces any saved note and is never replaced
-by the school's, and the school's note replaces the school's own.
+The teacher's instruction under a card is the school's, kept apart from
+anyone's note, line breaks and all, once for its assignment however many
+cards or pastes bring it: the same words under an Assigned card and a Due
+card are one instruction, and a card's day says where it was read, never
+that it is newer. The first instruction an assignment gets applies. A paste
+that brings a different one, or several at once, asks on the card which of
+the school's instructions apply now, listing the saved ones and the new, each
+with where it was read; nothing is ticked in advance, and "No school
+instruction applies now" is its own answer. Nothing of the text is saved
+until every such question is answered, and whatever is not chosen is kept as
+history, so nothing the school said is lost. Saved with such a question left
+unanswered, the page puts the focus on a summary that names it, and keeps
+every answer given on the other cards. All the cards about one
+assignment in one text are one question, asked once, on the first card of the
+text that lands on it. A choice made on a page the instructions have changed
+under since, from another tab or a retry, is refused whole, with the choice
+that was not saved said in words beside the instructions as they stand now and
+nothing ticked, so it is never carried onto facts it was not made against; a
+choice that already stands saves nothing more. The answers on every card of
+one assignment, one that ticks nothing among them, are each checked the same
+way before any is taken with another, and answers that ask for different
+things choose nothing and are said back as not saved. A form the page did not
+write, a field sent twice among them, or an answer to a question the page did
+not put, is refused whole, and what it chose that can be read is said back as
+the parent's unsaved choice on its card, with nothing ticked, even when the
+text puts no question there now; the card then offers "Review school
+instructions". The page signs the answers to which homework each card is that
+it was made with, and each question it asked about the school's instructions
+with the revision and assignment it showed, so a save knows which questions it
+really asked. A form without that signature, or one from before a restart, is
+read as a page made before those answers that asked nothing. The instructions'
+words travel in the form encoded, so a browser's line endings never change
+them; an instruction longer than any paste, kept from before, travels by its
+row, in a choice shown as not saved too, even while its card waits on which
+homework it is.
+
+Her card, the assignment's details, the lists of work due later, and the
+family page's rows show the instructions that apply as "From the school", in
+the order of their words, which means nothing else, with any said before, or
+waiting for review, in a fold beneath. The page says these are the school's
+words, and that which of them apply is the family's choice, which changes
+neither the school's record nor her own updates. The family's reading of the
+details, and the family page's rows, offer "Review school instructions",
+where a parent, or the household with the sign-in off, can restore an earlier
+instruction, retire one, settle one waiting for review, or say none applies;
+opening it writes nothing, and it saves by the same rule as the paste. A save
+returns to the page with what it did, said as standing only while nothing has
+changed since, and signed by the running Blossom, so an address worked out by
+hand, or one from before a restart, says nothing; a save that none applies
+says so in its own words. A save the file refuses is tried once, never again, and the
+answer that was not saved is shown, from the record read once more or, when
+that fails too, from a page that reads nothing, which says a choice made by
+reference to a row was selected by reference and that its text could not be
+read. She reads the instructions
+and never the control. A note typed by a parent shows as "A parent wrote",
+and the planner is told whose words a note is, and the school's instructions
+that apply as the teacher's; a school note left in the old note field, which
+no one chose, is shown apart as not yet reviewed and never reaches a plan.
+The record keeps where each fact came from, the row itself, its note, its due
+and assigned dates, and its type, so her page can say "Entered by a parent";
+a parent's typed note fills the note or replaces the saved one.
 
 A "Missing" line in the school's email is kept as what the school reported,
 with the day: the email's own date when the paste carries its date line, a
@@ -411,7 +493,8 @@ assignment's.
 
 A plan is made from the week as it stands. When work is saved into a waiting
 plan's window, or a date, a type, a note, a status the school reports, or
-what a source says about a date changes there, both pages say so, "Assignments changed after this plan was
+what a source says about a date, or which of the school's instructions
+apply, changes there, both pages say so, "Assignments changed after this plan was
 made", and the plan is not approved as it stands; plan again. Saving what is
 on record already, or work due well past the plan's week, changes nothing
 the plan was made from, and a plan a parent has decided is history, measured
@@ -423,7 +506,14 @@ version between made on the claims, which held each claim once, is dropped
 so that every observation is kept, and status reports the file holds twice
 for one channel, status, and day are folded to the first before the index
 that keeps them once is made. No assignment and no claim is dropped or
-rewritten.
+rewritten. A school note in the old note field, from a file written before
+the school's instructions were kept apart, is moved into them once, in the
+same transaction: each is kept, checked to be kept exactly once, and only
+then cleared from the field with its mark; her notes and a parent's stay
+where they are. A school note found in the old field later, beside
+instructions already kept, waits for a parent's review, and the family page
+says so with a link to the review. The steps in "Upgrading and rolling back"
+come first.
 
 ## The sample week
 

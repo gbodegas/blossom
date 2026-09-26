@@ -98,6 +98,11 @@ from blossom.stores.captures import (
     with_details,
 )
 from blossom.stores.paths import refuse_unsafe_path
+from blossom.stores.school_instructions import (
+    AUTHORED_MARKS,
+    SchoolInstructionRecords,
+    school_note,
+)
 
 DUE_THIS_WEEK_KEY = "due_this_week"
 logger = logging.getLogger(__name__)
@@ -287,9 +292,9 @@ class Assignment(BaseModel):
     assigned_on: date | None = None
     kind: AssignmentKind = AssignmentKind.HOMEWORK
     note: str | None = None
-    """What the teacher wrote under the card, as the portal shows it, or what a parent
-    typed with the assignment: an instruction about the work, kept with the assignment
-    because it is part of it. ``origins`` says which."""
+    """What a parent typed with the assignment, or what she wrote on work she added;
+    ``origins`` says which. The school's instructions are kept in their own table, and a
+    school note still here is one not yet moved there."""
     origins: dict[str, SourceChannel] = {}
     """Where each of the row's facts came from, by field: ``record`` for the row
     itself, then ``note``, ``kind``, ``due_date``, and ``assigned_on`` when a channel
@@ -605,7 +610,7 @@ class Reopened:
     check: FamilyCheck
 
 
-class ProjectStateStore(CaptureRecords):
+class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
     """SQLite-backed project state, opened once and shared across worker threads.
 
     The connection is created at application startup rather than per request,
@@ -751,6 +756,12 @@ class ProjectStateStore(CaptureRecords):
         with self._writing():
             self._upgrade_date_claims()
         self._upgrade()
+        # The school's instructions, kept apart from anyone's own note: the table, and the
+        # move of every school note out of the old note field, together or not at all.
+        # After ``_upgrade``, which gives a file from before the field the move reads.
+        with self._writing():
+            self._create_instruction_table()
+            self._carry_school_notes()
 
     def _upgrade_date_claims(self) -> None:
         """Give the claims table the note a claim came from, the note's revision, whether
@@ -907,7 +918,7 @@ class ProjectStateStore(CaptureRecords):
                 store._create_tables()
                 if seed is not None:
                     given = seed()
-                    store._upsert_assignments_locked(given.assignments)
+                    store._upsert_assignments_locked(given.assignments, initial=True)
                     for assignment_id, records in given.claims.items():
                         store._record_claims_locked(assignment_id, records)
                     for report in given.student_reports:
@@ -1891,11 +1902,41 @@ class ProjectStateStore(CaptureRecords):
             ).fetchall()
         return {str(row[0]): report_from(row[1:]) for row in rows}
 
-    def _upsert_assignments_locked(self, assignments: Iterable[Assignment]) -> None:
+    def _upsert_assignments_locked(
+        self, assignments: Iterable[Assignment], *, initial: bool = False
+    ) -> None:
         """Write each row, over the row with its id when there is one. A note or origins
         the new row lacks leave the saved ones standing: a row written without them, a
-        set read from a file among them, never erases what a parent or a paste put there."""
-        for assignment in assignments:
+        set read from a file among them, never erases what a parent or a paste put there.
+
+        A school note, by the ``note_by`` rule, is never written to the note field. It
+        is kept as the school's instruction, by the store's rule, which refuses the
+        whole write when a new text needs a choice, or by the startup rule when a blank
+        file is seeded (``initial``). The row keeps whatever note of hers or a parent's
+        it had, with its mark.
+        """
+        for given in assignments:
+            assignment = given
+            instruction: tuple[str, object] | None = None
+            if school_note(given.note, given.origins):
+                origins = dict(given.origins)
+                mark = origins.pop("note", None)
+                instruction = (cast(str, given.note), mark)
+                saved = self._connection.execute(
+                    "SELECT note, origins FROM assignments WHERE assignment_id = ?",
+                    (given.assignment_id,),
+                ).fetchone()
+                if saved is not None and saved[0] is not None and saved[1] is not None:
+                    try:
+                        held = json.loads(str(saved[1]))
+                    except ValueError:
+                        held = {}
+                    held_mark = held.get("note") if isinstance(held, dict) else None
+                    # A mark that is not text is read as none, as origins that cannot be
+                    # read are.
+                    if type(held_mark) is str and held_mark in AUTHORED_MARKS:
+                        origins["note"] = SourceChannel(held_mark)
+                assignment = given.model_copy(update={"note": None, "origins": origins})
             self._connection.execute(
                 """
                 INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1927,6 +1968,10 @@ class ProjectStateStore(CaptureRecords):
                     else None,
                 ),
             )
+            if instruction is not None:
+                self._keep_note_as_instruction_locked(
+                    given.assignment_id, instruction[0], instruction[1], initial=initial
+                )
 
     def is_empty(self) -> bool:
         """Whether nothing is on record yet: no assignment, and no claim about one."""

@@ -27,6 +27,7 @@ from blossom.routes.navigation import (
     todays_plan_href,
     week_href,
 )
+from blossom.school_instructions import to_wire, travels_in_words
 from blossom.settings import STATIC_PATH, TEMPLATE_PATH
 
 ASSETS = ("blossom.css", "blossom.js")
@@ -66,13 +67,16 @@ def page_templates() -> Jinja2Templates:
     ``week_href`` for her week with one card in view,
     ``result_anchor`` and ``hand_in_result_anchor`` for the places a save's redirect lands
     on, so a page and the address sent to it name a place the same way, ``todays_plan_id``
-    and ``todays_plan_href`` for the place on her week that holds today's plan, and
-    ``asset_tag`` for the files a page links."""
+    and ``todays_plan_href`` for the place on her week that holds today's plan,
+    ``asset_tag`` for the files a page links, ``wire`` for an instruction's words as a
+    form carries them, and the test ``in_words`` for words a form carries as they are."""
     templates = Jinja2Templates(directory=TEMPLATE_PATH)
     templates.env.filters["clock"] = spoken_time
     templates.env.filters["ended"] = ended
     templates.env.filters["long_date"] = long_date
     templates.env.filters["present"] = present_plan
+    templates.env.filters["wire"] = to_wire
+    templates.env.tests["in_words"] = travels_in_words
     templates.env.globals["asset_tag"] = asset_tag()
     templates.env.globals["assignment_anchor"] = assignment_anchor
     templates.env.globals["details_href"] = details_href

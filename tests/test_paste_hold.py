@@ -36,49 +36,13 @@ from tests.support import (
     Answer,
     browser,
     fixture_clock,
+    homework_from_a_note,
     practice_store,
     state_of,
 )
 
 AT = datetime(2026, 9, 14, 21, 0, tzinfo=UTC)
 MONDAY = date(2026, 9, 14)
-
-
-def homework_from_a_note(
-    store: ProjectStateStore,
-    *,
-    by: str = STUDENT,
-    channel: SourceChannel = SourceChannel.STUDENT_REPORT,
-    course: str = "Geometry",
-    title: str = "Questions 4-8",
-) -> str:
-    name = new_capture_id()
-    made = store.create_capture(
-        name,
-        "Geometry questions 4-8, heard from a classmate",
-        None,
-        None,
-        authored_by=STUDENT,
-        channel=SourceChannel.STUDENT_REPORT,
-        now=AT,
-        today=MONDAY,
-    )
-    assert isinstance(made, CaptureCreated)
-    given = CaptureDetails(course=course, title=title, kind="HOMEWORK")
-    done = store.promote_capture(
-        name,
-        given,
-        expected_revision=1,
-        basis=candidate_basis(candidate_readings(store, given)),
-        candidates=reader(store),
-        choice="new",
-        authored_by=by,  # type: ignore[arg-type]
-        channel=channel,
-        now=AT,
-        today=MONDAY,
-    )
-    assert isinstance(done, CapturePromoted)
-    return done.assignment_id
 
 
 def entry(course: str, title: str, due: date | None = None) -> Reading:

@@ -1,0 +1,53 @@
+{#
+  The school's instructions for one assignment and anyone's own note on it,
+  apart, one part for every page that lists the assignment: her card, its
+  details, the rows of work due later, and the family's rows. ``words`` is
+  the assignment's words view; ``to_a_parent`` says whose voice the page
+  speaks in; ``review_href`` is the family's review, given only on the
+  family's own reading, and offered while the instructions can be read.
+
+  Those that apply are said as the school's, in the one order; those said
+  before and any waiting for review are folded in a native disclosure; that
+  they cannot be read is said, never that none is kept. Which apply is the
+  family's choice, and the page says so. A school note left in the old note
+  field is said apart, as not yet reviewed, and never as one that applies.
+#}
+{% if words.any_instruction %}
+  <div class="school-instructions">
+    {% for text in words.current %}
+      <p class="from-teacher">From the school: <q class="authored-text">{{ text }}</q></p>
+    {% endfor %}
+    {% if words.unreadable %}
+      <p class="source">The school's instructions for this assignment cannot be read right now, so they are not shown.</p>
+    {% elif not words.current %}
+      <p class="source">No instruction from the school applies now.</p>
+    {% endif %}
+    {% if words.earlier or words.awaiting %}
+      <details class="earlier-instructions">
+        <summary>{% if words.awaiting %}Instructions from the school waiting for review, and earlier ones{% else %}Earlier instructions from the school{% endif %}</summary>
+        <ul>
+          {% for text in words.awaiting %}
+            <li><q class="authored-text">{{ text }}</q> <span class="source">Waiting for a parent's review; it does not apply until then.</span></li>
+          {% endfor %}
+          {% for text in words.earlier %}
+            <li><q class="authored-text">{{ text }}</q> <span class="source">Earlier; does not apply now.</span></li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+    <p class="source">These are the school's words. Which of them apply is chosen by the family; the choice changes neither the school's record nor {% if to_a_parent %}her{% else %}your{% endif %} own updates.</p>
+    {% if review_href and not words.unreadable %}
+      <p class="support-links"><a href="{{ review_href }}">Review school instructions</a></p>
+    {% endif %}
+  </div>
+{% endif %}
+{% if words.note %}
+  {# Whose words the note is, said to whoever reads it. Hers are hers: never the teacher's. #}
+  {% if words.note_by == "parent" %}
+    <p class="from-teacher">A parent wrote: <q>{{ words.note }}</q></p>
+  {% elif words.note_by == "student" %}
+    <p class="from-teacher">{% if to_a_parent %}She wrote{% else %}You wrote{% endif %}: <q>{{ words.note }}</q></p>
+  {% else %}
+    <p class="from-teacher">Found in the old note field, not yet reviewed: <q class="authored-text">{{ words.note }}</q> <span class="source">It is the school's, and it does not apply until a parent reviews it.</span></p>
+  {% endif %}
+{% endif %}

@@ -36,6 +36,9 @@ TO_TURN_IN: Final = "to-turn-in"
 RETURN_FIELDS: Final = frozenset({"return_to", "week", "plan_id"})
 """The three fields that say where a reader came from, on a link and on a form alike."""
 PLAN_ID_MAX_LENGTH: Final = 200
+INSTRUCTIONS_REVIEW: Final = "/parent/school-instructions"
+"""The family's review of which of the school's instructions for one assignment apply."""
+INSTRUCTIONS_ACTION: Final = "/parent/actions/school-instructions"
 """Longer than any draft id the graph makes; a longer one is not looked up."""
 
 
@@ -76,6 +79,18 @@ def address(path: str, fragment: str = "", **query: str | None) -> str:
     given = {name: value for name, value in query.items() if value}
     made = URL(path).include_query_params(**given) if given else URL(path)
     return str(made.replace(fragment=fragment) if fragment else made)
+
+
+def instructions_review_href(assignment_id: str, *, result: str | None = None) -> str:
+    """The address of the review of one assignment's school instructions; with ``result``,
+    what a save just did, landing on the words that say it."""
+    made = f"{INSTRUCTIONS_REVIEW}/{segment(assignment_id)}"
+    return made if not result else address(made, fragment="result", result=result)
+
+
+def instructions_action_href(assignment_id: str) -> str:
+    """The address that review's form is sent to."""
+    return f"{INSTRUCTIONS_ACTION}/{segment(assignment_id)}"
 
 
 def details_href(assignment_id: str, *, fragment: str = "", **context: str | None) -> str:

@@ -1460,15 +1460,29 @@ main.wide {
 /* The choices on a note's details: the same homework or a separate assignment, and the
    tick that leaves a due date out. The control keeps its size beside a label that wraps. */
 .homework-note .choice input[type="radio"],
-.homework-note .choice input[type="checkbox"] {
+.homework-note .choice input[type="checkbox"],
+.choice.instructions input[type="checkbox"] {
   flex: 0 0 auto;
   width: 1.25rem;
   height: 1.25rem;
   margin: 0;
 }
 
-.homework-note .choice label span {
+.homework-note .choice label span,
+.choice.instructions label > span {
   min-width: 0;
+}
+
+/* The school's words in a choice read as text, not as the label's heading; how each
+   stands follows in the softer line the pages use for where a fact came from. */
+.choice.instructions label q,
+.choice.instructions label .source {
+  font-family: var(--font-body);
+  font-weight: 400;
+}
+
+.choice.instructions label q {
+  color: var(--text);
 }
 
 /* What she and the school currently say about a candidate, under its choice and in line

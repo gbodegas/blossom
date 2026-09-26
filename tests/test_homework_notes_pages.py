@@ -179,7 +179,8 @@ def test_a_page_costs_the_same_statements_however_many_notes_and_requests_there_
             costs.append(len(statements(state.project_state, client, where)))
 
     assert costs[0] == costs[1] == costs[2]
-    assert costs[0] <= 10
+    # One of them is the one read of the school's instructions, however many there are.
+    assert costs[0] <= 11
 
 
 # -------------------------------------------------------------- the family page
