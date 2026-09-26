@@ -1163,6 +1163,36 @@ def test_a_form_that_cannot_be_read_then_a_reading_that_fails_says_back_the_same
     assert '<a href="#not-saved">' in refused.text
 
 
+@pytest.mark.parametrize("refusal", ["nothing-chosen", "form-unreadable", "write-refused"])
+def test_a_failure_that_is_not_the_files_is_raised_not_shown_as_a_refusal(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    """A refused save whose page breaks for a reason other than the file raises that error."""
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        marked_up_earlier(store)
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        fields = {
+            "nothing-chosen": list(the_form(page).items()),
+            "form-unreadable": damaged(the_form(page, MARKED_UP), "a-padded-revision"),
+            "write-refused": list(the_form(page, MARKED_UP).items()),
+        }[refusal]
+
+        def break_the_page(*_: object, **__: object) -> None:
+            msg = "a defect in the page"
+            raise LookupError(msg)
+
+        def refuse_the_write(*_: object, **__: object) -> None:
+            msg = "the disk refused"
+            raise sqlite3.OperationalError(msg)
+
+        if refusal == "write-refused":
+            monkeypatch.setattr(store, "settle_school_instructions", refuse_the_write)
+        monkeypatch.setattr(store, "one_assignment", break_the_page)
+        with pytest.raises(LookupError, match="a defect in the page"):
+            post_as_sent(client, fields)
+
+
 # ------------------------------------------------------------------ a note longer than a paste
 
 LONG_NOTE = "Read every chapter, then answer each question in full. " * 730

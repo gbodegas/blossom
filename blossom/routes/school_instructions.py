@@ -405,8 +405,9 @@ def page_or_plain(
     carried: CarriedAccount | None = None,
     failed: bool = False,
 ) -> HTMLResponse:
-    """The page with a refusal said first, read once; when the record cannot be read back,
-    the plain page that reads no store and keeps the answer as it was sent."""
+    """The page with a refusal said first, read once; when the file refuses the reading, the
+    plain page that reads no store and keeps the answer as it was sent. Any other error is
+    raised, so a defect isn't shown as the file's refusal."""
     try:
         return review_page(
             request,
@@ -419,7 +420,7 @@ def page_or_plain(
             status_code=status_code,
             failed=failed,
         )
-    except Exception:
+    except sqlite3.Error:
         logger.exception("the review of school instructions could not be read back")
         return plain_page(
             request, assignment_id, account_of(submitted, unsaved), problem, status_code, carried
