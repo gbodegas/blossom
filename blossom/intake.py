@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
-from blossom.candidates import CandidateReading, readings_for
+from blossom.candidates import readings_for
 from blossom.captures import Author, Capture, candidate_basis
 from blossom.pairing import pair as pair  # the one rule, kept where both askers share it
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel, SourceRecord
@@ -1197,9 +1197,11 @@ def _where(
 def _report_of(reading: Reading) -> dict[str, str | None] | None:
     """The report an undated reading carries, as a placement keeps it: evidence of which
     report was placed, never a key for another."""
-    if not reading.reports:
-        return None
-    report = reading.reports[-1]
+    return _placement(reading.reports[-1]) if reading.reports else None
+
+
+def _placement(report: StatusReport) -> dict[str, str | None]:
+    """One report as a placement keeps it: its channel, status, day, and source date line."""
     return {
         "channel": report.channel.value,
         "status": report.status,
@@ -1233,19 +1235,28 @@ def _stands(
 
 
 def identity_basis(
-    shown_as: Mapping[str, CandidateReading],
     candidates: Sequence[Assignment],
     decided: tuple[IntakeDecision, ...],
+    mine: Collection[str],
 ) -> str:
-    """The fingerprint of an identity question: every candidate as a row of homework shows
-    it (``shown_as``), with its note and who wrote it, and every answer kept for the name.
-    A choice sent
-    back is checked against it in the save's transaction, so an answer about homework that
-    has since arrived, left, changed, or been answered elsewhere is put again."""
-    shown = candidate_basis([shown_as[item.assignment_id] for item in candidates])
-    notes = sorted([item.assignment_id, item.note, item.note_by] for item in candidates)
+    """The fingerprint of an identity question: each candidate as the question shows it, by
+    its id, title, due date, where it came from, and her note where it's quoted, and every
+    answer kept for the name. A choice sent back is checked against it in the save's
+    transaction. The question is asked again when homework has since arrived, left,
+    changed in what the question shows, or been answered elsewhere, and not for a change
+    it doesn't show."""
+    shown = sorted(
+        [
+            item.assignment_id,
+            item.title,
+            None if item.due_date is None else item.due_date.isoformat(),
+            "hers" if item.assignment_id in mine else item.origins.get("record"),
+            item.note if item.assignment_id in mine and item.note_by == "student" else None,
+        ]
+        for item in candidates
+    )
     answered = [item.sequence for item in decided]
-    serialized = json.dumps([shown, notes, answered], separators=(",", ":"))
+    serialized = json.dumps([shown, answered], separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
@@ -1329,10 +1340,11 @@ class NotAsked:
 
 class _Seen:
     """What is already accounted for while one text is compared: the claims and reports on
-    record for each row, and those earlier readings of the same text add to it."""
+    record for each row, from the comparison's one reading of them, and those earlier
+    readings of the same text add to it."""
 
-    def __init__(self, store: ProjectStateStore) -> None:
-        self._store = store
+    def __init__(self, saved: "_OnRecord") -> None:
+        self._saved = saved
         self._claims: dict[str, list[SourceRecord]] = {}
         self._reports: dict[str, list[StatusReport]] = {}
 
@@ -1341,9 +1353,7 @@ class _Seen:
     ) -> tuple[SourceRecord, ...]:
         """The claims not yet accounted for under a row, now accounted for."""
         if assignment_id not in self._claims:
-            self._claims[assignment_id] = (
-                list(self._store.deadline_records(assignment_id)) if saved else []
-            )
+            self._claims[assignment_id] = list(self._saved.claims(assignment_id)) if saved else []
         kept = self._claims[assignment_id]
         fresh = []
         for record in claims:
@@ -1357,9 +1367,7 @@ class _Seen:
     ) -> tuple[StatusReport, ...]:
         """The reports not yet accounted for under a row, now accounted for."""
         if assignment_id not in self._reports:
-            self._reports[assignment_id] = (
-                list(self._store.status_reports(assignment_id)) if saved else []
-            )
+            self._reports[assignment_id] = list(self._saved.reports(assignment_id)) if saved else []
         kept = self._reports[assignment_id]
         fresh = []
         for report in reports:
@@ -1371,14 +1379,23 @@ class _Seen:
 
 class _OnRecord:
     """What the rows a text could land on keep already: their claims, the school's reports,
-    the texts of the school's instructions, and each row as a candidate shows it. Each is
-    read for every such row at once, the first time a comparison asks, so a text of any
-    length costs the same few reads."""
+    the reports an answer placed there, and the texts of the school's instructions, read
+    for every such row at once the first time a comparison asks, so a text of any length
+    costs the same few reads."""
 
-    def __init__(self, store: ProjectStateStore, rows: Sequence[Assignment]) -> None:
+    def __init__(
+        self,
+        store: ProjectStateStore,
+        rows: Sequence[Assignment],
+        decided: Mapping[tuple[str, str], tuple[IntakeDecision, ...]],
+    ) -> None:
         self._store = store
-        self._rows = list(rows)
-        self._names = [row.assignment_id for row in self._rows]
+        self._names = [row.assignment_id for row in rows]
+        self._placed: dict[str, list[Mapping[str, str | None]]] = {}
+        for answers in decided.values():
+            for item in answers:
+                if item.kind == "report_placed" and item.report is not None:
+                    self._placed.setdefault(item.lands_on, []).append(item.report)
 
     @functools.cached_property
     def _kept(
@@ -1396,15 +1413,16 @@ class _OnRecord:
     def reports(self, assignment_id: str) -> list[StatusReport]:
         return self._kept[1].get(assignment_id, [])
 
+    def placed(self, assignment_id: str) -> list[Mapping[str, str | None]]:
+        """The reports an answer placed on a row, as the answer keeps them: a second line
+        of one day that the school's reports count as the first is still placed there."""
+        return self._placed.get(assignment_id, [])
+
     def texts(self, assignment_id: str) -> set[str]:
         """The school's instructions kept under a row, by text; none where they can't be
         read, so nothing is taken as saved there."""
         standing = self._kept[2].readable.get(assignment_id)
         return set() if standing is None else {item.text for item in standing.kept}
-
-    @functools.cached_property
-    def shown(self) -> dict[str, CandidateReading]:
-        return {item.assignment_id: item for item in readings_for(self._store, self._rows)}
 
 
 def changes_for(
@@ -1462,12 +1480,13 @@ def changes_for(
     apart = store.kept_apart()
     decided = store.intake_decisions(reading.pair for reading in items)
     names = dict.fromkeys(reading.pair for reading in items)
-    saved = _OnRecord(store, [item for name in names for item in on_record.get(name, [])])
+    saved = _OnRecord(store, [item for name in names for item in on_record.get(name, [])], decided)
 
-    def writes_nothing(item: Assignment, reading: Reading) -> bool:
+    def writes_nothing(item: Assignment, reading: Reading, kind: AssignmentKind | None) -> bool:
         """Whether landing a reading on a row on record would write nothing: every claim,
         report, and school instruction it brings is kept there already, and nothing typed
-        with it differs from the row: its note, its type, or an assigned date the row lacks."""
+        with it differs from the row: its note, the type the card asks for (``kind``), or an
+        assigned date the row lacks. A report an answer placed there counts as saved."""
         name = item.assignment_id
         return (
             all(
@@ -1476,6 +1495,7 @@ def changes_for(
             )
             and all(
                 any(_same_report_as_written(one, other) for other in saved.reports(name))
+                or _placement(one) in saved.placed(name)
                 for one in reading.reports
             )
             and (
@@ -1483,16 +1503,16 @@ def changes_for(
                 or {seen.text for seen in reading.instructions} <= saved.texts(name)
             )
             and _note_change(item, reading) is None
-            and not (reading.kind_chosen and reading.kind != item.kind)
+            and kind in (None, item.kind)
             and not (reading.assigned_on is not None and item.assigned_on is None)
         )
 
-    def holds(item: Assignment, reading: Reading) -> bool:
+    def holds(item: Assignment, reading: Reading, kind: AssignmentKind | None) -> bool:
         """Whether a row on record holds everything a reading brings: the same text, saved
         there before, which moves nothing when saved again."""
-        return bool(reading.claims or reading.reports) and writes_nothing(item, reading)
+        return bool(reading.claims or reading.reports) and writes_nothing(item, reading, kind)
 
-    seen = _Seen(store)
+    seen = _Seen(saved)
     anchors: dict[tuple[str, str], int] = {}
     """The place in ``changes`` of the first new reading under each name in this text."""
     pending: dict[str, Assignment] = {}
@@ -1501,22 +1521,28 @@ def changes_for(
     for key, reading in enumerate(items):
         answer = occurrences.get(key)
         known = decided.get(reading.pair, ())
-        where = _where(reading, on_record.get(reading.pair, []), mine, known, holds, apart)
+        kind = kinds.get(key, reading.kind if reading.kind_chosen else None)
+        where = _where(
+            reading,
+            on_record.get(reading.pair, []),
+            mine,
+            known,
+            functools.partial(holds, kind=kind),
+            apart,
+        )
         reply = identities.get(key)
         decision: DecisionToKeep | None = None
         stale = False
         if reply is not None or where.asks is not None:
             shown = tuple(item.assignment_id for item in where.candidates)
-            basis = (
-                "" if where.asks is None else identity_basis(saved.shown, where.candidates, known)
-            )
+            basis = "" if where.asks is None else identity_basis(where.candidates, known, mine)
             standing = None if reply is None else _stands(reply, reading, known)
             # An answer kept already is a retry only when everything the card brings is
             # saved where it landed; anything new is judged by the question as it stands.
             if (
                 standing is not None
                 and standing.lands_on in by_id
-                and writes_nothing(by_id[standing.lands_on], reading)
+                and writes_nothing(by_id[standing.lands_on], reading, kind)
             ):
                 where = _Where(lands=by_id[standing.lands_on])
             elif reply is None:

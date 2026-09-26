@@ -562,6 +562,32 @@ def test_an_entry_with_no_dates_about_her_homework_asks_same_or_different(
     assert choices(shown.text, 0) == [mine, DIFFERENT]
 
 
+def test_a_type_changed_on_saved_text_asks_which_once_another_shares_the_date(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        first = read(client, GUIDE_CARD)
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
+        store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 9))], {})
+        page = read(client, GUIDE_CARD + chr(10) + lab_card("10/15/2026"))
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data={**review_form(page), "kind-0": "TASK"})
+        after = tables(client)
+        repeated = client.post("/parent/inbox/keep", data=review_form(read(client, GUIDE_CARD)))
+        row = store_of(client).one_assignment(mine)
+
+    assert question(page, 0) == ""
+    assert refused.status_code == 409
+    assert after == before
+    assert sorted(choices(refused.text, 0)) == sorted([mine, GUIDE_COPY, DIFFERENT])
+    assert repeated.status_code == 303
+    assert row is not None
+    assert row.kind is AssignmentKind.HOMEWORK
+
+
 def test_her_homework_kept_apart_when_her_note_was_added_is_not_asked_about_again(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -689,6 +715,55 @@ def test_a_second_missing_report_with_another_date_asks_which_again(
 
     assert question(repeated, 0) == ""
     assert sorted(choices(another, 0)) == sorted([early, late, DIFFERENT])
+
+
+SECOND_MISSING = LAB_MISSING.replace("09/30", "10/02")
+
+
+@pytest.mark.parametrize("placed", ["on-the-same-homework", "on-other-homework", "a-third-arrives"])
+def test_a_second_missing_line_placed_and_sent_again_writes_nothing_more(
+    tmp_path: pathlib.Path, placed: str
+) -> None:
+    with client_in(tmp_path) as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        first = read(client, LAB_MISSING)
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(early)}
+        )
+        text = SECOND_MISSING + "10/02 Math - A: Homework: Worksheet Grade: Missing\n"
+        page = read(client, text)
+        target = late if placed == "on-other-homework" else early
+        form = {**review_form(page), "identity-0": choice_value(target)}
+        if placed == "a-third-arrives":
+            third = copy_of_the_guide(date(2026, 10, 22)).model_copy(
+                update={
+                    "assignment_id": "assignment-lab-log-third",
+                    "course": "Science",
+                    "title": LAB_LOG,
+                }
+            )
+            store_of(client).put_on_record([third], {})
+        before = tables(client)
+        saved = client.post("/parent/inbox/keep", data=form)
+        after_saved = tables(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        after_again = tables(client)
+        fresh = read(client, SECOND_MISSING)
+        recorded = decisions(client)
+
+    assert sorted(choices(page, 0)) == sorted([early, late, DIFFERENT])
+    if placed == "a-third-arrives":
+        assert saved.status_code == 409
+        assert after_saved == before
+        return
+    assert saved.status_code == 303
+    assert again.status_code == 303
+    assert after_again == after_saved
+    assert question(fresh, 0) == ""
+    assert [(kind, lands_on) for kind, _, _, _, lands_on, _ in recorded] == [
+        ("report_placed", early),
+        ("report_placed", target),
+    ]
 
 
 def test_a_date_that_one_of_two_has_lands_there_without_a_question(tmp_path: pathlib.Path) -> None:
@@ -1010,6 +1085,52 @@ def test_the_identity_question_reads_the_same_few_statements_for_any_number_of_c
     assert counts[1] == counts[20] == counts[100]
 
 
+def test_resolved_cards_read_the_same_few_statements_for_any_number_of_cards(
+    tmp_path: pathlib.Path,
+) -> None:
+    counts: dict[int, int] = {}
+    for size in (1, 20, 100):
+        folder = tmp_path / str(size)
+        folder.mkdir()
+        with client_in(folder) as client:
+            store = store_of(client)
+            store.put_on_record(
+                [
+                    Assignment(
+                        assignment_id=f"assignment-lab-{number}",
+                        course="Science",
+                        title=f"Lab {number}",
+                        due_date=date(2026, 10, 1),
+                        dependencies=[],
+                        reported_submission_status="unknown",
+                        kind=AssignmentKind.HOMEWORK,
+                        origins={"record": SourceChannel.LMS},
+                    )
+                    for number in range(size)
+                ],
+                {},
+            )
+            cards = "".join(
+                "Homework for Wren\n- 09/28/2026 - Monday\n"
+                f"Science - Assigned: Lab {number}: (Due:10/01/2026)\nBring the log.\n"
+                for number in range(size)
+            )
+            now = store.instruction_moment()
+            items = read_text(cards, now=now[0], today=now[1]).items
+            statements: list[str] = []
+            store._connection.set_trace_callback(statements.append)
+            try:
+                changes = changes_for(items, store)
+            finally:
+                store._connection.set_trace_callback(None)
+        assert [change.assignment_id for change in changes] == [
+            f"assignment-lab-{number}" for number in range(size)
+        ]
+        counts[size] = sum(1 for sql in statements if sql.lstrip().upper().startswith("SELECT"))
+
+    assert counts[1] == counts[20] == counts[100]
+
+
 # ------------------------------------------------------------------ retries and stale forms
 
 
@@ -1182,6 +1303,85 @@ def test_her_notes_author_changed_after_the_question_showed_it_puts_the_question
     assert refused.status_code == 409
     assert after == before
     assert HER_NOTE not in html.unescape(question(refused.text, 0))
+
+
+@pytest.mark.parametrize(
+    "hidden", ["school-status", "a-parents-note-on-hers", "her-note-on-school-homework"]
+)
+def test_a_change_the_question_does_not_show_leaves_the_answer_standing(
+    tmp_path: pathlib.Path, hidden: str
+) -> None:
+    with client_in(tmp_path) as client:
+        store = store_of(client)
+        if hidden == "a-parents-note-on-hers":
+            mine = homework_from_a_note(
+                store,
+                by="parent",
+                channel=SourceChannel.PARENT_ENTRY,
+                course="Health",
+                title="Course Guide Due",
+                due_date=date(2026, 9, 9),
+                note="A parent's words.",
+            )
+        else:
+            mine = hers(client)
+        other = copy_of_the_guide(date(2026, 9, 30)).model_copy(
+            update={
+                "note": "Her words on it.",
+                "origins": {"record": SourceChannel.LMS, "note": SourceChannel.STUDENT_REPORT},
+            }
+        )
+        store.put_on_record([other], {})
+        page = read(client, GUIDE_CARD)
+        if hidden == "school-status":
+            change = ("reported_submission_status", "missing", mine)
+        elif hidden == "a-parents-note-on-hers":
+            change = ("note", "Newer parent words.", mine)
+        else:
+            change = ("note", "Her newer words on it.", GUIDE_COPY)
+        column, value, name = change
+        store._connection.execute(
+            f"UPDATE assignments SET {column} = ? WHERE assignment_id = ?",  # noqa: S608
+            (value, name),
+        )
+        store._connection.commit()
+        saved = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(mine)}
+        )
+
+    assert sorted(choices(page, 0)) == sorted([mine, GUIDE_COPY, DIFFERENT])
+    assert saved.status_code == 303
+
+
+@pytest.mark.parametrize("shown", ["title-spacing", "school-source"])
+def test_a_change_the_question_shows_on_other_homework_puts_it_again(
+    tmp_path: pathlib.Path, shown: str
+) -> None:
+    with client_in(tmp_path) as client:
+        store = store_of(client)
+        mine = hers(client)
+        store.put_on_record([copy_of_the_guide(date(2026, 9, 30))], {})
+        page = read(client, GUIDE_CARD)
+        if shown == "title-spacing":
+            store._connection.execute(
+                "UPDATE assignments SET title = ? WHERE assignment_id = ?",
+                ("Course Guide  Due", GUIDE_COPY),
+            )
+        else:
+            store._connection.execute(
+                "UPDATE assignments SET origins = json_set(origins, '$.record', ?) "
+                "WHERE assignment_id = ?",
+                (SourceChannel.EMAIL.value, GUIDE_COPY),
+            )
+        store._connection.commit()
+        before = tables(client)
+        refused = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(mine)}
+        )
+        after = tables(client)
+
+    assert refused.status_code == 409
+    assert after == before
 
 
 def test_a_review_page_signed_before_a_restart_is_read_as_one_that_asked_nothing(
