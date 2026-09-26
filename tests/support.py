@@ -47,6 +47,7 @@ from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.candidates import candidate_readings, reader
 from blossom.captures import (
     STUDENT,
+    CaptureChanged,
     CaptureCreated,
     CaptureDetails,
     CapturePromoted,
@@ -1022,9 +1023,13 @@ def homework_from_a_note(
     channel: SourceChannel = SourceChannel.STUDENT_REPORT,
     course: str = "Geometry",
     title: str = "Questions 4-8",
+    due_date: date | None = None,
+    note: str | None = None,
+    choice: str = "new",
 ) -> str:
-    """A homework note promoted to new homework under this course and title, as a
-    student or a parent does it; the new assignment's id."""
+    """A homework note promoted to new homework under this course and title, with her due
+    date and note when given, as a student or a parent does it; the new assignment's id.
+    ``separate`` keeps it apart from homework of the same class and title on record."""
     name = new_capture_id()
     made = store.create_capture(
         name,
@@ -1037,14 +1042,16 @@ def homework_from_a_note(
         today=NOTE_DAY,
     )
     assert isinstance(made, CaptureCreated)
-    given = CaptureDetails(course=course, title=title, kind="HOMEWORK")
+    given = CaptureDetails(
+        course=course, title=title, kind="HOMEWORK", due_date=due_date, note=note
+    )
     done = store.promote_capture(
         name,
         given,
         expected_revision=1,
         basis=candidate_basis(candidate_readings(store, given)),
         candidates=reader(store),
-        choice="new",
+        choice=choice,  # type: ignore[arg-type]
         authored_by=by,  # type: ignore[arg-type]
         channel=channel,
         now=NOTE_AT,
@@ -1052,3 +1059,39 @@ def homework_from_a_note(
     )
     assert isinstance(done, CapturePromoted)
     return done.assignment_id
+
+
+def waiting_note(
+    store: ProjectStateStore,
+    *,
+    course: str,
+    title: str,
+    text: str,
+    due_date: date | None = None,
+) -> str:
+    """A homework note of hers that waits, given this class, title, and day; the note's
+    id."""
+    name = new_capture_id()
+    made = store.create_capture(
+        name,
+        text,
+        None,
+        None,
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=NOTE_AT,
+        today=NOTE_DAY,
+    )
+    assert isinstance(made, CaptureCreated)
+    given = CaptureDetails(course=course, title=title, kind="HOMEWORK", due_date=due_date)
+    clarified = store.clarify_capture(
+        name,
+        given,
+        expected_revision=1,
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=NOTE_AT,
+        today=NOTE_DAY,
+    )
+    assert isinstance(clarified, CaptureChanged)
+    return name

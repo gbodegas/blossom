@@ -42,6 +42,7 @@ from blossom.captures import (
     CLARIFY,
     CREATE,
     EDIT,
+    PROMOTE,
     RESTORE,
     Author,
     CandidateDecision,
@@ -556,6 +557,28 @@ class CaptureRecords:
         with self._lock:
             rows = self._connection.execute(CAPTURES_OF_ASSIGNMENT, (assignment_id,)).fetchall()
         return self._decoded(rows)
+
+    def kept_apart(self) -> dict[str, tuple[str, ...]]:
+        """For each assignment a note was kept as, apart from homework of its class and title,
+        the homework it was kept apart from, as the press recorded it. A decision that
+        cannot be read is left out, so the homework is asked about again rather than taken
+        as settled."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT capture_id, decision FROM capture_events "
+                "WHERE operation = ? AND decision IS NOT NULL ORDER BY sequence",
+                (PROMOTE,),
+            ).fetchall()
+        apart: dict[str, tuple[str, ...]] = {}
+        for capture_id, raw in rows:
+            try:
+                decision = decision_from(held_text(raw, "decision"))
+                name = derived_assignment_id(capture_id_from(capture_id))
+            except (TypeError, ValueError, UnreadableCapture):
+                continue
+            if decision.choice == "separate":
+                apart[name] = decision.candidates
+        return apart
 
     def assignments_made_from_notes(self) -> set[str]:
         """The ids of the assignments on record that a note became, in one statement.

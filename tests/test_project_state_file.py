@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+import threading
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 
@@ -594,6 +595,255 @@ def test_a_report_is_kept_once_per_channel_status_and_day_whoever_writes_it(
         "2026-09-13T20:00:00+00:00",
     ]
     assert unique == {"status_reports_once"}
+
+
+def a_line(day: date, beside: str | None) -> StatusReport:
+    """A Missing report of that day, with the date the school wrote beside the work."""
+    return a_report(day).model_copy(update={"source_date_text": beside})
+
+
+def test_two_reports_of_one_day_are_two_when_the_school_wrote_different_dates_beside_them(
+    tmp_path: pathlib.Path,
+) -> None:
+    day = date(2026, 10, 5)
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        store.put_on_record([a_row(None, {})], {})
+        store.record_status_reports(
+            "assignment-essay", [a_line(day, "09/30"), a_line(day, "10/02")]
+        )
+        store.record_status_reports("assignment-essay", [a_line(day, "10/02"), a_line(day, None)])
+        store.put_on_record([], {}, {"assignment-essay": [a_line(day, "09/30"), a_line(day, None)]})
+        kept = [report.source_date_text for report in store.status_reports("assignment-essay")]
+    finally:
+        store.close()
+
+    assert kept == ["09/30", "10/02", None]
+
+
+OLD_REPORTS = """
+    CREATE TABLE assignments (
+        assignment_id TEXT PRIMARY KEY, course TEXT NOT NULL, title TEXT NOT NULL,
+        due_date TEXT, dependencies TEXT NOT NULL, reported_submission_status TEXT NOT NULL,
+        assigned_on TEXT, kind TEXT NOT NULL, note TEXT, origins TEXT
+    );
+    INSERT INTO assignments VALUES
+        ('assignment-essay', 'World History', 'Canal Era comparison essay', '2026-08-21',
+         '', 'missing', NULL, 'HOMEWORK', NULL, NULL);
+    CREATE TABLE status_reports (
+        assignment_id TEXT NOT NULL, status TEXT NOT NULL, channel TEXT NOT NULL,
+        reported_on TEXT NOT NULL, dated_by TEXT NOT NULL, observed_at TEXT NOT NULL
+    );
+    INSERT INTO status_reports VALUES
+        ('assignment-essay', 'missing', 'EMAIL', '2026-10-05', 'the day it was pasted',
+         '2026-10-05T20:00:00+00:00'),
+        ('assignment-essay', 'missing', 'EMAIL', '2026-10-05', 'the day it was pasted',
+         '2026-10-05T21:00:00+00:00');
+"""
+"""A file from before the date beside the work was kept: one report held twice."""
+BEFORE = {
+    "an-index-by-day": """
+        ALTER TABLE status_reports ADD COLUMN source_date_text TEXT;
+        UPDATE status_reports SET source_date_text = '09/30';
+        DELETE FROM status_reports WHERE rowid > 1;
+        CREATE UNIQUE INDEX status_reports_once
+        ON status_reports (assignment_id, channel, status, reported_on);
+    """,
+    "no-index": """
+        ALTER TABLE status_reports ADD COLUMN source_date_text TEXT;
+        UPDATE status_reports SET source_date_text = '09/30' WHERE rowid = 1;
+        UPDATE status_reports SET source_date_text = '10/02' WHERE rowid = 2;
+    """,
+    "no-date-column": "",
+}
+"""What each earlier file makes of those rows: an index by day, two lines of one day and no
+index, or no date column at all."""
+UPGRADED = {"an-index-by-day": ["09/30"], "no-index": ["09/30", "10/02"], "no-date-column": [None]}
+
+
+@pytest.mark.parametrize("before", sorted(BEFORE))
+def test_a_file_whose_report_index_leaves_out_the_date_line_gets_one_that_keeps_it(
+    tmp_path: pathlib.Path, before: str
+) -> None:
+    path = tmp_path / "before.sqlite3"
+    old = sqlite3.connect(path)
+    old.executescript(OLD_REPORTS + BEFORE[before])
+    old.commit()
+    old.close()
+    day = date(2026, 10, 5)
+    lines = ["09/30", "10/02", None]
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        upgraded = [report.source_date_text for report in store.status_reports("assignment-essay")]
+        store.record_status_reports("assignment-essay", [a_line(day, line) for line in lines])
+        kept = [report.source_date_text for report in store.status_reports("assignment-essay")]
+    finally:
+        store.close()
+    restarted = ProjectStateStore.open(path, fixture_clock())
+    try:
+        again = [report.source_date_text for report in restarted.status_reports("assignment-essay")]
+        (made,) = restarted._connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'status_reports_once'"
+        ).fetchone()
+    finally:
+        restarted.close()
+
+    assert upgraded == UPGRADED[before]
+    assert kept == upgraded + [line for line in lines if line not in upgraded]
+    assert again == kept
+    assert "source_date_text" in made
+
+
+def old_file(path: pathlib.Path, before: str) -> None:
+    old = sqlite3.connect(path)
+    old.executescript(OLD_REPORTS + BEFORE[before])
+    old.commit()
+    old.close()
+
+
+def reports_and_index(path: pathlib.Path) -> tuple[list[tuple[object, ...]], str | None]:
+    """The file's reports as stored and the report index's SQL, read without the store."""
+    connection = sqlite3.connect(path)
+    try:
+        rows = connection.execute("SELECT * FROM status_reports ORDER BY rowid").fetchall()
+        made = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'status_reports_once'"
+        ).fetchone()
+    finally:
+        connection.close()
+    return rows, None if made is None else str(made[0])
+
+
+INDEX_READ = "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'status_reports_once'"
+COLUMNS_READ = "PRAGMA table_info(status_reports)"
+DROP = "DROP INDEX status_reports_once"
+FOLD = "DELETE FROM status_reports WHERE rowid NOT IN"
+RACED = {
+    "an-index-by-day": [
+        ("first", INDEX_READ),
+        ("second", INDEX_READ),
+        ("first", DROP),
+        ("second", DROP),
+        ("first", FOLD),
+    ],
+    "no-index": [
+        ("first", INDEX_READ),
+        ("second", INDEX_READ),
+        ("first", FOLD),
+        ("second", FOLD),
+    ],
+    "no-date-column": [
+        ("first", COLUMNS_READ),
+        ("second", COLUMNS_READ),
+        ("first", "ALTER TABLE status_reports"),
+        ("second", "ALTER TABLE status_reports"),
+    ],
+}
+"""For each earlier file, two starts that both read the old schema, then change it in turn."""
+
+
+@pytest.mark.parametrize("before", sorted(BEFORE))
+def test_two_starts_upgrading_one_file_at_once_both_open_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, before: str
+) -> None:
+    path = tmp_path / "before.sqlite3"
+    old_file(path, before)
+    order = RACED[before]
+    turn = [0]
+    moved = threading.Condition()
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+
+    class Stepped(sqlite3.Connection):
+        def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:
+            said = " ".join(sql.split())
+            step = next((mark for _, mark in order if said.startswith(mark)), None)
+            me = (threading.current_thread().name, step)
+            with moved:
+                # A start that holds the writer keeps the other from its turn; go on.
+                if me in order and not moved.wait_for(
+                    lambda: turn[0] >= len(order) or order[turn[0]] == me, timeout=3
+                ):
+                    turn[0] = len(order)
+            try:
+                return super().execute(sql, parameters)  # type: ignore[arg-type]
+            finally:
+                with moved:
+                    if turn[0] < len(order) and order[turn[0]] == me:
+                        turn[0] += 1
+                    moved.notify_all()
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = real_connect(*args, factory=Stepped, **kwargs)  # type: ignore[call-overload]
+        opened.append(connection)
+        return connection  # type: ignore[no-any-return]
+
+    outcomes: dict[str, str] = {}
+
+    def start() -> None:
+        name = threading.current_thread().name
+        try:
+            ProjectStateStore.open(path, fixture_clock()).close()
+            outcomes[name] = "opened"
+        except sqlite3.Error as error:
+            outcomes[name] = f"{type(error).__name__}: {error}"
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    first = threading.Thread(target=start, name="first")
+    second = threading.Thread(target=start, name="second")
+    first.start()
+    with moved:
+        moved.wait_for(lambda: turn[0] >= 1, timeout=5)
+    second.start()
+    first.join(timeout=30)
+    second.join(timeout=30)
+    for connection in opened:
+        connection.close()
+    monkeypatch.undo()
+    rows, made = reports_and_index(path)
+
+    assert outcomes == {"first": "opened", "second": "opened"}
+    assert [row[-1] for row in rows] == UPGRADED[before]
+    assert made is not None
+    assert "source_date_text" in made
+
+
+@pytest.mark.parametrize("before", sorted(BEFORE))
+def test_an_upgrade_refused_the_new_report_index_leaves_the_file_as_it_was(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, before: str
+) -> None:
+    path = tmp_path / "before.sqlite3"
+    old_file(path, before)
+    was = reports_and_index(path)
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+
+    def no_index(action: int, first: str | None, *rest: object) -> int:
+        refused = action == sqlite3.SQLITE_CREATE_INDEX and first == "status_reports_once"
+        return sqlite3.SQLITE_DENY if refused else sqlite3.SQLITE_OK
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = real_connect(*args, **kwargs)  # type: ignore[call-overload]
+        connection.set_authorizer(no_index)
+        opened.append(connection)
+        return connection  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    with pytest.raises(sqlite3.DatabaseError):
+        ProjectStateStore.open(path, fixture_clock())
+    for connection in opened:
+        connection.close()
+    monkeypatch.undo()
+    refused = reports_and_index(path)
+    store = ProjectStateStore.open(path, fixture_clock())
+    try:
+        upgraded = [report.source_date_text for report in store.status_reports("assignment-essay")]
+    finally:
+        store.close()
+
+    assert refused == was
+    assert upgraded == UPGRADED[before]
+    assert "source_date_text" in (reports_and_index(path)[1] or "")
 
 
 def test_a_row_written_without_a_note_or_origins_keeps_the_saved_ones(

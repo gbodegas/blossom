@@ -5,8 +5,10 @@
   The page for a review or a save the record refused because a claim about a
   date on record cannot be read: what happened, in a sentence that takes the
   focus as the page arrives, with no script; the text as pasted or the entry
-  as typed, to copy; the answers given on the cards, as unsaved input; and
-  the ways on. Nothing here reads the record, tries anything again, or says
+  as typed, to copy; the answers given on the cards, as unsaved input, the
+  homework each card was said to be and her notes ticked to link among them,
+  in what the review page signed; and the ways on. Nothing here reads the
+  record, tries anything again, or says
   anything was saved. The one way to try again is the ordinary press, through
   the same reading as the first time.
 #}
@@ -28,7 +30,7 @@
       <h2 class="update-heading" id="kept-answers" tabindex="-1">Your answers on the cards, not saved</h2>
       <ul>
         {% for answer in answers %}
-          <li>Card {{ answer.key }}: {% if answer.occurrence == "new" %}new work under the same name{% elif answer.occurrence == "update" %}the same assignment{% else %}no answer about the assignment{% endif %}{% if answer.kind %}; type {{ answer.kind|lower|capitalize }}{% endif %}.{% if answer.instructions or answer.unshown or answer.none_applies %} The school's instructions chosen to apply: {% for text in answer.instructions %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% if answer.unshown %}{% if answer.instructions %}, {% endif %}{% if answer.unshown == 1 %}one instruction selected by reference; its text could not be read{% else %}{{ answer.unshown }} instructions selected by reference; their text could not be read{% endif %}{% endif %}{% if answer.none_applies %}{% if answer.instructions or answer.unshown %}, and {% endif %}that none applies{% endif %}.{% endif %}</li>
+          <li>Card {{ answer.key }}: {% if answer.occurrence == "new" %}new work under the same name{% elif answer.occurrence == "update" %}the same assignment{% elif answer.homework %}the homework with id <span class="authored-text">{{ answer.homework }}</span>{% elif answer.different %}different homework with the same title{% else %}no answer about the assignment{% endif %}{% if answer.kind %}; type {{ answer.kind|lower|capitalize }}{% endif %}.{% if answer.instructions or answer.unshown or answer.none_applies %} The school's instructions chosen to apply: {% for text in answer.instructions %}<q class="authored-text">{{ text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}{% if answer.unshown %}{% if answer.instructions %}, {% endif %}{% if answer.unshown == 1 %}one instruction selected by reference; its text could not be read{% else %}{{ answer.unshown }} instructions selected by reference; their text could not be read{% endif %}{% endif %}{% if answer.none_applies %}{% if answer.instructions or answer.unshown %}, and {% endif %}that none applies{% endif %}.{% endif %}{% if answer.notes %} Her {% if answer.notes|length == 1 %}note{% else %}notes{% endif %} ticked to link: {% for words in answer.notes %}<q class="authored-text">{{ words }}</q>{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}</li>
         {% endfor %}
       </ul>
     {% endif %}

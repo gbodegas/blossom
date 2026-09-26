@@ -97,6 +97,7 @@ from blossom.stores.captures import (
     held_text_or_nothing,
     with_details,
 )
+from blossom.stores.intake_decisions import IntakeDecisionRecords
 from blossom.stores.paths import refuse_unsafe_path
 from blossom.stores.school_instructions import (
     AUTHORED_MARKS,
@@ -120,6 +121,17 @@ STUDENT_REPORTS_NAMED: Final = """
     FROM student_reports
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY rowid
+"""
+EVERY_STATUS_REPORT: Final = """
+    SELECT assignment_id, status, channel, reported_on, dated_by, observed_at, source_date_text
+    FROM status_reports
+    ORDER BY reported_on, rowid
+"""
+STATUS_REPORTS_NAMED: Final = """
+    SELECT assignment_id, status, channel, reported_on, dated_by, observed_at, source_date_text
+    FROM status_reports
+    WHERE assignment_id IN (SELECT value FROM json_each(?))
+    ORDER BY reported_on, rowid
 """
 EVERY_DATE_CLAIM: Final = """
     SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in,
@@ -610,7 +622,7 @@ class Reopened:
     check: FamilyCheck
 
 
-class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
+class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecisionRecords):
     """SQLite-backed project state, opened once and shared across worker threads.
 
     The connection is created at application startup rather than per request,
@@ -755,13 +767,20 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
         # that makes a note's claim one claim, together or not at all.
         with self._writing():
             self._upgrade_date_claims()
-        self._upgrade()
+        # Everything a file from before needs, read and changed in one transaction: a start
+        # refused any step leaves the file as it was, and a second start reads the schema
+        # only once the first has changed it.
+        with self._writing():
+            self._upgrade()
         # The school's instructions, kept apart from anyone's own note: the table, and the
         # move of every school note out of the old note field, together or not at all.
         # After ``_upgrade``, which gives a file from before the field the move reads.
         with self._writing():
             self._create_instruction_table()
             self._carry_school_notes()
+        # What a parent said about which homework a school row is about.
+        with self._writing():
+            self._create_intake_decision_table()
 
     def _upgrade_date_claims(self) -> None:
         """Give the claims table the note a claim came from, the note's revision, whether
@@ -819,7 +838,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
         )
 
     def _upgrade(self) -> None:
-        """Bring a file from before up to this schema, by adding, and keep what it holds.
+        """Bring a file from before up to this schema in the caller's transaction, by
+        adding, and keep what it holds.
 
         Columns a file lacks are added; no row is dropped, folded, or
         rewritten. Every claim a file holds is kept, two observations of the
@@ -829,37 +849,47 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
         writes, and not this table's. The one thing taken away is an index a
         version between made, which held a claim once and so refused that
         history; a file that carries it loses the index and keeps its rows.
-        Reports are the other way about: one per channel, status, and day is
-        the promise, kept by an index, and a file from a version without it
-        keeps the first of any duplicates.
+        Reports are the other way about: one per channel, status, day, and
+        the date the school wrote beside the work is the promise, kept by an
+        index, and a file from a version without it keeps the first of any
+        duplicates. An index that leaves out that date is made again with it.
         """
         self._connection.execute("DROP INDEX IF EXISTS date_claims_once")
-        indexes = {
-            str(row[1]) for row in self._connection.execute("PRAGMA index_list(status_reports)")
+        reports = {
+            str(row[1]) for row in self._connection.execute("PRAGMA table_info(status_reports)")
         }
-        if "status_reports_once" not in indexes:
-            # A report is one per channel, status, and day, as promised; a
-            # file from a version that kept no index on that is folded to
-            # one, the first kept, before the index is made. The fold is a
-            # write, so it is committed here unless a start's own transaction
-            # is open around it, which then commits it with the tables.
-            outer = self._connection.in_transaction
+        if "source_date_text" not in reports:
+            self._connection.execute("ALTER TABLE status_reports ADD COLUMN source_date_text TEXT")
+        made = self._connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'status_reports_once'"
+        ).fetchone()
+        if made is not None and "source_date_text" not in str(made[0]):
+            # Two Missing lines of one day with different dates beside them
+            # are two reports; an index that holds them once is dropped and
+            # made again. Its rows are already unique under the new key.
+            self._connection.execute("DROP INDEX status_reports_once")
+            made = None
+        if made is None:
+            # A report is one per channel, status, day, and date as written,
+            # as promised; a file from a version that kept no index on that
+            # is folded to one, the first kept, before the index is made.
             self._connection.execute(
                 """
                 DELETE FROM status_reports WHERE rowid NOT IN (
                     SELECT MIN(rowid) FROM status_reports
-                    GROUP BY assignment_id, channel, status, reported_on
+                    GROUP BY assignment_id, channel, status, reported_on,
+                        IFNULL(source_date_text, '')
                 )
                 """
             )
             self._connection.execute(
                 """
                 CREATE UNIQUE INDEX status_reports_once
-                ON status_reports (assignment_id, channel, status, reported_on)
+                ON status_reports (
+                    assignment_id, channel, status, reported_on, IFNULL(source_date_text, '')
+                )
                 """
             )
-            if not outer and self._connection.in_transaction:
-                self._connection.commit()
         columns = {
             str(row[1]) for row in self._connection.execute("PRAGMA table_info(assignments)")
         }
@@ -867,11 +897,6 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
             self._connection.execute("ALTER TABLE assignments ADD COLUMN note TEXT")
         if "origins" not in columns:
             self._connection.execute("ALTER TABLE assignments ADD COLUMN origins TEXT")
-        reports = {
-            str(row[1]) for row in self._connection.execute("PRAGMA table_info(status_reports)")
-        }
-        if "source_date_text" not in reports:
-            self._connection.execute("ALTER TABLE status_reports ADD COLUMN source_date_text TEXT")
 
     @classmethod
     def open(cls, path: Path, clock: Clock) -> "ProjectStateStore":
@@ -1020,22 +1045,26 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
                 self._record_status_reports_locked(assignment_id, said)
 
     def record_status_reports(self, assignment_id: str, reports: Iterable[StatusReport]) -> None:
-        """Keep what a school channel reported about one assignment, once per day and status,
-        and set the row's reported status from the latest report, in one transaction."""
+        """Keep what a school channel reported about one assignment, once per day, status, and
+        date as written, and set the row's reported status from the latest report, in one
+        transaction."""
         with self._lock, self._connection:
             self._record_status_reports_locked(assignment_id, reports)
 
     def _record_status_reports_locked(
         self, assignment_id: str, reports: Iterable[StatusReport]
     ) -> None:
-        """Keep each report once per channel, status, and day, whoever writes it: the index
-        the file keeps refuses a second, and only that conflict is passed over. The row's
-        reported status then follows the latest report, by the day reported and the order
-        kept, so what the pages and the planner read of the row never lags the reports."""
+        """Keep each report once per channel, status, day, and date as written, whoever
+        writes it: the index the file keeps refuses a second, and only that conflict is
+        passed over. The row's reported status then follows the latest report, by the day
+        reported and the order kept, so what the pages and the planner read of the row never
+        lags the reports."""
         self._connection.executemany(
             """
             INSERT INTO status_reports VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (assignment_id, channel, status, reported_on) DO NOTHING
+            ON CONFLICT (
+                assignment_id, channel, status, reported_on, IFNULL(source_date_text, '')
+            ) DO NOTHING
             """,
             [
                 (
@@ -1078,19 +1107,19 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
             ).fetchall()
         return [report_from(row) for row in rows]
 
-    def status_reports_by_assignment(self) -> dict[str, list[StatusReport]]:
-        """Every report the school has made, by assignment, by the day reported and then the
-        order kept, in one read. The last report of a channel in that order is what the
-        channel says now; the rest is the school's history, kept apart from hers."""
+    def status_reports_by_assignment(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> dict[str, list[StatusReport]]:
+        """Every report the school has made on the assignments named, or on all when none are, by
+        the day reported and then the order kept, in one read. The last report of a channel in
+        that order is what it says now; the rest is the school's history, kept apart from hers."""
         with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT assignment_id, status, channel, reported_on, dated_by, observed_at,
-                       source_date_text
-                FROM status_reports
-                ORDER BY reported_on, rowid
-                """
-            ).fetchall()
+            if assignment_ids is None:
+                rows = self._connection.execute(EVERY_STATUS_REPORT).fetchall()
+            else:
+                rows = self._connection.execute(
+                    STATUS_REPORTS_NAMED, (json.dumps(sorted(assignment_ids)),)
+                ).fetchall()
         reports: dict[str, list[StatusReport]] = {}
         for row in rows:
             reports.setdefault(str(row[0]), []).append(report_from(row[1:]))
@@ -2096,27 +2125,6 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
         with self._lock, self._writing():
             yield
 
-    def held_by_notes(
-        self, pairs: Iterable[tuple[str, str]]
-    ) -> dict[tuple[str, str], tuple[str, ...]]:
-        """Which of these classes and titles are the class and title of homework a note
-        became, by the rule the school's paste pairs by, and which assignments each is:
-        every one, since a second note can be kept as a separate assignment under the same
-        class and title. Empty when none is, which is every paste until a note is added to
-        homework."""
-        made = self.assignments_made_from_notes()
-        if not made:
-            return {}
-        by_name: dict[tuple[str, str], list[str]] = {}
-        for item in self.all_assignments():
-            if item.assignment_id in made:
-                by_name.setdefault(pair(item.course, item.title), []).append(item.assignment_id)
-        return {
-            name: tuple(sorted(by_name[name]))
-            for name in (pair(course, title) for course, title in pairs)
-            if name in by_name
-        }
-
     def promotion_candidates(
         self, details: CaptureDetails, *, among: Iterable["Assignment"] | None = None
     ) -> list["Assignment"]:
@@ -2365,6 +2373,90 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
                             expected_revision=expected_revision, leaving=leaving
                         ),
                     ),
+                    channel=channel,
+                )
+                if note.due_date is not None:
+                    self._record_capture_claim_locked(
+                        target,
+                        SourceRecord(
+                            channel=note.attribution["due_date"].channel,
+                            asserted_value=note.due_date.isoformat(),
+                            observed_at=now,
+                            confidence=CAPTURE_CLAIM_CONFIDENCE,
+                            seen_in=HOMEWORK_NOTE,
+                        ),
+                        capture_id=name,
+                        capture_revision=changed.capture.revision,
+                    )
+                return CapturePromoted(changed.capture, changed.event, target, False)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CaptureNotSaved(name, error) from error
+
+    def paste_link_standing(
+        self, capture_id: str, *, target: str, expected_revision: int
+    ) -> Literal["waits", "stands", "changed"]:
+        """Where a note offered on a paste review stands against linking it to ``target``:
+        ``stands`` when it is joined to that homework already and the homework is on
+        record, which a retry finds; ``waits`` when it is at the revision the page showed,
+        since every move of a note makes a new revision; ``changed`` otherwise. The note's
+        history is checked first, and one that can't be read is ``UnreadableCapture``.
+        Read in the caller's transaction, so the save is judged against what it writes."""
+        with self._lock:
+            standing = self._capture_locked(capture_id_from(capture_id))
+            if standing is None:
+                return "changed"
+            self._validated_capture_history_locked(standing)
+            if standing.assignment_id == target:
+                return "stands" if self.one_assignment(target) is not None else "changed"
+        return "waits" if standing.revision == expected_revision else "changed"
+
+    def link_capture_from_paste(
+        self,
+        capture_id: str,
+        *,
+        target: str,
+        expected_revision: int,
+        basis: str,
+        authored_by: Author,
+        channel: SourceChannel,
+        now: datetime,
+        today: date,
+    ) -> CapturePromoted | HomeworkGone | CaptureConflict:
+        """Link a waiting note to the homework a school paste lands on, inside the paste's
+        own write transaction, which found with ``paste_link_standing`` that it waits at
+        ``expected_revision``. The homework must be on record, which is ``HomeworkGone``
+        otherwise, and have the note's class and title, which is ``CaptureConflict``
+        otherwise; neither writes anything. The link keeps the choice of a paste and
+        ``basis``, the row as it was linked, and a day the note gives is one more claim
+        beside the school's. Her words and details stay as they are. A write the file
+        refuses is ``CaptureNotSaved``, and the paste's transaction is rolled back whole."""
+        name = capture_id_from(capture_id)
+        try:
+            with self._lock, self._writing():
+                standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
+                if not standing.outstanding or standing.revision != expected_revision:
+                    msg = "the note changed since the paste was reviewed"
+                    raise RuntimeError(msg)
+                item = self.one_assignment(target)
+                if item is None:
+                    return HomeworkGone(standing, target)
+                if (
+                    standing.course is None
+                    or standing.title is None
+                    or pair(standing.course, standing.title) != pair(item.course, item.title)
+                ):
+                    return CaptureConflict(standing)
+                note = standing.model_copy(update={"assignment_id": target})
+                changed = self._change_locked(
+                    standing,
+                    note,
+                    LINK,
+                    authored_by,
+                    reading,
+                    now=now,
+                    today=today,
+                    decision=CandidateDecision(choice="paste", candidates=(target,), basis=basis),
                     channel=channel,
                 )
                 if note.due_date is not None:
