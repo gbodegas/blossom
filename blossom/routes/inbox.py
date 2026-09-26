@@ -129,8 +129,8 @@ IDENTITY_FORM_UNREADABLE: Final = (
     "Look at them again below."
 )
 LINK_FORM_UNREADABLE: Final = (
-    "A note ticked to link is not one this review offered, so nothing was saved. Look "
-    "at them again below."
+    "The choices to link her notes could not be read, so nothing was saved. Look at them "
+    "again below."
 )
 NOTE_UNREADABLE: Final = (
     "A note of hers ticked to link cannot be read right now, so nothing was saved. Your "
@@ -393,7 +393,9 @@ def identity_answers(
             unreadable = True
             continue
         if head == "creation":
-            unreadable = unreadable or value != question.creation
+            if value != question.creation:
+                unreadable = True
+                bent.add(int(card))
             continue
         chosen = None if value == DIFFERENT else homework_named(value)
         if value != DIFFERENT and (chosen is None or chosen not in question.shown):
@@ -1152,7 +1154,8 @@ async def keep_readings(request: Request, state: State) -> Response:
         occurrences, kinds = answers_from(form, unasked_for(state, read))
         if identity_unreadable:
             # An answer about which homework a card is that the page did not ask, a homework
-            # or token it did not give, or one sent twice, is no form the page wrote.
+            # or token it did not give, or one sent twice, is no form the page wrote. The
+            # answers that were read, on other cards and in the notes ticked, are kept.
             return preview_page(
                 request,
                 state,
@@ -1164,13 +1167,16 @@ async def keep_readings(request: Request, state: State) -> Response:
                 unsaved=read_answers.unsaved,
                 carried=carried,
                 made=page_made,
+                identities=identities,
+                linked=linked,
                 refused="malformed",
                 notice=IDENTITY_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
         if link_unreadable:
-            # A note ticked that the page did not offer, or ticked twice, is no form the page
-            # wrote.
+            # A box the page did not offer, a box sent twice, as a file, or with another value,
+            # or a note ticked twice is no form the page wrote. The notice says only that the
+            # choices could not be read, since it holds for every one of these.
             return preview_page(
                 request,
                 state,

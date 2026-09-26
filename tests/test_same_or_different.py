@@ -2421,8 +2421,14 @@ def test_a_token_or_a_choice_the_page_did_not_give_is_refused(
         refused = client.post("/parent/inbox/keep", data=form)
         after = tables(client)
 
+    returned = review_form(refused.text)
     assert refused.status_code == 422
     assert after == before
+    if forged == "a-card-never-asked":
+        assert returned["identity-0"] == choice_value(mine)
+    else:
+        assert question(refused.text, 0)
+        assert "identity-0" not in returned
 
 
 SECOND_GUIDE = "assignment-second-guide"
@@ -3343,6 +3349,114 @@ def test_a_note_ticked_on_two_cards_for_different_homework_is_refused(
     assert after == before
     assert note is not None
     assert note.outstanding
+
+
+LINKS_UNREADABLE = (
+    "The choices to link her notes could not be read, so nothing was saved. Look at them "
+    "again below."
+)
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [
+        "an-offered-box-twice",
+        "an-offered-box-as-a-file",
+        "an-offered-box-with-another-value",
+        "a-box-not-offered",
+        "a-box-on-a-card-not-shown",
+        "a-note-on-two-cards",
+    ],
+)
+def test_link_choices_that_cannot_be_read_are_refused_in_words_true_of_each(
+    tmp_path: pathlib.Path, sent: str
+) -> None:
+    two_cards = sent == "a-note-on-two-cards"
+    with client_in(tmp_path) as client:
+        if two_cards:
+            guide_rows(client)
+        name = guide_note(client)
+        page = read(client, GUIDE_DUE_CARD + GUIDE_DUE_LAST if two_cards else GUIDE_CARD)
+        box = links_on(page, 0)[0]
+        form: dict[str, str | list[str]] = {**review_form(page)}
+        files = None
+        if sent == "an-offered-box-twice":
+            form[box] = ["1", "1"]
+        elif sent == "an-offered-box-as-a-file":
+            files = {box: ("tick.txt", b"1", "text/plain")}
+        elif sent == "an-offered-box-with-another-value":
+            form[box] = "yes"
+        elif sent == "a-box-not-offered":
+            form["link-0-5"] = "1"
+        elif sent == "a-box-on-a-card-not-shown":
+            form["link-7-0"] = "1"
+        else:
+            form = {**form, box: "1", links_on(page, 1)[0]: "1"}
+        before = tables(client), len(store_of(client).capture_history(name))
+        refused = client.post("/parent/inbox/keep", data=form, files=files)
+        after = tables(client), len(store_of(client).capture_history(name))
+        returned = {
+            field: value
+            for field, value in review_form(refused.text).items()
+            if not field.startswith("link-")
+        }
+        corrected = {**returned, box: "1"}
+        saved = client.post("/parent/inbox/keep", data=corrected)
+        once = tables(client), len(store_of(client).capture_history(name))
+        again = client.post("/parent/inbox/keep", data=corrected)
+        twice = tables(client), len(store_of(client).capture_history(name))
+        note = store_of(client).capture(name)
+
+    summary = re.search(r'<p class="problem"[^>]*id="problem-summary"[^>]*>(.*?)</p>', refused.text)
+    assert refused.status_code == 422
+    assert after == before
+    assert returned["text"] == review_form(page)["text"]
+    assert summary is not None
+    assert html.unescape(summary.group(1)) == LINKS_UNREADABLE
+    assert (saved.status_code, again.status_code) == (303, 303)
+    assert once != before
+    assert twice == once
+    assert note is not None
+    assert not note.outstanding
+
+
+@pytest.mark.parametrize("beside", ["a-note-ticked", "another-card-answered"])
+def test_an_identity_answer_that_cannot_be_read_keeps_the_other_answers_given(
+    tmp_path: pathlib.Path, beside: str
+) -> None:
+    name = ""
+    with client_in(tmp_path) as client:
+        if beside == "a-note-ticked":
+            two_guides(client)
+            name = guide_note(client)
+            page = read(client, GUIDE_MISSING)
+            answer, kept = choice_value(GUIDE_COPY), links_on(page, 0)[0]
+            form = {**review_form(page), "identity-0": [answer, answer], kept: "1"}
+        else:
+            hers(client)
+            early, _ = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+            page = read(client, GUIDE_CARD + lab_card("10/15/2026"))
+            answer, kept = DIFFERENT, "identity-1"
+            form = {**review_form(page), "identity-0": [answer, answer], kept: choice_value(early)}
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+        returned = review_form(refused.text)
+        corrected = {**returned, "identity-0": answer}
+        saved = client.post("/parent/inbox/keep", data=corrected)
+        once = tables(client)
+        again = client.post("/parent/inbox/keep", data=corrected)
+        twice = tables(client)
+        note = store_of(client).capture(name) if name else None
+
+    assert refused.status_code == 422
+    assert after == before
+    assert returned[kept] == form[kept]
+    assert "identity-0" not in returned
+    assert (saved.status_code, again.status_code) == (303, 303)
+    assert once != before
+    assert twice == once
+    assert (note is not None and not note.outstanding) == bool(name)
 
 
 def test_repeated_cards_for_one_homework_offer_the_note_once(tmp_path: pathlib.Path) -> None:
