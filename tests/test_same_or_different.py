@@ -930,6 +930,33 @@ def test_two_missing_lines_in_one_paste_are_each_placed_where_the_parent_says(
         assert (on_early, on_late) == (["09/30", "10/02"], [])
 
 
+def test_a_placed_line_a_file_from_before_kept_no_report_of_is_not_asked_about_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An index that held one report a day kept only the first line; the answer still stands."""
+    with client_in(tmp_path, "2026-10-05") as client:
+        early, _ = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        page = read(client, ONE_DAY)
+        client.post(
+            "/parent/inbox/keep",
+            data={
+                **review_form(page),
+                "identity-0": choice_value(early),
+                "identity-1": choice_value(early),
+            },
+        )
+        connection = store_of(client)._connection
+        connection.execute("DELETE FROM status_reports WHERE source_date_text = '10/02'")
+        connection.commit()
+        fresh = read(client, SECOND_MISSING)
+        resaved = client.post("/parent/inbox/keep", data=review_form(fresh))
+        on_early = [said.source_date_text for said in store_of(client).status_reports(early)]
+
+    assert question(fresh, 0) == ""
+    assert resaved.status_code == 303
+    assert on_early == ["09/30", "10/02"]
+
+
 def test_a_missing_line_unanswered_or_answered_against_old_facts_saves_nothing(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -2426,6 +2453,71 @@ def test_a_typed_note_alone_on_her_homework_can_be_finished_and_says_so(
     assert "kept_note=1" in finished.headers["location"]
     assert after == before
     assert "Her note stayed. Your note wasn't saved to her homework." in html.unescape(family.text)
+
+
+@pytest.mark.parametrize("again", ["the-same-form", "a-fresh-entry", "another-note"])
+def test_a_typed_note_kept_off_her_homework_lands_again_where_the_answer_put_it(
+    tmp_path: pathlib.Path, again: str
+) -> None:
+    typed = entry(due_date="", note="Signed copy is in the blue folder.")
+    later = {**typed, "note": "Bring it back on Monday."} if again == "another-note" else typed
+    with client_in(tmp_path) as client:
+        mine = hers(client, due=None)
+        store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 16))], {})
+        shown = client.post("/parent/inbox/enter", data=typed)
+        answered = client.post(
+            "/parent/inbox/keep", data={**review_form(shown.text), "identity-0": choice_value(mine)}
+        )
+        form = review_form(answered.text)
+        saved = client.post("/parent/inbox/keep", data=form)
+        after_saved = tables(client)
+        page = client.post("/parent/inbox/enter", data=later).text
+        retry = form if again == "the-same-form" else review_form(page)
+        retried = client.post("/parent/inbox/keep", data=retry)
+        after_retried = tables(client)
+        recorded = decisions(client)
+        row = store_of(client).one_assignment(mine)
+
+    assert sorted(choices(shown.text, 0)) == sorted([mine, GUIDE_COPY, DIFFERENT])
+    assert KEPT_NOTE in html.unescape(answered.text)
+    assert saved.status_code == 303
+    assert question(page, 0) == ""
+    assert KEPT_NOTE in html.unescape(page)
+    assert later["note"] in html.unescape(page)
+    assert retried.status_code == 303
+    assert "kept_note=1" in retried.headers["location"]
+    assert after_retried == after_saved
+    assert [lands_on for _, _, _, _, lands_on, _ in recorded] == [mine]
+    assert row is not None
+    assert row.note == HER_NOTE
+
+
+def test_a_typed_note_kept_off_her_homework_is_not_asked_again_once_another_shares_the_date(
+    tmp_path: pathlib.Path,
+) -> None:
+    typed = entry(note="Signed copy is in the blue folder.")
+    with client_in(tmp_path) as client:
+        mine = hers(client, due=None)
+        shown = client.post("/parent/inbox/enter", data=typed)
+        answered = client.post(
+            "/parent/inbox/keep", data={**review_form(shown.text), "identity-0": choice_value(mine)}
+        )
+        saved = client.post("/parent/inbox/keep", data=review_form(answered.text))
+        store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 9))], {})
+        before = tables(client)
+        page = client.post("/parent/inbox/enter", data=typed).text
+        again = client.post("/parent/inbox/keep", data=review_form(page))
+        after = tables(client)
+        row = store_of(client).one_assignment(mine)
+
+    assert saved.status_code == 303
+    assert question(page, 0) == ""
+    assert KEPT_NOTE in html.unescape(page)
+    assert again.status_code == 303
+    assert after == before
+    assert row is not None
+    assert row.note == HER_NOTE
+    assert row.due_date == date(2026, 9, 9)
 
 
 def test_her_note_changed_after_the_review_refuses_a_save_that_keeps_it(

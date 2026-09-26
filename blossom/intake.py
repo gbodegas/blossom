@@ -1534,7 +1534,8 @@ def changes_for(
         """Whether landing a reading on a row on record would write nothing: every claim,
         report, and school instruction it brings is kept there already, and nothing typed
         with it differs from the row: its note, the type the card asks for (``kind``), or an
-        assigned date the row lacks. A report an answer placed there counts as saved."""
+        assigned date the row lacks. A report an answer placed there counts as saved, and a
+        typed note her own note keeps off the row writes nothing."""
         name = item.assignment_id
         return (
             all(
@@ -1550,7 +1551,7 @@ def changes_for(
                 not reading.instructions
                 or {seen.text for seen in reading.instructions} <= saved.texts(name)
             )
-            and _note_change(item, reading) is None
+            and _note_change(item, reading) in (None, "kept")
             and kind in (None, item.kind)
             and not (reading.assigned_on is not None and item.assigned_on is None)
         )

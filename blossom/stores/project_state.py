@@ -767,7 +767,11 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         # that makes a note's claim one claim, together or not at all.
         with self._writing():
             self._upgrade_date_claims()
-        self._upgrade()
+        # Everything a file from before needs, read and changed in one transaction: a start
+        # refused any step leaves the file as it was, and a second start reads the schema
+        # only once the first has changed it.
+        with self._writing():
+            self._upgrade()
         # The school's instructions, kept apart from anyone's own note: the table, and the
         # move of every school note out of the old note field, together or not at all.
         # After ``_upgrade``, which gives a file from before the field the move reads.
@@ -834,7 +838,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         )
 
     def _upgrade(self) -> None:
-        """Bring a file from before up to this schema, by adding, and keep what it holds.
+        """Bring a file from before up to this schema in the caller's transaction, by
+        adding, and keep what it holds.
 
         Columns a file lacks are added; no row is dropped, folded, or
         rewritten. Every claim a file holds is kept, two observations of the
@@ -867,11 +872,7 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         if made is None:
             # A report is one per channel, status, day, and date as written,
             # as promised; a file from a version that kept no index on that
-            # is folded to one, the first kept, before the index is made. The
-            # fold is a write, so it is committed here unless a start's own
-            # transaction is open around it, which then commits it with the
-            # tables.
-            outer = self._connection.in_transaction
+            # is folded to one, the first kept, before the index is made.
             self._connection.execute(
                 """
                 DELETE FROM status_reports WHERE rowid NOT IN (
@@ -889,8 +890,6 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 )
                 """
             )
-            if not outer and self._connection.in_transaction:
-                self._connection.commit()
         columns = {
             str(row[1]) for row in self._connection.execute("PRAGMA table_info(assignments)")
         }
