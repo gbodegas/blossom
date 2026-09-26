@@ -17,6 +17,7 @@ import re
 import secrets
 import sqlite3
 from datetime import date
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,6 +25,7 @@ from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.assignment_status import statuses_for
+from blossom.captures import Author
 from blossom.intake import (
     ChangedSinceShown,
     Kept,
@@ -37,6 +39,7 @@ from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import came_from, draft_of
 from blossom.routes.note_details import choice_value
 from blossom.settings import Settings
+from blossom.stores.intake_decisions import INSERT_DECISION, DecisionToKeep
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from tests.support import (
     SAME_ORIGIN,
@@ -2028,6 +2031,342 @@ def test_a_kept_answer_that_cannot_be_read_saves_nothing_and_keeps_the_paste(
         assert "A saved answer about which homework a row is cannot be read right now" in words
         assert "Course Guide Due" in words
     assert after == before
+
+
+TOKEN = "b" * 32
+PLACEMENT = {
+    "channel": "EMAIL",
+    "status": "Missing",
+    "day": "2026-09-14",
+    "source_date_text": "09/14",
+}
+
+
+def placed(**change: object) -> str:
+    return json.dumps({**PLACEMENT, **change})
+
+
+def kept_row(mine: str, **change: object) -> tuple[object, ...]:
+    """A Same about her guide in the columns ``INSERT_DECISION`` takes, as the store writes
+    it, with ``change`` made to it."""
+    row: dict[str, object] = {
+        "kind": "same",
+        "course": "Health",
+        "title": "Course Guide Due",
+        "due_date": None,
+        "lands_on": mine,
+        "shown": json.dumps([mine]),
+        "basis": "a" * 64,
+        "creation": None,
+        "report": None,
+        "authored_by": "parent",
+        "channel": "PARENT_ENTRY",
+        "decided_at": "2026-09-14T12:00:00+00:00",
+        "decided_on": "2026-09-14",
+    }
+    return tuple({**row, **change}.values())
+
+
+def keep_row(client: TestClient, row: tuple[object, ...]) -> None:
+    store = store_of(client)
+    store._connection.execute(INSERT_DECISION, row)
+    store._connection.commit()
+
+
+OF_NO_SHAPE: dict[str, dict[str, object]] = {
+    "no homework shown": {"shown": "[]"},
+    "a fingerprint of no shape": {"basis": "not-a-fingerprint"},
+    "an author the store never names": {"authored_by": "unexpected-role"},
+    "a time that is no time": {"decided_at": "not-a-time"},
+    "a time with no zone": {"decided_at": "2026-09-14T12:00:00"},
+    "a time in another zone": {"decided_at": "2026-09-14T12:00:00+02:00"},
+    "a time not as the store writes one": {"decided_at": "2026-09-14T12:00:00Z"},
+    "a day that is no day": {"decided_on": "not-a-day"},
+    "a due date not as the store writes one": {"due_date": "20260909"},
+    "a channel the store never names": {"channel": "SOMEWHERE"},
+    "an answer landed on homework it never showed": {"shown": '["assignment-elsewhere"]'},
+    "the same homework shown twice": {"shown": '["MINE", "MINE"]'},
+    "an empty id among the homework shown": {"shown": '["", "MINE"]'},
+    "the homework shown as an object": {"shown": '{"MINE": 1}'},
+    "a creation token on a Same": {"creation": TOKEN},
+    "a report on a Same": {"report": placed()},
+    "a Which landed on homework it never showed": {
+        "kind": "which",
+        "shown": '["assignment-elsewhere"]',
+    },
+    "a Different with no token": {"kind": "different", "lands_on": f"assignment-{TOKEN}"},
+    "a Different with a token of no shape": {
+        "kind": "different",
+        "creation": "not-a-token",
+        "lands_on": "assignment-not-a-token",
+    },
+    "a Different landed elsewhere than its token": {"kind": "different", "creation": TOKEN},
+    "a Different that showed no homework": {
+        "kind": "different",
+        "creation": TOKEN,
+        "lands_on": f"assignment-{TOKEN}",
+        "shown": "[]",
+    },
+    "the homework shown stored as bytes": {
+        "kind": "different",
+        "creation": TOKEN,
+        "lands_on": f"assignment-{TOKEN}",
+        "shown": b'["assignment-elsewhere"]',
+    },
+    "a placement with no report": {"kind": "report_placed"},
+    "a placement missing a field": {
+        "kind": "report_placed",
+        "report": json.dumps({"channel": "EMAIL", "status": "Missing", "day": "2026-09-14"}),
+    },
+    "a placement with a field more": {"kind": "report_placed", "report": placed(grade="F")},
+    "a placement from a channel the store never names": {
+        "kind": "report_placed",
+        "report": placed(channel="SOMEWHERE"),
+    },
+    "a placement on a day that is no day": {"kind": "report_placed", "report": placed(day="09/14")},
+    "a placement with a status of no shape": {"kind": "report_placed", "report": placed(status=1)},
+    "a placement with a date line of no shape": {
+        "kind": "report_placed",
+        "report": placed(source_date_text=914),
+    },
+    "a placement that is no object": {"kind": "report_placed", "report": "[]"},
+    "a placement stored as bytes": {"kind": "report_placed", "report": placed().encode()},
+    "a placement about dated text": {
+        "kind": "report_placed",
+        "report": placed(),
+        "due_date": "2026-09-09",
+    },
+}
+OWNERS_FOUR = (
+    "no homework shown",
+    "a fingerprint of no shape",
+    "an author the store never names",
+    "a time that is no time",
+)
+
+
+def of_no_shape(mine: str, name: str) -> tuple[object, ...]:
+    change = {
+        field: value.replace("MINE", mine) if isinstance(value, str) else value
+        for field, value in OF_NO_SHAPE[name].items()
+    }
+    return kept_row(mine, **change)
+
+
+def refused_whole(status: int, page: str, before: object, after: object) -> None:
+    words = html.unescape(page)
+    assert status == 500
+    assert "A saved answer about which homework a row is cannot be read right now" in words
+    assert "Course Guide Due" in words
+    assert after == before
+
+
+@pytest.mark.parametrize("name", list(OF_NO_SHAPE))
+def test_a_kept_answer_in_a_shape_the_store_never_writes_settles_nothing(
+    tmp_path: pathlib.Path, name: str
+) -> None:
+    """A kept answer is read only in the shape the store writes; any other refuses the paste."""
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        original = read(client, GUIDE_CARD)
+        keep_row(client, of_no_shape(mine, name))
+        before = tables(client)
+        reviewed = client.post("/parent/inbox/read", data={"text": GUIDE_CARD})
+        saved = client.post("/parent/inbox/keep", data=review_form(original))
+        after = tables(client)
+
+    refused_whole(reviewed.status_code, reviewed.text, before, after)
+    refused_whole(saved.status_code, saved.text, before, after)
+
+
+@pytest.mark.parametrize("name", OWNERS_FOUR)
+@pytest.mark.parametrize(
+    "shape", ["an email line", "a typed entry", "a card before another", "a card after another"]
+)
+def test_a_kept_answer_of_no_shape_refuses_every_kind_of_paste_whole(
+    tmp_path: pathlib.Path, name: str, shape: str
+) -> None:
+    texts = {
+        "an email line": GUIDE_MISSING,
+        "a card before another": GUIDE_CARD + "\n" + LAB_CARD,
+        "a card after another": LAB_CARD + "\n" + GUIDE_CARD,
+    }
+    route, sent = (
+        ("/parent/inbox/enter", entry(due_date=""))
+        if shape == "a typed entry"
+        else ("/parent/inbox/read", {"text": texts[shape]})
+    )
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        original = client.post(route, data=sent)
+        keep_row(client, of_no_shape(mine, name))
+        before = tables(client)
+        reviewed = client.post(route, data=sent)
+        saved = client.post("/parent/inbox/keep", data=review_form(original.text))
+        after = tables(client)
+
+    assert original.status_code == 200
+    assert "Is this the same homework?" in original.text
+    refused_whole(reviewed.status_code, reviewed.text, before, after)
+    refused_whole(saved.status_code, saved.text, before, after)
+
+
+@pytest.mark.parametrize(
+    ("change", "asks"),
+    [
+        ({}, False),
+        ({"kind": "which"}, False),
+        ({"kind": "different", "creation": TOKEN, "lands_on": f"assignment-{TOKEN}"}, False),
+        ({"kind": "report_placed", "report": placed()}, True),
+        ({"kind": "report_placed", "report": placed(source_date_text=None)}, True),
+    ],
+)
+def test_a_kept_answer_as_the_store_writes_it_is_read(
+    tmp_path: pathlib.Path, change: dict[str, object], asks: bool
+) -> None:
+    """A Same, Which, or Different as written settles her homework; a placement doesn't."""
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        keep_row(client, kept_row(mine, **change))
+        page = read(client, GUIDE_CARD)
+
+    assert bool(question(page, 0)) is asks
+
+
+def test_once_a_kept_answer_of_no_shape_is_gone_the_first_question_asks_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        keep_row(client, of_no_shape(mine, "no homework shown"))
+        refused = client.post("/parent/inbox/read", data={"text": GUIDE_CARD})
+        store_of(client)._connection.execute("DELETE FROM intake_decisions")
+        store_of(client)._connection.commit()
+        page = read(client, GUIDE_CARD)
+        unanswered = client.post("/parent/inbox/keep", data=review_form(page))
+        form = {**review_form(page), "identity-0": choice_value(mine)}
+        saved = client.post("/parent/inbox/keep", data=form)
+        after_saved = tables(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        after_again = tables(client)
+        fresh = read(client, GUIDE_CARD)
+        resaved = client.post("/parent/inbox/keep", data=review_form(fresh))
+        after_resaved = tables(client)
+        recorded = decisions(client)
+
+    assert refused.status_code == 500
+    assert choices(page, 0) == [mine, DIFFERENT]
+    assert unanswered.status_code == 200
+    assert choices(unanswered.text, 0) == [mine, DIFFERENT]
+    assert saved.status_code == 303
+    assert again.status_code == 303
+    assert not question(fresh, 0)
+    assert resaved.status_code == 303
+    assert after_again == after_saved
+    assert after_resaved == after_saved
+    assert recorded == [("same", "Health", "Course Guide Due", "2026-09-09", mine, None)]
+
+
+def test_a_kept_different_of_no_shape_is_never_taken_for_the_answer_sent_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        form = {**review_form(read(client, GUIDE_CARD)), "identity-0": DIFFERENT}
+        token = form["creation-0"]
+        made = f"assignment-{token}"
+        keep_row(
+            client, kept_row(mine, kind="different", creation=token, lands_on=made, shown="[]")
+        )
+        before = tables(client)
+        sent = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+
+    refused_whole(sent.status_code, sent.text, before, after)
+
+
+def answer_about_hers(mine: str, **change: object) -> DecisionToKeep:
+    fields: dict[str, Any] = {
+        "kind": "same",
+        "course": "Health",
+        "title": "Course Guide Due",
+        "due_date": None,
+        "lands_on": mine,
+        "shown": (mine,),
+        "basis": "a" * 64,
+    }
+    return DecisionToKeep(**{**fields, **change})
+
+
+@pytest.mark.parametrize(
+    ("change", "author"),
+    [
+        ({"shown": ()}, "parent"),
+        ({"shown": ("assignment-elsewhere",)}, "parent"),
+        ({"basis": "not-a-fingerprint"}, "parent"),
+        ({"creation": TOKEN}, "parent"),
+        ({"report": PLACEMENT}, "parent"),
+        ({"kind": "different"}, "parent"),
+        ({"kind": "different", "creation": TOKEN}, "parent"),
+        ({"kind": "report_placed"}, "parent"),
+        ({"kind": "report_placed", "report": {**PLACEMENT, "grade": "F"}}, "parent"),
+        ({"kind": "report_placed", "report": PLACEMENT, "due_date": date(2026, 9, 9)}, "parent"),
+        ({}, "unexpected-role"),
+    ],
+)
+def test_a_direct_caller_cannot_keep_an_answer_the_store_could_not_read(
+    tmp_path: pathlib.Path, change: dict[str, object], author: str
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        store = store_of(client)
+        now, today = store.instruction_moment()
+        with pytest.raises(ValueError, match="cannot be kept"):
+            store.record_intake_decision(
+                answer_about_hers(mine, **change),
+                authored_by=cast("Author", author),
+                channel=SourceChannel.PARENT_ENTRY,
+                now=now,
+                today=today,
+            )
+        assert decisions(client) == []
+
+
+def test_answers_of_every_kind_read_back_the_same_once_the_file_is_opened_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        store = store_of(client)
+        now, today = store.instruction_moment()
+        for answer in (
+            answer_about_hers(mine),
+            answer_about_hers(mine, kind="which", due_date=date(2026, 9, 9)),
+            answer_about_hers(
+                mine, kind="different", creation=TOKEN, lands_on=f"assignment-{TOKEN}"
+            ),
+            answer_about_hers(mine, kind="report_placed", report=PLACEMENT),
+            answer_about_hers(
+                mine, kind="report_placed", report={**PLACEMENT, "source_date_text": None}
+            ),
+        ):
+            store.record_intake_decision(
+                answer,
+                authored_by=None,
+                channel=SourceChannel.PARENT_ENTRY,
+                now=now,
+                today=today,
+            )
+        first = store.intake_decisions([("Health", "Course Guide Due")])
+    with client_in(tmp_path) as client:
+        second = store_of(client).intake_decisions([("Health", "Course Guide Due")])
+
+    kept = second[("Health", "Course Guide Due")]
+    assert second == first
+    kinds = ["same", "which", "different", "report_placed", "report_placed"]
+    assert [item.kind for item in kept] == kinds
+    assert [item.authored_by for item in kept] == ["household"] * 5
+    assert kept[3].report == PLACEMENT
 
 
 # ------------------------------------------------------------------ the creation token

@@ -11,13 +11,14 @@ still covers what is on record.
 """
 
 import json
+import re
 import sqlite3
 import threading
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
-from typing import Final, Literal, cast
+from datetime import UTC, date, datetime, timedelta
+from typing import Final, Literal, cast, get_args
 
 from blossom.captures import Author
 from blossom.reconciliation import SourceChannel
@@ -26,6 +27,11 @@ DecisionKind = Literal["same", "different", "which", "report_placed"]
 """What a parent said about a school row: the same homework as hers, different homework
 with the same title, which of several it is, or which one a single report is about."""
 DECISION_KINDS: Final = ("same", "different", "which", "report_placed")
+CREATION: Final = re.compile(r"[0-9a-f]{32}")
+"""A creation token as the review page makes it."""
+FINGERPRINT: Final = re.compile(r"[0-9a-f]{64}")
+"""A fingerprint of what a question showed, as ``identity_basis`` makes it."""
+PLACEMENT_FIELDS: Final = frozenset({"channel", "status", "day", "source_date_text"})
 
 CREATE_INTAKE_DECISIONS: Final = """
 CREATE TABLE IF NOT EXISTS intake_decisions (
@@ -104,49 +110,103 @@ class DecisionToKeep:
     report: Mapping[str, str | None] | None = None
 
 
+def _day(text: object) -> date:
+    """A day exactly as the store writes one."""
+    day = date.fromisoformat(cast(str, text))
+    if day.isoformat() != text:
+        raise ValueError(text)
+    return day
+
+
+def _placement(text: object) -> dict[str, str | None]:
+    """A report's placement as the store writes it: the report's channel, status, day, and
+    the date written beside the work, if any."""
+    placed = json.loads(cast(str, text))
+    if not isinstance(placed, dict) or placed.keys() != PLACEMENT_FIELDS:
+        raise ValueError(text)
+    SourceChannel(placed["channel"])
+    _day(placed["day"])
+    beside = placed["source_date_text"]
+    if type(placed["status"]) is not str or not (beside is None or type(beside) is str):
+        raise ValueError(text)
+    return placed
+
+
+def _checked(sequence: int, fields: tuple[object, ...]) -> IntakeDecision:
+    """The columns after the sequence as the store writes them, or ``ValueError`` (or
+    ``TypeError``): each in its format, and the ones its kind needs in agreement. An answer
+    lands on homework its question showed, or on the one a Different's token makes."""
+    (
+        kind,
+        course,
+        title,
+        due,
+        lands_on,
+        shown,
+        basis,
+        creation,
+        report,
+        authored_by,
+        channel,
+        decided_at,
+        decided_on,
+    ) = fields
+    words = (course, title, lands_on, shown, basis, authored_by, channel, decided_at)
+    if kind not in DECISION_KINDS or not all(type(value) is str for value in words):
+        raise ValueError(kind)
+    named = json.loads(cast(str, shown))
+    if (
+        not isinstance(named, list)
+        or not named
+        or not all(type(item) is str and item for item in named)
+        or len(set(named)) != len(named)
+    ):
+        raise ValueError(shown)
+    if FINGERPRINT.fullmatch(cast(str, basis)) is None:
+        raise ValueError(basis)
+    if authored_by not in get_args(Author):
+        raise ValueError(authored_by)
+    SourceChannel(cast(str, channel))
+    moment = datetime.fromisoformat(cast(str, decided_at))
+    if moment.utcoffset() != timedelta(0) or moment.isoformat() != decided_at:
+        raise ValueError(decided_at)
+    _day(decided_on)
+    if not (report is None or type(report) is str):
+        raise ValueError(report)
+    if kind == "different":
+        if creation is None or CREATION.fullmatch(cast(str, creation)) is None:
+            raise ValueError(creation)
+        if lands_on != f"assignment-{creation}":
+            raise ValueError(lands_on)
+    elif creation is not None or lands_on not in named:
+        raise ValueError(lands_on)
+    placed = None if report is None else _placement(report)
+    due_date = None if due is None else _day(due)
+    if (kind == "report_placed") != (placed is not None) or (placed and due_date is not None):
+        raise ValueError(report)
+    return IntakeDecision(
+        sequence=sequence,
+        kind=cast(DecisionKind, kind),
+        course=cast(str, course),
+        title=cast(str, title),
+        due_date=due_date,
+        lands_on=cast(str, lands_on),
+        shown=tuple(named),
+        basis=cast(str, basis),
+        creation=cast(str | None, creation),
+        report=placed,
+        authored_by=cast(str, authored_by),
+        channel=cast(str, channel),
+    )
+
+
 def _decision_of(row: tuple[object, ...]) -> IntakeDecision:
     """One row as the store wrote it, or ``UnreadableDecision``."""
     try:
-        (
-            sequence,
-            kind,
-            course,
-            title,
-            due,
-            lands_on,
-            shown,
-            basis,
-            creation,
-            report,
-            authored_by,
-            channel,
-            _,
-            _,
-        ) = row
-        if kind not in DECISION_KINDS or type(sequence) is not int:
-            raise ValueError(kind)
-        if not all(type(value) is str for value in (course, title, lands_on, basis, channel)):
-            raise ValueError(lands_on)
-        named = json.loads(cast(str, shown))
-        if not isinstance(named, list) or not all(type(item) is str for item in named):
-            raise ValueError(shown)
-        placed = None if report is None else json.loads(cast(str, report))
-        if placed is not None and not isinstance(placed, dict):
-            raise ValueError(report)
-        return IntakeDecision(
-            sequence=sequence,
-            kind=cast(DecisionKind, kind),
-            course=cast(str, course),
-            title=cast(str, title),
-            due_date=None if due is None else date.fromisoformat(cast(str, due)),
-            lands_on=cast(str, lands_on),
-            shown=tuple(named),
-            basis=cast(str, basis),
-            creation=None if creation is None else str(creation),
-            report=placed,
-            authored_by=str(authored_by),
-            channel=cast(str, channel),
-        )
+        sequence, *fields = row
+        if type(sequence) is not int:
+            raise ValueError(sequence)
+        return _checked(sequence, tuple(fields))
     except (TypeError, ValueError) as error:
         msg = "a saved answer about which homework a row is about cannot be read"
         raise UnreadableDecision(msg) from error
@@ -193,24 +253,28 @@ class IntakeDecisionRecords:
         now: datetime,
         today: date,
     ) -> None:
-        """Keep one answer, in the caller's write transaction; a second decision with the
-        same creation token is refused by the table."""
+        """Keep one answer, in the caller's write transaction. An answer the store couldn't
+        read back is refused before anything is written, and a second decision with the same
+        creation token is refused by the table."""
+        fields = (
+            decision.kind,
+            decision.course,
+            decision.title,
+            None if decision.due_date is None else decision.due_date.isoformat(),
+            decision.lands_on,
+            json.dumps(list(decision.shown)),
+            decision.basis,
+            decision.creation,
+            None if decision.report is None else json.dumps(dict(decision.report)),
+            authored_by or "household",
+            channel.value,
+            now.astimezone(UTC).isoformat(),
+            today.isoformat(),
+        )
+        try:
+            _checked(0, fields)
+        except (TypeError, ValueError) as error:
+            msg = "this answer about which homework a row is about cannot be kept"
+            raise ValueError(msg) from error
         with self._lock, self._writing():
-            self._connection.execute(
-                INSERT_DECISION,
-                (
-                    decision.kind,
-                    decision.course,
-                    decision.title,
-                    None if decision.due_date is None else decision.due_date.isoformat(),
-                    decision.lands_on,
-                    json.dumps(list(decision.shown)),
-                    decision.basis,
-                    decision.creation,
-                    None if decision.report is None else json.dumps(dict(decision.report)),
-                    authored_by or "household",
-                    channel.value,
-                    now.astimezone(UTC).isoformat(),
-                    today.isoformat(),
-                ),
-            )
+            self._connection.execute(INSERT_DECISION, fields)

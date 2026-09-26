@@ -87,7 +87,12 @@ from blossom.school_instructions import (
     revision_of,
     settle,
 )
-from blossom.stores.intake_decisions import DecisionKind, DecisionToKeep, IntakeDecision
+from blossom.stores.intake_decisions import (
+    CREATION,
+    DecisionKind,
+    DecisionToKeep,
+    IntakeDecision,
+)
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -115,8 +120,6 @@ NEW_WORK: Final = "new"
 DIFFERENT: Final = "different"
 """The review form's word for different homework with the same title. Homework on record
 is sent with a prefix, so no id can be read as this word."""
-CREATION: Final = re.compile(r"[0-9a-f]{32}")
-"""A creation token as the review page makes it."""
 KEPT_NOTE: Final = (
     "Her note will stay. Your note won't be saved to this assignment. The other changes can "
     "still be saved."
