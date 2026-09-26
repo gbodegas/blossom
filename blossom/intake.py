@@ -56,6 +56,7 @@ heading's first name is read as nothing and never kept.
 """
 
 import dataclasses
+import functools
 import hashlib
 import json
 import re
@@ -65,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
-from blossom.candidates import readings_for
+from blossom.candidates import CandidateReading, readings_for
 from blossom.captures import Author, candidate_basis
 from blossom.pairing import pair as pair  # the one rule, kept where both askers share it
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel, SourceRecord
@@ -91,7 +92,7 @@ from blossom.stores.project_state import (
     ProjectStateStore,
     StatusReport,
 )
-from blossom.stores.school_instructions import UnreadableInstruction
+from blossom.stores.school_instructions import InstructionReadings, UnreadableInstruction
 
 PORTAL_CONFIDENCE: Final = 0.9
 """The portal's own page, pasted whole: the school's word, as it wrote it."""
@@ -110,7 +111,8 @@ ANOTHER_OCCURRENCE: Final = timedelta(days=7)
 UPDATE: Final = "update"
 NEW_WORK: Final = "new"
 DIFFERENT: Final = "different"
-"""The answer that a row is different homework with the same title as the homework shown."""
+"""The review form's word for different homework with the same title. Homework on record
+is sent with a prefix, so no id can be read as this word."""
 CREATION: Final = re.compile(r"[0-9a-f]{32}")
 """A creation token as the review page makes it."""
 KEPT_NOTE: Final = (
@@ -458,6 +460,12 @@ def _same_report(one: StatusReport, other: StatusReport) -> bool:
         other.status,
         other.reported_on,
     )
+
+
+def _same_report_as_written(one: StatusReport, other: StatusReport) -> bool:
+    """The same report from the same line of the school's text: two Missing lines of one day
+    that begin with different dates are two reports."""
+    return _same_report(one, other) and one.source_date_text == other.source_date_text
 
 
 def read_text(text: str, *, now: datetime, today: date) -> Read:
@@ -877,13 +885,17 @@ class Change:
 
     @property
     def note_shown(self) -> str | None:
-        """What the review page says the typed note does, as the page signs it. Where a
-        note is saved already, whether it is replaced or hers stays, a fingerprint of it
-        comes along, so a save that finds another note there asks again."""
-        if self.note_change in (None, "fill") or self.standing is None:
-            return self.note_change
+        """What the review page says the typed note does, as the page signs it: ``fill``,
+        or, where a note is saved already, ``update``, ``kept``, or ``same`` for a typed
+        note that matches it, with a fingerprint of that note, so a save that finds
+        another note there asks again."""
+        outcome = self.note_change
+        if outcome is None and self.reading.note and self.standing is not None:
+            outcome = "same"
+        if outcome in (None, "fill") or self.standing is None:
+            return outcome
         saved = (self.standing.note or "").encode("utf-8")
-        return f"{self.note_change}:{hashlib.sha256(saved).hexdigest()[:16]}"
+        return f"{outcome}:{hashlib.sha256(saved).hexdigest()[:16]}"
 
     @property
     def assignment_id(self) -> str:
@@ -1093,10 +1105,11 @@ class ShownInstruction:
 @dataclass(frozen=True)
 class IdentityAnswer:
     """A parent's answer to which homework a card is about, with what the card showed: an id
-    it listed or ``DIFFERENT``, the ids it listed in order, the fingerprint of all it showed,
-    and, for different homework, the creation token the review page made for the card."""
+    it listed, or ``None`` for different homework; the ids it listed in order; the
+    fingerprint of all it showed; and, for different homework, the creation token the
+    review page made for the card."""
 
-    choice: str
+    choice: str | None
     shown: tuple[str, ...]
     basis: str
     creation: str | None = None
@@ -1200,7 +1213,7 @@ def _stands(
     token; the same or which, by the name, the due date, and where it landed; a report's
     placement, only for that same report."""
     for item in decided:
-        if reply.choice == DIFFERENT:
+        if reply.choice is None:
             if reply.creation is not None and item.creation == reply.creation:
                 return item
             continue
@@ -1217,16 +1230,17 @@ def _stands(
 
 
 def identity_basis(
-    store: ProjectStateStore,
+    shown_as: Mapping[str, CandidateReading],
     candidates: Sequence[Assignment],
     decided: tuple[IntakeDecision, ...],
 ) -> str:
     """The fingerprint of an identity question: every candidate as a row of homework shows
-    it, with its note, and every answer kept for the name. A choice sent back is checked
-    against it in the save's transaction, so an answer about homework that has since
-    arrived, left, changed, or been answered elsewhere is put again."""
-    shown = candidate_basis(readings_for(store, list(candidates)))
-    notes = sorted([item.assignment_id, item.note] for item in candidates)
+    it (``shown_as``), with its note and who wrote it, and every answer kept for the name.
+    A choice sent
+    back is checked against it in the save's transaction, so an answer about homework that
+    has since arrived, left, changed, or been answered elsewhere is put again."""
+    shown = candidate_basis([shown_as[item.assignment_id] for item in candidates])
+    notes = sorted([item.assignment_id, item.note, item.note_by] for item in candidates)
     answered = [item.sequence for item in decided]
     serialized = json.dumps([shown, notes, answered], separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -1352,6 +1366,44 @@ class _Seen:
         return tuple(fresh)
 
 
+class _OnRecord:
+    """What the rows a text could land on keep already: their claims, the school's reports,
+    the texts of the school's instructions, and each row as a candidate shows it. Each is
+    read for every such row at once, the first time a comparison asks, so a text of any
+    length costs the same few reads."""
+
+    def __init__(self, store: ProjectStateStore, rows: Sequence[Assignment]) -> None:
+        self._store = store
+        self._rows = list(rows)
+        self._names = [row.assignment_id for row in self._rows]
+
+    @functools.cached_property
+    def _kept(
+        self,
+    ) -> tuple[dict[str, list[SourceRecord]], dict[str, list[StatusReport]], InstructionReadings]:
+        return (
+            self._store.deadline_records_by_assignment(self._names),
+            self._store.status_reports_by_assignment(),
+            self._store.school_instruction_readings(self._names),
+        )
+
+    def claims(self, assignment_id: str) -> list[SourceRecord]:
+        return self._kept[0].get(assignment_id, [])
+
+    def reports(self, assignment_id: str) -> list[StatusReport]:
+        return self._kept[1].get(assignment_id, [])
+
+    def texts(self, assignment_id: str) -> set[str]:
+        """The school's instructions kept under a row, by text; none where they can't be
+        read, so nothing is taken as saved there."""
+        standing = self._kept[2].readable.get(assignment_id)
+        return set() if standing is None else {item.text for item in standing.kept}
+
+    @functools.cached_property
+    def shown(self) -> dict[str, CandidateReading]:
+        return {item.assignment_id: item for item in readings_for(self._store, self._rows)}
+
+
 def changes_for(
     items: tuple[Reading, ...],
     store: ProjectStateStore,
@@ -1406,23 +1458,36 @@ def changes_for(
     mine = store.assignments_made_from_notes()
     apart = store.kept_apart()
     decided = store.intake_decisions(reading.pair for reading in items)
-    held_claims: dict[str, list[SourceRecord]] = {}
-    held_reports: dict[str, list[StatusReport]] = {}
+    names = dict.fromkeys(reading.pair for reading in items)
+    saved = _OnRecord(store, [item for name in names for item in on_record.get(name, [])])
+
+    def writes_nothing(item: Assignment, reading: Reading) -> bool:
+        """Whether landing a reading on a row on record would write nothing: every claim,
+        report, and school instruction it brings is kept there already, and nothing typed
+        with it differs from the row: its note, its type, or an assigned date the row lacks."""
+        name = item.assignment_id
+        return (
+            all(
+                any(_same_claim(one, other) for other in saved.claims(name))
+                for one in reading.claims
+            )
+            and all(
+                any(_same_report_as_written(one, other) for other in saved.reports(name))
+                for one in reading.reports
+            )
+            and (
+                not reading.instructions
+                or {seen.text for seen in reading.instructions} <= saved.texts(name)
+            )
+            and _note_change(item, reading) is None
+            and not (reading.kind_chosen and reading.kind != item.kind)
+            and not (reading.assigned_on is not None and item.assigned_on is None)
+        )
 
     def holds(item: Assignment, reading: Reading) -> bool:
-        """Whether a row on record holds every claim and report a reading makes: the same
-        text, saved there before."""
-        if not reading.claims and not reading.reports:
-            return False
-        name = item.assignment_id
-        if name not in held_claims:
-            held_claims[name] = store.deadline_records(name)
-            held_reports[name] = store.status_reports(name)
-        return all(
-            any(_same_claim(one, other) for other in held_claims[name]) for one in reading.claims
-        ) and all(
-            any(_same_report(one, other) for other in held_reports[name]) for one in reading.reports
-        )
+        """Whether a row on record holds everything a reading brings: the same text, saved
+        there before, which moves nothing when saved again."""
+        return bool(reading.claims or reading.reports) and writes_nothing(item, reading)
 
     seen = _Seen(store)
     anchors: dict[tuple[str, str], int] = {}
@@ -1439,9 +1504,17 @@ def changes_for(
         stale = False
         if reply is not None or where.asks is not None:
             shown = tuple(item.assignment_id for item in where.candidates)
-            basis = "" if where.asks is None else identity_basis(store, where.candidates, known)
+            basis = (
+                "" if where.asks is None else identity_basis(saved.shown, where.candidates, known)
+            )
             standing = None if reply is None else _stands(reply, reading, known)
-            if standing is not None and standing.lands_on in by_id:
+            # An answer kept already is a retry only when everything the card brings is
+            # saved where it landed; anything new is judged by the question as it stands.
+            if (
+                standing is not None
+                and standing.lands_on in by_id
+                and writes_nothing(by_id[standing.lands_on], reading)
+            ):
                 where = _Where(lands=by_id[standing.lands_on])
             elif reply is None:
                 changes.append(_asked(key, reading, where, shown, basis, kinds, mine))
@@ -1449,9 +1522,9 @@ def changes_for(
             elif (
                 where.asks is None
                 or reply.basis != basis
-                or (reply.choice != DIFFERENT and reply.choice not in shown)
+                or (reply.choice is not None and reply.choice not in shown)
                 or (
-                    reply.choice == DIFFERENT
+                    reply.choice is None
                     and (reply.creation is None or CREATION.fullmatch(reply.creation) is None)
                 )
             ):
@@ -1461,7 +1534,7 @@ def changes_for(
                         _asked(key, reading, where, shown, basis, kinds, mine, stale=True)
                     )
                     continue
-            elif reply.choice == DIFFERENT:
+            elif reply.choice is None:
                 made = f"assignment-{reply.creation}"
                 decision = _decision("different", reading, made, shown, basis, reply.creation)
                 change = dataclasses.replace(
@@ -1544,7 +1617,8 @@ def answers_to_no_question(
     asked: Mapping[int, tuple[int, str]] | None = None,
 ) -> frozenset[int]:
     """The cards an answer about the school's instructions is given on where the review page
-    puts no such question, from ``changes`` read with no answer given: a card the text does
+    puts no such question, from ``changes`` read with the answers about which homework each
+    card is and no answer about instructions: a card the text does
     not have; a card that lands on an assignment with no decision; a card of an assignment
     that needs a choice that did not ask it in ``asked``, even where it carries the decision
     now; a card that asked at another revision or about another assignment; and a decision
@@ -1560,13 +1634,14 @@ def answers_to_no_question(
     question the page put. A card folded into another answers for the assignment it
     joins, and only where the page asked on that card: a question the fold raises is
     one the page never asked. A card that lands nowhere yet carries no decision, and
-    nothing reads its answer here.
+    nothing reads its answer here; nor does a card whose answer about which homework it
+    is was made against facts that changed, which leaves the whole text unsaved.
     """
     decided = {change.key: change for change in changes if change.instructions is not None}
     carriers = {change.assignment_id: change for change in decided.values()}
     cards = {change.key: change for change in changes}
     asked = asked or {}
-    unlanded = {change.key for change in changes if change.lands_nowhere}
+    unlanded = {change.key for change in changes if change.lands_nowhere or change.identity_stale}
     never: set[int] = set()
     for key, answer in answers.items():
         if key in unlanded:
@@ -1995,7 +2070,9 @@ def keep(
     with store.comparing_and_writing():
         if asked is not None:
             never_put = answers_to_no_question(
-                changes_for(items, store, occurrences=occurrences, kinds=kinds),
+                changes_for(
+                    items, store, occurrences=occurrences, kinds=kinds, identities=identities
+                ),
                 submitted_answers(instruction_answers or {}),
                 asked,
             )

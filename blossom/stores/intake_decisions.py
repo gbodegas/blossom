@@ -52,7 +52,9 @@ DECISIONS_NAMED: Final = """
 SELECT sequence, kind, course, title, due_date, lands_on, shown, basis, creation, report,
        authored_by, channel, decided_at, decided_on
 FROM intake_decisions
-WHERE course = ? AND title = ?
+WHERE (course, title) IN (
+    SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?)
+)
 ORDER BY sequence
 """
 INSERT_DECISION: Final = """
@@ -168,14 +170,19 @@ class IntakeDecisionRecords:
     def intake_decisions(
         self, pairs: Iterable[tuple[str, str]]
     ) -> dict[tuple[str, str], tuple[IntakeDecision, ...]]:
-        """Every answer kept for each class and title, oldest first. Read in the caller's
-        transaction, so a save reads what it will be judged against."""
+        """Every answer kept for each class and title, oldest first, in one statement however
+        many are asked about. Read in the caller's transaction, so a save reads what it will
+        be judged against."""
+        wanted = list(dict.fromkeys(pairs))
         with self._lock:
-            found: dict[tuple[str, str], tuple[IntakeDecision, ...]] = {}
-            for course, title in dict.fromkeys(pairs):
-                rows = self._connection.execute(DECISIONS_NAMED, (course, title)).fetchall()
-                found[(course, title)] = tuple(_decision_of(row) for row in rows)
-            return found
+            rows = self._connection.execute(
+                DECISIONS_NAMED, (json.dumps([list(name) for name in wanted]),)
+            ).fetchall()
+        found: dict[tuple[str, str], list[IntakeDecision]] = {name: [] for name in wanted}
+        for row in rows:
+            decision = _decision_of(row)
+            found[(decision.course, decision.title)].append(decision)
+        return {name: tuple(decisions) for name, decisions in found.items()}
 
     def record_intake_decision(
         self,

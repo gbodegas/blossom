@@ -66,6 +66,7 @@ from blossom.routes.instruction_answers import (
     said_back,
 )
 from blossom.routes.navigation import instructions_review_href
+from blossom.routes.note_details import choice_from, choice_value
 from blossom.routes.parent import review_page
 from blossom.routes.student import viewer_of
 from blossom.school_instructions import SubmittedChoice
@@ -360,13 +361,21 @@ def identity_answers(
         if head == "creation":
             unreadable = unreadable or value != question.creation
             continue
-        if value != DIFFERENT and value not in question.shown:
+        chosen = None if value == DIFFERENT else homework_named(value)
+        if value != DIFFERENT and (chosen is None or chosen not in question.shown):
             unreadable = True
             continue
         answers[int(card)] = IdentityAnswer(
-            value, question.shown, question.basis, question.creation
+            chosen, question.shown, question.basis, question.creation
         )
     return answers, unreadable
+
+
+def homework_named(value: str) -> str | None:
+    """The homework an identity choice names, as the page writes it with ``choice_value``,
+    or ``None`` for anything else."""
+    read = choice_from(value)
+    return read[1] if read is not None and read[0] == "same" else None
 
 
 def came_from(candidate: Assignment) -> str | None:
@@ -877,7 +886,11 @@ def preview_page(
                 },
             ),
             "creations": {card: question.creation for card, question in signed.items()},
-            "answered": {card: answer.choice for card, answer in answered.items()},
+            "answered": {
+                card: DIFFERENT if answer.choice is None else choice_value(answer.choice)
+                for card, answer in answered.items()
+            },
+            "same_as": choice_value,
             "came_from": came_from,
             "kept_note": any(change.note_change == "kept" for change in shown),
             "kind_choices": KIND_CHOICES,
@@ -1018,9 +1031,6 @@ async def keep_readings(request: Request, state: State) -> Response:
     # a write the file refuses, which is never tried again.
     try:
         occurrences, kinds = answers_from(form, unasked_for(state, read))
-        # An answer where the page puts no such question is no form the page wrote. The
-        # questions the page signed say where it asked, and at which revision.
-        changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
         page_made = made_with(state.result_key, form, draft)
         identities, identity_unreadable = identity_answers(form, page_made)
         if identity_unreadable:
@@ -1041,6 +1051,16 @@ async def keep_readings(request: Request, state: State) -> Response:
                 notice=IDENTITY_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
+        # An answer where the page puts no such question is no form the page wrote. The
+        # questions the page signed say where it asked, at which revision, and about which
+        # assignment, as the answers about which homework each card is land it.
+        changes = changes_for(
+            read.items,
+            state.project_state,
+            occurrences=occurrences,
+            kinds=kinds,
+            identities=identities,
+        )
         never_put = answers_to_no_question(changes, instruction_answers, page_made.asked)
         unreadable = read_answers.malformed or bool(never_put)
         contradicted = any(answer.contradicts for answer in instruction_answers.values())

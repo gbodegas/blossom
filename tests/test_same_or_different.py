@@ -23,13 +23,22 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.intake import ChangedSinceShown, Kept, keep, read_text, spoken_day
+from blossom.intake import (
+    ChangedSinceShown,
+    Kept,
+    changes_for,
+    keep,
+    read_text,
+    spoken_day,
+)
 from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import came_from, draft_of
+from blossom.routes.note_details import choice_value
 from blossom.settings import Settings
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from tests.support import (
     SAME_ORIGIN,
+    fixture_clock,
     fixture_settings,
     homework_from_a_note,
     store_of,
@@ -100,8 +109,10 @@ def question(page: str, key: int) -> str:
 
 
 def choices(page: str, key: int) -> list[str]:
-    """The values the identity question on one card offers, in order."""
-    return re.findall(rf'name="identity-{key}" value="([^"]+)"', question(page, key))
+    """What the identity question on one card offers, in order: the ids of the homework
+    it lists, then Different."""
+    values = re.findall(rf'name="identity-{key}" value="([^"]+)"', question(page, key))
+    return [value if value == DIFFERENT else value.removeprefix("same:") for value in values]
 
 
 def kept_tables(client: TestClient) -> list[str]:
@@ -255,12 +266,16 @@ def test_same_homework_puts_the_school_facts_on_hers_and_a_later_report_needs_no
     with client_in(tmp_path) as client:
         mine = hers(client, due=date(2026, 9, 10))
         page = read(client, GUIDE_CARD)
-        saved = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": mine})
+        saved = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(mine)}
+        )
         store = store_of(client)
         row = store.one_assignment(mine)
         kept = store.school_instruction_readings([mine]).readable[mine]
         claims = [claim.asserted_value for claim in store.deadline_records(mine)]
-        again = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": mine})
+        again = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(mine)}
+        )
         first = decisions(client)
         rows = [item.assignment_id for item in store.all_assignments()]
     with client_in(tmp_path, today="2026-09-15") as client:
@@ -306,10 +321,12 @@ def test_different_homework_is_its_own_and_each_later_report_asks_which(
         rows = sorted(item.assignment_id for item in store_of(client).all_assignments())
         report_page = read(client, GUIDE_MISSING)
         placed = client.post(
-            "/parent/inbox/keep", data={**review_form(report_page), "identity-0": theirs}
+            "/parent/inbox/keep",
+            data={**review_form(report_page), "identity-0": choice_value(theirs)},
         )
         replayed = client.post(
-            "/parent/inbox/keep", data={**review_form(report_page), "identity-0": theirs}
+            "/parent/inbox/keep",
+            data={**review_form(report_page), "identity-0": choice_value(theirs)},
         )
         repeated = read(client, GUIDE_MISSING)
         recorded = decisions(client)
@@ -318,7 +335,8 @@ def test_different_homework_is_its_own_and_each_later_report_asks_which(
     with client_in(tmp_path, today="2026-09-22") as client:
         next_page = read(client, GUIDE_MISSING_LATER)
         next_placed = client.post(
-            "/parent/inbox/keep", data={**review_form(next_page), "identity-0": theirs}
+            "/parent/inbox/keep",
+            data={**review_form(next_page), "identity-0": choice_value(theirs)},
         )
         recorded_later = decisions(client)
 
@@ -421,7 +439,9 @@ def test_the_same_text_pasted_again_after_more_homework_arrived_lands_where_it_w
     with client_in(tmp_path) as client:
         mine = hers(client)
         first = read(client, GUIDE_CARD)
-        client.post("/parent/inbox/keep", data={**review_form(first), "identity-0": mine})
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
         store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 9))], {})
         again = read(client, GUIDE_CARD)
         before = tables(client)
@@ -457,6 +477,90 @@ def test_text_saved_before_lands_where_it_was_saved_without_a_question(
     assert after == before
 
 
+GUIDE_INSTRUCTION = "Return the course guide signed by a parent after reading it."
+GUIDE_CHANGED = GUIDE_CARD.replace(GUIDE_INSTRUCTION, "Bring only the blue copy.")
+
+
+def instruction_texts(client: TestClient, name: str) -> tuple[str, ...]:
+    kept = store_of(client).school_instruction_readings([name]).readable
+    return () if name not in kept else tuple(item.text for item in kept[name].kept)
+
+
+@pytest.mark.parametrize("arrives", ["before-the-review", "before-the-save"])
+def test_saved_text_with_a_new_instruction_asks_which_once_another_shares_the_date(
+    tmp_path: pathlib.Path, arrives: str
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        first = read(client, GUIDE_CARD)
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
+        if arrives == "before-the-review":
+            store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 9))], {})
+        page = read(client, GUIDE_CHANGED)
+        form = review_form(page)
+        if arrives == "before-the-save":
+            form[box_for(page, 0, "Bring only the blue copy.")] = "1"
+            store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 9))], {})
+        before = tables(client)
+        unanswered = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+        saved = client.post(
+            "/parent/inbox/keep",
+            data={**review_form(unanswered.text), "identity-0": choice_value(GUIDE_COPY)},
+        )
+        on_the_copy = instruction_texts(client, GUIDE_COPY)
+        on_hers = instruction_texts(client, mine)
+
+    assert unanswered.status_code == (200 if arrives == "before-the-review" else 409)
+    assert after == before
+    assert sorted(choices(unanswered.text, 0)) == sorted([mine, GUIDE_COPY, DIFFERENT])
+    assert saved.status_code == 303
+    assert on_the_copy == ("Bring only the blue copy.",)
+    assert on_hers == (GUIDE_INSTRUCTION,)
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [{"note": "New words."}, {"kind": "TASK"}, {"assigned_on": "2026-09-14"}],
+    ids=["note", "type", "assigned"],
+)
+def test_an_entry_saved_before_that_changes_a_field_asks_which_once_another_shares_the_date(
+    tmp_path: pathlib.Path, typed: dict[str, str]
+) -> None:
+    with client_in(tmp_path) as client:
+        made = client.post("/parent/inbox/enter", data=art_entry("Old words."))
+        client.post("/parent/inbox/keep", data=review_form(made.text))
+        store = store_of(client)
+        (first,) = store.all_assignments()
+        twin = first.model_copy(
+            update={
+                "assignment_id": "assignment-art-sketchbook-school",
+                "note": None,
+                "origins": {"record": SourceChannel.LMS},
+            }
+        )
+        store.put_on_record([twin], {})
+        changed = client.post("/parent/inbox/enter", data={**art_entry("Old words."), **typed})
+        repeated = client.post("/parent/inbox/enter", data=art_entry("Old words."))
+
+    assert sorted(choices(changed.text, 0)) == sorted(
+        [first.assignment_id, twin.assignment_id, DIFFERENT]
+    )
+    assert question(repeated.text, 0) == ""
+
+
+def test_an_entry_with_no_dates_about_her_homework_asks_same_or_different(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        shown = client.post("/parent/inbox/enter", data=entry(due_date=""))
+
+    assert choices(shown.text, 0) == [mine, DIFFERENT]
+
+
 def test_her_homework_kept_apart_when_her_note_was_added_is_not_asked_about_again(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -489,11 +593,14 @@ def test_an_answer_that_never_showed_a_homework_now_due_that_day_asks_again(
     with client_in(tmp_path) as client:
         mine = hers(client)
         first = read(client, GUIDE_CARD)
-        client.post("/parent/inbox/keep", data={**review_form(first), "identity-0": mine})
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
         store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 9))], {})
         due_card = read(client, GUIDE_DUE_CARD)
         answered = client.post(
-            "/parent/inbox/keep", data={**review_form(due_card), "identity-0": GUIDE_COPY}
+            "/parent/inbox/keep",
+            data={**review_form(due_card), "identity-0": choice_value(GUIDE_COPY)},
         )
         typed = client.post("/parent/inbox/enter", data=entry())
         saved = client.post("/parent/inbox/keep", data=review_form(typed.text))
@@ -533,6 +640,56 @@ def test_two_known_homework_under_one_name_ask_which_and_are_never_combined(
     assert after == before
 
 
+def test_homework_whose_id_is_the_word_for_different_is_chosen_as_itself(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        store = store_of(client)
+        (later,) = school_rows(client, date(2026, 10, 8))
+        store.put_on_record(
+            [
+                Assignment(
+                    assignment_id=DIFFERENT,
+                    course="Science",
+                    title=LAB_LOG,
+                    due_date=date(2026, 10, 1),
+                    dependencies=[],
+                    reported_submission_status="unknown",
+                    kind=AssignmentKind.HOMEWORK,
+                    origins={"record": SourceChannel.LMS},
+                )
+            ],
+            {},
+        )
+        page = read(client, lab_card("10/15/2026"))
+        saved = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(DIFFERENT)}
+        )
+        rows = sorted(item.assignment_id for item in store.all_assignments())
+        recorded = decisions(client)
+
+    assert sorted(choices(page, 0)) == sorted([DIFFERENT, later, DIFFERENT])
+    assert saved.status_code == 303
+    assert rows == sorted([DIFFERENT, later])
+    assert [(kind, lands_on) for kind, _, _, _, lands_on, _ in recorded] == [("which", DIFFERENT)]
+
+
+def test_a_second_missing_report_with_another_date_asks_which_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        first = read(client, LAB_MISSING)
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(early)}
+        )
+        repeated = read(client, LAB_MISSING)
+        another = read(client, LAB_MISSING.replace("09/30", "10/02"))
+
+    assert question(repeated, 0) == ""
+    assert sorted(choices(another, 0)) == sorted([early, late, DIFFERENT])
+
+
 def test_a_date_that_one_of_two_has_lands_there_without_a_question(tmp_path: pathlib.Path) -> None:
     with client_in(tmp_path) as client:
         early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
@@ -551,7 +708,8 @@ TYPED_LAB_LOG = "assignment-lab-log-typed"
 
 def said_of(page: str, key: int, name: str) -> str:
     """What the identity question on one card says of one homework."""
-    label = question(page, key).split(f'value="{name}">', 1)[1].split("</label>", 1)[0]
+    label = question(page, key).split(f'value="{choice_value(name)}">', 1)[1]
+    label = label.split("</label>", 1)[0]
     return html.unescape(label)
 
 
@@ -633,7 +791,7 @@ def test_an_answer_that_brings_up_an_instruction_question_is_kept_for_the_save(
         client.post("/parent/inbox/keep", data=review_form(first))
         page = read(client, lab_card("10/15/2026") + "Bring the log and goggles.\n")
         answered = client.post(
-            "/parent/inbox/keep", data={**review_form(page), "identity-0": early}
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(early)}
         )
         form = review_form(answered.text)
         saved = client.post(
@@ -647,7 +805,7 @@ def test_an_answer_that_brings_up_an_instruction_question_is_kept_for_the_save(
     assert answered.status_code == 200
     assert question(answered.text, 0) == ""
     assert 'id="instructions-question-0"' in answered.text
-    assert form["identity-0"] == early
+    assert form["identity-0"] == choice_value(early)
     assert saved.status_code == 303
     assert kept[early].texts == ("Bring the log and goggles.",)
     assert [(kind, lands_on) for kind, _, _, _, lands_on, _ in recorded] == [("which", early)]
@@ -664,7 +822,9 @@ def test_an_answer_to_a_question_no_longer_asked_is_not_kept_for_the_save(
             "UPDATE assignments SET due_date = ? WHERE assignment_id = ?", ("2026-10-15", late)
         )
         store._connection.commit()
-        refused = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": early})
+        refused = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(early)}
+        )
         form = review_form(refused.text)
         saved = client.post("/parent/inbox/keep", data=form)
 
@@ -684,7 +844,9 @@ def test_a_different_answer_keeps_its_token_while_another_card_still_asks(
         form = review_form(page)
         returned = client.post("/parent/inbox/keep", data={**form, "identity-0": DIFFERENT})
         carried = review_form(returned.text)
-        saved = client.post("/parent/inbox/keep", data={**carried, "identity-1": early})
+        saved = client.post(
+            "/parent/inbox/keep", data={**carried, "identity-1": choice_value(early)}
+        )
         made = [
             item.assignment_id
             for item in store_of(client).all_assignments()
@@ -700,6 +862,153 @@ def test_a_different_answer_keeps_its_token_while_another_card_still_asks(
     assert made == [f"assignment-{form['creation-0']}"]
 
 
+def rival_due(path: pathlib.Path, due: date) -> None:
+    """Another Lab Log saved through a connection of its own."""
+    other = ProjectStateStore.open(path, fixture_clock())
+    try:
+        other.put_on_record(
+            [
+                Assignment(
+                    assignment_id="assignment-lab-log-rival",
+                    course="Science",
+                    title=LAB_LOG,
+                    due_date=due,
+                    dependencies=[],
+                    reported_submission_status="unknown",
+                    kind=AssignmentKind.HOMEWORK,
+                    origins={"record": SourceChannel.LMS},
+                )
+            ],
+            {},
+        )
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize(
+    "altered", ["another-homework", "a-page-that-asked-nothing", "a-rival-during-the-save"]
+)
+def test_an_instruction_answer_holds_to_the_homework_its_question_asked_about(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, altered: str
+) -> None:
+    moved: list[dict[str, list[tuple[object, ...]]]] = []
+    with client_in(tmp_path) as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        first = read(client, lab_card("10/01/2026") + "Bring the log.\n")
+        client.post("/parent/inbox/keep", data=review_form(first))
+        second = read(client, lab_card("10/08/2026") + "Bring the log.\n")
+        client.post("/parent/inbox/keep", data=review_form(second))
+        page = read(client, lab_card("10/15/2026") + "Bring the log and goggles.\n")
+        answered = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(early)}
+        )
+        form = {
+            **review_form(answered.text),
+            box_for(answered.text, 0, "Bring the log and goggles."): "1",
+        }
+        if altered == "another-homework":
+            form["identity-0"] = choice_value(late)
+        elif altered == "a-page-that-asked-nothing":
+            form["made_with"] = review_form(page)["made_with"]
+        else:
+
+            def racing(*args: object, **kwargs: object) -> object:
+                rival_due(tmp_path / "blossom.sqlite3", date(2026, 10, 15))
+                moved.append(tables(client))
+                return keep(*args, **kwargs)  # type: ignore[arg-type]
+
+            monkeypatch.setattr("blossom.routes.inbox.keep", racing)
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+
+    assert refused.status_code == (409 if altered == "a-rival-during-the-save" else 422)
+    assert after == (moved[0] if moved else before)
+
+
+def test_an_earlier_answer_is_no_receipt_for_a_card_that_brings_something_new(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Same was answered for the Assigned card. The Due card asks which of two, and a third
+    arrives before its save: the old answer never saved the Due card's date."""
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        first = read(client, GUIDE_CARD)
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
+        store = store_of(client)
+        store.put_on_record([copy_of_the_guide(date(2026, 9, 9))], {})
+        page = read(client, GUIDE_DUE_CARD)
+        third = copy_of_the_guide(date(2026, 9, 9)).model_copy(
+            update={"assignment_id": "assignment-health-guide-third"}
+        )
+        store.put_on_record([third], {})
+        before = tables(client)
+        refused = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(mine)}
+        )
+        after = tables(client)
+        again = read(client, GUIDE_DUE_CARD)
+        form = {**review_form(again), "identity-0": choice_value(mine)}
+        saved = client.post("/parent/inbox/keep", data=form)
+        after_save = tables(client)
+        retried = client.post("/parent/inbox/keep", data=form)
+        after_retry = tables(client)
+
+    assert sorted(choices(page, 0)) == sorted([mine, GUIDE_COPY, DIFFERENT])
+    assert refused.status_code == 409
+    assert after == before
+    assert saved.status_code == 303
+    assert retried.status_code == 303
+    assert after_retry == after_save
+
+
+def test_the_identity_question_reads_the_same_few_statements_for_any_number_of_cards(
+    tmp_path: pathlib.Path,
+) -> None:
+    counts: dict[int, int] = {}
+    for size in (1, 20, 100):
+        folder = tmp_path / str(size)
+        folder.mkdir()
+        with client_in(folder) as client:
+            store = store_of(client)
+            store.put_on_record(
+                [
+                    Assignment(
+                        assignment_id=f"assignment-lab-{number}-{place}",
+                        course="Science",
+                        title=f"Lab {number}",
+                        due_date=date(2026, 10, 1),
+                        dependencies=[],
+                        reported_submission_status="unknown",
+                        kind=AssignmentKind.HOMEWORK,
+                        origins={"record": SourceChannel.LMS},
+                    )
+                    for number in range(size)
+                    for place in range(2)
+                ],
+                {},
+            )
+            cards = "".join(
+                "Homework for Wren\n- 09/28/2026 - Monday\n"
+                f"Science - Assigned: Lab {number}: (Due:10/01/2026)\nBring the log.\n"
+                for number in range(size)
+            )
+            now = store.instruction_moment()
+            items = read_text(cards, now=now[0], today=now[1]).items
+            statements: list[str] = []
+            store._connection.set_trace_callback(statements.append)
+            try:
+                changes = changes_for(items, store)
+            finally:
+                store._connection.set_trace_callback(None)
+        assert [change.identity_question for change in changes] == ["which"] * size
+        counts[size] = sum(1 for sql in statements if sql.lstrip().upper().startswith("SELECT"))
+
+    assert counts[1] == counts[20] == counts[100]
+
+
 # ------------------------------------------------------------------ retries and stale forms
 
 
@@ -710,7 +1019,10 @@ def test_the_same_review_sent_again_after_a_lost_response_writes_nothing_more(
     with client_in(tmp_path) as client:
         mine = hers(client)
         page = read(client, GUIDE_CARD)
-        form = {**review_form(page), "identity-0": mine if answer == "same" else DIFFERENT}
+        form = {
+            **review_form(page),
+            "identity-0": choice_value(mine) if answer == "same" else DIFFERENT,
+        }
         first = client.post("/parent/inbox/keep", data=form)
         after_first = tables(client)
         second = client.post("/parent/inbox/keep", data=form)
@@ -729,7 +1041,9 @@ def test_a_second_tab_answering_otherwise_after_the_first_was_saved_is_refused(
         mine = hers(client)
         one = read(client, GUIDE_CARD)
         two = read(client, GUIDE_CARD)
-        saved = client.post("/parent/inbox/keep", data={**review_form(one), "identity-0": mine})
+        saved = client.post(
+            "/parent/inbox/keep", data={**review_form(one), "identity-0": choice_value(mine)}
+        )
         before = tables(client)
         refused = client.post(
             "/parent/inbox/keep", data={**review_form(two), "identity-0": DIFFERENT}
@@ -755,7 +1069,9 @@ def test_homework_arriving_between_the_review_and_the_save_puts_the_question_aga
         page = read(client, GUIDE_CARD)
         store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 30))], {})
         before = tables(client)
-        refused = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": mine})
+        refused = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(mine)}
+        )
         after = tables(client)
 
     assert choices(page, 0) == [mine, DIFFERENT]
@@ -776,11 +1092,11 @@ def test_a_second_tab_on_an_entry_that_adds_no_facts_is_refused_after_the_first_
         one = client.post("/parent/inbox/enter", data=lab_entry)
         two = client.post("/parent/inbox/enter", data=lab_entry)
         saved = client.post(
-            "/parent/inbox/keep", data={**review_form(one.text), "identity-0": early}
+            "/parent/inbox/keep", data={**review_form(one.text), "identity-0": choice_value(early)}
         )
         before = tables(client)
         refused = client.post(
-            "/parent/inbox/keep", data={**review_form(two.text), "identity-0": late}
+            "/parent/inbox/keep", data={**review_form(two.text), "identity-0": choice_value(late)}
         )
         after = tables(client)
 
@@ -831,13 +1147,40 @@ def test_her_homework_changed_after_the_question_showed_it_puts_the_question_aga
         )
         store._connection.commit()
         before = tables(client)
-        refused = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": mine})
+        refused = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(mine)}
+        )
         after = tables(client)
 
     assert HER_NOTE in html.unescape(question(page, 0))
     assert refused.status_code == 409
     assert after == before
     assert shown in html.unescape(question(refused.text, 0))
+
+
+def test_her_notes_author_changed_after_the_question_showed_it_puts_the_question_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        page = read(client, GUIDE_CARD)
+        store = store_of(client)
+        store._connection.execute(
+            "UPDATE assignments SET origins = json_set(origins, '$.note', ?) "
+            "WHERE assignment_id = ?",
+            (SourceChannel.PARENT_ENTRY.value, mine),
+        )
+        store._connection.commit()
+        before = tables(client)
+        refused = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(mine)}
+        )
+        after = tables(client)
+
+    assert HER_NOTE in html.unescape(question(page, 0))
+    assert refused.status_code == 409
+    assert after == before
+    assert HER_NOTE not in html.unescape(question(refused.text, 0))
 
 
 def test_a_review_page_signed_before_a_restart_is_read_as_one_that_asked_nothing(
@@ -869,7 +1212,9 @@ def test_a_failed_decision_write_keeps_the_paste_and_writes_nothing(
 
         monkeypatch.setattr(store, "record_intake_decision", refuse)
         before = tables(client)
-        failed = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": mine})
+        failed = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(mine)}
+        )
         after = tables(client)
 
     assert failed.status_code == 500
@@ -885,7 +1230,9 @@ def test_a_kept_answer_that_cannot_be_read_saves_nothing_and_keeps_the_paste(
     with client_in(tmp_path) as client:
         mine = hers(client)
         first = read(client, GUIDE_CARD)
-        client.post("/parent/inbox/keep", data={**review_form(first), "identity-0": mine})
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
         page = read(client, GUIDE_MISSING)
         store = store_of(client)
         store._connection.execute("UPDATE intake_decisions SET shown = '{\"a\": 1}'")
@@ -948,9 +1295,9 @@ def test_a_token_or_a_choice_the_page_did_not_give_is_refused(
         if forged == "a-token-the-page-never-made":
             form = {**form, "creation-0": "0" * 32, "identity-0": DIFFERENT}
         elif forged == "an-id-never-shown":
-            form = {**form, "identity-0": other}
+            form = {**form, "identity-0": choice_value(other)}
         else:
-            form = {**form, "identity-0": mine, "identity-7": DIFFERENT}
+            form = {**form, "identity-0": choice_value(mine), "identity-7": DIFFERENT}
         before = tables(client)
         refused = client.post("/parent/inbox/keep", data=form)
         after = tables(client)
@@ -981,7 +1328,7 @@ def test_a_direct_caller_meets_the_same_rules(tmp_path: pathlib.Path) -> None:
         wrong = (
             IdentityAnswer(mine, card.identity_shown, "0" * 64),
             IdentityAnswer(other, card.identity_shown, card.identity_basis),
-            IdentityAnswer(DIFFERENT, card.identity_shown, card.identity_basis, "not-a-token"),
+            IdentityAnswer(None, card.identity_shown, card.identity_basis, "not-a-token"),
         )
         refused = [
             keep(items, store, identities={0: item}, imported_by="parent", now=now[0], today=now[1])
@@ -999,6 +1346,41 @@ def test_a_direct_caller_meets_the_same_rules(tmp_path: pathlib.Path) -> None:
     assert before.get("intake_decisions") == []
     assert rows == sorted([mine, other])
     assert isinstance(saved, Kept)
+
+
+def test_a_direct_caller_meets_the_instruction_question_where_its_answer_lands(
+    tmp_path: pathlib.Path,
+) -> None:
+    from blossom.intake import IdentityAnswer, NotAsked
+    from blossom.school_instructions import SubmittedChoice
+
+    with client_in(tmp_path) as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        for due in ("10/01/2026", "10/08/2026"):
+            saved = read(client, lab_card(due) + "Bring the log.\n")
+            client.post("/parent/inbox/keep", data=review_form(saved))
+        store: ProjectStateStore = store_of(client)
+        now = store.instruction_moment()
+        text = lab_card("10/15/2026") + "Bring the log and goggles.\n"
+        items = read_text(text, now=now[0], today=now[1]).items
+        (card,) = changes_for(items, store)
+        words = ("Bring the log.", "Bring the log and goggles.")
+        answer = SubmittedChoice(1, words, frozenset({"Bring the log and goggles."}))
+        before = tables(client)
+        refused = keep(
+            items,
+            store,
+            instruction_answers={0: answer},
+            asked={0: (1, early)},
+            identities={0: IdentityAnswer(late, card.identity_shown, card.identity_basis)},
+            imported_by="parent",
+            now=now[0],
+            today=now[1],
+        )
+        after = tables(client)
+
+    assert isinstance(refused, NotAsked)
+    assert after == before
 
 
 # ------------------------------------------------------------------ a parent's typed note
@@ -1028,7 +1410,9 @@ def test_a_parents_typed_note_leaves_her_note_and_says_so_before_and_after_savin
     with client_in(tmp_path) as client:
         mine = hers(client, due=None)
         first = read(client, GUIDE_CARD)
-        client.post("/parent/inbox/keep", data={**review_form(first), "identity-0": mine})
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
         shown = client.post(
             "/parent/inbox/enter", data=entry(note="Signed copy is in the blue folder.")
         )
@@ -1069,7 +1453,9 @@ def test_her_note_arriving_after_the_review_refuses_the_save(tmp_path: pathlib.P
     with client_in(tmp_path) as client:
         mine = hers(client, due=None)
         first = read(client, GUIDE_CARD)
-        client.post("/parent/inbox/keep", data={**review_form(first), "identity-0": mine})
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
         store = store_of(client)
         store._connection.execute(
             "UPDATE assignments SET note = NULL WHERE assignment_id = ?", (mine,)
@@ -1131,13 +1517,51 @@ def test_the_same_typed_note_sent_twice_is_saved_once(tmp_path: pathlib.Path) ->
     assert after_again == after_first
 
 
+def test_a_note_changed_after_a_review_that_kept_it_as_it_was_refuses_the_save(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        made = client.post("/parent/inbox/enter", data=art_entry("Same words."))
+        client.post("/parent/inbox/keep", data=review_form(made.text))
+        one = client.post("/parent/inbox/enter", data={**art_entry("Same words."), "kind": "TASK"})
+        two = client.post("/parent/inbox/enter", data=art_entry("Newer parent words."))
+        client.post("/parent/inbox/keep", data=review_form(two.text))
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data=review_form(one.text))
+        after = tables(client)
+        (row,) = store_of(client).all_assignments()
+
+    assert refused.status_code == 409
+    assert after == before
+    assert row.note == "Newer parent words."
+
+
+def test_a_typed_note_that_matches_sent_twice_saves_once(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        made = client.post("/parent/inbox/enter", data=art_entry("Same words."))
+        client.post("/parent/inbox/keep", data=review_form(made.text))
+        shown = client.post(
+            "/parent/inbox/enter", data={**art_entry("Same words."), "kind": "TASK"}
+        )
+        first = client.post("/parent/inbox/keep", data=review_form(shown.text))
+        after_first = tables(client)
+        again = client.post("/parent/inbox/keep", data=review_form(shown.text))
+        after_again = tables(client)
+
+    assert first.status_code == 303
+    assert again.status_code == 303
+    assert after_again == after_first
+
+
 def test_a_typed_note_alone_on_her_homework_can_be_finished_and_says_so(
     tmp_path: pathlib.Path,
 ) -> None:
     with client_in(tmp_path) as client:
         mine = hers(client, due=None)
         first = read(client, GUIDE_CARD)
-        client.post("/parent/inbox/keep", data={**review_form(first), "identity-0": mine})
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
         shown = client.post(
             "/parent/inbox/enter",
             data=entry(due_date="", note="Signed copy is in the blue folder."),
@@ -1167,7 +1591,9 @@ def test_her_note_changed_after_the_review_refuses_a_save_that_keeps_it(
     with client_in(tmp_path) as client:
         mine = hers(client)
         first = read(client, GUIDE_CARD)
-        client.post("/parent/inbox/keep", data={**review_form(first), "identity-0": mine})
+        client.post(
+            "/parent/inbox/keep", data={**review_form(first), "identity-0": choice_value(mine)}
+        )
         shown = client.post(
             "/parent/inbox/enter", data=entry(kind="TASK", note="A parent's words.")
         )

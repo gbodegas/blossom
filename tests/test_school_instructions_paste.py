@@ -33,6 +33,7 @@ from blossom.routes.inbox import (
     unsaved_on,
 )
 from blossom.routes.navigation import instructions_action_href, instructions_review_href
+from blossom.routes.note_details import choice_value
 from blossom.school_instructions import (
     INSTRUCTION_MAX_LENGTH,
     InstructionChoice,
@@ -1862,9 +1863,9 @@ def test_a_choice_stays_with_its_assignment_when_another_connection_moves_the_ca
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, pick: str, rival: str
 ) -> None:
     """A row another connection saves under the same name and due date, before the save or
-    while it runs, holds none of what this text says: the text was saved on the assignment
-    the page asked about, so the card lands there again and the choice goes to it, never to
-    the other row, whose instructions stay as they were."""
+    while it runs: the text brings a new instruction, so it isn't a repeat of what was saved,
+    and the card asks which homework it is about. Nothing is written, the choice is said
+    back, and neither assignment's instructions change."""
     path = tmp_path / "blossom.sqlite3"
     moved: list[dict[str, list[tuple[object, ...]]]] = []
     with client_in(tmp_path) as client:
@@ -1892,14 +1893,19 @@ def test_a_choice_stays_with_its_assignment_when_another_connection_moves_the_ca
                 return keep(*args, **kwargs)  # type: ignore[arg-type]
 
             monkeypatch.setattr("blossom.routes.inbox.keep", racing)
-        answered = client.post("/parent/inbox/keep", data={**review_form(page), **choice})
+        refused = client.post("/parent/inbox/keep", data={**review_form(page), **choice})
+        after = tables(client)
         found = store.school_instruction_readings([name, RIVAL]).readable
 
     assert review_form(page)["instructions-0"] == "1"
     assert len(moved) == 1
-    assert answered.status_code == 303
-    assert found[name].texts == ((PENCIL,) if pick == "pencil" else ())
-    assert found[RIVAL].texts == (WORK,)
+    assert refused.status_code == 409
+    assert after == moved[0]
+    assert found[name].texts == found[RIVAL].texts == (WORK,)
+    assert f'name="identity-0" value="{choice_value(RIVAL)}"' in refused.text
+    assert f'name="identity-0" value="{choice_value(name)}"' in refused.text
+    said = "that no school instruction applies" if pick == "none" else PENCIL
+    assert said in said_back_on(refused.text, "0")
 
 
 # ------------------------------------------------------------------ a card folded into another
