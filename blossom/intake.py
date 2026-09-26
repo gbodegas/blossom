@@ -67,7 +67,7 @@ from datetime import date, datetime, timedelta
 from typing import Final
 
 from blossom.candidates import readings_for
-from blossom.captures import Author, Capture, candidate_basis
+from blossom.captures import Author, Capture, CaptureNotSaved, CapturePromoted, candidate_basis
 from blossom.pairing import pair as pair  # the one rule, kept where both askers share it
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel, SourceRecord
 from blossom.school_instructions import (
@@ -799,7 +799,7 @@ class Change:
     homework: the creation token the review page made, never the course, title, or date."""
     waiting: tuple[Capture, ...] = ()
     """Her notes that wait with this card's class and title, offered to link to the
-    homework it lands on: on the first card shown under the name, and no other."""
+    homework it lands on."""
 
     @property
     def lands_nowhere(self) -> bool:
@@ -1625,15 +1625,15 @@ def changes_for(
 
 
 def _with_waiting_notes(changes: list[Change], store: ProjectStateStore) -> list[Change]:
-    """Each note of hers that waits, offered on the first card of the text with its class
-    and title, read in one statement. A card folded into another comes after it, so
-    the notes are always on the card the page shows."""
+    """Each note of hers that waits, offered on every card of the text with its class and
+    title, read in one statement: which homework it joins is the parent's choice, never
+    the order of the cards."""
     waiting: dict[tuple[str, str], list[Capture]] = {}
     for note in store.outstanding_captures().notes:
         if note.course is not None and note.title is not None:
             waiting.setdefault(pair(note.course, note.title), []).append(note)
     for index, change in enumerate(changes):
-        notes = waiting.pop(change.reading.pair, None)
+        notes = waiting.get(change.reading.pair)
         if notes:
             changes[index] = dataclasses.replace(change, waiting=tuple(notes))
     return changes
@@ -2077,7 +2077,7 @@ def keep(
     identities: Mapping[int, IdentityAnswer] | None = None,
     shown_identities: Collection[int] | None = None,
     shown_notes: Mapping[int, str] | None = None,
-    links: Mapping[int, Sequence[tuple[str, int]]] | None = None,
+    links: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
     imported_by: Author | None = None,
     now: datetime | None = None,
     today: date | None = None,
@@ -2148,18 +2148,23 @@ def keep(
             return ChangedSinceShown(changes)
         if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):
             return changes
-        # Each note ticked to link must still wait as the page showed it; one joined to that
-        # homework already is what was asked, and anything else leaves the text unsaved.
+        # Each note ticked to link goes to the homework its card landed on when the page was
+        # made, or where an answer now lands a card that asked, and nowhere else; it must
+        # still wait as the page showed it, and one joined there already is what was
+        # asked. Anything else leaves the text unsaved.
         linking: list[tuple[str, str, int]] = []
         for change in changes:
-            for capture_id, revision in (links or {}).get(change.key, ()):
+            for capture_id, revision, lands in (links or {}).get(change.key, ()):
+                target = change.assignment_id
+                if lands not in (None, target):
+                    return ChangedSinceShown(changes)
                 standing = store.paste_link_standing(
-                    capture_id, target=change.assignment_id, expected_revision=revision
+                    capture_id, target=target, expected_revision=revision
                 )
                 if standing == "changed":
                     return ChangedSinceShown(changes)
                 if standing == "waits":
-                    linking.append((capture_id, change.assignment_id, revision))
+                    linking.append((capture_id, target, revision))
         rows: dict[str, Assignment] = {}
         claims: dict[str, list[SourceRecord]] = {}
         reports: dict[str, list[StatusReport]] = {}
@@ -2217,7 +2222,7 @@ def keep(
                 raise RuntimeError(msg)
         for capture_id, target, revision in linking:
             row = store.one_assignment(target)
-            store.link_capture_from_paste(
+            done = store.link_capture_from_paste(
                 capture_id,
                 target=target,
                 expected_revision=revision,
@@ -2227,6 +2232,10 @@ def keep(
                 now=now or moment[0],
                 today=today or moment[1],
             )
+            if not isinstance(done, CapturePromoted):
+                # The homework was written a moment ago in this same transaction, under
+                # the note's own class and title; anything else rolls the text back.
+                raise CaptureNotSaved(capture_id, RuntimeError("the homework to link moved"))
     return Kept(
         added=len(added),
         updated=len(updated - added),

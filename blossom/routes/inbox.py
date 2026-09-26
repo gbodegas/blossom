@@ -26,7 +26,7 @@ from typing import Annotated, Final
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from blossom.captures import CaptureNotSaved
+from blossom.captures import CaptureNotSaved, UnreadableCapture
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.intake import (
     CLAIMED,
@@ -131,6 +131,10 @@ IDENTITY_FORM_UNREADABLE: Final = (
 LINK_FORM_UNREADABLE: Final = (
     "A note ticked to link is not one this review offered, so nothing was saved. Look "
     "at them again below."
+)
+NOTE_UNREADABLE: Final = (
+    "A note of hers ticked to link cannot be read right now, so nothing was saved. Your "
+    "input is still here."
 )
 DECISION_UNREADABLE: Final = (
     "A saved answer about which homework a row is cannot be read right now, so nothing was "
@@ -295,7 +299,7 @@ class PageMade:
     asked: dict[int, tuple[int, str]] = field(default_factory=dict)
     identities: dict[int, AskedIdentity] = field(default_factory=dict)
     notes: dict[int, str] = field(default_factory=dict)
-    links: dict[int, tuple[tuple[str, int], ...]] = field(default_factory=dict)
+    links: dict[int, tuple[tuple[str, int, str | None], ...]] = field(default_factory=dict)
 
 
 def made_with_field(
@@ -305,7 +309,7 @@ def made_with_field(
     asked: Mapping[int, tuple[int, str]] | None = None,
     identities: Mapping[int, AskedIdentity] | None = None,
     notes: Mapping[int, str] | None = None,
-    links: Mapping[int, Sequence[tuple[str, int]]] | None = None,
+    links: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
     ties it to the page's draft."""
@@ -348,7 +352,10 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
     }
     notes = {int(card): str(outcome) for card, outcome in context.get("notes", [])}
     links = {
-        int(card): tuple((str(name), int(revision)) for name, revision in offered)
+        int(card): tuple(
+            (str(name), int(revision), None if lands is None else str(lands))
+            for name, revision, lands in offered
+        )
         for card, offered in context.get("links", [])
     }
     return PageMade(occurrences, asked, identities, notes, links)
@@ -387,12 +394,14 @@ def identity_answers(
 
 def link_answers(
     fields: Mapping[str, str], page: PageMade
-) -> tuple[dict[int, list[tuple[str, int]]], bool]:
+) -> tuple[dict[int, list[tuple[str, int, str | None]]], bool]:
     """The notes of hers ticked to link, as the page offered them: ``link-<card>-<place>``
-    names the note the page signed at that place on that card. The second value says
-    whether anything was sent that the page did not offer, which refuses the form
-    whole."""
-    ticked: dict[int, list[tuple[str, int]]] = {}
+    names the note the page signed at that place on that card, with the homework the
+    card landed on when the page was made, or ``None`` where it asked which. The second
+    value says whether anything was sent that the page did not offer, or one note ticked
+    on more than one card, since repeated cards for one homework are shown as one;
+    either refuses the form whole."""
+    ticked: dict[int, list[tuple[str, int, str | None]]] = {}
     unreadable = False
     for name, value in fields.items():
         head, _, rest = name.partition("-")
@@ -404,6 +413,9 @@ def link_answers(
             unreadable = True
             continue
         ticked.setdefault(int(card), []).append(offered[int(place)])
+    names = [name for notes in ticked.values() for name, _, _ in notes]
+    if len(names) != len(set(names)):
+        unreadable = True
     return ticked, unreadable
 
 
@@ -751,7 +763,7 @@ def preview_page(
     carried: Mapping[int, CarriedAccount] | None = None,
     made: PageMade | None = None,
     identities: Mapping[int, IdentityAnswer] | None = None,
-    linked: Mapping[int, Sequence[tuple[str, int]]] | None = None,
+    linked: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -922,7 +934,14 @@ def preview_page(
                     if change.note_shown is not None
                 },
                 {
-                    change.key: tuple((note.capture_id, note.revision) for note in change.waiting)
+                    change.key: tuple(
+                        (
+                            note.capture_id,
+                            note.revision,
+                            None if change.lands_nowhere else change.assignment_id,
+                        )
+                        for note in change.waiting
+                    )
                     for change in shown
                     if change.waiting
                 },
@@ -936,7 +955,10 @@ def preview_page(
             "came_from": came_from,
             "kept_note": any(change.note_change == "kept" for change in shown),
             "waiting": any(change.waiting for change in shown),
-            "links_ticked": {card: list(notes) for card, notes in (linked or {}).items()},
+            "links_ticked": {
+                card: [(name, revision) for name, revision, _ in notes]
+                for card, notes in (linked or {}).items()
+            },
             "kind_choices": KIND_CHOICES,
             "notice": notice,
             "sample": state.settings.sample,
@@ -965,7 +987,7 @@ def preview_or_recovery(
     carried: Mapping[int, CarriedAccount] | None = None,
     made: PageMade | None = None,
     identities: Mapping[int, IdentityAnswer] | None = None,
-    linked: Mapping[int, Sequence[tuple[str, int]]] | None = None,
+    linked: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -1180,6 +1202,9 @@ async def keep_readings(request: Request, state: State) -> Response:
         return intake_unavailable(request, state, draft, kept_answers, INSTRUCTION_UNREADABLE)
     except UnreadableDecision:
         return intake_unavailable(request, state, draft, kept_answers, DECISION_UNREADABLE)
+    except UnreadableCapture:
+        logger.exception("a note ticked to link could not be read")
+        return intake_unavailable(request, state, draft, kept_answers, NOTE_UNREADABLE)
     except CaptureNotSaved:
         logger.exception("a note could not be linked from the paste")
         return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)

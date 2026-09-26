@@ -1919,15 +1919,6 @@ def test_each_matching_note_is_offered_and_only_the_ticked_one_is_linked(
     assert linked.assignment_id == row.assignment_id
 
 
-def test_a_note_is_offered_once_on_the_first_card_of_its_name(tmp_path: pathlib.Path) -> None:
-    with client_in(tmp_path) as client:
-        guide_note(client)
-        page = read(client, GUIDE_CARD + GUIDE_NEXT_ROUND)
-
-    assert len(links_on(page, 0)) == 1
-    assert links_on(page, 1) == []
-
-
 def test_a_ticked_note_stays_ticked_on_a_page_returned_for_another_question(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -2026,17 +2017,22 @@ def test_a_note_changed_after_the_review_refuses_the_whole_save(
     assert note.assignment_id is None
 
 
+@pytest.mark.parametrize("failure", ["the-disk-refuses", "the-homework-is-gone"])
 def test_a_failed_link_write_keeps_the_paste_and_writes_nothing(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
-    from blossom.captures import CaptureNotSaved
+    from blossom.captures import CaptureNotSaved, HomeworkGone
 
     with client_in(tmp_path) as client:
         name = guide_note(client)
         page = read(client, GUIDE_CARD)
         store = store_of(client)
 
-        def refuse(*_: object, **__: object) -> None:
+        def refuse(*_: object, target: str, **__: object) -> HomeworkGone:
+            if failure == "the-homework-is-gone":
+                note = store.capture(name)
+                assert note is not None
+                return HomeworkGone(note, target)
             raise CaptureNotSaved(name, sqlite3.OperationalError("the disk refused"))
 
         monkeypatch.setattr(store, "link_capture_from_paste", refuse)
@@ -2064,3 +2060,203 @@ def test_a_link_the_page_did_not_offer_is_refused(tmp_path: pathlib.Path) -> Non
 
     assert refused.status_code == 422
     assert after == before
+
+
+GUIDE_DUE_LAST = "Homework for Wren\n- 09/30/2026 - Wednesday\nHealth - Due: Course Guide Due:\n"
+GUIDE_LAST = "assignment-health-guide-last"
+GUIDE_DUE_NEXT_DAY = "Homework for Wren\n- 09/10/2026 - Thursday\nHealth - Due: Course Guide Due:\n"
+
+
+def guide_rows(client: TestClient) -> None:
+    """Two school assignments of the guide's class and title, due September 9 and 30."""
+    store_of(client).put_on_record(
+        [
+            copy_of_the_guide(date(2026, 9, 9)),
+            copy_of_the_guide(date(2026, 9, 30)).model_copy(update={"assignment_id": GUIDE_LAST}),
+        ],
+        {},
+    )
+
+
+def moved_under_the_review(path: pathlib.Path) -> None:
+    """Through a connection of its own: the guide copy now due September 30, and another
+    assignment of its name due September 9."""
+    other = ProjectStateStore.open(path, fixture_clock())
+    try:
+        other._connection.execute(
+            "UPDATE assignments SET due_date = ? WHERE assignment_id = ?",
+            ("2026-09-30", GUIDE_COPY),
+        )
+        other._connection.commit()
+        other.put_on_record(
+            [copy_of_the_guide(date(2026, 9, 9)).model_copy(update={"assignment_id": GUIDE_LAST})],
+            {},
+        )
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("moved", ["before-the-save", "during-the-save"])
+def test_a_ticked_link_holds_to_the_homework_the_review_showed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, moved: str
+) -> None:
+    changed: list[dict[str, list[tuple[object, ...]]]] = []
+    with client_in(tmp_path) as client:
+        store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 9))], {})
+        name = guide_note(client)
+        page = read(client, GUIDE_DUE_CARD)
+        form = {**review_form(page), links_on(page, 0)[0]: "1"}
+        if moved == "before-the-save":
+            moved_under_the_review(tmp_path / "blossom.sqlite3")
+            changed.append(tables(client))
+        else:
+
+            def racing(*args: object, **kwargs: object) -> object:
+                moved_under_the_review(tmp_path / "blossom.sqlite3")
+                changed.append(tables(client))
+                return keep(*args, **kwargs)  # type: ignore[arg-type]
+
+            monkeypatch.setattr("blossom.routes.inbox.keep", racing)
+        refused = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+        note = store_of(client).capture(name)
+
+    assert refused.status_code == 409
+    assert after == changed[0]
+    assert note is not None
+    assert note.outstanding
+
+
+@pytest.mark.parametrize("order", ["in-order", "reversed"])
+def test_a_waiting_note_can_go_to_either_card_of_its_name(
+    tmp_path: pathlib.Path, order: str
+) -> None:
+    cards = [GUIDE_DUE_CARD, GUIDE_DUE_LAST]
+    if order == "reversed":
+        cards.reverse()
+    last = cards.index(GUIDE_DUE_LAST)
+    with client_in(tmp_path) as client:
+        guide_rows(client)
+        name = guide_note(client)
+        page = read(client, "".join(cards))
+        saved = client.post(
+            "/parent/inbox/keep", data={**review_form(page), links_on(page, last)[0]: "1"}
+        )
+        note = store_of(client).capture(name)
+
+    assert len(links_on(page, 0)) == len(links_on(page, 1)) == 1
+    assert saved.status_code == 303
+    assert note is not None
+    assert note.assignment_id == GUIDE_LAST
+
+
+def test_a_note_ticked_on_two_cards_for_different_homework_is_refused(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        guide_rows(client)
+        name = guide_note(client)
+        page = read(client, GUIDE_DUE_CARD + GUIDE_DUE_LAST)
+        before = tables(client)
+        refused = client.post(
+            "/parent/inbox/keep",
+            data={**review_form(page), links_on(page, 0)[0]: "1", links_on(page, 1)[0]: "1"},
+        )
+        after = tables(client)
+        note = store_of(client).capture(name)
+
+    assert refused.status_code == 422
+    assert after == before
+    assert note is not None
+    assert note.outstanding
+
+
+def test_repeated_cards_for_one_homework_offer_the_note_once(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 9))], {})
+        name = guide_note(client)
+        page = read(client, GUIDE_DUE_CARD + GUIDE_DUE_NEXT_DAY)
+        offered = [box for key in range(2) for box in links_on(page, key)]
+        saved = client.post("/parent/inbox/keep", data={**review_form(page), offered[0]: "1"})
+        store = store_of(client)
+        note = store.capture(name)
+        links = [event for event in store.capture_history(name) if event.operation == "link"]
+
+    assert offered == ["link-0-0"]
+    assert saved.status_code == 303
+    assert note is not None
+    assert note.assignment_id == GUIDE_COPY
+    assert len(links) == 1
+
+
+@pytest.mark.parametrize("day", [date(2026, 9, 11), None], ids=["with-a-day", "without-a-day"])
+@pytest.mark.parametrize("target", ["not-on-record", "of-another-name"])
+def test_a_paste_link_to_homework_it_cannot_join_writes_nothing(
+    tmp_path: pathlib.Path, day: date | None, target: str
+) -> None:
+    from blossom.captures import CaptureConflict, HomeworkGone
+
+    with client_in(tmp_path) as client:
+        (lab,) = school_rows(client, date(2026, 10, 1))
+        store = store_of(client)
+        name = waiting_note(
+            store, course="Health", title="Course Guide Due", text=GUIDE_WORDS, due_date=day
+        )
+        before = store.capture(name)
+        events = len(store.capture_history(name))
+        claims = tables(client)["date_claims"]
+        now = store.instruction_moment()
+        assert before is not None
+        refused = store.link_capture_from_paste(
+            name,
+            target="assignment-missing" if target == "not-on-record" else lab,
+            expected_revision=before.revision,
+            basis="0" * 64,
+            authored_by="parent",
+            channel=SourceChannel.PARENT_ENTRY,
+            now=now[0],
+            today=now[1],
+        )
+        after = store.capture(name)
+        events_after = len(store.capture_history(name))
+        claims_after = tables(client)["date_claims"]
+
+    assert isinstance(refused, HomeworkGone if target == "not-on-record" else CaptureConflict)
+    assert after == before
+    assert events_after == events
+    assert claims_after == claims
+
+
+@pytest.mark.parametrize("damage", ["a-broken-history", "homework-gone"])
+def test_a_link_already_made_counts_as_made_only_while_it_reads_sound(
+    tmp_path: pathlib.Path, damage: str
+) -> None:
+    with client_in(tmp_path) as client:
+        name = guide_note(client)
+        one = read(client, GUIDE_DUE_CARD)
+        two = read(client, GUIDE_DUE_CARD + chr(10) + lab_card("10/15/2026"))
+        first = client.post(
+            "/parent/inbox/keep", data={**review_form(one), links_on(one, 0)[0]: "1"}
+        )
+        store = store_of(client)
+        if damage == "a-broken-history":
+            store._connection.execute(
+                "DELETE FROM capture_events WHERE capture_id = ? AND revision = 1", (name,)
+            )
+        else:
+            note = store.capture(name)
+            assert note is not None
+            store._connection.execute(
+                "DELETE FROM assignments WHERE assignment_id = ?", (note.assignment_id,)
+            )
+        store._connection.commit()
+        before = tables(client)
+        refused = client.post(
+            "/parent/inbox/keep", data={**review_form(two), links_on(two, 0)[0]: "1"}
+        )
+        after = tables(client)
+
+    assert first.status_code == 303
+    assert refused.status_code == (500 if damage == "a-broken-history" else 409)
+    assert after == before
+    assert "Course Guide Due" in html.unescape(refused.text)

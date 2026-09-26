@@ -2371,16 +2371,18 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         self, capture_id: str, *, target: str, expected_revision: int
     ) -> Literal["waits", "stands", "changed"]:
         """Where a note offered on a paste review stands against linking it to ``target``:
-        ``stands`` when it is joined to that homework already, which a retry finds;
-        ``waits`` when it is at the revision the page showed, since every move of a note
-        makes a new revision; ``changed`` otherwise. Read in the caller's transaction, so
-        the save is judged against what it writes."""
+        ``stands`` when it is joined to that homework already and the homework is on
+        record, which a retry finds; ``waits`` when it is at the revision the page showed,
+        since every move of a note makes a new revision; ``changed`` otherwise. The note's
+        history is checked first, and one that can't be read is ``UnreadableCapture``.
+        Read in the caller's transaction, so the save is judged against what it writes."""
         with self._lock:
             standing = self._capture_locked(capture_id_from(capture_id))
-        if standing is None:
-            return "changed"
-        if standing.assignment_id == target:
-            return "stands"
+            if standing is None:
+                return "changed"
+            self._validated_capture_history_locked(standing)
+            if standing.assignment_id == target:
+                return "stands" if self.one_assignment(target) is not None else "changed"
         return "waits" if standing.revision == expected_revision else "changed"
 
     def link_capture_from_paste(
@@ -2394,13 +2396,15 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         channel: SourceChannel,
         now: datetime,
         today: date,
-    ) -> CapturePromoted:
+    ) -> CapturePromoted | HomeworkGone | CaptureConflict:
         """Link a waiting note to the homework a school paste lands on, inside the paste's
         own write transaction, which found with ``paste_link_standing`` that it waits at
-        ``expected_revision``. The link keeps the choice of a paste and ``basis``, the row
-        as it was linked, and a day the note gives is one more claim beside the school's.
-        Her words and details stay as they are. Anything else is ``CaptureNotSaved``, and
-        the paste's transaction is rolled back whole."""
+        ``expected_revision``. The homework must be on record, which is ``HomeworkGone``
+        otherwise, and have the note's class and title, which is ``CaptureConflict``
+        otherwise; neither writes anything. The link keeps the choice of a paste and
+        ``basis``, the row as it was linked, and a day the note gives is one more claim
+        beside the school's. Her words and details stay as they are. A write the file
+        refuses is ``CaptureNotSaved``, and the paste's transaction is rolled back whole."""
         name = capture_id_from(capture_id)
         try:
             with self._lock, self._writing():
@@ -2409,6 +2413,15 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 if not standing.outstanding or standing.revision != expected_revision:
                     msg = "the note changed since the paste was reviewed"
                     raise RuntimeError(msg)
+                item = self.one_assignment(target)
+                if item is None:
+                    return HomeworkGone(standing, target)
+                if (
+                    standing.course is None
+                    or standing.title is None
+                    or pair(standing.course, standing.title) != pair(item.course, item.title)
+                ):
+                    return CaptureConflict(standing)
                 note = standing.model_copy(update={"assignment_id": target})
                 changed = self._change_locked(
                     standing,
