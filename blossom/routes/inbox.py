@@ -40,6 +40,7 @@ from blossom.intake import (
     ChangedSinceShown,
     Held,
     Kept,
+    NotAsked,
     Read,
     answers_to_no_question,
     by_hand,
@@ -913,6 +914,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 occurrences=occurrences,
                 kinds=kinds,
                 instruction_answers=instruction_answers,
+                asked=page_made.asked,
                 imported_by="parent" if viewer_of(request) == "parent" else "household",
                 now=now,
                 today=today,
@@ -924,6 +926,29 @@ async def keep_readings(request: Request, state: State) -> Response:
     except sqlite3.Error:
         logger.exception("a paste could not be saved")
         return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
+    if isinstance(kept, NotAsked):
+        # The same check as above, made again where the save writes: another connection's
+        # save can move a card to other homework after the first check.
+        return preview_or_recovery(
+            request,
+            state,
+            read,
+            draft,
+            kept_answers,
+            occurrences=occurrences,
+            kinds=kinds,
+            instruction_answers={
+                key: answer for key, answer in instruction_answers.items() if key not in kept.cards
+            },
+            unsaved={
+                **read_answers.unsaved,
+                **{key: UnsavedChoice.of(instruction_answers[key]) for key in kept.cards},
+            },
+            carried=carried,
+            refused="malformed",
+            notice=INSTRUCTION_FORM_UNREADABLE,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
     if isinstance(kept, ChangedSinceShown):
         return preview_or_recovery(
             request,

@@ -1038,6 +1038,15 @@ class ChangedSinceShown:
     changes: list["Change"]
 
 
+@dataclass(frozen=True)
+class NotAsked:
+    """Nothing was saved: an answer about the school's instructions came on a card where the
+    signed page asked no such question, checked against the record as the save found it.
+    ``cards`` are those cards."""
+
+    cards: frozenset[int]
+
+
 class _Seen:
     """What is already accounted for while one text is compared: the claims and reports on
     record for each row, and those earlier readings of the same text add to it."""
@@ -1206,9 +1215,9 @@ def answers_to_no_question(
     again finds what it asks for standing, and any other finds the facts changed. So
     an answer that would write where no choice is needed was never an answer to a
     question the page put. A card folded into another answers for the assignment it
-    joins: where that assignment's question is asked, its answer is checked with the
-    others there; where none is, it meets the same check. A card that lands nowhere
-    yet carries no decision, and nothing reads its answer here.
+    joins, and only where the page asked on that card: a question the fold raises is
+    one the page never asked. A card that lands nowhere yet carries no decision, and
+    nothing reads its answer here.
     """
     decided = {change.key: change for change in changes if change.instructions is not None}
     carriers = {change.assignment_id: change for change in decided.values()}
@@ -1237,7 +1246,7 @@ def answers_to_no_question(
             if into is not None:
                 card = cards.get(into)
             change = None if card is None else carriers.get(card.assignment_id)
-            if change is None or (change.instructions_asked and into is None and key not in asked):
+            if change is None or (change.instructions_asked and key not in asked):
                 never.add(key)
                 continue
         elif change.instructions_asked and key not in asked:
@@ -1617,10 +1626,11 @@ def keep(
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
     instruction_answers: Mapping[int, InstructionChoice | SubmittedChoice] | None = None,
+    asked: Mapping[int, tuple[int, str]] | None = None,
     imported_by: Author | None = None,
     now: datetime | None = None,
     today: date | None = None,
-) -> Kept | Held | ChangedSinceShown | list[Change]:
+) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
     """Compare and write as one: save what the record lacks, and say what changed.
 
     The comparison and the write happen while the store is held for this
@@ -1644,8 +1654,22 @@ def keep(
     instructions that changed since the page was made leaves it unsaved with
     what changed handed back, whichever card it is on. ``imported_by`` is who
     pasted, kept apart from the school channel the words came from.
+
+    ``asked`` holds the questions about the school's instructions that a signed
+    page asked. When it's given, the answers are checked against it again here,
+    since another connection can change which assignment a card lands on
+    after the page's own check; an answer to a question the page never
+    asked leaves the whole text unsaved.
     """
     with store.comparing_and_writing():
+        if asked is not None:
+            never_put = answers_to_no_question(
+                changes_for(items, store, occurrences=occurrences, kinds=kinds),
+                submitted_answers(instruction_answers or {}),
+                asked,
+            )
+            if never_put:
+                return NotAsked(never_put)
         held = held_rows(items, store)
         if held is not None:
             return held

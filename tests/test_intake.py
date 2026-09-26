@@ -29,6 +29,7 @@ from blossom.intake import (
     ChangedSinceShown,
     Held,
     Kept,
+    NotAsked,
     Reading,
     by_hand,
     by_week,
@@ -771,7 +772,7 @@ def test_a_type_chosen_on_any_card_about_one_assignment_is_the_assignments(
     finally:
         store.close()
     outcomes: dict[
-        str, tuple[Kept | Held | ChangedSinceShown | list[Change], list[Assignment]]
+        str, tuple[Kept | Held | ChangedSinceShown | NotAsked | list[Change], list[Assignment]]
     ] = {}
     for name, kinds in {
         "chosen on the first": {0: AssignmentKind.TASK},
@@ -1228,11 +1229,11 @@ def test_two_savings_of_one_text_at_once_add_nothing_twice(tmp_path: pathlib.Pat
     read = read_text(THREE_WEEKS, now=NOW, today=TODAY)
     released = threading.Barrier(2)
 
-    def one_saving(_: int) -> Kept | Held | ChangedSinceShown | list[Change]:
+    def one_saving(_: int) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
         released.wait()
         return keep(read.items, store)
 
-    def one_answer(_: int) -> Kept | Held | ChangedSinceShown | list[Change]:
+    def one_answer(_: int) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
         released.wait()
         return keep(readings(WEEK_TWO), store, occurrences={0: NEW_WORK})
 
