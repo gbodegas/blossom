@@ -720,8 +720,9 @@ class Change:
     fills_assigned_on: bool
     note_change: str | None
     """``fill`` when the record has no note and a parent typed one; ``update`` when a
-    parent's typed note replaces the saved one; ``None`` when there is nothing to say. The
-    school's words are never a note: they are its instructions, decided apart."""
+    parent's typed note replaces the saved one; ``kept`` when her own note stays instead;
+    ``None`` when there is nothing to say. The school's words are never a note: they are
+    its instructions, decided apart."""
     kind: AssignmentKind
     """The kind the row will have: the reader's suggestion, or the parent's choice."""
     kind_by_parent: bool
@@ -777,6 +778,8 @@ class Change:
     one name, ``report`` for an undated report that more than one could mean."""
     identity_shown: tuple[str, ...] = ()
     """The ids of the homework the question lists, in order."""
+    identity_hers: frozenset[str] = frozenset()
+    """Which of those are homework made from her note."""
     identity_basis: str = ""
     """The fingerprint of what the question shows, which an answer is checked against."""
     identity_stale: bool = False
@@ -871,6 +874,16 @@ class Change:
     def standing(self) -> Assignment | None:
         """The row this card's changes are measured against: after the cards before it."""
         return self.base if self.base is not None else self.on_record
+
+    @property
+    def note_shown(self) -> str | None:
+        """What the review page says the typed note does, as the page signs it. Where a
+        note is saved already, whether it is replaced or hers stays, a fingerprint of it
+        comes along, so a save that finds another note there asks again."""
+        if self.note_change in (None, "fill") or self.standing is None:
+            return self.note_change
+        saved = (self.standing.note or "").encode("utf-8")
+        return f"{self.note_change}:{hashlib.sha256(saved).hexdigest()[:16]}"
 
     @property
     def assignment_id(self) -> str:
@@ -1209,12 +1222,13 @@ def identity_basis(
     decided: tuple[IntakeDecision, ...],
 ) -> str:
     """The fingerprint of an identity question: every candidate as a row of homework shows
-    it, and every answer kept for the name. A choice sent back is checked against it in the
-    save's transaction, so an answer about homework that has since arrived, left, changed,
-    or been answered elsewhere is put again."""
+    it, with its note, and every answer kept for the name. A choice sent back is checked
+    against it in the save's transaction, so an answer about homework that has since
+    arrived, left, changed, or been answered elsewhere is put again."""
     shown = candidate_basis(readings_for(store, list(candidates)))
+    notes = sorted([item.assignment_id, item.note] for item in candidates)
     answered = [item.sequence for item in decided]
-    serialized = json.dumps([shown, answered], separators=(",", ":"))
+    serialized = json.dumps([shown, notes, answered], separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
@@ -1225,11 +1239,13 @@ def _asked(
     shown: tuple[str, ...],
     basis: str,
     kinds: Mapping[int, AssignmentKind],
+    mine: Collection[str],
     *,
     stale: bool = False,
 ) -> Change:
     """A card that asks which homework it is about, and lands nowhere until answered."""
     kind, by_parent, suggested = _kind_for(key, reading, None, kinds)
+    hers = frozenset(item.assignment_id for item in where.candidates if item.assignment_id in mine)
     return Change(
         key,
         reading,
@@ -1249,6 +1265,7 @@ def _asked(
         identity_asked=True,
         identity_question=where.asks,
         identity_shown=shown,
+        identity_hers=hers,
         identity_basis=basis,
         identity_stale=stale,
     )
@@ -1427,7 +1444,7 @@ def changes_for(
             if standing is not None and standing.lands_on in by_id:
                 where = _Where(lands=by_id[standing.lands_on])
             elif reply is None:
-                changes.append(_asked(key, reading, where, shown, basis, kinds))
+                changes.append(_asked(key, reading, where, shown, basis, kinds, mine))
                 continue
             elif (
                 where.asks is None
@@ -1440,7 +1457,9 @@ def changes_for(
             ):
                 stale = True
                 if where.asks is not None:
-                    changes.append(_asked(key, reading, where, shown, basis, kinds, stale=True))
+                    changes.append(
+                        _asked(key, reading, where, shown, basis, kinds, mine, stale=True)
+                    )
                     continue
             elif reply.choice == DIFFERENT:
                 made = f"assignment-{reply.creation}"
@@ -1902,6 +1921,17 @@ def _note_change(existing: Assignment, reading: Reading) -> str | None:
     return "fill" if existing.note is None else "update"
 
 
+def _note_moved(change: Change, shown: str | None) -> bool:
+    """Whether a typed note would do something the review page didn't say: keep her note
+    where the page said it wouldn't, or the other way round, or meet a saved note other
+    than the one the page showed. A note that now matches what was typed writes nothing,
+    so a retry passes."""
+    if shown is not None and change.note_change is not None:
+        return change.note_shown != shown
+    said = None if shown is None else shown.partition(":")[0]
+    return (change.note_change == "kept") != (said == "kept")
+
+
 @dataclass(frozen=True)
 class Kept:
     """What one saving did, counted in assignments: rows added, rows already saved that
@@ -1946,7 +1976,8 @@ def keep(
     facts that changed since, or a question the review page did not ask
     (``shown_identities``), leaves the whole text unsaved with what changed
     handed back; so does a typed note whose fate differs from what the page
-    said (``shown_notes``), such as her note arriving after the review.
+    said (``shown_notes``), such as her note arriving after the review or
+    another note saved where it would go.
 
     The school's instructions are decided once for each assignment, in the
     same transaction: a new instruction that needs a choice leaves the whole
@@ -1987,9 +2018,7 @@ def keep(
         ):
             return ChangedSinceShown(changes)
         if shown_notes is not None and any(
-            (change.note_change == "kept") != (shown_notes.get(change.key) == "kept")
-            for change in changes
-            if change.note_change is not None or change.key in shown_notes
+            _note_moved(change, shown_notes.get(change.key)) for change in changes
         ):
             return ChangedSinceShown(changes)
         if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):

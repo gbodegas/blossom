@@ -9,9 +9,12 @@ changes nothing, and an answer made against facts that changed since writes
 nothing. A parent's typed note never replaces the note she gave her homework.
 """
 
+import hmac
 import html
+import json
 import pathlib
 import re
+import secrets
 import sqlite3
 from datetime import date
 
@@ -20,8 +23,9 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.intake import ChangedSinceShown, Kept, keep, read_text
+from blossom.intake import ChangedSinceShown, Kept, keep, read_text, spoken_day
 from blossom.reconciliation import SourceChannel
+from blossom.routes.inbox import came_from, draft_of
 from blossom.settings import Settings
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from tests.support import (
@@ -542,6 +546,160 @@ def test_a_date_that_one_of_two_has_lands_there_without_a_question(tmp_path: pat
     assert early not in kept or kept[early].texts == ()
 
 
+TYPED_LAB_LOG = "assignment-lab-log-typed"
+
+
+def said_of(page: str, key: int, name: str) -> str:
+    """What the identity question on one card says of one homework."""
+    label = question(page, key).split(f'value="{name}">', 1)[1].split("</label>", 1)[0]
+    return html.unescape(label)
+
+
+def test_the_question_says_where_each_homework_came_from(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        store = store_of(client)
+        mine = homework_from_a_note(
+            store,
+            by="parent",
+            channel=SourceChannel.PARENT_ENTRY,
+            course="Science",
+            title=LAB_LOG,
+            due_date=date(2026, 10, 12),
+        )
+        (school,) = school_rows(client, date(2026, 10, 1))
+        store.put_on_record(
+            [
+                Assignment(
+                    assignment_id=TYPED_LAB_LOG,
+                    course="Science",
+                    title=LAB_LOG,
+                    due_date=date(2026, 10, 8),
+                    dependencies=[],
+                    reported_submission_status="unknown",
+                    kind=AssignmentKind.HOMEWORK,
+                    origins={"record": SourceChannel.PARENT_ENTRY},
+                )
+            ],
+            {},
+        )
+        page = read(client, lab_card("10/15/2026"))
+
+    assert sorted(choices(page, 0)) == sorted([school, TYPED_LAB_LOG, mine, DIFFERENT])
+    assert "From the school portal." in said_of(page, 0, school)
+    assert "From the family entry." in said_of(page, 0, TYPED_LAB_LOG)
+    assert "From her note." in said_of(page, 0, mine)
+    assert "Saved from the school." not in html.unescape(question(page, 0))
+
+
+@pytest.mark.parametrize(
+    ("record", "said"),
+    [
+        (SourceChannel.LMS, "From the school portal."),
+        (SourceChannel.EMAIL, "From the school email."),
+        (SourceChannel.PARENT_ENTRY, "From the family entry."),
+        (SourceChannel.STUDENT_REPORT, "From her report."),
+        (None, None),
+    ],
+)
+def test_where_a_homework_came_from_is_read_from_its_record(
+    record: SourceChannel | None, said: str | None
+) -> None:
+    row = copy_of_the_guide(date(2026, 9, 9))
+    origins = {} if record is None else {"record": record}
+    assert came_from(row.model_copy(update={"origins": origins})) == said
+
+
+# ------------------------------------------------------------------ an answer kept for the save
+
+
+def box_for(page: str, key: int, words: str) -> str:
+    """The name of the instruction box on one card whose label quotes these words."""
+    for name, label in re.findall(
+        rf'<input type="checkbox" name="(apply-{key}-\d+)" value="1"[^>]*> '
+        r'<span><q class="authored-text">(.*?)</q>',
+        page,
+    ):
+        if html.unescape(label) == words:
+            return str(name)
+    raise AssertionError(words)
+
+
+def test_an_answer_that_brings_up_an_instruction_question_is_kept_for_the_save(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        first = read(client, lab_card("10/01/2026") + "Bring the log.\n")
+        client.post("/parent/inbox/keep", data=review_form(first))
+        page = read(client, lab_card("10/15/2026") + "Bring the log and goggles.\n")
+        answered = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": early}
+        )
+        form = review_form(answered.text)
+        saved = client.post(
+            "/parent/inbox/keep",
+            data={**form, box_for(answered.text, 0, "Bring the log and goggles."): "1"},
+        )
+        kept = store_of(client).school_instruction_readings([early]).readable
+        recorded = decisions(client)
+
+    assert sorted(choices(page, 0)) == sorted([early, late, DIFFERENT])
+    assert answered.status_code == 200
+    assert question(answered.text, 0) == ""
+    assert 'id="instructions-question-0"' in answered.text
+    assert form["identity-0"] == early
+    assert saved.status_code == 303
+    assert kept[early].texts == ("Bring the log and goggles.",)
+    assert [(kind, lands_on) for kind, _, _, _, lands_on, _ in recorded] == [("which", early)]
+
+
+def test_an_answer_to_a_question_no_longer_asked_is_not_kept_for_the_save(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        page = read(client, lab_card("10/15/2026"))
+        store = store_of(client)
+        store._connection.execute(
+            "UPDATE assignments SET due_date = ? WHERE assignment_id = ?", ("2026-10-15", late)
+        )
+        store._connection.commit()
+        refused = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": early})
+        form = review_form(refused.text)
+        saved = client.post("/parent/inbox/keep", data=form)
+
+    assert refused.status_code == 409
+    assert question(refused.text, 0) == ""
+    assert "identity-0" not in form
+    assert saved.status_code == 303
+
+
+def test_a_different_answer_keeps_its_token_while_another_card_still_asks(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        hers(client)
+        early, _ = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        page = read(client, GUIDE_CARD + lab_card("10/15/2026"))
+        form = review_form(page)
+        returned = client.post("/parent/inbox/keep", data={**form, "identity-0": DIFFERENT})
+        carried = review_form(returned.text)
+        saved = client.post("/parent/inbox/keep", data={**carried, "identity-1": early})
+        made = [
+            item.assignment_id
+            for item in store_of(client).all_assignments()
+            if item.course == "Health" and "from-note" not in item.assignment_id
+        ]
+
+    assert choices(page, 0)[-1] == DIFFERENT
+    assert choices(page, 1)
+    assert returned.status_code == 200
+    assert question(returned.text, 0) == ""
+    assert carried["identity-0"] == DIFFERENT
+    assert saved.status_code == 303
+    assert made == [f"assignment-{form['creation-0']}"]
+
+
 # ------------------------------------------------------------------ retries and stale forms
 
 
@@ -651,6 +809,50 @@ def test_homework_made_from_her_note_after_the_review_is_met_inside_the_save(
     assert refused.status_code == 409
     assert after == before
     assert choices(refused.text, 0) == [mine, DIFFERENT]
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "shown"),
+    [
+        ("note", "Bring it back on Friday.", "Bring it back on Friday."),
+        ("due_date", "2026-09-10", f"Due {spoken_day(date(2026, 9, 10))}"),
+    ],
+)
+def test_her_homework_changed_after_the_question_showed_it_puts_the_question_again(
+    tmp_path: pathlib.Path, column: str, value: str, shown: str
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        page = read(client, GUIDE_CARD)
+        store = store_of(client)
+        store._connection.execute(
+            f"UPDATE assignments SET {column} = ? WHERE assignment_id = ?",  # noqa: S608
+            (value, mine),
+        )
+        store._connection.commit()
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": mine})
+        after = tables(client)
+
+    assert HER_NOTE in html.unescape(question(page, 0))
+    assert refused.status_code == 409
+    assert after == before
+    assert shown in html.unescape(question(refused.text, 0))
+
+
+def test_a_review_page_signed_before_a_restart_is_read_as_one_that_asked_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        page = read(client, lab_card("10/15/2026"))
+        form = review_form(page)
+        made = ";[]"
+        words = {name: value.strip() for name, value in draft_of(form).items()}
+        signed = json.dumps([sorted(words.items()), made]).encode("utf-8")
+        check = hmac.new(secrets.token_bytes(32), signed, "sha256").hexdigest()[:16]
+        saved = client.post("/parent/inbox/keep", data={**form, "made_with": f"{made}.{check}"})
+
+    assert saved.status_code == 303
 
 
 def test_a_failed_decision_write_keeps_the_paste_and_writes_nothing(
@@ -887,3 +1089,98 @@ def test_her_note_arriving_after_the_review_refuses_the_save(tmp_path: pathlib.P
     assert after == before
     assert KEPT_NOTE in html.unescape(refused.text)
     assert str(escape("A parent's words.")) in refused.text
+
+
+def art_entry(note: str) -> dict[str, str]:
+    return entry(course="Art", title="Sketchbook", due_date="2026-09-20", note=note)
+
+
+@pytest.mark.parametrize("saved_first", ["", "Old words."], ids=["said-filled", "said-replaced"])
+def test_a_note_saved_by_another_tab_after_the_review_refuses_the_save(
+    tmp_path: pathlib.Path, saved_first: str
+) -> None:
+    with client_in(tmp_path) as client:
+        made = client.post("/parent/inbox/enter", data=art_entry(saved_first))
+        client.post("/parent/inbox/keep", data=review_form(made.text))
+        one = client.post("/parent/inbox/enter", data=art_entry("Bring pencils."))
+        two = client.post("/parent/inbox/enter", data=art_entry("Bring charcoal."))
+        client.post("/parent/inbox/keep", data=review_form(two.text))
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data=review_form(one.text))
+        after = tables(client)
+        (row,) = store_of(client).all_assignments()
+
+    assert refused.status_code == 409
+    assert after == before
+    assert row.note == "Bring charcoal."
+    assert "Your note replaces the saved note." in html.unescape(refused.text)
+
+
+def test_the_same_typed_note_sent_twice_is_saved_once(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        made = client.post("/parent/inbox/enter", data=art_entry("Old words."))
+        client.post("/parent/inbox/keep", data=review_form(made.text))
+        shown = client.post("/parent/inbox/enter", data=art_entry("New words."))
+        first = client.post("/parent/inbox/keep", data=review_form(shown.text))
+        after_first = tables(client)
+        again = client.post("/parent/inbox/keep", data=review_form(shown.text))
+        after_again = tables(client)
+
+    assert first.status_code == 303
+    assert again.status_code == 303
+    assert after_again == after_first
+
+
+def test_a_typed_note_alone_on_her_homework_can_be_finished_and_says_so(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client, due=None)
+        first = read(client, GUIDE_CARD)
+        client.post("/parent/inbox/keep", data={**review_form(first), "identity-0": mine})
+        shown = client.post(
+            "/parent/inbox/enter",
+            data=entry(due_date="", note="Signed copy is in the blue folder."),
+        )
+        before = tables(client)
+        finished = client.post("/parent/inbox/keep", data=review_form(shown.text))
+        after = tables(client)
+        family = client.get(finished.headers["location"])
+
+    words = html.unescape(shown.text)
+    assert KEPT_NOTE in words
+    assert (
+        "Her note will stay, and your note won't be saved to her homework. Nothing else here "
+        "needs saving."
+    ) in words
+    assert "Everything here is saved already" not in words
+    assert re.search(r'<button type="submit" class="primary"[^>]*>Keep her note</button>', words)
+    assert finished.status_code == 303
+    assert "kept_note=1" in finished.headers["location"]
+    assert after == before
+    assert "Her note stayed. Your note wasn't saved to her homework." in html.unescape(family.text)
+
+
+def test_her_note_changed_after_the_review_refuses_a_save_that_keeps_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = hers(client)
+        first = read(client, GUIDE_CARD)
+        client.post("/parent/inbox/keep", data={**review_form(first), "identity-0": mine})
+        shown = client.post(
+            "/parent/inbox/enter", data=entry(kind="TASK", note="A parent's words.")
+        )
+        store = store_of(client)
+        store._connection.execute(
+            "UPDATE assignments SET note = ? WHERE assignment_id = ?", ("Her newer words.", mine)
+        )
+        store._connection.commit()
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data=review_form(shown.text))
+        after = tables(client)
+
+    assert KEPT_NOTE in html.unescape(shown.text)
+    assert refused.status_code == 409
+    assert after == before
+    assert "Her newer words." in html.unescape(refused.text)
