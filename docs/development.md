@@ -151,8 +151,10 @@ Three files under `.local/` outlive a restart:
   `school_instructions`, holds the school's instructions for each
   assignment, apart from anyone's note: each one's words once, where it was
   first read, who pasted it, and whether it applies now, was said before,
-  or waits for a parent's review. A file from before any of them gains the
-  tables on the first start.
+  or waits for a parent's review. A fifth, `intake_decisions`, keeps each
+  answer about which homework a school row is about: the answer, the row's
+  class, title, and due date, where it landed, and the homework the card
+  listed. A file from before any of them gains the tables on the first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   A draft is its text and, in a nullable `plan_snapshot` column, the plan as
@@ -363,7 +365,34 @@ due date changed or new work. Saying it is the same moves the saved date to
 the pasted one, or folds the later card into the first; saying it is new
 work makes a row of its own. Either answer is kept, so the next paste of
 that text finds the right row and asks nothing, and the same answer sent
-twice, from a retry or a page left open, changes nothing. The type, homework
+twice, from a retry or a page left open, changes nothing.
+
+When the record can't tell which homework a row is about, the card asks. That
+happens when the row has the class and title of homework made from her note
+and no parent has said yet whether it's the same homework, or when two or more
+saved assignments share the row's class and title and its due date doesn't
+pick out exactly one. The card lists each of them and "Different homework with
+the same title", and nothing is chosen in advance. Same homework puts the
+school's dates, reports, and instructions on her assignment and leaves her
+note and her dates alone; a school date that differs is kept beside hers.
+Different homework makes the school's own assignment, whose id comes from a
+token the review page makes once, so a retry finds that assignment instead of
+making another. The answer is kept, so the next paste of that work lands
+without a question. An undated report, such as a Missing email, that could
+mean more than one assignment asks for each report, and placing one report
+never places another. Each Missing line is its own report, read apart from any
+portal card with the same title, so two lines in one paste can go to different
+homework, while lines that can mean only one homework share its card. The email's leading date is shown but never read as
+a date. A paste that repeats text already saved lands where it was saved and
+asks nothing. A parent's typed note never replaces the note she gave her own
+homework: the review says her note will stay and that the other changes can
+still be saved, and the family page says so again after the save. A note of
+hers that waits with the row's class and title is offered to link, unticked,
+with her words and day, even on a paste that adds nothing else. Ticked, the
+save links it to the homework the row lands on and keeps her day as a claim
+beside the school's.
+
+The type, homework
 or task, is suggested from the title, paperwork and materials being tasks,
 and can be changed on any card, a saved one included; a parent's choice is
 kept as theirs, and the type typed with an entry corrects a saved row the

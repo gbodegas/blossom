@@ -45,6 +45,8 @@
   {% if added is not none %}
     <p class="note" role="status">
       {% if not added and not updated %}Nothing to save: everything read was saved already{% if unchanged %} ({{ unchanged }} unchanged){% endif %}.{% else %}{{ added or 0 }} added, {{ updated or 0 }} updated, {{ unchanged or 0 }} unchanged.{% endif %}
+      {% if kept_note %}Her note stayed. Your note wasn't saved to her homework.{% endif %}
+      {% if linked %}{% if linked == 1 %}Her note is linked now.{% else %}{{ linked }} of her notes are linked now.{% endif %}{% endif %}
     </p>
   {% endif %}
 

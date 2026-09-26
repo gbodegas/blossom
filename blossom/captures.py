@@ -90,7 +90,7 @@ ATTRIBUTED: Final = ("course", "title", "due_date", "kind", "note")
 DETAILS: Final = ATTRIBUTED
 """The details a note may be given so that it can become homework. Her words are not one."""
 
-PromotionChoice = Literal["new", "same", "separate", "found"]
+PromotionChoice = Literal["new", "same", "separate", "found", "paste"]
 """What a person chose when adding a note to homework: there was no homework of that class
 and title, it is the same homework as one shown, it is to be kept apart from those shown, or
 it is homework found by search, named by the one row chosen."""
@@ -619,11 +619,11 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
     something was, with a class, a title, and a kind on the note by then,
     which it may settle in the same act; joining names one of the homework
     that was shown, by the choice of the same, with those three settled the
-    same way, or by the choice of homework found by search, which changes no
-    detail. Nothing else carries a choice. An unlink takes the assignment
-    away from a note that was joined and changes nothing else, so the note
-    waits again. No change but an edit touches her words, and nothing but an
-    unlink ever takes an assignment away.
+    same way, or by the choice of homework found by search or named by a
+    school paste, neither of which changes a detail. Nothing else carries a
+    choice. An unlink takes the assignment away from a note that was joined
+    and changes nothing else, so the note waits again. No change but an edit
+    touches her words, and nothing but an unlink ever takes an assignment away.
     """
     before, after = change.before, change.after
     decision = change.decision
@@ -661,7 +661,11 @@ def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
             and after.assignment_id in shown
             and (
                 (choice == "same" and settled)
-                or (choice == "found" and same_details and shown == (after.assignment_id,))
+                or (
+                    choice in ("found", "paste")
+                    and same_details
+                    and shown == (after.assignment_id,)
+                )
             )
         )
         left = (
@@ -695,21 +699,21 @@ name what the school said, never a person's press."""
 
 def _way_in_is_its_kinds(capture_id: str, place: int, change: CaptureEvent) -> None:
     """The tree a press came through is a person's, hers or the family's, and is kept on a
-    link by search and on an unlink, and on nothing else: a change that carries the
-    school's channel, or any other change that carries one, is unreadable, as a change of
-    the wrong shape is."""
+    link by search, on a link from a school paste, and on an unlink, and on nothing else:
+    a change that carries the school's channel, or any other change that carries one, is
+    unreadable, as a change of the wrong shape is."""
     if change.channel is None:
         return
     if change.channel not in PERSONS_TREES:
         raise UnsoundCaptureHistory(
             capture_id, f"revision {place} keeps a way in that is no person's tree"
         )
-    by_search = (
+    pressed = (
         change.operation == LINK
         and change.decision is not None
-        and change.decision.choice == "found"
+        and change.decision.choice in ("found", "paste")
     )
-    if not (by_search or change.operation == UNLINK):
+    if not (pressed or change.operation == UNLINK):
         raise UnsoundCaptureHistory(
             capture_id, f"revision {place} keeps a way in that no {change.operation} has"
         )

@@ -10,6 +10,7 @@ import dataclasses
 import html
 import pathlib
 import re
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime
 
@@ -1279,16 +1280,17 @@ def test_a_claim_that_cannot_be_read_inside_the_write_rolls_it_back_and_keeps_th
         assert shown.status_code == 200, shown.text[:300]
         form = sent_back(shown.text)
         store = state_of(client).project_state
-        real = store.deadline_records
+        real = store.deadline_records_by_assignment
         seen: list[bool] = []
 
-        def refusing(assignment_id: str) -> list[SourceRecord]:
+        def refusing(names: Iterable[str] | None = None) -> dict[str, list[SourceRecord]]:
             seen.append(store._connection.in_transaction)
             if seen[-1]:
-                raise UnreadableClaim(assignment_id)
-            return real(assignment_id)
+                name = "assignment-unreadable"
+                raise UnreadableClaim(name)
+            return real(names)
 
-        monkeypatch.setattr(store, "deadline_records", refusing)
+        monkeypatch.setattr(store, "deadline_records_by_assignment", refusing)
         before = tables(client)
         answer = client.post("/parent/inbox/keep", data=form)
         after = tables(client)

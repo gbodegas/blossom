@@ -27,7 +27,7 @@ from blossom.intake import (
     UPDATE,
     Change,
     ChangedSinceShown,
-    Held,
+    IdentityAnswer,
     Kept,
     NotAsked,
     Reading,
@@ -572,7 +572,8 @@ def test_repeated_work_under_one_name_is_a_question_and_either_answer_is_kept(
     """A weekly practice due a week after the saved one is not merged in silence. Saying it
     is the same assignment moves the saved date, so the next paste, before or after a
     restart, finds it and asks nothing; saying it is new work makes a row of its own, and
-    the same answer given again finds that row and changes nothing."""
+    the same answer given again finds that row and changes nothing. With two rounds on
+    record, a date matching neither asks which, never the nearest."""
     path = tmp_path / "blossom.sqlite3"
     store = ProjectStateStore.open(path, fixture_clock())
     try:
@@ -628,15 +629,17 @@ def test_repeated_work_under_one_name_is_a_question_and_either_answer_is_kept(
     assert len({row.assignment_id for row in rows}) == 2
     assert replayed == Kept(added=0, updated=0, unchanged=1)
     assert len(rows_after_replay) == 2
-    assert [change.state for change in nudged] == [CLAIMED]
-    assert nudged[0].saved_due == date(2026, 9, 21)
+    assert [change.state for change in nudged] == [REVIEW]
+    assert nudged[0].identity_asked
+    assert sorted(nudged[0].identity_shown) == sorted(row.assignment_id for row in rows)
 
 
 def test_a_confirmed_new_round_keeps_what_the_family_added_when_the_answer_is_replayed(
     tmp_path: pathlib.Path,
 ) -> None:
     """A retry, or an older review page still open, sends the same new-work answer again
-    after a parent has added a note and the school has reported on the new row: the answer
+    after a parent has added a note and the school has reported on the new row, placed
+    there by the parent's answer to which homework the undated report is about: the answer
     finds that row and changes nothing, so nothing the family added is lost."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:
@@ -653,7 +656,12 @@ def test_a_confirmed_new_round_keeps_what_the_family_added_when_the_answer_is_re
         )
         keep((note,), store)
         told = readings("Assignments:\n09/14 Math - A: Homework: Weekly practice Grade: Missing\n")
-        keep(told, store)
+        (asked,) = changes_for(told, store)
+        dated = {row.due_date: row.assignment_id for row in store.all_assignments()}
+        answer = IdentityAnswer(
+            dated[date(2026, 9, 14)], asked.identity_shown, asked.identity_basis
+        )
+        keep(told, store, identities={0: answer})
         replayed = keep(readings(WEEK_TWO), store, occurrences={0: NEW_WORK})
         rows = {row.due_date: row for row in store.all_assignments()}
         second = rows[date(2026, 9, 14)]
@@ -772,7 +780,7 @@ def test_a_type_chosen_on_any_card_about_one_assignment_is_the_assignments(
     finally:
         store.close()
     outcomes: dict[
-        str, tuple[Kept | Held | ChangedSinceShown | NotAsked | list[Change], list[Assignment]]
+        str, tuple[Kept | ChangedSinceShown | NotAsked | list[Change], list[Assignment]]
     ] = {}
     for name, kinds in {
         "chosen on the first": {0: AssignmentKind.TASK},
@@ -968,6 +976,135 @@ def test_a_card_repeated_in_one_text_is_one_claim_and_a_report_repeated_is_one_r
     assert len(reports) == 1
 
 
+def test_missing_lines_about_undated_work_are_read_apart_one_reading_for_each() -> None:
+    """Each Missing line can be about different homework under the name, so each is read
+    apart, with its own line; a line repeated word for word is one report."""
+    first = "09/14 Health - A: Homework: Course Guide Due Grade: Missing\n"
+    second = first.replace("09/14", "09/21")
+    two_emails = (
+        "Date: Mon, Sep 14, 2026 12:00\nAssignments:\n"
+        + first
+        + "Date: Mon, Sep 21, 2026 12:00\nAssignments:\n"
+        + second
+    )
+    one_day = "Assignments:\n" + first + "Assignments:\n" + second
+    repeated = "Assignments:\n" + first + "Assignments:\n" + first
+
+    def seen(text: str) -> list[tuple[int | None, list[tuple[str | None, date]]]]:
+        return [
+            (item.at_line, [(said.source_date_text, said.reported_on) for said in item.reports])
+            for item in readings(text)
+        ]
+
+    assert seen(two_emails) == [
+        (3, [("09/14", date(2026, 9, 14))]),
+        (6, [("09/21", date(2026, 9, 21))]),
+    ]
+    assert seen(one_day) == [(2, [("09/14", TODAY)]), (4, [("09/21", TODAY)])]
+    assert seen(repeated) == [(2, [("09/14", TODAY)])]
+
+
+@pytest.mark.parametrize("order", ["card-first", "emails-first"])
+@pytest.mark.parametrize("lines", [1, 2])
+def test_missing_lines_beside_a_dated_card_of_their_name_are_read_apart_from_it(
+    order: str, lines: int
+) -> None:
+    """A card's date, claims, and instructions are its own: each Missing line beside it is
+    read with no date, as if the card weren't there, and placed on its own."""
+    card = "Tuesday 9/8/2026\nHealth\nDue: Course Guide Due:\nBring the signed guide.\n"
+    emails = "".join(
+        f"Assignments:\n09/{day} Health - A: Homework: Course Guide Due Grade: Missing\n"
+        for day in ("14", "21")[:lines]
+    )
+    text = card + "\n" + emails if order == "card-first" else emails + "\n" + card
+    items = readings(text)
+    dated = [item for item in items if item.due_date is not None]
+    told = [item for item in items if item.due_date is None]
+
+    assert len(items) == 1 + lines
+    assert [(item.due_date, item.origin, item.reports) for item in dated] == [
+        (date(2026, 9, 8), SourceChannel.LMS, ())
+    ]
+    assert words(dated[0]) == ("Bring the signed guide.",)
+    assert [[said.source_date_text for said in item.reports] for item in told] == [
+        ["09/14"],
+        ["09/21"],
+    ][:lines]
+    for item in told:
+        assert (item.origin, item.claims, item.instructions, item.occurrence) == (
+            SourceChannel.EMAIL,
+            (),
+            (),
+            None,
+        )
+    assert dated[0].occurrence is None
+
+
+def test_a_missing_line_shares_a_dated_cards_card_only_once_both_land_on_one_homework(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A card a week or more from the saved date asks whether it's the same assignment; a
+    Missing line beside it lands on the saved one by its own rule, and shares the card only
+    once the answer puts the card there too."""
+    text = (
+        "Tuesday 9/15/2026\nMath\nDue: Practice:\n\n"
+        "Assignments:\n09/14 Math - A: Homework: Practice Grade: Missing\n"
+    )
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        keep(readings("Tuesday 9/1/2026\nMath\nDue: Practice:\n"), store)
+        (saved,) = store.all_assignments()
+        asked = changes_for(readings(text), store)
+        same = changes_for(readings(text), store, occurrences={0: UPDATE})
+        new = changes_for(readings(text), store, occurrences={0: NEW_WORK})
+    finally:
+        store.close()
+
+    def placed(changes: list[Change]) -> list[tuple[str, int | None, str]]:
+        return [(change.state, change.folded_into, change.assignment_id) for change in changes]
+
+    assert placed(asked)[1:] == [(CLAIMED, None, saved.assignment_id)]
+    assert asked[0].state == REVIEW
+    assert placed(same) == [
+        (CLAIMED, None, saved.assignment_id),
+        (FOLDED, 0, saved.assignment_id),
+    ]
+    assert [report.source_date_text for report in same[0].new_reports] == ["09/14"]
+    assert placed(new)[1:] == [(CLAIMED, None, saved.assignment_id)]
+    assert new[0].state == NEW
+
+
+@pytest.mark.parametrize("entries", ["typed", "dated"])
+def test_a_card_that_brings_more_than_the_schools_reports_keeps_its_own(
+    tmp_path: pathlib.Path, entries: str
+) -> None:
+    """Only the school's undated reports of one homework share a card: a typed entry, or a
+    reading the portal dates, is never folded into another."""
+    items: tuple[Reading, ...]
+    if entries == "typed":
+        items = (
+            by_hand("Science", "Lab Log", None, None, None, "Bring the log.", now=NOW),
+            by_hand("Science", "Lab Log", None, None, None, "Bring the goggles.", now=NOW),
+        )
+    else:
+        email = "Assignments:\n09/08 Math - A: Homework: Practice Grade: Missing\n"
+        items = readings(email + "Tuesday 9/8/2026\nMath\nDue: Practice:\n") + readings(
+            email.replace("09/08", "09/09") + "Wednesday 9/9/2026\nMath\nDue: Practice:\n"
+        )
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        changes = changes_for(items, store)
+    finally:
+        store.close()
+
+    if entries == "typed":
+        assert [change.state for change in changes] == [NEW, NEW]
+    else:
+        # Each Missing line is read apart and lands on the new homework the first card makes.
+        assert [change.state for change in changes] == [FOLDED, NEW, FOLDED, NEW]
+        assert [change.folded_into for change in changes] == [1, None, 1, None]
+
+
 def test_a_type_typed_with_an_entry_corrects_a_saved_row_and_the_correction_is_kept(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1150,11 +1287,17 @@ def test_each_field_keeps_the_channel_that_gave_it_whatever_the_order(
             )
         finally:
             store.close()
-    mixed = readings(email_first)[0]
+    told, card = readings(email_first)
 
-    assert mixed.origin is SourceChannel.EMAIL
-    assert mixed.origin_of("due_date") is SourceChannel.LMS
-    assert [said.channel for said in mixed.instructions] == [SourceChannel.LMS]
+    assert (told.origin, told.due_date, told.claims, told.instructions) == (
+        SourceChannel.EMAIL,
+        None,
+        (),
+        (),
+    )
+    assert [report.channel for report in told.reports] == [SourceChannel.EMAIL]
+    assert (card.origin, card.due_date, card.reports) == (SourceChannel.LMS, date(2026, 9, 10), ())
+    assert [said.channel for said in card.instructions] == [SourceChannel.LMS]
     for name, (row, claim_channels, report_channels, applying_now) in outcomes.items():
         assert row.due_date == date(2026, 9, 10), name
         assert row.assigned_on == date(2026, 9, 8), name
@@ -1229,11 +1372,11 @@ def test_two_savings_of_one_text_at_once_add_nothing_twice(tmp_path: pathlib.Pat
     read = read_text(THREE_WEEKS, now=NOW, today=TODAY)
     released = threading.Barrier(2)
 
-    def one_saving(_: int) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
+    def one_saving(_: int) -> Kept | ChangedSinceShown | NotAsked | list[Change]:
         released.wait()
         return keep(read.items, store)
 
-    def one_answer(_: int) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
+    def one_answer(_: int) -> Kept | ChangedSinceShown | NotAsked | list[Change]:
         released.wait()
         return keep(readings(WEEK_TWO), store, occurrences={0: NEW_WORK})
 

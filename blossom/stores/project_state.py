@@ -97,6 +97,7 @@ from blossom.stores.captures import (
     held_text_or_nothing,
     with_details,
 )
+from blossom.stores.intake_decisions import IntakeDecisionRecords
 from blossom.stores.paths import refuse_unsafe_path
 from blossom.stores.school_instructions import (
     AUTHORED_MARKS,
@@ -610,7 +611,7 @@ class Reopened:
     check: FamilyCheck
 
 
-class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
+class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecisionRecords):
     """SQLite-backed project state, opened once and shared across worker threads.
 
     The connection is created at application startup rather than per request,
@@ -762,6 +763,9 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
         with self._writing():
             self._create_instruction_table()
             self._carry_school_notes()
+        # What a parent said about which homework a school row is about.
+        with self._writing():
+            self._create_intake_decision_table()
 
     def _upgrade_date_claims(self) -> None:
         """Give the claims table the note a claim came from, the note's revision, whether
@@ -2096,27 +2100,6 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
         with self._lock, self._writing():
             yield
 
-    def held_by_notes(
-        self, pairs: Iterable[tuple[str, str]]
-    ) -> dict[tuple[str, str], tuple[str, ...]]:
-        """Which of these classes and titles are the class and title of homework a note
-        became, by the rule the school's paste pairs by, and which assignments each is:
-        every one, since a second note can be kept as a separate assignment under the same
-        class and title. Empty when none is, which is every paste until a note is added to
-        homework."""
-        made = self.assignments_made_from_notes()
-        if not made:
-            return {}
-        by_name: dict[tuple[str, str], list[str]] = {}
-        for item in self.all_assignments():
-            if item.assignment_id in made:
-                by_name.setdefault(pair(item.course, item.title), []).append(item.assignment_id)
-        return {
-            name: tuple(sorted(by_name[name]))
-            for name in (pair(course, title) for course, title in pairs)
-            if name in by_name
-        }
-
     def promotion_candidates(
         self, details: CaptureDetails, *, among: Iterable["Assignment"] | None = None
     ) -> list["Assignment"]:
@@ -2365,6 +2348,90 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
                             expected_revision=expected_revision, leaving=leaving
                         ),
                     ),
+                    channel=channel,
+                )
+                if note.due_date is not None:
+                    self._record_capture_claim_locked(
+                        target,
+                        SourceRecord(
+                            channel=note.attribution["due_date"].channel,
+                            asserted_value=note.due_date.isoformat(),
+                            observed_at=now,
+                            confidence=CAPTURE_CLAIM_CONFIDENCE,
+                            seen_in=HOMEWORK_NOTE,
+                        ),
+                        capture_id=name,
+                        capture_revision=changed.capture.revision,
+                    )
+                return CapturePromoted(changed.capture, changed.event, target, False)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CaptureNotSaved(name, error) from error
+
+    def paste_link_standing(
+        self, capture_id: str, *, target: str, expected_revision: int
+    ) -> Literal["waits", "stands", "changed"]:
+        """Where a note offered on a paste review stands against linking it to ``target``:
+        ``stands`` when it is joined to that homework already and the homework is on
+        record, which a retry finds; ``waits`` when it is at the revision the page showed,
+        since every move of a note makes a new revision; ``changed`` otherwise. The note's
+        history is checked first, and one that can't be read is ``UnreadableCapture``.
+        Read in the caller's transaction, so the save is judged against what it writes."""
+        with self._lock:
+            standing = self._capture_locked(capture_id_from(capture_id))
+            if standing is None:
+                return "changed"
+            self._validated_capture_history_locked(standing)
+            if standing.assignment_id == target:
+                return "stands" if self.one_assignment(target) is not None else "changed"
+        return "waits" if standing.revision == expected_revision else "changed"
+
+    def link_capture_from_paste(
+        self,
+        capture_id: str,
+        *,
+        target: str,
+        expected_revision: int,
+        basis: str,
+        authored_by: Author,
+        channel: SourceChannel,
+        now: datetime,
+        today: date,
+    ) -> CapturePromoted | HomeworkGone | CaptureConflict:
+        """Link a waiting note to the homework a school paste lands on, inside the paste's
+        own write transaction, which found with ``paste_link_standing`` that it waits at
+        ``expected_revision``. The homework must be on record, which is ``HomeworkGone``
+        otherwise, and have the note's class and title, which is ``CaptureConflict``
+        otherwise; neither writes anything. The link keeps the choice of a paste and
+        ``basis``, the row as it was linked, and a day the note gives is one more claim
+        beside the school's. Her words and details stay as they are. A write the file
+        refuses is ``CaptureNotSaved``, and the paste's transaction is rolled back whole."""
+        name = capture_id_from(capture_id)
+        try:
+            with self._lock, self._writing():
+                standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
+                if not standing.outstanding or standing.revision != expected_revision:
+                    msg = "the note changed since the paste was reviewed"
+                    raise RuntimeError(msg)
+                item = self.one_assignment(target)
+                if item is None:
+                    return HomeworkGone(standing, target)
+                if (
+                    standing.course is None
+                    or standing.title is None
+                    or pair(standing.course, standing.title) != pair(item.course, item.title)
+                ):
+                    return CaptureConflict(standing)
+                note = standing.model_copy(update={"assignment_id": target})
+                changed = self._change_locked(
+                    standing,
+                    note,
+                    LINK,
+                    authored_by,
+                    reading,
+                    now=now,
+                    today=today,
+                    decision=CandidateDecision(choice="paste", candidates=(target,), basis=basis),
                     channel=channel,
                 )
                 if note.due_date is not None:

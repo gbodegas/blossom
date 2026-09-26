@@ -1201,17 +1201,19 @@ is settled before the note's name is read, as on the details page, and the
 gate lets her sign-in reach the family's link and unlink presses to be refused
 there with the words kept.
 
-A school paste that names homework made from a note is held whole. Until the
-pages can ask whether the school's row is the same work, a text with such a
-row saves nothing, not that row and not the rows beside it: the review names
-the rows in the way, offers no save, and keeps the text, and a save sent
-anyway is answered 409. Homework made from a note is known by its id, since a
-parent's press marks the record a family entry and her ordinary reports on
-school homework mark nothing. The save reserves the writer and compares inside
-that transaction, so a note added through another connection between the
-review and the save is met too. Under one class and title there can be more
-than one assignment made from a note, since a second note can be kept as a
-separate assignment, and the hold names every one of them.
+A school paste that names homework made from a note asks before it saves.
+Until a parent says whether the school's row is the same homework or different
+homework with the same title, the text saves nothing, not that row and not the
+rows beside it. Homework made from a note is known by its id, since a parent's
+press marks the record a family entry and her ordinary reports on school
+homework mark nothing. The answer is kept in `intake_decisions` with the
+homework the card listed and a fingerprint of what it showed. The save compares
+that fingerprint inside its own transaction, so homework added or answered
+through another connection between the review and the save leaves the text
+unsaved, with the question put again. Under one class and title there can be
+more than one assignment made from a note, and the question lists every one of
+them. A paste that repeats text already saved lands where it was saved and asks
+nothing.
 
 The five details are shown by one template macro wherever they are shown: on
 the note's page, where a kind is shown whenever one is held, beside a form
