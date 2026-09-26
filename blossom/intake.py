@@ -56,14 +56,17 @@ heading's first name is read as nothing and never kept.
 """
 
 import dataclasses
+import hashlib
+import json
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 
-from blossom.captures import Author
+from blossom.candidates import readings_for
+from blossom.captures import Author, candidate_basis
 from blossom.pairing import pair as pair  # the one rule, kept where both askers share it
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel, SourceRecord
 from blossom.school_instructions import (
@@ -81,6 +84,7 @@ from blossom.school_instructions import (
     revision_of,
     settle,
 )
+from blossom.stores.intake_decisions import DecisionKind, DecisionToKeep, IntakeDecision
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -105,6 +109,14 @@ ANOTHER_OCCURRENCE: Final = timedelta(days=7)
 """How far past the recorded due date a pasted one must be to ask whether it is new work."""
 UPDATE: Final = "update"
 NEW_WORK: Final = "new"
+DIFFERENT: Final = "different"
+"""The answer that a row is different homework with the same title as the homework shown."""
+CREATION: Final = re.compile(r"[0-9a-f]{32}")
+"""A creation token as the review page makes it."""
+KEPT_NOTE: Final = (
+    "Her note will stay. Your note won't be saved to this assignment. The other changes can "
+    "still be saved."
+)
 
 TASK_THING: Final = re.compile(
     r"\b(?:syllabus|binders?|supplies|permission|dividers|book\s+covers?)\b", re.IGNORECASE
@@ -756,6 +768,30 @@ class Change:
     instructions_with: int | None = None
     """The key of the card that carries this card's assignment's instructions, when that is
     another card of the same text."""
+    candidates: tuple[Assignment, ...] = ()
+    """The homework on record the card asks about, in the order shown."""
+    identity_asked: bool = False
+    """Whether the card asks which homework it is about before anything of it is saved."""
+    identity_question: str | None = None
+    """Why it asks: ``hers`` for homework made from her note, ``which`` for several under
+    one name, ``report`` for an undated report that more than one could mean."""
+    identity_shown: tuple[str, ...] = ()
+    """The ids of the homework the question lists, in order."""
+    identity_basis: str = ""
+    """The fingerprint of what the question shows, which an answer is checked against."""
+    identity_stale: bool = False
+    """Whether an answer given on the card was made against facts that changed since."""
+    identity_decision: DecisionToKeep | None = None
+    """The answer the save keeps with the card."""
+    made_as: str | None = None
+    """The id of the school's own assignment made by the answer that it is different
+    homework: the creation token the review page made, never the course, title, or date."""
+
+    @property
+    def lands_nowhere(self) -> bool:
+        """Whether the card waits on the parent's word about which homework it is, and so
+        lands on no assignment yet."""
+        return self.ambiguous or self.identity_asked
 
     @property
     def instructions_asked(self) -> bool:
@@ -839,6 +875,8 @@ class Change:
     @property
     def assignment_id(self) -> str:
         """The row the reading lands in: the record's own when it has one, else a new one."""
+        if self.made_as is not None:
+            return self.made_as
         if self.on_record is not None and self.occurrence != NEW_WORK:
             return self.on_record.assignment_id
         if self.occurrence == NEW_WORK and self.reading.due_date is not None:
@@ -881,7 +919,7 @@ class Change:
         into another, else ``new``, ``claimed``, or ``known``."""
         if self.folded_into is not None:
             return FOLDED
-        if self.ambiguous or self.instructions_asked or self.instructions_stale:
+        if self.lands_nowhere or self.instructions_asked or self.instructions_stale:
             return REVIEW
         if self.on_record is None or self.occurrence == NEW_WORK:
             return NEW
@@ -942,6 +980,13 @@ class Change:
     @property
     def effect_base(self) -> str:
         """What saving does apart from the type, which the page rewrites as the select changes."""
+        if self.identity_asked:
+            if self.identity_question == "report":
+                return (
+                    "More than one assignment on record has this class and title. Say which "
+                    "one this report is about; the answer places this report only."
+                )
+            return "Say which homework this is before anything of it is saved."
         if self.state == REVIEW and not self.ambiguous:
             if self.instructions_stale:
                 return (
@@ -976,7 +1021,7 @@ class Change:
                 part for part in ("Saved as a new assignment.", self.instructions_effect) if part
             )
         if self.state == KNOWN:
-            return "Nothing changes."
+            return KEPT_NOTE if self.note_change == "kept" else "Nothing changes."
         parts = []
         if self.fills_due_date:
             parts.append(
@@ -1002,6 +1047,8 @@ class Change:
             parts.append("The note is saved.")
         elif self.note_change == "update":
             parts.append("Your note replaces the saved note.")
+        elif self.note_change == "kept":
+            parts.append(KEPT_NOTE)
         if self.instructions_effect:
             parts.append(self.instructions_effect)
         return " ".join(parts)
@@ -1028,6 +1075,205 @@ class ShownInstruction:
     card: str | None
     card_day: date | None
     sequence: int | None = None
+
+
+@dataclass(frozen=True)
+class IdentityAnswer:
+    """A parent's answer to which homework a card is about, with what the card showed: an id
+    it listed or ``DIFFERENT``, the ids it listed in order, the fingerprint of all it showed,
+    and, for different homework, the creation token the review page made for the card."""
+
+    choice: str
+    shown: tuple[str, ...]
+    basis: str
+    creation: str | None = None
+
+
+@dataclass(frozen=True)
+class _Where:
+    """Where the record puts a reading before any answer: on a row, by an answer kept or by
+    its date; nowhere yet, with a question; or by today's rules for one row or none."""
+
+    lands: Assignment | None = None
+    asks: str | None = None
+    candidates: tuple[Assignment, ...] = ()
+    today: bool = False
+
+
+def _where(
+    reading: Reading,
+    candidates: list[Assignment],
+    mine: set[str],
+    decided: tuple[IntakeDecision, ...],
+    holds: Callable[[Assignment, Reading], bool],
+    apart: Mapping[str, tuple[str, ...]],
+) -> _Where:
+    """Which homework a reading is about, by the rules the review page states. Text saved
+    before is never asked about again: a reading whose every claim and report one candidate
+    already ``holds`` lands there, as the same text saved twice moves nothing. Then, for a
+    dated reading: the latest answer kept for the same name and due date, while it showed
+    every candidate now due that day; her homework asks until a parent has said, here or
+    when her note was kept apart from one of them; one candidate due that day; several ask;
+    one candidate due another day or none follow today's rules. An undated report lands on
+    the only candidate once any of hers is settled, and asks for each report when several
+    could be meant. A placement of one report is never an answer about another."""
+    by_id = {item.assignment_id: item for item in candidates}
+    saved_before = [item for item in candidates if holds(item, reading)]
+    settled = {item.lands_on for item in decided if item.kind in ("same", "which")} | {
+        name for item in decided if item.kind == "different" for name in item.shown
+    }
+    # Homework whose note was kept apart from one of these when it was added is settled too.
+    settled |= {name for name, others in apart.items() if by_id.keys() & set(others)}
+    open_hers = [
+        item
+        for item in candidates
+        if item.assignment_id in mine and item.assignment_id not in settled
+    ]
+    if len(saved_before) == 1:
+        return _Where(lands=saved_before[0])
+    if reading.due_date is not None:
+        due_that_day = {
+            item.assignment_id for item in candidates if item.due_date == reading.due_date
+        }
+        latest = next(
+            (
+                item
+                for item in reversed(decided)
+                if item.kind != "report_placed" and item.due_date == reading.due_date
+            ),
+            None,
+        )
+        if (
+            latest is not None
+            and latest.lands_on in by_id
+            and due_that_day <= {*latest.shown, latest.lands_on}
+        ):
+            return _Where(lands=by_id[latest.lands_on])
+        if open_hers:
+            return _Where(asks="hers", candidates=tuple(candidates))
+        if len(due_that_day) == 1:
+            return _Where(lands=by_id[next(iter(due_that_day))])
+        if len(candidates) >= 2:
+            return _Where(asks="which", candidates=tuple(candidates))
+        return _Where(lands=candidates[0] if candidates else None, today=True)
+    if not candidates:
+        return _Where(today=True)
+    if len(candidates) == 1:
+        if open_hers:
+            return _Where(asks="hers", candidates=tuple(candidates))
+        return _Where(lands=candidates[0])
+    return _Where(asks="report", candidates=tuple(candidates))
+
+
+def _report_of(reading: Reading) -> dict[str, str | None] | None:
+    """The report an undated reading carries, as a placement keeps it: evidence of which
+    report was placed, never a key for another."""
+    if not reading.reports:
+        return None
+    report = reading.reports[-1]
+    return {
+        "channel": report.channel.value,
+        "status": report.status,
+        "day": report.reported_on.isoformat(),
+        "source_date_text": report.source_date_text,
+    }
+
+
+def _stands(
+    reply: IdentityAnswer, reading: Reading, decided: tuple[IntakeDecision, ...]
+) -> IntakeDecision | None:
+    """The answer kept already that says what ``reply`` asks for: a retry finds it, so an
+    answer sent twice writes nothing more. Different homework is found by its creation
+    token; the same or which, by the name, the due date, and where it landed; a report's
+    placement, only for that same report."""
+    for item in decided:
+        if reply.choice == DIFFERENT:
+            if reply.creation is not None and item.creation == reply.creation:
+                return item
+            continue
+        if item.lands_on != reply.choice:
+            continue
+        if reading.due_date is not None:
+            if item.kind in ("same", "which") and item.due_date == reading.due_date:
+                return item
+        elif item.kind == "same" or (
+            item.kind == "report_placed" and item.report == _report_of(reading)
+        ):
+            return item
+    return None
+
+
+def identity_basis(
+    store: ProjectStateStore,
+    candidates: Sequence[Assignment],
+    decided: tuple[IntakeDecision, ...],
+) -> str:
+    """The fingerprint of an identity question: every candidate as a row of homework shows
+    it, and every answer kept for the name. A choice sent back is checked against it in the
+    save's transaction, so an answer about homework that has since arrived, left, changed,
+    or been answered elsewhere is put again."""
+    shown = candidate_basis(readings_for(store, list(candidates)))
+    answered = [item.sequence for item in decided]
+    serialized = json.dumps([shown, answered], separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _asked(
+    key: int,
+    reading: Reading,
+    where: _Where,
+    shown: tuple[str, ...],
+    basis: str,
+    kinds: Mapping[int, AssignmentKind],
+    *,
+    stale: bool = False,
+) -> Change:
+    """A card that asks which homework it is about, and lands nowhere until answered."""
+    kind, by_parent, suggested = _kind_for(key, reading, None, kinds)
+    return Change(
+        key,
+        reading,
+        None,
+        (),
+        (),
+        False,
+        False,
+        False,
+        None,
+        kind,
+        by_parent,
+        False,
+        None,
+        suggested_kind=suggested,
+        candidates=where.candidates,
+        identity_asked=True,
+        identity_question=where.asks,
+        identity_shown=shown,
+        identity_basis=basis,
+        identity_stale=stale,
+    )
+
+
+def _decision(
+    kind: DecisionKind,
+    reading: Reading,
+    lands_on: str,
+    shown: tuple[str, ...],
+    basis: str,
+    creation: str | None = None,
+) -> DecisionToKeep:
+    """The answer the save keeps, with the row's name and due date."""
+    return DecisionToKeep(
+        kind=kind,
+        course=reading.pair[0],
+        title=reading.pair[1],
+        due_date=reading.due_date,
+        lands_on=lands_on,
+        shown=shown,
+        basis=basis,
+        creation=creation,
+        report=_report_of(reading) if kind == "report_placed" else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -1096,8 +1342,16 @@ def changes_for(
     occurrences: Mapping[int, str] | None = None,
     kinds: Mapping[int, AssignmentKind] | None = None,
     instruction_answers: Mapping[int, InstructionChoice | SubmittedChoice] | None = None,
+    identities: Mapping[int, IdentityAnswer] | None = None,
 ) -> list[Change]:
     """Compare each reading with the record: what is new, what is known, what a paste adds.
+
+    Which homework a reading is about follows ``_where``: where the record
+    cannot tell, the card asks, lists the homework it could be, and lands
+    nowhere until ``identities`` answers it. An answer made against the facts
+    as they stand lands the card and is kept with it; one that is kept
+    already lands it and keeps nothing more; one made against facts that
+    changed since marks the card stale and writes nothing.
 
     A reading matches a row by its course and title, whatever the row's id,
     so an assignment on record from a fixture or an earlier paste takes the
@@ -1126,11 +1380,33 @@ def changes_for(
     """
     occurrences = occurrences or {}
     kinds = kinds or {}
+    identities = identities or {}
     on_record: dict[tuple[str, str], list[Assignment]] = {}
     by_id: dict[str, Assignment] = {}
     for item in store.all_assignments():
         on_record.setdefault(pair(item.course, item.title), []).append(item)
         by_id[item.assignment_id] = item
+    mine = store.assignments_made_from_notes()
+    apart = store.kept_apart()
+    decided = store.intake_decisions(reading.pair for reading in items)
+    held_claims: dict[str, list[SourceRecord]] = {}
+    held_reports: dict[str, list[StatusReport]] = {}
+
+    def holds(item: Assignment, reading: Reading) -> bool:
+        """Whether a row on record holds every claim and report a reading makes: the same
+        text, saved there before."""
+        if not reading.claims and not reading.reports:
+            return False
+        name = item.assignment_id
+        if name not in held_claims:
+            held_claims[name] = store.deadline_records(name)
+            held_reports[name] = store.status_reports(name)
+        return all(
+            any(_same_claim(one, other) for other in held_claims[name]) for one in reading.claims
+        ) and all(
+            any(_same_report(one, other) for other in held_reports[name]) for one in reading.reports
+        )
+
     seen = _Seen(store)
     anchors: dict[tuple[str, str], int] = {}
     """The place in ``changes`` of the first new reading under each name in this text."""
@@ -1139,10 +1415,57 @@ def changes_for(
     changes: list[Change] = []
     for key, reading in enumerate(items):
         answer = occurrences.get(key)
-        existing = _match(on_record.get(reading.pair, []), reading)
+        known = decided.get(reading.pair, ())
+        where = _where(reading, on_record.get(reading.pair, []), mine, known, holds, apart)
+        reply = identities.get(key)
+        decision: DecisionToKeep | None = None
+        stale = False
+        if reply is not None or where.asks is not None:
+            shown = tuple(item.assignment_id for item in where.candidates)
+            basis = "" if where.asks is None else identity_basis(store, where.candidates, known)
+            standing = None if reply is None else _stands(reply, reading, known)
+            if standing is not None and standing.lands_on in by_id:
+                where = _Where(lands=by_id[standing.lands_on])
+            elif reply is None:
+                changes.append(_asked(key, reading, where, shown, basis, kinds))
+                continue
+            elif (
+                where.asks is None
+                or reply.basis != basis
+                or (reply.choice != DIFFERENT and reply.choice not in shown)
+                or (
+                    reply.choice == DIFFERENT
+                    and (reply.creation is None or CREATION.fullmatch(reply.creation) is None)
+                )
+            ):
+                stale = True
+                if where.asks is not None:
+                    changes.append(_asked(key, reading, where, shown, basis, kinds, stale=True))
+                    continue
+            elif reply.choice == DIFFERENT:
+                made = f"assignment-{reply.creation}"
+                decision = _decision("different", reading, made, shown, basis, reply.creation)
+                change = dataclasses.replace(
+                    _new_change(key, reading, None, None, False, kinds, seen, None, made),
+                    made_as=made,
+                    identity_decision=decision,
+                )
+                changes.append(change)
+                continue
+            else:
+                answered: DecisionKind = (
+                    "report_placed"
+                    if where.asks == "report"
+                    else "same"
+                    if reply.choice in mine
+                    else "which"
+                )
+                decision = _decision(answered, reading, reply.choice, shown, basis)
+                where = _Where(lands=by_id[reply.choice])
+        existing = where.lands
         twin = None if existing is not None else anchors.get(reading.pair)
         other = None
-        if existing is not None:
+        if existing is not None and where.today:
             other = pending.get(existing.assignment_id, existing).due_date
         if twin is not None:
             other = changes[twin].reading.due_date
@@ -1166,10 +1489,11 @@ def changes_for(
             else:
                 if existing is None and reading.pair not in anchors:
                     anchors[reading.pair] = len(changes)
-                changes.append(change)
+                changes.append(dataclasses.replace(change, identity_stale=stale))
                 continue
         base = pending.get(existing.assignment_id, existing)
         change = _change_to(key, reading, existing, base, answer, asked, kinds, seen)
+        change = dataclasses.replace(change, identity_stale=stale, identity_decision=decision)
         changes.append(change)
         if change.state == CLAIMED:
             row = _updated_row(change)
@@ -1223,7 +1547,7 @@ def answers_to_no_question(
     carriers = {change.assignment_id: change for change in decided.values()}
     cards = {change.key: change for change in changes}
     asked = asked or {}
-    unlanded = {change.key for change in changes if change.ambiguous}
+    unlanded = {change.key for change in changes if change.lands_nowhere}
     never: set[int] = set()
     for key, answer in answers.items():
         if key in unlanded:
@@ -1295,7 +1619,7 @@ def _with_instructions(
     for index, change in enumerate(changes):
         if change.folded_into is not None:
             folded.setdefault(change.folded_into, []).append(change.key)
-        elif change.ambiguous:
+        elif change.lands_nowhere:
             if change.key in answers:
                 changes[index] = dataclasses.replace(
                     change, instructions_unsaved=(answers[change.key],)
@@ -1398,9 +1722,11 @@ def _new_change(
     kinds: Mapping[int, AssignmentKind],
     seen: _Seen,
     beside: date | None,
+    made_as: str | None = None,
 ) -> Change:
     """A reading with no row to land on, or one the parent said is new work, or one that
-    waits on the parent's answer about ``beside``, the other date under its name."""
+    waits on the parent's answer about ``beside``, the other date under its name.
+    ``made_as`` is the id the answer that it is different homework gives the new row."""
     kind, by_parent, suggested = _kind_for(key, reading, None, kinds)
     change = Change(
         key,
@@ -1418,6 +1744,7 @@ def _new_change(
         answer,
         beside=beside,
         suggested_kind=suggested,
+        made_as=made_as,
     )
     if change.state == REVIEW:
         return change
@@ -1563,60 +1890,28 @@ def conflicting_choices(changes: list[Change]) -> list[str]:
     return [names[key] for key, kinds in chosen.items() if len(kinds) > 1]
 
 
-def _match(rows: list[Assignment], reading: Reading) -> Assignment | None:
-    """The row a reading lands on among those under its name: the one due nearest its
-    date, a row with no date last; with no date in the reading, the latest."""
-    if not rows:
-        return None
-    if reading.due_date is None:
-        return max(rows, key=lambda row: (row.due_date or date.min, row.assignment_id))
-    pasted = reading.due_date
-
-    def distance(row: Assignment) -> tuple[int, str]:
-        apart = timedelta.max if row.due_date is None else abs(row.due_date - pasted)
-        return (apart.days, row.assignment_id)
-
-    return min(rows, key=distance)
-
-
 def _note_change(existing: Assignment, reading: Reading) -> str | None:
     """What a parent's typed note does to the saved note. Only a parent's entry carries a
-    note; the reader keeps the school's words as instructions, never as one."""
+    note; the reader keeps the school's words as instructions, never as one. The note she
+    gave her own homework stays hers: a parent's note is ``kept`` off it, and never saved
+    in its place."""
     if not reading.note or reading.note == existing.note:
         return None
+    if existing.note_by == "student":
+        return "kept"
     return "fill" if existing.note is None else "update"
 
 
 @dataclass(frozen=True)
 class Kept:
     """What one saving did, counted in assignments: rows added, rows already saved that
-    changed, and rows unchanged. Two cards about one row are one row here."""
+    changed, and rows unchanged. Two cards about one row are one row here. ``kept_notes``
+    counts the typed notes left off her homework, whose own note stayed."""
 
     added: int
     updated: int
     unchanged: int
-
-
-@dataclass(frozen=True)
-class Held:
-    """The whole text was held and nothing of it was written: some of its rows carry the
-    class and title of homework made from a homework note, which the school's version
-    cannot yet be reviewed against. ``blocking`` is those rows, and ``assignments`` the
-    homework they would have touched."""
-
-    blocking: tuple[Reading, ...]
-    assignments: tuple[str, ...]
-
-
-def held_rows(items: tuple[Reading, ...], store: ProjectStateStore) -> Held | None:
-    """The rows of a text that are in the way, or ``None`` when none is. Read from the record
-    as it stands when this is called: a review calls it to say so early, and ``keep`` calls
-    it again inside the transaction it writes in, which is the one that decides."""
-    found = store.held_by_notes((item.course, item.title) for item in items)
-    if not found:
-        return None
-    blocking = tuple(item for item in items if item.pair in found)
-    return Held(blocking, tuple(sorted({name for item in blocking for name in found[item.pair]})))
+    kept_notes: int = 0
 
 
 def keep(
@@ -1627,10 +1922,13 @@ def keep(
     kinds: Mapping[int, AssignmentKind] | None = None,
     instruction_answers: Mapping[int, InstructionChoice | SubmittedChoice] | None = None,
     asked: Mapping[int, tuple[int, str]] | None = None,
+    identities: Mapping[int, IdentityAnswer] | None = None,
+    shown_identities: Collection[int] | None = None,
+    shown_notes: Mapping[int, str] | None = None,
     imported_by: Author | None = None,
     now: datetime | None = None,
     today: date | None = None,
-) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
+) -> Kept | ChangedSinceShown | NotAsked | list[Change]:
     """Compare and write as one: save what the record lacks, and say what changed.
 
     The comparison and the write happen while the store is held for this
@@ -1643,10 +1941,12 @@ def keep(
     changes are handed back for the parent to look at again.
 
     The file's writer is reserved before anything is read, so nothing another
-    connection writes can land between the comparison and the write. That is
-    where a text is held: if any row carries the class and title of homework
-    made from a homework note, nothing of the whole text is written, not the
-    rows beside it either, and the rows in the way are handed back.
+    connection writes can land between the comparison and the write. Which
+    homework each row is about is judged there too: an answer made against
+    facts that changed since, or a question the review page did not ask
+    (``shown_identities``), leaves the whole text unsaved with what changed
+    handed back; so does a typed note whose fate differs from what the page
+    said (``shown_notes``), such as her note arriving after the review.
 
     The school's instructions are decided once for each assignment, in the
     same transaction: a new instruction that needs a choice leaves the whole
@@ -1670,19 +1970,27 @@ def keep(
             )
             if never_put:
                 return NotAsked(never_put)
-        held = held_rows(items, store)
-        if held is not None:
-            return held
         changes = changes_for(
             items,
             store,
             occurrences=occurrences,
             kinds=kinds,
             instruction_answers=instruction_answers,
+            identities=identities,
         )
         # A choice made against instructions that have changed is refused before any other
         # question is put again, so a page returned never shows it as still made.
-        if any(change.instructions_stale for change in changes):
+        if any(change.instructions_stale or change.identity_stale for change in changes):
+            return ChangedSinceShown(changes)
+        if shown_identities is not None and any(
+            change.identity_asked and change.key not in shown_identities for change in changes
+        ):
+            return ChangedSinceShown(changes)
+        if shown_notes is not None and any(
+            (change.note_change == "kept") != (shown_notes.get(change.key) == "kept")
+            for change in changes
+            if change.note_change is not None or change.key in shown_notes
+        ):
             return ChangedSinceShown(changes)
         if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):
             return changes
@@ -1715,6 +2023,16 @@ def keep(
         store.put_on_record(rows.values(), claims, reports)
         moment = store.instruction_moment()
         for change in changes:
+            if change.identity_decision is None or change.state == FOLDED:
+                continue
+            store.record_intake_decision(
+                change.identity_decision,
+                authored_by=imported_by,
+                channel=SourceChannel.PARENT_ENTRY,
+                now=now or moment[0],
+                today=today or moment[1],
+            )
+        for change in changes:
             if not isinstance(change.instructions, InstructionsSettled):
                 continue
             settled = store.settle_school_instructions(
@@ -1735,6 +2053,7 @@ def keep(
         added=len(added),
         updated=len(updated - added),
         unchanged=len(unchanged - added - updated),
+        kept_notes=sum(1 for change in changes if change.note_change == "kept"),
     )
 
 

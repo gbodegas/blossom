@@ -16,6 +16,7 @@ field as it was, the failing field named, and the section open.
 import hmac
 import json
 import logging
+import secrets
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.intake import (
     CLAIMED,
+    DIFFERENT,
     FOLDED,
     KNOWN,
     NEW,
@@ -38,7 +40,7 @@ from blossom.intake import (
     UPDATE,
     Change,
     ChangedSinceShown,
-    Held,
+    IdentityAnswer,
     Kept,
     NotAsked,
     Read,
@@ -47,7 +49,6 @@ from blossom.intake import (
     by_week,
     changes_for,
     conflicting_choices,
-    held_rows,
     keep,
     read_text,
     spoken_day,
@@ -67,6 +68,7 @@ from blossom.routes.navigation import instructions_review_href
 from blossom.routes.parent import review_page
 from blossom.routes.student import viewer_of
 from blossom.school_instructions import SubmittedChoice
+from blossom.stores.intake_decisions import UnreadableDecision
 from blossom.stores.project_state import AssignmentKind, UnreadableClaim
 from blossom.stores.school_instructions import UnreadableInstruction
 from blossom.templating import page_templates
@@ -115,10 +117,17 @@ IDENTIFY_FIRST: Final = (
     "A card needs your answer about which homework it is before its school instructions can "
     "be chosen. Nothing was saved; the choice made on it is shown there as not saved."
 )
-HELD_BY_A_NOTE: Final = (
-    "Nothing was saved. Some of this is about homework she added from a note, and Blossom "
-    "cannot yet tell the school's version from hers. The rows are named below. Take them "
-    "out to save the rest, or leave this for now; the text is kept."
+HOMEWORK_CHANGED: Final = (
+    "The saved homework changed since this review was shown, so nothing was saved. Look at "
+    "it again before saving."
+)
+IDENTITY_FORM_UNREADABLE: Final = (
+    "The answers about which homework a card is could not be read, so nothing was saved. "
+    "Look at them again below."
+)
+DECISION_UNREADABLE: Final = (
+    "A saved answer about which homework a row is cannot be read right now, so nothing was "
+    "saved. Your input is still here."
 )
 CLAIM_UNREADABLE: Final = (
     "A saved claim about a date cannot be read right now, so nothing was saved. Your input "
@@ -252,18 +261,33 @@ def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[dateti
 
 MADE_WITH: Final = "made_with"
 """The field where a review page writes what it was made with, signed: the answers to which
-homework each card is, and each question it asked about the school's instructions, so a save
-can tell a question the page asked from one a form claims."""
+homework each card is, each question it asked about the school's instructions, each question
+it asked about which homework a card is about, and what it said a typed note would do, so a
+save can tell what the page asked and said from what a form claims."""
+
+
+@dataclass(frozen=True)
+class AskedIdentity:
+    """A question a review page asked about which homework a card is about: the homework it
+    listed, in order, the fingerprint of what it showed, and the creation token it made for
+    different homework."""
+
+    shown: tuple[str, ...]
+    basis: str
+    creation: str
 
 
 @dataclass(frozen=True)
 class PageMade:
     """What a review page was made with, as it signed it: the answers to which homework each
-    card is, and for each card that asked which of the school's instructions apply, the
-    revision it showed and the assignment it asked about."""
+    card is, for each card that asked which of the school's instructions apply the revision
+    it showed and the assignment it asked about, each question about which homework a card
+    is about, and what it said each typed note would do."""
 
     occurrences: dict[int, str] = field(default_factory=dict)
     asked: dict[int, tuple[int, str]] = field(default_factory=dict)
+    identities: dict[int, AskedIdentity] = field(default_factory=dict)
+    notes: dict[int, str] = field(default_factory=dict)
 
 
 def made_with_field(
@@ -271,30 +295,77 @@ def made_with_field(
     draft: Mapping[str, str],
     occurrences: Mapping[int, str] | None,
     asked: Mapping[int, tuple[int, str]] | None = None,
+    identities: Mapping[int, AskedIdentity] | None = None,
+    notes: Mapping[int, str] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
     ties it to the page's draft."""
     answers = ",".join(f"{card}:{value}" for card, value in sorted((occurrences or {}).items()))
-    questions = json.dumps(sorted([card, *question] for card, question in (asked or {}).items()))
-    made = f"{answers};{questions}"
+    context = {
+        "asked": sorted([card, *question] for card, question in (asked or {}).items()),
+        "identities": sorted(
+            [card, list(question.shown), question.basis, question.creation]
+            for card, question in (identities or {}).items()
+        ),
+        "notes": sorted([card, outcome] for card, outcome in (notes or {}).items()),
+    }
+    made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
     return f"{made}.{_made_with_check(key, draft, made)}"
 
 
 def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> PageMade:
     """What the page was made with, as it signed it. A form without that field, or with one
     this process didn't sign for this draft, is read as a page made before any answer to
-    which homework a card is, and one that asked nothing about the school's instructions."""
+    which homework a card is, one that asked nothing, and one that said nothing of a note."""
     made, _, check = form.get(MADE_WITH, "").rpartition(".")
     expected = _made_with_check(key, draft, made)
     if not hmac.compare_digest(check.encode("utf-8"), expected.encode("utf-8")):
         return PageMade()
-    answers, _, questions = made.partition(";")
+    answers, _, rest = made.partition(";")
     occurrences: dict[int, str] = {}
     for part in filter(None, answers.split(",")):
         card, _, value = part.partition(":")
         occurrences[int(card)] = value
-    asked = {card: (revision, assignment) for card, revision, assignment in json.loads(questions)}
-    return PageMade(occurrences, asked)
+    context = json.loads(rest)
+    asked = {
+        card: (revision, assignment) for card, revision, assignment in context.get("asked", [])
+    }
+    identities = {
+        card: AskedIdentity(tuple(shown), basis, creation)
+        for card, shown, basis, creation in context.get("identities", [])
+    }
+    notes = {int(card): str(outcome) for card, outcome in context.get("notes", [])}
+    return PageMade(occurrences, asked, identities, notes)
+
+
+def identity_answers(
+    fields: Mapping[str, str], page: PageMade
+) -> tuple[dict[int, IdentityAnswer], bool]:
+    """The answers to which homework each card is about, as the page asked: each names a
+    homework the signed question listed, or different homework, with the creation token the
+    page made for that card. The second value says whether anything was sent that the page
+    did not ask or give: an answer on a card it did not ask, a homework it did not list, or
+    a token it did not make. Such a form is refused whole."""
+    answers: dict[int, IdentityAnswer] = {}
+    unreadable = False
+    for name, value in fields.items():
+        head, _, card = name.rpartition("-")
+        if head not in ("identity", "creation") or not review_key(card):
+            continue
+        question = page.identities.get(int(card))
+        if question is None:
+            unreadable = True
+            continue
+        if head == "creation":
+            unreadable = unreadable or value != question.creation
+            continue
+        if value != DIFFERENT and value not in question.shown:
+            unreadable = True
+            continue
+        answers[int(card)] = IdentityAnswer(
+            value, question.shown, question.basis, question.creation
+        )
+    return answers, unreadable
 
 
 def _made_with_check(key: bytes, draft: Mapping[str, str], answers: str) -> str:
@@ -620,14 +691,17 @@ def preview_page(
     instruction_answers: Mapping[int, SubmittedChoice] | None = None,
     unsaved: Mapping[int, UnsavedChoice] | None = None,
     carried: Mapping[int, CarriedAccount] | None = None,
+    made: PageMade | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """What was read, week by week against the record as it is, with the way to save it.
-    A text with a row about homework made from a homework note says so, names the rows, and
-    offers no save: the text stays to be edited. A claim on record that cannot be read
-    refuses the comparison, and the page that reads no store keeps the draft.
+    A card that could be about more than one homework, or about homework made from her
+    note that no parent has settled yet, asks which. Each such question gets a creation
+    token for different homework, made once: a page returned keeps the token its form was
+    signed with (``made``). A claim on record that cannot be read refuses the comparison,
+    and the page that reads no store keeps the draft.
 
     ``refused`` says the page comes back for an answer about the school's
     instructions that was not saved: ``contradict``, ``malformed``, ``stale``,
@@ -650,13 +724,20 @@ def preview_page(
             kinds=kinds,
             instruction_answers=instruction_answers,
         )
-        held = held_rows(read.items, state.project_state)
     except UnreadableClaim:
         return intake_unavailable(
             request,
             state,
             draft,
             answers_shown(occurrences, kinds, instruction_answers, unsaved, carried),
+        )
+    except UnreadableDecision:
+        return intake_unavailable(
+            request,
+            state,
+            draft,
+            answers_shown(occurrences, kinds, instruction_answers, unsaved, carried),
+            DECISION_UNREADABLE,
         )
     except UnreadableInstruction:
         return intake_unavailable(
@@ -675,6 +756,7 @@ def preview_page(
         unanswered = [change.key for change in changes if change.instructions_asked]
         unreadable = [key for key, account in said.items() if account.why == "unreadable"]
         which = [change.key for change in changes if change.ambiguous]
+        identity = [change.key for change in changes if change.identity_asked]
         held_back = [key for key in which if key in said]
         contradicting = [
             change.key
@@ -694,6 +776,8 @@ def preview_page(
             target = unreadable[0]
         elif refused == "waiting" and held_back:
             target = held_back[0]
+        elif refused in ("identify", "stale") and identity:
+            target = identity[0]
         elif asked:
             target = asked[0]
         # The link names only what the page shows: the question, the question of which
@@ -704,10 +788,11 @@ def preview_page(
         elif target in which:
             problem_target = target
             problem_link = (f"occurrence-question-{target}", "Go to the question.")
+        elif target in identity:
+            problem_target = target
+            problem_link = (f"identity-question-{target}", "Go to the question.")
         elif target in said:
             problem_link = (f"instructions-unsaved-{target}", "See the choice not saved.")
-    if held is not None:
-        notice = HELD_BY_A_NOTE
     if notice is None and conflicting_choices(changes):
         notice = CHOOSE_ONE_TYPE
     shown = [change for change in changes if change.state != FOLDED]
@@ -719,6 +804,18 @@ def preview_page(
         "review": sum(1 for change in shown if change.state == REVIEW),
     }
     to_save = counts["new"] + counts["updated"] + counts["review"]
+    before = made or PageMade()
+    identities = {
+        change.key: AskedIdentity(
+            change.identity_shown,
+            change.identity_basis,
+            before.identities[change.key].creation
+            if change.key in before.identities
+            else secrets.token_hex(16),
+        )
+        for change in shown
+        if change.identity_asked
+    }
     return templates.TemplateResponse(
         request,
         "inbox_preview.html",
@@ -739,10 +836,16 @@ def preview_page(
                     for change in shown
                     if change.instructions_question
                 },
+                identities,
+                {
+                    change.key: change.note_change
+                    for change in shown
+                    if change.note_change is not None
+                },
             ),
+            "creations": {card: question.creation for card, question in identities.items()},
             "kind_choices": KIND_CHOICES,
             "notice": notice,
-            "held": held,
             "sample": state.settings.sample,
             "spoken_report": spoken_report,
             "spoken_day": spoken_day,
@@ -767,6 +870,7 @@ def preview_or_recovery(
     instruction_answers: Mapping[int, SubmittedChoice] | None = None,
     unsaved: Mapping[int, UnsavedChoice] | None = None,
     carried: Mapping[int, CarriedAccount] | None = None,
+    made: PageMade | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -785,6 +889,7 @@ def preview_or_recovery(
             instruction_answers=instruction_answers,
             unsaved=unsaved,
             carried=carried,
+            made=made,
             refused=refused,
             notice=notice,
             status_code=status_code,
@@ -879,6 +984,25 @@ async def keep_readings(request: Request, state: State) -> Response:
         # questions the page signed say where it asked, and at which revision.
         changes = changes_for(read.items, state.project_state, occurrences=occurrences, kinds=kinds)
         page_made = made_with(state.result_key, form, draft)
+        identities, identity_unreadable = identity_answers(form, page_made)
+        if identity_unreadable:
+            # An answer about which homework a card is that the page did not ask, or a
+            # homework or token it did not give, is no form the page wrote.
+            return preview_page(
+                request,
+                state,
+                read,
+                draft,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
+                carried=carried,
+                made=page_made,
+                refused="malformed",
+                notice=IDENTITY_FORM_UNREADABLE,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         never_put = answers_to_no_question(changes, instruction_answers, page_made.asked)
         unreadable = read_answers.malformed or bool(never_put)
         contradicted = any(answer.contradicts for answer in instruction_answers.values())
@@ -902,6 +1026,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                     **{key: UnsavedChoice.of(instruction_answers[key]) for key in never_put},
                 },
                 carried=carried,
+                made=page_made,
                 refused="malformed" if unreadable else "contradict",
                 notice=INSTRUCTION_FORM_UNREADABLE if unreadable else INSTRUCTIONS_CONTRADICT,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -915,6 +1040,9 @@ async def keep_readings(request: Request, state: State) -> Response:
                 kinds=kinds,
                 instruction_answers=instruction_answers,
                 asked=page_made.asked,
+                identities=identities,
+                shown_identities=set(page_made.identities),
+                shown_notes=page_made.notes,
                 imported_by="parent" if viewer_of(request) == "parent" else "household",
                 now=now,
                 today=today,
@@ -923,6 +1051,8 @@ async def keep_readings(request: Request, state: State) -> Response:
         return intake_unavailable(request, state, draft, kept_answers)
     except UnreadableInstruction:
         return intake_unavailable(request, state, draft, kept_answers, INSTRUCTION_UNREADABLE)
+    except UnreadableDecision:
+        return intake_unavailable(request, state, draft, kept_answers, DECISION_UNREADABLE)
     except sqlite3.Error:
         logger.exception("a paste could not be saved")
         return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
@@ -945,11 +1075,13 @@ async def keep_readings(request: Request, state: State) -> Response:
                 **{key: UnsavedChoice.of(instruction_answers[key]) for key in kept.cards},
             },
             carried=carried,
+            made=page_made,
             refused="malformed",
             notice=INSTRUCTION_FORM_UNREADABLE,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     if isinstance(kept, ChangedSinceShown):
+        instructions_moved = any(change.instructions_stale for change in kept.changes)
         return preview_or_recovery(
             request,
             state,
@@ -960,21 +1092,9 @@ async def keep_readings(request: Request, state: State) -> Response:
             kinds=kinds,
             instruction_answers=instruction_answers,
             carried=carried,
+            made=page_made,
             refused="stale",
-            notice=CHANGED_SINCE_SHOWN,
-            status_code=status.HTTP_409_CONFLICT,
-        )
-    if isinstance(kept, Held):
-        return preview_or_recovery(
-            request,
-            state,
-            read,
-            draft,
-            kept_answers,
-            occurrences=occurrences,
-            kinds=kinds,
-            instruction_answers=instruction_answers,
-            carried=carried,
+            notice=CHANGED_SINCE_SHOWN if instructions_moved else HOMEWORK_CHANGED,
             status_code=status.HTTP_409_CONFLICT,
         )
     if not isinstance(kept, Kept):
@@ -1002,6 +1122,8 @@ async def keep_readings(request: Request, state: State) -> Response:
             refused = "unanswered"
         elif not conflicting and held_back:
             refused = "waiting"
+        elif not conflicting and any(change.identity_asked for change in kept):
+            refused = "identify"
         return preview_or_recovery(
             request,
             state,
@@ -1012,10 +1134,12 @@ async def keep_readings(request: Request, state: State) -> Response:
             kinds=kinds,
             instruction_answers=instruction_answers,
             carried=carried,
+            made=page_made,
             refused=refused,
             notice=notice,
         )
+    note = "&kept_note=1" if kept.kept_notes else ""
     return RedirectResponse(
-        f"/parent?added={kept.added}&updated={kept.updated}&unchanged={kept.unchanged}",
+        f"/parent?added={kept.added}&updated={kept.updated}&unchanged={kept.unchanged}{note}",
         status_code=status.HTTP_303_SEE_OTHER,
     )

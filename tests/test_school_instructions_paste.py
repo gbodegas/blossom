@@ -20,12 +20,12 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.intake import Change, ChangedSinceShown, Held, Kept, NotAsked, keep, read_text
+from blossom.intake import Change, ChangedSinceShown, Kept, NotAsked, keep, read_text
 from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import (
     CHANGED_SINCE_SHOWN,
     CHOOSE_INSTRUCTIONS,
-    HELD_BY_A_NOTE,
+    HOMEWORK_CHANGED,
     IDENTIFY_FIRST,
     INSTRUCTION_FORM_UNREADABLE,
     INSTRUCTIONS_CONTRADICT,
@@ -1208,7 +1208,7 @@ def none_chosen_since(store: ProjectStateStore, name: str) -> None:
 
 def keep_both(
     store: ProjectStateStore, answers: dict[int, SubmittedChoice]
-) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
+) -> Kept | ChangedSinceShown | NotAsked | list[Change]:
     """The weekly practice's two cards, both said to be the saved homework, kept with these
     answers by a caller other than the page."""
     reading = read_text(WEEKLY_TWICE, now=KEEP_NOW, today=KEEP_TODAY)
@@ -1861,9 +1861,10 @@ def rival_saved(path: pathlib.Path, original: Assignment) -> None:
 def test_a_choice_stays_with_its_assignment_when_another_connection_moves_the_card(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, pick: str, rival: str
 ) -> None:
-    """A row another connection saves can take the card from the assignment the page asked
-    about, before the save or while it runs; the choice made for the first is refused whole,
-    and neither assignment's instructions change."""
+    """A row another connection saves under the same name and due date, before the save or
+    while it runs, holds none of what this text says: the text was saved on the assignment
+    the page asked about, so the card lands there again and the choice goes to it, never to
+    the other row, whose instructions stay as they were."""
     path = tmp_path / "blossom.sqlite3"
     moved: list[dict[str, list[tuple[object, ...]]]] = []
     with client_in(tmp_path) as client:
@@ -1891,18 +1892,14 @@ def test_a_choice_stays_with_its_assignment_when_another_connection_moves_the_ca
                 return keep(*args, **kwargs)  # type: ignore[arg-type]
 
             monkeypatch.setattr("blossom.routes.inbox.keep", racing)
-        refused = client.post("/parent/inbox/keep", data={**review_form(page), **choice})
-        after = tables(client)
+        answered = client.post("/parent/inbox/keep", data={**review_form(page), **choice})
         found = store.school_instruction_readings([name, RIVAL]).readable
 
     assert review_form(page)["instructions-0"] == "1"
-    assert refused.status_code == 422
-    assert after == moved[0]
-    assert found[name].texts == found[RIVAL].texts == (WORK,)
-    assert the_question_on(refused.text) == "0"
-    assert ticked(refused.text, "0") == []
-    said = "that no school instruction applies" if pick == "none" else PENCIL
-    assert said in said_back_on(refused.text, "0")
+    assert len(moved) == 1
+    assert answered.status_code == 303
+    assert found[name].texts == ((PENCIL,) if pick == "pencil" else ())
+    assert found[RIVAL].texts == (WORK,)
 
 
 # ------------------------------------------------------------------ a card folded into another
@@ -1920,7 +1917,7 @@ STEPS = SubmittedChoice(0, PRACTICE_SHOWN, frozenset({"Show all steps."}))
 
 def keep_folded(
     store: ProjectStateStore, folded: SubmittedChoice
-) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
+) -> Kept | ChangedSinceShown | NotAsked | list[Change]:
     """The practice sheet's second card folded into its first, and an unrelated form, kept
     with an answer on each card of the practice sheet."""
     reading = read_text(PRACTICE, now=KEEP_NOW, today=KEEP_TODAY)
@@ -2158,7 +2155,7 @@ def test_a_carried_choice_stays_until_a_fresh_one_is_made(
     assert ("none applies" if choice == "none" else words) in kept
 
 
-# ------------------------------------------------------------------ a paste held by a note
+# ------------------------------------------------------------------ met by homework from a note
 
 CHECK_5_AND_A_FORM = CHECK_5 + "10/01/2026 - Thursday\nScience - Due: Lab safety form:\n"
 CHECK_5_ASSIGNED = (
@@ -2168,12 +2165,13 @@ CHECK_5_ASSIGNED = (
 
 @pytest.mark.parametrize("since", ["unchanged", "changed"])
 @pytest.mark.parametrize("choice", ["none", "one"])
-def test_a_paste_held_by_a_note_keeps_the_choices_on_its_other_cards(
+def test_a_paste_met_by_homework_from_a_note_keeps_the_choices_on_its_other_cards(
     tmp_path: pathlib.Path, choice: str, since: str
 ) -> None:
-    """Homework made from a note since the page was read holds the whole paste; the choice on
-    another card comes back ticked when its instructions still stand as shown, and is said
-    back as not saved, with nothing ticked, when they changed."""
+    """Homework made from a note since the page was read leaves the whole paste unsaved, its
+    card asking which homework it is; the choice on another card comes back ticked when its
+    instructions still stand as shown, and is said back as not saved, with nothing ticked,
+    when they changed."""
     words = "that no school instruction applies" if choice == "none" else "Show each step."
     with client_in(tmp_path) as client:
         page = client.post("/parent/inbox/read", data={"text": CHECK_5_AND_A_FORM}).text
@@ -2191,7 +2189,8 @@ def test_a_paste_held_by_a_note_keeps_the_choices_on_its_other_cards(
         after = tables(client)
 
     assert held.status_code == 409
-    assert str(escape(HELD_BY_A_NOTE)) in held.text
+    notice = HOMEWORK_CHANGED if since == "unchanged" else CHANGED_SINCE_SHOWN
+    assert str(escape(notice)) in held.text
     assert after == before
     carrier = the_question_on(held.text)
     if since == "changed":

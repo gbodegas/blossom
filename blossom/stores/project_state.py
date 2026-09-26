@@ -97,6 +97,7 @@ from blossom.stores.captures import (
     held_text_or_nothing,
     with_details,
 )
+from blossom.stores.intake_decisions import IntakeDecisionRecords
 from blossom.stores.paths import refuse_unsafe_path
 from blossom.stores.school_instructions import (
     AUTHORED_MARKS,
@@ -610,7 +611,7 @@ class Reopened:
     check: FamilyCheck
 
 
-class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
+class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecisionRecords):
     """SQLite-backed project state, opened once and shared across worker threads.
 
     The connection is created at application startup rather than per request,
@@ -762,6 +763,9 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
         with self._writing():
             self._create_instruction_table()
             self._carry_school_notes()
+        # What a parent said about which homework a school row is about.
+        with self._writing():
+            self._create_intake_decision_table()
 
     def _upgrade_date_claims(self) -> None:
         """Give the claims table the note a claim came from, the note's revision, whether
@@ -2095,27 +2099,6 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords):
         when the block succeeds, rolled back when it fails."""
         with self._lock, self._writing():
             yield
-
-    def held_by_notes(
-        self, pairs: Iterable[tuple[str, str]]
-    ) -> dict[tuple[str, str], tuple[str, ...]]:
-        """Which of these classes and titles are the class and title of homework a note
-        became, by the rule the school's paste pairs by, and which assignments each is:
-        every one, since a second note can be kept as a separate assignment under the same
-        class and title. Empty when none is, which is every paste until a note is added to
-        homework."""
-        made = self.assignments_made_from_notes()
-        if not made:
-            return {}
-        by_name: dict[tuple[str, str], list[str]] = {}
-        for item in self.all_assignments():
-            if item.assignment_id in made:
-                by_name.setdefault(pair(item.course, item.title), []).append(item.assignment_id)
-        return {
-            name: tuple(sorted(by_name[name]))
-            for name in (pair(course, title) for course, title in pairs)
-            if name in by_name
-        }
 
     def promotion_candidates(
         self, details: CaptureDetails, *, among: Iterable["Assignment"] | None = None

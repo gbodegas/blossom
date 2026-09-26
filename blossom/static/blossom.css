@@ -1461,7 +1461,8 @@ main.wide {
    tick that leaves a due date out. The control keeps its size beside a label that wraps. */
 .homework-note .choice input[type="radio"],
 .homework-note .choice input[type="checkbox"],
-.choice.instructions input[type="checkbox"] {
+.choice.instructions input[type="checkbox"],
+.choice.identity input[type="radio"] {
   flex: 0 0 auto;
   width: 1.25rem;
   height: 1.25rem;
@@ -1469,19 +1470,23 @@ main.wide {
 }
 
 .homework-note .choice label span,
-.choice.instructions label > span {
+.choice.instructions label > span,
+.choice.identity label > span {
   min-width: 0;
 }
 
 /* The school's words in a choice read as text, not as the label's heading; how each
    stands follows in the softer line the pages use for where a fact came from. */
 .choice.instructions label q,
-.choice.instructions label .source {
+.choice.instructions label .source,
+.choice.identity label q,
+.choice.identity label .source {
   font-family: var(--font-body);
   font-weight: 400;
 }
 
-.choice.instructions label q {
+.choice.instructions label q,
+.choice.identity label q {
   color: var(--text);
 }
 

@@ -27,7 +27,7 @@ from blossom.intake import (
     UPDATE,
     Change,
     ChangedSinceShown,
-    Held,
+    IdentityAnswer,
     Kept,
     NotAsked,
     Reading,
@@ -572,7 +572,8 @@ def test_repeated_work_under_one_name_is_a_question_and_either_answer_is_kept(
     """A weekly practice due a week after the saved one is not merged in silence. Saying it
     is the same assignment moves the saved date, so the next paste, before or after a
     restart, finds it and asks nothing; saying it is new work makes a row of its own, and
-    the same answer given again finds that row and changes nothing."""
+    the same answer given again finds that row and changes nothing. With two rounds on
+    record, a date matching neither asks which, never the nearest."""
     path = tmp_path / "blossom.sqlite3"
     store = ProjectStateStore.open(path, fixture_clock())
     try:
@@ -628,15 +629,17 @@ def test_repeated_work_under_one_name_is_a_question_and_either_answer_is_kept(
     assert len({row.assignment_id for row in rows}) == 2
     assert replayed == Kept(added=0, updated=0, unchanged=1)
     assert len(rows_after_replay) == 2
-    assert [change.state for change in nudged] == [CLAIMED]
-    assert nudged[0].saved_due == date(2026, 9, 21)
+    assert [change.state for change in nudged] == [REVIEW]
+    assert nudged[0].identity_asked
+    assert sorted(nudged[0].identity_shown) == sorted(row.assignment_id for row in rows)
 
 
 def test_a_confirmed_new_round_keeps_what_the_family_added_when_the_answer_is_replayed(
     tmp_path: pathlib.Path,
 ) -> None:
     """A retry, or an older review page still open, sends the same new-work answer again
-    after a parent has added a note and the school has reported on the new row: the answer
+    after a parent has added a note and the school has reported on the new row, placed
+    there by the parent's answer to which homework the undated report is about: the answer
     finds that row and changes nothing, so nothing the family added is lost."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:
@@ -653,7 +656,12 @@ def test_a_confirmed_new_round_keeps_what_the_family_added_when_the_answer_is_re
         )
         keep((note,), store)
         told = readings("Assignments:\n09/14 Math - A: Homework: Weekly practice Grade: Missing\n")
-        keep(told, store)
+        (asked,) = changes_for(told, store)
+        dated = {row.due_date: row.assignment_id for row in store.all_assignments()}
+        answer = IdentityAnswer(
+            dated[date(2026, 9, 14)], asked.identity_shown, asked.identity_basis
+        )
+        keep(told, store, identities={0: answer})
         replayed = keep(readings(WEEK_TWO), store, occurrences={0: NEW_WORK})
         rows = {row.due_date: row for row in store.all_assignments()}
         second = rows[date(2026, 9, 14)]
@@ -772,7 +780,7 @@ def test_a_type_chosen_on_any_card_about_one_assignment_is_the_assignments(
     finally:
         store.close()
     outcomes: dict[
-        str, tuple[Kept | Held | ChangedSinceShown | NotAsked | list[Change], list[Assignment]]
+        str, tuple[Kept | ChangedSinceShown | NotAsked | list[Change], list[Assignment]]
     ] = {}
     for name, kinds in {
         "chosen on the first": {0: AssignmentKind.TASK},
@@ -1229,11 +1237,11 @@ def test_two_savings_of_one_text_at_once_add_nothing_twice(tmp_path: pathlib.Pat
     read = read_text(THREE_WEEKS, now=NOW, today=TODAY)
     released = threading.Barrier(2)
 
-    def one_saving(_: int) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
+    def one_saving(_: int) -> Kept | ChangedSinceShown | NotAsked | list[Change]:
         released.wait()
         return keep(read.items, store)
 
-    def one_answer(_: int) -> Kept | Held | ChangedSinceShown | NotAsked | list[Change]:
+    def one_answer(_: int) -> Kept | ChangedSinceShown | NotAsked | list[Change]:
         released.wait()
         return keep(readings(WEEK_TWO), store, occurrences={0: NEW_WORK})
 
