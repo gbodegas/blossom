@@ -1462,7 +1462,8 @@ main.wide {
 .homework-note .choice input[type="radio"],
 .homework-note .choice input[type="checkbox"],
 .choice.instructions input[type="checkbox"],
-.choice.identity input[type="radio"] {
+.choice.identity input[type="radio"],
+.choice.links input[type="checkbox"] {
   flex: 0 0 auto;
   width: 1.25rem;
   height: 1.25rem;
@@ -1471,7 +1472,8 @@ main.wide {
 
 .homework-note .choice label span,
 .choice.instructions label > span,
-.choice.identity label > span {
+.choice.identity label > span,
+.choice.links label > span {
   min-width: 0;
 }
 
@@ -1480,13 +1482,16 @@ main.wide {
 .choice.instructions label q,
 .choice.instructions label .source,
 .choice.identity label q,
-.choice.identity label .source {
+.choice.identity label .source,
+.choice.links label q,
+.choice.links label .source {
   font-family: var(--font-body);
   font-weight: 400;
 }
 
 .choice.instructions label q,
-.choice.identity label q {
+.choice.identity label q,
+.choice.links label q {
   color: var(--text);
 }
 

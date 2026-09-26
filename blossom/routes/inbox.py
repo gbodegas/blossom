@@ -26,6 +26,7 @@ from typing import Annotated, Final
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from blossom.captures import CaptureNotSaved
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.intake import (
     CLAIMED,
@@ -126,6 +127,10 @@ HOMEWORK_CHANGED: Final = (
 IDENTITY_FORM_UNREADABLE: Final = (
     "The answers about which homework a card is could not be read, so nothing was saved. "
     "Look at them again below."
+)
+LINK_FORM_UNREADABLE: Final = (
+    "A note ticked to link is not one this review offered, so nothing was saved. Look "
+    "at them again below."
 )
 DECISION_UNREADABLE: Final = (
     "A saved answer about which homework a row is cannot be read right now, so nothing was "
@@ -290,6 +295,7 @@ class PageMade:
     asked: dict[int, tuple[int, str]] = field(default_factory=dict)
     identities: dict[int, AskedIdentity] = field(default_factory=dict)
     notes: dict[int, str] = field(default_factory=dict)
+    links: dict[int, tuple[tuple[str, int], ...]] = field(default_factory=dict)
 
 
 def made_with_field(
@@ -299,6 +305,7 @@ def made_with_field(
     asked: Mapping[int, tuple[int, str]] | None = None,
     identities: Mapping[int, AskedIdentity] | None = None,
     notes: Mapping[int, str] | None = None,
+    links: Mapping[int, Sequence[tuple[str, int]]] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
     ties it to the page's draft."""
@@ -310,6 +317,9 @@ def made_with_field(
             for card, question in (identities or {}).items()
         ),
         "notes": sorted([card, outcome] for card, outcome in (notes or {}).items()),
+        "links": sorted(
+            [card, [list(note) for note in offered]] for card, offered in (links or {}).items()
+        ),
     }
     made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
     return f"{made}.{_made_with_check(key, draft, made)}"
@@ -337,7 +347,11 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         for card, shown, basis, creation in context.get("identities", [])
     }
     notes = {int(card): str(outcome) for card, outcome in context.get("notes", [])}
-    return PageMade(occurrences, asked, identities, notes)
+    links = {
+        int(card): tuple((str(name), int(revision)) for name, revision in offered)
+        for card, offered in context.get("links", [])
+    }
+    return PageMade(occurrences, asked, identities, notes, links)
 
 
 def identity_answers(
@@ -369,6 +383,28 @@ def identity_answers(
             chosen, question.shown, question.basis, question.creation
         )
     return answers, unreadable
+
+
+def link_answers(
+    fields: Mapping[str, str], page: PageMade
+) -> tuple[dict[int, list[tuple[str, int]]], bool]:
+    """The notes of hers ticked to link, as the page offered them: ``link-<card>-<place>``
+    names the note the page signed at that place on that card. The second value says
+    whether anything was sent that the page did not offer, which refuses the form
+    whole."""
+    ticked: dict[int, list[tuple[str, int]]] = {}
+    unreadable = False
+    for name, value in fields.items():
+        head, _, rest = name.partition("-")
+        if head != "link":
+            continue
+        card, _, place = rest.partition("-")
+        offered = page.links.get(int(card), ()) if review_key(card) else ()
+        if value != "1" or not review_key(place) or int(place) >= len(offered):
+            unreadable = True
+            continue
+        ticked.setdefault(int(card), []).append(offered[int(place)])
+    return ticked, unreadable
 
 
 def homework_named(value: str) -> str | None:
@@ -715,6 +751,7 @@ def preview_page(
     carried: Mapping[int, CarriedAccount] | None = None,
     made: PageMade | None = None,
     identities: Mapping[int, IdentityAnswer] | None = None,
+    linked: Mapping[int, Sequence[tuple[str, int]]] | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -884,6 +921,11 @@ def preview_page(
                     for change in shown
                     if change.note_shown is not None
                 },
+                {
+                    change.key: tuple((note.capture_id, note.revision) for note in change.waiting)
+                    for change in shown
+                    if change.waiting
+                },
             ),
             "creations": {card: question.creation for card, question in signed.items()},
             "answered": {
@@ -893,6 +935,8 @@ def preview_page(
             "same_as": choice_value,
             "came_from": came_from,
             "kept_note": any(change.note_change == "kept" for change in shown),
+            "waiting": any(change.waiting for change in shown),
+            "links_ticked": {card: list(notes) for card, notes in (linked or {}).items()},
             "kind_choices": KIND_CHOICES,
             "notice": notice,
             "sample": state.settings.sample,
@@ -921,6 +965,7 @@ def preview_or_recovery(
     carried: Mapping[int, CarriedAccount] | None = None,
     made: PageMade | None = None,
     identities: Mapping[int, IdentityAnswer] | None = None,
+    linked: Mapping[int, Sequence[tuple[str, int]]] | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -941,6 +986,7 @@ def preview_or_recovery(
             carried=carried,
             made=made,
             identities=identities,
+            linked=linked,
             refused=refused,
             notice=notice,
             status_code=status_code,
@@ -1051,6 +1097,26 @@ async def keep_readings(request: Request, state: State) -> Response:
                 notice=IDENTITY_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
+        linked, link_unreadable = link_answers(form, page_made)
+        if link_unreadable:
+            # A note ticked that the page did not offer is no form the page wrote.
+            return preview_page(
+                request,
+                state,
+                read,
+                draft,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                refused="malformed",
+                notice=LINK_FORM_UNREADABLE,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         # An answer where the page puts no such question is no form the page wrote. The
         # questions the page signed say where it asked, at which revision, and about which
         # assignment, as the answers about which homework each card is land it.
@@ -1086,6 +1152,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 carried=carried,
                 made=page_made,
                 identities=identities,
+                linked=linked,
                 refused="malformed" if unreadable else "contradict",
                 notice=INSTRUCTION_FORM_UNREADABLE if unreadable else INSTRUCTIONS_CONTRADICT,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1102,6 +1169,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 identities=identities,
                 shown_identities=set(page_made.identities),
                 shown_notes=page_made.notes,
+                links=linked,
                 imported_by="parent" if viewer_of(request) == "parent" else "household",
                 now=now,
                 today=today,
@@ -1112,6 +1180,9 @@ async def keep_readings(request: Request, state: State) -> Response:
         return intake_unavailable(request, state, draft, kept_answers, INSTRUCTION_UNREADABLE)
     except UnreadableDecision:
         return intake_unavailable(request, state, draft, kept_answers, DECISION_UNREADABLE)
+    except CaptureNotSaved:
+        logger.exception("a note could not be linked from the paste")
+        return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
     except sqlite3.Error:
         logger.exception("a paste could not be saved")
         return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
@@ -1136,6 +1207,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             carried=carried,
             made=page_made,
             identities=identities,
+            linked=linked,
             refused="malformed",
             notice=INSTRUCTION_FORM_UNREADABLE,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1154,6 +1226,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             carried=carried,
             made=page_made,
             identities=identities,
+            linked=linked,
             refused="stale",
             notice=CHANGED_SINCE_SHOWN if instructions_moved else HOMEWORK_CHANGED,
             status_code=status.HTTP_409_CONFLICT,
@@ -1197,10 +1270,12 @@ async def keep_readings(request: Request, state: State) -> Response:
             carried=carried,
             made=page_made,
             identities=identities,
+            linked=linked,
             refused=refused,
             notice=notice,
         )
     note = "&kept_note=1" if kept.kept_notes else ""
+    note += f"&linked={kept.linked}" if kept.linked else ""
     return RedirectResponse(
         f"/parent?added={kept.added}&updated={kept.updated}&unchanged={kept.unchanged}{note}",
         status_code=status.HTTP_303_SEE_OTHER,

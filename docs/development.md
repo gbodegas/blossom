@@ -384,7 +384,11 @@ never places another; the email's leading date is shown but never read as a
 date. A paste that repeats text already saved lands where it was saved and
 asks nothing. A parent's typed note never replaces the note she gave her own
 homework: the review says her note will stay and that the other changes can
-still be saved, and the family page says so again after the save.
+still be saved, and the family page says so again after the save. A note of
+hers that waits with the row's class and title is offered to link, unticked,
+with her words and day, even on a paste that adds nothing else. Ticked, the
+save links it to the homework the row lands on and keeps her day as a claim
+beside the school's.
 
 The type, homework
 or task, is suggested from the title, paperwork and materials being tasks,

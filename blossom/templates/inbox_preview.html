@@ -239,6 +239,15 @@
               {% for report in reading.reports %}
                 <p class="source">{{ spoken_report(report) }}</p>
               {% endfor %}
+              {% if change.waiting %}
+                {# Her notes that wait under this name, none ticked; the save links a ticked one to the homework this card lands on. #}
+                <fieldset class="choice links" id="links-{{ change.key }}">
+                  <legend>Her {% if change.waiting|length == 1 %}note{% else %}notes{% endif %} waiting with this class and title</legend>
+                  {% for note in change.waiting %}
+                    <label><input type="checkbox" name="link-{{ change.key }}-{{ loop.index0 }}" value="1"{% if (note.capture_id, note.revision) in links_ticked.get(change.key, []) %} checked{% endif %}> <span>Link her note to <span class="authored-text">{{ reading.title }}</span> <span class="source"><q class="authored-text">{{ note.text }}</q>{% if note.due_date %} Her day: {{ spoken_day(note.due_date) }}.{% endif %}</span></span></label>
+                  {% endfor %}
+                </fieldset>
+              {% endif %}
               <details class="steps">
                 <summary>Source details</summary>
                 {% if reading.claims %}
@@ -262,14 +271,14 @@
       <div class="panel">
         {% if total %}
           <p class="note">
-            {% if to_save == 0 and counts.review == 0 %}{% if kept_note %}Her note will stay, and your note won't be saved to her homework. Nothing else here needs saving.{% else %}Everything here is saved already; there is nothing to save.{% endif %} A type changed on a card can still be saved.{% elif counts.review %}Answer the question{% if counts.review != 1 %}s{% endif %} above, then save.{% else %}Saving adds {{ counts.new }} and updates {{ counts.updated }}; the other {{ counts.unchanged }} stay as they are.{% endif %}
+            {% if to_save == 0 and counts.review == 0 %}{% if kept_note %}Her note will stay, and your note won't be saved to her homework. Nothing else here needs saving.{% elif waiting %}Everything read is saved already; a note of hers ticked above is linked when saved.{% else %}Everything here is saved already; there is nothing to save.{% endif %} A type changed on a card can still be saved.{% elif counts.review %}Answer the question{% if counts.review != 1 %}s{% endif %} above, then save.{% else %}Saving adds {{ counts.new }} and updates {{ counts.updated }}; the other {{ counts.unchanged }} stay as they are.{% endif %}
           </p>
         {% endif %}
         <div class="actions review-actions">
           {% if total %}
             {# A typed note kept off her homework is still something to finish, so the family page can say so. #}
-            {% set done = to_save == 0 and counts.review == 0 and not kept_note %}
-            <button type="submit" class="primary{% if done %} done{% endif %}"{% if done %} disabled aria-disabled="true"{% endif %} data-changed-label="Save changes">{% if to_save == 0 and kept_note %}Keep her note{% else %}Save {{ to_save }} assignment{% if to_save != 1 %}s{% endif %}{% endif %}</button>
+            {% set done = to_save == 0 and counts.review == 0 and not kept_note and not waiting %}
+            <button type="submit" class="primary{% if done %} done{% endif %}"{% if done %} disabled aria-disabled="true"{% endif %} data-changed-label="Save changes">{% if to_save == 0 and kept_note %}Keep her note{% elif to_save == 0 and waiting %}Save the ticked links{% else %}Save {{ to_save }} assignment{% if to_save != 1 %}s{% endif %}{% endif %}</button>
           {% endif %}
           <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate>Edit</button>
         </div>

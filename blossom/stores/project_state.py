@@ -2367,6 +2367,77 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             raise CaptureNotSaved(name, error) from error
 
+    def paste_link_standing(
+        self, capture_id: str, *, target: str, expected_revision: int
+    ) -> Literal["waits", "stands", "changed"]:
+        """Where a note offered on a paste review stands against linking it to ``target``:
+        ``stands`` when it is joined to that homework already, which a retry finds;
+        ``waits`` when it is at the revision the page showed, since every move of a note
+        makes a new revision; ``changed`` otherwise. Read in the caller's transaction, so
+        the save is judged against what it writes."""
+        with self._lock:
+            standing = self._capture_locked(capture_id_from(capture_id))
+        if standing is None:
+            return "changed"
+        if standing.assignment_id == target:
+            return "stands"
+        return "waits" if standing.revision == expected_revision else "changed"
+
+    def link_capture_from_paste(
+        self,
+        capture_id: str,
+        *,
+        target: str,
+        expected_revision: int,
+        basis: str,
+        authored_by: Author,
+        channel: SourceChannel,
+        now: datetime,
+        today: date,
+    ) -> CapturePromoted:
+        """Link a waiting note to the homework a school paste lands on, inside the paste's
+        own write transaction, which found with ``paste_link_standing`` that it waits at
+        ``expected_revision``. The link keeps the choice of a paste and ``basis``, the row
+        as it was linked, and a day the note gives is one more claim beside the school's.
+        Her words and details stay as they are. Anything else is ``CaptureNotSaved``, and
+        the paste's transaction is rolled back whole."""
+        name = capture_id_from(capture_id)
+        try:
+            with self._lock, self._writing():
+                standing = self._required_capture_locked(name)
+                reading = self._validated_capture_history_locked(standing)
+                if not standing.outstanding or standing.revision != expected_revision:
+                    msg = "the note changed since the paste was reviewed"
+                    raise RuntimeError(msg)
+                note = standing.model_copy(update={"assignment_id": target})
+                changed = self._change_locked(
+                    standing,
+                    note,
+                    LINK,
+                    authored_by,
+                    reading,
+                    now=now,
+                    today=today,
+                    decision=CandidateDecision(choice="paste", candidates=(target,), basis=basis),
+                    channel=channel,
+                )
+                if note.due_date is not None:
+                    self._record_capture_claim_locked(
+                        target,
+                        SourceRecord(
+                            channel=note.attribution["due_date"].channel,
+                            asserted_value=note.due_date.isoformat(),
+                            observed_at=now,
+                            confidence=CAPTURE_CLAIM_CONFIDENCE,
+                            seen_in=HOMEWORK_NOTE,
+                        ),
+                        capture_id=name,
+                        capture_revision=changed.capture.revision,
+                    )
+                return CapturePromoted(changed.capture, changed.event, target, False)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CaptureNotSaved(name, error) from error
+
     def unlink_capture(
         self,
         capture_id: str,

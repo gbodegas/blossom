@@ -42,6 +42,7 @@ from tests.support import (
     fixture_settings,
     homework_from_a_note,
     store_of,
+    waiting_note,
 )
 
 HER_NOTE = "Get it signed at dinner."
@@ -1610,3 +1611,256 @@ def test_her_note_changed_after_the_review_refuses_a_save_that_keeps_it(
     assert refused.status_code == 409
     assert after == before
     assert "Her newer words." in html.unescape(refused.text)
+
+
+# ------------------------------------------------------------------ a note still waiting
+
+GUIDE_WORDS = "Course guide back by Friday, heard in class."
+
+
+def links_on(page: str, key: int) -> list[str]:
+    """The boxes a card offers for linking her waiting notes, in order, none ticked."""
+    found = re.findall(
+        rf'<input type="checkbox" name="(link-{key}-\d+)" value="1"( checked)?>', page
+    )
+    assert all(not ticked for _, ticked in found), found
+    return [name for name, _ in found]
+
+
+def guide_note(client: TestClient, text: str = GUIDE_WORDS) -> str:
+    return waiting_note(
+        store_of(client),
+        course="Health",
+        title="Course Guide Due",
+        text=text,
+        due_date=date(2026, 9, 11),
+    )
+
+
+def test_a_waiting_note_is_offered_on_a_new_row_and_linked_when_ticked(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        name = guide_note(client)
+        page = read(client, GUIDE_CARD)
+        offered = links_on(page, 0)
+        saved = client.post("/parent/inbox/keep", data={**review_form(page), offered[0]: "1"})
+        family = client.get(saved.headers["location"])
+        store = store_of(client)
+        note = store.capture(name)
+        (row,) = store.all_assignments()
+        claims = [claim.asserted_value for claim in store.deadline_records(row.assignment_id)]
+        history = store.sound_capture_history(name)
+
+    words = html.unescape(re.sub(r"<[^>]+>", "", page))
+    assert len(offered) == 1
+    assert "Link her note to Course Guide Due" in words
+    assert GUIDE_WORDS in words
+    assert saved.status_code == 303
+    assert "linked=1" in saved.headers["location"]
+    assert note is not None
+    assert note.assignment_id == row.assignment_id
+    assert note.text == GUIDE_WORDS
+    assert "2026-09-11" in claims
+    assert "Her note is linked now." in html.unescape(family.text)
+    assert history is not None
+    linked = history[1][-1]
+    assert linked.decision is not None
+    assert (linked.decision.choice, linked.channel) == ("paste", SourceChannel.PARENT_ENTRY)
+
+
+def test_a_paste_that_adds_nothing_offers_a_note_written_since_and_saves_only_the_link(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        first = read(client, GUIDE_CARD)
+        client.post("/parent/inbox/keep", data=review_form(first))
+        name = guide_note(client)
+        page = read(client, GUIDE_CARD)
+        before = tables(client)
+        saved = client.post(
+            "/parent/inbox/keep", data={**review_form(page), links_on(page, 0)[0]: "1"}
+        )
+        after = tables(client)
+        store = store_of(client)
+        note = store.capture(name)
+        (row,) = store.all_assignments()
+
+    assert re.search(
+        r'<button type="submit" class="primary"[^>]*>Save the ticked links</button>', page
+    )
+    assert "a note of hers ticked above is linked when saved." in html.unescape(page)
+    assert saved.status_code == 303
+    assert after["assignments"] == before["assignments"]
+    assert after["intake_decisions"] == before["intake_decisions"]
+    assert note is not None
+    assert note.assignment_id == row.assignment_id
+
+
+def test_each_matching_note_is_offered_and_only_the_ticked_one_is_linked(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        left = guide_note(client, "First word about the guide.")
+        chosen = guide_note(client, "Second word about the guide.")
+        page = read(client, GUIDE_CARD)
+        offered = links_on(page, 0)
+        saved = client.post("/parent/inbox/keep", data={**review_form(page), offered[1]: "1"})
+        store = store_of(client)
+        (row,) = store.all_assignments()
+        waits = store.capture(left)
+        linked = store.capture(chosen)
+
+    assert len(offered) == 2
+    assert saved.status_code == 303
+    assert waits is not None
+    assert waits.outstanding
+    assert linked is not None
+    assert linked.assignment_id == row.assignment_id
+
+
+def test_a_note_is_offered_once_on_the_first_card_of_its_name(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        guide_note(client)
+        page = read(client, GUIDE_CARD + GUIDE_NEXT_ROUND)
+
+    assert len(links_on(page, 0)) == 1
+    assert links_on(page, 1) == []
+
+
+def test_a_ticked_note_stays_ticked_on_a_page_returned_for_another_question(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        name = guide_note(client)
+        early, _ = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        page = read(client, GUIDE_CARD + lab_card("10/15/2026"))
+        returned = client.post(
+            "/parent/inbox/keep", data={**review_form(page), links_on(page, 0)[0]: "1"}
+        )
+        saved = client.post(
+            "/parent/inbox/keep",
+            data={**review_form(returned.text), "identity-1": choice_value(early)},
+        )
+        note = store_of(client).capture(name)
+
+    assert returned.status_code == 200
+    assert '<input type="checkbox" name="link-0-0" value="1" checked>' in returned.text
+    assert saved.status_code == 303
+    assert note is not None
+    assert note.assignment_id is not None
+
+
+def test_a_paste_with_no_note_ticked_saves_and_leaves_her_note_waiting(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        name = guide_note(client)
+        page = read(client, GUIDE_CARD)
+        saved = client.post("/parent/inbox/keep", data=review_form(page))
+        note = store_of(client).capture(name)
+
+    assert saved.status_code == 303
+    assert "linked=" not in saved.headers["location"]
+    assert note is not None
+    assert note.outstanding
+
+
+def test_a_linked_note_sent_again_links_nothing_more(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        name = guide_note(client)
+        page = read(client, GUIDE_CARD)
+        form = {**review_form(page), links_on(page, 0)[0]: "1"}
+        first = client.post("/parent/inbox/keep", data=form)
+        after_first = tables(client)
+        events = len(store_of(client).capture_history(name))
+        again = client.post("/parent/inbox/keep", data=form)
+        after_again = tables(client)
+        events_again = len(store_of(client).capture_history(name))
+
+    assert first.status_code == 303
+    assert again.status_code == 303
+    assert after_again == after_first
+    assert events_again == events
+
+
+@pytest.mark.parametrize("change", ["clarified", "archived"])
+def test_a_note_changed_after_the_review_refuses_the_whole_save(
+    tmp_path: pathlib.Path, change: str
+) -> None:
+    from blossom.captures import CaptureDetails
+
+    with client_in(tmp_path) as client:
+        name = guide_note(client)
+        page = read(client, GUIDE_CARD + lab_card("10/15/2026"))
+        form = {**review_form(page), links_on(page, 0)[0]: "1"}
+        store = store_of(client)
+        moment = store.instruction_moment()
+        if change == "clarified":
+            store.clarify_capture(
+                name,
+                CaptureDetails(
+                    course="Health",
+                    title="Course Guide Due",
+                    kind="HOMEWORK",
+                    due_date=date(2026, 9, 12),
+                ),
+                expected_revision=2,
+                authored_by="student",
+                channel=SourceChannel.STUDENT_REPORT,
+                now=moment[0],
+                today=moment[1],
+            )
+        else:
+            store.archive_capture(
+                name, expected_revision=2, authored_by="student", now=moment[0], today=moment[1]
+            )
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+        note = store.capture(name)
+
+    assert refused.status_code == 409
+    assert after == before
+    assert note is not None
+    assert note.assignment_id is None
+
+
+def test_a_failed_link_write_keeps_the_paste_and_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blossom.captures import CaptureNotSaved
+
+    with client_in(tmp_path) as client:
+        name = guide_note(client)
+        page = read(client, GUIDE_CARD)
+        store = store_of(client)
+
+        def refuse(*_: object, **__: object) -> None:
+            raise CaptureNotSaved(name, sqlite3.OperationalError("the disk refused"))
+
+        monkeypatch.setattr(store, "link_capture_from_paste", refuse)
+        before = tables(client)
+        failed = client.post(
+            "/parent/inbox/keep", data={**review_form(page), links_on(page, 0)[0]: "1"}
+        )
+        after = tables(client)
+        note = store.capture(name)
+
+    assert failed.status_code == 500
+    assert after == before
+    assert "Course Guide Due" in html.unescape(failed.text)
+    assert note is not None
+    assert note.outstanding
+
+
+def test_a_link_the_page_did_not_offer_is_refused(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        guide_note(client)
+        page = read(client, GUIDE_CARD)
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data={**review_form(page), "link-0-5": "1"})
+        after = tables(client)
+
+    assert refused.status_code == 422
+    assert after == before

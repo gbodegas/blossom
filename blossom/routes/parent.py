@@ -663,6 +663,7 @@ def review_page(
     updated: int | None = None,
     unchanged: int | None = None,
     kept_note: bool = False,
+    linked: int | None = None,
     paste: str | None = None,
     entry: Mapping[str, str] | None = None,
     entry_open: bool = False,
@@ -762,6 +763,7 @@ def review_page(
             "updated": updated,
             "unchanged": unchanged,
             "kept_note": kept_note,
+            "linked": linked,
             "problem_field": problem_field,
             "paste": paste or "",
             "entry": dict(entry or {}),
@@ -1010,6 +1012,9 @@ def review(
         str | None,
         Query(description="1 when the last save left a typed note off her homework; a note"),
     ] = None,
+    linked: Annotated[
+        str | None, Query(description="how many of her notes the last save linked; a note")
+    ] = None,
     checked: Annotated[
         str | None, Query(description="the assignment whose row a check was just made on")
     ] = None,
@@ -1044,6 +1049,7 @@ def review(
         updated=a_count(updated),
         unchanged=a_count(unchanged),
         kept_note=kept_note == "1",
+        linked=a_count(linked),
         check=CheckState(said[0][1], said=said[0][0])
         if said
         else (CheckState(focus) if focus else None),

@@ -47,6 +47,7 @@ from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.candidates import candidate_readings, reader
 from blossom.captures import (
     STUDENT,
+    CaptureChanged,
     CaptureCreated,
     CaptureDetails,
     CapturePromoted,
@@ -1058,3 +1059,39 @@ def homework_from_a_note(
     )
     assert isinstance(done, CapturePromoted)
     return done.assignment_id
+
+
+def waiting_note(
+    store: ProjectStateStore,
+    *,
+    course: str,
+    title: str,
+    text: str,
+    due_date: date | None = None,
+) -> str:
+    """A homework note of hers that waits, given this class, title, and day; the note's
+    id."""
+    name = new_capture_id()
+    made = store.create_capture(
+        name,
+        text,
+        None,
+        None,
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=NOTE_AT,
+        today=NOTE_DAY,
+    )
+    assert isinstance(made, CaptureCreated)
+    given = CaptureDetails(course=course, title=title, kind="HOMEWORK", due_date=due_date)
+    clarified = store.clarify_capture(
+        name,
+        given,
+        expected_revision=1,
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=NOTE_AT,
+        today=NOTE_DAY,
+    )
+    assert isinstance(clarified, CaptureChanged)
+    return name
