@@ -989,7 +989,6 @@ def test_missing_lines_about_undated_work_are_read_apart_one_reading_for_each() 
     )
     one_day = "Assignments:\n" + first + "Assignments:\n" + second
     repeated = "Assignments:\n" + first + "Assignments:\n" + first
-    with_a_card = "Tuesday 9/8/2026\nHealth\nDue: Course Guide Due:\n" + one_day
 
     def seen(text: str) -> list[tuple[int | None, list[tuple[str | None, date]]]]:
         return [
@@ -1003,7 +1002,76 @@ def test_missing_lines_about_undated_work_are_read_apart_one_reading_for_each() 
     ]
     assert seen(one_day) == [(2, [("09/14", TODAY)]), (4, [("09/21", TODAY)])]
     assert seen(repeated) == [(2, [("09/14", TODAY)])]
-    assert seen(with_a_card) == [(3, [("09/14", TODAY)])]
+
+
+@pytest.mark.parametrize("order", ["card-first", "emails-first"])
+@pytest.mark.parametrize("lines", [1, 2])
+def test_missing_lines_beside_a_dated_card_of_their_name_are_read_apart_from_it(
+    order: str, lines: int
+) -> None:
+    """A card's date, claims, and instructions are its own: each Missing line beside it is
+    read with no date, as if the card weren't there, and placed on its own."""
+    card = "Tuesday 9/8/2026\nHealth\nDue: Course Guide Due:\nBring the signed guide.\n"
+    emails = "".join(
+        f"Assignments:\n09/{day} Health - A: Homework: Course Guide Due Grade: Missing\n"
+        for day in ("14", "21")[:lines]
+    )
+    text = card + "\n" + emails if order == "card-first" else emails + "\n" + card
+    items = readings(text)
+    dated = [item for item in items if item.due_date is not None]
+    told = [item for item in items if item.due_date is None]
+
+    assert len(items) == 1 + lines
+    assert [(item.due_date, item.origin, item.reports) for item in dated] == [
+        (date(2026, 9, 8), SourceChannel.LMS, ())
+    ]
+    assert words(dated[0]) == ("Bring the signed guide.",)
+    assert [[said.source_date_text for said in item.reports] for item in told] == [
+        ["09/14"],
+        ["09/21"],
+    ][:lines]
+    for item in told:
+        assert (item.origin, item.claims, item.instructions, item.occurrence) == (
+            SourceChannel.EMAIL,
+            (),
+            (),
+            None,
+        )
+    assert dated[0].occurrence is None
+
+
+def test_a_missing_line_shares_a_dated_cards_card_only_once_both_land_on_one_homework(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A card a week or more from the saved date asks whether it's the same assignment; a
+    Missing line beside it lands on the saved one by its own rule, and shares the card only
+    once the answer puts the card there too."""
+    text = (
+        "Tuesday 9/15/2026\nMath\nDue: Practice:\n\n"
+        "Assignments:\n09/14 Math - A: Homework: Practice Grade: Missing\n"
+    )
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        keep(readings("Tuesday 9/1/2026\nMath\nDue: Practice:\n"), store)
+        (saved,) = store.all_assignments()
+        asked = changes_for(readings(text), store)
+        same = changes_for(readings(text), store, occurrences={0: UPDATE})
+        new = changes_for(readings(text), store, occurrences={0: NEW_WORK})
+    finally:
+        store.close()
+
+    def placed(changes: list[Change]) -> list[tuple[str, int | None, str]]:
+        return [(change.state, change.folded_into, change.assignment_id) for change in changes]
+
+    assert placed(asked)[1:] == [(CLAIMED, None, saved.assignment_id)]
+    assert asked[0].state == REVIEW
+    assert placed(same) == [
+        (CLAIMED, None, saved.assignment_id),
+        (FOLDED, 0, saved.assignment_id),
+    ]
+    assert [report.source_date_text for report in same[0].new_reports] == ["09/14"]
+    assert placed(new)[1:] == [(CLAIMED, None, saved.assignment_id)]
+    assert new[0].state == NEW
 
 
 @pytest.mark.parametrize("entries", ["typed", "dated"])
@@ -1029,7 +1097,12 @@ def test_a_card_that_brings_more_than_the_schools_reports_keeps_its_own(
     finally:
         store.close()
 
-    assert [change.state for change in changes] == [NEW, NEW]
+    if entries == "typed":
+        assert [change.state for change in changes] == [NEW, NEW]
+    else:
+        # Each Missing line is read apart and lands on the new homework the first card makes.
+        assert [change.state for change in changes] == [FOLDED, NEW, FOLDED, NEW]
+        assert [change.folded_into for change in changes] == [1, None, 1, None]
 
 
 def test_a_type_typed_with_an_entry_corrects_a_saved_row_and_the_correction_is_kept(
@@ -1214,11 +1287,17 @@ def test_each_field_keeps_the_channel_that_gave_it_whatever_the_order(
             )
         finally:
             store.close()
-    mixed = readings(email_first)[0]
+    told, card = readings(email_first)
 
-    assert mixed.origin is SourceChannel.EMAIL
-    assert mixed.origin_of("due_date") is SourceChannel.LMS
-    assert [said.channel for said in mixed.instructions] == [SourceChannel.LMS]
+    assert (told.origin, told.due_date, told.claims, told.instructions) == (
+        SourceChannel.EMAIL,
+        None,
+        (),
+        (),
+    )
+    assert [report.channel for report in told.reports] == [SourceChannel.EMAIL]
+    assert (card.origin, card.due_date, card.reports) == (SourceChannel.LMS, date(2026, 9, 10), ())
+    assert [said.channel for said in card.instructions] == [SourceChannel.LMS]
     for name, (row, claim_channels, report_channels, applying_now) in outcomes.items():
         assert row.due_date == date(2026, 9, 10), name
         assert row.assigned_on == date(2026, 9, 8), name

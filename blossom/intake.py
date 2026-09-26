@@ -429,11 +429,11 @@ class _Draft:
             self.report_lines.append(line)
 
     def readings(self) -> list[Reading]:
-        """What the draft reads as. Work with no date of its own gets a reading for each
-        report, since each line can be about different homework under the name and is
-        placed on its own."""
+        """What the draft reads as: a card's reading, or a reading for each of the school's
+        Missing lines, since each line can be about different homework under the name and
+        is placed on its own."""
         whole = self.reading()
-        if self.due_date is not None or len(self.reports) < 2:
+        if not self.reports:
             return [whole]
         return [
             dataclasses.replace(whole, reports=(report,), at_line=line)
@@ -448,11 +448,6 @@ class _Draft:
             block = "\n".join(lines)
             if block and all(item.text != block for item in instructions):
                 instructions.append(InstructionSeen(block, SourceChannel.LMS, card, day))
-        # A dated card places every report read with it, so one report a day is enough.
-        reports: list[StatusReport] = []
-        for report in self.reports:
-            if all(_same_report(report, kept) is False for kept in reports):
-                reports.append(report)
         return Reading(
             course=self.course,
             title=self.title,
@@ -462,7 +457,7 @@ class _Draft:
             claims=tuple(self.claims),
             origin=self.origin,
             instructions=tuple(instructions),
-            reports=tuple(reports),
+            reports=tuple(self.reports),
             at_line=self.at_line,
             occurrence=self.occurrence,
             field_origins=dict(self.field_origins),
@@ -502,8 +497,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     that does not read as one is text that needs review, and it ends the
     card before it, so nothing after it is taken for that card's words. A
     mail program's date line outside a card dates the school's reports read
-    after it, and the other lines of a mail header are read as nothing. A
-    Missing line about work with no date in the text is a reading of its own,
+    after it, and the other lines of a mail header are read as nothing. Each
+    Missing line is a reading of its own, apart from any card of its name,
     and the same line twice is one. Any
     other plain line outside a card needs review too. A card that names an
     assignment again a week or more from the date it was first read with is
@@ -658,23 +653,24 @@ def _draft_for(
     number: int,
     when: date | None,
 ) -> _Draft:
-    """The draft a card adds to: the round of its name whose date is within a week of the
-    card's, else a new round; a card with no date of its own joins the first round."""
+    """The draft a line adds to. A card joins the round of its name whose date is within a
+    week of the card's, else starts a new round. The school's Missing lines have no date of
+    their own, so they share a draft of their own and never join a card's."""
     key = pair(course, title)
     rounds = drafts.setdefault(key, [])
     for draft in rounds:
-        if (
-            when is None
-            or draft.due_date is None
-            or abs(draft.due_date - when) < ANOTHER_OCCURRENCE
-        ):
+        if when is None:
+            if draft.due_date is None:
+                return draft
+        elif draft.due_date is not None and abs(draft.due_date - when) < ANOTHER_OCCURRENCE:
             return draft
+    dated = any(draft.due_date is not None for draft in rounds)
     draft = _Draft(
         course=key[0],
         title=key[1],
         origin=origin,
         at_line=number,
-        occurrence=None if not rounds or when is None else when.isoformat(),
+        occurrence=None if not dated or when is None else when.isoformat(),
     )
     rounds.append(draft)
     return draft
@@ -1656,27 +1652,34 @@ def changes_for(
 
 def _reports_together(changes: list[Change], answered: Collection[int]) -> list[Change]:
     """The school's reports read apart, shown on one card where they can mean only one
-    homework: an undated card from the email, with no answer given, that lands where an
-    earlier such card lands, a new row included, adds its reports there and is folded in.
-    A card that asks, or that an answer placed, keeps its own."""
+    homework: an undated card from the email, with no answer given, that lands where
+    another card of the text lands, a new row included, adds its reports to that card and
+    is folded in. A dated card lands by its own date and is the one shown, and it keeps
+    the email's channel as the record's when a Missing line named the work first. A card
+    that asks, or that an answer placed, keeps its own."""
+
+    def told(change: Change) -> bool:
+        return change.reading.due_date is None and change.reading.origin is SourceChannel.EMAIL
+
+    lands = (NEW, CLAIMED, KNOWN)
     first: dict[str, int] = {}
     for index, change in enumerate(changes):
-        if (
-            change.reading.due_date is not None
-            or change.reading.origin is not SourceChannel.EMAIL
-            or change.key in answered
-            or change.state not in (NEW, CLAIMED, KNOWN)
-        ):
+        if change.state in lands and not told(change):
+            first.setdefault(change.assignment_id, index)
+    for index, change in enumerate(changes):
+        if change.state not in lands or not told(change) or change.key in answered:
             continue
         place = first.setdefault(change.assignment_id, index)
         if place == index:
             continue
         anchor = changes[place]
-        reports = anchor.reading.reports + change.reading.reports
+        reading = dataclasses.replace(
+            anchor.reading,
+            reports=anchor.reading.reports + change.reading.reports,
+            origin=change.reading.origin if index < place else anchor.reading.origin,
+        )
         changes[place] = dataclasses.replace(
-            anchor,
-            reading=dataclasses.replace(anchor.reading, reports=reports),
-            new_reports=anchor.new_reports + change.new_reports,
+            anchor, reading=reading, new_reports=anchor.new_reports + change.new_reports
         )
         changes[index] = dataclasses.replace(change, folded_into=anchor.key)
     return changes

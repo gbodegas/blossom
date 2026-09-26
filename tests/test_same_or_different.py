@@ -897,6 +897,145 @@ def test_the_same_missing_email_twice_in_one_paste_asks_once(tmp_path: pathlib.P
     assert question(page, 1) == ""
 
 
+HEALTH_CARD = "Wednesday 9/9/2026\nHealth\nDue: Course Guide Due:\n"
+GUIDE_EMAILS = (
+    "Date: Mon, Sep 14, 2026 12:00\n"
+    + GUIDE_MISSING
+    + "Date: Mon, Sep 21, 2026 12:00\n"
+    + GUIDE_MISSING_LATER
+)
+
+
+def guides_due(client: TestClient, *dues: date) -> list[str]:
+    """Course Guide Due assignments on record from the school, one for each due date."""
+    rows = [
+        copy_of_the_guide(due).model_copy(update={"assignment_id": f"assignment-guide-{place}"})
+        for place, due in enumerate(dues)
+    ]
+    store_of(client).put_on_record(rows, {})
+    return [row.assignment_id for row in rows]
+
+
+def beside_the_card(card: str, emails: str, order: str) -> str:
+    return card + "\n" + emails if order == "card-first" else emails + "\n" + card
+
+
+@pytest.mark.parametrize(
+    "emails", [GUIDE_EMAILS, GUIDE_MISSING + GUIDE_MISSING_LATER], ids=["dated-emails", "one-day"]
+)
+@pytest.mark.parametrize("order", ["card-first", "emails-first"])
+def test_missing_lines_beside_a_dated_card_each_ask_and_are_placed_apart(
+    tmp_path: pathlib.Path, order: str, emails: str
+) -> None:
+    card, lines = (0, (1, 2)) if order == "card-first" else (2, (0, 1))
+    text = beside_the_card(HEALTH_CARD, emails, order)
+    with client_in(tmp_path, "2026-09-26") as client:
+        sep9, sep16 = guides_due(client, date(2026, 9, 9), date(2026, 9, 16))
+        page = read(client, text)
+        before = tables(client)
+        unanswered = client.post("/parent/inbox/keep", data=review_form(page))
+        after_unanswered = tables(client)
+        form = {
+            **review_form(page),
+            f"identity-{lines[0]}": choice_value(sep9),
+            f"identity-{lines[1]}": choice_value(sep16),
+        }
+        saved = client.post("/parent/inbox/keep", data=form)
+        after_saved = tables(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        after_again = tables(client)
+        fresh = read(client, text)
+        resaved = client.post("/parent/inbox/keep", data=review_form(fresh))
+        after_resaved = tables(client)
+        store = store_of(client)
+        on9 = [said.source_date_text for said in store.status_reports(sep9)]
+        on16 = [said.source_date_text for said in store.status_reports(sep16)]
+        dated9 = [said.asserted_value for said in store.deadline_records(sep9)]
+        dated16 = [said.asserted_value for said in store.deadline_records(sep16)]
+
+    assert question(page, card) == ""
+    assert sorted(choices(page, lines[0])) == sorted([sep9, sep16, DIFFERENT])
+    assert sorted(choices(page, lines[1])) == sorted([sep9, sep16, DIFFERENT])
+    assert unanswered.status_code == 200
+    assert after_unanswered == before
+    assert saved.status_code == 303
+    assert (on9, on16) == (["09/14"], ["09/21"])
+    assert (dated9, dated16) == (["2026-09-09"], [])
+    assert again.status_code == 303
+    assert after_again == after_saved
+    assert [question(fresh, key) for key in range(3)] == ["", "", ""]
+    assert resaved.status_code == 303
+    assert after_resaved == after_saved
+
+
+@pytest.mark.parametrize("header", [True, False], ids=["dated-email", "undated-email"])
+@pytest.mark.parametrize("order", ["card-first", "emails-first"])
+def test_one_missing_line_beside_a_dated_card_asks_and_the_card_keeps_its_instruction(
+    tmp_path: pathlib.Path, order: str, header: bool
+) -> None:
+    card, line = (0, 1) if order == "card-first" else (1, 0)
+    email = ("Date: Mon, Sep 14, 2026 12:00\n" if header else "") + GUIDE_MISSING
+    text = beside_the_card(HEALTH_CARD + "Bring the signed guide.\n", email, order)
+    with client_in(tmp_path, "2026-09-26") as client:
+        sep9, sep16 = guides_due(client, date(2026, 9, 9), date(2026, 9, 16))
+        page = read(client, text)
+        saved = client.post(
+            "/parent/inbox/keep",
+            data={**review_form(page), f"identity-{line}": choice_value(sep16)},
+        )
+        on9 = [said.source_date_text for said in store_of(client).status_reports(sep9)]
+        on16 = [said.source_date_text for said in store_of(client).status_reports(sep16)]
+        guide9, guide16 = instruction_texts(client, sep9), instruction_texts(client, sep16)
+
+    assert question(page, card) == ""
+    assert sorted(choices(page, line)) == sorted([sep9, sep16, DIFFERENT])
+    assert saved.status_code == 303
+    assert (on9, on16) == ([], ["09/14"])
+    assert (guide9, guide16) == (("Bring the signed guide.",), ())
+
+
+def test_a_missing_line_beside_a_dated_card_answered_against_old_facts_saves_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path, "2026-09-26") as client:
+        sep9, sep16 = guides_due(client, date(2026, 9, 9), date(2026, 9, 16))
+        page = read(client, beside_the_card(HEALTH_CARD, GUIDE_EMAILS, "card-first"))
+        form = {
+            **review_form(page),
+            "identity-1": choice_value(sep9),
+            "identity-2": choice_value(sep16),
+        }
+        store_of(client).put_on_record([copy_of_the_guide(date(2026, 9, 23))], {})
+        before = tables(client)
+        stale = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+
+    assert stale.status_code == 409
+    assert after == before
+
+
+@pytest.mark.parametrize("order", ["card-first", "emails-first"])
+@pytest.mark.parametrize("saved", [0, 1], ids=["new-homework", "one-on-record"])
+def test_missing_lines_that_can_mean_only_the_cards_homework_show_on_its_card(
+    tmp_path: pathlib.Path, saved: int, order: str
+) -> None:
+    with client_in(tmp_path, "2026-09-26") as client:
+        guides_due(client, *[date(2026, 9, 9)] * saved)
+        page = read(client, beside_the_card(HEALTH_CARD, GUIDE_EMAILS, order))
+        kept = client.post("/parent/inbox/keep", data=review_form(page))
+        rows = store_of(client).all_assignments()
+        reports = store_of(client).status_reports(rows[0].assignment_id)
+
+    assert page.count('<article class="assignment reading-') == 1
+    assert 'class="choice identity"' not in page
+    assert "folded into" not in html.unescape(page)
+    assert kept.status_code == 303
+    assert [(row.due_date, row.reported_submission_status) for row in rows] == [
+        (date(2026, 9, 9), "missing")
+    ]
+    assert [said.source_date_text for said in reports] == ["09/14", "09/21"]
+
+
 def test_a_date_that_one_of_two_has_lands_there_without_a_question(tmp_path: pathlib.Path) -> None:
     with client_in(tmp_path) as client:
         early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
