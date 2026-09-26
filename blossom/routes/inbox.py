@@ -18,7 +18,7 @@ import json
 import logging
 import secrets
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Annotated, Final
@@ -367,19 +367,27 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
 
 
 def identity_answers(
-    fields: Mapping[str, str], page: PageMade
+    fields: Iterable[tuple[str, object]], page: PageMade
 ) -> tuple[dict[int, IdentityAnswer], bool]:
-    """The answers to which homework each card is about, as the page asked: each names a
-    homework the signed question listed, or different homework, with the creation token the
-    page made for that card. The second value says whether anything was sent that the page
-    did not ask or give: an answer on a card it did not ask, a homework it did not list, or
-    a token it did not make. Such a form is refused whole."""
+    """The answers to which homework each card is about, as the page asked, read from every
+    field as sent: each names a homework the signed question listed, or different homework,
+    with the creation token the page made for that card. The second value says whether
+    anything was sent that the page did not ask or give: an answer on a card it did not ask,
+    a homework it did not list, a token it did not make, or a field sent twice or as a
+    file, which leaves that card with no answer. Such a form is refused whole."""
     answers: dict[int, IdentityAnswer] = {}
     unreadable = False
-    for name, value in fields.items():
+    seen: set[str] = set()
+    bent: set[int] = set()
+    for name, value in fields:
         head, _, card = name.rpartition("-")
         if head not in ("identity", "creation") or not review_key(card):
             continue
+        if name in seen or not isinstance(value, str):
+            unreadable = True
+            bent.add(int(card))
+            continue
+        seen.add(name)
         question = page.identities.get(int(card))
         if question is None:
             unreadable = True
@@ -394,21 +402,22 @@ def identity_answers(
         answers[int(card)] = IdentityAnswer(
             chosen, question.shown, question.basis, question.creation
         )
-    return answers, unreadable
+    return {card: answer for card, answer in answers.items() if card not in bent}, unreadable
 
 
 def link_answers(
-    fields: Mapping[str, str], page: PageMade
+    fields: Iterable[tuple[str, object]], page: PageMade
 ) -> tuple[dict[int, list[tuple[str, int, str | None]]], bool]:
-    """The notes of hers ticked to link, as the page offered them: ``link-<card>-<place>``
-    names the note the page signed at that place on that card, with the homework the
-    card landed on when the page was made, or ``None`` where it asked which. The second
-    value says whether anything was sent that the page did not offer, or one note ticked
-    on more than one card, since repeated cards for one homework are shown as one;
-    either refuses the form whole."""
+    """The notes of hers ticked to link, as the page offered them, read from every field as
+    sent: ``link-<card>-<place>`` names the note the page signed at that place on that
+    card, with the homework the card landed on when the page was made, or ``None`` where
+    it asked which. The second value says whether anything was sent that the page did not
+    offer, a box sent as a file among them, or one note ticked more than once, by a box
+    sent twice or on more than one card, since repeated cards for one homework are shown
+    as one; either refuses the form whole."""
     ticked: dict[int, list[tuple[str, int, str | None]]] = {}
     unreadable = False
-    for name, value in fields.items():
+    for name, value in fields:
         head, _, rest = name.partition("-")
         if head != "link":
             continue
@@ -587,14 +596,17 @@ def answers_kept(
     unsaved: Mapping[int, UnsavedChoice] | None = None,
     carried: Mapping[int, CarriedAccount] | None = None,
     page: PageMade | None = None,
+    identities: Mapping[int, IdentityAnswer] | None = None,
+    linked: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review form carried, read by the one reader the save uses and with no
     record read: the page's own notes of what each select suggested and showed, of what was
     chosen, and of what was folded into what decide what is an answer, as they would have
     on the save. Only the fields the page writes, under a key the page could have written,
     are read; anything else the form holds is no answer and takes nothing else down. Which
-    homework each card is about and the notes ticked to link are read against what the page
-    signed (``page``), so only choices it offered are said back."""
+    homework each card is about and the notes ticked to link are the save's own reading of
+    them (``identities``, ``linked``), made against what the page signed (``page``), so
+    only choices it offered, each sent once, are said back."""
     safe: dict[str, str] = {}
     for name, value in form.items():
         head, _, key = name.rpartition("-")
@@ -606,11 +618,9 @@ def answers_kept(
             continue
         safe[name] = value
     occurrences, kinds = answers_from(safe, {})
-    page = page or PageMade()
-    identities, _ = identity_answers(form, page)
-    linked, _ = link_answers(form, page)
+    words = (page or PageMade()).words
     return answers_shown(
-        occurrences, kinds, instructions, unsaved, carried, identities, linked, page.words
+        occurrences, kinds, instructions, unsaved, carried, identities, linked, words
     )
 
 
@@ -1125,7 +1135,14 @@ async def keep_readings(request: Request, state: State) -> Response:
         key: account for key, account in carried_accounts(fields).items() if key not in chosen
     }
     page_made = made_with(state.result_key, form, draft)
-    kept_answers = answers_kept(form, instruction_answers, read_answers.unsaved, carried, page_made)
+    # Which homework each card is and the notes ticked are read from every field as sent too:
+    # a field sent twice or as a file is no answer, for the save or for a page that says the
+    # answers back.
+    identities, identity_unreadable = identity_answers(fields, page_made)
+    linked, link_unreadable = link_answers(fields, page_made)
+    kept_answers = answers_kept(
+        form, instruction_answers, read_answers.unsaved, carried, page_made, identities, linked
+    )
     # A claim on record that cannot be read refuses the comparison, before the write or
     # inside its transaction, which is rolled back whole before anything is answered. The
     # answer reads no store and keeps the draft and the answers given on the cards, which
@@ -1133,10 +1150,9 @@ async def keep_readings(request: Request, state: State) -> Response:
     # file refuses, which is never tried again.
     try:
         occurrences, kinds = answers_from(form, unasked_for(state, read))
-        identities, identity_unreadable = identity_answers(form, page_made)
         if identity_unreadable:
-            # An answer about which homework a card is that the page did not ask, or a
-            # homework or token it did not give, is no form the page wrote.
+            # An answer about which homework a card is that the page did not ask, a homework
+            # or token it did not give, or one sent twice, is no form the page wrote.
             return preview_page(
                 request,
                 state,
@@ -1152,9 +1168,9 @@ async def keep_readings(request: Request, state: State) -> Response:
                 notice=IDENTITY_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
-        linked, link_unreadable = link_answers(form, page_made)
         if link_unreadable:
-            # A note ticked that the page did not offer is no form the page wrote.
+            # A note ticked that the page did not offer, or ticked twice, is no form the page
+            # wrote.
             return preview_page(
                 request,
                 state,

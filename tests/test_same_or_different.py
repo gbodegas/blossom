@@ -1777,6 +1777,96 @@ def test_a_token_or_a_choice_the_page_did_not_give_is_refused(
     assert after == before
 
 
+SECOND_GUIDE = "assignment-second-guide"
+
+
+def two_guides(client: TestClient) -> None:
+    first = copy_of_the_guide(date(2026, 9, 9))
+    store_of(client).put_on_record(
+        [first, first.model_copy(update={"assignment_id": SECOND_GUIDE})], {}
+    )
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [
+        "two-homework",
+        "two-homework-the-other-way",
+        "one-homework-twice",
+        "a-token-twice",
+        "a-note-twice",
+        "a-homework-as-a-file",
+    ],
+)
+def test_an_answer_sent_twice_or_as_a_file_refuses_the_whole_paste(
+    tmp_path: pathlib.Path, sent: str
+) -> None:
+    with client_in(tmp_path) as client:
+        two_guides(client)
+        guide_note(client)
+        page = read(client, GUIDE_MISSING + "\n" + lab_card("10/15/2026"))
+        first, second = choice_value(GUIDE_COPY), choice_value(SECOND_GUIDE)
+        form: dict[str, str | list[str]] = {**review_form(page)}
+        files = None
+        if sent == "two-homework":
+            form["identity-0"] = [first, second]
+        elif sent == "two-homework-the-other-way":
+            form["identity-0"] = [second, first]
+        elif sent == "one-homework-twice":
+            form["identity-0"] = [first, first]
+        elif sent == "a-token-twice":
+            token = review_form(page)["creation-0"]
+            form = {**form, "identity-0": DIFFERENT, "creation-0": [token, token]}
+        elif sent == "a-note-twice":
+            form = {**form, "identity-0": first, links_on(page, 0)[0]: ["1", "1"]}
+        else:
+            files = {"identity-0": ("choice.txt", first.encode(), "text/plain")}
+        before = tables(client)
+        refused = client.post("/parent/inbox/keep", data=form, files=files)
+        after = tables(client)
+        saved = client.post("/parent/inbox/keep", data={**review_form(page), "identity-0": first})
+
+    returned = review_form(refused.text)
+    assert refused.status_code == 422
+    assert after == before
+    assert returned["text"] == review_form(page)["text"]
+    if sent == "a-note-twice":
+        # Both boxes say the same, so the note comes back ticked, with the homework chosen.
+        assert (returned["identity-0"], returned["link-0-0"]) == (first, "1")
+    else:
+        assert sorted(choices(refused.text, 0)) == sorted([GUIDE_COPY, SECOND_GUIDE, DIFFERENT])
+    assert saved.status_code == 303
+
+
+def test_a_failed_save_says_back_no_homework_for_an_answer_sent_twice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blossom.stores.intake_decisions import UnreadableDecision
+
+    with client_in(tmp_path) as client:
+        two_guides(client)
+        page = read(client, GUIDE_MISSING)
+        form = {
+            **review_form(page),
+            "identity-0": [choice_value(GUIDE_COPY), choice_value(SECOND_GUIDE)],
+            "kind-0": "TASK",
+        }
+
+        def unreadable(*_: object, **__: object) -> None:
+            msg = "a kept answer is torn"
+            raise UnreadableDecision(msg)
+
+        monkeypatch.setattr(store_of(client), "intake_decisions", unreadable)
+        failed = client.post("/parent/inbox/keep", data=form)
+
+    shown = html.unescape(failed.text)
+    kept = re.sub(r"<[^>]+>", "", shown.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0])
+    assert failed.status_code == 500
+    assert "Card 0: no answer about the assignment; type Task." in kept
+    assert GUIDE_COPY not in shown
+    assert SECOND_GUIDE not in shown
+
+
 # ------------------------------------------------------------------ direct callers
 
 
