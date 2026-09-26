@@ -535,8 +535,10 @@ as stale. A household file from before this schema is brought
 up to it on the first start: columns it lacks are added, the index a
 version between made on the claims, which held each claim once, is dropped
 so that every observation is kept, and status reports the file holds twice
-for one channel, status, and day are folded to the first before the index
-that keeps them once is made. No assignment and no claim is dropped or
+for one channel, status, day, and date beside the work are folded to the
+first before the index that keeps them once is made. An index that leaves out
+that date is made again with it, so two Missing lines of one day with
+different dates beside them are two reports. No assignment and no claim is dropped or
 rewritten. A school note in the old note field, from a file written before
 the school's instructions were kept apart, is moved into them once, in the
 same transaction: each is kept, checked to be kept exactly once, and only

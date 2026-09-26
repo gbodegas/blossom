@@ -1286,15 +1286,16 @@ def identity_basis(
     mine: Collection[str],
 ) -> str:
     """The fingerprint of an identity question: each candidate as the question shows it, by
-    its id, title, due date, where it came from, and her note where it's quoted, and the
-    answers kept to that same question (``decided``). A choice sent back is checked against
-    it in the save's transaction. The question is asked again when homework has since
-    arrived, left, changed in what the question shows, or been answered elsewhere, and not
-    for a change it doesn't show or an answer to another question of the name."""
+    its id, title, class, due date, where it came from, and her note where it's quoted, and
+    the answers kept to that same question (``decided``). A choice sent back is checked
+    against it in the save's transaction. The question is asked again when homework has
+    since arrived, left, changed in what the question shows, or been answered elsewhere, and
+    not for a change it doesn't show or an answer to another question of the name."""
     shown = sorted(
         [
             item.assignment_id,
             item.title,
+            item.course,
             None if item.due_date is None else item.due_date.isoformat(),
             "hers" if item.assignment_id in mine else item.origins.get("record"),
             item.note if item.assignment_id in mine and item.note_by == "student" else None,
@@ -1411,13 +1412,14 @@ class _Seen:
     def novel_reports(
         self, assignment_id: str, saved: bool, reports: tuple[StatusReport, ...]
     ) -> tuple[StatusReport, ...]:
-        """The reports not yet accounted for under a row, now accounted for."""
+        """The reports not yet accounted for under a row, now accounted for, each as the
+        school wrote it: a second Missing line of the same day is a report of its own."""
         if assignment_id not in self._reports:
             self._reports[assignment_id] = list(self._saved.reports(assignment_id)) if saved else []
         kept = self._reports[assignment_id]
         fresh = []
         for report in reports:
-            if all(_same_report(report, other) is False for other in kept):
+            if all(_same_report_as_written(report, other) is False for other in kept):
                 kept.append(report)
                 fresh.append(report)
         return tuple(fresh)

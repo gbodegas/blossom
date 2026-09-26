@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
+from blossom.assignment_status import statuses_for
 from blossom.intake import (
     ChangedSinceShown,
     Kept,
@@ -30,6 +31,7 @@ from blossom.intake import (
     keep,
     read_text,
     spoken_day,
+    spoken_report,
 )
 from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import came_from, draft_of
@@ -924,11 +926,8 @@ def test_two_missing_lines_in_one_paste_are_each_placed_where_the_parent_says(
     assert evidence == ["09/30", "10/02"]
     if apart:
         assert (on_early, on_late) == (["09/30"], ["10/02"])
-    elif text == TWO_EMAILS:
-        assert (on_early, on_late) == (["09/30", "10/02"], [])
     else:
-        # One day's report on one homework is one row; the second line is its placement.
-        assert (on_early, on_late) == (["09/30"], [])
+        assert (on_early, on_late) == (["09/30", "10/02"], [])
 
 
 def test_a_missing_line_unanswered_or_answered_against_old_facts_saves_nothing(
@@ -980,6 +979,111 @@ def test_missing_lines_that_can_mean_only_one_homework_show_on_one_card(
     assert kept.status_code == 303
     assert len(rows) == 1
     assert [said.source_date_text for said in reports] == ["09/30", "10/02"]
+
+
+ONE_EMAIL = "Date: Mon, Oct 5, 2026 12:00\n" + LAB_MISSING + SECOND_MISSING.split("\n", 1)[1]
+"""Both lines under one date line: one day, two dates beside the work."""
+LAB_CARD = lab_card("10/01/2026")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [ONE_DAY, ONE_EMAIL, LAB_MISSING + LAB_MISSING, LAB_CARD + "\n" + ONE_DAY, ONE_DAY + LAB_CARD],
+    ids=["no-date-line", "one-email", "one-line-twice", "card-then-lines", "lines-then-card"],
+)
+@pytest.mark.parametrize("landing", ["one-homework", "a-new-row", "her-homework"])
+def test_every_missing_line_a_card_shows_is_kept_on_the_homework_it_lands_on(
+    tmp_path: pathlib.Path, text: str, landing: str
+) -> None:
+    with client_in(tmp_path, "2026-10-05") as client:
+        store = store_of(client)
+        if landing == "one-homework":
+            school_rows(client, date(2026, 10, 1))
+        elif landing == "her-homework":
+            homework_from_a_note(
+                store, course="Science", title=LAB_LOG, due_date=date(2026, 10, 1), note=HER_NOTE
+            )
+        page = read(client, text)
+        form = review_form(page)
+        asked = set(re.findall(r'name="identity-(\d+)" value="(same:[^"]+)"', page))
+        form.update({f"identity-{key}": value for key, value in asked})
+        saved = client.post("/parent/inbox/keep", data=form)
+        after_saved = tables(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        after_again = tables(client)
+        resaved = client.post("/parent/inbox/keep", data=review_form(read(client, text)))
+        after_resaved = tables(client)
+        (row,) = [item.assignment_id for item in store.all_assignments() if item.title == LAB_LOG]
+        kept = [said.source_date_text for said in store.status_reports(row)]
+
+    assert bool(asked) is (landing == "her-homework")
+    assert "The email writes 09/30 beside it" in html.unescape(page)
+    assert (saved.status_code, again.status_code, resaved.status_code) == (303, 303, 303)
+    assert kept == (["09/30"] if text == LAB_MISSING + LAB_MISSING else ["09/30", "10/02"])
+    assert after_again == after_saved
+    assert after_resaved == after_saved
+
+
+@pytest.mark.parametrize("later", [SECOND_MISSING, ONE_DAY], ids=["the-other-line", "both-lines"])
+def test_a_missing_line_pasted_later_the_same_day_is_kept_beside_the_first(
+    tmp_path: pathlib.Path, later: str
+) -> None:
+    with client_in(tmp_path, "2026-10-05") as client:
+        (row,) = school_rows(client, date(2026, 10, 1))
+        first = client.post("/parent/inbox/keep", data=review_form(read(client, LAB_MISSING)))
+        page = read(client, later)
+        saved = client.post("/parent/inbox/keep", data=review_form(page))
+        after_saved = tables(client)
+        again = client.post("/parent/inbox/keep", data=review_form(page))
+        resaved = client.post("/parent/inbox/keep", data=review_form(read(client, later)))
+        after_resaved = tables(client)
+        kept = [said.source_date_text for said in store_of(client).status_reports(row)]
+        status = statuses_for(store_of(client), [row])[row]
+        (recorded,) = [
+            item.reported_submission_status for item in store_of(client).all_assignments()
+        ]
+
+    assert "The email writes 10/02 beside it" in html.unescape(page)
+    assert (first.status_code, saved.status_code) == (303, 303)
+    assert (again.status_code, resaved.status_code) == (303, 303)
+    assert kept == ["09/30", "10/02"]
+    assert after_resaved == after_saved
+    assert [spoken_report(said) for said in status.school_history] == [
+        f"From the school email, pasted {spoken_day(date(2026, 10, 5))}. The email writes {beside}"
+        " beside it, which it does not explain."
+        for beside in ("09/30", "10/02")
+    ]
+    assert [(said.status, said.source_date_text) for said in status.school_statements] == [
+        ("missing", "10/02")
+    ]
+    assert recorded == "missing"
+
+
+@pytest.mark.parametrize(
+    "line", [LAB_MISSING, SECOND_MISSING, ONE_DAY], ids=["first", "second", "both"]
+)
+@pytest.mark.parametrize("saved", [0, 1], ids=["on-a-new-row", "on-one-homework"])
+def test_lines_of_one_day_saved_without_a_question_are_known_once_more_homework_arrives(
+    tmp_path: pathlib.Path, line: str, saved: int
+) -> None:
+    later = copy_of_the_guide(date(2026, 10, 8)).model_copy(
+        update={"assignment_id": "assignment-lab-log-later", "course": "Science", "title": LAB_LOG}
+    )
+    with client_in(tmp_path, "2026-10-05") as client:
+        school_rows(client, *[date(2026, 10, 1)] * saved)
+        first = client.post("/parent/inbox/keep", data=review_form(read(client, ONE_DAY)))
+        store_of(client).put_on_record([later], {})
+        before = tables(client)
+        page = read(client, line)
+        again = client.post("/parent/inbox/keep", data=review_form(page))
+        after = tables(client)
+    with client_in(tmp_path, "2026-10-06") as client:
+        next_day = read(client, SECOND_MISSING)
+
+    assert (first.status_code, again.status_code) == (303, 303)
+    assert (question(page, 0), question(page, 1)) == ("", "")
+    assert after == before
+    assert "Which homework is this report about?" in question(next_day, 0)
 
 
 def test_the_same_missing_email_twice_in_one_paste_asks_once(tmp_path: pathlib.Path) -> None:
@@ -1796,7 +1900,7 @@ def test_a_change_the_question_does_not_show_leaves_the_answer_standing(
     assert saved.status_code == 303
 
 
-@pytest.mark.parametrize("shown", ["title-spacing", "school-source"])
+@pytest.mark.parametrize("shown", ["title-spacing", "course-spacing", "school-source"])
 def test_a_change_the_question_shows_on_other_homework_puts_it_again(
     tmp_path: pathlib.Path, shown: str
 ) -> None:
@@ -1809,6 +1913,11 @@ def test_a_change_the_question_shows_on_other_homework_puts_it_again(
             store._connection.execute(
                 "UPDATE assignments SET title = ? WHERE assignment_id = ?",
                 ("Course Guide  Due", GUIDE_COPY),
+            )
+        elif shown == "course-spacing":
+            store._connection.execute(
+                "UPDATE assignments SET course = ? WHERE assignment_id = ?",
+                ("Health ", GUIDE_COPY),
             )
         else:
             store._connection.execute(

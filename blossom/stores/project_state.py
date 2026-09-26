@@ -844,33 +844,49 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         writes, and not this table's. The one thing taken away is an index a
         version between made, which held a claim once and so refused that
         history; a file that carries it loses the index and keeps its rows.
-        Reports are the other way about: one per channel, status, and day is
-        the promise, kept by an index, and a file from a version without it
-        keeps the first of any duplicates.
+        Reports are the other way about: one per channel, status, day, and
+        the date the school wrote beside the work is the promise, kept by an
+        index, and a file from a version without it keeps the first of any
+        duplicates. An index that leaves out that date is made again with it.
         """
         self._connection.execute("DROP INDEX IF EXISTS date_claims_once")
-        indexes = {
-            str(row[1]) for row in self._connection.execute("PRAGMA index_list(status_reports)")
+        reports = {
+            str(row[1]) for row in self._connection.execute("PRAGMA table_info(status_reports)")
         }
-        if "status_reports_once" not in indexes:
-            # A report is one per channel, status, and day, as promised; a
-            # file from a version that kept no index on that is folded to
-            # one, the first kept, before the index is made. The fold is a
-            # write, so it is committed here unless a start's own transaction
-            # is open around it, which then commits it with the tables.
+        if "source_date_text" not in reports:
+            self._connection.execute("ALTER TABLE status_reports ADD COLUMN source_date_text TEXT")
+        made = self._connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'status_reports_once'"
+        ).fetchone()
+        if made is not None and "source_date_text" not in str(made[0]):
+            # Two Missing lines of one day with different dates beside them
+            # are two reports; an index that holds them once is dropped and
+            # made again. Its rows are already unique under the new key.
+            self._connection.execute("DROP INDEX status_reports_once")
+            made = None
+        if made is None:
+            # A report is one per channel, status, day, and date as written,
+            # as promised; a file from a version that kept no index on that
+            # is folded to one, the first kept, before the index is made. The
+            # fold is a write, so it is committed here unless a start's own
+            # transaction is open around it, which then commits it with the
+            # tables.
             outer = self._connection.in_transaction
             self._connection.execute(
                 """
                 DELETE FROM status_reports WHERE rowid NOT IN (
                     SELECT MIN(rowid) FROM status_reports
-                    GROUP BY assignment_id, channel, status, reported_on
+                    GROUP BY assignment_id, channel, status, reported_on,
+                        IFNULL(source_date_text, '')
                 )
                 """
             )
             self._connection.execute(
                 """
                 CREATE UNIQUE INDEX status_reports_once
-                ON status_reports (assignment_id, channel, status, reported_on)
+                ON status_reports (
+                    assignment_id, channel, status, reported_on, IFNULL(source_date_text, '')
+                )
                 """
             )
             if not outer and self._connection.in_transaction:
@@ -882,11 +898,6 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
             self._connection.execute("ALTER TABLE assignments ADD COLUMN note TEXT")
         if "origins" not in columns:
             self._connection.execute("ALTER TABLE assignments ADD COLUMN origins TEXT")
-        reports = {
-            str(row[1]) for row in self._connection.execute("PRAGMA table_info(status_reports)")
-        }
-        if "source_date_text" not in reports:
-            self._connection.execute("ALTER TABLE status_reports ADD COLUMN source_date_text TEXT")
 
     @classmethod
     def open(cls, path: Path, clock: Clock) -> "ProjectStateStore":
@@ -1035,22 +1046,26 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 self._record_status_reports_locked(assignment_id, said)
 
     def record_status_reports(self, assignment_id: str, reports: Iterable[StatusReport]) -> None:
-        """Keep what a school channel reported about one assignment, once per day and status,
-        and set the row's reported status from the latest report, in one transaction."""
+        """Keep what a school channel reported about one assignment, once per day, status, and
+        date as written, and set the row's reported status from the latest report, in one
+        transaction."""
         with self._lock, self._connection:
             self._record_status_reports_locked(assignment_id, reports)
 
     def _record_status_reports_locked(
         self, assignment_id: str, reports: Iterable[StatusReport]
     ) -> None:
-        """Keep each report once per channel, status, and day, whoever writes it: the index
-        the file keeps refuses a second, and only that conflict is passed over. The row's
-        reported status then follows the latest report, by the day reported and the order
-        kept, so what the pages and the planner read of the row never lags the reports."""
+        """Keep each report once per channel, status, day, and date as written, whoever
+        writes it: the index the file keeps refuses a second, and only that conflict is
+        passed over. The row's reported status then follows the latest report, by the day
+        reported and the order kept, so what the pages and the planner read of the row never
+        lags the reports."""
         self._connection.executemany(
             """
             INSERT INTO status_reports VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (assignment_id, channel, status, reported_on) DO NOTHING
+            ON CONFLICT (
+                assignment_id, channel, status, reported_on, IFNULL(source_date_text, '')
+            ) DO NOTHING
             """,
             [
                 (
