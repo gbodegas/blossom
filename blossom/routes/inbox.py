@@ -870,7 +870,11 @@ def preview_page(
     if notice is None and conflicting_choices(changes):
         notice = CHOOSE_ONE_TYPE
     shown = [change for change in changes if change.state != FOLDED]
-    folded = [change for change in changes if change.state == FOLDED]
+    # A card the parent folded carries that answer on the page; a report shown on another
+    # card carries nothing.
+    folded = [
+        change for change in changes if change.state == FOLDED and change.occurrence == UPDATE
+    ]
     counts = {
         "new": sum(1 for change in shown if change.state == NEW),
         "updated": sum(1 for change in shown if change.state == CLAIMED),

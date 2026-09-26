@@ -766,6 +766,137 @@ def test_a_second_missing_line_placed_and_sent_again_writes_nothing_more(
     ]
 
 
+TWO_EMAILS = (
+    "Date: Wed, Sep 30, 2026 12:00\n"
+    + LAB_MISSING
+    + "Date: Fri, Oct 2, 2026 12:00\n"
+    + SECOND_MISSING
+)
+ONE_DAY = LAB_MISSING + SECOND_MISSING
+"""The two lines with no date line: both reported the day they're pasted."""
+
+
+def placed_reports(client: TestClient) -> list[str | None]:
+    """The source date line of each report an answer placed, in order."""
+    return [
+        json.loads(report)["source_date_text"]
+        for (report,) in store_of(client)._connection.execute(
+            "SELECT report FROM intake_decisions WHERE report IS NOT NULL ORDER BY sequence"
+        )
+    ]
+
+
+@pytest.mark.parametrize("apart", [True, False], ids=["on-each", "both-on-one"])
+@pytest.mark.parametrize("text", [TWO_EMAILS, ONE_DAY], ids=["dated-emails", "one-day"])
+def test_two_missing_lines_in_one_paste_are_each_placed_where_the_parent_says(
+    tmp_path: pathlib.Path, text: str, apart: bool
+) -> None:
+    with client_in(tmp_path, "2026-10-05") as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        page = read(client, text)
+        second = late if apart else early
+        form = {
+            **review_form(page),
+            "identity-0": choice_value(early),
+            "identity-1": choice_value(second),
+        }
+        saved = client.post("/parent/inbox/keep", data=form)
+        after_saved = tables(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        after_again = tables(client)
+        fresh = read(client, text)
+        resaved = client.post("/parent/inbox/keep", data=review_form(fresh))
+        after_resaved = tables(client)
+        on_early = [said.source_date_text for said in store_of(client).status_reports(early)]
+        on_late = [said.source_date_text for said in store_of(client).status_reports(late)]
+        recorded = decisions(client)
+        evidence = placed_reports(client)
+
+    assert sorted(choices(page, 0)) == sorted([early, late, DIFFERENT])
+    assert sorted(choices(page, 1)) == sorted([early, late, DIFFERENT])
+    assert saved.status_code == 303
+    assert again.status_code == 303
+    assert after_again == after_saved
+    assert question(fresh, 0) == ""
+    assert question(fresh, 1) == ""
+    assert fresh.count('<article class="assignment reading-') == (2 if apart else 1)
+    assert resaved.status_code == 303
+    assert after_resaved == after_saved
+    assert [(kind, lands_on) for kind, _, _, _, lands_on, _ in recorded] == [
+        ("report_placed", early),
+        ("report_placed", second),
+    ]
+    assert evidence == ["09/30", "10/02"]
+    if apart:
+        assert (on_early, on_late) == (["09/30"], ["10/02"])
+    elif text == TWO_EMAILS:
+        assert (on_early, on_late) == (["09/30", "10/02"], [])
+    else:
+        # One day's report on one homework is one row; the second line is its placement.
+        assert (on_early, on_late) == (["09/30"], [])
+
+
+def test_a_missing_line_unanswered_or_answered_against_old_facts_saves_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path, "2026-10-05") as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        page = read(client, TWO_EMAILS)
+        one = {**review_form(page), "identity-0": choice_value(early)}
+        before = tables(client)
+        unanswered = client.post("/parent/inbox/keep", data=one)
+        after_unanswered = tables(client)
+        third = copy_of_the_guide(date(2026, 10, 22)).model_copy(
+            update={
+                "assignment_id": "assignment-lab-log-third",
+                "course": "Science",
+                "title": LAB_LOG,
+            }
+        )
+        store_of(client).put_on_record([third], {})
+        before_stale = tables(client)
+        stale = client.post("/parent/inbox/keep", data={**one, "identity-1": choice_value(late)})
+        after_stale = tables(client)
+
+    assert unanswered.status_code == 200
+    assert sorted(choices(unanswered.text, 1)) == sorted([early, late, DIFFERENT])
+    assert after_unanswered == before
+    assert stale.status_code == 409
+    assert after_stale == before_stale
+
+
+@pytest.mark.parametrize("saved", [0, 1], ids=["new-homework", "one-on-record"])
+def test_missing_lines_that_can_mean_only_one_homework_show_on_one_card(
+    tmp_path: pathlib.Path, saved: int
+) -> None:
+    with client_in(tmp_path, "2026-10-05") as client:
+        school_rows(client, *[date(2026, 10, 1)] * saved)
+        page = read(client, TWO_EMAILS)
+        kept = client.post("/parent/inbox/keep", data=review_form(page))
+        rows = [row for row in store_of(client).all_assignments() if row.title == LAB_LOG]
+        reports = store_of(client).status_reports(rows[0].assignment_id)
+
+    shown = html.unescape(page)
+    assert page.count('<article class="assignment reading-') == 1
+    assert question(page, 0) == ""
+    assert "folded into" not in shown
+    assert "The email writes 09/30 beside it" in shown
+    assert "The email writes 10/02 beside it" in shown
+    assert kept.status_code == 303
+    assert len(rows) == 1
+    assert [said.source_date_text for said in reports] == ["09/30", "10/02"]
+
+
+def test_the_same_missing_email_twice_in_one_paste_asks_once(tmp_path: pathlib.Path) -> None:
+    once = "Date: Wed, Sep 30, 2026 12:00\n" + LAB_MISSING
+    with client_in(tmp_path, "2026-10-05") as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        page = read(client, once + once)
+
+    assert sorted(choices(page, 0)) == sorted([early, late, DIFFERENT])
+    assert question(page, 1) == ""
+
+
 def test_a_date_that_one_of_two_has_lands_there_without_a_question(tmp_path: pathlib.Path) -> None:
     with client_in(tmp_path) as client:
         early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))

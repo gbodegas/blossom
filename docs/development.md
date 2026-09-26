@@ -380,8 +380,10 @@ token the review page makes once, so a retry finds that assignment instead of
 making another. The answer is kept, so the next paste of that work lands
 without a question. An undated report, such as a Missing email, that could
 mean more than one assignment asks for each report, and placing one report
-never places another; the email's leading date is shown but never read as a
-date. A paste that repeats text already saved lands where it was saved and
+never places another. Each Missing line is its own report, so two lines in one
+paste can go to different homework, while lines that can mean only one
+homework share its card. The email's leading date is shown but never read as
+a date. A paste that repeats text already saved lands where it was saved and
 asks nothing. A parent's typed note never replaces the note she gave her own
 homework: the review says her note will stay and that the other changes can
 still be saved, and the family page says so again after the save. A note of

@@ -32,8 +32,10 @@ The shapes, as the portal writes them:
   day: the email's own date when the paste carries its date line, otherwise
   the day it was pasted, and the report says which. The date beside the
   assignment is kept as the text it is, since the email does not say what it
-  means; it is not a due date. A line in that shape with any other grade is
-  not the "Missing" email and is left for review.
+  means; it is not a due date. Lines about work the text gives no date are
+  read apart, since each can be about different homework under the name. A
+  line in that shape with any other grade is not the "Missing" email and is
+  left for review.
 
 One item appears under an assigned day and under a due day, often in two
 weeks, and is one assignment matched by its course and title, exactly as the
@@ -404,6 +406,8 @@ class _Draft:
     assigned_on: date | None = None
     claims: list[SourceRecord] = field(default_factory=list)
     reports: list[StatusReport] = field(default_factory=list)
+    report_lines: list[int] = field(default_factory=list)
+    """The line each report was read from, in the same order."""
     notes: list[tuple[Card, date | None, list[str]]] = field(default_factory=list)
     """The instruction under each card the item was seen on, one block per card, with the
     card it was under, assigned or due, and that card's day."""
@@ -417,10 +421,24 @@ class _Draft:
         if all(_same_claim(record, kept) is False for kept in self.claims):
             self.claims.append(record)
 
-    def report(self, report: StatusReport) -> None:
-        """Keep a report once per text: the same channel, status, and day is one report."""
-        if all(_same_report(report, kept) is False for kept in self.reports):
+    def report(self, report: StatusReport, line: int) -> None:
+        """Keep a report once per text as written: a line repeated word for word is one
+        report, and two lines of one day with different dates beside them are two."""
+        if all(_same_report_as_written(report, kept) is False for kept in self.reports):
             self.reports.append(report)
+            self.report_lines.append(line)
+
+    def readings(self) -> list[Reading]:
+        """What the draft reads as. Work with no date of its own gets a reading for each
+        report, since each line can be about different homework under the name and is
+        placed on its own."""
+        whole = self.reading()
+        if self.due_date is not None or len(self.reports) < 2:
+            return [whole]
+        return [
+            dataclasses.replace(whole, reports=(report,), at_line=line)
+            for report, line in zip(self.reports, self.report_lines, strict=True)
+        ]
 
     def reading(self) -> Reading:
         # Each card's instruction is its own, the same words under two cards once: an
@@ -430,6 +448,11 @@ class _Draft:
             block = "\n".join(lines)
             if block and all(item.text != block for item in instructions):
                 instructions.append(InstructionSeen(block, SourceChannel.LMS, card, day))
+        # A dated card places every report read with it, so one report a day is enough.
+        reports: list[StatusReport] = []
+        for report in self.reports:
+            if all(_same_report(report, kept) is False for kept in reports):
+                reports.append(report)
         return Reading(
             course=self.course,
             title=self.title,
@@ -439,7 +462,7 @@ class _Draft:
             claims=tuple(self.claims),
             origin=self.origin,
             instructions=tuple(instructions),
-            reports=tuple(self.reports),
+            reports=tuple(reports),
             at_line=self.at_line,
             occurrence=self.occurrence,
             field_origins=dict(self.field_origins),
@@ -479,7 +502,9 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     that does not read as one is text that needs review, and it ends the
     card before it, so nothing after it is taken for that card's words. A
     mail program's date line outside a card dates the school's reports read
-    after it, and the other lines of a mail header are read as nothing. Any
+    after it, and the other lines of a mail header are read as nothing. A
+    Missing line about work with no date in the text is a reading of its own,
+    and the same line twice is one. Any
     other plain line outside a card needs review too. A card that names an
     assignment again a week or more from the date it was first read with is
     another round of the same name and is read apart, so the parent can say
@@ -541,7 +566,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                     dated_by=dated_by,
                     observed_at=now,
                     source_date_text=email.group("date"),
-                )
+                ),
+                number,
             )
             continue
         card_course, body = course, line
@@ -599,7 +625,9 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             last.notes[-1][2].append(line)
             continue
         unread.append(Unread(number, line))
-    items = tuple(draft.reading() for rounds in drafts.values() for draft in rounds)
+    items = tuple(
+        reading for rounds in drafts.values() for draft in rounds for reading in draft.readings()
+    )
     return Read(items=items, unread=tuple(unread))
 
 
@@ -753,8 +781,9 @@ class Change:
     the reader's suggestion. Kept apart from ``kind`` so a page returned with a choice
     still pending shows the choice and still knows it was one."""
     folded_into: int | None = None
-    """The key of the card this one was folded into, as the parent said; such a card is
-    not shown, saves nothing of its own, and its answers travel with the page."""
+    """The key of the card this one was folded into: as the parent said, whose answers
+    travel with the page, or a report shown on the card for the same homework. Such a card
+    is not shown and saves nothing of its own."""
     instructions: InstructionsOutcome | None = None
     """What keeping the school's instructions would do to the assignment this card lands
     on, decided once for every card of the text that lands there, and carried by the
@@ -1620,8 +1649,37 @@ def changes_for(
             row = _updated_row(change)
             if row is not None:
                 pending[existing.assignment_id] = row
+    changes = _reports_together(changes, identities)
     changes = _with_instructions(changes, store, submitted_answers(instruction_answers or {}))
     return _with_waiting_notes(changes, store)
+
+
+def _reports_together(changes: list[Change], answered: Collection[int]) -> list[Change]:
+    """The school's reports read apart, shown on one card where they can mean only one
+    homework: an undated card from the email, with no answer given, that lands where an
+    earlier such card lands, a new row included, adds its reports there and is folded in.
+    A card that asks, or that an answer placed, keeps its own."""
+    first: dict[str, int] = {}
+    for index, change in enumerate(changes):
+        if (
+            change.reading.due_date is not None
+            or change.reading.origin is not SourceChannel.EMAIL
+            or change.key in answered
+            or change.state not in (NEW, CLAIMED, KNOWN)
+        ):
+            continue
+        place = first.setdefault(change.assignment_id, index)
+        if place == index:
+            continue
+        anchor = changes[place]
+        reports = anchor.reading.reports + change.reading.reports
+        changes[place] = dataclasses.replace(
+            anchor,
+            reading=dataclasses.replace(anchor.reading, reports=reports),
+            new_reports=anchor.new_reports + change.new_reports,
+        )
+        changes[index] = dataclasses.replace(change, folded_into=anchor.key)
+    return changes
 
 
 def _with_waiting_notes(changes: list[Change], store: ProjectStateStore) -> list[Change]:

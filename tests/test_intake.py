@@ -976,6 +976,62 @@ def test_a_card_repeated_in_one_text_is_one_claim_and_a_report_repeated_is_one_r
     assert len(reports) == 1
 
 
+def test_missing_lines_about_undated_work_are_read_apart_one_reading_for_each() -> None:
+    """Each Missing line can be about different homework under the name, so each is read
+    apart, with its own line; a line repeated word for word is one report."""
+    first = "09/14 Health - A: Homework: Course Guide Due Grade: Missing\n"
+    second = first.replace("09/14", "09/21")
+    two_emails = (
+        "Date: Mon, Sep 14, 2026 12:00\nAssignments:\n"
+        + first
+        + "Date: Mon, Sep 21, 2026 12:00\nAssignments:\n"
+        + second
+    )
+    one_day = "Assignments:\n" + first + "Assignments:\n" + second
+    repeated = "Assignments:\n" + first + "Assignments:\n" + first
+    with_a_card = "Tuesday 9/8/2026\nHealth\nDue: Course Guide Due:\n" + one_day
+
+    def seen(text: str) -> list[tuple[int | None, list[tuple[str | None, date]]]]:
+        return [
+            (item.at_line, [(said.source_date_text, said.reported_on) for said in item.reports])
+            for item in readings(text)
+        ]
+
+    assert seen(two_emails) == [
+        (3, [("09/14", date(2026, 9, 14))]),
+        (6, [("09/21", date(2026, 9, 21))]),
+    ]
+    assert seen(one_day) == [(2, [("09/14", TODAY)]), (4, [("09/21", TODAY)])]
+    assert seen(repeated) == [(2, [("09/14", TODAY)])]
+    assert seen(with_a_card) == [(3, [("09/14", TODAY)])]
+
+
+@pytest.mark.parametrize("entries", ["typed", "dated"])
+def test_a_card_that_brings_more_than_the_schools_reports_keeps_its_own(
+    tmp_path: pathlib.Path, entries: str
+) -> None:
+    """Only the school's undated reports of one homework share a card: a typed entry, or a
+    reading the portal dates, is never folded into another."""
+    items: tuple[Reading, ...]
+    if entries == "typed":
+        items = (
+            by_hand("Science", "Lab Log", None, None, None, "Bring the log.", now=NOW),
+            by_hand("Science", "Lab Log", None, None, None, "Bring the goggles.", now=NOW),
+        )
+    else:
+        email = "Assignments:\n09/08 Math - A: Homework: Practice Grade: Missing\n"
+        items = readings(email + "Tuesday 9/8/2026\nMath\nDue: Practice:\n") + readings(
+            email.replace("09/08", "09/09") + "Wednesday 9/9/2026\nMath\nDue: Practice:\n"
+        )
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        changes = changes_for(items, store)
+    finally:
+        store.close()
+
+    assert [change.state for change in changes] == [NEW, NEW]
+
+
 def test_a_type_typed_with_an_entry_corrects_a_saved_row_and_the_correction_is_kept(
     tmp_path: pathlib.Path,
 ) -> None:
