@@ -2181,6 +2181,104 @@ def test_a_failed_link_write_keeps_the_paste_and_writes_nothing(
     assert note.outstanding
 
 
+STRIPED = "Bring the striped folder from the art room."
+
+
+@pytest.mark.parametrize("failure", ["a-broken-history", "a-failed-link-write", "the-file-refuses"])
+def test_a_failed_save_shows_the_homework_chosen_and_the_notes_ticked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from blossom.captures import CaptureNotSaved
+
+    with client_in(tmp_path) as client:
+        store = store_of(client)
+        first = copy_of_the_guide(date(2026, 9, 9))
+        second = first.model_copy(update={"assignment_id": "assignment-second-guide"})
+        store.put_on_record([first, second], {})
+        school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        name = guide_note(client, STRIPED)
+        guide_note(client, "Ask for the rubric too.")
+        waiting_note(store, course="Science", title=LAB_LOG, text="Graph paper, not lined.")
+        page = read(client, GUIDE_DUE_CARD + chr(10) + lab_card("10/15/2026"))
+        form = {
+            **review_form(page),
+            "identity-0": choice_value("assignment-second-guide"),
+            "identity-1": DIFFERENT,
+            **dict.fromkeys([*links_on(page, 0), *links_on(page, 1)], "1"),
+        }
+        if failure == "a-broken-history":
+            store._connection.execute(
+                "DELETE FROM capture_events WHERE capture_id = ? AND revision = 1", (name,)
+            )
+            store._connection.commit()
+        elif failure == "a-failed-link-write":
+
+            def refuse(*_: object, **__: object) -> None:
+                raise CaptureNotSaved(name, sqlite3.OperationalError("the disk refused"))
+
+            monkeypatch.setattr(store, "link_capture_from_paste", refuse)
+        else:
+
+            def full(*_: object, **__: object) -> None:
+                msg = "the disk is full"
+                raise sqlite3.OperationalError(msg)
+
+            monkeypatch.setattr(store, "put_on_record", full)
+        before = tables(client)
+        failed = client.post("/parent/inbox/keep", data=form)
+        after = tables(client)
+
+    shown = html.unescape(failed.text)
+    kept = re.sub(r"<[^>]+>", "", shown.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0])
+    card_0, card_1 = re.findall(r"Card \d+:[^\n]*", kept)
+    assert failed.status_code == 500
+    assert after == before
+    assert "Health - Due: Course Guide Due:" in shown
+    assert card_0.startswith("Card 0: the homework with id assignment-second-guide")
+    assert "Her notes ticked to link:" in card_0
+    assert STRIPED in card_0
+    assert "Ask for the rubric too." in card_0
+    assert card_1.startswith("Card 1: different homework with the same title")
+    assert "Her note ticked to link: Graph paper, not lined.." in card_1
+
+
+def test_a_failed_save_says_back_only_the_choices_the_page_signed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blossom.stores.intake_decisions import UnreadableDecision
+
+    with client_in(tmp_path) as client:
+        store = store_of(client)
+        first = copy_of_the_guide(date(2026, 9, 9))
+        second = first.model_copy(update={"assignment_id": "assignment-second-guide"})
+        store.put_on_record([first, second], {})
+        guide_note(client, STRIPED)
+        page = read(client, GUIDE_DUE_CARD)
+        form = {
+            **review_form(page),
+            "identity-0": choice_value("assignment-second-guide"),
+            links_on(page, 0)[0]: "1",
+            "kind-0": "TASK",
+        }
+        made, _, check = form["made_with"].rpartition(".")
+        form["made_with"] = f"{made}.{'0' * len(check)}"
+
+        def unreadable(*_: object, **__: object) -> None:
+            msg = "a kept answer is torn"
+            raise UnreadableDecision(msg)
+
+        monkeypatch.setattr(store, "intake_decisions", unreadable)
+        failed = client.post("/parent/inbox/keep", data=form)
+
+    shown = html.unescape(failed.text)
+    kept = re.sub(r"<[^>]+>", "", shown.split('id="kept-answers"', 1)[1].split("</ul>", 1)[0])
+    assert failed.status_code == 500
+    assert "Health - Due: Course Guide Due:" in shown
+    assert "Card 0: no answer about the assignment; type Task." in kept
+    assert "assignment-second-guide" not in shown
+    assert STRIPED not in shown
+
+
 def test_a_link_the_page_did_not_offer_is_refused(tmp_path: pathlib.Path) -> None:
     with client_in(tmp_path) as client:
         guide_note(client)
