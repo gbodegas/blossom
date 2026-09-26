@@ -91,9 +91,9 @@ DETAILS: Final = ATTRIBUTED
 """The details a note may be given so that it can become homework. Her words are not one."""
 
 PromotionChoice = Literal["new", "same", "separate", "found", "paste"]
-"""What a person chose when adding a note to homework: there was no homework of that class
-and title, it is the same homework as one shown, it is to be kept apart from those shown, or
-it is homework found by search, named by the one row chosen."""
+"""What a person chose when adding a note to homework: no homework of that class and title,
+the same homework as one shown, kept apart from those shown, homework found by search and
+named by the one row chosen, or, from a school paste's review, the homework its row lands on."""
 
 
 class NotACaptureId(ValueError):

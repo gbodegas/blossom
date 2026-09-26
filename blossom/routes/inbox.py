@@ -121,8 +121,8 @@ IDENTIFY_FIRST: Final = (
     "be chosen. Nothing was saved; the choice made on it is shown there as not saved."
 )
 HOMEWORK_CHANGED: Final = (
-    "The saved homework changed since this review was shown, so nothing was saved. Look at "
-    "it again before saving."
+    "The saved homework or a note of hers changed since this review was shown, so nothing was "
+    "saved. Look at it again before saving."
 )
 IDENTITY_FORM_UNREADABLE: Final = (
     "The answers about which homework a card is could not be read, so nothing was saved. "

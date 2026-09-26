@@ -380,7 +380,9 @@ token the review page makes once, so a retry finds that assignment instead of
 making another. The answer is kept, so the next paste of that work lands
 without a question. An undated report, such as a Missing email, that could
 mean more than one assignment asks for each report, and placing one report
-never places another. Each Missing line is its own report, read apart from any
+never places another. An entry with no dates that could mean more than one asks
+which homework it is. The same entry typed again lands where it went without a
+question, and a changed one asks again. Each Missing line is its own report, read apart from any
 portal card with the same title, so two lines in one paste can go to different
 homework, while lines that can mean only one homework share its card. The email's leading date is shown but never read as
 a date. A paste that repeats text already saved lands where it was saved and

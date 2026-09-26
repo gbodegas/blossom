@@ -1208,9 +1208,11 @@ rows beside it. Homework made from a note is known by its id, since a parent's
 press marks the record a family entry and her ordinary reports on school
 homework mark nothing. The answer is kept in `intake_decisions` with the
 homework the card listed and a fingerprint of what it showed. The save compares
-that fingerprint inside its own transaction, so homework added or answered
-through another connection between the review and the save leaves the text
-unsaved, with the question put again. Under one class and title there can be
+that fingerprint inside its own transaction, so homework added through another
+connection between the review and the save, or the same question answered
+there, leaves the text unsaved and asks again. An answer to another question of
+the same name, such as another Missing line's, doesn't. Under one class and
+title there can be
 more than one assignment made from a note, and the question lists every one of
 them. A paste that repeats text already saved lands where it was saved and asks
 nothing.

@@ -122,6 +122,17 @@ STUDENT_REPORTS_NAMED: Final = """
     WHERE assignment_id IN (SELECT value FROM json_each(?))
     ORDER BY rowid
 """
+EVERY_STATUS_REPORT: Final = """
+    SELECT assignment_id, status, channel, reported_on, dated_by, observed_at, source_date_text
+    FROM status_reports
+    ORDER BY reported_on, rowid
+"""
+STATUS_REPORTS_NAMED: Final = """
+    SELECT assignment_id, status, channel, reported_on, dated_by, observed_at, source_date_text
+    FROM status_reports
+    WHERE assignment_id IN (SELECT value FROM json_each(?))
+    ORDER BY reported_on, rowid
+"""
 EVERY_DATE_CLAIM: Final = """
     SELECT assignment_id, channel, asserted_value, observed_at, confidence, seen_in,
         capture_id, capture_revision, active, withdrawn_at
@@ -1082,19 +1093,19 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
             ).fetchall()
         return [report_from(row) for row in rows]
 
-    def status_reports_by_assignment(self) -> dict[str, list[StatusReport]]:
-        """Every report the school has made, by assignment, by the day reported and then the
-        order kept, in one read. The last report of a channel in that order is what the
-        channel says now; the rest is the school's history, kept apart from hers."""
+    def status_reports_by_assignment(
+        self, assignment_ids: Iterable[str] | None = None
+    ) -> dict[str, list[StatusReport]]:
+        """Every report the school has made on the assignments named, or on all when none are, by
+        the day reported and then the order kept, in one read. The last report of a channel in
+        that order is what it says now; the rest is the school's history, kept apart from hers."""
         with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT assignment_id, status, channel, reported_on, dated_by, observed_at,
-                       source_date_text
-                FROM status_reports
-                ORDER BY reported_on, rowid
-                """
-            ).fetchall()
+            if assignment_ids is None:
+                rows = self._connection.execute(EVERY_STATUS_REPORT).fetchall()
+            else:
+                rows = self._connection.execute(
+                    STATUS_REPORTS_NAMED, (json.dumps(sorted(assignment_ids)),)
+                ).fetchall()
         reports: dict[str, list[StatusReport]] = {}
         for row in rows:
             reports.setdefault(str(row[0]), []).append(report_from(row[1:]))

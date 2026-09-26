@@ -1161,6 +1161,7 @@ def _where(
     decided: tuple[IntakeDecision, ...],
     holds: Callable[[Assignment, Reading], bool],
     apart: Mapping[str, tuple[str, ...]],
+    unchanged: Callable[[Assignment, Reading], bool],
 ) -> _Where:
     """Which homework a reading is about, by the rules the review page states. Text saved
     before is never asked about again: a reading whose every claim and report one candidate
@@ -1168,9 +1169,12 @@ def _where(
     dated reading: the latest answer kept for the same name and due date, while it showed
     every candidate now due that day; her homework asks until a parent has said, here or
     when her note was kept apart from one of them; one candidate due that day; several ask;
-    one candidate due another day or none follow today's rules. An undated report lands on
-    the only candidate once any of hers is settled, and asks for each report when several
-    could be meant. A placement of one report is never an answer about another."""
+    one candidate due another day or none follow today's rules. Undated text lands on the
+    only candidate once any of hers is settled. When several could be meant, it lands where
+    the latest answer to its own question put it, while that answer showed every candidate
+    and the text would change nothing there (``unchanged``); otherwise each report asks
+    where it goes and anything else asks which homework it is. A placement of one report
+    is never an answer about another."""
     by_id = {item.assignment_id: item for item in candidates}
     saved_before = [item for item in candidates if holds(item, reading)]
     settled = {item.lands_on for item in decided if item.kind in ("same", "which")} | {
@@ -1216,7 +1220,15 @@ def _where(
         if open_hers:
             return _Where(asks="hers", candidates=tuple(candidates))
         return _Where(lands=candidates[0])
-    return _Where(asks="report", candidates=tuple(candidates))
+    latest = next((item for item in reversed(decided) if _answers(item, reading)), None)
+    if (
+        latest is not None
+        and latest.lands_on in by_id
+        and by_id.keys() <= {*latest.shown, latest.lands_on}
+        and unchanged(by_id[latest.lands_on], reading)
+    ):
+        return _Where(lands=by_id[latest.lands_on])
+    return _Where(asks="report" if reading.reports else "which", candidates=tuple(candidates))
 
 
 def _report_of(reading: Reading) -> dict[str, str | None] | None:
@@ -1240,8 +1252,8 @@ def _stands(
 ) -> IntakeDecision | None:
     """The answer kept already that says what ``reply`` asks for: a retry finds it, so an
     answer sent twice writes nothing more. Different homework is found by its creation
-    token; the same or which, by the name, the due date, and where it landed; a report's
-    placement, only for that same report."""
+    token; the same or which, by the name, the due date when the text has one, and where
+    it landed; a report's placement, only for that same report."""
     for item in decided:
         if reply.choice is None:
             if reply.creation is not None and item.creation == reply.creation:
@@ -1252,11 +1264,20 @@ def _stands(
         if reading.due_date is not None:
             if item.kind in ("same", "which") and item.due_date == reading.due_date:
                 return item
-        elif item.kind == "same" or (
+        elif item.kind in ("same", "which") or (
             item.kind == "report_placed" and item.report == _report_of(reading)
         ):
             return item
     return None
+
+
+def _answers(item: IntakeDecision, reading: Reading) -> bool:
+    """Whether a kept answer is one to the question a reading asks: for an undated report,
+    that report's placement; for any other text, an answer about the same due date or the
+    same lack of one."""
+    if reading.due_date is None and reading.reports:
+        return item.kind == "report_placed" and item.report == _report_of(reading)
+    return item.kind != "report_placed" and item.due_date == reading.due_date
 
 
 def identity_basis(
@@ -1265,11 +1286,11 @@ def identity_basis(
     mine: Collection[str],
 ) -> str:
     """The fingerprint of an identity question: each candidate as the question shows it, by
-    its id, title, due date, where it came from, and her note where it's quoted, and every
-    answer kept for the name. A choice sent back is checked against it in the save's
-    transaction. The question is asked again when homework has since arrived, left,
-    changed in what the question shows, or been answered elsewhere, and not for a change
-    it doesn't show."""
+    its id, title, due date, where it came from, and her note where it's quoted, and the
+    answers kept to that same question (``decided``). A choice sent back is checked against
+    it in the save's transaction. The question is asked again when homework has since
+    arrived, left, changed in what the question shows, or been answered elsewhere, and not
+    for a change it doesn't show or an answer to another question of the name."""
     shown = sorted(
         [
             item.assignment_id,
@@ -1428,7 +1449,7 @@ class _OnRecord:
     ) -> tuple[dict[str, list[SourceRecord]], dict[str, list[StatusReport]], InstructionReadings]:
         return (
             self._store.deadline_records_by_assignment(self._names),
-            self._store.status_reports_by_assignment(),
+            self._store.status_reports_by_assignment(self._names),
             self._store.school_instruction_readings(self._names),
         )
 
@@ -1554,13 +1575,15 @@ def changes_for(
             known,
             functools.partial(holds, kind=kind),
             apart,
+            functools.partial(writes_nothing, kind=kind),
         )
         reply = identities.get(key)
         decision: DecisionToKeep | None = None
         stale = False
         if reply is not None or where.asks is not None:
             shown = tuple(item.assignment_id for item in where.candidates)
-            basis = "" if where.asks is None else identity_basis(where.candidates, known, mine)
+            here = tuple(item for item in known if _answers(item, reading))
+            basis = "" if where.asks is None else identity_basis(where.candidates, here, mine)
             standing = None if reply is None else _stands(reply, reading, known)
             # An answer kept already is a retry only when everything the card brings is
             # saved where it landed; anything new is judged by the question as it stands.

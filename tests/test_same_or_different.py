@@ -562,6 +562,77 @@ def test_an_entry_with_no_dates_about_her_homework_asks_same_or_different(
     assert choices(shown.text, 0) == [mine, DIFFERENT]
 
 
+def undated_lab_entry(**fields: str) -> dict[str, str]:
+    """A parent's entry with no dates that two Lab Log assignments could mean."""
+    return {
+        **entry(course="Science", title=LAB_LOG, due_date="", note="Bring the lab book."),
+        **fields,
+    }
+
+
+def test_an_entry_with_no_dates_asks_which_homework_and_the_same_entry_again_saves_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        early, _ = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        shown = client.post("/parent/inbox/enter", data=undated_lab_entry())
+        form = {**review_form(shown.text), "identity-0": choice_value(early)}
+        saved = client.post("/parent/inbox/keep", data=form)
+        after_saved = tables(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        after_again = tables(client)
+        fresh = client.post("/parent/inbox/enter", data=undated_lab_entry())
+        resaved = client.post("/parent/inbox/keep", data=review_form(fresh.text))
+        after_resaved = tables(client)
+        recorded = decisions(client)
+        (note,) = [
+            row.note for row in store_of(client).all_assignments() if row.assignment_id == early
+        ]
+
+    said = html.unescape(shown.text)
+    assert "Say which homework this is before anything of it is saved." in said
+    assert "this report" not in said
+    assert saved.status_code == 303
+    assert again.status_code == 303
+    assert after_again == after_saved
+    assert question(fresh.text, 0) == ""
+    assert resaved.status_code == 303
+    assert after_resaved == after_saved
+    assert [(kind, lands_on) for kind, _, _, _, lands_on, _ in recorded] == [("which", early)]
+    assert note == "Bring the lab book."
+
+
+@pytest.mark.parametrize("later", ["another-note", "a-third-arrives", "a-missing-line"])
+def test_an_answer_about_an_entry_with_no_dates_places_only_that_entry_unchanged(
+    tmp_path: pathlib.Path, later: str
+) -> None:
+    with client_in(tmp_path, "2026-10-05") as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        shown = client.post("/parent/inbox/enter", data=undated_lab_entry())
+        client.post(
+            "/parent/inbox/keep",
+            data={**review_form(shown.text), "identity-0": choice_value(early)},
+        )
+        if later == "another-note":
+            page = client.post(
+                "/parent/inbox/enter", data=undated_lab_entry(note="Bring graph paper too.")
+            ).text
+        elif later == "a-third-arrives":
+            third = copy_of_the_guide(date(2026, 10, 22)).model_copy(
+                update={
+                    "assignment_id": "assignment-lab-log-third",
+                    "course": "Science",
+                    "title": LAB_LOG,
+                }
+            )
+            store_of(client).put_on_record([third], {})
+            page = client.post("/parent/inbox/enter", data=undated_lab_entry()).text
+        else:
+            page = read(client, LAB_MISSING)
+
+    assert {early, late, DIFFERENT} <= set(choices(page, 0))
+
+
 def test_a_type_changed_on_saved_text_asks_which_once_another_shares_the_date(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -715,6 +786,30 @@ def test_a_second_missing_report_with_another_date_asks_which_again(
 
     assert question(repeated, 0) == ""
     assert sorted(choices(another, 0)) == sorted([early, late, DIFFERENT])
+
+
+def test_a_missing_line_saved_while_one_homework_had_its_name_is_not_asked_about_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        (early,) = school_rows(client, date(2026, 10, 1))
+        first = read(client, LAB_MISSING)
+        saved = client.post("/parent/inbox/keep", data=review_form(first))
+        later = copy_of_the_guide(date(2026, 10, 8)).model_copy(
+            update={
+                "assignment_id": "assignment-lab-log-later",
+                "course": "Science",
+                "title": LAB_LOG,
+            }
+        )
+        store_of(client).put_on_record([later], {})
+        repeated = read(client, LAB_MISSING)
+        another = read(client, LAB_MISSING.replace("09/30", "10/02"))
+
+    assert question(first, 0) == ""
+    assert saved.status_code == 303
+    assert question(repeated, 0) == ""
+    assert sorted(choices(another, 0)) == sorted([early, later.assignment_id, DIFFERENT])
 
 
 SECOND_MISSING = LAB_MISSING.replace("09/30", "10/02")
@@ -1401,6 +1496,34 @@ def test_resolved_cards_read_the_same_few_statements_for_any_number_of_cards(
     assert counts[1] == counts[20] == counts[100]
 
 
+def test_a_report_on_other_homework_that_cannot_be_read_leaves_the_paste_alone(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path, "2026-10-05") as client:
+        early, _ = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        store = store_of(client)
+        store._connection.execute(
+            "INSERT INTO status_reports (assignment_id, status, channel, reported_on, dated_by, "
+            "observed_at, source_date_text) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "assignment-other",
+                "missing",
+                "not-a-channel",
+                "2026-09-01",
+                "email",
+                "2026-09-01T12:00:00+00:00",
+                None,
+            ),
+        )
+        store._connection.commit()
+        page = read(client, LAB_MISSING)
+        saved = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "identity-0": choice_value(early)}
+        )
+
+    assert saved.status_code == 303
+
+
 # ------------------------------------------------------------------ retries and stale forms
 
 
@@ -1495,6 +1618,56 @@ def test_a_second_tab_on_an_entry_that_adds_no_facts_is_refused_after_the_first_
     asked = html.unescape(question(one.text, 0))
     assert "Which homework is this?" in asked
     assert "This entry is saved as its own assignment." in asked
+    assert saved.status_code == 303
+    assert refused.status_code == 409
+    assert after == before
+
+
+@pytest.mark.parametrize("texts", ["two-missing-lines", "two-due-dates", "a-line-and-an-entry"])
+def test_two_tabs_answering_other_questions_of_one_name_both_save(
+    tmp_path: pathlib.Path, texts: str
+) -> None:
+    with client_in(tmp_path, "2026-10-05") as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        if texts == "two-missing-lines":
+            one, two = read(client, LAB_MISSING), read(client, SECOND_MISSING)
+        elif texts == "two-due-dates":
+            one, two = read(client, lab_card("10/15/2026")), read(client, lab_card("10/22/2026"))
+        else:
+            one = read(client, LAB_MISSING)
+            lab_entry = entry(course="Science", title=LAB_LOG, due_date="")
+            two = client.post("/parent/inbox/enter", data=lab_entry).text
+        first = client.post(
+            "/parent/inbox/keep", data={**review_form(one), "identity-0": choice_value(early)}
+        )
+        second = client.post(
+            "/parent/inbox/keep", data={**review_form(two), "identity-0": choice_value(late)}
+        )
+        recorded = decisions(client)
+
+    assert sorted(choices(two, 0)) == sorted([early, late, DIFFERENT])
+    assert first.status_code == 303
+    assert second.status_code == 303
+    assert [lands_on for _, _, _, _, lands_on, _ in recorded] == [early, late]
+
+
+def test_one_missing_line_placed_from_two_tabs_is_refused_the_second_time(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The second tab changes the type too, so the first tab's save isn't this text saved."""
+    with client_in(tmp_path, "2026-10-05") as client:
+        early, late = school_rows(client, date(2026, 10, 1), date(2026, 10, 8))
+        one, two = read(client, LAB_MISSING), read(client, LAB_MISSING)
+        saved = client.post(
+            "/parent/inbox/keep", data={**review_form(one), "identity-0": choice_value(early)}
+        )
+        before = tables(client)
+        refused = client.post(
+            "/parent/inbox/keep",
+            data={**review_form(two), "identity-0": choice_value(late), "kind-0": "TASK"},
+        )
+        after = tables(client)
+
     assert saved.status_code == 303
     assert refused.status_code == 409
     assert after == before
@@ -2371,7 +2544,10 @@ def test_a_note_changed_after_the_review_refuses_the_whole_save(
         after = tables(client)
         note = store.capture(name)
 
+    summary = re.search(r'id="problem-summary"[^>]*>(.*?)</p>', refused.text, re.S)
     assert refused.status_code == 409
+    assert summary is not None
+    assert "a note of hers changed" in html.unescape(summary.group(1))
     assert after == before
     assert note is not None
     assert note.assignment_id is None
