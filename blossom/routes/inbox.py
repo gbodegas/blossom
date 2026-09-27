@@ -341,6 +341,9 @@ class PageMade:
     pages its Previous and Next go to, the only ones a press may ask for."""
     picks: dict[int, Pick] = field(default_factory=dict)
     """Homework chosen under another name on each card, as the page showed it."""
+    unsaved_picks: dict[int, tuple[str, str]] = field(default_factory=dict)
+    """Homework chosen on each card that wasn't taken, with why, as the page said it, so later
+    pages say it again until the card takes a choice or an answer."""
 
 
 def made_with_field(
@@ -356,6 +359,7 @@ def made_with_field(
     found_rows: Mapping[int, Sequence[tuple[str, str]]] | None = None,
     query: tuple[int, str, int, tuple[int, ...]] | None = None,
     picks: Mapping[int, Pick] | None = None,
+    unsaved_picks: Mapping[int, tuple[str, str]] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
     ties it to the page's draft."""
@@ -378,6 +382,9 @@ def made_with_field(
         "query": None if query is None else [*query[:3], list(query[3])],
         "picks": sorted(
             [card, pick.target, pick.basis, pick.situation] for card, pick in (picks or {}).items()
+        ),
+        "unsaved_picks": sorted(
+            [card, target, why] for card, (target, why) in (unsaved_picks or {}).items()
         ),
     }
     made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
@@ -434,9 +441,36 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         int(card): Pick(str(target), str(basis), str(situation))
         for card, target, basis, situation in context.get("picks", [])
     }
+    unsaved_picks = {
+        int(card): (str(target), str(why)) for card, target, why in context.get("unsaved_picks", [])
+    }
     return PageMade(
-        occurrences, asked, identities, notes, links, words, offers, found_rows, query, picks
+        occurrences,
+        asked,
+        identities,
+        notes,
+        links,
+        words,
+        offers,
+        found_rows,
+        query,
+        picks,
+        unsaved_picks,
     )
+
+
+def still_unsaved(
+    made: PageMade | None,
+    picks: Mapping[int, Pick],
+    identities: Mapping[int, IdentityAnswer] | None,
+) -> dict[int, tuple[str, str]]:
+    """The choices the page said weren't taken that still stand: each stays until its card
+    takes a choice or an answer about which homework it is."""
+    return {
+        key: unsaved
+        for key, unsaved in (made or PageMade()).unsaved_picks.items()
+        if key not in picks and key not in (identities or {})
+    }
 
 
 def identity_answers(
@@ -696,6 +730,8 @@ class AnswerKept:
     notes: tuple[str, ...] = ()
     renamed: bool = False
     """Whether ``homework`` was found and chosen under another name."""
+    unsaved_homework: str | None = None
+    """The id of homework chosen on the card under another name that wasn't taken."""
 
 
 def answers_kept(
@@ -728,8 +764,18 @@ def answers_kept(
         safe[name] = value
     occurrences, kinds = answers_from(safe, {})
     words = (page or PageMade()).words
+    not_taken = still_unsaved(page, picks or {}, identities)
     return answers_shown(
-        occurrences, kinds, instructions, unsaved, carried, identities, linked, words, picks
+        occurrences,
+        kinds,
+        instructions,
+        unsaved,
+        carried,
+        identities,
+        linked,
+        words,
+        picks,
+        {key: target for key, (target, _) in not_taken.items()},
     )
 
 
@@ -743,14 +789,16 @@ def answers_shown(
     linked: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
     words: Mapping[str, str] | None = None,
     picks: Mapping[int, Pick] | None = None,
+    unsaved_picks: Mapping[int, str] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review page was made with, in the same shape: an answer about the
     school's instructions by the words ticked, read off the wire before anything was
     written, so a page that reads no store can still say them; what a card whose answer
     could not be read chose, the same way; an instruction ticked by reference to a row,
     counted; a choice a card carries from a page that showed it as not saved, every answer
-    of it together; which homework the card was said to be about; and her notes ticked to
-    link, in the words the page signed."""
+    of it together; which homework the card was said to be about; her notes ticked to
+    link, in the words the page signed; and homework chosen under another name that wasn't
+    taken, by id."""
     made = {key: UnsavedChoice.of(answer) for key, answer in (instructions or {}).items()}
     made.update(unsaved or {})
     chosen = {
@@ -774,7 +822,18 @@ def answers_shown(
     identities = identities or {}
     linked = linked or {}
     picks = picks or {}
-    keys = sorted({*(occurrences or {}), *(kinds or {}), *chosen, *identities, *linked, *picks})
+    unsaved_picks = unsaved_picks or {}
+    keys = sorted(
+        {
+            *(occurrences or {}),
+            *(kinds or {}),
+            *chosen,
+            *identities,
+            *linked,
+            *picks,
+            *unsaved_picks,
+        }
+    )
     return [
         AnswerKept(
             str(key),
@@ -791,6 +850,7 @@ def answers_shown(
             key in identities and identities[key].choice is None and key not in picks,
             tuple((words or {}).get(name, "") for name, _, _ in linked.get(key, ())),
             key in picks,
+            unsaved_picks.get(key),
         )
         for key in keys
     ]
@@ -1022,9 +1082,14 @@ def preview_page(
     for, shown under its card with the words ``typed`` on each card kept;
     ``picks`` is the homework chosen on cards, shown under both names, and one
     made against a card or a homework that has changed since is said as not saved, with a
-    way to choose it again where the card still offers it. ``focus`` names what
-    takes the focus when no refusal is said first."""
+    way to choose it again where the card still offers it. The page signs each choice it
+    says wasn't taken, and pages after it say it again until its card takes a choice or an
+    answer. ``focus`` names what takes the focus when no refusal is said first."""
     picks = picks or {}
+    held = still_unsaved(made, picks, identities)
+    if search is not None and search.attempted is not None:
+        held[search.key] = (search.attempted, "changed")
+    not_taken = {key: target for key, (target, _) in held.items()}
     try:
         changes = changes_for(
             read.items,
@@ -1050,6 +1115,7 @@ def preview_page(
                 linked,
                 (made or PageMade()).words,
                 picks,
+                not_taken,
             ),
         )
     except UnreadableDecision:
@@ -1067,6 +1133,7 @@ def preview_page(
                 linked,
                 (made or PageMade()).words,
                 picks,
+                not_taken,
             ),
             DECISION_UNREADABLE,
         )
@@ -1085,6 +1152,7 @@ def preview_page(
                 linked,
                 (made or PageMade()).words,
                 picks,
+                not_taken,
             ),
             INSTRUCTION_UNREADABLE,
         )
@@ -1146,14 +1214,16 @@ def preview_page(
         choosable[search.key] = list(view.rows)
         if focus is None and refused is None:
             focus = f"search-results-{search.key}" if view.rows else f"search-hint-{search.key}"
-    # A choice not taken, one the save refused or one a Choose found changed, is said as not
-    # saved with the homework as it stands now. It's offered again only where the card
+    # A choice not taken, one the save refused, one a Choose found changed, or one an earlier
+    # page said that still stands, is said as not saved with the homework as it stands now,
+    # a new one on a card in place of the earlier. It's offered again only where the card
     # offers the search now, the homework has another name than the card's, and the card's
     # own results don't offer it already. Results shown on another card don't count.
     unsaved_picks: dict[int, UnsavedPick] = {}
     wanted = {change.key: (change.pick_refused, "stale") for change in shown if change.pick_refused}
-    if search is not None and search.attempted is not None and search.key in cards:
-        wanted.setdefault(search.key, (search.attempted, "changed"))
+    for key, not_taken_here in held.items():
+        if key in cards:
+            wanted.setdefault(key, not_taken_here)
     for key, (name, why) in wanted.items():
         row = state.project_state.one_assignment(name)
         item = None
@@ -1273,6 +1343,7 @@ def preview_page(
                     ),
                 ),
                 picked,
+                wanted,
             ),
             "creations": {card: question.creation for card, question in signed.items()},
             "answered": {
