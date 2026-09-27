@@ -46,7 +46,11 @@ visible, so she can see what still needs checking.
 "Missing" email, or add an assignment by hand. Blossom shows what it found
 before anything is saved. Pasting the same work again doesn't create
 duplicates, and dates that disagree keep their sources. I built this around
-our school's formats; anything it can't read is left for us to check.
+our school's formats; anything it can't read is left for us to check. When
+the school names work differently from how we saved it, the review can
+search the homework already here and point the school's row at it, and
+Blossom remembers that for the next paste. It never combines two assignments
+on its own.
 
 **The school's instructions.** The teacher's words under each card are kept as
 the school's, apart from any note she or a parent writes. When a paste brings
@@ -105,8 +109,9 @@ with that class and title is already here, Blossom lists it with its date and
 what she and the school currently say about it, and asks whether this is the
 same homework or a separate assignment. It doesn't merge on its own. From
 then on the assignment goes to the planner like any other; her original words
-still don't. A school paste that names such homework waits, whole, until
-Blossom can ask whether it's the same work. That question isn't built yet.
+still don't. When a school paste names such homework, the review asks
+whether the school's row is the same homework or different homework with the
+same title, and saves nothing until a parent answers.
 
 **Link to homework already here.** Sometimes the homework is already on the
 list under another name: the school's title, or a classmate's. From a note,

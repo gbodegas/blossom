@@ -914,7 +914,11 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
 
     @classmethod
     def initialize(
-        cls, path: Path, clock: Clock, seed: Callable[[], Seed] | None = None
+        cls,
+        path: Path,
+        clock: Clock,
+        seed: Callable[[], Seed] | None = None,
+        notes: Callable[["ProjectStateStore"], None] | None = None,
     ) -> "ProjectStateStore":
         """Open the household's file for the application, seeding a blank one.
 
@@ -926,7 +930,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         afresh. A file with anything in it is the household's record, whatever
         it holds, and is left alone, its tables added when missing. A seed that
         cannot be read stops the start, and the file this start made goes
-        with it.
+        with it. ``notes`` plants her homework notes after the seed, in the
+        same transaction, through the store's own paths.
         """
         connection, safe, blank = cls._connect(path)
         store = cls(connection, clock, tables=not blank)
@@ -948,6 +953,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                         store._record_claims_locked(assignment_id, records)
                     for report in given.student_reports:
                         store._append_student_report_locked(report)
+                if notes is not None:
+                    notes(store)
         except BaseException:
             store.discard_if_new()
             raise

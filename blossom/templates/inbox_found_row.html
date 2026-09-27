@@ -1,0 +1,18 @@
+{#
+  One homework the review's search found, or a choice not saved, as the candidate rows show
+  homework: its title, class, and due date, then what she and the school say of it and where
+  it came from. The press chooses it for card ``key``, only where ``can_choose``; its name
+  ends with the id.
+#}
+{% set chosen_here = picked_on.get(key) == item.row.assignment_id %}
+<li>
+  <p><span class="authored-text">{{ item.row.title }}</span>, {{ item.row.course }}, {% if item.row.due_date %}due {{ spoken_day(item.row.due_date) }}{% else %}no due date{% endif %}</p>
+  <p class="note candidate-facts">{{ item.row.kind }} {{ item.row.hers }}{% for said in item.row.school %} {{ said }}{% endfor %}{% if item.row.recorded %} {{ item.row.recorded }}{% endif %}{% if item.row.source %} {{ item.row.source }}{% endif %}</p>
+  {% if chosen_here %}
+    <p class="note">Chosen on this card.</p>
+  {% elif not can_choose %}
+    <p class="note">Id {{ item.row.assignment_id }}.</p>
+  {% else %}
+    <button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="choose" value="{{ key }}:{{ item.row.assignment_id }}">{% if again %}Choose it again{% else %}Choose this homework{% endif %}<span class="visually-hidden"> for {{ item.row.title }} ({{ item.row.course }}), {% if item.row.due_date %}due {{ spoken_day(item.row.due_date) }}{% else %}no due date{% endif %}, {{ item.row.assignment_id }}</span></button>
+  {% endif %}
+</li>

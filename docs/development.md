@@ -394,6 +394,21 @@ with her words and day, even on a paste that adds nothing else. Ticked, the
 save links it to the homework the row lands on and keeps her day as a claim
 beside the school's.
 
+A card that would save new homework, or that asks which homework it is, also
+offers "Is this homework already here under another name?". Its search finds
+homework by class or title, Done and older work included, twenty to a page,
+and never picks for the parent. Find, Next, Previous, Choose, and Remove only
+show the review again, with the draft and every answer kept; Save is the one
+press that writes. A chosen assignment is shown under both names with both
+dates, and the choice can be removed before saving. Saving puts the row's
+dates, reports, and instructions on that assignment and keeps its own name,
+her note, and its history. The choice is kept as a `renamed` answer for the
+school's class and title, so the next paste of that work lands there without
+a question, under the usual date rules. Once an assignment with the school's
+own name exists, a card asks which, listing both. Two assignments are never
+combined: where a question lists homework an earlier answer kept apart, it
+says so, and says that combining them isn't available here.
+
 The type, homework
 or task, is suggested from the title, paperwork and materials being tasks,
 and can be changed on any card, a saved one included; a parent's choice is
@@ -587,7 +602,12 @@ done (1)" as her own update, and the reading log, assigned that Monday and
 due the next, under "Assigned this week, due later"; the following week shows
 the same reading log as due. The syllabus update is the one report the set
 carries, in `data/sample/student_reports.json`, seeded with the assignments
-when the sample's file is created; the main fixtures carry none. Deleting the
+when the sample's file is created; the main fixtures carry none. Her homework
+notes are in `data/sample/homework_notes.json`, planted the same way through
+the store's own paths: one waits with no class yet, and one was added to
+homework as "Quiz 1 review" in Geometry, due September 21, which the school's
+portal later confirmed with the same date and an instruction, answered as the
+same homework, so pasting the school's card for it asks nothing. Deleting the
 sample folder starts it again with that one update and nothing she has done
 since. A plan made for that evening lists no dates to clarify,
 because nothing is missing or contested. "Previous week" shows an empty week,

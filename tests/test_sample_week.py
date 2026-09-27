@@ -22,7 +22,7 @@ from blossom.reconciliation import SourceChannel, SourceConfidence, classify_con
 from blossom.routes.student import build_student_due_this_week_view
 from blossom.settings import REPOSITORY_ROOT, SAMPLE_VARIABLE, Settings
 from blossom.sources import FixtureSource
-from tests.support import SAME_ORIGIN, fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings, store_of
 
 SAMPLE = REPOSITORY_ROOT / "data" / "sample"
 SAMPLE_DAY = "2026-09-07"
@@ -201,3 +201,79 @@ def test_the_prepared_sample_plan_is_labeled_and_matches_the_sample() -> None:
         assert title in text
     assert "The reviewer's notes" not in text
     assert "on track" not in text.split("```")[1]
+
+
+# ------------------------------------------------------------------ her homework notes
+
+
+QUIZ_CARD = "Homework for Wren\n- 09/21/2026 - Monday\nGeometry - Due: Quiz 1 review:\n"
+
+
+def sample_in(folder: pathlib.Path) -> Settings:
+    return sample_settings(
+        BLOSSOM_DATABASE_PATH=str(folder / "blossom.sqlite3"),
+        BLOSSOM_CHECKPOINT_PATH=str(folder / "checkpoints.sqlite3"),
+        BLOSSOM_TRACE_PATH=str(folder / "traces.sqlite3"),
+    )
+
+
+def test_the_sample_has_a_note_waiting_and_one_added_to_homework_with_the_schools_word(
+    tmp_path: pathlib.Path,
+) -> None:
+    """One note waits with no class yet. Another was added to homework, and the school's
+    portal later said the same due date and gave an instruction, which a parent said was
+    the same homework: a paste of the school's card for it asks nothing."""
+    with TestClient(create_app(sample_in(tmp_path)), headers=SAME_ORIGIN) as client:
+        store = store_of(client)
+        waiting = store.outstanding_captures().notes
+        made = store.assignments_made_from_notes()
+        (quiz,) = [item for item in store.all_assignments() if item.assignment_id in made]
+        claims = store.deadline_records(quiz.assignment_id)
+        kept = store.school_instruction_readings([quiz.assignment_id]).readable
+        answers = store.intake_decisions([("Geometry", "Quiz 1 review")])
+        review = client.post("/parent/inbox/read", data={"text": QUIZ_CARD}).text
+
+    (note,) = waiting
+    assert note.text == "Bring a shoebox for the habitat project, heard in science"
+    assert (note.course, note.title, note.due_date) == (None, None, None)
+    assert (quiz.course, quiz.title, quiz.due_date) == (
+        "Geometry",
+        "Quiz 1 review",
+        date(2026, 9, 21),
+    )
+    assert (quiz.note, quiz.note_by) == ("Review pages 1 to 11 first.", "student")
+    assert [
+        (claim.channel, claim.asserted_value)
+        for claim in claims
+        if claim.channel is SourceChannel.LMS
+    ] == [(SourceChannel.LMS, "2026-09-21")]
+    assert kept[quiz.assignment_id].texts == (
+        "Unit 1 quiz: angles, segments, and the first proofs.",
+    )
+    assert [(item.kind, item.lands_on) for item in answers[("Geometry", "Quiz 1 review")]] == [
+        ("same", quiz.assignment_id)
+    ]
+    assert 'id="identity-question-0"' not in review
+    assert "Saved; adds a date to review" in review
+    assert "The pasted date is added as evidence for the saved date." in review
+
+
+def test_the_sample_notes_are_planted_only_in_a_blank_file(tmp_path: pathlib.Path) -> None:
+    with TestClient(create_app(sample_in(tmp_path)), headers=SAME_ORIGIN) as client:
+        first = (
+            store_of(client)
+            ._connection.execute("SELECT COUNT(*) FROM homework_captures")
+            .fetchone()
+        )
+    with TestClient(create_app(sample_in(tmp_path)), headers=SAME_ORIGIN) as client:
+        again = (
+            store_of(client)
+            ._connection.execute("SELECT COUNT(*) FROM homework_captures")
+            .fetchone()
+        )
+
+    assert first == again == (2,)
+
+
+def test_the_test_fixtures_carry_no_notes() -> None:
+    assert FixtureSource(REPOSITORY_ROOT / "data" / "synthetic").homework_notes() == []

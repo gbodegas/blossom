@@ -1217,6 +1217,16 @@ more than one assignment made from a note, and the question lists every one of
 them. A paste that repeats text already saved lands where it was saved and asks
 nothing.
 
+A card can also point its row at homework already here under another name.
+The page signs what it showed: the cards that offered the search, the results
+each could choose from, and each choice with a fingerprint of that homework as
+shown. The search and the choice change only the page. The save takes a choice
+only as the page signed it, checks it against the card and that homework inside
+its transaction, and keeps it in `intake_decisions` as a `renamed` answer for
+the row's class and title, which later pastes of that name follow. A start on a
+file from before `renamed` answers makes that table again once, every row and
+its sequence kept, since SQLite can't change a table's check in place.
+
 The five details are shown by one template macro wherever they are shown: on
 the note's page, where a kind is shown whenever one is held, beside a form
 from a page that is behind, as what a note was added with, and in each entry of

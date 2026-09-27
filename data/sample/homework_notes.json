@@ -1,0 +1,27 @@
+[
+  {
+    "capture_id": "5a1d3c2e-7b64-4f0e-9c8a-2f1b6d4e8a17",
+    "text": "Bring a shoebox for the habitat project, heard in science",
+    "written_at": "2026-09-04T22:10:00+00:00",
+    "written_on": "2026-09-04"
+  },
+  {
+    "capture_id": "8e2f4a6b-1c3d-4e5f-9a7b-3c2d1e0f9b28",
+    "text": "Geometry quiz on the first unit, two weeks from Monday",
+    "written_at": "2026-09-03T21:30:00+00:00",
+    "written_on": "2026-09-03",
+    "added_to_homework": {
+      "course": "Geometry",
+      "title": "Quiz 1 review",
+      "kind": "HOMEWORK",
+      "due_date": "2026-09-21",
+      "note": "Review pages 1 to 11 first."
+    },
+    "later_from_the_school": {
+      "read_at": "2026-09-06T16:00:00+00:00",
+      "read_on": "2026-09-06",
+      "due_date": "2026-09-21",
+      "instruction": "Unit 1 quiz: angles, segments, and the first proofs."
+    }
+  }
+]

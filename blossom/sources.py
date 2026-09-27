@@ -18,10 +18,12 @@ access (an approved sender list or a dedicated folder), not after it.
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
 
+from blossom.captures import CaptureDetails
 from blossom.reconciliation import SourceRecord
 from blossom.stores.project_state import Assignment, ClaimReadings, Seed, StudentReport
 from blossom.stores.reflections import Reflection, ReflectionSubject
@@ -119,6 +121,25 @@ def read_whole(source: StateSource) -> Seed:
     )
 
 
+@dataclass(frozen=True)
+class SampleNote:
+    """One homework note of hers a fixture set carries, written before the set's day: its
+    id, her words, and when she wrote them. When it was added to homework, what it was added
+    with; and when the school's portal later said something of that homework, when it was
+    read, the due date it said, and the school's instruction, which a parent said was about
+    the same homework."""
+
+    capture_id: str
+    text: str
+    written_at: datetime
+    written_on: date
+    added: CaptureDetails | None = None
+    school_read_at: datetime | None = None
+    school_read_on: date | None = None
+    school_due: date | None = None
+    school_instruction: str | None = None
+
+
 class FixtureSource:
     """Reads a synthetic set from disk: the seed for the sample and the tests, offline."""
 
@@ -173,6 +194,28 @@ class FixtureSource:
         return [
             StudentReport.model_validate(item) for item in self._optional("student_reports.json")
         ]
+
+    def homework_notes(self) -> list[SampleNote]:
+        """Load ``homework_notes.json``, her notes: a file only the sample carries."""
+        notes = []
+        for item in self._optional("homework_notes.json"):
+            added = item.get("added_to_homework")
+            school = item.get("later_from_the_school")
+            said = dict(school) if isinstance(school, dict) else {}
+            notes.append(
+                SampleNote(
+                    capture_id=str(item["capture_id"]),
+                    text=str(item["text"]),
+                    written_at=datetime.fromisoformat(str(item["written_at"])),
+                    written_on=date.fromisoformat(str(item["written_on"])),
+                    added=None if added is None else CaptureDetails.model_validate(added),
+                    school_read_at=datetime.fromisoformat(str(said["read_at"])) if said else None,
+                    school_read_on=date.fromisoformat(str(said["read_on"])) if said else None,
+                    school_due=date.fromisoformat(str(said["due_date"])) if said else None,
+                    school_instruction=str(said["instruction"]) if said else None,
+                )
+            )
+        return notes
 
     def support_rules(self) -> list[SupportRule]:
         """Load ``support_rules.json``. A fixture set without one has no rules."""

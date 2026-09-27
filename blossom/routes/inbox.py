@@ -26,8 +26,18 @@ from typing import Annotated, Final
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from blossom.captures import CaptureNotSaved, UnreadableCapture
+from blossom.authored_text import TextRefused
+from blossom.candidates import readings_for
+from blossom.captures import CaptureNotSaved, UnreadableCapture, candidate_basis
 from blossom.dependencies import ApplicationState, get_application_state
+from blossom.homework_search import (
+    QUERY_MAX_LENGTH,
+    ResultsPage,
+    found,
+    page_number,
+    page_of,
+    terms_of,
+)
 from blossom.intake import (
     CLAIMED,
     DIFFERENT,
@@ -44,6 +54,8 @@ from blossom.intake import (
     IdentityAnswer,
     Kept,
     NotAsked,
+    NotOffered,
+    Pick,
     Read,
     answers_to_no_question,
     by_hand,
@@ -56,6 +68,7 @@ from blossom.intake import (
     spoken_report,
     within_a_school_year,
 )
+from blossom.pairing import pair
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel
 from blossom.routes.instruction_answers import (
     CarriedAccount,
@@ -68,8 +81,16 @@ from blossom.routes.instruction_answers import (
 )
 from blossom.routes.navigation import instructions_review_href
 from blossom.routes.note_details import choice_from, choice_value
+from blossom.routes.note_links import (
+    NO_SUCH_PAGE,
+    NOTHING_FOUND,
+    QUERY_REFUSED,
+    SEARCH_WORDS_NEEDED,
+    FoundRow,
+    row_of,
+)
 from blossom.routes.parent import review_page
-from blossom.routes.student import viewer_of
+from blossom.routes.student import parent_reads, viewer_of
 from blossom.school_instructions import SubmittedChoice
 from blossom.stores.intake_decisions import UnreadableDecision
 from blossom.stores.project_state import Assignment, AssignmentKind, UnreadableClaim
@@ -127,6 +148,13 @@ HOMEWORK_CHANGED: Final = (
 IDENTITY_FORM_UNREADABLE: Final = (
     "The answers about which homework a card is could not be read, so nothing was saved. "
     "Look at them again below."
+)
+PICK_FORM_UNREADABLE: Final = (
+    "The choice of homework already here under another name could not be read, so nothing "
+    "was saved. Look at it again below."
+)
+PRESS_UNREADABLE: Final = (
+    "That press isn't one this review offered, so nothing changed. The review is below as it was."
 )
 LINK_FORM_UNREADABLE: Final = (
     "The choices to link her notes could not be read, so nothing was saved. Look at them "
@@ -302,6 +330,20 @@ class PageMade:
     notes: dict[int, str] = field(default_factory=dict)
     links: dict[int, tuple[tuple[str, int, str | None], ...]] = field(default_factory=dict)
     words: dict[str, str] = field(default_factory=dict)
+    offers: dict[int, str] = field(default_factory=dict)
+    """The cards that offered to find homework already here under another name, with how
+    each stood then."""
+    found: dict[int, tuple[tuple[str, str], ...]] = field(default_factory=dict)
+    """For each card, the homework the page showed to choose from, with each one's
+    fingerprint as shown."""
+    query: tuple[int, str, int, tuple[int, ...]] | None = None
+    """The card whose search the page showed, its words, the page of results shown, and the
+    pages its Previous and Next go to, the only ones a press may ask for."""
+    picks: dict[int, Pick] = field(default_factory=dict)
+    """Homework chosen under another name on each card, as the page showed it."""
+    unsaved_picks: dict[int, tuple[str, str]] = field(default_factory=dict)
+    """Homework chosen on each card that wasn't taken, with why, as the page said it, so later
+    pages say it again until the card takes a choice or an answer."""
 
 
 def made_with_field(
@@ -313,6 +355,11 @@ def made_with_field(
     notes: Mapping[int, str] | None = None,
     links: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
     words: Mapping[str, str] | None = None,
+    offers: Mapping[int, str] | None = None,
+    found_rows: Mapping[int, Sequence[tuple[str, str]]] | None = None,
+    query: tuple[int, str, int, tuple[int, ...]] | None = None,
+    picks: Mapping[int, Pick] | None = None,
+    unsaved_picks: Mapping[int, tuple[str, str]] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
     ties it to the page's draft."""
@@ -328,6 +375,17 @@ def made_with_field(
             [card, [list(note) for note in offered]] for card, offered in (links or {}).items()
         ),
         "words": sorted([name, text] for name, text in (words or {}).items()),
+        "offers": sorted([card, situation] for card, situation in (offers or {}).items()),
+        "found": sorted(
+            [card, [list(row) for row in rows]] for card, rows in (found_rows or {}).items()
+        ),
+        "query": None if query is None else [*query[:3], list(query[3])],
+        "picks": sorted(
+            [card, pick.target, pick.basis, pick.situation] for card, pick in (picks or {}).items()
+        ),
+        "unsaved_picks": sorted(
+            [card, target, why] for card, (target, why) in (unsaved_picks or {}).items()
+        ),
     }
     made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
     return f"{made}.{_made_with_check(key, draft, made)}"
@@ -363,7 +421,56 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         for card, offered in context.get("links", [])
     }
     words = {str(name): str(text) for name, text in context.get("words", [])}
-    return PageMade(occurrences, asked, identities, notes, links, words)
+    offers = {int(card): str(situation) for card, situation in context.get("offers", [])}
+    found_rows = {
+        int(card): tuple((str(name), str(basis)) for name, basis in rows)
+        for card, rows in context.get("found", [])
+    }
+    shown_query = context.get("query")
+    query = (
+        None
+        if shown_query is None
+        else (
+            int(shown_query[0]),
+            str(shown_query[1]),
+            int(shown_query[2]),
+            tuple(int(number) for number in shown_query[3]),
+        )
+    )
+    picks = {
+        int(card): Pick(str(target), str(basis), str(situation))
+        for card, target, basis, situation in context.get("picks", [])
+    }
+    unsaved_picks = {
+        int(card): (str(target), str(why)) for card, target, why in context.get("unsaved_picks", [])
+    }
+    return PageMade(
+        occurrences,
+        asked,
+        identities,
+        notes,
+        links,
+        words,
+        offers,
+        found_rows,
+        query,
+        picks,
+        unsaved_picks,
+    )
+
+
+def still_unsaved(
+    made: PageMade | None,
+    picks: Mapping[int, Pick],
+    identities: Mapping[int, IdentityAnswer] | None,
+) -> dict[int, tuple[str, str]]:
+    """The choices the page said weren't taken that still stand: each stays until its card
+    takes a choice or an answer about which homework it is."""
+    return {
+        key: unsaved
+        for key, unsaved in (made or PageMade()).unsaved_picks.items()
+        if key not in picks and key not in (identities or {})
+    }
 
 
 def identity_answers(
@@ -433,6 +540,37 @@ def link_answers(
     if len(names) != len(set(names)):
         unreadable = True
     return ticked, unreadable
+
+
+def pick_answers(
+    fields: Iterable[tuple[str, object]], page: PageMade
+) -> tuple[dict[int, Pick], bool]:
+    """The homework chosen under another name on each card, as the page signed it, read from
+    every field as sent. Each choice the page showed comes back as ``picked-<card>`` naming
+    the homework it showed; the second value says whether the form holds anything else: a
+    choice changed, left out, sent twice or as a file, or one on a card the page showed none
+    on. Such a form is refused whole."""
+    sent: dict[int, str] = {}
+    unreadable = False
+    seen: set[str] = set()
+    for name, value in fields:
+        head, _, card = name.rpartition("-")
+        if head != "picked" or not review_key(card):
+            continue
+        if name in seen or not isinstance(value, str):
+            unreadable = True
+            continue
+        seen.add(name)
+        sent[int(card)] = value
+    for key, value in sent.items():
+        pick = page.picks.get(key)
+        if pick is None or pick.target != value:
+            unreadable = True
+    if set(page.picks) - set(sent):
+        unreadable = True
+    return {
+        key: pick for key, pick in page.picks.items() if sent.get(key) == pick.target
+    }, unreadable
 
 
 def homework_named(value: str) -> str | None:
@@ -590,6 +728,10 @@ class AnswerKept:
     homework: str | None = None
     different: bool = False
     notes: tuple[str, ...] = ()
+    renamed: bool = False
+    """Whether ``homework`` was found and chosen under another name."""
+    unsaved_homework: str | None = None
+    """The id of homework chosen on the card under another name that wasn't taken."""
 
 
 def answers_kept(
@@ -600,6 +742,7 @@ def answers_kept(
     page: PageMade | None = None,
     identities: Mapping[int, IdentityAnswer] | None = None,
     linked: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
+    picks: Mapping[int, Pick] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review form carried, read by the one reader the save uses and with no
     record read: the page's own notes of what each select suggested and showed, of what was
@@ -621,8 +764,18 @@ def answers_kept(
         safe[name] = value
     occurrences, kinds = answers_from(safe, {})
     words = (page or PageMade()).words
+    not_taken = still_unsaved(page, picks or {}, identities)
     return answers_shown(
-        occurrences, kinds, instructions, unsaved, carried, identities, linked, words
+        occurrences,
+        kinds,
+        instructions,
+        unsaved,
+        carried,
+        identities,
+        linked,
+        words,
+        picks,
+        {key: target for key, (target, _) in not_taken.items()},
     )
 
 
@@ -635,14 +788,17 @@ def answers_shown(
     identities: Mapping[int, IdentityAnswer] | None = None,
     linked: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
     words: Mapping[str, str] | None = None,
+    picks: Mapping[int, Pick] | None = None,
+    unsaved_picks: Mapping[int, str] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review page was made with, in the same shape: an answer about the
     school's instructions by the words ticked, read off the wire before anything was
     written, so a page that reads no store can still say them; what a card whose answer
     could not be read chose, the same way; an instruction ticked by reference to a row,
     counted; a choice a card carries from a page that showed it as not saved, every answer
-    of it together; which homework the card was said to be about; and her notes ticked to
-    link, in the words the page signed."""
+    of it together; which homework the card was said to be about; her notes ticked to
+    link, in the words the page signed; and homework chosen under another name that wasn't
+    taken, by id."""
     made = {key: UnsavedChoice.of(answer) for key, answer in (instructions or {}).items()}
     made.update(unsaved or {})
     chosen = {
@@ -665,7 +821,19 @@ def answers_shown(
     }
     identities = identities or {}
     linked = linked or {}
-    keys = sorted({*(occurrences or {}), *(kinds or {}), *chosen, *identities, *linked})
+    picks = picks or {}
+    unsaved_picks = unsaved_picks or {}
+    keys = sorted(
+        {
+            *(occurrences or {}),
+            *(kinds or {}),
+            *chosen,
+            *identities,
+            *linked,
+            *picks,
+            *unsaved_picks,
+        }
+    )
     return [
         AnswerKept(
             str(key),
@@ -674,12 +842,88 @@ def answers_shown(
             chosen[key].words if key in chosen else (),
             key in chosen and chosen[key].none_applies,
             chosen[key].unshown if key in chosen else 0,
-            None if key not in identities else identities[key].choice,
-            key in identities and identities[key].choice is None,
+            picks[key].target
+            if key in picks
+            else None
+            if key not in identities
+            else identities[key].choice,
+            key in identities and identities[key].choice is None and key not in picks,
             tuple((words or {}).get(name, "") for name, _, _ in linked.get(key, ())),
+            key in picks,
+            unsaved_picks.get(key),
         )
         for key in keys
     ]
+
+
+@dataclass(frozen=True)
+class SearchShown:
+    """The search a review press asks for on one card: its words, the page of results, and a
+    sentence to say in place of results or above them, when there's one."""
+
+    key: int
+    words: str
+    number: int = 1
+    problem: str | None = None
+    attempted: str | None = None
+    """Homework a press chose that changed or left since the page showed it, shown again as
+    it stands, whether or not the words still find it."""
+
+
+@dataclass(frozen=True)
+class UnsavedPick:
+    """A choice of homework on a card that wasn't taken: the homework as it stands now, or
+    ``None`` when it's gone; why (``stale`` at a save, ``changed`` at a Choose); and whether
+    the card can take it now, so the page offers a press only where one can succeed."""
+
+    row: FoundRow | None
+    why: str
+    can_choose: bool
+
+
+@dataclass(frozen=True)
+class FoundView:
+    """One card's search as the page shows it: the words, the page of results, each result
+    as a row to choose, and what to say, a problem or a hint, when there is something."""
+
+    key: int
+    words: str
+    results: ResultsPage | None
+    rows: tuple[FoundRow, ...]
+    said: str | None
+    problem: bool
+
+
+def found_view(
+    state: ApplicationState, change: Change, search: SearchShown, *, parent: bool
+) -> FoundView:
+    """The homework the words find for a card, twenty to a page, by the search's rules:
+    everything on record by its class or title, Done and older work included, except
+    homework with the card's own class and title, which the card's question already lists.
+    One reading of the rows serves the page and the fingerprints its choices carry."""
+    try:
+        terms = terms_of(search.words)
+    except TextRefused:
+        return FoundView(search.key, search.words, None, (), QUERY_REFUSED, problem=True)
+    if not terms:
+        hint = search.problem or SEARCH_WORDS_NEEDED
+        return FoundView(
+            search.key, search.words, None, (), hint, problem=search.problem is not None
+        )
+    store = state.project_state
+    rows = [
+        item
+        for item in store.all_assignments()
+        if pair(item.course, item.title) != change.reading.pair
+    ]
+    results = page_of(found(rows, terms), search.number)
+    if results is None:
+        return FoundView(search.key, search.words, None, (), NO_SUCH_PAGE, problem=True)
+    shown = tuple(row_of(item, parent=parent) for item in readings_for(store, list(results.items)))
+    said = search.problem or (NOTHING_FOUND if results.total == 0 else None)
+    return FoundView(
+        search.key, search.words, results, shown, said, problem=search.problem is not None
+    )
 
 
 @dataclass(frozen=True)
@@ -803,6 +1047,10 @@ def preview_page(
     made: PageMade | None = None,
     identities: Mapping[int, IdentityAnswer] | None = None,
     linked: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
+    picks: Mapping[int, Pick] | None = None,
+    search: SearchShown | None = None,
+    typed: Mapping[int, str] | None = None,
+    focus: str | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -827,7 +1075,21 @@ def preview_page(
     this reading of the record, the page says so first, with a 409, whatever
     else was wrong. The summary of a refusal takes the focus and links to the
     first question it is about, or, where that card puts no question now, to
-    the choice said back on it."""
+    the choice said back on it.
+
+    A card that asks, or that would save new homework, offers to find homework
+    already here under another name. ``search`` is the search one press asked
+    for, shown under its card with the words ``typed`` on each card kept;
+    ``picks`` is the homework chosen on cards, shown under both names, and one
+    made against a card or a homework that has changed since is said as not saved, with a
+    way to choose it again where the card still offers it. The page signs each choice it
+    says wasn't taken, and pages after it say it again until its card takes a choice or an
+    answer. ``focus`` names what takes the focus when no refusal is said first."""
+    picks = picks or {}
+    held = still_unsaved(made, picks, identities)
+    if search is not None and search.attempted is not None:
+        held[search.key] = (search.attempted, "changed")
+    not_taken = {key: target for key, (target, _) in held.items()}
     try:
         changes = changes_for(
             read.items,
@@ -836,20 +1098,43 @@ def preview_page(
             kinds=kinds,
             instruction_answers=instruction_answers,
             identities=identities,
+            picks=picks,
         )
     except UnreadableClaim:
         return intake_unavailable(
             request,
             state,
             draft,
-            answers_shown(occurrences, kinds, instruction_answers, unsaved, carried),
+            answers_shown(
+                occurrences,
+                kinds,
+                instruction_answers,
+                unsaved,
+                carried,
+                identities,
+                linked,
+                (made or PageMade()).words,
+                picks,
+                not_taken,
+            ),
         )
     except UnreadableDecision:
         return intake_unavailable(
             request,
             state,
             draft,
-            answers_shown(occurrences, kinds, instruction_answers, unsaved, carried),
+            answers_shown(
+                occurrences,
+                kinds,
+                instruction_answers,
+                unsaved,
+                carried,
+                identities,
+                linked,
+                (made or PageMade()).words,
+                picks,
+                not_taken,
+            ),
             DECISION_UNREADABLE,
         )
     except UnreadableInstruction:
@@ -857,7 +1142,18 @@ def preview_page(
             request,
             state,
             draft,
-            answers_shown(occurrences, kinds, instruction_answers, unsaved, carried),
+            answers_shown(
+                occurrences,
+                kinds,
+                instruction_answers,
+                unsaved,
+                carried,
+                identities,
+                linked,
+                (made or PageMade()).words,
+                picks,
+                not_taken,
+            ),
             INSTRUCTION_UNREADABLE,
         )
     said = unsaved_on(changes, unsaved or {}, carried)
@@ -909,6 +1205,42 @@ def preview_page(
     if notice is None and conflicting_choices(changes):
         notice = CHOOSE_ONE_TYPE
     shown = [change for change in changes if change.state != FOLDED]
+    parent = parent_reads(request)
+    view = None
+    choosable: dict[int, list[FoundRow]] = {}
+    cards = {change.key: change for change in shown}
+    if search is not None and search.key in cards and cards[search.key].offers:
+        view = found_view(state, cards[search.key], search, parent=parent)
+        choosable[search.key] = list(view.rows)
+        if focus is None and refused is None:
+            focus = f"search-results-{search.key}" if view.rows else f"search-hint-{search.key}"
+    # A choice not taken, one the save refused, one a Choose found changed, or one an earlier
+    # page said that still stands, is said as not saved with the homework as it stands now,
+    # a new one on a card in place of the earlier. It's offered again only where the card
+    # offers the search now, the homework has another name than the card's, and the card's
+    # own results don't offer it already. Results shown on another card don't count.
+    unsaved_picks: dict[int, UnsavedPick] = {}
+    wanted = {change.key: (change.pick_refused, "stale") for change in shown if change.pick_refused}
+    for key, not_taken_here in held.items():
+        if key in cards:
+            wanted.setdefault(key, not_taken_here)
+    for key, (name, why) in wanted.items():
+        row = state.project_state.one_assignment(name)
+        item = None
+        if row is not None:
+            item = row_of(readings_for(state.project_state, [row])[0], parent=parent)
+        card = cards[key]
+        can_choose = (
+            row is not None
+            and item is not None
+            and bool(card.offers)
+            and pair(row.course, row.title) != card.reading.pair
+            and name not in {listed.row.assignment_id for listed in choosable.get(key, ())}
+        )
+        unsaved_picks[key] = UnsavedPick(item, why, can_choose)
+        if can_choose and item is not None:
+            choosable.setdefault(key, []).append(item)
+    picked = {change.key: picks[change.key] for change in shown if change.picked}
     # A card the parent folded carries that answer on the page; a report shown on another
     # card carries nothing.
     folded = [
@@ -989,6 +1321,29 @@ def preview_page(
                     if change.waiting
                 },
                 {note.capture_id: note.text for change in shown for note in change.waiting},
+                {change.key: change.offers for change in shown if change.offers},
+                {
+                    key: [(item.row.assignment_id, item.basis) for item in rows]
+                    for key, rows in choosable.items()
+                },
+                None
+                if view is None
+                else (
+                    view.key,
+                    view.words,
+                    view.results.number if view.results is not None else 1,
+                    tuple(
+                        number
+                        for number in (
+                            (view.results.previous, view.results.next)
+                            if view.results is not None
+                            else ()
+                        )
+                        if number is not None
+                    ),
+                ),
+                picked,
+                wanted,
             ),
             "creations": {card: question.creation for card, question in signed.items()},
             "answered": {
@@ -1012,6 +1367,15 @@ def preview_page(
             "problem_target": problem_target,
             "problem_link": problem_link,
             "unsaved_on": said,
+            "search_view": view,
+            "picked_on": {key: pick.target for key, pick in picked.items()},
+            "choosable_on": {
+                key: {item.row.assignment_id for item in rows} for key, rows in choosable.items()
+            },
+            "unsaved_picks": unsaved_picks,
+            "typed": typed or {},
+            "focus": focus,
+            "query_max_length": QUERY_MAX_LENGTH,
         },
         status_code=status_code,
     )
@@ -1032,6 +1396,10 @@ def preview_or_recovery(
     made: PageMade | None = None,
     identities: Mapping[int, IdentityAnswer] | None = None,
     linked: Mapping[int, Sequence[tuple[str, int, str | None]]] | None = None,
+    picks: Mapping[int, Pick] | None = None,
+    search: SearchShown | None = None,
+    typed: Mapping[int, str] | None = None,
+    focus: str | None = None,
     refused: str | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
@@ -1053,6 +1421,10 @@ def preview_or_recovery(
             made=made,
             identities=identities,
             linked=linked,
+            picks=picks,
+            search=search,
+            typed=typed,
+            focus=focus,
             refused=refused,
             notice=notice,
             status_code=status_code,
@@ -1106,6 +1478,217 @@ async def edit_draft(request: Request, state: State) -> Response:
     )
 
 
+SEARCH_PRESSES: Final = ("find", "results_page", "choose", "remove")
+"""The presses that change only the review: Find, Next and Previous, Choose, and Remove."""
+
+
+def one_press(fields: Iterable[tuple[str, object]]) -> tuple[str, str] | None:
+    """The one review press a form was sent with, or ``None`` for none, more than one, or
+    one sent as a file."""
+    pressed = [(name, value) for name, value in fields if name in SEARCH_PRESSES]
+    if len(pressed) != 1 or not isinstance(pressed[0][1], str):
+        return None
+    return pressed[0][0], pressed[0][1]
+
+
+def card_of(value: str) -> int | None:
+    """A card's key as a press names it, or ``None``."""
+    return int(value) if review_key(value) else None
+
+
+@router.post("/find", response_class=HTMLResponse, include_in_schema=False)
+async def search_review(request: Request, state: State) -> Response:
+    """Find homework already here under another name for one card, page through what was
+    found, choose one, or take a choice back, and show the review again. Nothing is written:
+    Save is the one press that saves. The draft and every answer on the cards come back as
+    sent, questions still open among them, and a choice made on a card stays until Remove,
+    whatever is searched. Choose takes only homework the page showed for that card, and holds
+    it to the row as shown; a press the page didn't offer changes nothing. The answers carried
+    are read as Save reads them: an answer about the school's instructions on a card the page
+    didn't ask is shown as not saved, never signed as asked. A record that can't be read, or
+    a file that refuses a read, is answered by the page that reads no store, with the paste
+    and every answer kept."""
+    form = await submitted(request)
+    draft = draft_of(form)
+    read = read_draft(state, draft)
+    if isinstance(read, Problem):
+        return problem_page(request, state, draft, read)
+    fields = (await request.form()).multi_items()
+    read_answers = paste_answers(fields)
+    instruction_answers = read_answers.answers
+    made = {key: UnsavedChoice.of(answer) for key, answer in instruction_answers.items()}
+    chosen = {key for key, answer in {**made, **read_answers.unsaved}.items() if answer.chooses}
+    carried = {
+        key: account for key, account in carried_accounts(fields).items() if key not in chosen
+    }
+    page_made = made_with(state.result_key, form, draft)
+    identities, _ = identity_answers(fields, page_made)
+    linked, link_unreadable = link_answers(fields, page_made)
+    if link_unreadable:
+        linked = {}
+    picks = dict(page_made.picks)
+    typed = {
+        int(card): value
+        for name, value in form.items()
+        for head, _, card in [name.rpartition("-")]
+        if head == "search" and review_key(card)
+    }
+    kept_answers = answers_kept(
+        form,
+        instruction_answers,
+        read_answers.unsaved,
+        carried,
+        page_made,
+        identities,
+        linked,
+        picks,
+    )
+    store = state.project_state
+    search: SearchShown | None = None
+    focus: str | None = None
+    refused = False
+
+    def searched(key: int) -> SearchShown | None:
+        """The search the page showed for this card, kept through Choose and Remove, so a
+        page handed back later can show it again."""
+        shown = page_made.query
+        return None if shown is None or shown[0] != key else SearchShown(*shown[:3])
+
+    pressed = one_press(fields)
+    action, value = pressed if pressed is not None else ("", "")
+    try:
+        occurrences, kinds = answers_from(form, unasked_for(state, read))
+        # An answer about the school's instructions is held to the question the page asked,
+        # as at Save: one the page never asked is said back as not saved, never signed.
+        never_put = answers_to_no_question(
+            changes_for(
+                read.items,
+                store,
+                occurrences=occurrences,
+                kinds=kinds,
+                identities=identities,
+                picks=page_made.picks,
+            ),
+            instruction_answers,
+            page_made.asked,
+        )
+        unsaved = {
+            **read_answers.unsaved,
+            **{key: UnsavedChoice.of(instruction_answers[key]) for key in never_put},
+        }
+        instruction_answers = {
+            key: answer for key, answer in instruction_answers.items() if key not in never_put
+        }
+        if action == "find":
+            key = card_of(value)
+            if key is None or key not in page_made.offers:
+                refused = True
+            else:
+                search = SearchShown(key, typed.get(key, ""))
+        elif action == "results_page":
+            card, _, number = value.partition(":")
+            key, page = card_of(card), page_number(number) if number else None
+            shown = page_made.query
+            # Only a page the returned page's Previous or Next went to; results that shrank
+            # since are said on the page, never taken as a page it offered.
+            if (
+                key is None
+                or page is None
+                or shown is None
+                or shown[0] != key
+                or (page not in shown[3])
+            ):
+                refused = True
+            else:
+                search = SearchShown(key, shown[1], page)
+        elif action == "choose":
+            card, _, target = value.partition(":")
+            key = card_of(card)
+            offered_rows = dict(page_made.found.get(key, ())) if key is not None else {}
+            if key is None or key not in page_made.offers or target not in offered_rows:
+                refused = True
+            else:
+                row = store.one_assignment(target)
+                basis = None if row is None else candidate_basis(readings_for(store, [row]))
+                if basis == offered_rows[target]:
+                    picks[key] = Pick(target, offered_rows[target], page_made.offers[key])
+                    identities.pop(key, None)
+                    focus = f"picked-{key}"
+                    search = searched(key)
+                else:
+                    # The homework changed or left since the page showed it: nothing is
+                    # chosen, and the page shows it again as it stands now, whether or not
+                    # the words still find it.
+                    shown = page_made.query
+                    words = shown[1] if shown is not None and shown[0] == key else ""
+                    at = shown[2] if shown is not None and shown[0] == key else 1
+                    search = SearchShown(key, words, at, attempted=target)
+        elif action == "remove":
+            key = card_of(value)
+            if key is None or key not in picks:
+                refused = True
+            else:
+                del picks[key]
+                focus = f"rename-{key}"
+                search = searched(key)
+        else:
+            refused = True
+        if refused:
+            shown = page_made.query
+            return preview_or_recovery(
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=page_made.picks,
+                search=None if shown is None else SearchShown(shown[0], shown[1], shown[2]),
+                typed=typed,
+                refused="malformed",
+                notice=PRESS_UNREADABLE,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        return preview_or_recovery(
+            request,
+            state,
+            read,
+            draft,
+            kept_answers,
+            occurrences=occurrences,
+            kinds=kinds,
+            instruction_answers=instruction_answers,
+            unsaved=unsaved,
+            carried=carried,
+            made=page_made,
+            identities=identities,
+            linked=linked,
+            picks=picks,
+            search=search,
+            typed=typed,
+            focus=focus,
+        )
+    except UnreadableClaim:
+        return intake_unavailable(request, state, draft, kept_answers)
+    except UnreadableInstruction:
+        return intake_unavailable(request, state, draft, kept_answers, INSTRUCTION_UNREADABLE)
+    except UnreadableDecision:
+        return intake_unavailable(request, state, draft, kept_answers, DECISION_UNREADABLE)
+    except UnreadableCapture:
+        logger.exception("a note offered on the review could not be read")
+        return intake_unavailable(request, state, draft, kept_answers, NOTE_UNREADABLE)
+    except sqlite3.Error:
+        logger.exception("the review could not be read for a press")
+        return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
+
+
 @router.post("/keep", response_class=HTMLResponse, include_in_schema=False)
 async def keep_readings(request: Request, state: State) -> Response:
     """Read the draft again, save what is new against the record as it is, and say what
@@ -1142,8 +1725,28 @@ async def keep_readings(request: Request, state: State) -> Response:
     # answers back.
     identities, identity_unreadable = identity_answers(fields, page_made)
     linked, link_unreadable = link_answers(fields, page_made)
+    picks, pick_unreadable = pick_answers(fields, page_made)
+    # The words typed in each card's search, and the search the page showed, come back with
+    # every page the save hands back, so a refusal never costs the parent their search.
+    typed = {
+        int(card): value
+        for name, value in form.items()
+        for head, _, card in [name.rpartition("-")]
+        if head == "search" and review_key(card)
+    }
+    shown_query = page_made.query
+    search = (
+        None if shown_query is None else SearchShown(shown_query[0], shown_query[1], shown_query[2])
+    )
     kept_answers = answers_kept(
-        form, instruction_answers, read_answers.unsaved, carried, page_made, identities, linked
+        form,
+        instruction_answers,
+        read_answers.unsaved,
+        carried,
+        page_made,
+        identities,
+        linked,
+        picks,
     )
     # A claim on record that cannot be read refuses the comparison, before the write or
     # inside its transaction, which is rolled back whole before anything is answered. The
@@ -1169,6 +1772,9 @@ async def keep_readings(request: Request, state: State) -> Response:
                 made=page_made,
                 identities=identities,
                 linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
                 refused="malformed",
                 notice=IDENTITY_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1190,8 +1796,35 @@ async def keep_readings(request: Request, state: State) -> Response:
                 made=page_made,
                 identities=identities,
                 linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
                 refused="malformed",
                 notice=LINK_FORM_UNREADABLE,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        if pick_unreadable:
+            # A choice of homework under another name the page did not show, or one changed,
+            # left out, sent twice, or sent beside an answer to the card's own question, is no
+            # form the page wrote. The page comes back with the choices it showed.
+            return preview_page(
+                request,
+                state,
+                read,
+                draft,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=page_made.picks,
+                search=search,
+                typed=typed,
+                refused="malformed",
+                notice=PICK_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
         # An answer where the page puts no such question is no form the page wrote. The
@@ -1203,6 +1836,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             occurrences=occurrences,
             kinds=kinds,
             identities=identities,
+            picks=picks,
         )
         never_put = answers_to_no_question(changes, instruction_answers, page_made.asked)
         unreadable = read_answers.malformed or bool(never_put)
@@ -1230,6 +1864,9 @@ async def keep_readings(request: Request, state: State) -> Response:
                 made=page_made,
                 identities=identities,
                 linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
                 refused="malformed" if unreadable else "contradict",
                 notice=INSTRUCTION_FORM_UNREADABLE if unreadable else INSTRUCTIONS_CONTRADICT,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1247,6 +1884,8 @@ async def keep_readings(request: Request, state: State) -> Response:
                 shown_identities=set(page_made.identities),
                 shown_notes=page_made.notes,
                 links=linked,
+                picks=picks,
+                offered=page_made.offers,
                 imported_by="parent" if viewer_of(request) == "parent" else "household",
                 now=now,
                 today=today,
@@ -1266,6 +1905,29 @@ async def keep_readings(request: Request, state: State) -> Response:
     except sqlite3.Error:
         logger.exception("a paste could not be saved")
         return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
+    if isinstance(kept, NotOffered):
+        # Checked again where the save writes: a choice on a card the page didn't offer it
+        # on, or beside the card's own answer, is no form the page wrote.
+        return preview_or_recovery(
+            request,
+            state,
+            read,
+            draft,
+            kept_answers,
+            occurrences=occurrences,
+            kinds=kinds,
+            instruction_answers=instruction_answers,
+            carried=carried,
+            made=page_made,
+            identities=identities,
+            linked=linked,
+            picks=page_made.picks,
+            search=search,
+            typed=typed,
+            refused="malformed",
+            notice=PICK_FORM_UNREADABLE,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
     if isinstance(kept, NotAsked):
         # The same check as above, made again where the save writes: another connection's
         # save can move a card to other homework after the first check.
@@ -1288,6 +1950,9 @@ async def keep_readings(request: Request, state: State) -> Response:
             made=page_made,
             identities=identities,
             linked=linked,
+            picks=picks,
+            search=search,
+            typed=typed,
             refused="malformed",
             notice=INSTRUCTION_FORM_UNREADABLE,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1307,6 +1972,9 @@ async def keep_readings(request: Request, state: State) -> Response:
             made=page_made,
             identities=identities,
             linked=linked,
+            picks=picks,
+            search=search,
+            typed=typed,
             refused="stale",
             notice=CHANGED_SINCE_SHOWN if instructions_moved else HOMEWORK_CHANGED,
             status_code=status.HTTP_409_CONFLICT,
@@ -1351,6 +2019,9 @@ async def keep_readings(request: Request, state: State) -> Response:
             made=page_made,
             identities=identities,
             linked=linked,
+            picks=picks,
+            search=search,
+            typed=typed,
             refused=refused,
             notice=notice,
         )
