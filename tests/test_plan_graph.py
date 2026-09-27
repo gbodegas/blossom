@@ -625,16 +625,20 @@ def test_the_reviewer_is_told_the_same_rule_for_a_date_that_may_be_wrong() -> No
     """A reviewer that expects the warning in every block sends a plan back for keeping the
     planner's rule, and a round is spent on it. Both are told the same rule."""
     critic = Scripted(ok(accepting()))
+    planner = Scripted(ok(good_plan()))
 
-    run(graph_with(Scripted(ok(good_plan())), critic))
+    run(graph_with(planner, critic))
 
     system = " ".join(str(critic.briefs[0][0].content).split())
+    marked = "a date marked SINGLE_SOURCE, SOURCES_DISAGREE, or UNVERIFIED may be wrong"
     assert (
-        "A plan says once that a date from a single source may be wrong, in the block where "
-        "it changes what she does tonight; it does not repeat that across blocks, and it does "
-        "not say it of work due the day after the plan date, which cannot be due sooner than "
-        "tonight. Do not fault the reasons for leaving it out elsewhere."
+        f"A plan says once that {marked}, in the block where it changes what she does "
+        "tonight; it does not repeat that across blocks, and it does not say it of work due "
+        "the day after the plan date, which cannot be due sooner than tonight. Do not fault "
+        "the reasons for leaving it out elsewhere."
     ) in system
+    planned = " ".join(str(planner.briefs[0][0].content).split())
+    assert "A due date" + marked.removeprefix("a date") in planned
 
 
 def test_copied_text_is_escaped_inside_its_block() -> None:
@@ -1073,8 +1077,8 @@ def test_a_run_that_fails_its_checks_records_every_attempt() -> None:
         "verify",
     ]
     assert steps[2].found == (
-        "It broke 1 of 8 rules: assignment-algebra-set is due in this window and the plan "
-        "does not mention it."
+        "It broke 1 of 8 rules: the plan leaves out Algebra II \u00b7 Quadratic modeling "
+        "problem set."
     )
     assert steps[3].expected == "a revised plan that answers 1 finding"
     assert result["outcome"] == "checks_failed"
@@ -1220,8 +1224,11 @@ def test_a_plan_that_speaks_about_work_reported_done_fails_its_checks() -> None:
         "assignment-canal-essay is reported done and the plan still speaks about it"
         in verification.as_findings()
     )
-    assert "reported done" in result["steps"][-1].found
-    assert "assignment-canal-essay is not an assignment in this window" in result["steps"][-1].found
+    assert result["steps"][-1].found == (
+        "It broke 2 of 8 rules: the plan includes World History \u00b7 Canal Era comparison "
+        "essay, which isn't in the work to plan; the plan includes World History \u00b7 "
+        "Canal Era comparison essay, which she reported done."
+    )
     for brief in planner.briefs:
         sent_back = human_text(brief)
         assert "assignment-canal-essay" not in sent_back
@@ -1597,8 +1604,15 @@ def test_finished_work_put_off_or_in_both_places_never_reaches_a_revision_either
 
     checks = [item.found for item in result["steps"] if item.node == "verify"]
     assert planner.calls == 3
-    assert "assignment-canal-essay is reported done" in checks[0]
-    assert "assignment-canal-essay is both worked on and put off" in checks[1]
+    assert (
+        "the plan includes World History \u00b7 Canal Era comparison essay, which she "
+        "reported done" in checks[0]
+    )
+    assert (
+        "the plan both works on and puts off World History \u00b7 Canal Era comparison "
+        "essay" in checks[1]
+    )
+    assert all("assignment-" not in line for line in checks)
     assert checks[2] == "It kept all 8 rules."
     for brief in planner.briefs:
         text = human_text(brief)

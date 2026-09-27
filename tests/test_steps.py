@@ -13,6 +13,7 @@ from blossom.agent.steps import (
     describe_outcome,
     describe_plan,
     describe_verdict,
+    describe_verification,
     describe_week,
     expect_plan,
     step_label,
@@ -20,9 +21,11 @@ from blossom.agent.steps import (
 )
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.noticing import Noticing, Verdict
+from blossom.plan_checks import check_plan
+from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence
 from blossom.stores.project_state import Assignment
-from tests.support import ESSAY, PLAN_DATE, PROBLEM_SET, fixture_clock, good_plan
+from tests.support import ESSAY, PLAN_DATE, PROBLEM_SET, ZONE, fixture_clock, good_plan
 
 
 def finding(
@@ -216,7 +219,7 @@ def test_the_week_names_each_kind_of_doubtful_date_it_holds() -> None:
 
     assert described == (
         "3 assignments to plan. 1 has a due date the school's sources don't support. "
-        "3 have a due date that isn't confirmed. 1 has no due date. "
+        "2 have a due date that isn't confirmed. 1 has no due date. "
         "The evening allows 150 minutes."
     )
 
@@ -289,3 +292,71 @@ def test_the_kept_plans_step_says_why_it_is_the_one_for_review() -> None:
     assert KEPT_FOR_REVIEW == (
         "The last revision broke a rule, so this is the latest version that passed every check."
     )
+
+
+def test_a_rules_check_names_the_homework_as_the_run_read_it() -> None:
+    plan = DailyPlan(plan_date=PLAN_DATE, blocks=good_plan().blocks[:1])
+    verification = check_plan(
+        plan, due_in_window=[ESSAY, PROBLEM_SET], zone=ZONE, requested_evening=PLAN_DATE
+    )
+
+    found = describe_verification(verification)
+
+    assert found == (
+        "It broke 1 of 8 rules: the plan leaves out Algebra II \u00b7 Quadratic modeling "
+        "problem set."
+    )
+    assert describe_last_check([record("verify", 1, found)]) == (
+        "In the last version, it broke 1 of 8 rules: the plan leaves out Algebra II "
+        "\u00b7 Quadratic modeling problem set."
+    )
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        SourceConfidence.SINGLE_SOURCE,
+        SourceConfidence.SOURCES_DISAGREE,
+        SourceConfidence.UNVERIFIED,
+    ],
+)
+@pytest.mark.parametrize(
+    ("due", "said"),
+    [
+        (ESSAY.due_date, "1 has a due date that isn't confirmed."),
+        (None, "1 has no due date."),
+    ],
+)
+def test_the_week_never_says_work_with_no_due_date_has_one(
+    label: SourceConfidence, due: object, said: str
+) -> None:
+    essay = ESSAY.model_copy(update={"due_date": due})
+
+    described = describe_week(
+        [essay], [], {ESSAY.assignment_id: label}, rules=0, notes=0, budget=150, too_much=False
+    )
+
+    assert described == f"1 assignment to plan. {said} The evening allows 150 minutes."
+
+
+def test_work_with_no_due_date_the_school_gives_one_for_has_no_due_date() -> None:
+    undated = ESSAY.model_copy(update={"due_date": None})
+    school_gives_one = Noticing(
+        assignment_id=ESSAY.assignment_id,
+        expected=None,
+        observed=("LMS: 2026-08-20",),
+        observed_dates=(PLAN_DATE,),
+        verdict=Verdict.CONTRADICTED,
+    )
+
+    described = describe_week(
+        [undated],
+        [school_gives_one],
+        {ESSAY.assignment_id: SourceConfidence.SINGLE_SOURCE},
+        rules=0,
+        notes=0,
+        budget=150,
+        too_much=False,
+    )
+
+    assert described == "1 assignment to plan. 1 has no due date. The evening allows 150 minutes."

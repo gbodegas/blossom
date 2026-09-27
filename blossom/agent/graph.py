@@ -88,6 +88,7 @@ from blossom.noticing import Noticing, Week, planning_digest, read_week, reconci
 from blossom.plan_checks import (
     PlanVerification,
     check_plan,
+    homework_names,
 )
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence, classify_confidence
@@ -198,6 +199,9 @@ class PlanState(TypedDict):
     steps: NotRequired[Annotated[list[StepRecord], operator.add]]
     assignments: NotRequired[list[Assignment]]
     """The window's work still to plan: what the planner, the critic, and the checks see."""
+    names: NotRequired[dict[str, str]]
+    """How a parent reads each assignment the run read, finished work included, for the
+    record of what the checks found. No brief carries it."""
     done_ids: NotRequired[list[str]]
     """The window's work she had reported done when the run read it, kept out of
     ``assignments`` and held against the plan by the checks."""
@@ -287,6 +291,7 @@ def build_plan_graph(
         return {
             "assignments": active,
             "done_ids": done,
+            "names": homework_names(week.assignments),
             "student_reports": {
                 item.assignment_id: status.asserted
                 for item in active
@@ -430,6 +435,7 @@ def build_plan_graph(
             noticings=state.get("noticings", []),
             daily_minutes=state.get("budget_minutes", evening_minutes),
             reported_done=state.get("done_ids", []),
+            names=state.get("names"),
         )
         record = step(
             "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)

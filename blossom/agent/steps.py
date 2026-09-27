@@ -138,13 +138,15 @@ def describe_week(
 
     ``done`` is how much of the week she has reported done, which is left out
     of ``assignments`` and said apart, so the record shows the work the plan
-    was made from and the work it was not.
+    was made from and the work it was not. Work with no due date on record is
+    counted as that alone, whatever the sources say of it.
     """
-    contradicted = sum(item.contradicted for item in noticings)
+    dated = {item.assignment_id for item in assignments if item.due_date is not None}
+    contradicted = sum(item.contradicted for item in noticings if item.assignment_id in dated)
     uncertain = sum(
         label is not SourceConfidence.CORROBORATED
         for name, label in confidence.items()
-        if name in {item.assignment_id for item in assignments}
+        if name in dated
     )
     undated = sum(item.due_date is None for item in assignments)
     left_out = (
@@ -192,7 +194,7 @@ def describe_verification(verification: PlanVerification) -> str:
     if verification.passed:
         return f"It kept all {total} rules."
     failed = verification.failed_checks
-    findings = "; ".join(verification.as_findings())
+    findings = "; ".join(verification.as_plain())
     return f"It broke {len(failed)} of {total} rules: {findings}."
 
 

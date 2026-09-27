@@ -24,6 +24,7 @@ from blossom.plan_checks import (
     PlanCheck,
     PlanVerification,
     check_plan,
+    homework_names,
 )
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceConfidence
@@ -750,3 +751,211 @@ def test_no_finding_that_names_finished_work_goes_back_to_the_planner() -> None:
     assert all("done" not in line for line in sent)
     assert "assignment-canal-essay is both worked on and put off" in sent
     assert sent[-1] == ONLY_WHAT_IS_LISTED
+
+
+# ------------------------------------------------------ the findings a parent reads
+
+INVENTED = "assignment-invented"
+ESSAY_NAME = "World History \u00b7 Canal Era comparison essay"
+SET_NAME = "Algebra II \u00b7 Quadratic modeling problem set"
+
+
+@pytest.mark.parametrize(
+    ("plan", "evening", "said"),
+    [
+        (
+            DailyPlan(
+                plan_date=PLAN_DATE, blocks=[block("assignment-canal-essay", "16:30", "17:30")]
+            ),
+            PLAN_DATE,
+            f"the plan leaves out {SET_NAME}",
+        ),
+        (
+            DailyPlan(
+                plan_date=PLAN_DATE,
+                blocks=[block(INVENTED, "16:30", "17:30")],
+                deferred=[
+                    Deferral(assignment_id="assignment-canal-essay", reason="tomorrow"),
+                    Deferral(assignment_id="assignment-algebra-set", reason="tomorrow"),
+                ],
+            ),
+            PLAN_DATE,
+            "the plan includes homework Blossom doesn't recognize",
+        ),
+        (
+            DailyPlan(
+                plan_date=PLAN_DATE,
+                blocks=[
+                    block("assignment-canal-essay", "16:30", "17:30"),
+                    block("assignment-algebra-set", "18:00", "18:45"),
+                ],
+                deferred=[Deferral(assignment_id="assignment-canal-essay", reason="later")],
+            ),
+            PLAN_DATE,
+            f"the plan both works on and puts off {ESSAY_NAME}",
+        ),
+        (
+            DailyPlan(
+                plan_date=PLAN_DATE,
+                blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+                deferred=[
+                    Deferral(assignment_id="assignment-algebra-set", reason="later"),
+                    Deferral(assignment_id="assignment-algebra-set", reason="later still"),
+                ],
+            ),
+            PLAN_DATE,
+            f"the plan puts off {SET_NAME} 2 times",
+        ),
+        (
+            DailyPlan(
+                plan_date=date(2026, 8, 22),
+                blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+                deferred=[Deferral(assignment_id="assignment-algebra-set", reason="tomorrow")],
+            ),
+            date(2026, 8, 22),
+            f"{ESSAY_NAME} is due 2026-08-21 and is scheduled 2026-08-22, after it",
+        ),
+        (
+            DailyPlan(
+                plan_date=date(2026, 8, 21),
+                blocks=[block("assignment-algebra-set", "16:30", "17:30")],
+                deferred=[Deferral(assignment_id="assignment-canal-essay", reason="tomorrow")],
+            ),
+            date(2026, 8, 21),
+            f"{ESSAY_NAME} is due 2026-08-21 and is put off from 2026-08-21, past it",
+        ),
+        (
+            DailyPlan(
+                plan_date=PLAN_DATE,
+                blocks=[
+                    block("assignment-canal-essay", "16:30", "17:30"),
+                    block("assignment-algebra-set", "17:00", "18:00"),
+                ],
+            ),
+            PLAN_DATE,
+            f"{ESSAY_NAME} at 16:30:00 overlaps {SET_NAME} at 17:00:00",
+        ),
+    ],
+    ids=["left out", "unknown", "both", "put off twice", "late block", "late deferral", "overlap"],
+)
+def test_a_parent_reads_each_finding_with_the_homework_named(
+    plan: DailyPlan, evening: date, said: str
+) -> None:
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=evening)
+
+    assert result.as_plain() == (said,)
+    assert all("assignment-" not in line for line in result.as_plain())
+    assert any("assignment-" in line for line in result.as_findings())
+    assert result.as_feedback() == result.as_findings()
+
+
+def test_homework_nobody_has_is_never_named_by_the_id_the_plan_gave_it() -> None:
+    """Twice over, worked on and put off, and overlapping: the id stays out of every line
+    a parent reads, and one line says it once."""
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            block("assignment-canal-essay", "16:30", "17:30"),
+            block(INVENTED, "17:00", "17:45"),
+            block("<b>other</b>", "18:00", "18:15"),
+        ],
+        deferred=[
+            Deferral(assignment_id="assignment-algebra-set", reason="later"),
+            Deferral(assignment_id=INVENTED, reason="later"),
+        ],
+    )
+
+    result = check_plan(plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE)
+
+    assert result.as_plain() == (
+        "the plan includes homework Blossom doesn't recognize",
+        "the plan both works on and puts off homework Blossom doesn't recognize",
+        f"{ESSAY_NAME} at 16:30:00 overlaps homework Blossom doesn't recognize at 17:00:00",
+    )
+    assert INVENTED in " ".join(result.as_findings())
+
+
+def test_work_reported_done_is_named_as_the_run_read_it() -> None:
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+        deferred=[Deferral(assignment_id="assignment-algebra-set", reason="she says it is done")],
+    )
+
+    named = check_plan(
+        plan,
+        due_in_window=[ESSAY],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        reported_done=["assignment-algebra-set"],
+        names=homework_names(WINDOW),
+    )
+    unnamed = check_plan(
+        plan,
+        due_in_window=[ESSAY],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        reported_done=["assignment-algebra-set"],
+    )
+
+    assert named.as_plain() == (
+        f"the plan includes {SET_NAME}, which isn't in the work to plan",
+        f"the plan includes {SET_NAME}, which she reported done",
+    )
+    assert unnamed.as_plain() == (
+        "the plan includes homework Blossom doesn't recognize",
+        "the plan includes work she reported done",
+    )
+    assert named.as_findings() == unnamed.as_findings()
+    assert named.as_feedback() == unnamed.as_feedback() == (ONLY_WHAT_IS_LISTED,)
+
+
+def test_findings_that_name_no_homework_read_the_same_to_a_parent() -> None:
+    plan = DailyPlan(
+        plan_date=date(2026, 8, 20),
+        blocks=[
+            block("assignment-canal-essay", "15:00", "18:00"),
+            block("assignment-algebra-set", "18:00", "20:00"),
+        ],
+    )
+
+    result = check_plan(
+        plan, due_in_window=WINDOW, zone=ZONE, requested_evening=PLAN_DATE, daily_minutes=60
+    )
+
+    assert result.failed_checks == (
+        PlanCheck.PLAN_DATE_MATCHES_REQUEST,
+        PlanCheck.WITHIN_TIME_BUDGET,
+    )
+    assert result.as_plain() == result.as_findings()
+
+
+def test_a_verification_without_plain_findings_is_read_by_its_findings() -> None:
+    written_before = PlanVerification(
+        outcomes={PlanCheck.WITHIN_TIME_BUDGET: CheckOutcome.FAILED},
+        findings={PlanCheck.WITHIN_TIME_BUDGET: ("the plan asks for 165 minutes",)},
+    )
+
+    assert written_before.as_plain() == ("the plan asks for 165 minutes",)
+
+
+def test_homework_is_named_by_course_and_title_and_told_apart_when_they_match() -> None:
+    history_set = PROBLEM_SET.model_copy(
+        update={"assignment_id": "assignment-history-set", "course": "World History"}
+    )
+    again = PROBLEM_SET.model_copy(
+        update={"assignment_id": "assignment-algebra-set-2", "due_date": date(2026, 8, 31)}
+    )
+    undated = PROBLEM_SET.model_copy(
+        update={"assignment_id": "assignment-algebra-set-3", "due_date": None}
+    )
+
+    names = homework_names([ESSAY, PROBLEM_SET, history_set, again, undated])
+
+    assert names == {
+        "assignment-canal-essay": ESSAY_NAME,
+        "assignment-algebra-set": f"{SET_NAME} (due Aug 24)",
+        "assignment-history-set": "World History \u00b7 Quadratic modeling problem set",
+        "assignment-algebra-set-2": f"{SET_NAME} (due Aug 31)",
+        "assignment-algebra-set-3": f"{SET_NAME} (no due date)",
+    }

@@ -110,10 +110,11 @@ order:
     + "\n".join(f"- {criterion}: {question}" for criterion, question in CRITERIA.items())
     + """
 
-A plan says once that a date from a single source may be wrong, in the block
-where it changes what she does tonight; it does not repeat that across blocks,
-and it does not say it of work due the day after the plan date, which cannot be
-due sooner than tonight. Do not fault the reasons for leaving it out elsewhere.
+A plan says once that a date marked SINGLE_SOURCE, SOURCES_DISAGREE, or
+UNVERIFIED may be wrong, in the block where it changes what she does tonight;
+it does not repeat that across blocks, and it does not say it of work due the
+day after the plan date, which cannot be due sooner than tonight. Do not fault
+the reasons for leaving it out elsewhere.
 
 For each, write the critique first and the judgment after it. Say CANNOT_TELL
 when the data given does not settle the question; do not guess to avoid it. A

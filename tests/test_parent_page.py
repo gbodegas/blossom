@@ -29,14 +29,17 @@ from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
-from blossom.stores.project_state import Saved, Undone
+from blossom.stores.project_state import Assignment, Saved, Undone
+from tests import support
 from tests.support import (
     FIXTURE_TIMEZONE,
     SAME_ORIGIN,
     Scripted,
     fixture_settings,
+    forgetful_fixture_plan,
     ok,
     state_of,
+    store_of,
 )
 
 PLAN_DATE = date(2026, 8, 19)
@@ -868,3 +871,96 @@ def test_an_evening_past_the_calendars_edge_is_refused_by_the_form_as_by_the_rou
     assert over_json.status_code == 422
     assert over_json.json()["detail"].startswith("The evening of 9999-12-31 is past the edge")
     assert ended == []
+
+
+FIXTURE_LEFT_OUT = (
+    "Algebra II \u00b7 Quadratic modeling problem set",
+    "Science \u00b7 Science fair topic proposal",
+    "Science \u00b7 Cover the textbook",
+    "English \u00b7 Reading log, week one",
+    "English \u00b7 Syllabus, signed",
+    "Spanish \u00b7 Vocabulary quiz, unit one",
+)
+
+
+def ended_runs(client: TestClient, plans: Callable[[], list[DailyPlan]]) -> str:
+    """Plan the evening from Family review with ``plans`` and return the page from its
+    fold of plans that couldn't be made on."""
+    client.app.dependency_overrides[plan_graphs] = support.scripted_graphs(  # type: ignore[attr-defined]
+        plans, list
+    )
+    posted = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+    assert posted.status_code == 303
+    page = client.get(posted.headers["location"]).text
+    return page[page.index("<summary>Plans that couldn't be made</summary>") :]
+
+
+def test_a_failed_plan_names_the_homework_it_left_out_by_course_and_title() -> None:
+    with support.browser(key=True) as client:
+        fold = ended_runs(client, lambda: [forgetful_fixture_plan()] * 3)
+
+    last = re.search(
+        r'<p class="note">In the last version, it broke 1 of 8 rules: ([^<]*)\.</p>', fold
+    )
+    assert last is not None
+    assert sorted(last.group(1).split("; ")) == sorted(
+        f"the plan leaves out {name}" for name in FIXTURE_LEFT_OUT
+    )
+    assert fold.count(f"It broke 1 of 8 rules: {last.group(1)}.") == 3
+    assert "assignment-" not in fold
+
+
+def test_homework_the_plan_made_up_is_never_shown_by_its_id() -> None:
+    made_up = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            PlanBlock(
+                assignment_id="<b>assignment-made-up</b>",
+                starts_at=time(16, 0),
+                ends_at=time(16, 30),
+                rationale="first",
+            ),
+            *forgetful_fixture_plan().blocks,
+        ],
+    )
+    with support.browser(key=True) as client:
+        fold = ended_runs(client, lambda: [made_up] * 3)
+
+    assert "the plan includes homework Blossom doesn&#39;t recognize;" in fold
+    assert "made-up" not in fold
+    assert "<b>" not in fold
+
+
+def test_a_title_with_markup_is_shown_as_text_in_a_failed_plan() -> None:
+    lab = Assignment(
+        assignment_id="assignment-lab-notes",
+        course="Science",
+        title="<b>Lab</b> & notes",
+        due_date=date(2026, 8, 20),
+        dependencies=[],
+        reported_submission_status="not_started",
+    )
+    with support.browser(key=True) as client:
+        store_of(client).upsert_assignments([lab])
+        fold = ended_runs(client, lambda: [forgetful_fixture_plan()] * 3)
+
+    assert "the plan leaves out Science \u00b7 &lt;b&gt;Lab&lt;/b&gt; &amp; notes" in fold
+    assert "<b>Lab</b>" not in fold
+
+
+def test_a_failed_plan_keeps_the_names_the_run_read_after_the_homework_changes() -> None:
+    with support.browser(key=True) as client:
+        ended_runs(client, lambda: [forgetful_fixture_plan()] * 3)
+        renamed = next(
+            item
+            for item in store_of(client).all_assignments()
+            if item.assignment_id == "assignment-algebra-set"
+        ).model_copy(update={"title": "Renamed problem set", "course": "Geometry"})
+        store_of(client).upsert_assignments([renamed])
+        page = client.get("/parent").text
+        titles = {item.title for item in store_of(client).all_assignments()}
+
+    fold = page[page.index("<summary>Plans that couldn't be made</summary>") :]
+    assert "the plan leaves out Algebra II \u00b7 Quadratic modeling problem set" in fold
+    assert "Renamed problem set" not in fold
+    assert "Renamed problem set" in titles
