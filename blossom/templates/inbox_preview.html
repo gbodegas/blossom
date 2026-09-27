@@ -125,6 +125,11 @@
                   {% if reading.assigned_on %}<span class="source">Assigned {{ spoken_day(reading.assigned_on) }}</span>{% endif %}
                 </p>
               {% endif %}
+              {% if change.saved_as %}
+                {# The school's name and the name the homework is saved under, both with their dates. #}
+                {% set saved = change.saved_as %}
+                <p class="source names" id="names-{{ change.key }}">{% if reading.origin == "PARENT_ENTRY" %}This entry names it{% else %}The school calls this{% endif %} <span class="authored-text">{{ reading.title }}</span>, {{ reading.course }}, {% if reading.due_date %}due {{ spoken_day(reading.due_date) }}{% else %}with no due date{% endif %}. It's saved here as <span class="authored-text">{{ saved.title }}</span>, {{ saved.course }}, {% if saved.due_date %}due {{ spoken_day(saved.due_date) }}{% else %}with no due date yet{% endif %}.</p>
+              {% endif %}
               <p class="effect" data-base="{{ change.effect_base }}">{{ change.effect }}</p>
               {% if change.state == "review" %}
                 <input type="hidden" name="asked-{{ change.key }}" value="1">
@@ -141,14 +146,18 @@
                 {% if change.identity_question == "hers" %}
                   <p class="note">This has the class and title of homework from her note.</p>
                 {% endif %}
-                <fieldset class="choice identity" id="identity-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
+                {% set described = ((["problem-summary"] if problem_target == change.key else []) + (["kept-separate-" ~ change.key] if change.kept_separate else []))|join(" ") %}
+                <fieldset class="choice identity" id="identity-question-{{ change.key }}" tabindex="-1"{% if described %} aria-describedby="{{ described }}"{% endif %}>
                   <legend>{% if change.identity_question == "report" and report %}Which homework is this report about?{% elif change.candidates|length == 1 %}Is this the same homework?{% else %}Which homework is this?{% endif %}</legend>
                   {% for candidate in change.candidates %}
                     <label><input type="radio" name="identity-{{ change.key }}" value="{{ same_as(candidate.assignment_id) }}"> <span>{% if change.candidates|length == 1 %}Same homework{% else %}<span class="authored-text">{{ candidate.title }}</span>, {{ candidate.course }}{% endif %} <span class="source">{% if candidate.due_date %}Due {{ spoken_day(candidate.due_date) }}{% else %}No due date yet{% endif %}. {% if candidate.assignment_id in change.identity_hers %}From her note{% if candidate.note_by == "student" %}: <q class="authored-text">{{ candidate.note }}</q>{% else %}.{% endif %}{% elif came_from(candidate) %}{{ came_from(candidate) }}{% endif %} {% if change.candidates|length == 1 and change.identity_question == "hers" %}{% if reading.origin == "PARENT_ENTRY" %}The dates entered here go to her assignment.{% else %}The school's dates, reports, and instructions go to her assignment.{% endif %} Her note stays hers. {% endif %}Id {{ candidate.assignment_id }}.</span></span></label>
                   {% endfor %}
                   <label><input type="radio" name="identity-{{ change.key }}" value="different"> <span>Different homework with the same title <span class="source">{% if reading.origin == "PARENT_ENTRY" %}This entry is saved as its own assignment.{% else %}The school's is saved as its own assignment.{% endif %}</span></span></label>
                 </fieldset>
-                <p class="helper">Blossom compares class and title only; work the school names differently is not found here.</p>
+                {% if change.kept_separate %}
+                  <p class="note" id="kept-separate-{{ change.key }}">These assignments were kept separate earlier. Choosing one here adds this school update to it. Their existing records stay separate; combining them isn't available here.</p>
+                {% endif %}
+                <p class="helper">Blossom compares class and title only. If this is homework saved here under another name, find it below.</p>
               {% elif change.ambiguous %}
                 {# The page notes the cards it asks which homework they are. #}
                 <input type="hidden" name="which-{{ change.key }}" value="1">
@@ -165,6 +174,67 @@
                 {# So does an answer about which homework this is, with the token its question was signed with. #}
                 <input type="hidden" name="identity-{{ change.key }}" value="{{ answered[change.key] }}">
                 <input type="hidden" name="creation-{{ change.key }}" value="{{ creations[change.key] }}">
+              {% endif %}
+              {% if change.picked %}
+                {# Homework found under another name and chosen on this card, kept until Remove or Save. #}
+                <div class="picked">
+                  <input type="hidden" name="picked-{{ change.key }}" value="{{ change.on_record.assignment_id }}">
+                  <p class="note" id="picked-{{ change.key }}" tabindex="-1"{% if focus == "picked-" ~ change.key %} autofocus{% endif %}>Chosen on this card. Saving adds what this card brings to that homework; its own name, her note, and its history stay as they are. To choose other homework, find it below.</p>
+                  <div class="actions">
+                    <button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="remove" value="{{ change.key }}">Remove this choice</button>
+                  </div>
+                </div>
+              {% endif %}
+              {% if change.pick_refused %}
+                {% set row = unsaved_picks.get(change.key) %}
+                <div class="picked-unsaved" id="picked-unsaved-{{ change.key }}" tabindex="-1">
+                  <p class="problem">Not saved: this card or the homework chosen for it changed after it was chosen.{% if not row %} That homework isn't on record now.{% elif not change.offers %} This card doesn't offer that choice now.{% else %} Here it is as it stands now; choose it again if it's still the one.{% endif %}</p>
+                  {% if row %}
+                    <ol class="history-list">
+                      {% with item = row, key = change.key, again = change.offers %}{% include "inbox_found_row.html" %}{% endwith %}
+                    </ol>
+                  {% endif %}
+                </div>
+              {% endif %}
+              {% if change.offers %}
+                {#
+                  Homework already here under another name: a search of the class and title
+                  of everything on record, and a choice among what it finds. Find, Next,
+                  Previous, Choose, and Remove only show the review again; nothing is saved
+                  until Save.
+                #}
+                {% set looking = search_view is not none and search_view.key == change.key %}
+                <details class="rename" id="rename-{{ change.key }}"{% if looking or change.pick_refused or focus == "rename-" ~ change.key %} open{% endif %}>
+                  <summary{% if focus == "rename-" ~ change.key %} autofocus{% endif %}>Is this homework already here under another name?</summary>
+                  <p class="helper">Search the homework saved here by words from its class or title, then choose it. Nothing is saved until you press Save.</p>
+                  <div class="search-line">
+                    <label for="search-{{ change.key }}">Class or title words</label>
+                    <input type="text" id="search-{{ change.key }}" name="search-{{ change.key }}" maxlength="{{ query_max_length }}" value="{{ typed.get(change.key, '') }}" autocomplete="off">
+                    <button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="find" value="{{ change.key }}">Find</button>
+                  </div>
+                  {% if looking %}
+                    {% set view = search_view %}
+                    <div class="search-results">
+                      {% if view.said %}
+                        <p class="{% if view.problem %}problem{% else %}note{% endif %}" id="search-hint-{{ change.key }}" tabindex="-1"{% if focus == "search-hint-" ~ change.key %} autofocus{% endif %}>{{ view.said }}</p>
+                      {% endif %}
+                      {% if view.results and view.results.total %}
+                        <h3 class="update-heading" id="search-results-{{ change.key }}" tabindex="-1"{% if focus == "search-results-" ~ change.key %} autofocus{% endif %}>Found {{ view.results.total }}{% if view.results.last > 1 %}, page {{ view.results.number }} of {{ view.results.last }}{% endif %}</h3>
+                        <ol class="history-list">
+                          {% for item in view.rows %}
+                            {% with key = change.key, again = false %}{% include "inbox_found_row.html" %}{% endwith %}
+                          {% endfor %}
+                        </ol>
+                        {% if view.results.previous or view.results.next %}
+                          <div class="actions">
+                            {% if view.results.previous %}<button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="results_page" value="{{ change.key }}:{{ view.results.previous }}">Previous</button>{% endif %}
+                            {% if view.results.next %}<button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="results_page" value="{{ change.key }}:{{ view.results.next }}">Next</button>{% endif %}
+                          </div>
+                        {% endif %}
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                </details>
               {% endif %}
               <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
               <input type="hidden" name="shown-{{ change.key }}" value="{{ change.kind.value }}">

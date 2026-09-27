@@ -32,6 +32,7 @@ from blossom.agent.retention import sweep_saved_state
 from blossom.agent.trace import LocalRunTracer
 from blossom.clock import Clock, SystemClock, clock_from
 from blossom.household import SignInAttempts, keys_for, secret_beside
+from blossom.sample_notes import plant_notes
 from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource, read_whole
 from blossom.stores.checkpoints import open_checkpointer
@@ -148,6 +149,9 @@ def build_application_state(
         settings.database_path,
         clock,
         seed=None if fixture is None else lambda: read_whole(fixture),
+        notes=None
+        if fixture is None
+        else lambda store: plant_notes(store, fixture.homework_notes()),
     )
     opened: list[
         ProjectStateStore | DraftsStore | TraceStore | WorkloadSignalsStore | HelpRequestsStore

@@ -23,10 +23,11 @@ from typing import Final, Literal, cast, get_args
 from blossom.captures import Author
 from blossom.reconciliation import SourceChannel
 
-DecisionKind = Literal["same", "different", "which", "report_placed"]
+DecisionKind = Literal["same", "different", "which", "report_placed", "renamed"]
 """What a parent said about a school row: the same homework as hers, different homework
-with the same title, which of several it is, or which one a single report is about."""
-DECISION_KINDS: Final = ("same", "different", "which", "report_placed")
+with the same title, which of several it is, which one a single report is about, or
+homework already here under another name."""
+DECISION_KINDS: Final = ("same", "different", "which", "report_placed", "renamed")
 CREATION: Final = re.compile(r"[0-9a-f]{32}")
 """A creation token as the review page makes it."""
 FINGERPRINT: Final = re.compile(r"[0-9a-f]{64}")
@@ -36,7 +37,7 @@ PLACEMENT_FIELDS: Final = frozenset({"channel", "status", "day", "source_date_te
 CREATE_INTAKE_DECISIONS: Final = """
 CREATE TABLE IF NOT EXISTS intake_decisions (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind TEXT NOT NULL CHECK (kind IN ('same', 'different', 'which', 'report_placed')),
+    kind TEXT NOT NULL CHECK (kind IN ('same', 'different', 'which', 'report_placed', 'renamed')),
     course TEXT NOT NULL,
     title TEXT NOT NULL,
     due_date TEXT,
@@ -180,6 +181,8 @@ def _checked(sequence: int, fields: tuple[object, ...]) -> IntakeDecision:
             raise ValueError(lands_on)
     elif creation is not None or lands_on not in named:
         raise ValueError(lands_on)
+    if kind == "renamed" and named != [lands_on]:
+        raise ValueError(shown)
     placed = None if report is None else _placement(report)
     due_date = None if due is None else _day(due)
     if (kind == "report_placed") != (placed is not None) or (placed and due_date is not None):
@@ -223,9 +226,39 @@ class IntakeDecisionRecords:
         raise NotImplementedError
 
     def _create_intake_decision_table(self) -> None:
-        """The table and its index, in the caller's transaction."""
+        """The table and its index, in the caller's transaction. A table from before
+        ``renamed`` answers is made again with every row as it was: SQLite can't change
+        a table's check in place."""
+        made = self._connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'intake_decisions'"
+        ).fetchone()
+        if made is not None and "'renamed'" not in str(made[0]):
+            self._remake_for_renamed()
         self._connection.execute(CREATE_INTAKE_DECISIONS)
         self._connection.execute(INDEX_INTAKE_DECISIONS)
+
+    def _remake_for_renamed(self) -> None:
+        """Copy every answer, its sequence kept, into a table that takes ``renamed`` ones,
+        and put it in the old table's place, with the counter the old table had. In the
+        caller's transaction, so a refused step leaves the old one as it was."""
+        self._connection.execute(
+            CREATE_INTAKE_DECISIONS.replace(
+                "IF NOT EXISTS intake_decisions", "intake_decisions_next"
+            )
+        )
+        self._connection.execute(
+            "INSERT INTO intake_decisions_next SELECT * FROM intake_decisions ORDER BY sequence"
+        )
+        counted = self._connection.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'intake_decisions'"
+        ).fetchone()
+        self._connection.execute("DROP TABLE intake_decisions")
+        self._connection.execute("ALTER TABLE intake_decisions_next RENAME TO intake_decisions")
+        if counted is not None:
+            self._connection.execute(
+                "UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'intake_decisions'",
+                (counted[0],),
+            )
 
     def intake_decisions(
         self, pairs: Iterable[tuple[str, str]]

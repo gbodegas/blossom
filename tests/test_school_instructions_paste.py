@@ -20,7 +20,15 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
-from blossom.intake import Change, ChangedSinceShown, Kept, NotAsked, keep, read_text
+from blossom.intake import (
+    Change,
+    ChangedSinceShown,
+    Kept,
+    NotAsked,
+    NotOffered,
+    keep,
+    read_text,
+)
 from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import (
     CHANGED_SINCE_SHOWN,
@@ -1209,7 +1217,7 @@ def none_chosen_since(store: ProjectStateStore, name: str) -> None:
 
 def keep_both(
     store: ProjectStateStore, answers: dict[int, SubmittedChoice]
-) -> Kept | ChangedSinceShown | NotAsked | list[Change]:
+) -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
     """The weekly practice's two cards, both said to be the saved homework, kept with these
     answers by a caller other than the page."""
     reading = read_text(WEEKLY_TWICE, now=KEEP_NOW, today=KEEP_TODAY)
@@ -1923,7 +1931,7 @@ STEPS = SubmittedChoice(0, PRACTICE_SHOWN, frozenset({"Show all steps."}))
 
 def keep_folded(
     store: ProjectStateStore, folded: SubmittedChoice
-) -> Kept | ChangedSinceShown | NotAsked | list[Change]:
+) -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
     """The practice sheet's second card folded into its first, and an unrelated form, kept
     with an answer on each card of the practice sheet."""
     reading = read_text(PRACTICE, now=KEEP_NOW, today=KEEP_TODAY)
