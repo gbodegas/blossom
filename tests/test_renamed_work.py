@@ -1435,6 +1435,71 @@ def test_a_refused_save_keeps_the_search_words_and_the_choice_can_be_saved_after
     assert after_retry == settled
 
 
+Q1_AND_PICTURE = Q1_ASSIGNED + "\nThursday 10/1/2026\nArt\nDue: Picture:\n"
+
+
+@pytest.mark.parametrize("change", ["date-moved", "school-name-arrived"])
+@pytest.mark.parametrize("searched_on", [0, 1], ids=["this-card", "another-card"])
+def test_a_refused_choice_is_offered_again_on_its_own_card_whatever_another_card_shows(
+    tmp_path: pathlib.Path, change: str, searched_on: int
+) -> None:
+    """Results shown on another card neither hide a card's refused choice nor offer it on a
+    card that can't take it."""
+    with client_in(tmp_path) as client:
+        mine = patterns_quiz(client)
+        page = chosen(client, Q1_AND_PICTURE, mine)
+        looked = press(client, page, find=str(searched_on), **{"search-1": "patterns"})
+        if change == "date-moved":
+            store = store_of(client)
+            with store._connection:
+                store._connection.execute(
+                    "UPDATE assignments SET due_date = '2026-10-02' WHERE assignment_id = ?",
+                    (mine,),
+                )
+        else:
+            school_row(
+                client, "assignment-q1-check-3", "08 Algebra", "Q1 Check 3", date(2026, 10, 1)
+            )
+        before = tables(client)
+        refused = save(client, looked.text)
+        after_refusal = tables(client)
+        again = press(client, refused.text, choose=f"0:{mine}")
+        after_press = tables(client)
+        saved = save(client, again.text) if change == "date-moved" else None
+        settled = tables(client)
+        retried = save(client, again.text) if change == "date-moved" else None
+        after_retry = tables(client)
+        recorded = decisions(client)
+
+    shown = html.unescape(refused.text)
+    assert looked.status_code == 200
+    assert refused.status_code == 409
+    assert after_refusal == before
+    assert after_press == before
+    assert "picked-0" not in review_form(refused.text)
+    assert review_form(refused.text)["search-0"] == "patterns"
+    assert review_form(refused.text)["search-1"] == "patterns"
+    assert found(refused.text, 1) == ([mine] if searched_on == 1 else [])
+    if change == "date-moved":
+        assert found(refused.text, 0) == [mine]
+        assert "doesn't offer it as a choice now" not in shown
+        assert ("choose it again" if searched_on == 1 else "among the results below") in shown
+        assert again.status_code == 200
+        assert review_form(again.text)["picked-0"] == mine
+        assert saved is not None
+        assert saved.status_code == 303
+        assert retried is not None
+        assert retried.status_code == 303
+        assert after_retry == settled
+        assert [kind for kind, *_ in recorded] == ["renamed"]
+    else:
+        assert found(refused.text, 0) == []
+        assert "doesn't offer it as a choice now" in shown
+        assert again.status_code == 422
+        assert "picked-0" not in review_form(again.text)
+        assert after_retry == before
+
+
 def test_search_words_on_one_card_survive_a_question_left_open_on_another(
     tmp_path: pathlib.Path,
 ) -> None:

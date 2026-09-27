@@ -1148,9 +1148,8 @@ def preview_page(
             focus = f"search-results-{search.key}" if view.rows else f"search-hint-{search.key}"
     # A choice not taken, one the save refused or one a Choose found changed, is said as not
     # saved with the homework as it stands now. It's offered again only where the card
-    # offers the search now, the homework has another name than the card's, and the results
-    # shown don't offer it already.
-    shown_rows = {item.row.assignment_id for item in (view.rows if view is not None else ())}
+    # offers the search now, the homework has another name than the card's, and the card's
+    # own results don't offer it already. Results shown on another card don't count.
     unsaved_picks: dict[int, UnsavedPick] = {}
     wanted = {change.key: (change.pick_refused, "stale") for change in shown if change.pick_refused}
     if search is not None and search.attempted is not None and search.key in cards:
@@ -1166,7 +1165,7 @@ def preview_page(
             and item is not None
             and bool(card.offers)
             and pair(row.course, row.title) != card.reading.pair
-            and name not in shown_rows
+            and name not in {listed.row.assignment_id for listed in choosable.get(key, ())}
         )
         unsaved_picks[key] = UnsavedPick(item, why, can_choose)
         if can_choose and item is not None:
