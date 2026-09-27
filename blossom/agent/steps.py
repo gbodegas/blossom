@@ -233,7 +233,9 @@ def step_label(node: str, round_number: int) -> str:
 
 
 def step_sentence(found: str) -> str:
-    """A found line as a sentence: capitalized and ended, whichever version wrote it."""
+    """A found line as a sentence: trimmed, capitalized, and ended, whichever version wrote
+    it. A blank line stays empty."""
+    found = found.strip()
     if not found:
         return found
     sentence = found[0].upper() + found[1:]
@@ -242,8 +244,10 @@ def step_sentence(found: str) -> str:
 
 def describe_last_check(steps: Sequence[StepRecord]) -> str | None:
     """What the last rules check of a run found, said on its own, or ``None`` when the run
-    ended anywhere but a rules check."""
+    ended anywhere but a rules check or the check's line is blank."""
     if not steps or steps[-1].node != "verify":
         return None
     found = step_sentence(steps[-1].found)
+    if not found:
+        return None
     return f"In the last version, {found[0].lower()}{found[1:]}"

@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
@@ -628,6 +629,29 @@ def test_a_run_for_an_evening_already_past_is_kept_closed() -> None:
     assert not ended_fold_open(page)
     assert "No plan for Tuesday, August 18, 2026" in page
     assert "In the last version" not in page
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n"])
+def test_a_run_whose_last_check_is_blank_still_shows(blank: str) -> None:
+    at = datetime(2026, 8, 19, 20, tzinfo=UTC)
+    steps = [
+        StepRecord(node="plan", round=1, expected="", found="1 block", recorded_at=at),
+        StepRecord(node="verify", round=1, expected="", found=blank, recorded_at=at),
+    ]
+    with browser() as client:
+        state_of(client).drafts.record_run(
+            thread_id="plan:2026-08-19:blank",
+            plan_date=PLAN_DATE,
+            outcome="checks_failed",
+            steps=steps,
+        )
+        page = client.get("/parent")
+
+    assert page.status_code == 200
+    assert "No plan for Wednesday, August 19, 2026" in page.text
+    assert "In the last version" not in page.text
+    assert '<span class="step-node">Rules check</span>' in page.text
+    assert re.search(r'<p class="step-line">\s*\.</p>', page.text) is None
 
 
 def test_a_run_recorded_in_earlier_words_reads_as_sentences() -> None:

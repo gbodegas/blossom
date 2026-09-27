@@ -5,6 +5,7 @@ the real one the framework builds, with no model and no network.
 """
 
 import asyncio
+import json
 import logging
 import pathlib
 import sqlite3
@@ -16,8 +17,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import BaseMessage
+from langchain_core.language_models import BaseChatModel
+from langchain_core.language_models.fake_chat_models import (
+    FakeListChatModel,
+    GenericFakeChatModel,
+)
+from langchain_core.messages import AIMessage, BaseMessage, UsageMetadata
 from langchain_core.tracers.schemas import Run
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -283,13 +288,19 @@ def test_the_thread_id_comes_from_the_metadata_the_run_configuration_states() ->
 class ThroughAModel:
     """A planner or critic that goes through a framework chat model, as the real seam does.
 
-    The fake model answers with a fixed line; the parsed value comes from the
-    script. What matters is that the framework sees a model call inside the
-    node.
+    The fake model answers with a fixed line, with ``usage`` when given, as the
+    provider reports it; the parsed value comes from the script. What matters is
+    that the framework sees a model call inside the node.
     """
 
-    def __init__(self, parsed: object) -> None:
-        self.model = FakeListChatModel(responses=["{}"])
+    def __init__(self, parsed: object, usage: UsageMetadata | None = None) -> None:
+        self.model: BaseChatModel = (
+            FakeListChatModel(responses=["{}"])
+            if usage is None
+            else GenericFakeChatModel(
+                messages=iter([AIMessage(content="{}", usage_metadata=usage)])
+            )
+        )
         self.parsed = parsed
 
     async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[Any]:
@@ -317,6 +328,33 @@ def test_a_model_call_inside_a_node_is_a_run_beneath_that_node() -> None:
     assert [by_id[str(row.parent_run_id)].name for row in model_runs] == ["plan", "critique"]
     assert all(row.outputs is not None and "generations" in row.outputs for row in model_runs)
     assert all(row.inputs for row in model_runs)
+
+
+def test_what_each_model_call_cost_stays_in_the_trace() -> None:
+    """The run's steps say nothing of tokens, so the trace is where a call's cost is read."""
+    store = TraceStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    tracer = LocalRunTracer(store)
+    plan_cost = UsageMetadata(input_tokens=1234, output_tokens=567, total_tokens=1801)
+    verdict_cost = UsageMetadata(input_tokens=890, output_tokens=12, total_tokens=902)
+    graph = graph_with(
+        ThroughAModel(good_plan(), plan_cost), ThroughAModel(accepting(), verdict_cost)
+    )
+
+    async def go() -> None:
+        await graph.ainvoke(
+            PlanState(plan_date=PLAN_DATE, rounds=0),
+            config=run_config("plan:costed", callbacks=[tracer]),
+            durability=DURABILITY,
+        )
+
+    asyncio.run(go())
+
+    model_runs = [row for row in store.runs_for_thread("plan:costed") if row.run_type == "llm"]
+    usage = [
+        json.loads(row.outputs or "{}")["generations"][0][0]["message"]["kwargs"]["usage_metadata"]
+        for row in model_runs
+    ]
+    assert usage == [plan_cost, verdict_cost]
 
 
 def test_a_persisted_tree_is_forgotten_by_the_tracer_without_a_word_of_complaint(

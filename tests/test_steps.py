@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime
 
+import pytest
+
 from blossom.agent.steps import (
     KEPT_FOR_REVIEW,
     StepRecord,
@@ -261,6 +263,26 @@ def test_the_last_check_of_a_run_that_broke_every_rule_is_said_on_its_own() -> N
     )
     assert describe_last_check(steps[:2]) is None
     assert describe_last_check([]) is None
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_a_blank_found_line_is_no_sentence(blank: str) -> None:
+    assert step_sentence(blank) == ""
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_a_blank_last_check_is_not_said(blank: str) -> None:
+    steps = [record("plan", 1, "2 blocks, 150 minutes in all."), record("verify", 1, blank)]
+
+    assert describe_last_check(steps) is None
+
+
+def test_a_last_check_with_stray_spaces_is_said_without_them() -> None:
+    steps = [record("verify", 2, "  it broke 1 of 8 rules: the plan leaves the essay out ")]
+
+    assert describe_last_check(steps) == (
+        "In the last version, it broke 1 of 8 rules: the plan leaves the essay out."
+    )
 
 
 def test_the_kept_plans_step_says_why_it_is_the_one_for_review() -> None:
