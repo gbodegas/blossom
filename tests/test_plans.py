@@ -939,6 +939,37 @@ def test_a_verification_without_plain_findings_is_read_by_its_findings() -> None
     assert written_before.as_plain() == ("the plan asks for 165 minutes",)
 
 
+def test_twins_that_match_on_course_title_and_date_are_told_apart_by_their_ids() -> None:
+    """Two occurrences of one homework can share its course, title, and due date. Each is
+    named with its id, as a saved plan's rows name them, so a plan that leaves out both
+    reads as two findings rather than one."""
+    twin = PROBLEM_SET.model_copy(update={"assignment_id": "assignment-algebra-set-twin"})
+    undated = PROBLEM_SET.model_copy(
+        update={"assignment_id": "assignment-algebra-set-3", "due_date": None}
+    )
+    undated_twin = undated.model_copy(update={"assignment_id": "assignment-algebra-set-4"})
+    plan = DailyPlan(
+        plan_date=PLAN_DATE, blocks=[block("assignment-canal-essay", "16:30", "17:30")]
+    )
+
+    names = homework_names([ESSAY, PROBLEM_SET, twin, undated, undated_twin])
+    result = check_plan(
+        plan, due_in_window=[ESSAY, PROBLEM_SET, twin], zone=ZONE, requested_evening=PLAN_DATE
+    )
+
+    assert names == {
+        "assignment-canal-essay": ESSAY_NAME,
+        "assignment-algebra-set": f"{SET_NAME} (due Aug 24, assignment-algebra-set)",
+        "assignment-algebra-set-twin": f"{SET_NAME} (due Aug 24, assignment-algebra-set-twin)",
+        "assignment-algebra-set-3": f"{SET_NAME} (no due date, assignment-algebra-set-3)",
+        "assignment-algebra-set-4": f"{SET_NAME} (no due date, assignment-algebra-set-4)",
+    }
+    assert result.as_plain() == (
+        f"the plan leaves out {SET_NAME} (due Aug 24, assignment-algebra-set)",
+        f"the plan leaves out {SET_NAME} (due Aug 24, assignment-algebra-set-twin)",
+    )
+
+
 def test_homework_is_named_by_course_and_title_and_told_apart_when_they_match() -> None:
     history_set = PROBLEM_SET.model_copy(
         update={"assignment_id": "assignment-history-set", "course": "World History"}

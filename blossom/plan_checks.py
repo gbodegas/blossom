@@ -91,15 +91,20 @@ UNRECOGNIZED = "homework Blossom doesn't recognize"
 
 def homework_names(assignments: Iterable[Assignment]) -> dict[str, str]:
     """How a parent reads each assignment in a finding: course and title, with the due date
-    added when two share both."""
+    added when two share both, and the id too when they share the date as well, as a saved
+    plan's rows tell such twins apart."""
     read = list(assignments)
     same = Counter((item.course, item.title) for item in read)
+    twins = Counter((item.course, item.title, item.due_date) for item in read)
     names: dict[str, str] = {}
     for item in read:
         name = f"{item.course} \u00b7 {item.title}"
         if same[(item.course, item.title)] > 1:
             due = item.due_date
-            name += " (no due date)" if due is None else f" (due {due:%b} {due.day})"
+            when = "no due date" if due is None else f"due {due:%b} {due.day}"
+            if twins[(item.course, item.title, due)] > 1:
+                when = f"{when}, {item.assignment_id}"
+            name += f" ({when})"
         names[item.assignment_id] = name
     return names
 
