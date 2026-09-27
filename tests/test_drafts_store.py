@@ -372,6 +372,21 @@ def test_runs_that_ended_are_most_recent_first() -> None:
     assert [run.thread_id for run in store.runs_without_a_draft()] == ["plan:second", "plan:first"]
 
 
+def test_runs_saved_at_one_instant_are_listed_most_recent_first_by_the_order_saved() -> None:
+    """Thread ids are random, so two runs stamped alike are listed by the order they were
+    saved, the same order that says which one is newest."""
+    store = store_in_memory()
+    store.record_run(thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+    store.record_run(thread_id="plan:z", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+
+    runs = store.runs_without_a_draft()
+
+    assert [(run.thread_id, run.newest) for run in runs] == [
+        ("plan:z", True),
+        ("plan:a", False),
+    ]
+
+
 def test_a_run_that_ended_knows_whether_it_is_the_newest_for_its_evening() -> None:
     """A later run of the same evening, with a plan or without, makes an earlier one old;
     a run of another evening does not."""

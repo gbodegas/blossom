@@ -688,8 +688,9 @@ class DraftsStore:
         from a single snapshot and a replacement landing between two reads
         cannot pair one run's outcome with another's steps. Newest is read in
         the same query, against every run of the evening, with a draft or
-        without; two saved at one instant are told apart by the order they were
-        first saved, which saving a run again keeps.
+        without. Two saved at one instant are told apart by the order they were
+        first saved, which saving a run again keeps, both for the listing and
+        for which is newest.
         """
         with self._lock:
             rows = self._connection.execute(
@@ -706,7 +707,7 @@ class DraftsStore:
                        steps.recorded_at AS step_recorded_at
                 FROM runs LEFT JOIN steps ON steps.thread_id = runs.thread_id
                 WHERE runs.thread_id NOT IN (SELECT thread_id FROM drafts)
-                ORDER BY runs.recorded_at DESC, runs.thread_id, steps.position
+                ORDER BY runs.recorded_at DESC, runs.rowid DESC, steps.position
                 """
             ).fetchall()
         grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
