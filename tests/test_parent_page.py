@@ -28,7 +28,7 @@ from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
-from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
+from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
 from blossom.stores.project_state import Assignment, Saved, Undone
 from tests import support
 from tests.support import (
@@ -964,3 +964,115 @@ def test_a_failed_plan_keeps_the_names_the_run_read_after_the_homework_changes()
     assert "the plan leaves out Algebra II \u00b7 Quadratic modeling problem set" in fold
     assert "Renamed problem set" not in fold
     assert "Renamed problem set" in titles
+
+
+LONG_TITLE = "PhotosynthesisAndCellularRespirationReview"
+
+
+def long_twins() -> list[Assignment]:
+    """Two Science assignments due the same day under one title that is a single long word."""
+    return [
+        Assignment(
+            assignment_id=identity("Science", LONG_TITLE, occurrence),
+            course="Science",
+            title=LONG_TITLE,
+            due_date=date(2026, 8, 24),
+            dependencies=[],
+            reported_submission_status="not_started",
+        )
+        for occurrence in ("first", "second")
+    ]
+
+
+def deferring_the_twins() -> DailyPlan:
+    """The fixture week's passing plan with both twins put off, so it passes every check."""
+    plan = support.fixture_week_plan()
+    put_off = [
+        Deferral(assignment_id=item.assignment_id, reason="due Monday") for item in long_twins()
+    ]
+    return plan.model_copy(update={"deferred": [*plan.deferred, *put_off]})
+
+
+def faulting_the_reasons() -> CriticVerdict:
+    return CriticVerdict(
+        findings=[
+            CriterionFinding(
+                criterion=criterion,
+                critique="the reasons repeat themselves",
+                judgment=Judgment.FAILS if criterion is Criterion.RATIONALE else Judgment.PASSES,
+            )
+            for criterion in Criterion
+        ]
+    )
+
+
+def rules_for(css: str, name: str) -> list[str]:
+    """The declarations of every rule whose selectors use the class ``name``."""
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    return [
+        inside
+        for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain)
+        if re.search(rf"\.{re.escape(name)}(?![\w-])", head)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("card", "opening"),
+    [
+        ("failed run", '<article class="draft outcome-checks_failed">'),
+        ("kept plan", '<article class="draft outcome-unsettled">'),
+        ("reviewed kept plan", '<article class="draft decided-approved">'),
+    ],
+    ids=["failed run", "kept plan", "reviewed kept plan"],
+)
+def test_long_homework_labels_in_a_runs_explanation_stay_whole_and_wrap(
+    card: str, opening: str
+) -> None:
+    labels = [
+        f"Science \u00b7 {LONG_TITLE} (due Aug 24, {item.assignment_id})" for item in long_twins()
+    ]
+    with support.browser(key=True) as client:
+        store_of(client).upsert_assignments(long_twins())
+        if card == "failed run":
+            ended_runs(client, lambda: [forgetful_fixture_plan()] * 3)
+        else:
+            client.app.dependency_overrides[plan_graphs] = support.scripted_graphs(  # type: ignore[attr-defined]
+                lambda: [deferring_the_twins(), deferring_the_twins(), forgetful_fixture_plan()],
+                lambda: [faulting_the_reasons()] * 2,
+            )
+            posted = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+            assert posted.status_code == 303
+        if card == "reviewed kept plan":
+            draft_id = client.get("/parent/approvals").json()["waiting"][0]["draft_id"]
+            decided = client.post(
+                f"/parent/actions/decide/{draft_id}", data={"decision": "approve", "reason": ""}
+            )
+            assert decided.status_code == 303
+        page = client.get("/parent").text
+    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
+
+    start = page.index(opening)
+    article = page[start : page.index("</article>", start)]
+    naming = [
+        line
+        for line in re.findall(r'<p class="step-line">([^<]*)</p>', article)
+        if LONG_TITLE in line
+    ]
+    assert naming
+    assert all(label in line for line in naming for label in labels)
+    assert any("overflow-wrap: anywhere;" in rule for rule in rules_for(css, "step-line"))
+    if card == "failed run":
+        assert re.search(
+            r"""<details class="steps panel-fold" open>\s*<summary>Plans that couldn't be made"""
+            rf"""</summary>\s*<section>\s*{opening}""",
+            page,
+        )
+        note = re.search(r'<p class="note">(In the last version[^<]*)</p>', article)
+        assert note is not None
+        assert all(label in note.group(1) for label in labels)
+        assert ".steps .draft {\n  min-width: 0;\n  overflow-wrap: anywhere;\n}" in css
+    for name in ("draft", "step-line", "note", "steps"):
+        for rule in rules_for(css, name):
+            for cut in ("text-overflow", "overflow:", "overflow-x", "nowrap"):
+                assert cut not in rule
+            assert "overflow-wrap" not in rule or "overflow-wrap: anywhere;" in rule

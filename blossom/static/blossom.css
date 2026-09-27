@@ -792,6 +792,14 @@ button[disabled] {
   margin-block: 0.75rem 0;
 }
 
+/* A run's explanation names homework by course and title, and a title can be one
+   long word. The cards in a fold break it where they must, so the page never
+   scrolls sideways. */
+.steps .draft {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .return a {
   color: var(--blue-action);
   font-weight: 700;
@@ -1001,6 +1009,7 @@ details summary {
 .step-line {
   margin: 0.1rem 0;
   font-size: 0.95rem;
+  overflow-wrap: anywhere;
 }
 
 .too-much .actions {
