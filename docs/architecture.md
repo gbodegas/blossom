@@ -625,7 +625,9 @@ record it was built from. The planner is told to plan so that an earlier real
 date would still be met, and to say that a date may be wrong once in the plan,
 where it changes what she does tonight, never for work due the next day. A
 week read from the school's site is usually one source throughout, and the
-same warning in every block reads as stamped on to her and to the reviewer. One source counts as short of corroborated: that is
+same warning in every block reads as stamped on to her and to the reviewer.
+The reviewer is told the same rule, so it does not send a plan back for
+keeping it. One source counts as short of corroborated: that is
 the reason `SINGLE_SOURCE` is a state of its own rather than a kind of yes, and
 the flag is read by exclusion so a state added later reads as uncertain until
 somebody decides otherwise.

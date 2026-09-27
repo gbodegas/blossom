@@ -621,6 +621,22 @@ def test_the_planner_says_a_date_may_be_wrong_once_and_never_where_it_cannot_be(
     ) in system
 
 
+def test_the_reviewer_is_told_the_same_rule_for_a_date_that_may_be_wrong() -> None:
+    """A reviewer that expects the warning in every block sends a plan back for keeping the
+    planner's rule, and a round is spent on it. Both are told the same rule."""
+    critic = Scripted(ok(accepting()))
+
+    run(graph_with(Scripted(ok(good_plan())), critic))
+
+    system = " ".join(str(critic.briefs[0][0].content).split())
+    assert (
+        "A plan says once that a date from a single source may be wrong, in the block where "
+        "it changes what she does tonight; it does not repeat that across blocks, and it does "
+        "not say it of work due the day after the plan date, which cannot be due sooner than "
+        "tonight. Do not fault the reasons for leaving it out elsewhere."
+    ) in system
+
+
 def test_copied_text_is_escaped_inside_its_block() -> None:
     """A title that reads like markup or an instruction stays a title."""
     hostile = Assignment(
