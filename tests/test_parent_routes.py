@@ -349,7 +349,9 @@ def test_a_run_answers_with_its_steps_and_the_queue_carries_them() -> None:
 
     nodes = [item["node"] for item in started["steps"]]
     assert nodes == ["retrieve", "plan", "verify", "critique"]
-    assert started["steps"][0]["found"].startswith("7 assignments in the week: 1 contradicted")
+    assert started["steps"][0]["found"].startswith(
+        "7 assignments to plan. 1 has a due date the school's sources don't support."
+    )
     assert [item["node"] for item in detail["steps"]] == nodes
     assert [item["node"] for item in queue["waiting"][0]["steps"]] == nodes
 
@@ -369,6 +371,9 @@ def test_a_run_that_produced_nothing_still_leaves_its_record() -> None:
         "plan",
         "verify",
     ]
-    assert "Ended without a plan" in page
-    assert "The plan failed its checks after every revision." in page
+    assert "Plans that couldn't be made" in page
+    assert (
+        "Every version Blossom wrote broke one of its rules, so there&#39;s no plan to "
+        "review. Planning again may work, since each try writes a fresh plan." in page
+    )
     assert "How this run went" in page

@@ -72,7 +72,9 @@ With the app running as the README describes:
 - <http://127.0.0.1:8000/parent> is the parent's page: read the plan she has,
   see how it was made step by step, and say it looks good or ask for a
   change. A parent can also start an evening's plan for her there. A run that
-  ended without a plan is listed with its steps too. Planning needs an API
+  ended without a plan is listed with its steps too, under "Plans that
+  couldn't be made", which opens by itself when the latest run of an evening
+  still ahead made no plan. Planning needs an API
   key; reading and reviewing do not, so without one either page says a plan
   cannot start and everything else works. Where her Done stands beside a
   school report of Missing, the page offers Mark checked, with a note for

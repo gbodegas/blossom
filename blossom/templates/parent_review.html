@@ -8,10 +8,8 @@
       <ol>
         {% for step in steps %}
           <li>
-            <span class="step-node">{{ step.node }}</span>
-            <span class="step-round">round {{ step.round }}</span>
-            <p class="step-line">Expected: {{ step.expected }}.</p>
-            <p class="step-line">Found: {{ step.found }}.</p>
+            <span class="step-node">{{ step_label(step.node, step.round) }}</span>
+            <p class="step-line">{{ step.found|step_sentence }}</p>
           </li>
         {% endfor %}
       </ol>
@@ -601,16 +599,17 @@ Cover both books with paper.</pre>
   </details>
 
   {% if ended %}
-    <details class="steps panel-fold">
-      <summary>Ended without a plan</summary>
+    <details class="steps panel-fold"{% if ended_open %} open{% endif %}>
+      <summary>Plans that couldn't be made</summary>
       <section>
         {% for run in ended %}
           <article class="draft outcome-{{ run.outcome }}">
-            <p class="course">Evening of {{ run.plan_date }}</p>
+            <p class="course">{{ run.heading }}</p>
             <p class="confidence disagree">
               <strong>{{ run.summary }}</strong>
               <span class="when">Ended {{ local(run.recorded_at) }}.</span>
             </p>
+            {% if run.last_check %}<p class="note">{{ run.last_check }}</p>{% endif %}
             {{ steps_list(run.steps, "How this run went") }}
           </article>
         {% endfor %}

@@ -2024,7 +2024,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return student_page(
             request,
             state,
-            problem=ended_without_a_plan(run.outcome),
+            problem=ended_without_a_plan(run.outcome, parent=parent_reads(request)),
             status_code=status.HTTP_409_CONFLICT,
         )
     return RedirectResponse(f"{PAGE}?show_plan=1", status_code=status.HTTP_303_SEE_OTHER)

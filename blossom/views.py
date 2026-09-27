@@ -16,12 +16,13 @@ from datetime import date
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from blossom.agent.steps import StepRecord, describe_outcome
+from blossom.agent.steps import StepRecord, describe_last_check, describe_outcome
 from blossom.assignment_status import HistoryRow
 from blossom.captures import Capture
 from blossom.drafts import Decision, DraftStatus
 from blossom.hand_in import HandInProjection
 from blossom.intake import spoken_report
+from blossom.plan_reading import no_plan_title
 from blossom.reconciliation import CHANNEL_NAMES, SourceConfidence
 from blossom.school_instructions import InstructionsStanding
 from blossom.stores.drafts import DraftRecord, RunRecord
@@ -628,16 +629,21 @@ class PlanRunView(BaseModel):
 class RunView(BaseModel):
     """A run that ended before the gate, for the parent who would have decided.
 
-    ``summary`` says in one sentence why there is nothing to approve, and the
-    steps say what happened on the way.
+    ``summary`` says in plain words why there is nothing to approve and what to
+    do, ``last_check`` what the last rules check found when the run ended at
+    one, and the steps what happened on the way. ``newest`` is whether no later
+    run of its evening was saved.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     plan_date: date
+    heading: str
     outcome: str
     summary: str
+    last_check: str | None
     recorded_at: AwareDatetime
+    newest: bool
     steps: list[StepRecord]
 
     @classmethod
@@ -645,9 +651,12 @@ class RunView(BaseModel):
         """The parent's projection of a run row. The thread id stays out of it."""
         return cls(
             plan_date=record.plan_date,
+            heading=no_plan_title(record.plan_date),
             outcome=record.outcome,
             summary=describe_outcome(record.outcome),
+            last_check=describe_last_check(record.steps),
             recorded_at=record.recorded_at,
+            newest=record.newest,
             steps=record.steps,
         )
 

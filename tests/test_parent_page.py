@@ -15,6 +15,7 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 
 from blossom.agent.graph import plan_graph_for
+from blossom.agent.steps import StepRecord
 from blossom.app import create_app
 from blossom.clock import spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
@@ -28,7 +29,14 @@ from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.stores.project_state import Saved, Undone
-from tests.support import FIXTURE_TIMEZONE, SAME_ORIGIN, Scripted, fixture_settings, ok
+from tests.support import (
+    FIXTURE_TIMEZONE,
+    SAME_ORIGIN,
+    Scripted,
+    fixture_settings,
+    ok,
+    state_of,
+)
 
 PLAN_DATE = date(2026, 8, 19)
 CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
@@ -534,11 +542,16 @@ def test_the_page_shows_how_a_waiting_plan_was_made() -> None:
         page = client.get("/parent").text
 
     assert "How this plan was made" in page
-    assert '<span class="step-node">retrieve</span>' in page
-    assert "Expected: the record&#39;s due dates hold against the school&#39;s sources." in page
-    assert "Found: all 8 checks passed." in page
-    assert "Found: accepted on every criterion." in page
-    assert "Ended without a plan" not in page
+    assert '<span class="step-node">Read the week</span>' in page
+    assert '<span class="step-node">First plan</span>' in page
+    assert '<span class="step-node">Rules check</span>' in page
+    assert '<span class="step-node">Reviewer</span>' in page
+    assert "It kept all 8 rules." in page
+    assert "The reviewer found nothing to change." in page
+    assert "Expected:" not in page
+    assert "Found:" not in page
+    assert "round 1" not in page
+    assert "Plans that couldn't be made" not in page
 
 
 def test_a_decided_plan_keeps_the_record_of_how_it_was_made() -> None:
@@ -548,7 +561,18 @@ def test_a_decided_plan_keeps_the_record_of_how_it_was_made() -> None:
         page = client.get("/parent").text
 
     assert page.count("How this plan was made") == 1
-    assert "Found: accepted on every criterion." in page
+    assert "The reviewer found nothing to change." in page
+
+
+def ended_fold_open(page: str) -> bool:
+    """Whether the fold of plans that couldn't be made is open, read from that fold alone:
+    the page's other folds share its class."""
+    found = re.search(
+        r"""<details class="steps panel-fold"( open)?>\s*<summary>Plans that couldn't be made""",
+        page,
+    )
+    assert found is not None
+    return found.group(1) is not None
 
 
 def forgetful() -> DailyPlan:
@@ -562,12 +586,74 @@ def test_a_run_that_ended_without_a_plan_is_on_the_page_with_its_steps() -> None
         page = client.get("/parent").text
 
     assert posted.status_code == 303
-    assert "Ended without a plan" in page
-    assert "The plan failed its checks after every revision." in page
+    assert ended_fold_open(page)
+    assert "<summary>Plans that couldn't be made</summary>" in page
+    assert "No plan for Wednesday, August 19, 2026" in page
+    assert (
+        "Every version Blossom wrote broke one of its rules, so there&#39;s no plan to "
+        "review. Planning again may work, since each try writes a fresh plan." in page
+    )
+    assert "In the last version, it broke 1 of 8 rules:" in page
+    assert "ended with checks_failed" not in page
     assert "How this run went" in page
-    assert page.count('<span class="step-node">plan</span>') == 3
-    assert "Found: 1 of 8 checks failed:" in page
+    for label in ("First plan", "Second plan", "Third plan"):
+        assert f'<span class="step-node">{label}</span>' in page
+    assert page.count('<span class="step-node">Rules check</span>') == 3
     assert "No plans need your review." in page
+
+
+def test_a_run_a_later_run_of_its_evening_followed_is_kept_closed() -> None:
+    """The failed run is the record of an evening a later plan answered, so the page
+    keeps it folded."""
+    scripts = iter([[forgetful()] * 3, [a_plan()]])
+    with browser(plans=lambda: next(scripts)) as client:
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        page = client.get("/parent").text
+
+    assert not ended_fold_open(page)
+    assert "No plan for Wednesday, August 19, 2026" in page
+
+
+def test_a_run_for_an_evening_already_past_is_kept_closed() -> None:
+    with browser() as client:
+        state_of(client).drafts.record_run(
+            thread_id="plan:2026-08-18:old",
+            plan_date=PLAN_DATE - timedelta(days=1),
+            outcome="checks_failed",
+            steps=[],
+        )
+        page = client.get("/parent").text
+
+    assert not ended_fold_open(page)
+    assert "No plan for Tuesday, August 18, 2026" in page
+    assert "In the last version" not in page
+
+
+def test_a_run_recorded_in_earlier_words_reads_as_sentences() -> None:
+    """A run saved before the steps were written as sentences reads as sentences all the
+    same, labeled by what each step did."""
+    at = datetime(2026, 8, 19, 20, tzinfo=UTC)
+    steps = [
+        StepRecord(
+            node="plan", round=1, expected="", found="1 block asking 60 minutes", recorded_at=at
+        ),
+        StepRecord(
+            node="verify", round=1, expected="", found="all 8 checks passed", recorded_at=at
+        ),
+    ]
+    with browser() as client:
+        state_of(client).drafts.record_run(
+            thread_id="plan:2026-08-19:earlier",
+            plan_date=PLAN_DATE,
+            outcome="model_refused",
+            steps=steps,
+        )
+        page = client.get("/parent").text
+
+    assert '<span class="step-node">First plan</span>' in page
+    assert '<p class="step-line">1 block asking 60 minutes.</p>' in page
+    assert '<p class="step-line">All 8 checks passed.</p>' in page
 
 
 # ------------------------------------------------------- the plan and the week

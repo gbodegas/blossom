@@ -621,7 +621,11 @@ snapshot and draft name different evenings, whatever the checks said.
 
 A due date that is anything short of corroborated does not fail a plan. It is
 carried on the result as a flag, because a plan cannot be more certain than the
-record it was built from. One source counts as short of corroborated: that is
+record it was built from. The planner is told to plan so that an earlier real
+date would still be met, and to say that a date may be wrong once in the plan,
+where it changes what she does tonight, never for work due the next day. A
+week read from the school's site is usually one source throughout, and the
+same warning in every block reads as stamped on to her and to the reviewer. One source counts as short of corroborated: that is
 the reason `SINGLE_SOURCE` is a state of its own rather than a kind of yes, and
 the flag is read by exclusion so a state added later reads as uncertain until
 somebody decides otherwise.
@@ -670,7 +674,12 @@ evening before the run.
 back to `plan` with the findings before any critic sees it, because a
 judgment about a plan that is already wrong is a wasted call. `critique` asks
 the critic; fault sends the plan back with the critique, doubt sends it
-forward. `compose` renders the plan, the doubtful due dates, and the
+forward. A plan the critic sends back is kept in the state with its
+verification, since it passed tier one. A revision is shown the plan it
+revises, with only its entries for the work listed, and asked to change what
+the findings name and keep the rest, block times included; a planner that
+cannot see its last plan writes a new one and moves what no finding was
+about. `compose` renders the plan, the doubtful due dates, and the
 reviewer's notes as the text she reads, and saves it to the drafts table
 under an id derived from the thread, as the record; the route publishes it
 once the run has paused, and from that moment the plan is on her page. `require_human_approval` is the gate from `blossom/agent/gates.py`,
@@ -688,9 +697,12 @@ record, which `compose` saves with the draft. It is off the path to the gate,
 so a paused thread never meets it and the version stays put.
 
 The loop is bounded twice. The planner may be sent back `MAX_REVISIONS` times,
-after which a plan that still fails tier one is reported as `checks_failed` and
-nothing is proposed, while a plan the critic still faults goes to the gate as
-`unsettled`. And every run carries the recursion limit from
+after which a plan the critic still faults goes to the gate as `unsettled`. A
+last revision that fails tier one goes nowhere itself: the latest plan that
+passed tier one goes to the gate in its place, as `unsettled`, with the
+critique that sent it back and a `rescue` step saying why, and no model is
+asked again for it. Only a run in which no plan passed tier one is reported as
+`checks_failed`, with nothing proposed. And every run carries the recursion limit from
 `blossom/agent/runs.py`; a test holds the longest possible run under it, so
 the limit is a backstop and never the thing that ends a legitimate run.
 
@@ -717,13 +729,15 @@ each step, and nothing that runs the process.
 Each of the four nodes before `compose` appends one `StepRecord` from
 `blossom/agent/steps.py` to the state's `steps` key, under the same reducer
 `rounds` uses: the node's name, the planner round it belongs to, what it
-expected before acting, what it found, and the household clock's time. The
-words are built from the typed values, never from the model's prose: the
-week's counts, the plan's shape, which checks failed and why, which criteria
-the reviewer faulted, could not tell, or left out, and what a model call cost
-in tokens when the answer carried it. The reviewer's critique is its own
-prose, so it stays in the draft's notes and out of the record; the planner's
-rationales likewise. The record exists because the final state cannot
+expected before acting, what it found, and the household clock's time; a
+plan kept for the gate adds a `rescue` step. The words are plain sentences a
+parent reads, built from the typed values, never from the model's prose: the
+week's counts, the plan's shape, which checks failed and why, and which
+criteria the reviewer faulted, could not tell, or left out. What a model call
+cost stays in the trace. The reviewer's critique is its own prose, so it stays
+in the draft's notes and out of the record; the planner's rationales likewise.
+The family page labels each step by what it did, such as "Read the week",
+"Second plan", or "Rules check", and shows what it found. The record exists because the final state cannot
 say how a run got where it did: a passing check clears the findings that sent
 the plan back, and an accepted verdict says nothing about the one before it.
 Nothing reads the steps to decide what happens next.

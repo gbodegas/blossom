@@ -114,7 +114,7 @@ def test_both_budgets_are_the_households_numbers() -> None:
     )
 
     assert signaled["budget_minutes"] == 100
-    assert signaled["steps"][0].found.endswith("so the budget is 100 minutes")
+    assert signaled["steps"][0].found.endswith("so the evening allows 100 minutes.")
     assert usual["budget_minutes"] == 200
 
 
@@ -203,7 +203,7 @@ def test_a_signal_cuts_the_budget_before_the_planner_is_asked() -> None:
     assert "<too_much>" in brief
     assert "She said today is too much." in brief
     assert result["steps"][0].found.endswith(
-        "she said today is too much, so the budget is 75 minutes"
+        "She said today is too much, so the evening allows 75 minutes."
     )
 
 
@@ -331,7 +331,7 @@ def test_a_press_on_her_page_reaches_the_parents_plan() -> None:
         page = client.get("/parent").text
 
     assert started["steps"][0]["found"].endswith(
-        "she said today is too much, so the budget is 75 minutes"
+        "She said today is too much, so the evening allows 75 minutes."
     )
     assert "You said today was too much, so this plan is kept to 75 minutes." in page
 
@@ -402,7 +402,7 @@ def test_a_plan_made_after_the_press_fits_and_can_be_approved() -> None:
         approve = client.post(f"/parent/approvals/{started['draft_id']}", json={"approved": True})
 
     assert queue[0]["stale"] is None
-    assert started["steps"][0]["found"].endswith("so the budget is 75 minutes")
+    assert started["steps"][0]["found"].endswith("so the evening allows 75 minutes.")
     assert approve.status_code == 200
     assert approve.json()["decision"] == "approved"
 

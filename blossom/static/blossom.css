@@ -998,12 +998,6 @@ details summary {
   color: var(--blue-action);
 }
 
-.step-round {
-  margin-left: 0.4rem;
-  font-size: 0.9rem;
-  color: var(--text-soft);
-}
-
 .step-line {
   margin: 0.1rem 0;
   font-size: 0.95rem;
