@@ -185,14 +185,19 @@
                   </div>
                 </div>
               {% endif %}
-              {% if change.pick_refused %}
-                {% set row = unsaved_picks.get(change.key) %}
+              {% if change.key in unsaved_picks %}
+                {% set unsaved_pick = unsaved_picks[change.key] %}
+                {% set row = unsaved_pick.row %}
                 <div class="picked-unsaved" id="picked-unsaved-{{ change.key }}" tabindex="-1">
-                  <p class="problem">Not saved: this card or the homework chosen for it changed after it was chosen.{% if not row %} That homework isn't on record now.{% elif not change.offers %} This card doesn't offer that choice now.{% else %} Here it is as it stands now; choose it again if it's still the one.{% endif %}</p>
+                  <p class="problem">{% if unsaved_pick.why == "changed" %}That homework changed since this page was made. It wasn't chosen.{% else %}Not saved: this card or the homework chosen for it changed after it was chosen.{% endif %}{% if not row %} That homework isn't on record now.{% elif unsaved_pick.can_choose %} Here it is as it stands now; choose it again if it's still the one.{% elif change.offers and row.row.assignment_id in choosable_on.get(change.key, ()) %} Here it is as it stands now, among the results below.{% else %} Here it is as it stands now. This card doesn't offer it as a choice now; answer the card as it stands.{% endif %}</p>
                   {% if row %}
                     <ol class="history-list">
-                      {% with item = row, key = change.key, again = change.offers %}{% include "inbox_found_row.html" %}{% endwith %}
+                      {% with item = row, key = change.key, again = true, can_choose = unsaved_pick.can_choose %}{% include "inbox_found_row.html" %}{% endwith %}
                     </ol>
+                  {% endif %}
+                  {% if not change.offers and typed.get(change.key) %}
+                    <p class="note">Your search words: <q class="authored-text">{{ typed[change.key] }}</q></p>
+                    <input type="hidden" name="search-{{ change.key }}" value="{{ typed[change.key] }}">
                   {% endif %}
                 </div>
               {% endif %}
@@ -204,7 +209,7 @@
                   until Save.
                 #}
                 {% set looking = search_view is not none and search_view.key == change.key %}
-                <details class="rename" id="rename-{{ change.key }}"{% if looking or change.pick_refused or focus == "rename-" ~ change.key %} open{% endif %}>
+                <details class="rename" id="rename-{{ change.key }}"{% if looking or change.key in unsaved_picks or focus == "rename-" ~ change.key %} open{% endif %}>
                   <summary{% if focus == "rename-" ~ change.key %} autofocus{% endif %}>Is this homework already here under another name?</summary>
                   <p class="helper">Search the homework saved here by words from its class or title, then choose it. Nothing is saved until you press Save.</p>
                   <div class="search-line">
@@ -222,7 +227,7 @@
                         <h3 class="update-heading" id="search-results-{{ change.key }}" tabindex="-1"{% if focus == "search-results-" ~ change.key %} autofocus{% endif %}>Found {{ view.results.total }}{% if view.results.last > 1 %}, page {{ view.results.number }} of {{ view.results.last }}{% endif %}</h3>
                         <ol class="history-list">
                           {% for item in view.rows %}
-                            {% with key = change.key, again = false %}{% include "inbox_found_row.html" %}{% endwith %}
+                            {% with key = change.key, again = false, can_choose = true %}{% include "inbox_found_row.html" %}{% endwith %}
                           {% endfor %}
                         </ol>
                         {% if view.results.previous or view.results.next %}

@@ -297,12 +297,17 @@ def client_in(tmp_path: pathlib.Path, today: str = TODAY) -> TestClient:
 
 
 def review_form(page: str) -> dict[str, str]:
-    """The review form as a browser sends it back untouched: hidden fields, each select's
-    chosen option, each ticked box, and the text."""
+    """The review form as a browser sends it back untouched: hidden fields, the words in each
+    text field, each select's chosen option, each ticked box, and the text."""
     fields = {
         name: html.unescape(value)
         for name, value in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page)
     }
+    for field in re.findall(r'<input type="text"[^>]*>', page):
+        named = re.search(r'name="([^"]+)"', field)
+        valued = re.search(r'value="([^"]*)"', field)
+        if named is not None:
+            fields[named.group(1)] = html.unescape(valued.group(1) if valued else "")
     for name, body in re.findall(r'<select name="([^"]+)"[^>]*>(.*?)</select>', page, re.S):
         chosen = re.search(r'<option value="([^"]+)" selected>', body)
         assert chosen is not None, name
@@ -596,6 +601,7 @@ def test_remove_puts_the_card_back_as_new_homework(tmp_path: pathlib.Path) -> No
     assert names(removed.text, 0) == ""
     assert offered(removed.text, 0)
     assert ">New</span>" in removed.text
+    assert found(removed.text, 0) == [mine]
 
 
 # ------------------------------------------------------------------ Save, and later pastes
@@ -1235,3 +1241,309 @@ def test_a_direct_caller_is_held_to_the_rules_for_a_choice(tmp_path: pathlib.Pat
     assert isinstance(no_page, NotOffered)
     assert isinstance(sound_but_no_page, NotOffered)
     assert after["intake_decisions"] == []
+
+
+# ------------------------------------------------------------------ review of b3eb9bf
+
+WEEKLY = (
+    "Tuesday 9/1/2026\nMath\nDue: Weekly practice:\nShow all steps.\n"
+    "Tuesday 9/15/2026\nMath\nDue: Weekly practice:\nUse a pencil.\n"
+    "Thursday 10/1/2026\nArt\nDue: Picture:\n"
+)
+
+
+def unavailable_text(page: str) -> str:
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", "", page)).split())
+
+
+@pytest.mark.parametrize(
+    ("method", "problem"),
+    [
+        ("deadline_records_by_assignment", "claim"),
+        ("intake_decisions", "decision"),
+        ("school_instruction_readings", "instruction"),
+    ],
+)
+def test_a_record_that_cant_be_read_while_the_review_is_redrawn_keeps_the_choice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, method: str, problem: str
+) -> None:
+    """The review is redrawn after a press and the comparison meets a record that can't be
+    read: the page that reads no store keeps the paste, the other answers, and the homework
+    chosen under another name, and nothing is written."""
+    from blossom import intake
+    from blossom.routes import inbox
+    from blossom.stores.intake_decisions import UnreadableDecision
+    from blossom.stores.project_state import UnreadableClaim
+    from blossom.stores.school_instructions import UnreadableInstruction
+
+    raised = {
+        "claim": UnreadableClaim,
+        "decision": UnreadableDecision,
+        "instruction": UnreadableInstruction,
+    }[problem]
+    with client_in(tmp_path) as client:
+        mine = patterns_quiz(client)
+        page = chosen(client, Q1_ASSIGNED, mine)
+        before = tables(client)
+        real = intake.changes_for
+
+        def comparing(*args: object, **kwargs: object) -> object:
+            # The redrawn page's comparison is the one that carries the instruction answers.
+            if "instruction_answers" in kwargs:
+                msg = "cannot be read"
+                raise raised(msg)
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(inbox, "changes_for", comparing)
+        failed = press(client, page, find="0", **{"search-0": "patterns"})
+        monkeypatch.undo()
+        after = tables(client)
+
+    shown = unavailable_text(failed.text)
+    assert failed.status_code == 500
+    assert after == before
+    assert "Q1 Check 3" in shown
+    assert f"homework already here under another name, with id {mine}" in shown
+    assert method
+
+
+@pytest.mark.parametrize("renamed_to", ["another-name", "the-cards-own-name"])
+def test_choose_on_a_result_renamed_since_shows_it_as_it_stands(
+    tmp_path: pathlib.Path, renamed_to: str
+) -> None:
+    """The quiz was renamed after the results were shown, so the words searched don't find
+    it now. Choose picks nothing, and the quiz is shown under its new name all the same; it
+    can be chosen again only while the card still offers it and it has another name."""
+    title = "Unit One quiz" if renamed_to == "another-name" else "Q1 Check 3"
+    with client_in(tmp_path) as client:
+        mine = patterns_quiz(client)
+        page = read(client, Q1_ASSIGNED)
+        looked = press(client, page, find="0", **{"search-0": "patterns"})
+        store = store_of(client)
+        with store._connection:
+            store._connection.execute(
+                "UPDATE assignments SET title = ? WHERE assignment_id = ?", (title, mine)
+            )
+        before = tables(client)
+        refused = press(client, looked.text, choose=f"0:{mine}")
+        after = tables(client)
+        again = (
+            press(client, refused.text, choose=f"0:{mine}")
+            if renamed_to == "another-name"
+            else None
+        )
+
+    shown = html.unescape(refused.text)
+    assert refused.status_code == 200
+    assert after == before
+    assert "picked-0" not in review_form(refused.text)
+    assert "That homework changed since this page was made." in shown
+    assert title in shown
+    assert mine in shown
+    if again is None:
+        assert found(refused.text, 0) == []
+    else:
+        assert found(refused.text, 0) == [mine]
+        assert review_form(again.text)["picked-0"] == mine
+
+
+@pytest.mark.parametrize("answer", [{"none-0": "1"}, {"apply-0-0": "1"}])
+@pytest.mark.parametrize(
+    ("pressed", "status"),
+    [({"find": "2", "search-2": "picture"}, 200), ({"remove": "2"}, 422)],
+    ids=["find", "a-press-the-page-refuses"],
+)
+def test_a_press_never_turns_an_answer_the_page_didnt_ask_into_one_it_did(
+    tmp_path: pathlib.Path, answer: dict[str, str], pressed: dict[str, str], status: int
+) -> None:
+    """An instruction question carried over from another review, with the original page's
+    signature, is refused by Save. Sent with a press instead, one the page takes or one it
+    refuses, it stays unsaved: the page returned doesn't sign it as asked, and the Save
+    after it writes nothing."""
+    with client_in(tmp_path) as client:
+        page = read(client, WEEKLY)
+        original = review_form(page)
+        second = client.post("/parent/inbox/keep", data={**original, "occurrence-1": "update"})
+        asked = {
+            name: value
+            for name, value in review_form(second.text).items()
+            if name.startswith(("instructions-", "instruction-", "row-"))
+        }
+        carried = {**original, **asked, "occurrence-1": "update", **answer}
+        before = tables(client)
+        direct = client.post("/parent/inbox/keep", data=carried)
+        looked = client.post("/parent/inbox/find", data={**carried, **pressed})
+        saved = client.post("/parent/inbox/keep", data=review_form(looked.text))
+        after = tables(client)
+
+    assert asked
+    assert direct.status_code == 422
+    assert looked.status_code == status
+    assert saved.status_code != 303
+    assert after == before
+
+
+def test_an_answer_the_page_asked_survives_a_search_and_saves_once(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        page = read(client, WEEKLY)
+        second = client.post(
+            "/parent/inbox/keep", data={**review_form(page), "occurrence-1": "update"}
+        )
+        ticked = {**review_form(second.text), "apply-0-0": "1"}
+        looked = client.post(
+            "/parent/inbox/find", data={**ticked, "find": "2", "search-2": "picture"}
+        )
+        saved = client.post("/parent/inbox/keep", data=review_form(looked.text))
+        before = tables(client)
+        again = client.post("/parent/inbox/keep", data=review_form(looked.text))
+        after = tables(client)
+
+    assert second.status_code == 200
+    assert looked.status_code == 200
+    assert saved.status_code == 303
+    assert again.status_code == 303
+    assert after == before
+
+
+def test_a_refused_save_keeps_the_search_words_and_the_choice_can_be_saved_after(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        mine = patterns_quiz(client)
+        page = chosen(client, Q1_ASSIGNED, mine)
+        store = store_of(client)
+        with store._connection:
+            store._connection.execute(
+                "UPDATE assignments SET due_date = '2026-10-02' WHERE assignment_id = ?", (mine,)
+            )
+        before = tables(client)
+        refused = save(client, page)
+        after_refusal = tables(client)
+        again = press(client, refused.text, choose=f"0:{mine}")
+        saved = save(client, again.text)
+        settled = tables(client)
+        retried = save(client, again.text)
+        after_retry = tables(client)
+
+    assert refused.status_code == 409
+    assert after_refusal == before
+    assert review_form(refused.text)["search-0"] == "patterns"
+    assert 'id="search-results-0"' in refused.text
+    assert review_form(again.text)["search-0"] == "patterns"
+    assert saved.status_code == 303
+    assert retried.status_code == 303
+    assert after_retry == settled
+
+
+def test_search_words_on_one_card_survive_a_question_left_open_on_another(
+    tmp_path: pathlib.Path,
+) -> None:
+    with client_in(tmp_path) as client:
+        homework_from_a_note(store_of(client), course="Health", title="Course Guide Due")
+        patterns_quiz(client)
+        page = read(client, GUIDE_CARD + Q1_ASSIGNED.split("\n", 1)[1])
+        looked = press(client, page, find="1", **{"search-1": "patterns"})
+        unanswered = save(client, looked.text)
+
+    assert unanswered.status_code == 200
+    assert review_form(unanswered.text)["search-1"] == "patterns"
+
+
+def test_a_choice_the_card_no_longer_offers_is_shown_without_a_choose_press(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Homework of the school's own name arrived before Save: the card lands there now, so
+    the choice made on it is said as not saved, with no press that can't succeed."""
+    with client_in(tmp_path) as client:
+        mine = patterns_quiz(client)
+        page = chosen(client, Q1_ASSIGNED, mine)
+        school_row(client, "assignment-q1-check-3", "08 Algebra", "Q1 Check 3", date(2026, 10, 1))
+        refused = save(client, page)
+
+    assert refused.status_code == 409
+    assert 'id="picked-unsaved-0"' in refused.text
+    assert mine in refused.text
+    assert found(refused.text, 0) == []
+
+
+@pytest.mark.parametrize("damage", ["decision", "instruction", "file"])
+def test_a_press_that_meets_a_record_it_cant_read_keeps_the_paste_and_the_choice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    """Find or Choose meets an answer or an instruction that can't be read, or a file that
+    refuses the read: the page that reads no store keeps the paste and the choice, and
+    nothing is written. Repaired, the paste can be reviewed and saved afresh."""
+    from blossom.stores.school_instructions import UnreadableInstruction
+
+    with client_in(tmp_path) as client:
+        mine = patterns_quiz(client)
+        page = chosen(client, Q1_ASSIGNED, mine)
+        looked = press(client, page, find="0", **{"search-0": "patterns"})
+        store = store_of(client)
+        if damage == "decision":
+            keep_answer(store, a_renamed_answer(mine))
+            with store._connection:
+                store._connection.execute("UPDATE intake_decisions SET basis = 'bent'")
+        elif damage == "instruction":
+
+            def unreadable(*_: object, **__: object) -> object:
+                msg = "cannot be read"
+                raise UnreadableInstruction(msg)
+
+            monkeypatch.setattr(store, "school_instruction_readings", unreadable)
+        else:
+
+            def refused_read(*_: object, **__: object) -> object:
+                msg = "the disk refused"
+                raise sqlite3.OperationalError(msg)
+
+            monkeypatch.setattr(store, "one_assignment", refused_read)
+        before = tables(client)
+        failed = (
+            press(client, looked.text, choose=f"0:{mine}")
+            if damage == "file"
+            else press(client, page, find="0", **{"search-0": "patterns"})
+        )
+        after = tables(client)
+        monkeypatch.undo()
+        if damage == "decision":
+            with store._connection:
+                store._connection.execute("DELETE FROM intake_decisions")
+        fresh = chosen(client, Q1_ASSIGNED, mine)
+        saved = save(client, fresh)
+
+    shown = unavailable_text(failed.text)
+    assert failed.status_code == 500
+    assert after == before
+    assert "Q1 Check 3" in shown
+    assert mine in shown
+    assert saved.status_code == 303
+
+
+def test_next_and_previous_take_only_the_pages_the_page_offered(tmp_path: pathlib.Path) -> None:
+    with client_in(tmp_path) as client:
+        for place in range(41):
+            school_row(
+                client, f"assignment-warmup-{place:02}", "Warmups", f"Warmup {place:02}", None
+            )
+        page = read(client, Q1_ASSIGNED)
+        first = press(client, page, find="0", **{"search-0": "warmup"})
+        before = tables(client)
+        jumped = press(client, first.text, results_page="0:3")
+        refused = [
+            press(client, first.text, results_page=value).status_code
+            for value in ("0:0", "0:-1", "1:2", "0:x")
+        ]
+        second = press(client, first.text, results_page="0:2")
+        third = press(client, second.text, results_page="0:3")
+        back = press(client, third.text, results_page="0:2")
+        after = tables(client)
+
+    assert 'name="results_page" value="0:3"' not in first.text
+    assert jumped.status_code == 422
+    assert review_form(jumped.text)["search-0"] == "warmup"
+    assert refused == [422, 422, 422, 422]
+    assert second.status_code == third.status_code == back.status_code == 200
+    assert found(third.text, 0) == ["assignment-warmup-40"]
+    assert found(back.text, 0) == found(second.text, 0)
+    assert after == before

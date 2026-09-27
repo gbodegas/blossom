@@ -81,9 +81,7 @@ from blossom.routes.instruction_answers import (
 )
 from blossom.routes.navigation import instructions_review_href
 from blossom.routes.note_details import choice_from, choice_value
-from blossom.routes.note_links import HOMEWORK_CHANGED as FOUND_HOMEWORK_CHANGED
 from blossom.routes.note_links import (
-    HOMEWORK_GONE,
     NO_SUCH_PAGE,
     NOTHING_FOUND,
     QUERY_REFUSED,
@@ -338,8 +336,9 @@ class PageMade:
     found: dict[int, tuple[tuple[str, str], ...]] = field(default_factory=dict)
     """For each card, the homework the page showed to choose from, with each one's
     fingerprint as shown."""
-    query: tuple[int, str] | None = None
-    """The card whose search the page showed, and its words, for Next and Previous."""
+    query: tuple[int, str, int, tuple[int, ...]] | None = None
+    """The card whose search the page showed, its words, the page of results shown, and the
+    pages its Previous and Next go to, the only ones a press may ask for."""
     picks: dict[int, Pick] = field(default_factory=dict)
     """Homework chosen under another name on each card, as the page showed it."""
 
@@ -355,7 +354,7 @@ def made_with_field(
     words: Mapping[str, str] | None = None,
     offers: Mapping[int, str] | None = None,
     found_rows: Mapping[int, Sequence[tuple[str, str]]] | None = None,
-    query: tuple[int, str] | None = None,
+    query: tuple[int, str, int, tuple[int, ...]] | None = None,
     picks: Mapping[int, Pick] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
@@ -376,7 +375,7 @@ def made_with_field(
         "found": sorted(
             [card, [list(row) for row in rows]] for card, rows in (found_rows or {}).items()
         ),
-        "query": None if query is None else list(query),
+        "query": None if query is None else [*query[:3], list(query[3])],
         "picks": sorted(
             [card, pick.target, pick.basis, pick.situation] for card, pick in (picks or {}).items()
         ),
@@ -421,7 +420,16 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         for card, rows in context.get("found", [])
     }
     shown_query = context.get("query")
-    query = None if shown_query is None else (int(shown_query[0]), str(shown_query[1]))
+    query = (
+        None
+        if shown_query is None
+        else (
+            int(shown_query[0]),
+            str(shown_query[1]),
+            int(shown_query[2]),
+            tuple(int(number) for number in shown_query[3]),
+        )
+    )
     picks = {
         int(card): Pick(str(target), str(basis), str(situation))
         for card, target, basis, situation in context.get("picks", [])
@@ -797,6 +805,20 @@ class SearchShown:
     words: str
     number: int = 1
     problem: str | None = None
+    attempted: str | None = None
+    """Homework a press chose that changed or left since the page showed it, shown again as
+    it stands, whether or not the words still find it."""
+
+
+@dataclass(frozen=True)
+class UnsavedPick:
+    """A choice of homework on a card that wasn't taken: the homework as it stands now, or
+    ``None`` when it's gone; why (``stale`` at a save, ``changed`` at a Choose); and whether
+    the card can take it now, so the page offers a press only where one can succeed."""
+
+    row: FoundRow | None
+    why: str
+    can_choose: bool
 
 
 @dataclass(frozen=True)
@@ -1018,14 +1040,34 @@ def preview_page(
             request,
             state,
             draft,
-            answers_shown(occurrences, kinds, instruction_answers, unsaved, carried),
+            answers_shown(
+                occurrences,
+                kinds,
+                instruction_answers,
+                unsaved,
+                carried,
+                identities,
+                linked,
+                (made or PageMade()).words,
+                picks,
+            ),
         )
     except UnreadableDecision:
         return intake_unavailable(
             request,
             state,
             draft,
-            answers_shown(occurrences, kinds, instruction_answers, unsaved, carried),
+            answers_shown(
+                occurrences,
+                kinds,
+                instruction_answers,
+                unsaved,
+                carried,
+                identities,
+                linked,
+                (made or PageMade()).words,
+                picks,
+            ),
             DECISION_UNREADABLE,
         )
     except UnreadableInstruction:
@@ -1033,7 +1075,17 @@ def preview_page(
             request,
             state,
             draft,
-            answers_shown(occurrences, kinds, instruction_answers, unsaved, carried),
+            answers_shown(
+                occurrences,
+                kinds,
+                instruction_answers,
+                unsaved,
+                carried,
+                identities,
+                linked,
+                (made or PageMade()).words,
+                picks,
+            ),
             INSTRUCTION_UNREADABLE,
         )
     said = unsaved_on(changes, unsaved or {}, carried)
@@ -1092,21 +1144,33 @@ def preview_page(
     if search is not None and search.key in cards and cards[search.key].offers:
         view = found_view(state, cards[search.key], search, parent=parent)
         choosable[search.key] = list(view.rows)
-        if focus is None:
+        if focus is None and refused is None:
             focus = f"search-results-{search.key}" if view.rows else f"search-hint-{search.key}"
-    # A choice the save couldn't take is said as not saved, with the homework as it stands
-    # now, and offered again where the card still offers the search.
-    unsaved_picks: dict[int, FoundRow | None] = {}
-    for change in shown:
-        if change.pick_refused is None:
-            continue
-        row = state.project_state.one_assignment(change.pick_refused)
+    # A choice not taken, one the save refused or one a Choose found changed, is said as not
+    # saved with the homework as it stands now. It's offered again only where the card
+    # offers the search now, the homework has another name than the card's, and the results
+    # shown don't offer it already.
+    shown_rows = {item.row.assignment_id for item in (view.rows if view is not None else ())}
+    unsaved_picks: dict[int, UnsavedPick] = {}
+    wanted = {change.key: (change.pick_refused, "stale") for change in shown if change.pick_refused}
+    if search is not None and search.attempted is not None and search.key in cards:
+        wanted.setdefault(search.key, (search.attempted, "changed"))
+    for key, (name, why) in wanted.items():
+        row = state.project_state.one_assignment(name)
         item = None
         if row is not None:
             item = row_of(readings_for(state.project_state, [row])[0], parent=parent)
-        unsaved_picks[change.key] = item
-        if item is not None and change.offers:
-            choosable.setdefault(change.key, []).append(item)
+        card = cards[key]
+        can_choose = (
+            row is not None
+            and item is not None
+            and bool(card.offers)
+            and pair(row.course, row.title) != card.reading.pair
+            and name not in shown_rows
+        )
+        unsaved_picks[key] = UnsavedPick(item, why, can_choose)
+        if can_choose and item is not None:
+            choosable.setdefault(key, []).append(item)
     picked = {change.key: picks[change.key] for change in shown if change.picked}
     # A card the parent folded carries that answer on the page; a report shown on another
     # card carries nothing.
@@ -1193,7 +1257,22 @@ def preview_page(
                     key: [(item.row.assignment_id, item.basis) for item in rows]
                     for key, rows in choosable.items()
                 },
-                None if view is None else (view.key, view.words),
+                None
+                if view is None
+                else (
+                    view.key,
+                    view.words,
+                    view.results.number if view.results is not None else 1,
+                    tuple(
+                        number
+                        for number in (
+                            (view.results.previous, view.results.next)
+                            if view.results is not None
+                            else ()
+                        )
+                        if number is not None
+                    ),
+                ),
                 picked,
             ),
             "creations": {card: question.creation for card, question in signed.items()},
@@ -1220,6 +1299,9 @@ def preview_page(
             "unsaved_on": said,
             "search_view": view,
             "picked_on": {key: pick.target for key, pick in picked.items()},
+            "choosable_on": {
+                key: {item.row.assignment_id for item in rows} for key, rows in choosable.items()
+            },
             "unsaved_picks": unsaved_picks,
             "typed": typed or {},
             "focus": focus,
@@ -1351,7 +1433,11 @@ async def search_review(request: Request, state: State) -> Response:
     Save is the one press that saves. The draft and every answer on the cards come back as
     sent, questions still open among them, and a choice made on a card stays until Remove,
     whatever is searched. Choose takes only homework the page showed for that card, and holds
-    it to the row as shown; a press the page didn't offer changes nothing."""
+    it to the row as shown; a press the page didn't offer changes nothing. The answers carried
+    are read as Save reads them: an answer about the school's instructions on a card the page
+    didn't ask is shown as not saved, never signed as asked. A record that can't be read, or
+    a file that refuses a read, is answered by the page that reads no store, with the paste
+    and every answer kept."""
     form = await submitted(request)
     draft = draft_of(form)
     read = read_draft(state, draft)
@@ -1391,10 +1477,38 @@ async def search_review(request: Request, state: State) -> Response:
     search: SearchShown | None = None
     focus: str | None = None
     refused = False
+
+    def searched(key: int) -> SearchShown | None:
+        """The search the page showed for this card, kept through Choose and Remove, so a
+        page handed back later can show it again."""
+        shown = page_made.query
+        return None if shown is None or shown[0] != key else SearchShown(*shown[:3])
+
     pressed = one_press(fields)
     action, value = pressed if pressed is not None else ("", "")
     try:
         occurrences, kinds = answers_from(form, unasked_for(state, read))
+        # An answer about the school's instructions is held to the question the page asked,
+        # as at Save: one the page never asked is said back as not saved, never signed.
+        never_put = answers_to_no_question(
+            changes_for(
+                read.items,
+                store,
+                occurrences=occurrences,
+                kinds=kinds,
+                identities=identities,
+                picks=page_made.picks,
+            ),
+            instruction_answers,
+            page_made.asked,
+        )
+        unsaved = {
+            **read_answers.unsaved,
+            **{key: UnsavedChoice.of(instruction_answers[key]) for key in never_put},
+        }
+        instruction_answers = {
+            key: answer for key, answer in instruction_answers.items() if key not in never_put
+        }
         if action == "find":
             key = card_of(value)
             if key is None or key not in page_made.offers:
@@ -1405,23 +1519,18 @@ async def search_review(request: Request, state: State) -> Response:
             card, _, number = value.partition(":")
             key, page = card_of(card), page_number(number) if number else None
             shown = page_made.query
-            if key is None or page is None or shown is None or shown[0] != key:
+            # Only a page the returned page's Previous or Next went to; results that shrank
+            # since are said on the page, never taken as a page it offered.
+            if (
+                key is None
+                or page is None
+                or shown is None
+                or shown[0] != key
+                or (page not in shown[3])
+            ):
                 refused = True
             else:
-                try:
-                    terms = terms_of(shown[1])
-                except TextRefused:
-                    terms = ()
-                name = read.items[key].pair if key < len(read.items) else None
-                rows = [
-                    item
-                    for item in store.all_assignments()
-                    if pair(item.course, item.title) != name
-                ]
-                if not terms or page_of(found(rows, terms), page) is None:
-                    refused = True
-                else:
-                    search = SearchShown(key, shown[1], page)
+                search = SearchShown(key, shown[1], page)
         elif action == "choose":
             card, _, target = value.partition(":")
             key = card_of(card)
@@ -1435,13 +1544,15 @@ async def search_review(request: Request, state: State) -> Response:
                     picks[key] = Pick(target, offered_rows[target], page_made.offers[key])
                     identities.pop(key, None)
                     focus = f"picked-{key}"
+                    search = searched(key)
                 else:
                     # The homework changed or left since the page showed it: nothing is
-                    # chosen, and the page shows it again as it stands now.
+                    # chosen, and the page shows it again as it stands now, whether or not
+                    # the words still find it.
                     shown = page_made.query
                     words = shown[1] if shown is not None and shown[0] == key else ""
-                    said = HOMEWORK_GONE if row is None else FOUND_HOMEWORK_CHANGED
-                    search = SearchShown(key, words, problem=said)
+                    at = shown[2] if shown is not None and shown[0] == key else 1
+                    search = SearchShown(key, words, at, attempted=target)
         elif action == "remove":
             key = card_of(value)
             if key is None or key not in picks:
@@ -1449,11 +1560,32 @@ async def search_review(request: Request, state: State) -> Response:
             else:
                 del picks[key]
                 focus = f"rename-{key}"
+                search = searched(key)
         else:
             refused = True
-    except UnreadableClaim:
-        return intake_unavailable(request, state, draft, kept_answers)
-    if refused:
+        if refused:
+            shown = page_made.query
+            return preview_or_recovery(
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=page_made.picks,
+                search=None if shown is None else SearchShown(shown[0], shown[1], shown[2]),
+                typed=typed,
+                refused="malformed",
+                notice=PRESS_UNREADABLE,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         return preview_or_recovery(
             request,
             state,
@@ -1463,36 +1595,28 @@ async def search_review(request: Request, state: State) -> Response:
             occurrences=occurrences,
             kinds=kinds,
             instruction_answers=instruction_answers,
-            unsaved=read_answers.unsaved,
+            unsaved=unsaved,
             carried=carried,
             made=page_made,
             identities=identities,
             linked=linked,
-            picks=page_made.picks,
+            picks=picks,
+            search=search,
             typed=typed,
-            refused="malformed",
-            notice=PRESS_UNREADABLE,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            focus=focus,
         )
-    return preview_or_recovery(
-        request,
-        state,
-        read,
-        draft,
-        kept_answers,
-        occurrences=occurrences,
-        kinds=kinds,
-        instruction_answers=instruction_answers,
-        unsaved=read_answers.unsaved,
-        carried=carried,
-        made=page_made,
-        identities=identities,
-        linked=linked,
-        picks=picks,
-        search=search,
-        typed=typed,
-        focus=focus,
-    )
+    except UnreadableClaim:
+        return intake_unavailable(request, state, draft, kept_answers)
+    except UnreadableInstruction:
+        return intake_unavailable(request, state, draft, kept_answers, INSTRUCTION_UNREADABLE)
+    except UnreadableDecision:
+        return intake_unavailable(request, state, draft, kept_answers, DECISION_UNREADABLE)
+    except UnreadableCapture:
+        logger.exception("a note offered on the review could not be read")
+        return intake_unavailable(request, state, draft, kept_answers, NOTE_UNREADABLE)
+    except sqlite3.Error:
+        logger.exception("the review could not be read for a press")
+        return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
 
 
 @router.post("/keep", response_class=HTMLResponse, include_in_schema=False)
@@ -1532,6 +1656,18 @@ async def keep_readings(request: Request, state: State) -> Response:
     identities, identity_unreadable = identity_answers(fields, page_made)
     linked, link_unreadable = link_answers(fields, page_made)
     picks, pick_unreadable = pick_answers(fields, page_made)
+    # The words typed in each card's search, and the search the page showed, come back with
+    # every page the save hands back, so a refusal never costs the parent their search.
+    typed = {
+        int(card): value
+        for name, value in form.items()
+        for head, _, card in [name.rpartition("-")]
+        if head == "search" and review_key(card)
+    }
+    shown_query = page_made.query
+    search = (
+        None if shown_query is None else SearchShown(shown_query[0], shown_query[1], shown_query[2])
+    )
     kept_answers = answers_kept(
         form,
         instruction_answers,
@@ -1567,6 +1703,8 @@ async def keep_readings(request: Request, state: State) -> Response:
                 identities=identities,
                 linked=linked,
                 picks=picks,
+                search=search,
+                typed=typed,
                 refused="malformed",
                 notice=IDENTITY_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1589,6 +1727,8 @@ async def keep_readings(request: Request, state: State) -> Response:
                 identities=identities,
                 linked=linked,
                 picks=picks,
+                search=search,
+                typed=typed,
                 refused="malformed",
                 notice=LINK_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1611,6 +1751,8 @@ async def keep_readings(request: Request, state: State) -> Response:
                 identities=identities,
                 linked=linked,
                 picks=page_made.picks,
+                search=search,
+                typed=typed,
                 refused="malformed",
                 notice=PICK_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1653,6 +1795,8 @@ async def keep_readings(request: Request, state: State) -> Response:
                 identities=identities,
                 linked=linked,
                 picks=picks,
+                search=search,
+                typed=typed,
                 refused="malformed" if unreadable else "contradict",
                 notice=INSTRUCTION_FORM_UNREADABLE if unreadable else INSTRUCTIONS_CONTRADICT,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1708,6 +1852,8 @@ async def keep_readings(request: Request, state: State) -> Response:
             identities=identities,
             linked=linked,
             picks=page_made.picks,
+            search=search,
+            typed=typed,
             refused="malformed",
             notice=PICK_FORM_UNREADABLE,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1735,6 +1881,8 @@ async def keep_readings(request: Request, state: State) -> Response:
             identities=identities,
             linked=linked,
             picks=picks,
+            search=search,
+            typed=typed,
             refused="malformed",
             notice=INSTRUCTION_FORM_UNREADABLE,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1755,6 +1903,8 @@ async def keep_readings(request: Request, state: State) -> Response:
             identities=identities,
             linked=linked,
             picks=picks,
+            search=search,
+            typed=typed,
             refused="stale",
             notice=CHANGED_SINCE_SHOWN if instructions_moved else HOMEWORK_CHANGED,
             status_code=status.HTTP_409_CONFLICT,
@@ -1800,6 +1950,8 @@ async def keep_readings(request: Request, state: State) -> Response:
             identities=identities,
             linked=linked,
             picks=picks,
+            search=search,
+            typed=typed,
             refused=refused,
             notice=notice,
         )
