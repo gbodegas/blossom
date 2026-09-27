@@ -2371,18 +2371,16 @@ def keep(
 
     ``picks`` holds homework found under another name and chosen on a card,
     and ``offered`` the cards the page offered that on, as it signed them. A
-    choice on a card that never offered it, or beside an answer to the
-    card's own question, is refused as ``NotOffered``; one made against a
-    card or a homework that has changed since leaves the text unsaved with what changed
-    handed back, or, for a caller with no page (``offered`` of ``None``),
-    is refused as never offered.
+    choice needs a page's offer: one on a card the page didn't offer it on,
+    one with no page's offers at all (``offered`` of ``None``), or one beside
+    an answer to the card's own question is refused as ``NotOffered``. One
+    made against a card or a homework that has changed since leaves the text
+    unsaved with what changed handed back.
     """
     picks = picks or {}
     crossed = picks.keys() & (identities or {}).keys()
     unsigned = {
-        key
-        for key, pick in picks.items()
-        if offered is not None and offered.get(key) != pick.situation
+        key for key, pick in picks.items() if offered is None or offered.get(key) != pick.situation
     }
     if crossed or unsigned:
         return NotOffered(frozenset(crossed | unsigned))
@@ -2412,8 +2410,6 @@ def keep(
             picks=picks,
         )
         refused = frozenset(change.key for change in changes if change.pick_refused is not None)
-        if refused and offered is None:
-            return NotOffered(refused)
         # A choice made against instructions that have changed is refused before any other
         # question is put again, so a page returned never shows it as still made.
         if refused or any(change.instructions_stale or change.identity_stale for change in changes):

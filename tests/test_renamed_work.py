@@ -1179,7 +1179,8 @@ def test_the_search_leaves_out_homework_of_the_cards_own_name(tmp_path: pathlib.
 
 def test_a_direct_caller_is_held_to_the_rules_for_a_choice(tmp_path: pathlib.Path) -> None:
     """``keep`` refuses a choice of homework with the card's own name, a choice beside an
-    answer to the card's question, and, with no page, a choice the card doesn't bear out."""
+    answer to the card's question, and any choice with no page's offers to hold it to,
+    whether or not the card and the homework bear it out."""
     from blossom.candidates import readings_for
     from blossom.captures import candidate_basis
     from blossom.intake import IdentityAnswer, NotOffered, Pick, changes_for, keep
@@ -1220,9 +1221,17 @@ def test_a_direct_caller_is_held_to_the_rules_for_a_choice(tmp_path: pathlib.Pat
             now=now[0],
             today=now[1],
         )
+        sound_but_no_page = keep(
+            items,
+            store,
+            picks={0: Pick(packet, basis_of[packet], card.offers)},
+            now=now[0],
+            today=now[1],
+        )
         after = tables(client)
 
     assert isinstance(own_name, ChangedSinceShown)
     assert isinstance(beside, NotOffered)
     assert isinstance(no_page, NotOffered)
+    assert isinstance(sound_but_no_page, NotOffered)
     assert after["intake_decisions"] == []
