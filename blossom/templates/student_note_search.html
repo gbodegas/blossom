@@ -25,11 +25,11 @@
   </li>
 {% endmacro %}
 {% macro homework(row) %}<span class="authored-text">{{ row.course }}</span>: <span class="authored-text">{{ row.title }}</span>{% endmacro %}
-{% macro consequence() %}
+{% macro consequence(id) %}
   {% if joined %}
-    <p class="note" id="search-consequence">This moves the note's link from {% if current %}{{ homework(current) }}{% else %}homework that is not on record now{% endif %} to the homework you choose. The saved homework details stay the same. If the note includes a date, Blossom uses it when checking the newly linked homework's due date; it stops counting that note's date for the previous homework.</p>
+    <p class="note" id="{{ id }}">This moves the note's link from {% if current %}{{ homework(current) }}{% else %}homework that is not on record now{% endif %} to the homework you choose. The saved homework details stay the same. If the note includes a date, Blossom uses it when checking the newly linked homework's due date; it stops counting that note's date for the previous homework.</p>
   {% else %}
-    <p class="note" id="search-consequence">Link to this homework saves the link right away. The homework's saved details stay the same. If the note includes a date, Blossom also uses it when checking the due date.</p>
+    <p class="note" id="{{ id }}">Link to this homework saves the link right away. The homework's saved details stay the same. If the note includes a date, Blossom also uses it when checking the due date.</p>
   {% endif %}
 {% endmacro %}
 {#
@@ -99,7 +99,7 @@
     {% elif chosen_row %}
       {# The homework chosen, read with this page, shown beside the results when the words find it no more. #}
       <h2 class="update-heading" id="search-chosen">The homework chosen, as it stands now</h2>
-      {% if may_write %}{{ consequence() }}{% endif %}
+      {% if may_write %}{{ consequence("search-chosen-consequence") }}{% endif %}
       <ol class="history-list">
         {{ found_row(chosen_row, "chosen") }}
       </ol>
@@ -108,7 +108,7 @@
       {# The heading a search lands on says what was searched, how much was found, and which page. #}
       <h2 class="update-heading" id="search-results" tabindex="-1"{% if searched and not problem %} autofocus{% endif %}>{% if results and results.total %}{{ results.total }} found for &ldquo;{{ shown_query }}&rdquo;{% if results.last > 1 %}, page {{ results.number }} of {{ results.last }}{% endif %}{% elif results is not none %}Nothing found for &ldquo;{{ shown_query }}&rdquo;{% else %}Nothing was searched{% endif %}</h2>
       {% if results and results.total %}
-        {% if may_write and rows | rejectattr("row.assignment_id", "equalto", leaving) | list %}{{ consequence() }}{% endif %}
+        {% if may_write and rows | rejectattr("row.assignment_id", "equalto", leaving) | list %}{{ consequence("search-consequence") }}{% endif %}
         <ol class="history-list">
           {% for item in rows %}
             {{ found_row(item, "found") }}

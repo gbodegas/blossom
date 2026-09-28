@@ -1948,6 +1948,46 @@ def test_a_stale_choice_beside_the_results_leaves_each_press_with_its_consequenc
     assert ">Link to this homework<" in found.split(f'id="found-{second.assignment_id}"')[1]
 
 
+def repeated_ids(page: str) -> list[str]:
+    ids = re.findall(r'<[^>]*\sid="([^"]+)"', page)
+    return sorted({one for one in ids if ids.count(one) > 1})
+
+
+@pytest.mark.parametrize("family", [False, True], ids=["hers", "family"])
+@pytest.mark.parametrize("linked", [False, True], ids=["new", "move"])
+def test_each_id_on_the_search_page_names_one_element(linked: bool, family: bool) -> None:
+    with browser() as client:
+        name = save_note(client)
+        first = on_record(client, course="Math", title="Drill one", due=date(2026, 9, 1))
+        on_record(client, course="Math", title="Drill two", due=date(2026, 9, 2))
+        if linked:
+            joined(client, name, on_record(client))
+        found = search(client, name, "drill", family=family)
+        press = press_of(found, name, first.assignment_id, family=family)
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE assignments SET title = 'Novel study' WHERE assignment_id = ?",
+            (first.assignment_id,),
+        )
+        store._connection.commit()
+        stale = client.post(note_link_action(name, family=family), data=press)
+        pages = {
+            "first visit": client.get(
+                note_search_href(name, family=family), headers=PAGE_HEADERS
+            ).text,
+            "found": found,
+            "stale choice": stale.text,
+            "nothing found": search(client, name, "zebra", family=family),
+        }
+    sentence = "This moves the note's link from" if linked else LINK_CONSEQUENCE
+
+    assert stale.status_code == 409
+    assert stale.text.count(sentence) == 2
+    assert {shown: repeated_ids(page) for shown, page in pages.items()} == {
+        shown: [] for shown in pages
+    }
+
+
 @pytest.mark.parametrize("linked", ["dated", "undated", "gone"])
 def test_the_link_that_stands_is_named_with_its_date_or_says_what_is_missing(linked: str) -> None:
     with browser() as client:
