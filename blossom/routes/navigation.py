@@ -71,6 +71,8 @@ NOTES: Final = "homework-notes"
 """The id of the place that holds her homework notes, on her week and on their own page."""
 NOTE_RESULT: Final = "note-result"
 """The id of the place on a note's page that says what a save did, which a redirect lands on."""
+NOTES_RESULT: Final = "notes-result"
+"""The id of the place on her list of notes that says a note was deleted."""
 
 
 def address(path: str, fragment: str = "", **query: str | None) -> str:
@@ -132,9 +134,14 @@ def note_help_href(capture_id: str) -> str:
 
 
 def note_action(capture_id: str, step: str) -> str:
-    """The route one change to a note goes through: ``edit``, ``archive``, ``restore``, or
-    ``ask-for-help``."""
+    """The route one change to a note goes through: ``edit``, ``archive``, ``restore``,
+    ``delete``, or ``ask-for-help``."""
     return f"{NOTE_ACTIONS}/{segment(capture_id)}/{step}"
+
+
+def note_delete_href(capture_id: str) -> str:
+    """The page that asks before a note is deleted. Opening it writes nothing."""
+    return f"{NOTES_PAGE}/{segment(capture_id)}/delete"
 
 
 ADDED_NOTES_PAGE: Final = "/student/homework-notes/added"

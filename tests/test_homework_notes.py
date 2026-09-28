@@ -22,25 +22,33 @@ from blossom.captures import (
     CAPTURE_TEXT_MAX_LENGTH,
     HOUSEHOLD,
     STUDENT,
+    CaptureNotSaved,
     capture_id_from,
     new_capture_id,
 )
 from blossom.routes.captures import (
+    NOTE_ALREADY_DELETED,
     NOTE_ALREADY_SAVED,
     NOTE_ARCHIVED,
     NOTE_CHANGED,
+    NOTE_CHANGED_NOT_DELETED,
     NOTE_DATE_UNREADABLE,
+    NOTE_DELETED,
+    NOTE_DELETED_GONE,
     NOTE_EDITED,
     NOTE_GONE,
     NOTE_ID_TAKEN,
     NOTE_NEEDS_A_DATE_CHOICE,
     NOTE_NEEDS_WORDS,
+    NOTE_NOT_DELETED,
     NOTE_NOT_SAVED,
     NOTE_RESTORED,
     NOTE_SAVED,
     NOTE_SAVED_EARLIER,
     NOTE_TOO_LONG,
     NOTE_UNREADABLE,
+    NOTE_USE_UNKNOWN,
+    NOTE_WAS_DELETED,
     date_controls_are_valid,
     revision_of,
 )
@@ -50,7 +58,10 @@ from blossom.routes.navigation import (
     NEW_NOTE_PAGE,
     NOTE_ACTIONS,
     NOTES_PAGE,
+    NOTES_RESULT,
+    address,
     note_action,
+    note_delete_href,
     note_help_href,
     note_href,
 )
@@ -65,8 +76,11 @@ from tests.support import (
     Answer,
     browser,
     form_fields,
+    link_note,
+    promote_note,
     signed_in_household,
     state_of,
+    unlink_note,
     whole_form,
 )
 
@@ -1474,3 +1488,532 @@ def test_a_save_the_file_refuses_is_said_even_when_nothing_can_be_read_back(
         assert f'href="{HER_PAGE}"' in answer.text
     assert tried == ["write", "write"]
     assert written == ([], [])
+
+
+# ------------------------------------------------------------ deleting a note never used
+
+DELETE_GUIDE = "Made by mistake? Deleting removes it and its history for good."
+ARCHIVE_GUIDE = "Archiving takes it off your list. You can bring it back from Archived."
+DELETED_RESULT = '<p class="note update-result" role="status" id="notes-result" tabindex="-1">'
+
+
+def offers_delete(page: str, name: str) -> bool:
+    """Whether a note's page offers the confirmation, as a button that opens it."""
+    return (
+        f'action="{note_delete_href(name)}"' in page
+        and ">Delete this note</button>" in page
+        and DELETE_GUIDE in page
+    )
+
+
+def confirmation(client: TestClient, name: str) -> tuple[str, dict[str, str]]:
+    """The confirmation page and what its form would send."""
+    page = client.get(note_delete_href(name))
+    assert page.status_code == 200, page.text
+    return page.text, whole_form(page.text, note_action(name, "delete"))
+
+
+def delete_from(client: TestClient, name: str, fields: dict[str, str]) -> Answer:
+    return client.post(note_action(name, "delete"), data=fields, headers=PAGE_HEADERS)
+
+
+def signed_in_as(tmp_path: pathlib.Path, passphrase: str) -> TestClient:
+    client = TestClient(
+        create_app(signed_in_household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    )
+    client.__enter__()
+    client.post("/sign-in", data={"passphrase": passphrase})
+    return client
+
+
+def test_she_deletes_a_note_never_used_after_confirming_it() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client, "Zebra quartz violin questions")
+        other = saved_note(client, "Bring the signed form")
+        note = client.get(note_href(name)).text
+        before = tables(store)
+        page, fields = confirmation(client, name)
+        head = client.head(note_delete_href(name))
+        kept = client.get(note_href(name))
+        after_looking = tables(store)
+        answer = delete_from(client, name, fields)
+        listed = follow(client, answer)
+        gone_page = client.get(note_href(name))
+        standing = (store.capture(name), store.capture(other), store.capture_deleted(name))
+
+    assert offers_delete(note, name)
+    assert ARCHIVE_GUIDE in note
+    assert "<h1>Delete this note?</h1>" in page
+    assert "Zebra quartz violin questions" in page
+    assert ">Delete it for good</button>" in page
+    assert f'<a class="cancel" href="{note_href(name)}">Keep it</a>' in page
+    assert "can't be undone" in page
+    assert "backup" in page
+    assert fields == {"revision": "1"}
+    assert head.status_code == 200
+    assert kept.status_code == 200
+    assert after_looking == before
+    assert answer.headers["location"] == address(NOTES_PAGE, NOTES_RESULT, deleted=name)
+    assert f"{DELETED_RESULT}{NOTE_DELETED}</p>" in listed
+    assert "Zebra quartz violin" not in listed
+    assert "Bring the signed form" in listed
+    assert standing[0] is None
+    assert standing[1] is not None
+    assert standing[2]
+    assert gone_page.status_code == 404
+    assert said_first(gone_page.text, NOTE_DELETED_GONE)
+    assert "Zebra quartz violin" not in gone_page.text
+
+
+def test_a_delete_sent_again_is_answered_already_deleted_and_writes_nothing() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        _, fields = confirmation(client, name)
+        first = delete_from(client, name, fields)
+        before = tables(store)
+        again = delete_from(client, name, fields)
+        listed = follow(client, again)
+        back = client.get(first.headers["location"]).text
+        after = tables(store)
+
+    assert again.headers["location"] == address(NOTES_PAGE, NOTES_RESULT, already=name)
+    assert f"{DELETED_RESULT}{NOTE_ALREADY_DELETED}</p>" in listed
+    assert NOTE_DELETED not in listed.replace(NOTE_ALREADY_DELETED, "")
+    assert f"{DELETED_RESULT}{NOTE_DELETED}</p>" in back
+    assert after == before
+
+
+def test_an_archived_note_never_used_is_deleted_without_bringing_it_back() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        page = client.get(note_href(name)).text
+        client.post(
+            note_action(name, "archive"),
+            data=form_fields(page, note_action(name, "archive")),
+            headers=PAGE_HEADERS,
+        )
+        archived = client.get(note_href(name)).text
+        _, fields = confirmation(client, name)
+        listed = follow(client, delete_from(client, name, fields))
+        put_away = client.get(ARCHIVED_NOTES_PAGE).text
+        left = store.capture(name)
+
+    assert offers_delete(archived, name)
+    assert ARCHIVE_GUIDE not in archived
+    assert fields == {"revision": "2"}
+    assert NOTE_DELETED in listed
+    assert WORDS not in put_away
+    assert left is None
+
+
+def test_a_parent_can_read_her_note_and_can_not_delete_it(tmp_path: pathlib.Path) -> None:
+    client = signed_in_as(tmp_path, HERS)
+    try:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        _, fields = confirmation(client, name)
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        before = tables(store)
+        note = client.get(note_href(name))
+        asked = client.get(note_delete_href(name))
+        pressed = delete_from(client, name, fields)
+        after = tables(store)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert not offers_delete(note.text, name)
+    assert DELETE_GUIDE not in note.text
+    assert asked.status_code == 403
+    assert said_first(asked.text, NOT_HERS_TO_UPDATE)
+    assert pressed.status_code == 403
+    assert said_first(pressed.text, NOT_HERS_TO_UPDATE)
+    assert after == before
+
+
+def test_a_signed_in_student_deletes_through_her_own_pages(tmp_path: pathlib.Path) -> None:
+    client = signed_in_as(tmp_path, HERS)
+    try:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        _, fields = confirmation(client, name)
+        listed = follow(client, delete_from(client, name, fields))
+        deleted = store.capture_deleted(name)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert NOTE_DELETED in listed
+    assert deleted
+
+
+def test_an_expired_sign_in_deletes_nothing_and_the_note_asks_again(tmp_path: pathlib.Path) -> None:
+    client = signed_in_as(tmp_path, HERS)
+    try:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        _, fields = confirmation(client, name)
+        client.post("/sign-out")
+        before = tables(store)
+        pressed = delete_from(client, name, fields)
+        after = tables(store)
+        client.post("/sign-in", data={"passphrase": HERS})
+        note = client.get(note_href(name)).text
+        still = store.capture(name)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert pressed.status_code != 303 or NOTES_PAGE not in pressed.headers.get("location", "")
+    assert after == before
+    assert offers_delete(note, name)
+    assert still is not None
+
+
+def test_a_note_changed_since_the_confirmation_is_not_deleted_and_asks_again() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        _, stale = confirmation(client, name)
+        page = client.get(note_href(name, edit="1")).text
+        edit = note_action(name, "edit")
+        client.post(
+            edit,
+            data={
+                **form_fields(page, edit),
+                "text": "Geometry questions 4-9",
+                "course": "",
+                "due_date": "",
+            },
+            headers=PAGE_HEADERS,
+        )
+        before = tables(store)
+        refused = delete_from(client, name, stale)
+        after = tables(store)
+        _, fresh = confirmation(client, name)
+        listed = follow(client, delete_from(client, name, fresh))
+
+    assert refused.status_code == 409
+    assert said_first(refused.text, NOTE_CHANGED_NOT_DELETED)
+    assert "Geometry questions 4-9" in refused.text
+    assert offers_delete(refused.text, name)
+    assert after == before
+    assert fresh == {"revision": "2"}
+    assert NOTE_DELETED in listed
+
+
+def help_asked(client: TestClient, name: str) -> None:
+    page = client.get(note_help_href(name)).text
+    action = note_action(name, "ask-for-help")
+    answer = client.post(
+        action, data={**form_fields(page, action), "note": ""}, headers=PAGE_HEADERS
+    )
+    assert answer.status_code == 303, answer.text
+
+
+@pytest.mark.parametrize(
+    ("use", "said"),
+    [
+        ("promote", "It was just added to homework, so it can't be deleted. Archive it instead."),
+        (
+            "link",
+            "It was just linked to homework the school lists, so it can't be deleted. "
+            "Archive it instead.",
+        ),
+        ("unlink", "It was linked to homework before, so it can't be deleted. Archive it instead."),
+        ("help", "It was named in a request for help, so it can't be deleted. Archive it instead."),
+    ],
+)
+def test_a_note_used_since_the_page_was_drawn_is_kept_and_says_why(use: str, said: str) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        _, fields = confirmation(client, name)
+        if use == "promote":
+            promote_note(store, name)
+        elif use == "link":
+            link_note(store, name)
+        elif use == "unlink":
+            unlink_note(store, name)
+        else:
+            help_asked(client, name)
+        before = tables(store)
+        refused = delete_from(client, name, fields)
+        after = tables(store)
+        asked_again = client.get(note_delete_href(name))
+
+    assert refused.status_code == 409
+    assert said_first(refused.text, said)
+    assert not offers_delete(refused.text, name)
+    assert DELETE_GUIDE not in refused.text
+    assert after == before
+    assert asked_again.status_code == 409
+    assert "can&#39;t be deleted" in asked_again.text
+    assert f'action="{note_action(name, "delete")}"' not in asked_again.text
+
+
+def test_a_note_saved_before_deleting_was_possible_says_it_can_only_be_kept() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        store._connection.execute(
+            "INSERT INTO captures_of_unknown_use (capture_id) VALUES (?)", (name,)
+        )
+        store._connection.commit()
+        note = client.get(note_href(name)).text
+        refused = delete_from(client, name, {"revision": "1"})
+        still = store.capture(name)
+
+    assert not offers_delete(note, name)
+    assert str(escape(NOTE_USE_UNKNOWN)) in note
+    assert refused.status_code == 409
+    assert said_first(
+        refused.text,
+        "It was saved before notes could be deleted, and Blossom can't tell whether it was "
+        "used, so it can't be deleted. Archive it instead.",
+    )
+    assert still is not None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "revision=1&revision=1",
+        "revision=1&text=Geometry",
+        "revision=0",
+        "revision=01",
+        "revision=one",
+    ],
+)
+def test_a_delete_form_that_is_not_the_one_the_page_made_deletes_nothing(body: str) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        before = tables(store)
+        answer = client.post(
+            note_action(name, "delete"),
+            content=body,
+            headers={**PAGE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        after = tables(store)
+
+    assert answer.status_code == 422
+    assert said_first(answer.text, BAD_FORM)
+    assert after == before
+
+
+def test_a_delete_sent_as_a_file_deletes_nothing() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        before = tables(store)
+        answer = client.post(
+            note_action(name, "delete"),
+            files={"revision": ("revision.txt", b"1", "text/plain")},
+            headers=PAGE_HEADERS,
+        )
+
+        assert answer.status_code == 422
+        assert tables(store) == before
+
+
+def test_a_name_that_is_no_note_is_never_said_to_be_deleted() -> None:
+    with browser() as client:
+        unknown = client.post(
+            note_action(new_capture_id(), "delete"), data={"revision": "1"}, headers=PAGE_HEADERS
+        )
+        not_an_id = client.post(
+            f"{NOTE_ACTIONS}/not-a-note/delete", data={"revision": "1"}, headers=PAGE_HEADERS
+        )
+        page = client.get(note_delete_href(new_capture_id()))
+
+    for answer in (unknown, not_an_id, page):
+        assert answer.status_code == 404
+        assert said_first(answer.text, NOTE_GONE)
+        assert NOTE_DELETED not in answer.text
+
+
+def test_a_result_is_said_only_for_a_note_that_was_deleted() -> None:
+    with browser() as client:
+        name = saved_note(client)
+        pages = [
+            client.get(address(NOTES_PAGE, NOTES_RESULT, deleted=new_capture_id())).text,
+            client.get(address(NOTES_PAGE, NOTES_RESULT, deleted="not-a-note")).text,
+            client.get(address(NOTES_PAGE, NOTES_RESULT, deleted=name)).text,
+            client.get(address(NOTES_PAGE, NOTES_RESULT, already=name)).text,
+        ]
+
+    for page in pages:
+        assert 'id="notes-result"' not in page
+        assert NOTE_DELETED not in page
+        assert NOTE_ALREADY_DELETED not in page
+
+
+@pytest.mark.parametrize("words", [WORDS, "Something else entirely"])
+def test_the_first_save_sent_again_after_a_delete_makes_nothing_even_after_a_restart(
+    words: str, tmp_path: pathlib.Path
+) -> None:
+    client = signed_in_as(tmp_path, HERS)
+    try:
+        store = state_of(client).project_state
+        fields = new_form(client)
+        name = fields["capture_id"]
+        assert send(client, fields, text=WORDS, course="", due_date="").status_code == 303
+        _, confirm = confirmation(client, name)
+        assert delete_from(client, name, confirm).status_code == 303
+        before = tables(store)
+        replayed = send(client, fields, text=words, course="", due_date="")
+        after = tables(store)
+    finally:
+        client.__exit__(None, None, None)
+    restarted = signed_in_as(tmp_path, HERS)
+    try:
+        again = send(restarted, fields, text=words, course="", due_date="")
+        after_restart = tables(state_of(restarted).project_state)
+    finally:
+        restarted.__exit__(None, None, None)
+
+    for answer in (replayed, again):
+        assert answer.status_code == 409
+        assert said_first(answer.text, NOTE_WAS_DELETED)
+        assert f'href="{NEW_NOTE_PAGE}">Write down homework</a>' in answer.text
+        assert name not in answer.text
+        assert f'action="{NOTE_ACTIONS}"' not in answer.text
+        assert str(escape(words)) not in answer.text
+    assert after == before
+    assert after_restart == before
+
+
+def test_a_deleted_note_can_not_be_asked_about_and_its_pages_say_so() -> None:
+    with browser() as client:
+        name = saved_note(client)
+        help_page = client.get(note_help_href(name)).text
+        action = note_action(name, "ask-for-help")
+        help_fields = form_fields(help_page, action)
+        _, fields = confirmation(client, name)
+        delete_from(client, name, fields)
+        asked = client.post(
+            action, data={**help_fields, "note": "which ones?"}, headers=PAGE_HEADERS
+        )
+        confirm_again = client.get(note_delete_href(name))
+        requests = state_of(client).help_requests.open_requests()
+
+    assert asked.status_code == 404
+    assert confirm_again.status_code == 404
+    assert said_first(confirm_again.text, NOTE_DELETED_GONE)
+    assert requests == []
+
+
+def test_a_delete_the_file_refuses_keeps_the_note_and_says_nothing_was_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        _, fields = confirmation(client, name)
+
+        def refused(*_: object, **__: object) -> None:
+            raise CaptureNotSaved(name, sqlite3.OperationalError("disk I/O error"))
+
+        monkeypatch.setattr(store, "delete_capture", refused)
+        answer = delete_from(client, name, fields)
+
+        def unreadable(*_: object, **__: object) -> None:
+            msg = "disk I/O error"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "sound_capture_history", unreadable)
+        neither = delete_from(client, name, fields)
+        monkeypatch.undo()
+        still = store.capture(name)
+
+    assert answer.status_code == 500
+    assert said_first(answer.text, NOTE_NOT_DELETED)
+    assert WORDS in answer.text
+    assert neither.status_code == 500
+    assert NOTE_NOT_DELETED in neither.text
+    assert NOTE_DELETED not in neither.text.replace(NOTE_NOT_DELETED, "")
+    assert still is not None
+
+
+# ------------------------------------------------------------ the words for each reader
+
+
+def test_the_new_note_page_says_what_a_note_is_for_and_where_a_week_is_copied() -> None:
+    with browser() as client:
+        hers = client.get(NEW_NOTE_PAGE).text
+
+    assert "<title>Blossom - Write down homework</title>" in hers
+    assert "<h1>Write down homework</h1>" in hers
+    assert (
+        "Save it in your own words now. From the note you can make it new homework, or connect "
+        "it to homework the school already lists."
+    ) in hers
+    assert (
+        "Copying a whole week from the school's site? A parent does that on Family review."
+    ) in hers
+    assert 'href="/parent#add-assignments"' not in hers
+
+
+def test_a_parent_on_the_new_note_page_is_sent_to_family_review(tmp_path: pathlib.Path) -> None:
+    client = signed_in_as(tmp_path, THEIRS)
+    try:
+        theirs = client.get(NEW_NOTE_PAGE).text
+    finally:
+        client.__exit__(None, None, None)
+
+    assert "<h1>Write down homework</h1>" in theirs
+    assert "Copying a whole week from the school's site?" in theirs
+    assert '<a href="/parent#add-assignments">Paste it on Family review</a>' in theirs
+    assert "your own words" not in theirs
+
+
+def test_a_waiting_note_explains_both_choices_to_each_reader(tmp_path: pathlib.Path) -> None:
+    client = signed_in_as(tmp_path, HERS)
+    try:
+        name = saved_note(client)
+        hers = client.get(note_href(name)).text
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs = client.get(note_href(name)).text
+    finally:
+        client.__exit__(None, None, None)
+
+    for page, whose in ((hers, "your"), (theirs, "her")):
+        assert "<strong>This is new homework</strong>: Use this when it isn't on the " in page
+        assert (
+            f"You'll pick its class and a title, and then it shows up in {whose} week and "
+            f"{whose} plans."
+        ) in page
+        assert (
+            "<strong>This is about homework already listed</strong>: Use this when the school "
+            "already lists it. The note stays with that assignment, so nothing is listed twice."
+        ) in page
+        assert ">Add it to homework</a>" in page
+        assert ">Link to homework already here</a>" in page
+    assert "in your week" not in theirs
+
+
+def test_what_is_kept_says_a_note_never_used_can_be_deleted_to_each_reader(
+    tmp_path: pathlib.Path,
+) -> None:
+    client = signed_in_as(tmp_path, HERS)
+    try:
+        name = saved_note(client)
+        note, week = client.get(note_href(name)).text, " ".join(client.get(HER_PAGE).text.split())
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        their_note = client.get(note_href(name)).text
+        their_week = " ".join(client.get(HER_PAGE).text.split())
+    finally:
+        client.__exit__(None, None, None)
+
+    for page, who in ((note, "you delete"), (their_note, "she deletes")):
+        assert f"kept in the family's own file until {who} one that was never used" in page
+        assert "A backup made before a note was deleted may still hold it." in page
+    assert "You can delete a homework note that was never used" in week
+    assert "She can delete a homework note that was never used" in their_week
+    for page in (week, their_week):
+        assert "Only a deleted note's id stays, so the same form can't save it again" in page

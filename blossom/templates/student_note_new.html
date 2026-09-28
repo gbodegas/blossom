@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set page = "student" %}
-{% block title %}Blossom - Add homework{% endblock %}
+{% block title %}Blossom - Write down homework{% endblock %}
 {#
   The page a homework note is first written on. It asks for her words and
   nothing else: no class, no date, no source, no one's approval, and no model
@@ -13,13 +13,19 @@
   script. When the form's id already belongs to another note, that note is
   shown as it stands beside the words she sent, which come back in a form
   with an id of its own: saving them as another note is her choice to make.
-  A parent signed in is told the note is hers to write, and sees no form.
+  A form whose note was deleted is answered with a way to a new note and no
+  form: nothing of the deleted note comes back. A parent signed in is told the
+  note is hers to write, sees no form, and is pointed to Family review for a
+  whole week copied from the school's site.
 #}
 {% block content %}
   <p class="return"><a href="/student/due-this-week">{% if parent %}Back to her week{% else %}Back to my week{% endif %}</a></p>
-  <h1>Add homework</h1>
+  <h1>Write down homework</h1>
   {% if form.problem %}
-    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ form.problem }}{% if viewer != "parent" %}{% with field = form.field %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
+    <p class="problem" role="alert" id="note-problem" tabindex="-1" autofocus>{{ form.problem }}{% if viewer != "parent" and not deleted %}{% with field = form.field %}{% include "student_note_problem_link.html" %}{% endwith %}{% endif %}</p>
+  {% endif %}
+  {% if deleted %}
+    <p class="note"><a href="{{ new_note_page }}">Write down homework</a> to start a new note.</p>
   {% endif %}
   {% if taken %}
     <section class="panel homework-note" aria-label="The note this form already saved">
@@ -31,7 +37,9 @@
   {% endif %}
   {% if viewer == "parent" %}
     <p class="note">{{ not_hers }} A homework note is hers to write.</p>
-  {% else %}
+    <p class="note">Copying a whole week from the school's site? <a href="/parent#add-assignments">Paste it on Family review</a>.</p>
+  {% elif not deleted %}
+    <p class="note">Save it in your own words now. From the note you can make it new homework, or connect it to homework the school already lists.</p>
     <section class="panel homework-note">
       {% if form.unsaved %}<h2 class="update-heading">Your unsaved words</h2>{% endif %}
       <form method="post" action="/student/actions/homework-notes" class="report">
@@ -46,6 +54,7 @@
         </div>
       </form>
     </section>
+    <p class="note">Copying a whole week from the school's site? A parent does that on Family review.</p>
   {% endif %}
   <p class="note"><a href="/student/homework-notes">Homework notes</a></p>
 {% endblock %}

@@ -11,13 +11,15 @@
   the place it had. The page is there when the list is empty and says so. A
   note whose row cannot be read is said to be that, apart from the list, and
   breaks nothing. Reading either page writes nothing. A parent signed in reads
-  both and is offered no form.
+  both and is offered no form. After a delete the waiting list says so first,
+  when the record holds the note as deleted.
 #}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% block content %}
   {% set mine = viewer != "parent" %}
   <p class="return"><a href="/student/due-this-week">{% if mine %}Back to my week{% else %}Back to her week{% endif %}</a></p>
   <h1>{{ heading }}{% if notes or unreadable %} ({{ notes|length + unreadable|length }}){% endif %}</h1>
+  {% if result %}<p class="note update-result" role="status" id="notes-result" tabindex="-1">{{ result }}</p>{% endif %}
   <section class="panel homework-notes" id="homework-notes" tabindex="-1" aria-label="{{ heading }}">
     {% if archived %}
       <p class="note">Notes {% if mine %}you{% else %}she{% endif %} put away. Each is kept with its history and can be brought back from its own page.</p>
@@ -35,7 +37,7 @@
     {% endif %}
   </section>
   <p class="support-links">
-    {% if mine and which == "waiting" %}<a href="{{ new_note_page }}">Add homework</a>{% endif %}
+    {% if mine and which == "waiting" %}<a href="{{ new_note_page }}">Write down homework</a>{% endif %}
     {% if which != "waiting" %}<a href="{{ notes_page }}">Homework notes</a>{% endif %}
     {% if which != "added" %}<a href="{{ added_notes_page }}">Notes added to homework</a>{% endif %}
     {% if which != "archived" %}<a href="{{ archived_notes_page }}">Archived homework notes</a>{% endif %}

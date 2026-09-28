@@ -29,6 +29,7 @@ today's planning window.
 
 import logging
 import re
+import sqlite3
 from dataclasses import dataclass, replace
 from datetime import date
 from typing import Final
@@ -53,13 +54,18 @@ from blossom.captures import (
     Author,
     Capture,
     CaptureAlreadyCreated,
+    CaptureAlreadyDeleted,
     CaptureChanged,
     CaptureConflict,
     CaptureCreated,
+    CaptureDeleted,
     CaptureEvent,
     CaptureIdTaken,
+    CaptureInUse,
     CaptureNotSaved,
     CaptureUnchanged,
+    CaptureUse,
+    CaptureWasDeleted,
     NotACaptureId,
     Remaining,
     UnknownCapture,
@@ -81,7 +87,9 @@ from blossom.routes.navigation import (
     NEW_NOTE_PAGE,
     NOTE_RESULT,
     NOTES_PAGE,
+    NOTES_RESULT,
     WEEK_PAGE,
+    address,
     note_href,
 )
 from blossom.routes.student import (
@@ -159,6 +167,34 @@ NOTE_NOT_MOVED: Final = "That could not be saved, and nothing was changed. Try a
 HELP_NOT_ASKED: Final = "Your request could not be sent, and nothing was changed. Try again."
 NOTE_GONE: Final = "This homework note is not on record."
 NOTE_UNREADABLE: Final = "This homework note cannot be read right now. Nothing was changed."
+NOTE_DELETED: Final = "Note deleted."
+NOTE_ALREADY_DELETED: Final = "That note was already deleted."
+NOTE_WAS_DELETED: Final = "That note was deleted."
+NOTE_DELETED_GONE: Final = "This homework note was deleted."
+NOTE_NOT_DELETED: Final = "That could not be deleted, and nothing was changed. Try again."
+NOTE_CHANGED_NOT_DELETED: Final = (
+    "This note changed while you were away, so it wasn't deleted. This page shows it as it "
+    "stands now."
+)
+NOTE_USE_UNKNOWN: Final = (
+    "This note was saved before notes could be deleted, and Blossom can't tell whether it "
+    "was used, so it can't be deleted."
+)
+KEPT_BECAUSE: Final[dict[str, tuple[str, str]]] = {
+    "added": ("It was just added to homework", "It's in homework"),
+    "linked": (
+        "It was just linked to homework the school lists",
+        "It's linked to homework the school lists",
+    ),
+    "was_linked": ("It was linked to homework before",) * 2,
+    "asked": ("It was named in a request for help",) * 2,
+    "unknown": (
+        "It was saved before notes could be deleted, and Blossom can't tell whether it was used",
+    )
+    * 2,
+}
+"""Why a note is kept, said as it happened just now and as it stands. A link removed or a
+request for help is said as past, never as something that stands."""
 WITHOUT_DATE: Final = "without_date"
 REVISION_AS_WRITTEN: Final = re.compile(r"[1-9][0-9]{0,8}", re.ASCII)
 
@@ -419,15 +455,19 @@ def new_note_page(
     form: NoteForm,
     *,
     taken: Capture | None = None,
+    deleted: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
-    """The page a note is first written on. It reads no store, so it can always be shown."""
+    """The page a note is first written on. It reads no store, so it can always be shown.
+    ``deleted`` answers a form whose note was deleted, with no form of its own."""
     return templates.TemplateResponse(
         request,
         "student_note_new.html",
         {
             "form": form,
             "taken": taken,
+            "deleted": deleted,
+            "new_note_page": NEW_NOTE_PAGE,
             "viewer": viewer_of(request),
             "parent": parent_reads(request),
             "not_hers": NOT_HERS_TO_UPDATE,
@@ -439,14 +479,30 @@ def new_note_page(
     )
 
 
-def gone(request: Request, state: ApplicationState) -> HTMLResponse:
-    """The small page for a name that is no note of this record."""
+def gone(request: Request, state: ApplicationState, capture_id: str | None = None) -> HTMLResponse:
+    """The small page for a name that is no note of this record. A note that was deleted
+    is said to be, and nothing of it is shown, since nothing of it is kept."""
+    problem = NOTE_GONE
+    if capture_id is not None:
+        try:
+            if state.project_state.capture_deleted(capture_id):
+                problem = NOTE_DELETED_GONE
+        except (sqlite3.Error, ValueError):
+            logger.exception("whether the note %s was deleted could not be read", capture_id)
     return templates.TemplateResponse(
         request,
         "student_note_gone.html",
-        {"problem": NOTE_GONE, "ways_back": ways_back(request), "sample": state.settings.sample},
+        {"problem": problem, "ways_back": ways_back(request), "sample": state.settings.sample},
         status_code=status.HTTP_404_NOT_FOUND,
     )
+
+
+def kept_because(use: CaptureUse, *, archived: bool, just: bool) -> str:
+    """Why a note can't be deleted, and what she can do instead: archive it, or leave it
+    archived. ``just`` is for a use that came after the page offered the delete."""
+    now, before = KEPT_BECAUSE[use]
+    instead = "It stays archived." if archived else "Archive it instead."
+    return f"{now if just else before}, so it can't be deleted. {instead}"
 
 
 def plain_failure(
@@ -585,7 +641,7 @@ def note_page(
     if found is None:
         if form is not None:
             return plain_failure(request, state, NOTE_GONE, form, refusal(status_code, gone=True))
-        return gone(request, state)
+        return gone(request, state, capture_id)
     note, history = found[0], list(found[1])
     viewer = viewer_of(request)
     mine = viewer != "parent"
@@ -598,6 +654,14 @@ def note_page(
         request_made = state.help_requests.get(asked[:TOKEN_MAX_LENGTH])
         if request_made is not None and request_made.capture_id == note.capture_id:
             result = NoteResult(NOTE_ASKED, stands=True)
+    deletable = use_unknown = False
+    if mine:
+        try:
+            use = state.project_state.capture_use(note.capture_id)
+        except (UnknownCapture, UnreadableCapture, sqlite3.Error):
+            logger.exception("whether the note %s was used could not be read", capture_id)
+        else:
+            deletable, use_unknown = use is None, use == "unknown"
     if form is None and edit and mine and not note.archived:
         form = NoteForm(
             capture_id=note.capture_id,
@@ -618,6 +682,8 @@ def note_page(
             "viewer": viewer,
             "mine": mine,
             "in_homework": in_homework(state, note),
+            "deletable": deletable,
+            "use_unknown": NOTE_USE_UNKNOWN if use_unknown else None,
             "out_of_the_window": OUT_OF_THE_WINDOW,
             "window_unknown": WINDOW_UNKNOWN,
             "ways_back": ways_back(
@@ -722,10 +788,28 @@ def new_note(request: Request, state: State) -> HTMLResponse:
     return new_note_page(request, state, NoteForm(capture_id=new_capture_id()))
 
 
-def notes_list(request: Request, state: ApplicationState, *, which: str) -> HTMLResponse:
+def deleted_result(state: ApplicationState, deleted: str | None, already: str | None) -> str | None:
+    """What her list says after a delete: that the note was deleted, or was already, when
+    the record holds the note the address names as deleted. The address alone says
+    nothing, so no name makes the list claim a deletion that did not happen."""
+    for given, said in ((deleted, NOTE_DELETED), (already, NOTE_ALREADY_DELETED)):
+        if not given or len(given) > TOKEN_MAX_LENGTH:
+            continue
+        try:
+            if state.project_state.capture_deleted(given):
+                return said
+        except NotACaptureId:
+            continue
+    return None
+
+
+def notes_list(
+    request: Request, state: ApplicationState, *, which: str, result: str | None = None
+) -> HTMLResponse:
     """One of her three lists of notes, each a single read of the notes: the ones still
     waiting, the ones added to homework, or the ones she put away. The waiting ones say
-    what each still needs, from one read of the homework on record."""
+    what each still needs, from one read of the homework on record. ``result`` is what a
+    delete did, said first."""
     store = state.project_state
     read = {
         "waiting": store.outstanding_captures,
@@ -739,6 +823,7 @@ def notes_list(request: Request, state: ApplicationState, *, which: str) -> HTML
             "notes": read.notes,
             "unreadable": read.unreadable,
             "which": which,
+            "result": result,
             "archived": which == "archived",
             "remains": remains_for(state, read.notes),
             "viewer": viewer_of(request),
@@ -752,9 +837,13 @@ def notes_list(request: Request, state: ApplicationState, *, which: str) -> HTML
 
 
 @router.get("/homework-notes", response_class=HTMLResponse, include_in_schema=False)
-def homework_notes(request: Request, state: State) -> HTMLResponse:
-    """Every note still to do something about, the first saved first."""
-    return notes_list(request, state, which="waiting")
+def homework_notes(
+    request: Request, state: State, deleted: str | None = None, already: str | None = None
+) -> HTMLResponse:
+    """Every note still to do something about, the first saved first, and what a delete
+    did when the address names a note the record holds as deleted."""
+    result = deleted_result(state, deleted, already)
+    return notes_list(request, state, which="waiting", result=result)
 
 
 @router.get("/homework-notes/added", response_class=HTMLResponse, include_in_schema=False)
@@ -805,7 +894,7 @@ def help_about_a_note(request: Request, capture_id: str, state: State) -> HTMLRe
     except UnreadableCapture:
         return unreadable(request, state)
     if found is None:
-        return gone(request, state)
+        return gone(request, state, name)
     return help_page(request, state, found[0])
 
 
@@ -853,7 +942,8 @@ async def save_a_new_note(request: Request, state: State) -> Response:
     The same form again is the same note, answered with the note as it
     stands now. The same id with anything else in it is refused with both
     shown, and her words come back in a form with an id of its own, to save
-    as another note if she wants them. A parent is answered 403.
+    as another note if she wants them. The id of a deleted note is answered
+    409 whatever it sends, with a way to a new note. A parent is answered 403.
     """
     fields, whole = await fields_of(request, CREATE_FIELDS, may_be_absent=PRESSED_OR_PENDING)
     viewer = viewer_of(request)
@@ -914,6 +1004,16 @@ async def save_a_new_note(request: Request, state: State) -> Response:
                 state,
                 replace(form, capture_id=new_capture_id(), problem=NOTE_ID_TAKEN, unsaved=True),
                 taken=note,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        case CaptureWasDeleted():
+            # Nothing of the deleted note comes back, not its id and not these words: a
+            # new note is her choice, from a fresh page with an id of its own.
+            return new_note_page(
+                request,
+                state,
+                NoteForm(capture_id="", problem=NOTE_WAS_DELETED),
+                deleted=True,
                 status_code=status.HTTP_409_CONFLICT,
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
@@ -1057,7 +1157,7 @@ async def move_a_note(
                 today=today,
             )
     except UnknownCapture:
-        return gone(request, state)
+        return gone(request, state, name)
     except CaptureNotSaved:
         logger.exception("her homework note %s could not be moved", name)
         return note_or_plain(request, state, name, NOTE_NOT_MOVED, None)
@@ -1096,6 +1196,129 @@ async def archive_a_note(request: Request, capture_id: str, state: State) -> Res
 async def restore_a_note(request: Request, capture_id: str, state: State) -> Response:
     """Bring a note back to the place it had. Nothing is made of it."""
     return await move_a_note(request, capture_id, state, archive=False)
+
+
+@router.api_route(
+    "/homework-notes/{capture_id}/delete",
+    methods=["GET", "HEAD"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def delete_page(request: Request, capture_id: str, state: State) -> HTMLResponse:
+    """The page that asks before a note is deleted: her words as they stand, what deleting
+    does, and the two choices. Opening it writes nothing. A parent is answered 403 on the
+    note's own page, and a note that can't be deleted 409, with the reason."""
+    try:
+        name = capture_id_from(capture_id)
+    except NotACaptureId:
+        return gone(request, state)
+    if viewer_of(request) == "parent":
+        return note_page(
+            request,
+            state,
+            name,
+            problem=NOT_HERS_TO_UPDATE,
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    try:
+        found = state.project_state.sound_capture_history(name)
+        use = None if found is None else state.project_state.capture_use(name)
+    except UnreadableCapture:
+        return unreadable(request, state)
+    except UnknownCapture:
+        found = None
+    if found is None:
+        return gone(request, state, name)
+    note = found[0]
+    if use is not None:
+        return note_page(
+            request,
+            state,
+            name,
+            problem=kept_because(use, archived=note.archived, just=False),
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    return templates.TemplateResponse(
+        request,
+        "student_note_delete.html",
+        {
+            "note": note,
+            "ways_back": ways_back(request),
+            "sample": state.settings.sample,
+        },
+    )
+
+
+@router.post(
+    "/actions/homework-notes/{capture_id}/delete",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def delete_a_note(request: Request, capture_id: str, state: State) -> Response:
+    """Delete a note that was never used, from the revision the page showed.
+
+    The form carries the revision and nothing else, never her words. The
+    store checks, in the transaction that deletes, that the note was never
+    used and still stands at that revision. A note used since is answered
+    409 with the reason and a page that is behind 409 with the note as it
+    stands, whose own page asks again. A note deleted before is already
+    done. What a delete did is said on her list, from the record. A parent
+    is answered 403 and nothing is deleted.
+    """
+    fields, whole = await fields_of(request, MOVE_FIELDS)
+    try:
+        name = capture_id_from(capture_id)
+    except NotACaptureId:
+        return gone(request, state)
+    if viewer_of(request) == "parent":
+        return note_page(
+            request,
+            state,
+            name,
+            problem=NOT_HERS_TO_UPDATE,
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    revision = revision_of(fields)
+    if not whole or revision is None:
+        return note_page(
+            request,
+            state,
+            name,
+            problem=BAD_FORM,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    try:
+        async with state.decision_lock:
+            outcome = state.project_state.delete_capture(name, expected_revision=revision)
+    except UnknownCapture:
+        return gone(request, state, name)
+    except UnreadableCapture:
+        return unreadable(request, state, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    except CaptureNotSaved:
+        logger.exception("her homework note %s could not be deleted", name)
+        return note_or_plain(request, state, name, NOTE_NOT_DELETED, None)
+    match outcome:
+        case CaptureDeleted():
+            where = address(NOTES_PAGE, NOTES_RESULT, deleted=name)
+        case CaptureAlreadyDeleted():
+            where = address(NOTES_PAGE, NOTES_RESULT, already=name)
+        case CaptureInUse(capture=note, use=use):
+            return note_page(
+                request,
+                state,
+                name,
+                problem=kept_because(use, archived=note.archived, just=True),
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        case CaptureConflict():
+            return note_page(
+                request,
+                state,
+                name,
+                problem=NOTE_CHANGED_NOT_DELETED,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+    return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post(

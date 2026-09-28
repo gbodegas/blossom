@@ -23,8 +23,10 @@
   choice; on an archived note her words are shown to copy and nothing can be
   saved until she brings the note back.
 
-  She may edit, archive, and restore. A parent signed in reads all of it, the
-  archived and the history included, and is told the note is hers to change.
+  She may edit, archive, and restore, and delete a note that was never used,
+  after a page that asks first. A note saved before deleting was possible says
+  it can't be deleted. A parent signed in reads all of it, the archived and
+  the history included, and is told the note is hers to change.
 #}
 {% from "note_details_shown.html" import details_shown %}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
@@ -52,8 +54,8 @@
     {% elif not note.archived %}
       <p class="note">Saved {{ on(note.created_on) }}{% if note.updated_on != note.created_on %}, changed {{ on(note.updated_on) }}{% endif %}. It is not in a plan yet, and it is not an assignment.</p>
       {% if not form %}
-        <p class="note"><a href="{{ note_add_href(note.capture_id, family=not mine) }}">Add it to homework</a>{% if note.course and note.title %}. It has a class and a title, so it is ready to add.{% else %}. It needs a class and a title first, and that page asks for them.{% endif %}</p>
-        <p class="note"><a href="{{ note_search_href(note.capture_id, family=not mine) }}">Link to homework already here</a>: find it by its class or title, whatever this note calls it.</p>
+        <p class="note"><strong>This is new homework</strong>: Use this when it isn't on the school's list. You'll pick its class and a title, and then it shows up in {% if mine %}your week and your plans{% else %}her week and her plans{% endif %}. <a href="{{ note_add_href(note.capture_id, family=not mine) }}">Add it to homework</a>{% if note.course and note.title %}. It has a class and a title, so it is ready to add.{% endif %}</p>
+        <p class="note"><strong>This is about homework already listed</strong>: Use this when the school already lists it. The note stays with that assignment, so nothing is listed twice. <a href="{{ note_search_href(note.capture_id, family=not mine) }}">Link to homework already here</a></p>
       {% endif %}
     {% endif %}
     {# The corrections go through the reader's own tree, hers or the family's, whatever became of the homework. #}
@@ -101,7 +103,15 @@
             <button type="submit" class="secondary">Bring this note back</button>
           </form>
         {% endif %}
+        {% if deletable %}
+          <form method="get" action="{{ note_delete_href(note.capture_id) }}" class="action">
+            <button type="submit" class="secondary">Delete this note</button>
+          </form>
+        {% endif %}
       </div>
+      {% if not note.archived %}<p class="note">Archiving takes it off your list. You can bring it back from Archived.</p>{% endif %}
+      {% if deletable %}<p class="note">Made by mistake? Deleting removes it and its history for good.</p>{% endif %}
+      {% if use_unknown %}<p class="note">{{ use_unknown }}</p>{% endif %}
       <p class="note"><a href="{{ note_help_href(note.capture_id) }}">Ask for help about this note</a>. Opening that page sends nothing.</p>
     {% endif %}
     <details class="steps history">
@@ -123,7 +133,7 @@
           </li>
         {% endfor %}
       </ol>
-      <p class="note">Notes and their history are kept in the family's own file, and in any backup of it. Nothing here is sent to the school. The words of a note are never sent to the planning model; once a note is added to homework, the assignment's class, title, date, kind, and note about the work are, as they are for any homework.</p>
+      <p class="note">Notes and their history are kept in the family's own file until {% if mine %}you delete{% else %}she deletes{% endif %} one that was never used, and a used note can only be archived. A backup made before a note was deleted may still hold it. Nothing here is sent to the school. The words of a note are never sent to the planning model; once a note is added to homework, the assignment's class, title, date, kind, and note about the work are, as they are for any homework.</p>
     </details>
   </section>
 {% endblock %}

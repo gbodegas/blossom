@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% set page = "student" %}
+{% block title %}Blossom - Delete this note{% endblock %}
+{#
+  The page that asks before a note is deleted. It shows her words as they
+  stand now and says what deleting does: the note and its history go for good,
+  and a backup made earlier may still hold them. Opening it writes nothing.
+  The form carries the revision shown and never her words, and "Keep it" is a
+  plain way back to the note. Only a note that was never used reaches here.
+#}
+{% block content %}
+  {% for link in ways_back %}
+    <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
+  {% endfor %}
+  <h1>Delete this note?</h1>
+  <section class="panel homework-note">
+    <h2 class="update-heading">What you wrote</h2>
+    <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
+    <p class="note">Deleting removes this note and its history for good. It can't be undone. A backup of the family's file made before now may still hold it.</p>
+    <form method="post" action="{{ note_action(note.capture_id, "delete") }}" class="report">
+      <input type="hidden" name="revision" value="{{ note.revision }}">
+      <div class="actions">
+        <button type="submit" class="primary">Delete it for good</button>
+        <a class="cancel" href="{{ note_href(note.capture_id) }}">Keep it</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}
