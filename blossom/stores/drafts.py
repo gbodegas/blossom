@@ -154,6 +154,9 @@ class RunRecord(BaseModel):
     outcome: str
     recorded_at: AwareDatetime
     steps: list[StepRecord]
+    newest: bool = False
+    """Whether no later run of the same evening, with a draft or without, was saved; read
+    only for runs that ended without a draft."""
 
 
 class DraftsStore:
@@ -678,21 +681,33 @@ class DraftsStore:
         return [step_from(row) for row in rows]
 
     def runs_without_a_draft(self) -> list[RunRecord]:
-        """Runs that ended before the gate, most recent first, each with its steps.
+        """Runs that ended before the gate, most recent first, each with its steps, and
+        whether each is the newest run of its evening.
 
         One query joins the runs to their steps, so every record is assembled
         from a single snapshot and a replacement landing between two reads
-        cannot pair one run's outcome with another's steps.
+        cannot pair one run's outcome with another's steps. Newest is read in
+        the same query, against every run of the evening, with a draft or
+        without. Two saved at one instant are told apart by the order they were
+        first saved, which saving a run again keeps, both for the listing and
+        for which is newest.
         """
         with self._lock:
             rows = self._connection.execute(
                 """
                 SELECT runs.thread_id, runs.plan_date, runs.outcome, runs.recorded_at,
+                       NOT EXISTS (
+                           SELECT 1 FROM runs AS later
+                           WHERE later.plan_date = runs.plan_date
+                             AND (later.recorded_at > runs.recorded_at
+                                  OR (later.recorded_at = runs.recorded_at
+                                      AND later.rowid > runs.rowid))
+                       ) AS newest,
                        steps.node, steps.round, steps.expected, steps.found,
                        steps.recorded_at AS step_recorded_at
                 FROM runs LEFT JOIN steps ON steps.thread_id = runs.thread_id
                 WHERE runs.thread_id NOT IN (SELECT thread_id FROM drafts)
-                ORDER BY runs.recorded_at DESC, runs.thread_id, steps.position
+                ORDER BY runs.recorded_at DESC, runs.rowid DESC, steps.position
                 """
             ).fetchall()
         grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
@@ -707,6 +722,7 @@ class DraftsStore:
                 outcome=str(row["outcome"]),
                 recorded_at=datetime.fromisoformat(str(row["recorded_at"])),
                 steps=steps,
+                newest=bool(row["newest"]),
             )
             for thread_id, (row, steps) in grouped.items()
         ]

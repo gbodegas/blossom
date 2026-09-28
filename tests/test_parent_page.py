@@ -11,10 +11,12 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
 from blossom.agent.graph import plan_graph_for
+from blossom.agent.steps import StepRecord
 from blossom.app import create_app
 from blossom.clock import spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
@@ -26,9 +28,19 @@ from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
-from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
-from blossom.stores.project_state import Saved, Undone
-from tests.support import FIXTURE_TIMEZONE, SAME_ORIGIN, Scripted, fixture_settings, ok
+from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
+from blossom.stores.project_state import Assignment, Saved, Undone
+from tests import support
+from tests.support import (
+    FIXTURE_TIMEZONE,
+    SAME_ORIGIN,
+    Scripted,
+    fixture_settings,
+    forgetful_fixture_plan,
+    ok,
+    state_of,
+    store_of,
+)
 
 PLAN_DATE = date(2026, 8, 19)
 CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
@@ -534,11 +546,16 @@ def test_the_page_shows_how_a_waiting_plan_was_made() -> None:
         page = client.get("/parent").text
 
     assert "How this plan was made" in page
-    assert '<span class="step-node">retrieve</span>' in page
-    assert "Expected: the record&#39;s due dates hold against the school&#39;s sources." in page
-    assert "Found: all 8 checks passed." in page
-    assert "Found: accepted on every criterion." in page
-    assert "Ended without a plan" not in page
+    assert '<span class="step-node">Read the week</span>' in page
+    assert '<span class="step-node">First plan</span>' in page
+    assert '<span class="step-node">Rules check</span>' in page
+    assert '<span class="step-node">Reviewer</span>' in page
+    assert "It kept all 8 rules." in page
+    assert "The reviewer found nothing to change." in page
+    assert "Expected:" not in page
+    assert "Found:" not in page
+    assert "round 1" not in page
+    assert "Plans that couldn't be made" not in page
 
 
 def test_a_decided_plan_keeps_the_record_of_how_it_was_made() -> None:
@@ -548,7 +565,18 @@ def test_a_decided_plan_keeps_the_record_of_how_it_was_made() -> None:
         page = client.get("/parent").text
 
     assert page.count("How this plan was made") == 1
-    assert "Found: accepted on every criterion." in page
+    assert "The reviewer found nothing to change." in page
+
+
+def ended_fold_open(page: str) -> bool:
+    """Whether the fold of plans that couldn't be made is open, read from that fold alone:
+    the page's other folds share its class."""
+    found = re.search(
+        r"""<details class="steps panel-fold"( open)?>\s*<summary>Plans that couldn't be made""",
+        page,
+    )
+    assert found is not None
+    return found.group(1) is not None
 
 
 def forgetful() -> DailyPlan:
@@ -562,12 +590,97 @@ def test_a_run_that_ended_without_a_plan_is_on_the_page_with_its_steps() -> None
         page = client.get("/parent").text
 
     assert posted.status_code == 303
-    assert "Ended without a plan" in page
-    assert "The plan failed its checks after every revision." in page
+    assert ended_fold_open(page)
+    assert "<summary>Plans that couldn't be made</summary>" in page
+    assert "No plan for Wednesday, August 19, 2026" in page
+    assert (
+        "Every version Blossom wrote broke one of its rules, so there&#39;s no plan to "
+        "review. Planning again may work, since each try writes a fresh plan." in page
+    )
+    assert "In the last version, it broke 1 of 8 rules:" in page
+    assert "ended with checks_failed" not in page
     assert "How this run went" in page
-    assert page.count('<span class="step-node">plan</span>') == 3
-    assert "Found: 1 of 8 checks failed:" in page
+    for label in ("First plan", "Second plan", "Third plan"):
+        assert f'<span class="step-node">{label}</span>' in page
+    assert page.count('<span class="step-node">Rules check</span>') == 3
     assert "No plans need your review." in page
+
+
+def test_a_run_a_later_run_of_its_evening_followed_is_kept_closed() -> None:
+    """The failed run is the record of an evening a later plan answered, so the page
+    keeps it folded."""
+    scripts = iter([[forgetful()] * 3, [a_plan()]])
+    with browser(plans=lambda: next(scripts)) as client:
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        page = client.get("/parent").text
+
+    assert not ended_fold_open(page)
+    assert "No plan for Wednesday, August 19, 2026" in page
+
+
+def test_a_run_for_an_evening_already_past_is_kept_closed() -> None:
+    with browser() as client:
+        state_of(client).drafts.record_run(
+            thread_id="plan:2026-08-18:old",
+            plan_date=PLAN_DATE - timedelta(days=1),
+            outcome="checks_failed",
+            steps=[],
+        )
+        page = client.get("/parent").text
+
+    assert not ended_fold_open(page)
+    assert "No plan for Tuesday, August 18, 2026" in page
+    assert "In the last version" not in page
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n"])
+def test_a_run_whose_last_check_is_blank_still_shows(blank: str) -> None:
+    at = datetime(2026, 8, 19, 20, tzinfo=UTC)
+    steps = [
+        StepRecord(node="plan", round=1, expected="", found="1 block", recorded_at=at),
+        StepRecord(node="verify", round=1, expected="", found=blank, recorded_at=at),
+    ]
+    with browser() as client:
+        state_of(client).drafts.record_run(
+            thread_id="plan:2026-08-19:blank",
+            plan_date=PLAN_DATE,
+            outcome="checks_failed",
+            steps=steps,
+        )
+        page = client.get("/parent")
+
+    assert page.status_code == 200
+    assert "No plan for Wednesday, August 19, 2026" in page.text
+    assert "In the last version" not in page.text
+    assert '<span class="step-node">Rules check</span>' in page.text
+    assert re.search(r'<p class="step-line">\s*\.</p>', page.text) is None
+
+
+def test_a_run_recorded_in_earlier_words_reads_as_sentences() -> None:
+    """A run saved before the steps were written as sentences reads as sentences all the
+    same, labeled by what each step did."""
+    at = datetime(2026, 8, 19, 20, tzinfo=UTC)
+    steps = [
+        StepRecord(
+            node="plan", round=1, expected="", found="1 block asking 60 minutes", recorded_at=at
+        ),
+        StepRecord(
+            node="verify", round=1, expected="", found="all 8 checks passed", recorded_at=at
+        ),
+    ]
+    with browser() as client:
+        state_of(client).drafts.record_run(
+            thread_id="plan:2026-08-19:earlier",
+            plan_date=PLAN_DATE,
+            outcome="model_refused",
+            steps=steps,
+        )
+        page = client.get("/parent").text
+
+    assert '<span class="step-node">First plan</span>' in page
+    assert '<p class="step-line">1 block asking 60 minutes.</p>' in page
+    assert '<p class="step-line">All 8 checks passed.</p>' in page
 
 
 # ------------------------------------------------------- the plan and the week
@@ -758,3 +871,208 @@ def test_an_evening_past_the_calendars_edge_is_refused_by_the_form_as_by_the_rou
     assert over_json.status_code == 422
     assert over_json.json()["detail"].startswith("The evening of 9999-12-31 is past the edge")
     assert ended == []
+
+
+FIXTURE_LEFT_OUT = (
+    "Algebra II \u00b7 Quadratic modeling problem set",
+    "Science \u00b7 Science fair topic proposal",
+    "Science \u00b7 Cover the textbook",
+    "English \u00b7 Reading log, week one",
+    "English \u00b7 Syllabus, signed",
+    "Spanish \u00b7 Vocabulary quiz, unit one",
+)
+
+
+def ended_runs(client: TestClient, plans: Callable[[], list[DailyPlan]]) -> str:
+    """Plan the evening from Family review with ``plans`` and return the page from its
+    fold of plans that couldn't be made on."""
+    client.app.dependency_overrides[plan_graphs] = support.scripted_graphs(  # type: ignore[attr-defined]
+        plans, list
+    )
+    posted = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+    assert posted.status_code == 303
+    page = client.get(posted.headers["location"]).text
+    return page[page.index("<summary>Plans that couldn't be made</summary>") :]
+
+
+def test_a_failed_plan_names_the_homework_it_left_out_by_course_and_title() -> None:
+    with support.browser(key=True) as client:
+        fold = ended_runs(client, lambda: [forgetful_fixture_plan()] * 3)
+
+    last = re.search(
+        r'<p class="note">In the last version, it broke 1 of 8 rules: ([^<]*)\.</p>', fold
+    )
+    assert last is not None
+    assert sorted(last.group(1).split("; ")) == sorted(
+        f"the plan leaves out {name}" for name in FIXTURE_LEFT_OUT
+    )
+    assert fold.count(f"It broke 1 of 8 rules: {last.group(1)}.") == 3
+    assert "assignment-" not in fold
+
+
+def test_homework_the_plan_made_up_is_never_shown_by_its_id() -> None:
+    made_up = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            PlanBlock(
+                assignment_id="<b>assignment-made-up</b>",
+                starts_at=time(16, 0),
+                ends_at=time(16, 30),
+                rationale="first",
+            ),
+            *forgetful_fixture_plan().blocks,
+        ],
+    )
+    with support.browser(key=True) as client:
+        fold = ended_runs(client, lambda: [made_up] * 3)
+
+    assert "the plan includes homework Blossom doesn&#39;t recognize;" in fold
+    assert "made-up" not in fold
+    assert "<b>" not in fold
+
+
+def test_a_title_with_markup_is_shown_as_text_in_a_failed_plan() -> None:
+    lab = Assignment(
+        assignment_id="assignment-lab-notes",
+        course="Science",
+        title="<b>Lab</b> & notes",
+        due_date=date(2026, 8, 20),
+        dependencies=[],
+        reported_submission_status="not_started",
+    )
+    with support.browser(key=True) as client:
+        store_of(client).upsert_assignments([lab])
+        fold = ended_runs(client, lambda: [forgetful_fixture_plan()] * 3)
+
+    assert "the plan leaves out Science \u00b7 &lt;b&gt;Lab&lt;/b&gt; &amp; notes" in fold
+    assert "<b>Lab</b>" not in fold
+
+
+def test_a_failed_plan_keeps_the_names_the_run_read_after_the_homework_changes() -> None:
+    with support.browser(key=True) as client:
+        ended_runs(client, lambda: [forgetful_fixture_plan()] * 3)
+        renamed = next(
+            item
+            for item in store_of(client).all_assignments()
+            if item.assignment_id == "assignment-algebra-set"
+        ).model_copy(update={"title": "Renamed problem set", "course": "Geometry"})
+        store_of(client).upsert_assignments([renamed])
+        page = client.get("/parent").text
+        titles = {item.title for item in store_of(client).all_assignments()}
+
+    fold = page[page.index("<summary>Plans that couldn't be made</summary>") :]
+    assert "the plan leaves out Algebra II \u00b7 Quadratic modeling problem set" in fold
+    assert "Renamed problem set" not in fold
+    assert "Renamed problem set" in titles
+
+
+LONG_TITLE = "PhotosynthesisAndCellularRespirationReview"
+
+
+def long_twins() -> list[Assignment]:
+    """Two Science assignments due the same day under one title that is a single long word."""
+    return [
+        Assignment(
+            assignment_id=identity("Science", LONG_TITLE, occurrence),
+            course="Science",
+            title=LONG_TITLE,
+            due_date=date(2026, 8, 24),
+            dependencies=[],
+            reported_submission_status="not_started",
+        )
+        for occurrence in ("first", "second")
+    ]
+
+
+def deferring_the_twins() -> DailyPlan:
+    """The fixture week's passing plan with both twins put off, so it passes every check."""
+    plan = support.fixture_week_plan()
+    put_off = [
+        Deferral(assignment_id=item.assignment_id, reason="due Monday") for item in long_twins()
+    ]
+    return plan.model_copy(update={"deferred": [*plan.deferred, *put_off]})
+
+
+def faulting_the_reasons() -> CriticVerdict:
+    return CriticVerdict(
+        findings=[
+            CriterionFinding(
+                criterion=criterion,
+                critique="the reasons repeat themselves",
+                judgment=Judgment.FAILS if criterion is Criterion.RATIONALE else Judgment.PASSES,
+            )
+            for criterion in Criterion
+        ]
+    )
+
+
+def rules_for(css: str, name: str) -> list[str]:
+    """The declarations of every rule whose selectors use the class ``name``."""
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    return [
+        inside
+        for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain)
+        if re.search(rf"\.{re.escape(name)}(?![\w-])", head)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("card", "opening"),
+    [
+        ("failed run", '<article class="draft outcome-checks_failed">'),
+        ("kept plan", '<article class="draft outcome-unsettled">'),
+        ("reviewed kept plan", '<article class="draft decided-approved">'),
+    ],
+    ids=["failed run", "kept plan", "reviewed kept plan"],
+)
+def test_long_homework_labels_in_a_runs_explanation_stay_whole_and_wrap(
+    card: str, opening: str
+) -> None:
+    labels = [
+        f"Science \u00b7 {LONG_TITLE} (due Aug 24, {item.assignment_id})" for item in long_twins()
+    ]
+    with support.browser(key=True) as client:
+        store_of(client).upsert_assignments(long_twins())
+        if card == "failed run":
+            ended_runs(client, lambda: [forgetful_fixture_plan()] * 3)
+        else:
+            client.app.dependency_overrides[plan_graphs] = support.scripted_graphs(  # type: ignore[attr-defined]
+                lambda: [deferring_the_twins(), deferring_the_twins(), forgetful_fixture_plan()],
+                lambda: [faulting_the_reasons()] * 2,
+            )
+            posted = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+            assert posted.status_code == 303
+        if card == "reviewed kept plan":
+            draft_id = client.get("/parent/approvals").json()["waiting"][0]["draft_id"]
+            decided = client.post(
+                f"/parent/actions/decide/{draft_id}", data={"decision": "approve", "reason": ""}
+            )
+            assert decided.status_code == 303
+        page = client.get("/parent").text
+    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
+
+    start = page.index(opening)
+    article = page[start : page.index("</article>", start)]
+    naming = [
+        line
+        for line in re.findall(r'<p class="step-line">([^<]*)</p>', article)
+        if LONG_TITLE in line
+    ]
+    assert naming
+    assert all(label in line for line in naming for label in labels)
+    assert any("overflow-wrap: anywhere;" in rule for rule in rules_for(css, "step-line"))
+    if card == "failed run":
+        assert re.search(
+            r"""<details class="steps panel-fold" open>\s*<summary>Plans that couldn't be made"""
+            rf"""</summary>\s*<section>\s*{opening}""",
+            page,
+        )
+        note = re.search(r'<p class="note">(In the last version[^<]*)</p>', article)
+        assert note is not None
+        assert all(label in note.group(1) for label in labels)
+        assert ".steps .draft {\n  min-width: 0;\n  overflow-wrap: anywhere;\n}" in css
+    for name in ("draft", "step-line", "note", "steps"):
+        for rule in rules_for(css, name):
+            for cut in ("text-overflow", "overflow:", "overflow-x", "nowrap"):
+                assert cut not in rule
+            assert "overflow-wrap" not in rule or "overflow-wrap: anywhere;" in rule

@@ -28,7 +28,7 @@ from blossom.agent.graph import (
 )
 from blossom.agent.prompts import assignments_block
 from blossom.agent.runs import DURABILITY, RECURSION_LIMIT, run_config
-from blossom.agent.steps import StepRecord
+from blossom.agent.steps import KEPT_FOR_REVIEW, StepRecord
 from blossom.anthropic_client import ModelUnavailable
 from blossom.dependencies import build_application_state
 from blossom.drafts import Draft, DraftStatus
@@ -198,7 +198,9 @@ def test_a_plan_that_fails_the_checks_is_revised_before_any_critic_sees_it() -> 
     second = human_text(planner.briefs[1])
     assert '<feedback round="2">' in second
     assert "assignment-algebra-set is due in this window and the plan does not mention it" in second
-    assert second.rstrip().endswith("address every finding.")
+    assert second.rstrip().endswith(
+        "Keep everything else as it was, including block times, unless a finding is about them."
+    )
 
 
 def test_a_critics_fault_sends_the_plan_back_with_the_critique() -> None:
@@ -225,6 +227,185 @@ def test_a_plan_that_never_passes_the_checks_is_reported_not_proposed() -> None:
     assert critic.calls == 0
     assert "__interrupt__" not in result
     assert "draft" not in result
+
+
+# ------------------------------------------------------------------ the rescue
+
+
+def essay_plan(start: str, end: str) -> DailyPlan:
+    """A plan that passes every check, told apart from another by when the essay starts."""
+    return DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-canal-essay", start, end)],
+        deferred=[Deferral(assignment_id="assignment-algebra-set", reason="not due until Monday")],
+    )
+
+
+def passing_plans(count: int) -> list[DailyPlan]:
+    """``count`` plans that each pass the checks, the first at 4:00 PM, each an hour later."""
+    return [essay_plan(f"{16 + hour}:00", f"{17 + hour}:00") for hour in range(count)]
+
+
+def faulting_the_reasons(critique: str) -> CriticVerdict:
+    return CriticVerdict(
+        findings=[
+            *(
+                finding(Judgment.PASSES, criterion)
+                for criterion in Criterion
+                if criterion is not Criterion.RATIONALE
+            ),
+            finding(Judgment.FAILS, Criterion.RATIONALE, critique),
+        ]
+    )
+
+
+def test_a_last_revision_that_breaks_a_rule_sends_the_latest_passing_plan_to_the_gate() -> None:
+    """Every plan the reviewer sent back had passed the checks; the last revision did not.
+    The latest plan that passed goes to the gate, unsettled, with the critique that sent
+    it back, and no model is asked again for it."""
+    kept = passing_plans(MAX_REVISIONS)
+    planner = Scripted(*[ok(plan) for plan in kept], ok(plan_that_forgets_the_problem_set()))
+    critic = Scripted(
+        *[
+            ok(faulting_the_reasons(f"reason {number} repeats itself"))
+            for number in range(1, MAX_REVISIONS + 1)
+        ]
+    )
+
+    result = run(graph_with(planner, critic))
+
+    assert result["outcome"] == "unsettled"
+    assert result["rounds"] == MAX_REVISIONS + 1
+    assert planner.calls == MAX_REVISIONS + 1
+    assert critic.calls == MAX_REVISIONS
+    assert result["plan"] == kept[-1]
+    assert result["verification"].passed
+    body = result["__interrupt__"][0].value["body"]
+    latest = 4 + MAX_REVISIONS - 1
+    assert f"{latest}:00 PM to {latest + 1}:00 PM, set aside for Canal Era comparison essay" in body
+    assert "4:00 PM" not in body
+    assert "The reviewer did not settle on this plan." in body
+    assert f"reason {MAX_REVISIONS} repeats itself" in body
+    assert "reason 1 repeats itself" not in body
+
+
+def test_the_kept_plan_is_the_one_the_reviewer_last_sent_back_not_a_later_one() -> None:
+    """Only the first plan passed; every revision broke a rule. The first goes forward."""
+    first = essay_plan("16:00", "17:00")
+    planner = Scripted(ok(first), *[ok(plan_that_forgets_the_problem_set())] * MAX_REVISIONS)
+    critic = Scripted(ok(faulting_the_reasons("the reasons repeat themselves")))
+
+    result = run(graph_with(planner, critic))
+
+    assert result["outcome"] == "unsettled"
+    assert result["plan"] == first
+    assert result["verification"].passed
+    assert critic.calls == 1
+    body = result["__interrupt__"][0].value["body"]
+    assert "4:00 PM to 5:00 PM, set aside for Canal Era comparison essay" in body
+    assert "the reasons repeat themselves" in body
+
+
+def test_a_plan_that_broke_a_rule_before_any_reviewer_saw_it_is_never_the_one_kept() -> None:
+    """The first plan broke a rule, the second passed and was sent back, the last broke a
+    rule again: the second is the one kept."""
+    second = essay_plan("18:00", "19:00")
+    planner = Scripted(
+        ok(plan_that_forgets_the_problem_set()),
+        ok(second),
+        *[ok(plan_that_forgets_the_problem_set())] * (MAX_REVISIONS - 1),
+    )
+    critic = Scripted(ok(faulting_the_reasons("the reasons repeat themselves")))
+
+    result = run(graph_with(planner, critic))
+
+    assert result["outcome"] == "unsettled"
+    assert result["plan"] == second
+
+
+def test_the_kept_plans_record_says_why_it_was_kept_and_is_saved_with_the_draft() -> None:
+    drafts = drafts_in_memory()
+    planner = Scripted(
+        *[ok(plan) for plan in passing_plans(MAX_REVISIONS)],
+        ok(plan_that_forgets_the_problem_set()),
+    )
+    critic = Scripted(*[ok(faulting_the_reasons("the reasons repeat themselves"))] * MAX_REVISIONS)
+
+    result = run(graph_with(planner, critic, drafts=drafts))
+
+    steps = result["steps"]
+    assert [(item.node, item.round) for item in steps[-3:]] == [
+        ("plan", MAX_REVISIONS + 1),
+        ("verify", MAX_REVISIONS + 1),
+        ("rescue", MAX_REVISIONS + 1),
+    ]
+    assert steps[-2].found.startswith("It broke 1 of 8 rules:")
+    assert steps[-1].found == KEPT_FOR_REVIEW
+    assert drafts.steps_for("plan:2026-08-19") == steps
+    assert drafts.runs_without_a_draft() == []
+
+
+def test_a_kept_plan_is_approved_at_the_gate_like_any_other() -> None:
+    graph = graph_with(
+        Scripted(
+            *[ok(plan) for plan in passing_plans(MAX_REVISIONS)],
+            ok(plan_that_forgets_the_problem_set()),
+        ),
+        Scripted(*[ok(faulting_the_reasons("the reasons repeat themselves"))] * MAX_REVISIONS),
+    )
+    config = run_config("plan:kept")
+
+    async def go() -> dict[str, Any]:
+        await graph.ainvoke(
+            PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
+        )
+        resume: Command[Any] = Command(resume={"approved": True, "reason": None})
+        await graph.ainvoke(resume, config=config, durability=DURABILITY)
+        snapshot = await graph.aget_state(config)
+        return dict(snapshot.values) | {"next": snapshot.next}
+
+    final = asyncio.run(go())
+
+    assert final["next"] == ()
+    assert final["decision"] == "approved"
+    assert final["draft"].status is DraftStatus.APPROVED_FOR_MANUAL_SEND
+    assert final["plan"] == passing_plans(MAX_REVISIONS)[-1]
+
+
+def test_the_rescue_survives_the_process_that_wrote_it(tmp_path: pathlib.Path) -> None:
+    """The kept plan is saved state like the rest, so a run resumed from its file after
+    the process that paused it is gone still has it."""
+    path = tmp_path / "checkpoints.sqlite3"
+    kept = passing_plans(MAX_REVISIONS)
+
+    async def paused() -> None:
+        async with open_checkpointer(path) as saver:
+            graph = graph_with(
+                Scripted(*[ok(plan) for plan in kept], ok(plan_that_forgets_the_problem_set())),
+                Scripted(
+                    *[ok(faulting_the_reasons("the reasons repeat themselves"))] * MAX_REVISIONS
+                ),
+                checkpointer=saver,
+            )
+            await graph.ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0),
+                config=run_config("plan:reopened"),
+                durability=DURABILITY,
+            )
+
+    async def reopened() -> dict[str, Any]:
+        async with open_checkpointer(path) as saver:
+            graph = graph_with(Scripted(), Scripted(), checkpointer=saver)
+            snapshot = await graph.aget_state(run_config("plan:reopened"))
+            return dict(snapshot.values)
+
+    asyncio.run(paused())
+    values = asyncio.run(reopened())
+
+    assert values["outcome"] == "unsettled"
+    assert values["plan"] == kept[-1]
+    assert values["kept_plan"] == kept[-1]
+    assert values["kept_verification"].passed
 
 
 def test_a_critic_that_keeps_finding_fault_does_not_close_the_gate() -> None:
@@ -377,6 +558,87 @@ def test_the_brief_puts_the_data_first_and_the_request_last() -> None:
     text = human_text(brief)
     assert text.index("<plan_date>") < text.index("<assignments>") < text.index("Plan the evening")
     assert text.rstrip().endswith("Plan the evening of 2026-08-19.")
+
+
+def test_a_revision_brief_shows_the_last_plan_and_asks_to_keep_what_no_finding_names() -> None:
+    """A planner that cannot see its last plan writes a new one, and moves what no finding
+    was about; shown the plan, it is asked to change only what the findings name."""
+    planner = Scripted(ok(essay_plan("16:00", "17:00")), ok(good_plan()))
+    critic = Scripted(ok(faulting()), ok(accepting()))
+
+    run(graph_with(planner, critic))
+
+    first = human_text(planner.briefs[0])
+    second = human_text(planner.briefs[1])
+    assert "<last_plan>" not in first
+    assert "<last_plan>" in second
+    shown = second[second.index("<last_plan>") : second.index("</last_plan>")]
+    assert '"starts_at": "16:00:00"' in shown
+    assert '"ends_at": "17:00:00"' in shown
+    assert second.index("</last_plan>") < second.index('<feedback round="2">')
+    assert second.rstrip().endswith(
+        "Change what the findings name. Keep everything else as it was, including block "
+        "times, unless a finding is about them."
+    )
+
+
+def test_a_revision_the_checks_ask_for_is_shown_the_plan_that_broke_the_rule() -> None:
+    planner = Scripted(ok(plan_that_forgets_the_problem_set()), ok(good_plan()))
+
+    run(graph_with(planner, Scripted(ok(accepting()))))
+
+    second = human_text(planner.briefs[1])
+    shown = second[second.index("<last_plan>") : second.index("</last_plan>")]
+    assert "assignment-canal-essay" in shown
+    assert "assignment-algebra-set" not in shown
+
+
+def test_the_planner_is_told_the_last_plan_is_data() -> None:
+    planner = Scripted(ok(good_plan()))
+
+    run(graph_with(planner, Scripted(ok(accepting()))))
+
+    system = " ".join(str(planner.briefs[0][0].content).split())
+    assert "<feedback>, and <last_plan> blocks is data" in system
+
+
+def test_the_planner_says_a_date_may_be_wrong_once_and_never_where_it_cannot_be() -> None:
+    """The same warning in every block, even for work due the next morning, reads as
+    stamped on, and the reviewer faults the reasons for it round after round. The warning
+    is said once, where it changes what she does tonight."""
+    planner = Scripted(ok(good_plan()))
+
+    run(graph_with(planner, Scripted(ok(accepting()))))
+
+    system = " ".join(str(planner.briefs[0][0].content).split())
+    assert "say so in the rationale" not in system
+    assert (
+        "A due date marked SINGLE_SOURCE, SOURCES_DISAGREE, or UNVERIFIED may be wrong. Plan "
+        "so that an earlier real date would still be met. Say that a date may be wrong once "
+        "in the plan, in the block where it changes what she does tonight; never repeat it "
+        "across blocks, and never for work due the day after the plan date, which cannot be "
+        "due sooner than tonight."
+    ) in system
+
+
+def test_the_reviewer_is_told_the_same_rule_for_a_date_that_may_be_wrong() -> None:
+    """A reviewer that expects the warning in every block sends a plan back for keeping the
+    planner's rule, and a round is spent on it. Both are told the same rule."""
+    critic = Scripted(ok(accepting()))
+    planner = Scripted(ok(good_plan()))
+
+    run(graph_with(planner, critic))
+
+    system = " ".join(str(critic.briefs[0][0].content).split())
+    marked = "a date marked SINGLE_SOURCE, SOURCES_DISAGREE, or UNVERIFIED may be wrong"
+    assert (
+        f"A plan says once that {marked}, in the block where it changes what she does "
+        "tonight; it does not repeat that across blocks, and it does not say it of work due "
+        "the day after the plan date, which cannot be due sooner than tonight. Do not fault "
+        "the reasons for leaving it out elsewhere."
+    ) in system
+    planned = " ".join(str(planner.briefs[0][0].content).split())
+    assert "A due date" + marked.removeprefix("a date") in planned
 
 
 def test_copied_text_is_escaped_inside_its_block() -> None:
@@ -761,15 +1023,15 @@ def test_every_node_leaves_a_step_saying_what_it_expected_and_found() -> None:
     ]
     assert steps[0].expected == "the record's due dates hold against the school's sources"
     assert steps[0].found == (
-        "2 assignments in the week: 0 contradicted, 1 uncertain, 0 undated; "
-        "0 rules and 0 notes to follow; budget 150 minutes"
+        "2 assignments to plan. 1 has a due date that isn't confirmed. "
+        "The evening allows 150 minutes."
     )
     assert steps[1].expected == "a plan that accounts for every assignment inside 150 minutes"
-    assert steps[1].found == "1 block and 1 deferral asking 60 minutes"
+    assert steps[1].found == "1 block and 1 put off, 60 minutes in all."
     assert steps[2].expected == "every tier-one check passes"
-    assert steps[2].found == "all 8 checks passed"
+    assert steps[2].found == "It kept all 8 rules."
     assert steps[3].expected == "the reviewer passes every criterion"
-    assert steps[3].found == "accepted on every criterion"
+    assert steps[3].found == "The reviewer found nothing to change."
     assert all(item.recorded_at == fixture_clock().now() for item in steps)
 
 
@@ -789,11 +1051,14 @@ def test_a_revision_keeps_the_round_that_sent_the_plan_back() -> None:
         ("verify", 2),
         ("critique", 2),
     ]
-    assert steps[3].found == "faulted sizing; did not consider deferrals, support rules, rationale"
+    assert steps[3].found == (
+        "The reviewer found a problem with the block lengths and didn't consider what was "
+        "put off, the standing rules, and the reasons."
+    )
     assert "an hour is short" not in steps[3].found
     assert "an hour is short for a comparison essay" in human_text(planner.briefs[1])
     assert steps[4].expected == "a revised plan that answers 1 finding"
-    assert steps[6].found == "accepted on every criterion"
+    assert steps[6].found == "The reviewer found nothing to change."
 
 
 def test_a_run_that_fails_its_checks_records_every_attempt() -> None:
@@ -812,52 +1077,31 @@ def test_a_run_that_fails_its_checks_records_every_attempt() -> None:
         "verify",
     ]
     assert steps[2].found == (
-        "1 of 8 checks failed: assignment-algebra-set is due in this window and the plan "
-        "does not mention it"
+        "It broke 1 of 8 rules: the plan leaves out Algebra II \u00b7 Quadratic modeling "
+        "problem set."
     )
     assert steps[3].expected == "a revised plan that answers 1 finding"
     assert result["outcome"] == "checks_failed"
 
 
-def test_a_model_that_stops_leaves_the_reason_and_the_cost_in_the_record() -> None:
+def test_a_model_that_stops_leaves_the_reason_in_the_record() -> None:
     cut_off: ModelAnswer[DailyPlan] = ModelAnswer(
-        parsed=good_plan(),
-        stop_reason="max_tokens",
-        parsing_error=None,
-        input_tokens=1200,
-        output_tokens=4096,
+        parsed=good_plan(), stop_reason="max_tokens", parsing_error=None
     )
 
     result = run(graph_with(Scripted(cut_off), Scripted()))
 
     assert result["outcome"] == "model_truncated"
-    assert result["steps"][-1].found == "no plan: the answer was cut off (1200 tokens in, 4096 out)"
+    assert result["steps"][-1].found == "No plan came back: the answer was cut off."
 
 
 def test_a_critic_that_cannot_tell_is_recorded_as_such() -> None:
     result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(undecided()))))
 
-    assert result["steps"][-1].found.startswith("could not tell on support rules")
-    assert "did not consider order, sizing, deferrals, rationale" in result["steps"][-1].found
-
-
-def test_a_model_answer_reads_what_the_call_cost_from_the_raw_message() -> None:
-    raw = AIMessage(
-        content="{}",
-        response_metadata={"stop_reason": "end_turn"},
-        usage_metadata={"input_tokens": 1777, "output_tokens": 863, "total_tokens": 2640},
+    assert result["steps"][-1].found == (
+        "The reviewer couldn't judge the standing rules and didn't consider the order, the "
+        "block lengths, what was put off, and the reasons."
     )
-    bare = AIMessage(content="{}")
-
-    priced: ModelAnswer[DailyPlan] = ModelAnswer.from_structured(
-        {"raw": raw, "parsed": good_plan(), "parsing_error": None}
-    )
-    unpriced: ModelAnswer[DailyPlan] = ModelAnswer.from_structured(
-        {"raw": bare, "parsed": None, "parsing_error": None}
-    )
-
-    assert (priced.input_tokens, priced.output_tokens) == (1777, 863)
-    assert (unpriced.input_tokens, unpriced.output_tokens) == (None, None)
 
 
 def test_a_run_that_reaches_the_gate_saves_its_record_with_the_draft() -> None:
@@ -933,7 +1177,7 @@ def test_work_she_reports_done_is_left_out_of_what_the_planner_and_critic_see() 
     assert result["done_ids"] == ["assignment-canal-essay"]
     assert result["verification"].passed
     assert result["steps"][0].found.startswith(
-        "1 assignment in the week, 1 reported done and left out: "
+        "1 assignment to plan; 1 she reported done was left out."
     )
     assert "__interrupt__" in result
     assert "Canal Era" not in result["draft"].body
@@ -980,8 +1224,11 @@ def test_a_plan_that_speaks_about_work_reported_done_fails_its_checks() -> None:
         "assignment-canal-essay is reported done and the plan still speaks about it"
         in verification.as_findings()
     )
-    assert "reported done" in result["steps"][-1].found
-    assert "assignment-canal-essay is not an assignment in this window" in result["steps"][-1].found
+    assert result["steps"][-1].found == (
+        "It broke 2 of 8 rules: the plan includes World History \u00b7 Canal Era comparison "
+        "essay, which isn't in the work to plan; the plan includes World History \u00b7 "
+        "Canal Era comparison essay, which she reported done."
+    )
     for brief in planner.briefs:
         sent_back = human_text(brief)
         assert "assignment-canal-essay" not in sent_back
@@ -1017,7 +1264,7 @@ def test_a_window_with_nothing_left_to_do_ends_the_run_before_any_model_is_asked
     assert "__interrupt__" not in result
     assert [item.node for item in result["steps"]] == ["retrieve"]
     assert result["steps"][0].found.startswith(
-        "0 assignments in the week, 2 reported done and left out: "
+        "0 assignments to plan; 2 she reported done were left out."
     )
     assert [(item.outcome, [step.node for step in item.steps]) for item in ended] == [
         ("nothing_to_schedule", ["retrieve"])
@@ -1128,7 +1375,7 @@ def test_a_done_saved_while_the_planner_is_asked_leaves_the_run_on_what_it_read(
     record = drafts.get(result["draft"].draft_id)
     assert (planner.calls, critic.calls) == (1, 1)
     assert [item.found for item in result["steps"] if item.node == "verify"] == [
-        "all 8 checks passed"
+        "It kept all 8 rules."
     ]
     assert 'id="assignment-canal-essay"' in work_listed(planner.briefs[0])
     assert work_listed(critic.briefs[0]) == work_listed(planner.briefs[0])
@@ -1357,9 +1604,16 @@ def test_finished_work_put_off_or_in_both_places_never_reaches_a_revision_either
 
     checks = [item.found for item in result["steps"] if item.node == "verify"]
     assert planner.calls == 3
-    assert "assignment-canal-essay is reported done" in checks[0]
-    assert "assignment-canal-essay is both worked on and put off" in checks[1]
-    assert checks[2] == "all 8 checks passed"
+    assert (
+        "the plan includes World History \u00b7 Canal Era comparison essay, which she "
+        "reported done" in checks[0]
+    )
+    assert (
+        "the plan both works on and puts off World History \u00b7 Canal Era comparison "
+        "essay" in checks[1]
+    )
+    assert all("assignment-" not in line for line in checks)
+    assert checks[2] == "It kept all 8 rules."
     for brief in planner.briefs:
         text = human_text(brief)
         assert "assignment-canal-essay" not in text

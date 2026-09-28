@@ -14,7 +14,9 @@ back with its critique. One that cannot tell sends it forward, because that
 answer is addressed to a person. After ``MAX_REVISIONS`` the loop stops
 whatever the critic thinks and the plan goes forward with the critique
 attached, since tier two informs the gate and never closes it. A plan that
-still fails tier one at the bound goes nowhere: it is reported, not proposed.
+still fails tier one at the bound goes nowhere. The latest plan that passed
+tier one goes to the gate in its place, unsettled, with the critique that sent
+it back; with none, the run is reported, not proposed.
 
 The model can end the run on its own. A response cut off at the token limit, a
 refusal, or a body the schema cannot parse each ends the graph with an outcome
@@ -57,9 +59,11 @@ from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.prompts import critic_brief, planner_brief
 from blossom.agent.runs import draft_id_for
 from blossom.agent.steps import (
+    EXPECT_A_KEPT_PLAN,
     EXPECT_ACCEPTANCE,
     EXPECT_ALL_CHECKS,
     EXPECT_RECORD_HOLDS,
+    KEPT_FOR_REVIEW,
     NOTHING_TO_SCHEDULE,
     StepRecord,
     describe_failure,
@@ -68,7 +72,6 @@ from blossom.agent.steps import (
     describe_verification,
     describe_week,
     expect_plan,
-    tokens_note,
 )
 from blossom.anthropic_client import (
     MISSING_KEY,
@@ -85,6 +88,7 @@ from blossom.noticing import Noticing, Week, planning_digest, read_week, reconci
 from blossom.plan_checks import (
     PlanVerification,
     check_plan,
+    homework_names,
 )
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence, classify_confidence
@@ -127,8 +131,10 @@ Outcome = Literal[
 
 ``accepted`` means the checks passed and the critic agreed. ``unsettled`` means
 the checks passed and the critic did not agree, could not tell, or ran out of
-rounds: the plan went to the gate with the critique attached. ``checks_failed``
-means no plan within the bound passed tier one, so nothing was proposed. The
+rounds: the plan went to the gate with the critique attached. A last revision
+that fails tier one ends ``unsettled`` too, with the latest plan that passed
+going to the gate in its place. ``checks_failed`` means no plan within the
+bound passed tier one, so nothing was proposed. The
 three ``model_`` outcomes name how the model ended the run itself.
 ``nothing_to_schedule`` means the window held no work still to do when the run
 read it, so it ended at its first node with no model asked."""
@@ -148,9 +154,6 @@ class ModelAnswer[T: BaseModel]:
     parsed: T | None
     stop_reason: str | None
     parsing_error: str | None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    """What the call cost, as the provider counted it; absent from a scripted answer."""
 
     @classmethod
     def from_structured(cls, answer: Mapping[str, Any]) -> "ModelAnswer[T]":
@@ -159,14 +162,11 @@ class ModelAnswer[T: BaseModel]:
         stop_reason = (
             raw.response_metadata.get("stop_reason") if isinstance(raw, AIMessage) else None
         )
-        usage = raw.usage_metadata if isinstance(raw, AIMessage) else None
         error = answer.get("parsing_error")
         return cls(
             parsed=answer.get("parsed"),
             stop_reason=str(stop_reason) if stop_reason is not None else None,
             parsing_error=str(error) if error is not None else None,
-            input_tokens=None if usage is None else int(usage["input_tokens"]),
-            output_tokens=None if usage is None else int(usage["output_tokens"]),
         )
 
     def failure(self) -> Outcome | None:
@@ -199,6 +199,9 @@ class PlanState(TypedDict):
     steps: NotRequired[Annotated[list[StepRecord], operator.add]]
     assignments: NotRequired[list[Assignment]]
     """The window's work still to plan: what the planner, the critic, and the checks see."""
+    names: NotRequired[dict[str, str]]
+    """How a parent reads each assignment the run read, finished work included, for the
+    record of what the checks found. No brief carries it."""
     done_ids: NotRequired[list[str]]
     """The window's work she had reported done when the run read it, kept out of
     ``assignments`` and held against the plan by the checks."""
@@ -218,6 +221,12 @@ class PlanState(TypedDict):
     plan: NotRequired[DailyPlan]
     verification: NotRequired[PlanVerification]
     verdict: NotRequired[CriticVerdict]
+    kept_plan: NotRequired[DailyPlan]
+    """The latest plan that passed tier one and was sent back by the critic, kept for the
+    gate in case every revision after it fails tier one. ``verdict`` stays the critique
+    that sent it back, since a plan that fails tier one is never judged."""
+    kept_verification: NotRequired[PlanVerification]
+    """What tier one found about ``kept_plan``."""
     outcome: NotRequired[Outcome]
     draft: NotRequired[Draft]
     decision: NotRequired[Decision]
@@ -282,6 +291,7 @@ def build_plan_graph(
         return {
             "assignments": active,
             "done_ids": done,
+            "names": homework_names(week.assignments),
             "student_reports": {
                 item.assignment_id: status.asserted
                 for item in active
@@ -372,22 +382,26 @@ def build_plan_graph(
         """Ask the planner. Counts the round whether or not a plan comes back."""
         round_number = state["rounds"] + 1
         feedback = state.get("feedback", [])
-        messages = planner_brief(**evening(state), feedback=feedback, round_number=round_number)
+        messages = planner_brief(
+            **evening(state),
+            feedback=feedback,
+            round_number=round_number,
+            last_plan=state.get("plan"),
+        )
         expected = expect_plan(
             round_number, len(feedback), state.get("budget_minutes", evening_minutes)
         )
         answer = await planner(messages)
-        tokens = tokens_note(answer.input_tokens, answer.output_tokens)
         failure = answer.failure()
         if failure is not None or answer.parsed is None:
             outcome: Outcome = failure or "model_unparseable"
-            found = describe_failure(outcome, "plan", tokens)
+            found = describe_failure(outcome, "plan")
             return {
                 "rounds": 1,
                 "outcome": outcome,
                 "steps": [step("plan", round_number, expected, found)],
             }
-        found = describe_plan(answer.parsed, zone, tokens, evening=state["plan_date"])
+        found = describe_plan(answer.parsed, zone, evening=state["plan_date"])
         return {
             "rounds": 1,
             "plan": answer.parsed,
@@ -397,6 +411,11 @@ def build_plan_graph(
     def verify(state: PlanState) -> dict[str, Any]:
         """Tier one, against the reading both models were given. A failing plan becomes
         feedback, or the end when rounds are spent.
+
+        When rounds are spent and a plan passed tier one on the way, that plan goes to
+        the gate instead of nothing: the latest one the critic sent back, with its
+        verification and the critique that sent it back. No model is asked again for
+        it, and it was made from the same reading as everything else in the run.
 
         The plan is held to what ``retrieve`` read: the work still to do then,
         and the ids of what she had reported done then. A report that lands
@@ -416,6 +435,7 @@ def build_plan_graph(
             noticings=state.get("noticings", []),
             daily_minutes=state.get("budget_minutes", evening_minutes),
             reported_done=state.get("done_ids", []),
+            names=state.get("names"),
         )
         record = step(
             "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
@@ -427,9 +447,17 @@ def build_plan_graph(
             "feedback": list(verification.as_feedback()),
             "steps": [record],
         }
-        if state["rounds"] > MAX_REVISIONS:
-            update["outcome"] = "checks_failed"
-        return update
+        if state["rounds"] <= MAX_REVISIONS:
+            return update
+        if "kept_plan" not in state:
+            return update | {"outcome": "checks_failed"}
+        kept = step("rescue", state["rounds"], EXPECT_A_KEPT_PLAN, KEPT_FOR_REVIEW)
+        return {
+            "plan": state["kept_plan"],
+            "verification": state["kept_verification"],
+            "outcome": "unsettled",
+            "steps": [record, kept],
+        }
 
     async def critique(state: PlanState) -> dict[str, Any]:
         """Tier two. Fault sends the plan back; doubt or spent rounds send it forward."""
@@ -437,22 +465,25 @@ def build_plan_graph(
             **evening(state), plan=state["plan"], verification=state["verification"]
         )
         answer = await critic(messages)
-        tokens = tokens_note(answer.input_tokens, answer.output_tokens)
         failure = answer.failure()
         verdict = answer.parsed
         if failure is not None or verdict is None:
             outcome: Outcome = failure or "model_unparseable"
-            found = describe_failure(outcome, "verdict", tokens)
+            found = describe_failure(outcome, "verdict")
             record = step("critique", state["rounds"], EXPECT_ACCEPTANCE, found)
             return {"outcome": outcome, "steps": [record]}
-        record = step(
-            "critique", state["rounds"], EXPECT_ACCEPTANCE, describe_verdict(verdict, tokens)
-        )
+        record = step("critique", state["rounds"], EXPECT_ACCEPTANCE, describe_verdict(verdict))
         if verdict.accepted:
             return {"verdict": verdict, "outcome": "accepted", "steps": [record]}
         if verdict.failed and state["rounds"] <= MAX_REVISIONS:
             feedback = [f"{item.criterion}: {item.critique}" for item in verdict.failed]
-            return {"verdict": verdict, "feedback": feedback, "steps": [record]}
+            return {
+                "verdict": verdict,
+                "feedback": feedback,
+                "kept_plan": state["plan"],
+                "kept_verification": state["verification"],
+                "steps": [record],
+            }
         return {"verdict": verdict, "outcome": "unsettled", "steps": [record]}
 
     def compose(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
@@ -540,6 +571,8 @@ def build_plan_graph(
         return "record_run" if "outcome" in state else "verify"
 
     def after_verify(state: PlanState) -> str:
+        if state.get("outcome") in REACHED_THE_GATE:
+            return "compose"
         if state["verification"].passed:
             return "critique"
         return "record_run" if "outcome" in state else "plan"
@@ -569,7 +602,12 @@ def build_plan_graph(
     graph.add_conditional_edges(
         "verify",
         after_verify,
-        {"critique": "critique", "plan": "plan", "record_run": "record_run"},
+        {
+            "compose": "compose",
+            "critique": "critique",
+            "plan": "plan",
+            "record_run": "record_run",
+        },
     )
     graph.add_conditional_edges(
         "critique",

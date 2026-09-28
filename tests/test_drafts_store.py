@@ -372,6 +372,51 @@ def test_runs_that_ended_are_most_recent_first() -> None:
     assert [run.thread_id for run in store.runs_without_a_draft()] == ["plan:second", "plan:first"]
 
 
+def test_runs_saved_at_one_instant_are_listed_most_recent_first_by_the_order_saved() -> None:
+    """Thread ids are random, so two runs stamped alike are listed by the order they were
+    saved, the same order that says which one is newest."""
+    store = store_in_memory()
+    store.record_run(thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+    store.record_run(thread_id="plan:z", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+
+    runs = store.runs_without_a_draft()
+
+    assert [(run.thread_id, run.newest) for run in runs] == [
+        ("plan:z", True),
+        ("plan:a", False),
+    ]
+
+
+def test_a_run_that_ended_knows_whether_it_is_the_newest_for_its_evening() -> None:
+    """A later run of the same evening, with a plan or without, makes an earlier one old;
+    a run of another evening does not."""
+    store = ticking_store()
+    tomorrow = PLAN_DATE + timedelta(days=1)
+    yesterday = PLAN_DATE - timedelta(days=1)
+    store.record_run(thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+    store.record_run(thread_id="plan:b", plan_date=PLAN_DATE, outcome="model_refused", steps=[])
+    store.record_run(thread_id="plan:c", plan_date=tomorrow, outcome="checks_failed", steps=[])
+    save_and_publish(store, draft(), thread_id="plan:d", plan_date=tomorrow, outcome="accepted")
+    store.record_run(thread_id="plan:e", plan_date=yesterday, outcome="checks_failed", steps=[])
+
+    newest = {run.thread_id: run.newest for run in store.runs_without_a_draft()}
+
+    assert newest == {"plan:a": False, "plan:b": True, "plan:c": False, "plan:e": True}
+
+
+def test_two_runs_of_an_evening_saved_at_one_instant_leave_the_later_saved_newest() -> None:
+    """Thread ids are random, so the order they sort in says nothing about which run came
+    last; the order the runs were saved does, and saving one again keeps its place."""
+    store = store_in_memory()
+    store.record_run(thread_id="plan:z", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+    store.record_run(thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+    store.record_run(thread_id="plan:z", plan_date=PLAN_DATE, outcome="model_refused", steps=[])
+
+    newest = {run.thread_id: run.newest for run in store.runs_without_a_draft()}
+
+    assert newest == {"plan:z": False, "plan:a": True}
+
+
 def test_a_draft_and_the_record_of_its_run_are_saved_together() -> None:
     store = store_in_memory()
 

@@ -19,7 +19,7 @@ is why it is a state of its own rather than a kind of yes.
 """
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from enum import StrEnum
 from zoneinfo import ZoneInfo
@@ -85,6 +85,30 @@ ONLY_WHAT_IS_LISTED = "use only the assignments supplied in the list of work to 
 """What the planner is told when its plan spoke about work she has reported done, in place
 of every finding that names that work."""
 
+UNRECOGNIZED = "homework Blossom doesn't recognize"
+"""How a parent is told about an assignment the plan names that the run never read."""
+
+
+def homework_names(assignments: Iterable[Assignment]) -> dict[str, str]:
+    """How a parent reads each assignment in a finding: course and title, with the due date
+    added when two share both, and the id too when they share the date as well, as a saved
+    plan's rows tell such twins apart."""
+    read = list(assignments)
+    same = Counter((item.course, item.title) for item in read)
+    twins = Counter((item.course, item.title, item.due_date) for item in read)
+    names: dict[str, str] = {}
+    for item in read:
+        name = f"{item.course} \u00b7 {item.title}"
+        if same[(item.course, item.title)] > 1:
+            due = item.due_date
+            when = "no due date" if due is None else f"due {due:%b} {due.day}"
+            if twins[(item.course, item.title, due)] > 1:
+                when = f"{when}, {item.assignment_id}"
+            name += f" ({when})"
+        names[item.assignment_id] = name
+    return names
+
+
 ORDERED_PLAN_CHECKS: tuple[PlanCheck, ...] = (
     PlanCheck.PLAN_DATE_MATCHES_REQUEST,
     PlanCheck.ASSIGNMENTS_EXIST,
@@ -123,6 +147,9 @@ class PlanVerification(BaseModel):
     """Assignments whose due date on record no source supports. The deadline
     check measures these against the earliest date anyone gives, record or
     source, so a plan built on the record alone cannot pass by trusting it."""
+    plain: dict[PlanCheck, tuple[str, ...]] = {}
+    """The same findings as a parent reads them on the family page: each assignment named
+    by its course and title as the run read them, and never by an id the plan made up."""
     model_feedback: tuple[str, ...] | None = None
     """The findings as the planner may be sent them: every finding that names no work she
     has reported done, and one plain instruction in place of those that do. ``None`` for
@@ -145,10 +172,20 @@ class PlanVerification(BaseModel):
         )
 
     def as_findings(self) -> tuple[str, ...]:
-        """Every finding, flattened, for the run's record and a page to render."""
+        """Every finding, flattened, in the checks' own words."""
         return tuple(
             finding for check in ORDERED_PLAN_CHECKS for finding in self.findings.get(check, ())
         )
+
+    def as_plain(self) -> tuple[str, ...]:
+        """Every finding as a parent reads it, flattened, each line once. A check with no
+        plain findings is read by its findings."""
+        lines = (
+            finding
+            for check in ORDERED_PLAN_CHECKS
+            for finding in self.plain.get(check, self.findings.get(check, ()))
+        )
+        return tuple(dict.fromkeys(lines))
 
     def as_feedback(self) -> tuple[str, ...]:
         """The findings as the planner is sent them back.
@@ -172,6 +209,7 @@ def check_plan(
     noticings: Sequence[Noticing] = (),
     daily_minutes: int = DEFAULT_EVENING_MINUTES,
     reported_done: Sequence[str] = (),
+    names: Mapping[str, str] | None = None,
 ) -> PlanVerification:
     """Run every tier-one check over ``plan`` and report what failed and why.
 
@@ -185,19 +223,29 @@ def check_plan(
     dates set against the sources; where the sources contradict the record,
     the deadline is the earliest date either gives. ``reported_done`` names
     the work in the window she has reported done, which the plan was given
-    nothing about and must say nothing about.
+    nothing about and must say nothing about. ``names`` is how a parent reads each
+    assignment the run read, finished work included; without it, the window's work is
+    named and anything else is not.
     """
     known = {assignment.assignment_id: assignment for assignment in due_in_window}
+    called = homework_names(due_in_window) if names is None else names
     done = set(reported_done)
     contradicted = {item.assignment_id: item for item in noticings if item.contradicted}
     noted: dict[PlanCheck, list[tuple[str, frozenset[str]]]] = {
         check: [] for check in ORDERED_PLAN_CHECKS
     }
+    plain: dict[PlanCheck, list[str]] = {check: [] for check in ORDERED_PLAN_CHECKS}
 
-    def found(check: PlanCheck, text: str, *about: str) -> None:
+    def found(check: PlanCheck, text: str, *about: str, said: str | None = None) -> None:
         """Keep a finding with the assignments it names, so the ones that name finished
-        work can be kept from the planner."""
+        work can be kept from the planner, and with what a parent reads of it, which is the
+        finding itself when it names no assignment."""
         noted[check].append((text, frozenset(about)))
+        plain[check].append(text if said is None else said)
+
+    def reads_as(assignment_id: str) -> str:
+        """An assignment as a parent reads it, or ``UNRECOGNIZED`` if the run never read it."""
+        return called.get(assignment_id, UNRECOGNIZED)
 
     if plan.plan_date != requested_evening:
         found(
@@ -206,12 +254,22 @@ def check_plan(
             f"make it for {requested_evening}",
         )
     for name in sorted({name for name in plan.assignment_ids if name not in known}):
-        found(PlanCheck.ASSIGNMENTS_EXIST, f"{name} is not an assignment in this window", name)
+        found(
+            PlanCheck.ASSIGNMENTS_EXIST,
+            f"{name} is not an assignment in this window",
+            name,
+            said=f"the plan includes {called[name]}, which isn't in the work to plan"
+            if name in called
+            else f"the plan includes {UNRECOGNIZED}",
+        )
     for name in sorted(done.intersection(plan.assignment_ids)):
         found(
             PlanCheck.NO_REPORTED_DONE_WORK,
             f"{name} is reported done and the plan still speaks about it",
             name,
+            said=f"the plan includes {called[name]}, which she reported done"
+            if name in called
+            else "the plan includes work she reported done",
         )
 
     spoken_for = set(plan.assignment_ids)
@@ -221,14 +279,25 @@ def check_plan(
                 PlanCheck.NOTHING_OMITTED,
                 f"{due.assignment_id} is due in this window and the plan does not mention it",
                 due.assignment_id,
+                said=f"the plan leaves out {reads_as(due.assignment_id)}",
             )
 
     blocked = set(plan.blocked_ids)
     for name in sorted(blocked.intersection(plan.deferred_ids)):
-        found(PlanCheck.ONE_DECISION_PER_ASSIGNMENT, f"{name} is both worked on and put off", name)
+        found(
+            PlanCheck.ONE_DECISION_PER_ASSIGNMENT,
+            f"{name} is both worked on and put off",
+            name,
+            said=f"the plan both works on and puts off {reads_as(name)}",
+        )
     for name, count in sorted(Counter(plan.deferred_ids).items()):
         if count > 1:
-            found(PlanCheck.ONE_DECISION_PER_ASSIGNMENT, f"{name} is put off {count} times", name)
+            found(
+                PlanCheck.ONE_DECISION_PER_ASSIGNMENT,
+                f"{name} is put off {count} times",
+                name,
+                said=f"the plan puts off {reads_as(name)} {count} times",
+            )
 
     def deadline_of(assignment: Assignment) -> tuple[date | None, str]:
         """The day the work must be done by, and where that day comes from."""
@@ -249,6 +318,8 @@ def check_plan(
                 f"{block.assignment_id} is due {deadline}{basis} and is scheduled "
                 f"{plan.plan_date}, after it",
                 block.assignment_id,
+                said=f"{reads_as(block.assignment_id)} is due {deadline}{basis} and is scheduled "
+                f"{plan.plan_date}, after it",
             )
 
     for deferral in plan.deferred:
@@ -263,6 +334,8 @@ def check_plan(
                 f"{deferral.assignment_id} is due {deadline}{basis} and is put off from "
                 f"{plan.plan_date}, past it",
                 deferral.assignment_id,
+                said=f"{reads_as(deferral.assignment_id)} is due {deadline}{basis} and is put off "
+                f"from {plan.plan_date}, past it",
             )
 
     for earlier, later in plan.overlapping_pairs():
@@ -272,6 +345,8 @@ def check_plan(
             f"{later.assignment_id} at {later.starts_at}",
             earlier.assignment_id,
             later.assignment_id,
+            said=f"{reads_as(earlier.assignment_id)} at {earlier.starts_at} overlaps "
+            f"{reads_as(later.assignment_id)} at {later.starts_at}",
         )
 
     # Measured on the evening asked for, which is the evening the budget belongs to,
@@ -308,6 +383,7 @@ def check_plan(
             for check in ORDERED_PLAN_CHECKS
         },
         findings={check: tuple(texts) for check, texts in findings.items() if texts},
+        plain={check: tuple(texts) for check, texts in plain.items() if texts},
         model_feedback=feedback,
         uncertain_due_dates=uncertain,
         undated=tuple(

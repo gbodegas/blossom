@@ -95,11 +95,26 @@ def refuse_an_empty_run(run: PlanRunView) -> None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=NOTHING_TO_SCHEDULE)
 
 
-def ended_without_a_plan(outcome: str) -> str:
-    """The same, as her page says it."""
+def ended_without_a_plan(outcome: str, *, parent: bool) -> str:
+    """The same, as her page says it: what she can do, or, to a parent reading her page,
+    where the run's record is. The run's own name for how it ended is never shown."""
     if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
         return NOTHING_TO_SCHEDULE
-    return f"No plan was made this time: the run ended with {outcome}."
+    if outcome == "checks_failed":
+        what = "Blossom couldn't make a plan that fits this evening."
+        then = (
+            "Family review shows what went wrong."
+            if parent
+            else "You can try again, or ask a parent to look at what went wrong."
+        )
+    else:
+        what = "Blossom couldn't finish a plan this time."
+        then = (
+            "Family review shows what happened."
+            if parent
+            else "Try again in a minute; if it happens again, tell a parent."
+        )
+    return f"{what} {then}"
 
 
 Graphs = Annotated[PlanGraphs, Depends(plan_graphs)]

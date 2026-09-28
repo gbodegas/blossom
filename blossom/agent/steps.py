@@ -5,20 +5,20 @@ whether the plan passes the checks, whether the reviewer accepts it. The state
 at the end says where the run landed but not how it got there, because a
 passing check clears the findings that sent the plan back. A step record keeps
 that: one line per node, saying what the node expected before it acted and
-what it found, in words a person can read on the parent's page.
+what it found, in words a parent can read on the family page.
 
 The records are data about the run, not the run itself. Nothing reads them to
 decide what happens next; the graph's edges do that from the typed values.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import date
 from typing import Final
 from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from blossom.heuristic_relevance import CriticVerdict
+from blossom.heuristic_relevance import Criterion, CriticVerdict
 from blossom.noticing import Noticing
 from blossom.plan_checks import ORDERED_PLAN_CHECKS, PlanVerification
 from blossom.plans import DailyPlan
@@ -42,18 +42,35 @@ class StepRecord(BaseModel):
 EXPECT_RECORD_HOLDS = "the record's due dates hold against the school's sources"
 EXPECT_ALL_CHECKS = "every tier-one check passes"
 EXPECT_ACCEPTANCE = "the reviewer passes every criterion"
+EXPECT_A_KEPT_PLAN = "the latest plan that passed every check goes to review"
+
+KEPT_FOR_REVIEW: Final = (
+    "The last revision broke a rule, so this is the latest version that passed every check."
+)
+"""What the step says when the last revision broke a rule and an earlier plan went on."""
 
 FAILURES = {
     "model_truncated": "the answer was cut off",
-    "model_refused": "the model declined",
-    "model_unparseable": "the answer did not parse",
+    "model_refused": "the model declined to answer",
+    "model_unparseable": "the answer couldn't be read",
 }
 
+WHAT_CAME_BACK = {"plan": "plan", "verdict": "review"}
+
 OUTCOMES = {
-    "checks_failed": "The plan failed its checks after every revision.",
-    "model_truncated": "The model's answer was cut off.",
-    "model_refused": "The model declined to answer.",
-    "model_unparseable": "The model's answer did not parse.",
+    "checks_failed": (
+        "Every version Blossom wrote broke one of its rules, so there's no plan to review. "
+        "Planning again may work, since each try writes a fresh plan."
+    ),
+    "model_truncated": (
+        "An answer from the planning model was cut off, so there's no plan to review. "
+        "Planning again may work."
+    ),
+    "model_refused": "The planning model declined to answer, so there's no plan to review.",
+    "model_unparseable": (
+        "An answer from the planning model couldn't be read, so there's no plan to review. "
+        "Planning again may work."
+    ),
     "interrupted": (
         "The run stopped before its plan could wait for review, so the plan was set aside."
     ),
@@ -63,17 +80,39 @@ NOTHING_TO_SCHEDULE: Final = "nothing_to_schedule"
 """The outcome of a run whose window held no work still to plan when it was read: it
 ends before any model is asked, with a record and no draft."""
 
+CRITERION_NAMES: Final = {
+    Criterion.ORDER: "the order",
+    Criterion.SIZING: "the block lengths",
+    Criterion.DEFERRALS: "what was put off",
+    Criterion.SUPPORT_RULES: "the standing rules",
+    Criterion.RATIONALE: "the reasons",
+}
+"""Each criterion as a parent reads it."""
+
+LABELS: Final = {
+    "retrieve": "Read the week",
+    "verify": "Rules check",
+    "critique": "Reviewer",
+    "rescue": "Plan kept for review",
+}
+ORDINALS: Final = {1: "First", 2: "Second", 3: "Third", 4: "Fourth", 5: "Fifth"}
+
 
 def count(number: int, noun: str) -> str:
     """``1 block``, ``2 blocks``."""
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
-def tokens_note(input_tokens: int | None, output_tokens: int | None) -> str:
-    """The cost of a model call in tokens, or nothing when the answer did not carry it."""
-    if input_tokens is None or output_tokens is None:
-        return ""
-    return f" ({input_tokens} tokens in, {output_tokens} out)"
+def joined(parts: Sequence[str]) -> str:
+    """``a``, ``a and b``, ``a, b, and c``."""
+    if len(parts) <= 2:
+        return " and ".join(parts)
+    return ", ".join(parts[:-1]) + f", and {parts[-1]}"
+
+
+def how_many_have(number: int, what: str) -> str:
+    """``1 has a due date ...``, ``3 have a due date ...``."""
+    return f"{number} {'has' if number == 1 else 'have'} {what}."
 
 
 def expect_plan(round_number: int, findings: int, budget_minutes: int) -> str:
@@ -94,77 +133,123 @@ def describe_week(
     too_much: bool,
     done: int = 0,
 ) -> str:
-    """The week in one line: how much there is, how much is in doubt, and tonight's budget.
+    """The week in a few sentences: how much there is, how much is in doubt, and what the
+    evening allows.
 
     ``done`` is how much of the week she has reported done, which is left out
     of ``assignments`` and said apart, so the record shows the work the plan
-    was made from and the work it was not.
+    was made from and the work it was not. Work with no due date on record is
+    counted as that alone, whatever the sources say of it.
     """
-    contradicted = sum(item.contradicted for item in noticings)
+    dated = {item.assignment_id for item in assignments if item.due_date is not None}
+    contradicted = sum(item.contradicted for item in noticings if item.assignment_id in dated)
     uncertain = sum(
         label is not SourceConfidence.CORROBORATED
         for name, label in confidence.items()
-        if name in {item.assignment_id for item in assignments}
+        if name in dated
     )
     undated = sum(item.due_date is None for item in assignments)
-    evening = (
-        f"she said today is too much, so the budget is {budget} minutes"
+    left_out = (
+        f"; {done} she reported done {'was' if done == 1 else 'were'} left out" if done else ""
+    )
+    sentences = [f"{count(len(assignments), 'assignment')} to plan{left_out}."]
+    if contradicted:
+        sentences.append(
+            how_many_have(contradicted, "a due date the school's sources don't support")
+        )
+    if uncertain:
+        sentences.append(how_many_have(uncertain, "a due date that isn't confirmed"))
+    if undated:
+        sentences.append(how_many_have(undated, "no due date"))
+    if rules or notes:
+        sentences.append(
+            f"{count(rules, 'standing rule')} and {count(notes, 'note')} about what has "
+            "worked to follow."
+        )
+    sentences.append(
+        f"She said today is too much, so the evening allows {budget} minutes."
         if too_much
-        else f"budget {budget} minutes"
+        else f"The evening allows {budget} minutes."
     )
-    left_out = f", {done} reported done and left out" if done else ""
-    return (
-        f"{count(len(assignments), 'assignment')} in the week{left_out}: "
-        f"{contradicted} contradicted, "
-        f"{uncertain} uncertain, {undated} undated; {count(rules, 'rule')} and "
-        f"{count(notes, 'note')} to follow; {evening}"
-    )
+    return " ".join(sentences)
 
 
-def describe_plan(plan: DailyPlan, zone: ZoneInfo, tokens: str, *, evening: date) -> str:
-    """The shape of a plan: how many blocks and deferrals, and how long it asks for, measured
-    on the evening the run plans, whatever date the plan came back with."""
-    return (
-        f"{count(len(plan.blocks), 'block')} and {count(len(plan.deferred), 'deferral')} "
-        f"asking {plan.total_minutes(zone, on=evening)} minutes{tokens}"
-    )
+def describe_plan(plan: DailyPlan, zone: ZoneInfo, *, evening: date) -> str:
+    """The shape of a plan: how many blocks, what it puts off, and how long it asks for,
+    measured on the evening the run plans, whatever date the plan came back with."""
+    parts = [count(len(plan.blocks), "block")]
+    if plan.deferred:
+        parts.append(f"{len(plan.deferred)} put off")
+    return f"{' and '.join(parts)}, {plan.total_minutes(zone, on=evening)} minutes in all."
 
 
-def describe_failure(outcome: str, what: str, tokens: str) -> str:
+def describe_failure(outcome: str, what: str) -> str:
     """Why a model call produced no usable ``what``: no plan, or no verdict."""
-    return f"no {what}: {FAILURES.get(outcome, outcome)}{tokens}"
+    return f"No {WHAT_CAME_BACK[what]} came back: {FAILURES.get(outcome, outcome)}."
 
 
 def describe_verification(verification: PlanVerification) -> str:
     """Which checks passed, or which failed and why."""
     total = len(ORDERED_PLAN_CHECKS)
     if verification.passed:
-        return f"all {total} checks passed"
+        return f"It kept all {total} rules."
     failed = verification.failed_checks
-    findings = "; ".join(verification.as_findings())
-    return f"{len(failed)} of {total} checks failed: {findings}"
+    findings = "; ".join(verification.as_plain())
+    return f"It broke {len(failed)} of {total} rules: {findings}."
 
 
-def describe_verdict(verdict: CriticVerdict, tokens: str) -> str:
+def named(criteria: Iterable[Criterion]) -> str:
+    """Criteria as a parent reads them, in a list."""
+    return joined([CRITERION_NAMES[criterion] for criterion in criteria])
+
+
+def describe_verdict(verdict: CriticVerdict) -> str:
     """Which criteria the reviewer faulted, could not tell, or left out.
 
     The judgments are typed values; the reviewer's own words are not, so they
     stay in the draft's notes and out of the record.
     """
     if verdict.accepted:
-        return f"accepted on every criterion{tokens}"
-    parts = []
+        return "The reviewer found nothing to change."
+    clauses = []
     if verdict.failed:
-        parts.append("faulted " + ", ".join(str(item.criterion) for item in verdict.failed))
+        clauses.append("found a problem with " + named(item.criterion for item in verdict.failed))
     if verdict.undecided:
-        parts.append(
-            "could not tell on " + ", ".join(str(item.criterion) for item in verdict.undecided)
-        )
+        clauses.append("couldn't judge " + named(item.criterion for item in verdict.undecided))
     if verdict.missing:
-        parts.append("did not consider " + ", ".join(str(item) for item in verdict.missing))
-    return "; ".join(parts) + tokens
+        clauses.append("didn't consider " + named(verdict.missing))
+    return f"The reviewer {joined(clauses)}."
 
 
 def describe_outcome(outcome: str) -> str:
-    """One sentence for the page about a run that ended without a plan to show."""
+    """Plain sentences for the family page about a run that ended without a plan to show."""
     return OUTCOMES.get(outcome, f"The run ended with {outcome}.")
+
+
+def step_label(node: str, round_number: int) -> str:
+    """What a step did, as a parent reads it: ``Read the week``, ``Second plan``."""
+    if node == "plan":
+        ordinal = ORDINALS.get(round_number)
+        return f"{ordinal} plan" if ordinal else f"Plan {round_number}"
+    return LABELS.get(node, node)
+
+
+def step_sentence(found: str) -> str:
+    """A found line as a sentence: trimmed, capitalized, and ended, whichever version wrote
+    it. A blank line stays empty."""
+    found = found.strip()
+    if not found:
+        return found
+    sentence = found[0].upper() + found[1:]
+    return sentence if sentence.endswith(".") else sentence + "."
+
+
+def describe_last_check(steps: Sequence[StepRecord]) -> str | None:
+    """What the last rules check of a run found, said on its own, or ``None`` when the run
+    ended anywhere but a rules check or the check's line is blank."""
+    if not steps or steps[-1].node != "verify":
+        return None
+    found = step_sentence(steps[-1].found)
+    if not found:
+        return None
+    return f"In the last version, {found[0].lower()}{found[1:]}"

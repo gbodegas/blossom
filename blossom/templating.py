@@ -5,6 +5,7 @@ from typing import Final
 
 from fastapi.templating import Jinja2Templates
 
+from blossom.agent.steps import step_label, step_sentence
 from blossom.clock import spoken_time
 from blossom.plan_reading import long_date
 from blossom.plan_text import present_plan
@@ -69,10 +70,13 @@ def page_templates() -> Jinja2Templates:
     on, so a page and the address sent to it name a place the same way, ``todays_plan_id``
     and ``todays_plan_href`` for the place on her week that holds today's plan,
     ``asset_tag`` for the files a page links, ``wire`` for an instruction's words as a
-    form carries them, and the test ``in_words`` for words a form carries as they are."""
+    form carries them, ``step_label`` and ``step_sentence`` for a run's steps as a parent
+    reads them, and the test ``in_words`` for words a form carries as they are."""
     templates = Jinja2Templates(directory=TEMPLATE_PATH)
     templates.env.filters["clock"] = spoken_time
     templates.env.filters["ended"] = ended
+    templates.env.filters["step_sentence"] = step_sentence
+    templates.env.globals["step_label"] = step_label
     templates.env.filters["long_date"] = long_date
     templates.env.filters["present"] = present_plan
     templates.env.filters["wire"] = to_wire

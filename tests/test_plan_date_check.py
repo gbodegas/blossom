@@ -157,8 +157,8 @@ def test_a_wrong_evening_is_sent_back_once_and_the_corrected_plan_is_published()
     assert (planner.calls, critic.calls) == (2, 1)
     assert result["outcome"] == "accepted"
     assert verify_lines(result) == [
-        f"1 of 8 checks failed: {wrong_evening(PLAN_DATE - DAY)}",
-        "all 8 checks passed",
+        f"It broke 1 of 8 rules: {wrong_evening(PLAN_DATE - DAY)}.",
+        "It kept all 8 rules.",
     ]
     second = human_text(planner.briefs[1])
     assert '<feedback round="2">' in second
@@ -203,7 +203,7 @@ def test_a_plan_dated_at_the_edge_of_the_calendar_is_sent_back_like_any_other(ed
     assert (planner.calls, critic.calls) == (2, 1)
     assert result["outcome"] == "accepted"
     asked = next(item.found for item in result["steps"] if item.node == "plan")
-    assert asked.startswith("1 block and 1 deferral asking 60 minutes")
+    assert asked == "1 block and 1 put off, 60 minutes in all."
     assert wrong_evening(edge) in verify_lines(result)[0]
     record = drafts.get(result["draft"].draft_id)
     assert record is not None
@@ -224,7 +224,7 @@ def test_a_planner_that_never_names_the_evening_asked_for_ends_as_checks_failed(
     assert (planner.calls, critic.calls) == (MAX_REVISIONS + 1, 0)
     assert "__interrupt__" not in result
     assert "draft" not in result
-    assert verify_lines(result) == [f"1 of 8 checks failed: {wrong_evening(PLAN_DATE + DAY)}"] * (
+    assert verify_lines(result) == [f"It broke 1 of 8 rules: {wrong_evening(PLAN_DATE + DAY)}."] * (
         MAX_REVISIONS + 1
     )
     assert drafts.waiting() == []
@@ -259,7 +259,10 @@ def test_the_wrong_evening_every_time_leaves_the_plan_already_there_alone() -> N
         family = client.get("/parent", headers=PAGE_HEADERS).text
 
     assert again.status_code == 409
-    assert "No plan was made this time: the run ended with checks_failed." in again.text
+    assert (
+        "Blossom couldn&#39;t make a plan that fits this evening. You can try again, or "
+        "ask a parent to look at what went wrong." in again.text
+    )
     assert "something went wrong on the way" not in again.text
     assert planners[-1].calls == MAX_REVISIONS + 1
     assert latest is not None
@@ -268,7 +271,7 @@ def test_the_wrong_evening_every_time_leaves_the_plan_already_there_alone() -> N
     assert latest.decision is None
     assert [run.outcome for run in ended] == ["checks_failed"]
     assert in_flight == set()
-    assert "1 of 8 checks failed: the plan is for 2026-08-20" in family
+    assert "It broke 1 of 8 rules: the plan is for 2026-08-20" in family
 
 
 # ------------------------------------------------------------- whose evening it is
@@ -331,7 +334,7 @@ def test_a_day_that_turns_while_the_planner_is_asked_does_not_move_the_evening()
     record = drafts.get(result["draft"].draft_id)
     assert clock.today() == PLAN_DATE + DAY
     assert (len(planner.briefs), critic.calls) == (2, 1)
-    assert verify_lines(result)[0] == f"1 of 8 checks failed: {wrong_evening(PLAN_DATE + DAY)}"
+    assert verify_lines(result)[0] == f"It broke 1 of 8 rules: {wrong_evening(PLAN_DATE + DAY)}."
     assert result["outcome"] == "accepted"
     assert record is not None
     assert record.plan_date == PLAN_DATE
@@ -474,7 +477,9 @@ def test_a_run_paused_before_the_check_existed_resumes_and_keeps_its_own_record(
     assert set(resumed["verification"].outcomes) == set(SEVEN)
     assert record is not None
     assert record.decision == "approved"
-    assert [item.found for item in record.steps if item.node == "verify"] == ["all 7 checks passed"]
+    assert [item.found for item in record.steps if item.node == "verify"] == [
+        "It kept all 7 rules."
+    ]
 
 
 def test_a_decided_plan_from_before_the_check_reads_on_the_family_page_as_it_was(
@@ -500,7 +505,8 @@ def test_a_decided_plan_from_before_the_check_reads_on_the_family_page_as_it_was
         after = state_of(client).drafts.get(record.draft_id)
 
     assert len(plan_checks.ORDERED_PLAN_CHECKS) == 8
-    assert "Found: all 7 checks passed." in family
+    assert "It kept all 7 rules." in family
+    assert "8 rules" not in family
     assert "8 checks" not in family
     assert "<strong>Looks good.</strong>" in family
     assert "Looks good." in hers

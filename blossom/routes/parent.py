@@ -731,6 +731,7 @@ def review_page(
     every_decided = [plans[record.draft_id].view for record in records.decided]
     todays = next((view for view in every_decided if view.draft_id == records.current_id), None)
     decided = [view for view in every_decided if view is not todays]
+    ended = [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()]
     return templates.TemplateResponse(
         request,
         "parent_review.html",
@@ -742,7 +743,10 @@ def review_page(
             "todays_decided": todays,
             "open_plan": open_plan if open_plan in plans else None,
             "readings": {name: found.reading for name, found in plans.items()},
-            "ended": [RunView.from_record(run) for run in state.drafts.runs_without_a_draft()],
+            "ended": ended,
+            # Open when the latest run of an evening still ahead made no plan, so the
+            # parent sees why without looking for it.
+            "ended_open": any(run.newest and run.plan_date >= today for run in ended),
             "problem": check.problem if about_a_row and check is not None else problem,
             "problem_target": check.assignment_id if about_a_row and check is not None else None,
             "reason_max_length": REASON_MAX_LENGTH,

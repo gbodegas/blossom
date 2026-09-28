@@ -5,6 +5,7 @@ it. These tests hold her page, her JSON routes, and the parent's review to
 that, with scripted models so nothing is ever sent.
 """
 
+import pathlib
 import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
@@ -21,20 +22,24 @@ from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdi
 from blossom.noticing import read_week
 from blossom.plan_text import present_plan
 from blossom.plans import DailyPlan
-from blossom.routes.runs import NOTHING_TO_SCHEDULE, plan_graphs
+from blossom.routes.runs import NOTHING_TO_SCHEDULE, ended_without_a_plan, plan_graphs
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.stores.drafts import DraftsStore
 from tests.support import (
     FIXTURE_TIMEZONE,
     PLAN_DATE,
     SAME_ORIGIN,
+    THEIRS,
     accepting,
+    client_for,
     drafts_in_memory,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
     light_fixture_plan,
     scripted_graphs,
+    signed_in,
+    signed_in_household,
 )
 
 PAGE = "/student/due-this-week"
@@ -181,6 +186,47 @@ def test_without_a_key_the_page_says_so_and_keeps_working() -> None:
     assert over_json.status_code == 503
 
 
+def test_why_there_is_no_plan_is_said_in_plain_words_to_whoever_reads_it() -> None:
+    """Her page never shows the run's code. She is told what she can do; a parent reading
+    her page is sent to the family page, where the run's record is."""
+    for outcome in ("model_truncated", "model_refused", "model_unparseable", "interrupted"):
+        assert ended_without_a_plan(outcome, parent=False) == (
+            "Blossom couldn't finish a plan this time. Try again in a minute; if it happens "
+            "again, tell a parent."
+        )
+        assert ended_without_a_plan(outcome, parent=True) == (
+            "Blossom couldn't finish a plan this time. Family review shows what happened."
+        )
+    assert ended_without_a_plan("checks_failed", parent=False) == (
+        "Blossom couldn't make a plan that fits this evening. You can try again, or ask a "
+        "parent to look at what went wrong."
+    )
+    assert ended_without_a_plan("checks_failed", parent=True) == (
+        "Blossom couldn't make a plan that fits this evening. Family review shows what went wrong."
+    )
+    assert ended_without_a_plan("nothing_to_schedule", parent=False) == NOTHING_TO_SCHEDULE
+    assert ended_without_a_plan("nothing_to_schedule", parent=True) == NOTHING_TO_SCHEDULE
+
+
+def test_a_parent_who_plans_from_her_page_is_told_where_the_record_is(
+    tmp_path: pathlib.Path,
+) -> None:
+    client = client_for(signed_in_household(tmp_path))
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [forgetful_fixture_plan()] * 3, lambda: [accepting()]
+    )
+    with client:
+        signed_in(client, THEIRS)
+        response = client.post("/student/actions/plan")
+
+    assert response.status_code == 409
+    assert (
+        "Blossom couldn&#39;t make a plan that fits this evening. Family review shows what "
+        "went wrong."
+    ) in response.text
+    assert "You can try again" not in response.text
+
+
 def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() -> None:
     app = create_app(
         fixture_settings(
@@ -195,7 +241,11 @@ def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() ->
         over_json = client.post("/student/plans")
 
     assert response.status_code == 409
-    assert "No plan was made this time: the run ended with checks_failed." in response.text
+    assert (
+        "Blossom couldn&#39;t make a plan that fits this evening. You can try again, or "
+        "ask a parent to look at what went wrong." in response.text
+    )
+    assert "checks_failed" not in response.text
     assert "No plan for today yet." in response.text
     assert over_json.status_code == 409
 

@@ -155,6 +155,11 @@ def plan_title(value: date) -> str:
     return f"Plan for {value:%A, %B} {value.day}, {value.year}"
 
 
+def no_plan_title(value: date) -> str:
+    """The heading of a run that ended without a plan, said as a plan's heading is."""
+    return f"No plan for {value:%A, %B} {value.day}, {value.year}"
+
+
 def read_plan(
     record: DraftRecord,
     *,
