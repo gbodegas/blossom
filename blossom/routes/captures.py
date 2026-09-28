@@ -166,7 +166,8 @@ NOTE_NOT_SAVED: Final = "Your note could not be saved. Your words are still here
 NOTE_NOT_MOVED: Final = "That could not be saved, and nothing was changed. Try again."
 HELP_NOT_ASKED: Final = "Your request could not be sent, and nothing was changed. Try again."
 NOTE_GONE: Final = "This homework note is not on record."
-NOTE_UNREADABLE: Final = "This homework note cannot be read right now. Nothing was changed."
+NOTE_CANNOT_BE_READ: Final = "This homework note cannot be read right now."
+NOTE_UNREADABLE: Final = f"{NOTE_CANNOT_BE_READ} Nothing was changed."
 NOTE_DELETED: Final = "Note deleted."
 NOTE_ALREADY_DELETED: Final = "That note was already deleted."
 NOTE_WAS_DELETED: Final = "That note was deleted."
@@ -592,12 +593,14 @@ def unreadable(
     request: Request, state: ApplicationState, status_code: int = status.HTTP_200_OK
 ) -> HTMLResponse:
     """The small page for a note that is on record and cannot be read, which is not the page
-    for a name that is no note: it says the note is unavailable and that nothing changed."""
+    for a name that is no note. A refused press adds that nothing changed; a page opened
+    doesn't, since it may follow a save that went through."""
+    opened = request.method in ("GET", "HEAD")
     return templates.TemplateResponse(
         request,
         "student_note_gone.html",
         {
-            "problem": NOTE_UNREADABLE,
+            "problem": NOTE_CANNOT_BE_READ if opened else NOTE_UNREADABLE,
             "ways_back": ways_back(request),
             "sample": state.settings.sample,
         },
@@ -617,6 +620,7 @@ def note_page(
     asked: str | None = None,
     edit: bool = False,
     status_code: int = status.HTTP_200_OK,
+    reraise: bool = False,
 ) -> HTMLResponse:
     """One note's page: what stands, the first words when they differ, who supplied a class
     or a day, the history, and for her the ways to change it. Two reads in one snapshot, and
@@ -626,18 +630,27 @@ def note_page(
     When the page is the answer to a refused change, ``form`` holds what she
     typed, and a note that cannot be shown does not take that with it: the
     answer is then the page that reads no store, with everything she typed.
+    A read the file refuses is said as unavailable too, and a refused change says the
+    note can't be read whenever its read fails. ``reraise`` marks a failed write instead:
+    its own message stands, so a note the store can't decode, or any failed read without
+    a form, goes back to the caller.
     """
     try:
         found = state.project_state.sound_capture_history(capture_id)
     except UnreadableCapture:
+        if reraise:
+            raise
         if form is not None:
             return plain_failure(request, state, NOTE_UNREADABLE, form, refusal(status_code))
         return unreadable(request, state, status_code)
-    except Exception:
-        if form is None:
+    except Exception as fault:
+        if form is None and (reraise or not isinstance(fault, sqlite3.Error)):
             raise
-        logger.exception("the note %s could not be read to answer a refused change", capture_id)
-        return plain_failure(request, state, problem or NOTE_UNREADABLE, form, refusal(status_code))
+        logger.exception("the note %s could not be read", capture_id)
+        if form is None:
+            return unreadable(request, state, status_code)
+        said = (problem or NOTE_UNREADABLE) if reraise else NOTE_UNREADABLE
+        return plain_failure(request, state, said, form, refusal(status_code))
     if found is None:
         if form is not None:
             return plain_failure(request, state, NOTE_GONE, form, refusal(status_code, gone=True))
@@ -780,22 +793,11 @@ def note_or_plain(
             form=form,
             problem=problem,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            reraise=True,
         )
     except Exception:
         logger.exception("a note's page could not be read back after a failed write")
         return plain_failure(request, state, problem, form)
-
-
-def note_or_unreadable(
-    request: Request, state: ApplicationState, capture_id: str, problem: str, status_code: int
-) -> HTMLResponse:
-    """The note's page with why it wasn't deleted said first; when SQLite can't read the note
-    back, the page that says it is unavailable, since nothing was changed."""
-    try:
-        return note_page(request, state, capture_id, problem=problem, status_code=status_code)
-    except sqlite3.Error:
-        logger.exception("the note %s could not be read to say why it wasn't deleted", capture_id)
-        return unreadable(request, state, status_code)
 
 
 # ------------------------------------------------------------------ the pages
@@ -910,7 +912,8 @@ def help_about_a_note(request: Request, capture_id: str, state: State) -> HTMLRe
         return gone(request, state)
     try:
         found = state.project_state.sound_capture_history(name)
-    except UnreadableCapture:
+    except (UnreadableCapture, sqlite3.Error):
+        logger.exception("the note %s could not be read for its help page", name)
         return unreadable(request, state)
     if found is None:
         return gone(request, state, name)
@@ -1232,8 +1235,8 @@ def delete_page(request: Request, capture_id: str, state: State) -> HTMLResponse
     except NotACaptureId:
         return gone(request, state)
     if viewer_of(request) == "parent":
-        return note_or_unreadable(
-            request, state, name, NOT_HERS_TO_UPDATE, status.HTTP_403_FORBIDDEN
+        return note_page(
+            request, state, name, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
         )
     try:
         found = state.project_state.sound_capture_history(name)
@@ -1247,12 +1250,12 @@ def delete_page(request: Request, capture_id: str, state: State) -> HTMLResponse
         return gone(request, state, name)
     note = found[0]
     if use is not None:
-        return note_or_unreadable(
+        return note_page(
             request,
             state,
             name,
-            kept_because(use, archived=note.archived, just=False),
-            status.HTTP_409_CONFLICT,
+            problem=kept_because(use, archived=note.archived, just=False),
+            status_code=status.HTTP_409_CONFLICT,
         )
     return templates.TemplateResponse(
         request,
@@ -1287,13 +1290,17 @@ async def delete_a_note(request: Request, capture_id: str, state: State) -> Resp
     except NotACaptureId:
         return gone(request, state)
     if viewer_of(request) == "parent":
-        return note_or_unreadable(
-            request, state, name, NOT_HERS_TO_UPDATE, status.HTTP_403_FORBIDDEN
+        return note_page(
+            request, state, name, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
         )
     revision = revision_of(fields)
     if not whole or revision is None:
-        return note_or_unreadable(
-            request, state, name, BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
+        return note_page(
+            request,
+            state,
+            name,
+            problem=BAD_FORM,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     try:
         async with state.decision_lock:
@@ -1311,16 +1318,20 @@ async def delete_a_note(request: Request, capture_id: str, state: State) -> Resp
         case CaptureAlreadyDeleted():
             where = address(NOTES_PAGE, NOTES_RESULT, already=name)
         case CaptureInUse(capture=note, use=use):
-            return note_or_unreadable(
+            return note_page(
                 request,
                 state,
                 name,
-                kept_because(use, archived=note.archived, just=True),
-                status.HTTP_409_CONFLICT,
+                problem=kept_because(use, archived=note.archived, just=True),
+                status_code=status.HTTP_409_CONFLICT,
             )
         case CaptureConflict():
-            return note_or_unreadable(
-                request, state, name, NOTE_CHANGED_NOT_DELETED, status.HTTP_409_CONFLICT
+            return note_page(
+                request,
+                state,
+                name,
+                problem=NOTE_CHANGED_NOT_DELETED,
+                status_code=status.HTTP_409_CONFLICT,
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 

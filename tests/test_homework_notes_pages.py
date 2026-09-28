@@ -16,6 +16,7 @@ from blossom.captures import new_capture_id
 from blossom.routes.captures import (
     HELP_NOT_ASKED,
     NOTE_ASKED,
+    NOTE_CANNOT_BE_READ,
     NOTE_GONE,
     NOTE_NOT_SAVED,
     NOTE_UNREADABLE,
@@ -677,9 +678,11 @@ def test_a_note_its_own_page_cannot_show_is_not_shown_or_asked_about_through_hel
         )
         sent = state.help_requests.open_requests()
 
-    assert escape(NOTE_UNREADABLE) in own_page.text
+    assert escape(NOTE_CANNOT_BE_READ) in own_page.text
     assert opened.status_code == 200
-    assert escape(NOTE_UNREADABLE) in opened.text
+    assert escape(NOTE_CANNOT_BE_READ) in opened.text
+    for page in (own_page, opened):
+        assert escape(NOTE_UNREADABLE) not in page.text
     assert escape(NOTE_GONE) not in opened.text
     assert f'action="{action}"' not in opened.text
     assert asked.status_code == 500

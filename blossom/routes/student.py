@@ -1785,9 +1785,10 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     kept; anything else is appended. The comparison and the write are one
     operation under the decision lock, so two devices saving together get
     one save and one refusal. A write the file refuses is answered with the
-    component and her words, and never with a word of a save. A parent
-    signed in is told the update is hers to make, 403, and nothing is
-    written.
+    component and her words, and never with a word of a save. An assignment
+    not on record now is answered 404 with her choice and words to copy. A
+    parent signed in is told the update is hers to make, 403, and nothing
+    is written.
 
     One route serves the card on her week and the assignment's details. The
     form says which it came from, and that decides only where the result is
@@ -1857,20 +1858,14 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
                 today=state.clock.today(),
             )
     except UnknownAssignment:
-        if origin.detail:
-            return gone_page(
-                request,
-                state,
-                origin.back,
-                assignment_id,
-                card=CardState(assignment_id, status=chosen, note=note),
-            )
-        return student_page(
+        # The card is gone, so her choice and words go to the page that keeps them to
+        # copy, with the way back to where she was.
+        return gone_page(
             request,
             state,
-            week=origin.week,
-            problem=NOT_ON_RECORD,
-            status_code=status.HTTP_404_NOT_FOUND,
+            origin.back if origin.detail else ReturnTo("week", origin.week),
+            assignment_id,
+            card=CardState(assignment_id, status=chosen, note=note),
         )
     except UnknownReport:
         return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)

@@ -676,6 +676,40 @@ def test_the_other_persons_press_on_a_note_that_cannot_be_read_or_is_gone_keeps_
         assert escape(NOTE_GONE) not in answer.text
 
 
+def test_a_refused_link_whose_note_sqlite_can_not_read_back_keeps_the_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A press refused, then a note the file won't read: the page that reads no store keeps
+    the search words and the choice, and nothing is linked."""
+    with browser() as client:
+        name = save_note(client)
+        log = on_record(client)
+        press = press_of(search(client, name, "reading"), name, log.assignment_id)
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE assignments SET title = 'Novel study' WHERE assignment_id = ?",
+            (log.assignment_id,),
+        )
+        store._connection.commit()
+        before = rows(client)
+
+        def refused_read(*_: object, **__: object) -> None:
+            msg = "disk I/O error"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(store, "sound_capture_history", refused_read)
+        answer = client.post(note_link_action(name), data=press, headers=PAGE_HEADERS)
+        monkeypatch.undo()
+        after = rows(client)
+
+    assert answer.status_code == 409
+    assert "<h1>Nothing was saved</h1>" in answer.text
+    assert escape(HOMEWORK_CHANGED) in answer.text
+    assert 'Search words, as typed: <span class="authored-text">reading</span>' in answer.text
+    assert f'Homework chosen: <span class="authored-text">{log.assignment_id}</span>' in answer.text
+    assert after == before
+
+
 def test_homework_that_changed_so_the_words_no_longer_find_it_is_still_shown_as_it_stands() -> None:
     """The row the press was held to is shown as it stands now, with a fresh press, even
     when the search words find it no more."""
