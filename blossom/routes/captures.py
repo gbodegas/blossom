@@ -630,8 +630,9 @@ def note_page(
     When the page is the answer to a refused change, ``form`` holds what she
     typed, and a note that cannot be shown does not take that with it: the
     answer is then the page that reads no store, with everything she typed.
-    A read the file refuses is said as unavailable too, unless ``reraise``
-    hands it back to a caller that has its own page for it.
+    A read the file refuses is said as unavailable too, and a refused change says the
+    note can't be read whenever its read fails. ``reraise`` marks a failed write instead:
+    its own message stands, and without a form the error goes back to the caller.
     """
     try:
         found = state.project_state.sound_capture_history(capture_id)
@@ -645,7 +646,8 @@ def note_page(
         logger.exception("the note %s could not be read", capture_id)
         if form is None:
             return unreadable(request, state, status_code)
-        return plain_failure(request, state, problem or NOTE_UNREADABLE, form, refusal(status_code))
+        said = (problem or NOTE_UNREADABLE) if reraise else NOTE_UNREADABLE
+        return plain_failure(request, state, said, form, refusal(status_code))
     if found is None:
         if form is not None:
             return plain_failure(request, state, NOTE_GONE, form, refusal(status_code, gone=True))

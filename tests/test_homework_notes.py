@@ -2214,6 +2214,77 @@ def test_a_refused_change_to_a_note_sqlite_can_not_read_back_changes_nothing(
     assert logged_unreadable(caplog, name)
 
 
+def not_a_database(*_: object, **__: object) -> None:
+    msg = "file is not a database"
+    raise sqlite3.DatabaseError(msg)
+
+
+def read_fails(*_: object, **__: object) -> None:
+    msg = "the read failed"
+    raise RuntimeError(msg)
+
+
+@pytest.mark.parametrize("reader", ["signed in", "sign-in off"])
+@pytest.mark.parametrize(
+    "fault", [disk_error, not_a_database, read_fails], ids=["disk", "not a database", "other"]
+)
+@pytest.mark.parametrize(
+    ("case", "expected", "refused_with"),
+    [
+        ("no revision", 422, BAD_FORM),
+        ("twice", 422, BAD_FORM),
+        ("too long", 422, NOTE_TOO_LONG),
+        ("page behind", 409, NOTE_CHANGED),
+    ],
+    ids=["no revision", "twice", "too long", "page behind"],
+)
+def test_a_refused_edit_whose_note_can_not_be_read_back_says_so_and_keeps_her_words(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    reader: str,
+    fault: Callable[..., None],
+    case: str,
+    expected: int,
+    refused_with: str,
+) -> None:
+    client = signed_in_as(tmp_path, HERS) if reader == "signed in" else browser().__enter__()
+    try:
+        store = state_of(client).project_state
+        name = saved_note(client, "Zebra quartz violin questions")
+        action = note_action(name, "edit")
+        fields = whole_form(client.get(note_href(name, edit="1")).text, action)
+        words = "<b>Wren's</b> own words" + ("!" * CAPTURE_TEXT_MAX_LENGTH * (case == "too long"))
+        fields.update(text=words, course="Geometry", due_date="2026-09-30")
+        if case == "page behind":
+            elsewhere = {**fields, "text": "Zebra quartz violin questions 1-9"}
+            client.post(action, data=elsewhere, headers=PAGE_HEADERS)
+        if case == "no revision":
+            body = urlencode([pair for pair in fields.items() if pair[0] != "revision"])
+        else:
+            body = broken(fields, case)
+        before = tables(store)
+        monkeypatch.setattr(store, "sound_capture_history", fault)
+        answer = client.post(action, content=body, headers=URLENCODED)
+        monkeypatch.undo()
+        after = tables(store)
+        again = client.post(action, content=body, headers=URLENCODED)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert answer.status_code == expected
+    assert f"autofocus>{escape(NOTE_UNREADABLE)}</p>" in answer.text
+    assert answer.text.count(" autofocus") == 1
+    assert str(escape(refused_with)) not in answer.text
+    assert str(escape(words)) in answer.text
+    assert "Zebra quartz violin" not in answer.text
+    assert after == before
+    assert logged_unreadable(caplog, name)
+    assert again.status_code == expected
+    assert str(escape(refused_with)) in again.text
+    assert str(escape(NOTE_UNREADABLE)) not in again.text
+
+
 def test_a_change_saved_before_its_note_could_not_be_read_is_not_said_to_be_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
