@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set page = "parent" if family else "student" %}
-{% block title %}Blossom - Link a note to homework already here{% endblock %}
+{% block title %}Blossom - Find homework for this note{% endblock %}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
 {% macro found_row(item, anchor) %}
   <li id="{{ anchor }}-{{ item.row.assignment_id }}"{% if chosen == item.row.assignment_id %} class="chosen"{% endif %}>
@@ -24,12 +24,21 @@
     {% endif %}
   </li>
 {% endmacro %}
+{% macro homework(row) %}<span class="authored-text">{{ row.course }}</span>: <span class="authored-text">{{ row.title }}</span>{% endmacro %}
+{% macro consequence(id) %}
+  {% if joined %}
+    <p class="note" id="{{ id }}">This moves the note's link from {% if current %}{{ homework(current) }}{% else %}homework that is not on record now{% endif %} to the homework you choose. The saved homework details stay the same. If the note includes a date, Blossom uses it when checking the newly linked homework's due date; it stops counting that note's date for the previous homework.</p>
+  {% else %}
+    <p class="note" id="{{ id }}">Link to this homework saves the link right away. The homework's saved details stay the same. If the note includes a date, Blossom also uses it when checking the due date.</p>
+  {% endif %}
+{% endmacro %}
 {#
   The page that finds homework already on record by its class or title,
   however the note puts it, and joins the note to one result by a press of
-  its own. The search comes first, since it is the one thing to do here; the
-  words of the note, never searched, and the longer explanation open from a
-  disclosure below it. Each result is shown as the candidate rows show
+  its own. It reads in the order it is used: the way back to the note, any
+  refusal, the note's words and the homework it is linked to now, the search,
+  what a press does beside the presses, and the longer explanation in a
+  disclosure at the end. Each result is shown as the candidate rows show
   homework, from the one reading the page makes, with the fingerprint the
   press carries, so the save is held to the row as shown; the homework a
   refused press chose is shown once from that same reading, in the results
@@ -40,20 +49,40 @@
   accessible name, hidden from sight, by title, class, day, and id, since
   the same words repeat down the list and two rows can share a title and a
   class. The words follow who is reading, never the tree the address is in.
-  Reading the page writes nothing.
+  One thing at most takes focus: a refusal, or the heading of a search that was
+  asked for; a first visit leaves focus where the browser puts it. Reading
+  the page writes nothing.
 #}
 {% block content %}
+  {% set status_heading = results is not none or (searched and not problem) %}
+  <p class="return"><a href="{{ note_href(note.capture_id) }}">Back to the note</a></p>
   {% for link in ways_back %}
     <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
   {% endfor %}
-  <p class="return"><a href="{{ note_href(note.capture_id) }}">Back to the note</a></p>
-  <h1>Link a note to homework already here</h1>
+  <h1>Find homework for this note</h1>
   {% if problem %}
     <p class="problem" role="alert" id="search-problem" tabindex="-1" autofocus>{{ problem }}{% if query_error %} <a href="#search-words">Review your search words</a>{% endif %}</p>
   {% endif %}
+  {% if attempt and attempt.leaving %}
+    {# What a refused move asked, apart from the link that stands and from any fresh press. #}
+    <p class="note" id="search-request">Move requested from <span class="authored-text">{{ attempt.leaving }}</span>{% if attempt.target %} to <span class="authored-text">{{ attempt.target }}</span>{% endif %}. This move was not saved.</p>
+  {% endif %}
   <section class="panel homework-note">
+    <h2 class="update-heading">{% if parent %}Her note{% else %}Your note{% endif %}</h2>
+    <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
     <p class="note">Linking the homework note saved {{ on(note.created_on) }}{% if own %}, which made an assignment of its own{% elif note.archived %}, which is archived{% elif joined %}, already linked to homework{% else %}, not in homework yet{% endif %}.</p>
-    {% if not may_write and not own and not note.archived %}
+    {% if joined %}
+      {# The link that stands, whole, before the search and any result that would change it. #}
+      <p class="note" id="search-linked-now">{% if current %}Linked to {{ homework(current) }}, {% if current.due_date %}due {{ on(current.due_date) }}{% else %}no due date on record{% endif %}.{% else %}The homework this note is linked to is not on record now.{% endif %}</p>
+    {% elif attempt and attempt.leaving %}
+      <p class="note">This note is not linked to homework now.</p>
+    {% endif %}
+    <p class="note">Search by class or title. {% if parent %}Her{% else %}Your{% endif %} note stays as it is.</p>
+    {% if own %}
+      <p class="note"><span class="pill">In homework</span> {{ own_sentence }} <a href="{{ details_href(note.assignment_id) }}">Open the assignment</a>.</p>
+    {% elif note.archived %}
+      <p class="note">This note is archived. <a href="{{ note_href(note.capture_id) }}">Open the note</a> to bring it back before linking it.</p>
+    {% elif not may_write %}
       <p class="note">{% if family %}Sign in as a parent to link a note here.{% else %}{{ not_hers }}{% endif %}</p>
     {% endif %}
     <form method="get" action="{{ note_search_href(note.capture_id, family=family) }}" class="report">
@@ -62,53 +91,45 @@
       <button type="submit" class="secondary">Search</button>
       <p class="note" id="search-words-hint">Up to 200 characters. Every word must occur in the class or the title. Done work and work outside this week are found too.</p>
     </form>
-    {% if hint %}
+    {% if hint and not status_heading %}
       <p class="note" id="search-hint">{{ hint }}</p>
     {% endif %}
-    {% if attempt and attempt.leaving %}
-      {# What a refused move asked, apart from the link that stands and from any fresh press. #}
-      <p class="note" id="search-request">Move requested from <span class="authored-text">{{ attempt.leaving }}</span>{% if attempt.target %} to <span class="authored-text">{{ attempt.target }}</span>{% endif %}. This move was not saved.</p>
-      {% if not note.assignment_id %}
-        <p class="note">This note is not linked to homework now.</p>
-      {% endif %}
-    {% endif %}
-    {% if joined %}
-      {# The link that stands, whole, after the form and before any result that would change it. #}
-      <p class="note" id="search-linked-now">Linked now to {% if current %}<span class="authored-text">{{ current.course }}</span> &middot; <span class="authored-text">{{ current.title }}</span>{% else %}homework that is not on record now{% endif %}. Choosing a result moves this link to it: the old link is withdrawn and the new one made together, or neither. Nothing on either assignment changes.</p>
-    {% endif %}
-    <details class="steps">
-      <summary>Read this homework note</summary>
-      <h2 class="update-heading">{% if parent %}What she wrote{% else %}What you wrote{% endif %}</h2>
-      <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
-      <p class="note">These words stay as they are. The search never reads them, and nothing here is shared with the planning model.</p>
-      {% if own %}
-        <p class="note"><span class="pill">In homework</span> {{ own_sentence }} <a href="{{ details_href(note.assignment_id) }}">Open the assignment</a>.</p>
-      {% elif note.archived %}
-        <p class="note">This note is archived. <a href="{{ note_href(note.capture_id) }}">Open the note</a> to bring it back before linking it.</p>
-      {% elif not joined %}
-        <p class="note">Choosing homework in the results joins this note to it and changes nothing on that assignment: not its title, its date, its status, or its note. A day the note gives is kept as one more source for the date.</p>
-      {% endif %}
-    </details>
     {% if chosen_gone %}
       <p class="note" id="search-chosen-gone">{{ chosen_gone_sentence }} Homework chosen: <span class="authored-text">{{ chosen }}</span>.</p>
     {% elif chosen_row %}
       {# The homework chosen, read with this page, shown beside the results when the words find it no more. #}
       <h2 class="update-heading" id="search-chosen">The homework chosen, as it stands now</h2>
+      {% if may_write and chosen_row.row.assignment_id != leaving %}{{ consequence("search-chosen-consequence") }}{% endif %}
       <ol class="history-list">
         {{ found_row(chosen_row, "chosen") }}
       </ol>
     {% endif %}
-    {% if results and results.total %}
-      <h2 class="update-heading" id="search-results">Found {{ results.total }}{% if results.last > 1 %}, page {{ results.number }} of {{ results.last }}{% endif %}</h2>
-      <ol class="history-list">
-        {% for item in rows %}
-          {{ found_row(item, "found") }}
-        {% endfor %}
-      </ol>
-      {% if pages.previous or pages.next %}
-        <p class="note">{% if pages.previous %}<a href="{{ pages.previous }}">Previous page</a>{% endif %}{% if pages.previous and pages.next %} &middot; {% endif %}{% if pages.next %}<a href="{{ pages.next }}">Next page</a>{% endif %}</p>
+    {% if status_heading %}
+      {# The heading a search lands on says what was searched, how much was found, and which page. #}
+      <h2 class="update-heading" id="search-results" tabindex="-1"{% if searched and not problem %} autofocus{% endif %}>{% if results and results.total %}{{ results.total }} found for &ldquo;{{ shown_query }}&rdquo;{% if results.last > 1 %}, page {{ results.number }} of {{ results.last }}{% endif %}{% elif results is not none %}Nothing found for &ldquo;{{ shown_query }}&rdquo;{% else %}Nothing was searched{% endif %}</h2>
+      {% if results and results.total %}
+        {% if may_write and rows | rejectattr("row.assignment_id", "equalto", leaving) | list %}{{ consequence("search-consequence") }}{% endif %}
+        <ol class="history-list">
+          {% for item in rows %}
+            {{ found_row(item, "found") }}
+          {% endfor %}
+        </ol>
+        {% if pages.previous or pages.next %}
+          <p class="note">{% if pages.previous %}<a href="{{ pages.previous }}">Previous page</a>{% endif %}{% if pages.previous and pages.next %} &middot; {% endif %}{% if pages.next %}<a href="{{ pages.next }}">Next page</a>{% endif %}</p>
+        {% endif %}
+      {% else %}
+        {% if hint %}<p class="note" id="search-hint">{{ hint }}</p>{% endif %}
+        <p class="note"><a href="#search-words">Change the search</a></p>
       {% endif %}
     {% endif %}
-    <p class="note">Nothing is joined until one of the presses in the results is used, and the save checks the note and the homework again as they stand then.</p>
+    <details class="steps">
+      <summary>How linking works</summary>
+      <p class="note">The search reads only the class and the title of homework on record, however the note puts them. It never reads the note's words, and nothing here is shared with the planning model.</p>
+      <p class="note">A link changes nothing on the homework: not its title, its date, its status, or its note. A date the note gives is kept as one more source for the due date.</p>
+      {% if joined %}
+        <p class="note">A move withdraws the old link and makes the new one together, or neither. Nothing on either assignment changes.</p>
+      {% endif %}
+      <p class="note">Each press checks the note and the homework again as they stand then. If either changed, nothing is saved, and this page shows them as they stand.</p>
+    </details>
   </section>
 {% endblock %}

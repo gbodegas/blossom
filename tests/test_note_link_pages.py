@@ -10,6 +10,7 @@ the note's name is read; nothing is joined by a search alone.
 """
 
 import pathlib
+import re
 import sqlite3
 import uuid
 from collections.abc import Callable
@@ -171,7 +172,7 @@ def test_the_note_and_the_details_page_offer_the_search_and_a_search_joins_nothi
 
     assert f'<a href="{note_search_href(name)}">Link to homework already here</a>' in note_page
     assert f'<a href="{note_search_href(name)}">Search homework already here</a>' in details
-    assert "<h1>Link a note to homework already here</h1>" in page
+    assert "<h1>Find homework for this note</h1>" in page
     assert escape(WORDS) in page
     assert after == before
 
@@ -246,10 +247,10 @@ def test_results_come_twenty_to_a_page_in_one_order_with_next_and_previous() -> 
         beyond_nothing = client.get(note_search_href(name, q="", page="2"), headers=PAGE_HEADERS)
 
     assert first.count('id="found-') == PAGE_SIZE
-    assert "Found 25, page 1 of 2" in first
+    assert "25 found for &ldquo;drill&rdquo;, page 1 of 2</h2>" in first
     assert ">Next page</a>" in first
     assert ">Previous page</a>" not in first
-    assert f'href="{escape(note_search_href(name, q="drill", page="2"))}"' in first
+    assert f'href="{escape(note_search_href(name, q="drill", page="2"))}#search-results"' in first
     assert second.count('id="found-') == 5
     assert ">Previous page</a>" in second
     assert ">Next page</a>" not in second
@@ -427,7 +428,7 @@ def test_changing_a_link_moves_the_note_and_says_so() -> None:
         note_page = client.get(note_href(name)).text
 
     assert "already linked to homework" in page
-    assert "Summer reading log" in page.split("Linked now to")[1].split("</p>")[0]
+    assert "Summer reading log" in page.split('id="search-linked-now"')[1].split("</p>")[0]
     assert press["from"] == log.assignment_id
     assert '>Move the link here<span class="visually-hidden"> for ' in page
     assert answer.status_code == 303
@@ -526,7 +527,7 @@ def test_the_other_persons_press_is_refused_with_what_was_typed_kept(
         assert "Typed &lt;b&gt;words&lt;/b&gt;" in parents_on_hers.text
         assert "Typed &lt;b&gt;words&lt;/b&gt;" in no_note.text
     assert parents_page.status_code == 200
-    assert "What she wrote" in parents_page.text
+    assert ">Her note</h2>" in parents_page.text
     assert after == before
 
 
@@ -549,7 +550,7 @@ def test_a_parent_joins_and_unlinks_through_the_familys_tree(tmp_path: pathlib.P
         )
         after = state_of(client).project_state.capture_history(name)
 
-    assert "What she wrote" in page
+    assert ">Her note</h2>" in page
     assert answer.status_code == 303
     assert escape(JOINED_TO_HOMEWORK) in landed
     assert history[-1].authored_by == "parent"
@@ -730,6 +731,7 @@ def test_homework_that_changed_so_the_words_no_longer_find_it_is_still_shown_as_
     assert answer.status_code == 409
     assert HOMEWORK_CHANGED in answer.text
     assert "Novel study" in shown
+    assert LINK_CONSEQUENCE in answer.text.split('id="search-chosen"')[1].split('id="chosen-')[0]
     assert 'value="reading"' in answer.text
     assert (fresh["target"], fresh["revision"]) == (log.assignment_id, press["revision"])
     assert fresh["basis"] != press["basis"]
@@ -1027,23 +1029,22 @@ def test_a_refused_query_stays_refused_whatever_the_page_number() -> None:
     assert NO_SUCH_PAGE not in answer.text
 
 
-def test_the_search_comes_first_and_the_note_opens_from_a_disclosure() -> None:
-    """The search field and its button come before the note's words and the explanations,
-    which a native disclosure holds whole; an error stays outside the disclosure."""
+def test_the_note_comes_before_the_search_and_the_rest_opens_from_a_disclosure() -> None:
+    """Her words and where the note stands come before the search field, whole and outside
+    any fold; the longer explanation is a native disclosure after the results; an error
+    comes before the note."""
     long_words = "A long note. " * 37
     with browser() as client:
         name = save_note(client, text=long_words.strip())
         page = search(client, name, "")
         refused = client.get(note_search_href(name, q="Q" * 201), headers=PAGE_HEADERS).text
 
-    assert page.index('id="search-words"') < page.index("<details")
-    assert page.index(">Search</button>") < page.index("<details")
-    assert "<summary>Read this homework note</summary>" in page
-    assert page.index("<summary>Read this homework note</summary>") < page.index(
-        escape(long_words.strip())
-    )
+    assert page.index(escape(long_words.strip())) < page.index('id="search-words"')
+    assert "<summary>How linking works</summary>" in page
+    assert page.index('id="search-words"') < page.index("<summary>How linking works</summary>")
+    assert escape(long_words.strip()) not in page.split("<details")[1]
     assert "Linking the homework note saved" in page.split("<details")[0]
-    assert refused.index('id="search-problem"') < refused.index("<details")
+    assert refused.index('id="search-problem"') < refused.index("note-words")
 
 
 # ------------------------------------------------------------------ third review round
@@ -1282,24 +1283,30 @@ def test_the_search_page_reads_the_note_and_the_homework_in_one_reading(
     assert not (waiting and renamed), outcomes
 
 
-def test_the_search_comes_first_when_the_note_is_linked_to_long_named_homework() -> None:
+def test_the_link_comes_before_the_search_when_the_note_is_linked_to_long_named_homework() -> None:
     with browser() as client:
         name = save_note(client, due_date="2026-08-21")
         long_named = on_record(client, course="C" * 60, title="Worksheet " + "T" * 189)
+        on_record(client, course="Math", title="Worksheet two")
         pressed = press_of(search(client, name, "worksheet"), name, long_named.assignment_id)
         assert client.post(note_link_action(name), data=pressed).status_code == 303
         page = search(client, name, "")
+        found = search(client, name, "worksheet")
+        alone = search(client, name, "C" * 60)
 
     standing = page.split("Linking the homework note saved")[1].split("</p>")[0]
     assert "already linked to homework" in standing
     assert "T" * 189 not in standing
-    assert page.index('id="search-words"') < page.index('id="search-linked-now"')
-    assert page.index(">Search</button>") < page.index('id="search-linked-now"')
+    assert page.index('id="search-linked-now"') < page.index('id="search-words"')
+    assert page.index('id="search-linked-now"') < page.index(">Search</button>")
     linked = page.split('id="search-linked-now"')[1].split("</p>")[0]
     assert "T" * 189 in linked
-    assert "moves this link" in linked
     assert page.index('id="search-linked-now"') < page.index("<details")
-    assert page.count("moves this link") == 1
+    assert "This moves the note's link" not in page
+    assert found.count("This moves the note's link from") == 1
+    assert "T" * 189 in found.split("This moves the note's link from")[1].split("</p>")[0]
+    assert alone.count('id="found-') == 1
+    assert "This moves the note's link" not in alone
 
 
 # ------------------------------------------------------------------ fourth review round
@@ -1468,6 +1475,7 @@ def test_a_stale_move_names_what_it_asked_apart_from_the_link_that_stands(
             assert fresh["revision"] == str(standing.revision)
         else:
             assert "<form" not in row
+            assert "This note is archived." in refused.text.split('id="search-words"')[0]
 
 
 @pytest.mark.parametrize("family", [False, True])
@@ -1751,12 +1759,12 @@ def test_a_parent_reading_her_pages_is_told_about_her(tmp_path: pathlib.Path) ->
         parents_own = search(client, name, "reading", family=True)
 
     row = hers_search.split(f'id="found-{done.assignment_id}"')[1].split("</li>")[0]
-    assert "What you wrote" in hers_search
+    assert ">Your note</h2>" in hers_search
     assert "You said Done on" in row
     assert parents_search.status_code == 200
     row = parents_search.text.split(f'id="found-{done.assignment_id}"')[1].split("</li>")[0]
-    assert "What she wrote" in parents_search.text
-    assert "What you wrote" not in parents_search.text
+    assert ">Her note</h2>" in parents_search.text
+    assert ">Your note</h2>" not in parents_search.text
     assert "She said Done on" in row
     assert "You said" not in parents_search.text
     assert "From your report" not in parents_search.text
@@ -1765,7 +1773,7 @@ def test_a_parent_reading_her_pages_is_told_about_her(tmp_path: pathlib.Path) ->
     assert parents_details.status_code == 200
     assert "What she wrote" in parents_details.text
     assert "What you wrote" not in parents_details.text
-    assert "What she wrote" in parents_own
+    assert ">Her note</h2>" in parents_own
     assert "She said Done on" in parents_own
 
 
@@ -1866,3 +1874,323 @@ def test_with_the_sign_in_off_the_way_back_to_her_week_follows_the_tree() -> Non
     assert ">Back to my week</a>" in hers.text
     assert ">Back to her week</a>" in family.text
     assert ">Back to her week</a>" in family_details.text
+
+
+# ------------------------------------------------------------------ the page's order and focus
+
+CHANGE_THE_SEARCH = '<a href="#search-words">Change the search</a>'
+LINK_CONSEQUENCE = (
+    "Link to this homework saves the link right away. The homework's saved details stay the "
+    "same. If the note includes a date, Blossom also uses it when checking the due date."
+)
+
+
+def focused(page: str) -> list[str]:
+    """The id of every element the page asks the browser to focus."""
+    return re.findall(r'<[^>]*\bid="([^"]+)"[^>]*\sautofocus', page)
+
+
+@pytest.mark.parametrize("family", [False, True], ids=["hers", "family"])
+def test_the_page_reads_note_link_search_results_then_the_longer_explanation(
+    family: bool,
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        log = on_record(client)
+        on_record(client, title="Reading response")
+        pressed = press_of(search(client, name, "reading"), name, log.assignment_id)
+        assert client.post(note_link_action(name), data=pressed).status_code == 303
+        page = search(client, name, "reading", family=family)
+    whose = "Her" if family else "Your"
+    marks = [
+        '<p class="return"><a href="' + note_href(name) + '">Back to the note</a></p>',
+        "<h1>Find homework for this note</h1>",
+        f">{whose} note</h2>",
+        'class="authored-text note-words"',
+        'id="search-linked-now"',
+        f"Search by class or title. {whose} note stays as it is.",
+        'id="search-words"',
+        'id="search-results"',
+        "This moves the note's link from",
+        'id="found-',
+        "<summary>How linking works</summary>",
+    ]
+    where = [page.index(mark) for mark in marks]
+
+    assert where == sorted(where), list(zip(marks, where, strict=True))
+    assert page.index('<p class="return">') == where[0]
+
+
+def test_a_note_not_yet_linked_says_what_linking_does_beside_the_results() -> None:
+    with browser() as client:
+        name = save_note(client)
+        on_record(client)
+        page = search(client, name, "reading")
+
+    assert LINK_CONSEQUENCE in page
+    assert (
+        page.index('id="search-results"') < page.index(LINK_CONSEQUENCE) < page.index('id="found-')
+    )
+    assert "This moves the note's link" not in page
+    assert "Nothing is joined until" not in page
+
+
+@pytest.mark.parametrize("family", [False, True], ids=["hers", "family"])
+def test_a_linked_note_says_what_a_move_does_beside_the_move_presses(family: bool) -> None:
+    with browser() as client:
+        name = save_note(client)
+        log = on_record(client)
+        on_record(
+            client, course="Spanish", title="Vocabulary list, unit nine", due=date(2026, 8, 21)
+        )
+        joined(client, name, log)
+        page = search(client, name, "nine", family=family)
+    said = page.split('id="search-consequence">')[1].split("</p>")[0]
+
+    assert " ".join(re.sub(r"<[^>]+>", "", said).split()) == (
+        "This moves the note's link from Humanities: Summer reading log to the homework you "
+        "choose. The saved homework details stay the same. If the note includes a date, Blossom "
+        "uses it when checking the newly linked homework's due date; it stops counting that "
+        "note's date for the previous homework."
+    )
+    assert page.index('id="search-results"') < page.index('id="search-consequence"')
+    assert page.index('id="search-consequence"') < page.index(">Move the link here<")
+    assert LINK_CONSEQUENCE not in page
+
+
+def test_a_stale_choice_beside_the_results_leaves_each_press_with_its_consequence() -> None:
+    """The homework chosen, changed so the words find it no more, is shown with its own
+    press and the sentence beside it; the other results keep theirs beside their presses."""
+    with browser() as client:
+        name = save_note(client)
+        first = on_record(client, course="Math", title="Drill one", due=date(2026, 9, 1))
+        second = on_record(client, course="Math", title="Drill two", due=date(2026, 9, 2))
+        press = press_of(search(client, name, "drill"), name, first.assignment_id)
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE assignments SET title = 'Novel study' WHERE assignment_id = ?",
+            (first.assignment_id,),
+        )
+        store._connection.commit()
+        answer = client.post(note_link_action(name), data=press)
+    chosen = answer.text.split('id="search-chosen"')[1].split('id="search-results"')[0]
+    found = answer.text.split('id="search-results"')[1]
+
+    assert answer.status_code == 409
+    assert chosen.index(LINK_CONSEQUENCE) < chosen.index(">Link to this homework<")
+    assert found.index(LINK_CONSEQUENCE) < found.index(f'id="found-{second.assignment_id}"')
+    assert ">Link to this homework<" in found.split(f'id="found-{second.assignment_id}"')[1]
+
+
+@pytest.mark.parametrize("chosen", ["the link now", "linked elsewhere"])
+@pytest.mark.parametrize("reader", ["hers", "family", "hers signed in", "parent signed in"])
+def test_a_sentence_on_what_a_press_does_shows_only_beside_a_press(
+    reader: str, chosen: str, tmp_path: pathlib.Path
+) -> None:
+    """After a stale move, the chosen row and the results say what a press does only where
+    they hold a press, including when the homework chosen is the note's link now."""
+    family = reader in ("family", "parent signed in")
+    signed_in = reader.endswith("signed in")
+    client = (
+        TestClient(
+            create_app(signed_in_household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+        )
+        if signed_in
+        else browser()
+    )
+    with client:
+        if signed_in:
+            client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        if reader == "parent signed in":
+            client.post("/sign-out")
+            client.post("/sign-in", data={"passphrase": THEIRS})
+        log = on_record(client)
+        first = on_record(client, course="Math", title="Drill one", due=date(2026, 9, 1))
+        second = on_record(client, course="Math", title="Drill two", due=date(2026, 9, 2))
+
+        def move(target: Assignment, words: str) -> dict[str, str]:
+            page = search(client, name, words, family=family)
+            return press_of(page, name, target.assignment_id, family=family)
+
+        action = note_link_action(name, family=family)
+        assert client.post(action, data=move(log, "reading")).status_code == 303
+        press = move(first, "drill")
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE assignments SET title = 'Novel study' WHERE assignment_id = ?",
+            (first.assignment_id,),
+        )
+        store._connection.commit()
+        other_tab = move(first, "novel") if chosen == "the link now" else move(second, "drill")
+        assert client.post(action, data=other_tab).status_code == 303
+        answers = [client.post(action, data=press) for _ in range(2)]
+    press_here = chosen == "linked elsewhere"
+    sentence = "This moves the note's link from"
+
+    for answer in answers:
+        beside = answer.text.split('id="search-chosen"')[1].split('id="search-results"')[0]
+        found = answer.text.split('id="search-results"')[1]
+        assert answer.status_code == 409
+        assert (sentence in beside, ">Move the link here<" in beside) == (press_here, press_here)
+        assert (sentence in found, ">Move the link here<" in found) == (
+            not press_here,
+            not press_here,
+        )
+        assert answer.text.count(sentence) == 1
+
+
+def repeated_ids(page: str) -> list[str]:
+    ids = re.findall(r'<[^>]*\sid="([^"]+)"', page)
+    return sorted({one for one in ids if ids.count(one) > 1})
+
+
+@pytest.mark.parametrize("family", [False, True], ids=["hers", "family"])
+@pytest.mark.parametrize("linked", [False, True], ids=["new", "move"])
+def test_each_id_on_the_search_page_names_one_element(linked: bool, family: bool) -> None:
+    with browser() as client:
+        name = save_note(client)
+        first = on_record(client, course="Math", title="Drill one", due=date(2026, 9, 1))
+        on_record(client, course="Math", title="Drill two", due=date(2026, 9, 2))
+        if linked:
+            joined(client, name, on_record(client))
+        found = search(client, name, "drill", family=family)
+        press = press_of(found, name, first.assignment_id, family=family)
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE assignments SET title = 'Novel study' WHERE assignment_id = ?",
+            (first.assignment_id,),
+        )
+        store._connection.commit()
+        stale = client.post(note_link_action(name, family=family), data=press)
+        pages = {
+            "first visit": client.get(
+                note_search_href(name, family=family), headers=PAGE_HEADERS
+            ).text,
+            "found": found,
+            "stale choice": stale.text,
+            "nothing found": search(client, name, "zebra", family=family),
+        }
+    sentence = "This moves the note's link from" if linked else LINK_CONSEQUENCE
+
+    assert stale.status_code == 409
+    assert stale.text.count(sentence) == 2
+    assert {shown: repeated_ids(page) for shown, page in pages.items()} == {
+        shown: [] for shown in pages
+    }
+
+
+@pytest.mark.parametrize("linked", ["dated", "undated", "gone"])
+def test_the_link_that_stands_is_named_with_its_date_or_says_what_is_missing(linked: str) -> None:
+    with browser() as client:
+        name = save_note(client)
+        log = on_record(client, due=None if linked == "undated" else date(2026, 8, 28))
+        pressed = press_of(search(client, name, "reading"), name, log.assignment_id)
+        assert client.post(note_link_action(name), data=pressed).status_code == 303
+        if linked == "gone":
+            store = state_of(client).project_state
+            store._connection.execute(
+                "DELETE FROM assignments WHERE assignment_id = ?", (log.assignment_id,)
+            )
+            store._connection.commit()
+        page = search(client, name, "")
+    standing = page.split('id="search-linked-now"')[1].split("</p>")[0]
+
+    expected = {
+        "dated": "Linked to Humanities: Summer reading log, due August 28, 2026.",
+        "undated": "Linked to Humanities: Summer reading log, no due date on record.",
+        "gone": "The homework this note is linked to is not on record now.",
+    }[linked]
+    assert expected in " ".join(re.sub(r"<[^>]+>", "", standing).split())
+
+
+@pytest.mark.parametrize("family", [False, True], ids=["hers", "family"])
+def test_a_first_visit_moves_focus_nowhere(family: bool) -> None:
+    with browser() as client:
+        name = save_note(client)
+        on_record(client)
+        page = client.get(note_search_href(name, family=family), headers=PAGE_HEADERS).text
+
+    assert focused(page) == []
+    assert 'id="search-results"' not in page
+
+
+@pytest.mark.parametrize(
+    ("words", "heading"),
+    [
+        ("summer reading", "1 found for &ldquo;summer reading&rdquo;"),
+        ("zebra quartz", "Nothing found for &ldquo;zebra quartz&rdquo;"),
+        ("", "Nothing was searched"),
+    ],
+)
+def test_a_search_lands_on_its_results_heading_and_the_next_tab_is_useful(
+    words: str, heading: str
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        on_record(client)
+        pressed = note_search_href(name, q=words) if words else note_search_href(name) + "?q="
+        page = client.get(pressed, headers=PAGE_HEADERS).text
+    start = page.index('id="search-results"')
+    tag = page[page.rindex("<", 0, start) : page.index(">", start) + 1]
+    after = page[start:]
+
+    assert focused(page) == ["search-results"]
+    assert 'tabindex="-1"' in tag
+    assert heading in after.split("</h2>")[0]
+    if words == "summer reading":
+        assert after.index("<button") < after.index("</li>")
+    else:
+        assert CHANGE_THE_SEARCH in after
+        assert after.index(CHANGE_THE_SEARCH) < after.index("<summary>")
+
+
+def test_paging_lands_on_the_results_heading_of_the_page_reached() -> None:
+    with browser() as client:
+        name = save_note(client)
+        for number in range(PAGE_SIZE + 2):
+            on_record(client, title=f"Reading log {number}")
+        first = search(client, name, "reading")
+        link = re.findall(r'<a href="([^"]+)">Next page</a>', first)[0].replace("&amp;", "&")
+        second = client.get(link, headers=PAGE_HEADERS).text
+
+    assert link.endswith("#search-results")
+    assert focused(second) == ["search-results"]
+    assert "page 2 of 2" in second.split('id="search-results"')[1].split("</h2>")[0]
+    assert re.findall(r'<a href="([^"]+)">Previous page</a>', second)[0].endswith("#search-results")
+
+
+@pytest.mark.parametrize("problem", ["invalid query", "page past the end"])
+def test_a_refused_search_focuses_its_problem_and_nothing_else(problem: str) -> None:
+    with browser() as client:
+        name = save_note(client)
+        on_record(client)
+        asked = (
+            note_search_href(name, q="Q" * 201)
+            if problem == "invalid query"
+            else note_search_href(name, q="reading", page="9")
+        )
+        answer = client.get(asked, headers=PAGE_HEADERS)
+
+    assert focused(answer.text) == ["search-problem"]
+    assert answer.status_code == (200 if problem == "invalid query" else 404)
+    if problem == "invalid query":
+        assert 'aria-invalid="true"' in answer.text
+        assert 'value="' + "Q" * 201 + '"' in answer.text
+
+
+def test_a_stale_choice_focuses_its_refusal_only() -> None:
+    with browser() as client:
+        name = save_note(client)
+        log = on_record(client)
+        press = press_of(search(client, name, "reading"), name, log.assignment_id)
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE assignments SET title = 'Novel study' WHERE assignment_id = ?",
+            (log.assignment_id,),
+        )
+        store._connection.commit()
+        answer = client.post(note_link_action(name), data=press)
+
+    assert answer.status_code == 409
+    assert focused(answer.text) == ["search-problem"]
