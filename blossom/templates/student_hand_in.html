@@ -140,7 +140,7 @@
           {% endfor %}
           <div class="actions">
             <button type="submit" class="primary" aria-label="{% if hc.unsaved %}Save again: your hand-in update{% else %}Save hand-in update{% endif %} for {{ assignment.title }}, {{ assignment.course }}">{% if hc.unsaved %}Save again{% else %}Save hand-in update{% endif %}</button>
-            <a class="cancel" href="{{ hand_in_links.keep }}" aria-label="Leave the hand-in status for {{ assignment.title }} as it is">{% if hi.state is none %}Not now{% else %}Keep it as it is{% endif %}</a>
+            <a class="cancel" href="{{ hand_in_links.keep }}">{% if hi.state is none %}Not now{% else %}Keep it as it is{% endif %}<span class="visually-hidden">: the hand-in status for {{ assignment.title }}</span></a>
           </div>
         </form>
       {% endif %}

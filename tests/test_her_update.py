@@ -325,7 +325,7 @@ def test_the_change_button_opens_the_form_with_the_update_as_it_stands() -> None
     assert 'value="not_yet" checked>' in card
     assert ">Half left.</textarea>" in card
     assert '<span class="pill">Your update: Not yet</span>' in card
-    assert "Keep it as it is</a>" in card
+    assert 'Keep it as it is<span class="visually-hidden">' in card
     assert ">Change</button>" not in card
 
 

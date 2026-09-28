@@ -69,9 +69,12 @@ from tests.support import (
     as_served,
     browser,
     card_for,
+    control_names,
     fixture_clock,
     form_fields,
     lands_on,
+    names_not_led_by_their_words,
+    names_without_their_words,
     report,
     school_said,
     signed_in_household,
@@ -802,6 +805,11 @@ def test_an_undo_shown_with_a_result_is_refused_once_the_record_moves_on(origin:
     about = about_of(refused.text)
     assert ESSAY_TITLE in about
     assert "You asked to undo: Turned in, from August 19, 2026." in about
+    assert ("Open Turning it in", f"Open Turning it in: {ESSAY_TITLE}, World History") in (
+        control_names(about)
+    )
+    assert names_without_their_words(refused.text) == []
+    assert names_not_led_by_their_words(refused.text) == []
     assert "You reported it turned in on August 19, 2026." in about
     assert "desk" in about
     assert 'name="hand_in_id"' not in refused.text
@@ -951,6 +959,8 @@ def test_a_press_on_something_that_left_the_list_is_refused_with_what_stands_bes
     assert f"return_to={back}" in about
     assert "hand_in=change" in about
     assert "Review and update in Turning it in" in about
+    assert names_without_their_words(refused.text) == []
+    assert names_not_led_by_their_words(refused.text) == []
     assert 'name="expected_hand_in_id"' not in about
     assert listed(refused.text) == []
     assert "To turn in (" not in refused.text

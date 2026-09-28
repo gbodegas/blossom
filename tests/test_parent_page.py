@@ -376,15 +376,22 @@ def test_each_decision_button_says_which_draft_it_decides() -> None:
         )
         two_waiting = client.get("/parent").text
 
-    named = r'aria-label="((?:Say|Ask for a change to) the plan for [^"]+)"'
-    assert re.findall(named, one_waiting) == [
-        "Say the plan for Wednesday, August 19 looks good",
+    named = (
+        r'>Looks good<span class="visually-hidden">: (the plan for [^<]+)</span>'
+        r'|aria-label="(Ask for a change to the plan for [^"]+)"'
+    )
+
+    def labels_of(page: str) -> list[str]:
+        return ["".join(found) for found in re.findall(named, page)]
+
+    assert labels_of(one_waiting) == [
+        "the plan for Wednesday, August 19",
         "Ask for a change to the plan for Wednesday, August 19",
     ]
-    labels = re.findall(named, two_waiting)
+    labels = labels_of(two_waiting)
     assert len(labels) == 4
     assert len(set(labels)) == 4
-    assert "Say the plan for Wednesday, August 19, 1 of 2 looks good" in labels
+    assert "the plan for Wednesday, August 19, 1 of 2" in labels
     assert "Ask for a change to the plan for Thursday, August 20, 2 of 2" in labels
     assert "She has this plan on her page already." in two_waiting
     assert "This plan is for Thursday, August 20. It reaches her page on that day" in two_waiting
