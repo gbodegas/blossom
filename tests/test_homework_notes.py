@@ -1938,6 +1938,173 @@ def test_a_delete_the_file_refuses_keeps_the_note_and_says_nothing_was_changed(
     assert still is not None
 
 
+def disk_error(*_: object, **__: object) -> None:
+    msg = "disk I/O error"
+    raise sqlite3.OperationalError(msg)
+
+
+def logged_unreadable(caplog: pytest.LogCaptureFixture, name: str) -> bool:
+    """Whether a read of this note that SQLite refused was logged."""
+    messages = [record.getMessage() for record in caplog.records]
+    return any("could not be read" in message and name in message for message in messages)
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+@pytest.mark.parametrize("read", ["sound_capture_history", "capture_use"])
+def test_a_confirmation_whose_note_sqlite_can_not_read_says_it_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, read: str, method: str
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client, "Zebra quartz violin questions")
+        before = tables(store)
+        monkeypatch.setattr(store, read, disk_error)
+        page = client.request(method, note_delete_href(name))
+        monkeypatch.undo()
+        after = tables(store)
+        deleted = store.capture_deleted(name)
+        _, fields = confirmation(client, name)
+
+    assert page.status_code == 200
+    if method == "GET":
+        assert said_first(page.text, NOTE_UNREADABLE)
+        assert "Zebra quartz violin" not in page.text
+        assert f'href="{HER_PAGE}"' in page.text
+    else:
+        assert page.text == ""
+    assert after == before
+    assert not deleted
+    assert fields["revision"] == "1"
+    assert logged_unreadable(caplog, name)
+
+
+@pytest.mark.parametrize(
+    ("passphrase", "expected"), [(HERS, 200), (THEIRS, 403)], ids=["student", "parent"]
+)
+def test_a_signed_in_reader_is_told_a_note_sqlite_can_not_read_is_unavailable(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, passphrase: str, expected: int
+) -> None:
+    client = signed_in_as(tmp_path, HERS)
+    try:
+        store = state_of(client).project_state
+        name = saved_note(client, "Zebra quartz violin questions")
+        _, fields = confirmation(client, name)
+        if passphrase == THEIRS:
+            client.post("/sign-out")
+            client.post("/sign-in", data={"passphrase": THEIRS})
+        before = tables(store)
+        monkeypatch.setattr(store, "sound_capture_history", disk_error)
+        answers: list[Answer] = [client.get(note_delete_href(name))]
+        if passphrase == THEIRS:
+            answers.append(delete_from(client, name, fields))
+        monkeypatch.undo()
+        after = tables(store)
+    finally:
+        client.__exit__(None, None, None)
+
+    for answer in answers:
+        assert answer.status_code == expected
+        assert said_first(answer.text, NOTE_UNREADABLE)
+        assert "Zebra quartz violin" not in answer.text
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("used, asked", 409),
+        ("used, pressed", 409),
+        ("changed, pressed", 409),
+        ("bad form, pressed", 422),
+    ],
+)
+def test_a_note_kept_whose_page_sqlite_can_not_read_back_says_it_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: str, expected: int
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client, "Zebra quartz violin questions")
+        _, fields = confirmation(client, name)
+        if case.startswith("used"):
+            promote_note(store, name)
+        if case.startswith("changed"):
+            page = client.get(note_href(name, edit="1")).text
+            edit = note_action(name, "edit")
+            typed = {"text": "Zebra quartz violin questions 1-9", "course": "", "due_date": ""}
+            client.post(edit, data={**form_fields(page, edit), **typed}, headers=PAGE_HEADERS)
+        note = store.capture(name)
+        assert note is not None
+        before = tables(store)
+        read = store.sound_capture_history
+        reads: list[str] = []
+
+        def fails_after_the_first(capture_id: str) -> object:
+            reads.append(capture_id)
+            if len(reads) > 1:
+                disk_error()
+            return read(capture_id)
+
+        answer: Answer
+        if case == "used, asked":
+            monkeypatch.setattr(store, "sound_capture_history", fails_after_the_first)
+            answer = client.get(note_delete_href(name))
+        else:
+            monkeypatch.setattr(store, "sound_capture_history", disk_error)
+            sent = {"revision": str(note.revision)} if case == "used, pressed" else fields
+            answer = delete_from(client, name, {} if case.startswith("bad form") else sent)
+        monkeypatch.undo()
+        after = tables(store)
+
+    assert answer.status_code == expected
+    assert said_first(answer.text, NOTE_UNREADABLE)
+    assert "Zebra quartz violin" not in answer.text
+    assert after == before
+    assert logged_unreadable(caplog, name)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected", "problem"),
+    [
+        ("opened", 200, None),
+        ("changed, pressed", 409, NOTE_CHANGED_NOT_DELETED),
+        ("bad form, pressed", 422, BAD_FORM),
+    ],
+)
+def test_a_note_whose_use_sqlite_can_not_read_is_shown_without_the_delete(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    case: str,
+    expected: int,
+    problem: str | None,
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client, "Zebra quartz violin questions")
+        _, fields = confirmation(client, name)
+        if case.startswith("changed"):
+            page = client.get(note_href(name, edit="1")).text
+            edit = note_action(name, "edit")
+            typed = {"text": "Zebra quartz violin questions 1-9", "course": "", "due_date": ""}
+            client.post(edit, data={**form_fields(page, edit), **typed}, headers=PAGE_HEADERS)
+        before = tables(store)
+        monkeypatch.setattr(store, "capture_use", disk_error)
+        answer: Answer
+        if case == "opened":
+            answer = client.get(note_href(name))
+        else:
+            answer = delete_from(client, name, {} if case.startswith("bad form") else fields)
+        monkeypatch.undo()
+        after = tables(store)
+
+    assert answer.status_code == expected
+    assert "Zebra quartz violin questions" in answer.text
+    assert not offers_delete(answer.text, name)
+    if problem is not None:
+        assert said_first(answer.text, problem)
+    assert after == before
+    assert logged_unreadable(caplog, name)
+
+
 # ------------------------------------------------------------ the words for each reader
 
 

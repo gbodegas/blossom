@@ -181,9 +181,9 @@ Three files under `.local/` outlive a restart:
   id stays, so the form that saved it can't save it again. A used note can
   only be archived, putting one away keeps it, and nothing sweeps them, so a
   copy of this file made as a backup holds her notes and their history too,
-  a deleted note included if the copy was made before she deleted it. Notes
-  saved before deleting was possible can only be archived, since nothing
-  shows they were never asked about.
+  a deleted note included if the copy was made before she deleted it. A note
+  saved before notes could be deleted can only be archived, since nothing
+  shows it was never asked about.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
   and an expired draft's state goes with it, so it holds only what is

@@ -195,7 +195,7 @@ class HelpRequestsStore:
         one transaction: the connection's own scope would begin nothing until
         the insert, which would leave the look outside it. The note's id is
         kept as asked about in the same transaction. A name that is no note
-        of this record, a deleted note's included, is ``UnknownCaptureReference``
+        of this record, including a deleted note's id, is ``UnknownCaptureReference``
         and nothing is written. Whatever the file refuses is rolled back whole.
         """
         name = None if capture_id is None else capture_id_from(capture_id)

@@ -786,6 +786,18 @@ def note_or_plain(
         return plain_failure(request, state, problem, form)
 
 
+def note_or_unreadable(
+    request: Request, state: ApplicationState, capture_id: str, problem: str, status_code: int
+) -> HTMLResponse:
+    """The note's page with why it wasn't deleted said first; when SQLite can't read the note
+    back, the page that says it is unavailable, since nothing was changed."""
+    try:
+        return note_page(request, state, capture_id, problem=problem, status_code=status_code)
+    except sqlite3.Error:
+        logger.exception("the note %s could not be read to say why it wasn't deleted", capture_id)
+        return unreadable(request, state, status_code)
+
+
 # ------------------------------------------------------------------ the pages
 
 
@@ -1220,17 +1232,14 @@ def delete_page(request: Request, capture_id: str, state: State) -> HTMLResponse
     except NotACaptureId:
         return gone(request, state)
     if viewer_of(request) == "parent":
-        return note_page(
-            request,
-            state,
-            name,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
+        return note_or_unreadable(
+            request, state, name, NOT_HERS_TO_UPDATE, status.HTTP_403_FORBIDDEN
         )
     try:
         found = state.project_state.sound_capture_history(name)
         use = None if found is None else state.project_state.capture_use(name)
-    except UnreadableCapture:
+    except (UnreadableCapture, sqlite3.Error):
+        logger.exception("the note %s could not be read to ask before deleting it", name)
         return unreadable(request, state)
     except UnknownCapture:
         found = None
@@ -1238,12 +1247,12 @@ def delete_page(request: Request, capture_id: str, state: State) -> HTMLResponse
         return gone(request, state, name)
     note = found[0]
     if use is not None:
-        return note_page(
+        return note_or_unreadable(
             request,
             state,
             name,
-            problem=kept_because(use, archived=note.archived, just=False),
-            status_code=status.HTTP_409_CONFLICT,
+            kept_because(use, archived=note.archived, just=False),
+            status.HTTP_409_CONFLICT,
         )
     return templates.TemplateResponse(
         request,
@@ -1278,21 +1287,13 @@ async def delete_a_note(request: Request, capture_id: str, state: State) -> Resp
     except NotACaptureId:
         return gone(request, state)
     if viewer_of(request) == "parent":
-        return note_page(
-            request,
-            state,
-            name,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
+        return note_or_unreadable(
+            request, state, name, NOT_HERS_TO_UPDATE, status.HTTP_403_FORBIDDEN
         )
     revision = revision_of(fields)
     if not whole or revision is None:
-        return note_page(
-            request,
-            state,
-            name,
-            problem=BAD_FORM,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return note_or_unreadable(
+            request, state, name, BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT
         )
     try:
         async with state.decision_lock:
@@ -1310,20 +1311,16 @@ async def delete_a_note(request: Request, capture_id: str, state: State) -> Resp
         case CaptureAlreadyDeleted():
             where = address(NOTES_PAGE, NOTES_RESULT, already=name)
         case CaptureInUse(capture=note, use=use):
-            return note_page(
+            return note_or_unreadable(
                 request,
                 state,
                 name,
-                problem=kept_because(use, archived=note.archived, just=True),
-                status_code=status.HTTP_409_CONFLICT,
+                kept_because(use, archived=note.archived, just=True),
+                status.HTTP_409_CONFLICT,
             )
         case CaptureConflict():
-            return note_page(
-                request,
-                state,
-                name,
-                problem=NOTE_CHANGED_NOT_DELETED,
-                status_code=status.HTTP_409_CONFLICT,
+            return note_or_unreadable(
+                request, state, name, NOTE_CHANGED_NOT_DELETED, status.HTTP_409_CONFLICT
             )
     return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
 
