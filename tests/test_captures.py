@@ -1458,7 +1458,7 @@ def test_a_deleted_note_leaves_none_of_its_words_in_the_file(tmp_path: pathlib.P
     """On a connection that did not ask for it, the delete turns on overwriting what it frees."""
     path = tmp_path / "record.sqlite3"
     store = ProjectStateStore(sqlite3.connect(path, check_same_thread=False), fixture_clock())
-    assert store._connection.execute("PRAGMA secure_delete").fetchone()[0] == 0
+    store._connection.execute("PRAGMA secure_delete=OFF")
     name = new_capture_id()
     first, then = "Zebra quartz violin homework", "Zebra quartz violin homework, revised"
     created(create(store, name, first))
