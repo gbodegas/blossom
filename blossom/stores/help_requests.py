@@ -125,6 +125,7 @@ IDS_FROM_REQUESTS: Final = (
     "INSERT OR IGNORE INTO help_request_ids (request_id) SELECT request_id FROM help_requests"
 )
 RESERVE_ID: Final = "INSERT OR IGNORE INTO help_request_ids (request_id) VALUES (?)"
+ID_KEPT: Final = "SELECT 1 FROM help_request_ids WHERE request_id=?"
 RETAINED_ONE: Final = """
     SELECT * FROM help_requests
     WHERE request_id=? AND (state<>'resolved' OR resolved_at >= ?)
@@ -321,8 +322,21 @@ class HelpRequestsStore:
                 raise
         return HelpAsked(request)
 
+    def already_asked(
+        self, request_id: str, note: str | None = None, *, capture_id: str | None = None
+    ) -> AskOutcome | None:
+        """What sending the form whose id this is would answer, or None while its id is
+        unused. It reads and never writes: ``ask_once`` decides again in its own
+        transaction, so a caller may answer a form sent again before reading anything else."""
+        form = request_id_from(request_id)
+        name = None if capture_id is None else capture_id_from(capture_id)
+        with self._lock:
+            if self._connection.execute(ID_KEPT, (form,)).fetchone() is None:
+                return None
+            return self._asked_before(form, note, name)
+
     def _asked_before(self, form: str, note: str | None, name: str | None) -> AskOutcome:
-        """What an id already used stands for, read inside the caller's transaction."""
+        """What an id already used stands for, read through this store's own connection."""
         row = self._connection.execute(RETAINED_ONE, (form, self._cutoff())).fetchone()
         if row is None:
             return HelpFormUsed()

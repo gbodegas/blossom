@@ -350,3 +350,39 @@ def test_the_ids_table_holds_nothing_but_ids(path: pathlib.Path) -> None:
 
     assert columns == ["request_id"]
     assert [tuple(row) for row in rows] == [(form,)]
+
+
+@pytest.mark.parametrize(
+    ("then", "outcome"),
+    [
+        ("fresh", None),
+        ("the same", HelpAlreadyAsked),
+        ("other spacing", HelpAlreadyAsked),
+        ("the note gone", HelpAlreadyAsked),
+        ("other words", HelpFormChanged),
+        ("another note", HelpFormChanged),
+        ("taken back", HelpFormUsed),
+    ],
+)
+def test_looking_a_form_id_up_answers_as_sending_it_would_and_writes_nothing(
+    path: pathlib.Path, then: str, outcome: type | None
+) -> None:
+    notes = practice_store(path)
+    store = HelpRequestsStore.open(path, fixture_clock())
+    about, other = a_note(notes), a_note(notes, "Read chapter 3")
+    form = new_request_id()
+    if then != "fresh":
+        store.ask_once(form, PLAN_DATE, "which part?", capture_id=about)
+    if then == "taken back":
+        assert store.take_back(form)
+    if then == "the note gone":
+        notes._connection.execute("DELETE FROM homework_captures WHERE capture_id = ?", (about,))
+        notes._connection.commit()
+    words = {"other spacing": "  which   part? ", "other words": "another part?"}.get(
+        then, "which part?"
+    )
+    before = (requests_in(store), ids_in(store))
+    looked = store.already_asked(form, words, capture_id=other if then == "another note" else about)
+
+    assert (requests_in(store), ids_in(store)) == before
+    assert (None if looked is None else type(looked)) is outcome

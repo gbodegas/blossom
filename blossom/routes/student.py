@@ -239,8 +239,8 @@ BAD_FORM: Final = (
 )
 NOT_HERS_TO_ASK: Final = "Sign in as the student to ask for help or take a request back."
 HELP_FORM_NOT_WHOLE: Final = (
-    "That form carried a field twice or left one out, so nothing was sent. Your words are "
-    "below; ask again."
+    "That form carried a field twice, left one out, or had one this page doesn't send, so "
+    "nothing was sent. Your words are below; ask again."
 )
 HELP_NOT_SENT: Final = "Your request could not be sent, and nothing was changed. Try again."
 ALREADY_SENT: Final = "That request was already sent."

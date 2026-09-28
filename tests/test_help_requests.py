@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 from pydantic import ValidationError
 
 from blossom.app import create_app
@@ -152,6 +153,7 @@ def test_the_store_offers_no_way_to_read_a_pattern() -> None:
     assert offered == {
         "ask",
         "ask_once",
+        "already_asked",
         "take_back",
         "accept",
         "resolve",
@@ -442,6 +444,10 @@ def test_she_can_not_take_up_or_resolve_her_own_request(tmp_path: pathlib.Path) 
 
 
 FIRST = ("note", "First synthetic words")
+NOT_WHOLE_SAID = (
+    "That form carried a field twice, left one out, or had one this page doesn't send, "
+    "so nothing was sent."
+)
 
 
 @pytest.mark.parametrize(
@@ -466,6 +472,7 @@ def test_an_ask_form_that_is_not_whole_sends_nothing_and_keeps_her_first_words(
 
     assert answer.status_code == 422
     assert held == []
+    assert str(escape(NOT_WHOLE_SAID)) in answer.text
     assert again["note"] == "First synthetic words"
     assert "Second synthetic words" not in answer.text
     assert again["request_id"] not in ("", "not-an-id", form_id)
@@ -483,6 +490,7 @@ def test_a_note_sent_as_a_file_sends_nothing_and_shows_none_of_it() -> None:
 
     assert answer.status_code == 422
     assert "file words" not in answer.text
+    assert str(escape(NOT_WHOLE_SAID)) in answer.text
     assert held == []
 
 

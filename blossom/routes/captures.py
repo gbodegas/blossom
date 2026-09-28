@@ -96,6 +96,8 @@ from blossom.routes.student import (
     BAD_FORM,
     FORM_SENT_OTHER_WORDS,
     FORM_USED,
+    HELP_FORM_NOT_WHOLE,
+    NOT_HERS_TO_ASK,
     NOT_HERS_TO_UPDATE,
     ReturnLink,
     State,
@@ -563,7 +565,7 @@ def help_not_sent(
             "card": None,
             "hand_in_card": None,
             "heading": "Request not sent",
-            "note_problem": problem if mine else NOT_HERS_TO_UPDATE,
+            "note_problem": problem if mine else NOT_HERS_TO_ASK,
             "help_question": question if mine else "",
             "help_note": capture_id,
             "ways_back": ways_back(request),
@@ -1359,7 +1361,9 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     write, or the file cannot be read, the answer is the page that needs no
     note, with her question, and nothing is sent. The form carries an id the
     page gave it: the same form sent again sends nothing more and lands on
-    the request it made, as it stands now, on her week. One that already
+    the request it made, as it stands now, on her week. That id is looked up
+    before the note is, so the landing holds whatever became of the note
+    since. One that already
     asked with other words, or whose request was taken back or has gone,
     sends nothing and keeps her question in a fresh form.
     A parent is answered 403 before the note is looked up, on the page that
@@ -1373,12 +1377,36 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
         except NotACaptureId:
             shown = None
         return help_not_sent(
-            request, state, NOT_HERS_TO_UPDATE, question, shown, status.HTTP_403_FORBIDDEN
+            request, state, NOT_HERS_TO_ASK, question, shown, status.HTTP_403_FORBIDDEN
         )
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
+    words = question.strip()
+    try:
+        form = request_id_from(fields.get("request_id", ""))
+    except NotARequestId:
+        form = None
+    sound = whole and form is not None
+    if sound and form is not None and len(words) <= NOTE_MAX_LENGTH:
+        try:
+            before = state.help_requests.already_asked(form, words or None, capture_id=name)
+        except Exception:
+            logger.exception("the form for her request for help about note %s was not read", name)
+            return help_not_sent(
+                request,
+                state,
+                HELP_NOT_ASKED,
+                question,
+                name,
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        if isinstance(before, HelpAlreadyAsked):
+            return RedirectResponse(
+                address(WEEK_PAGE, "help-result", asked_again=before.request.request_id),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
     try:
         found = state.project_state.sound_capture_history(name)
     except UnreadableCapture:
@@ -1393,19 +1421,13 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     if found is None:
         return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
     note = found[0]
-    words = question.strip()
-    try:
-        form = request_id_from(fields.get("request_id", ""))
-    except NotARequestId:
-        form = None
-    sound = whole and form is not None
     if form is None or not sound or len(words) > NOTE_MAX_LENGTH:
         return help_page(
             request,
             state,
             note,
             question=question,
-            problem=QUESTION_TOO_LONG if sound else BAD_FORM,
+            problem=QUESTION_TOO_LONG if sound else HELP_FORM_NOT_WHOLE,
             question_error=sound,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
