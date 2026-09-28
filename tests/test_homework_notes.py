@@ -24,6 +24,7 @@ from blossom.captures import (
     HOUSEHOLD,
     STUDENT,
     CaptureNotSaved,
+    UnreadableCapture,
     capture_id_from,
     new_capture_id,
 )
@@ -43,6 +44,7 @@ from blossom.routes.captures import (
     NOTE_NEEDS_A_DATE_CHOICE,
     NOTE_NEEDS_WORDS,
     NOTE_NOT_DELETED,
+    NOTE_NOT_MOVED,
     NOTE_NOT_SAVED,
     NOTE_RESTORED,
     NOTE_SAVED,
@@ -2283,6 +2285,116 @@ def test_a_refused_edit_whose_note_can_not_be_read_back_says_so_and_keeps_her_wo
     assert again.status_code == expected
     assert str(escape(refused_with)) in again.text
     assert str(escape(NOTE_UNREADABLE)) not in again.text
+
+
+def undecodable(*_: object, **__: object) -> None:
+    name = "the note"
+    raise UnreadableCapture(name)
+
+
+def opened_to(client: TestClient, name: str, step: str) -> dict[str, str]:
+    """What the page for a change would send, with new words typed for an edit."""
+    if step == "restore":
+        page = client.get(note_href(name)).text
+        archive = note_action(name, "archive")
+        client.post(archive, data=form_fields(page, archive), headers=PAGE_HEADERS)
+    if step == "delete":
+        return confirmation(client, name)[1]
+    action = note_action(name, step)
+    page = client.get(note_href(name, edit="1") if step == "edit" else note_href(name)).text
+    fields = whole_form(page, action)
+    if step == "edit":
+        fields.update(text="<b>Wren's</b> own words", course="Geometry", due_date="2026-09-30")
+    return fields
+
+
+def says_the_save_failed(answer: Answer, step: str, failed_with: str) -> None:
+    assert answer.status_code == 500
+    assert "<h1>Update not saved</h1>" in answer.text
+    assert f"autofocus>{escape(failed_with)}</p>" in answer.text
+    assert answer.text.count(" autofocus") == 1
+    assert str(escape(NOTE_UNREADABLE)) not in answer.text
+    assert "Zebra quartz violin" not in answer.text
+    assert (str(escape("<b>Wren's</b> own words")) in answer.text) == (step == "edit")
+
+
+@pytest.mark.parametrize("reader", ["signed in", "sign-in off"])
+@pytest.mark.parametrize(
+    ("step", "failed_with"),
+    [("edit", NOTE_NOT_SAVED), ("archive", NOTE_NOT_MOVED), ("restore", NOTE_NOT_MOVED)],
+    ids=["edit", "archive", "restore"],
+)
+def test_a_change_to_a_note_that_can_not_be_decoded_says_the_save_failed(
+    tmp_path: pathlib.Path, reader: str, step: str, failed_with: str
+) -> None:
+    client = signed_in_as(tmp_path, HERS) if reader == "signed in" else browser().__enter__()
+    try:
+        store = state_of(client).project_state
+        name = saved_note(client, "Zebra quartz violin questions")
+        fields = opened_to(client, name, step)
+        column = "SELECT attribution FROM homework_captures WHERE capture_id = ?"
+        (kept,) = store._connection.execute(column, (name,)).fetchone()
+        damage = "UPDATE homework_captures SET attribution = ? WHERE capture_id = ?"
+        store._connection.execute(damage, ("no json", name))
+        store._connection.commit()
+        before = tables(store)
+        answer = client.post(note_action(name, step), data=fields, headers=PAGE_HEADERS)
+        after = tables(store)
+        store._connection.execute(damage, (kept, name))
+        store._connection.commit()
+        again = client.post(note_action(name, step), data=fields, headers=PAGE_HEADERS)
+    finally:
+        client.__exit__(None, None, None)
+
+    says_the_save_failed(answer, step, failed_with)
+    assert after == before
+    assert again.status_code == 303
+
+
+@pytest.mark.parametrize("reader", ["signed in", "sign-in off"])
+@pytest.mark.parametrize(
+    "fault",
+    [undecodable, disk_error, not_a_database, read_fails],
+    ids=["undecodable", "disk", "not a database", "other"],
+)
+@pytest.mark.parametrize(
+    ("step", "failed_with"),
+    [
+        ("edit", NOTE_NOT_SAVED),
+        ("archive", NOTE_NOT_MOVED),
+        ("restore", NOTE_NOT_MOVED),
+        ("delete", NOTE_NOT_DELETED),
+    ],
+    ids=["edit", "archive", "restore", "delete"],
+)
+def test_a_failed_save_keeps_its_message_whatever_stops_the_note_being_read_back(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reader: str,
+    fault: Callable[..., None],
+    step: str,
+    failed_with: str,
+) -> None:
+    client = signed_in_as(tmp_path, HERS) if reader == "signed in" else browser().__enter__()
+    try:
+        store = state_of(client).project_state
+        name = saved_note(client, "Zebra quartz violin questions")
+        fields = opened_to(client, name, step)
+
+        def refused(*_: object, **__: object) -> None:
+            raise CaptureNotSaved(name, sqlite3.OperationalError("disk I/O error"))
+
+        before = tables(store)
+        monkeypatch.setattr(store, f"{step}_capture", refused)
+        monkeypatch.setattr(store, "sound_capture_history", fault)
+        answer = client.post(note_action(name, step), data=fields, headers=PAGE_HEADERS)
+        monkeypatch.undo()
+        after = tables(store)
+    finally:
+        client.__exit__(None, None, None)
+
+    says_the_save_failed(answer, step, failed_with)
+    assert after == before
 
 
 def test_a_change_saved_before_its_note_could_not_be_read_is_not_said_to_be_unchanged(

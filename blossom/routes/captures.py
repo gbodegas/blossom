@@ -632,11 +632,14 @@ def note_page(
     answer is then the page that reads no store, with everything she typed.
     A read the file refuses is said as unavailable too, and a refused change says the
     note can't be read whenever its read fails. ``reraise`` marks a failed write instead:
-    its own message stands, and without a form the error goes back to the caller.
+    its own message stands, so a note the store can't decode, or any failed read without
+    a form, goes back to the caller.
     """
     try:
         found = state.project_state.sound_capture_history(capture_id)
     except UnreadableCapture:
+        if reraise:
+            raise
         if form is not None:
             return plain_failure(request, state, NOTE_UNREADABLE, form, refusal(status_code))
         return unreadable(request, state, status_code)
