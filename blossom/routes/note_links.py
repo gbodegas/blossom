@@ -57,7 +57,7 @@ from blossom.routes.captures import (
 )
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.hand_in import accepted_at
-from blossom.routes.navigation import NOTE_RESULT, note_href, note_search_href
+from blossom.routes.navigation import NOTE_RESULT, address, note_href, note_search_href
 from blossom.routes.note_details import (
     BASIS_AS_WRITTEN,
     HERS,
@@ -85,6 +85,8 @@ student_router = APIRouter(prefix="/student", tags=["student"])
 family_router = APIRouter(prefix="/parent", tags=["parent"])
 State = Annotated[ApplicationState, Depends(get_application_state)]
 
+RESULTS: Final = "search-results"
+"""The heading a search, and each page of its results, lands on."""
 SEARCH_WORDS_NEEDED: Final = "Type a word or two from the class or the title to search."
 QUERY_REFUSED: Final = (
     "Search words are one line of up to 200 characters. Nothing was searched, and nothing "
@@ -158,6 +160,7 @@ def search_page(
     form: SearchForm | None = None,
     problem: str | None = None,
     selected: str | None = None,
+    searched: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """The search page: the note's words, where it stands, the query, and the homework the
@@ -165,7 +168,8 @@ def search_page(
     homework by a link is moved by that press instead; a note that made its own assignment,
     or one put away, is shown the page with no press on it. Reading the page writes nothing.
     A note or a line that cannot be read is said as unavailable; a name that is no note's
-    is said so."""
+    is said so. ``searched`` is a search asked for, by the Search button or a page link:
+    its results heading takes focus unless a problem is said, which takes it instead."""
     store = state.project_state
     viewer = viewer_of(request)
     parent = parent_reads(request)
@@ -243,12 +247,18 @@ def search_page(
     page_hrefs = {
         "previous": None
         if results is None or results.previous is None
-        else note_search_href(
-            note.capture_id, family=way.family, q=query, page=str(results.previous)
+        else address(
+            note_search_href(
+                note.capture_id, family=way.family, q=query, page=str(results.previous)
+            ),
+            fragment=RESULTS,
         ),
         "next": None
         if results is None or results.next is None
-        else note_search_href(note.capture_id, family=way.family, q=query, page=str(results.next)),
+        else address(
+            note_search_href(note.capture_id, family=way.family, q=query, page=str(results.next)),
+            fragment=RESULTS,
+        ),
     }
     return templates.TemplateResponse(
         request,
@@ -265,6 +275,8 @@ def search_page(
             "current": current,
             "leaving": leaving,
             "query": query,
+            "shown_query": " ".join(query.split()),
+            "searched": searched,
             "query_max_length": QUERY_MAX_LENGTH,
             "problem": problem or refused,
             "hint": hint,
@@ -558,21 +570,35 @@ async def unlink_from_homework(
 
 
 def open_search(
-    request: Request, capture_id: str, state: ApplicationState, way: Way, q: str, page: str | None
+    request: Request,
+    capture_id: str,
+    state: ApplicationState,
+    way: Way,
+    q: str | None,
+    page: str | None,
 ) -> HTMLResponse:
-    """Open the search page. It writes nothing."""
+    """Open the search page. It writes nothing. An address with search words, even empty
+    ones, or a page is a search asked for; one with neither is a first visit."""
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    return search_page(request, state, name, way, query=q, page=page)
+    return search_page(
+        request,
+        state,
+        name,
+        way,
+        query=q or "",
+        page=page,
+        searched=q is not None or page is not None,
+    )
 
 
 @student_router.get(
     "/homework-notes/{capture_id}/search", response_class=HTMLResponse, include_in_schema=False
 )
 def her_search(
-    request: Request, capture_id: str, state: State, q: str = "", page: str | None = None
+    request: Request, capture_id: str, state: State, q: str | None = None, page: str | None = None
 ) -> HTMLResponse:
     """The search page in her tree."""
     return open_search(request, capture_id, state, HERS, q, page)
@@ -602,7 +628,7 @@ async def her_unlink(request: Request, capture_id: str, state: State) -> Respons
     "/homework-notes/{capture_id}/search", response_class=HTMLResponse, include_in_schema=False
 )
 def family_search(
-    request: Request, capture_id: str, state: State, q: str = "", page: str | None = None
+    request: Request, capture_id: str, state: State, q: str | None = None, page: str | None = None
 ) -> HTMLResponse:
     """The search page in the family's tree."""
     return open_search(request, capture_id, state, THEIRS, q, page)

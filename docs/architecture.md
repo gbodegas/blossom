@@ -1206,6 +1206,14 @@ press. The note needs no details of its own
 for the link, and the homework keeps every field, with a day the note gives as
 one more claim. The search page reads the note and its line inside the same
 reading as the results, so nothing on the page comes from another moment.
+It reads in the order it is used: the way back to the note, any refusal, the
+note's words and the homework it is linked to now with its due date, the
+search, the results heading, what a press does beside the presses, and a
+"How linking works" fold with the longer explanation. At most one thing on it
+takes focus: a refusal, or the heading of a search that was asked for, which
+says the words, the count, and the page. An address with search words, even
+empty ones, or a page is such a search, and the page links land on that
+heading; a first visit leaves focus where the browser puts it.
 Creating a separate assignment and adding a new one stay on the
 promotion form with the complete automatic-candidate basis, so no page of
 results ever stands in for it.
