@@ -38,6 +38,7 @@ from blossom.routes.student import (
     BAD_FORM,
     CANNOT_UNDO,
     CHOOSE_ONE,
+    GONE,
     NOT_HERS_TO_UPDATE,
     NOT_SAVED,
     NOT_THIS_CARDS,
@@ -57,6 +58,7 @@ from blossom.stores.project_state import (
     ProjectStateStore,
     Saved,
     StatusReport,
+    UnknownAssignment,
 )
 from tests.support import ESSAY_ID as ESSAY
 from tests.support import (
@@ -83,6 +85,7 @@ from tests.support import (
     school_said,
     signed_in_household,
     state_of,
+    whole_form,
 )
 from tests.support import FIXTURE_WEEK as WEEK
 from tests.support import HER_PAGE as PAGE
@@ -1523,3 +1526,74 @@ def test_two_assignments_with_one_title_are_told_apart_in_the_notice_by_their_id
     assert over_json["reported_done_work"] == [
         {"assignment_id": poster, "title": "Poster"} for poster in posters
     ]
+
+
+UNSAVED_HEADING = '<h3 class="update-heading">Your unsaved update</h3>'
+REPORT = "/student/actions/assignments/{}/report"
+
+
+@pytest.mark.parametrize("how", ["deleted", "refused by the store"])
+def test_a_save_from_the_week_for_homework_no_longer_on_record_keeps_her_choice_and_words(
+    monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    with browser() as client:
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+        fields = whole_form(page, REPORT.format(ESSAY))
+        store = state_of(client).project_state
+        if how == "deleted":
+            store._connection.execute("DELETE FROM assignments WHERE assignment_id=?", (ESSAY,))
+            store._connection.commit()
+        else:
+
+            def gone(*_: object, **__: object) -> None:
+                raise UnknownAssignment(ESSAY)
+
+            monkeypatch.setattr(store, "report_status", gone)
+        answer = client.post(
+            REPORT.format(ESSAY),
+            data={**fields, "status": "done", "note": "Typed before it went."},
+            headers=PAGE_HEADERS,
+        )
+        monkeypatch.undo()
+        reports = store.student_reports(ESSAY)
+
+    assert answer.status_code == 404
+    assert GONE in answer.text
+    assert "Your choice: Done. It was not saved." in answer.text
+    assert "readonly>Typed before it went.</textarea>" in answer.text
+    assert 'href="/student/due-this-week' in answer.text
+    assert reports == []
+
+
+@pytest.mark.parametrize("where", ["week", "details", "assigned later"])
+def test_a_save_refused_for_a_newer_update_heads_her_words_as_unsaved(where: str) -> None:
+    """The update saved elsewhere is shown, then her own choice and words, headed unsaved."""
+    name = LOG if where == "assigned later" else ESSAY
+    opened = f"/student/assignments/{name}" if where == "details" else PAGE
+    with browser() as client:
+        first = client.get(opened, headers=PAGE_HEADERS).text
+        fields = whole_form(first, REPORT.format(name))
+        report(client, name, "done")
+        refused = client.post(
+            REPORT.format(name),
+            data={**fields, "status": "not_yet", "note": "still the last page"},
+            headers=PAGE_HEADERS,
+        )
+        change = "1" if where == "details" else name
+        changing = client.get(f"{opened}?change={change}", headers=PAGE_HEADERS).text
+        too_long = client.post(
+            REPORT.format(name),
+            data={**whole_form(changing, REPORT.format(name)), "note": "x" * 501},
+            headers=PAGE_HEADERS,
+        )
+    shown = refused.text if where == "details" else card_for(refused.text, name)
+
+    assert refused.status_code == 409
+    assert SAVED_ELSEWHERE in shown
+    assert shown.count(UNSAVED_HEADING) == 1
+    saved = shown.index('<span class="pill">Your update: Done</span>')
+    assert saved < shown.index(UNSAVED_HEADING) < shown.index('value="not_yet" checked')
+    assert ">still the last page</textarea>" in shown
+    assert too_long.status_code == 422
+    assert UNSAVED_HEADING not in too_long.text
+    assert UNSAVED_HEADING not in changing

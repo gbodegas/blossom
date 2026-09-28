@@ -19,6 +19,7 @@ typed kept whether or not the name is a note's.
 """
 
 import logging
+import sqlite3
 from dataclasses import dataclass
 from typing import Annotated, Final
 
@@ -187,6 +188,11 @@ def search_page(
     with store.reading():
         try:
             found_note = store.sound_capture_history(capture_id)
+        except sqlite3.Error:
+            if form is not None:
+                raise
+            logger.exception("the note %s could not be read to search for its homework", capture_id)
+            return unreadable(request, state, status_code)
         except UnreadableCapture:
             if form is not None:
                 # A refusal of who pressed stands whatever became of the note.

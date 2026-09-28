@@ -18,6 +18,7 @@ copied nowhere.
 
 import logging
 import re
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date
@@ -657,6 +658,11 @@ def details_page(
     turned_away = status_code == status.HTTP_403_FORBIDDEN
     try:
         found = found if found is not None else store.sound_capture_history(capture_id)
+    except sqlite3.Error:
+        if form is not None:
+            raise
+        logger.exception("the note %s could not be read to add it to homework", capture_id)
+        return unreadable(request, state, status_code)
     except UnreadableCapture:
         if form is None:
             return unreadable(request, state, status_code)
