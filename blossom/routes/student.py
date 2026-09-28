@@ -46,11 +46,11 @@ signed in sees her update and cannot make one in her name.
 """
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
-from typing import Annotated, Final, cast
+from typing import Annotated, Any, Final, cast
 
 from fastapi import (
     APIRouter,
@@ -63,6 +63,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from blossom.anthropic_client import model_configured
@@ -471,7 +472,23 @@ def help_requests_shown(
     return [help_view(state, request, about) for request in requests]
 
 
-@router.post("/help-requests", status_code=status.HTTP_201_CREATED)
+class HersToAsk(APIRoute):
+    """A route only she may call. The framework reads and checks a JSON body before the
+    handler or any dependency runs, so a parent is answered 403 here, before the body
+    is read."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        """The framework's handler, reached only once the reader may ask."""
+        handle = super().get_route_handler()
+
+        async def hers(request: Request) -> Response:
+            if viewer_of(request) == "parent":
+                raise HTTPException(status.HTTP_403_FORBIDDEN, detail=NOT_HERS_TO_ASK)
+            return await handle(request)
+
+        return hers
+
+
 def ask_for_help(
     request: Request,
     response: Response,
@@ -480,9 +497,8 @@ def ask_for_help(
 ) -> HelpRequestResponse:
     """Ask for help today. ``payload`` is optional so an empty POST works. With a
     ``request_id`` the same id sent again is the request it made, 200, and never a second;
-    without one every POST asks again, so a retry is not safe. A parent is answered 403."""
-    if viewer_of(request) == "parent":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=NOT_HERS_TO_ASK)
+    without one every POST asks again, so a retry is not safe. ``HersToAsk`` answers a
+    parent 403 before the body is read."""
     note = None if payload is None else payload.note
     form = None if payload is None else payload.request_id
     if form is None:
@@ -501,6 +517,15 @@ def ask_for_help(
         principal=Principal.STUDENT,
         request=help_view(state, asked, notes_named_by(state, [asked])),
     )
+
+
+router.add_api_route(
+    "/help-requests",
+    ask_for_help,
+    methods=["POST"],
+    status_code=status.HTTP_201_CREATED,
+    route_class_override=HersToAsk,
+)
 
 
 @router.get("/help-requests")
@@ -2107,19 +2132,20 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
 async def ask_for_help_from_the_page(request: Request, state: State) -> Response:
     """The other press on her page. A blank note is no note; a long one is said, not cut.
 
-    The form is read whole, her words and the id the page gave the form, each
-    once, before anything else; a form that is not whole sends nothing and
+    A parent is answered 403 before the form is read. Her form is read whole,
+    her words and the id the page gave the form, each once, before anything
+    is looked up; a form that is not whole sends nothing and
     comes back with her first words in a fresh form. The same form sent again
     is the request it made, said beside it, and never a second; a form that
     already asked with other words, or whose request was taken back or has
-    gone, sends nothing and keeps her words. A parent is answered 403.
+    gone, sends nothing and keeps her words.
     """
-    fields, whole = await fields_of(request, ASK_FIELDS)
-    words = fields.get("note", "")
     if viewer_of(request) == "parent":
         return student_page(
             request, state, problem=NOT_HERS_TO_ASK, status_code=status.HTTP_403_FORBIDDEN
         )
+    fields, whole = await fields_of(request, ASK_FIELDS)
+    words = fields.get("note", "")
     try:
         form = request_id_from(fields.get("request_id", ""))
     except NotARequestId:

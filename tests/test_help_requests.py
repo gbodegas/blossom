@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
+from blossom.routes import student as student_routes
 from blossom.stores.help_requests import (
     HELP_RETENTION_DAYS,
     NOTE_MAX_LENGTH,
@@ -421,6 +422,130 @@ def test_a_parent_can_not_ask_or_take_back_in_her_name(tmp_path: pathlib.Path) -
     assert "/student/actions/take-back-help/" not in page
     assert "<q>hers</q>" in page
     assert 'href="/parent#help-she-asked-for"' in page
+
+
+HELP_JSON = "/student/help-requests"
+JSON_TYPE = {"Content-Type": "application/json"}
+BROKEN_FORM = {"Content-Type": "multipart/form-data; boundary=synthetic"}
+BROKEN_BODY = b"--synthetic\r\nContent-Disposition: form-data\r\n\r\nno end"
+OVERLONG = b'{"note": "' + b"x" * (NOTE_MAX_LENGTH + 1) + b'"}'
+
+
+async def unread(*args: object, **kwargs: object) -> None:
+    msg = "the body was read before the reader was known"
+    raise AssertionError(msg)
+
+
+@pytest.mark.parametrize(
+    ("where", "body", "headers"),
+    [
+        (ASK, BROKEN_BODY, BROKEN_FORM),
+        (ASK, b"note=from+a+parent&note=twice", {"Content-Type": FORM_TYPE}),
+        (ASK, b"", {"Content-Type": FORM_TYPE}),
+        (HELP_JSON, b"{not json", JSON_TYPE),
+        (HELP_JSON, OVERLONG, JSON_TYPE),
+        (HELP_JSON, b'{"request_id": "not-an-id"}', JSON_TYPE),
+        (HELP_JSON, b'{"status": "done"}', JSON_TYPE),
+        (HELP_JSON, b'{"note": "from a parent"}', {"Content-Type": "text/plain"}),
+        (HELP_JSON, b"", {}),
+        (HELP_JSON, b"\xff\xfe{", JSON_TYPE),
+    ],
+    ids=[
+        "form broken multipart",
+        "form note twice",
+        "form empty",
+        "json malformed",
+        "json overlong",
+        "json bad id",
+        "json unknown field",
+        "json as plain text",
+        "json empty",
+        "json not utf-8",
+    ],
+)
+def test_a_parent_is_refused_before_the_body_is_read(
+    where: str,
+    body: bytes,
+    headers: dict[str, str],
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = signed_in(tmp_path)
+    try:
+        as_a_parent(client)
+        before = requests_held(client)
+        monkeypatch.setattr(student_routes, "fields_of", unread)
+        refused = client.post(where, content=body, headers=headers)
+        monkeypatch.undo()
+        after = requests_held(client)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert refused.status_code == 403
+    assert "Sign in as the student to ask for help or take a request back." in refused.text
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("body", "headers", "status_code", "problem"),
+    [
+        (b"", {}, 201, None),
+        (b"null", JSON_TYPE, 201, None),
+        (b'{"note": "hers"}', JSON_TYPE, 201, None),
+        (b'{"note": "hers"}', {"Content-Type": "application/json; charset=utf-8"}, 201, None),
+        (b'{"note": "hers"}', {"Content-Type": "application/problem+json"}, 201, None),
+        (b'{"note": "hers"}', {}, 422, ("model_attributes_type", ["body"])),
+        (b"{not json", JSON_TYPE, 422, ("json_invalid", ["body", 1])),
+        (OVERLONG, JSON_TYPE, 422, ("string_too_long", ["body", "note"])),
+        (b'{"status": "done"}', JSON_TYPE, 422, ("extra_forbidden", ["body", "status"])),
+        (
+            b'{"request_id": "not-an-id"}',
+            JSON_TYPE,
+            422,
+            ("string_pattern_mismatch", ["body", "request_id"]),
+        ),
+        (
+            b'{"note": "hers"}',
+            {"Content-Type": "text/plain"},
+            422,
+            ("model_attributes_type", ["body"]),
+        ),
+        (b"\xff\xfe{", JSON_TYPE, 400, None),
+    ],
+    ids=[
+        "empty",
+        "null",
+        "json",
+        "json with charset",
+        "a json subtype",
+        "no content type",
+        "malformed",
+        "overlong",
+        "unknown field",
+        "bad id",
+        "plain text",
+        "not utf-8",
+    ],
+)
+def test_her_json_ask_reads_its_body_as_the_framework_does(
+    body: bytes,
+    headers: dict[str, str],
+    status_code: int,
+    problem: tuple[str, list[str | int]] | None,
+    tmp_path: pathlib.Path,
+) -> None:
+    client = signed_in(tmp_path)
+    try:
+        answer = client.post(HELP_JSON, content=body, headers=headers)
+        held = requests_held(client)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert answer.status_code == status_code
+    assert len(held) == (1 if status_code == 201 else 0)
+    if problem is not None:
+        first = answer.json()["detail"][0]
+        assert (first["type"], first["loc"]) == problem
 
 
 def test_she_can_not_take_up_or_resolve_her_own_request(tmp_path: pathlib.Path) -> None:

@@ -15,6 +15,7 @@ from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.captures import new_capture_id
+from blossom.routes import captures as note_routes
 from blossom.routes.captures import (
     HELP_NOT_ASKED,
     NOTE_ASKED,
@@ -507,6 +508,48 @@ def test_a_parent_asking_about_a_note_is_refused_before_the_note_is_looked_up(
     assert [line for line in seen if "capture" in line] == []
     assert tried == []
     assert help_rows == [0, 0, 0]
+
+
+@pytest.mark.parametrize(
+    ("body", "kind"),
+    [
+        (
+            b"--synthetic\r\nContent-Disposition: form-data\r\n\r\nno end",
+            "multipart/form-data; boundary=synthetic",
+        ),
+        (b"note=from+a+parent&note=twice", "application/x-www-form-urlencoded"),
+        (b"", "application/x-www-form-urlencoded"),
+    ],
+    ids=["broken multipart", "note twice", "empty"],
+)
+def test_a_parent_asking_about_a_note_is_refused_before_the_form_is_read(
+    body: bytes, kind: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+
+        async def unread(*args: object, **kwargs: object) -> None:
+            msg = "a parent's form was read"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(note_routes, "fields_of", unread)
+        refused = client.post(
+            note_action(name, "ask-for-help"),
+            content=body,
+            headers={**PAGE_HEADERS, "Content-Type": kind},
+        )
+        monkeypatch.undo()
+        held = help_held(client)
+
+    assert refused.status_code == 403
+    assert str(escape(NOT_HERS_TO_ASK)) in refused.text
+    assert f'href="{note_href(name)}"' in refused.text
+    assert "from a parent" not in refused.text
+    assert held == ([], 0)
 
 
 def own_row(page: str, *, family: bool, resolved: bool) -> str:
@@ -1128,7 +1171,7 @@ def test_a_note_question_sent_as_a_file_asks_nothing_and_says_why() -> None:
     assert held == ([], 0)
 
 
-@pytest.mark.parametrize("sent", ["the same words", "other words"])
+@pytest.mark.parametrize("sent", ["the same words", "other words", "taken back"])
 @pytest.mark.parametrize("what", ["unreadable", "gone", "read_failure"])
 def test_a_note_form_sent_again_is_answered_by_its_id_whatever_became_of_the_note(
     what: str, sent: str, monkeypatch: pytest.MonkeyPatch
@@ -1141,6 +1184,8 @@ def test_a_note_form_sent_again_is_answered_by_its_id_whatever_became_of_the_not
         form = {**help_form(client, name), "note": "Which part comes first?"}
         assert client.post(action, data=form, headers=PAGE_HEADERS).status_code == 303
         asked = state.help_requests.open_requests()[0]
+        if sent == "taken back":
+            client.post(f"/student/actions/take-back-help/{asked.request_id}")
         before = help_held(client)
         if what == "read_failure":
 
@@ -1159,7 +1204,7 @@ def test_a_note_form_sent_again_is_answered_by_its_id_whatever_became_of_the_not
                 (name,),
             )
             store._connection.commit()
-        words = "Which part comes first?" if sent == "the same words" else "Where do I start?"
+        words = "Where do I start?" if sent == "other words" else "Which part comes first?"
         again = client.post(action, data={**form, "note": words}, headers=PAGE_HEADERS)
         monkeypatch.undo()
         landed = client.get(again.headers.get("location", HER_PAGE))
@@ -1174,8 +1219,86 @@ def test_a_note_form_sent_again_is_answered_by_its_id_whatever_became_of_the_not
         assert f'id="help-result" tabindex="-1">{ALREADY_SENT}' in row
         assert "Which part comes first?" in row
     else:
-        assert again.status_code == (404 if what == "gone" else 500)
-        assert "Where do I start?" in again.text
+        fresh = f"{HER_PAGE}#ask-for-help"
+        assert again.status_code == 409
+        assert (FORM_USED if sent == "taken back" else FORM_SENT_OTHER_WORDS) in again.text
+        assert f"readonly>{words}</textarea>" in again.text
+        assert f'<a href="{fresh}">Open a new help form</a>' in again.text
+        assert (f'href="{note_href(name)}"' in again.text) is (what != "gone")
+        assert whole_form(landed.text, "/student/actions/ask-for-help")["request_id"]
+
+
+@pytest.mark.parametrize("signed", [False, True], ids=["sign-in off", "signed in"])
+@pytest.mark.parametrize("what", ["unreadable", "read_failure", "not found"])
+@pytest.mark.parametrize("sent", ["other words", "taken back"])
+def test_a_note_form_that_already_asked_says_so_through_failed_reads_and_after_they_end(
+    sent: str, what: str, signed: bool, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = create_app(signed_in_household(tmp_path)) if signed else browser().app
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        if signed:
+            client.post("/sign-in", data={"passphrase": HERS})
+        state = state_of(client)
+        store = state.project_state
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form = {**help_form(client, name), "note": "Synthetic first question"}
+        assert client.post(action, data=form, headers=PAGE_HEADERS).status_code == 303
+        asked = state.help_requests.open_requests()[0]
+        if sent == "taken back":
+            client.post(f"/student/actions/take-back-help/{asked.request_id}")
+        words = "Changed synthetic question" if sent == "other words" else form["note"]
+        before = help_held(client)
+        kept = store._connection.execute(
+            "SELECT attribution FROM homework_captures WHERE capture_id = ?", (name,)
+        ).fetchone()[0]
+        if what == "unreadable":
+            store._connection.execute(
+                "UPDATE homework_captures SET attribution = 'no json' WHERE capture_id = ?",
+                (name,),
+            )
+            store._connection.commit()
+        else:
+
+            def unread(*args: object, **kwargs: object) -> None:
+                if what == "read_failure":
+                    msg = "the file cannot be read"
+                    raise sqlite3.OperationalError(msg)
+
+            monkeypatch.setattr(store, "sound_capture_history", unread)
+        failed = [
+            client.post(action, data={**form, "note": words}, headers=PAGE_HEADERS)
+            for _ in range(2)
+        ]
+        monkeypatch.undo()
+        store._connection.execute(
+            "UPDATE homework_captures SET attribution = ? WHERE capture_id = ?", (kept, name)
+        )
+        store._connection.commit()
+        recovered = client.post(action, data={**form, "note": words}, headers=PAGE_HEADERS)
+        held = help_held(client)
+        fresh = whole_form(client.get(note_help_href(name)).text, action)
+        sent_fresh = client.post(action, data={**fresh, "note": words}, headers=PAGE_HEADERS)
+        after = help_held(client)
+        now = state.help_requests.open_requests()
+
+    problem = FORM_USED if sent == "taken back" else FORM_SENT_OTHER_WORDS
+    link = f"{HER_PAGE}#ask-for-help"
+    for answer in failed:
+        assert answer.status_code == 409
+        assert problem in answer.text
+        assert f"readonly>{words}</textarea>" in answer.text
+        assert f'<a href="{link}">Open a new help form</a>' in answer.text
+    assert recovered.status_code == 409
+    assert problem in recovered.text
+    again = whole_form(recovered.text, action)
+    assert again["note"] == words
+    assert again["request_id"] not in (form["request_id"], fresh["request_id"])
+    assert held == before
+    assert sent_fresh.status_code == 303
+    assert after[1] == before[1] + 1
+    assert len(after[0]) == len(before[0]) + 1
+    assert [item.note for item in now if item.request_id == fresh["request_id"]] == [words]
 
 
 def test_a_note_form_whose_id_cannot_be_looked_up_asks_nothing_and_keeps_the_question(

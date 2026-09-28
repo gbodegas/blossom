@@ -107,6 +107,7 @@ from blossom.routes.student import (
 )
 from blossom.stores.help_requests import (
     NOTE_MAX_LENGTH,
+    AskOutcome,
     HelpAlreadyAsked,
     HelpAsked,
     HelpFormChanged,
@@ -552,12 +553,21 @@ def help_not_sent(
     question: str,
     capture_id: str | None,
     status_code: int,
+    *,
+    before: AskOutcome | None = None,
 ) -> HTMLResponse:
     """The page for a request for help that was refused where no note can be shown beside
     it. It needs no note and reads no store: what happened, her question as she typed it,
-    and the ways back, the note's own page among them when its name is one. A parent is
-    shown no question, since the request is not theirs to make."""
+    and the ways back, the note's own page among them when its name is one. A form whose
+    id already asked, with other words or for a request since taken back, says that with
+    409 and links to the help form on her week, which needs no note. A parent is shown no
+    question, since the request is not theirs to make."""
     mine = viewer_of(request) != "parent"
+    fresh_form = None
+    if isinstance(before, HelpFormChanged | HelpFormUsed):
+        problem = FORM_USED if isinstance(before, HelpFormUsed) else FORM_SENT_OTHER_WORDS
+        status_code = status.HTTP_409_CONFLICT
+        fresh_form = address(WEEK_PAGE, "ask-for-help")
     return templates.TemplateResponse(
         request,
         "student_update_recovery.html",
@@ -568,6 +578,7 @@ def help_not_sent(
             "note_problem": problem if mine else NOT_HERS_TO_ASK,
             "help_question": question if mine else "",
             "help_note": capture_id,
+            "help_fresh_form": fresh_form,
             "ways_back": ways_back(request),
             "sample": state.settings.sample,
         },
@@ -1365,20 +1376,19 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     before the note is, so the landing holds whatever became of the note
     since. One that already
     asked with other words, or whose request was taken back or has gone,
-    sends nothing and keeps her question in a fresh form.
-    A parent is answered 403 before the note is looked up, on the page that
-    needs no note, and nothing is sent in her name.
+    sends nothing and keeps her question in a fresh form, or, where the note
+    can't be shown, says so with 409 beside a link to a fresh form.
+    A parent is answered 403 before the form is read, on the page that needs
+    no note, and nothing is sent in her name.
     """
-    fields, whole = await fields_of(request, HELP_FIELDS)
-    question = fields.get("note", "")
     if viewer_of(request) == "parent":
         try:
             shown: str | None = capture_id_from(capture_id)
         except NotACaptureId:
             shown = None
-        return help_not_sent(
-            request, state, NOT_HERS_TO_ASK, question, shown, status.HTTP_403_FORBIDDEN
-        )
+        return help_not_sent(request, state, NOT_HERS_TO_ASK, "", shown, status.HTTP_403_FORBIDDEN)
+    fields, whole = await fields_of(request, HELP_FIELDS)
+    question = fields.get("note", "")
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
@@ -1389,6 +1399,7 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     except NotARequestId:
         form = None
     sound = whole and form is not None
+    before: AskOutcome | None = None
     if sound and form is not None and len(words) <= NOTE_MAX_LENGTH:
         try:
             before = state.help_requests.already_asked(form, words or None, capture_id=name)
@@ -1411,15 +1422,29 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
         found = state.project_state.sound_capture_history(name)
     except UnreadableCapture:
         return help_not_sent(
-            request, state, NOTE_UNREADABLE, question, name, status.HTTP_500_INTERNAL_SERVER_ERROR
+            request,
+            state,
+            NOTE_UNREADABLE,
+            question,
+            name,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            before=before,
         )
     except Exception:
         logger.exception("the note %s could not be read for her request for help", name)
         return help_not_sent(
-            request, state, HELP_NOT_ASKED, question, name, status.HTTP_500_INTERNAL_SERVER_ERROR
+            request,
+            state,
+            HELP_NOT_ASKED,
+            question,
+            name,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            before=before,
         )
     if found is None:
-        return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
+        return help_not_sent(
+            request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND, before=before
+        )
     note = found[0]
     if form is None or not sound or len(words) > NOTE_MAX_LENGTH:
         return help_page(
