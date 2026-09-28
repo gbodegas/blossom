@@ -105,6 +105,14 @@ NOTES_TABLE: Final = """
     SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'homework_captures'
 """
 NOTE_NAMED: Final = "SELECT 1 FROM homework_captures WHERE capture_id = ?"
+NOTES_NAMED_TABLE: Final = (
+    "CREATE TABLE IF NOT EXISTS notes_named_by_requests (capture_id TEXT PRIMARY KEY)"
+)
+NOTES_NAMED_FROM_REQUESTS: Final = """
+    INSERT OR IGNORE INTO notes_named_by_requests (capture_id)
+    SELECT capture_id FROM help_requests WHERE capture_id IS NOT NULL
+"""
+NOTE_NAMED_ONCE: Final = "INSERT OR IGNORE INTO notes_named_by_requests (capture_id) VALUES (?)"
 
 
 class UnknownCaptureReference(LookupError):
@@ -119,7 +127,8 @@ class HelpRequestsStore:
     retention_policy = (
         "Keep a request until a parent resolves it, and for fourteen days after, so the word "
         "back can be read; nothing older stays, and nothing is ever derived from how often "
-        "she asks."
+        "she asks. The id of a note a request named is kept after the request goes, and "
+        "nothing else of it, so that note is never deleted."
     )
 
     def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
@@ -149,6 +158,17 @@ class HelpRequestsStore:
         if "capture_id" not in columns:
             self._connection.execute("ALTER TABLE help_requests ADD COLUMN capture_id TEXT")
         self._connection.commit()
+        # The notes a request ever named, by id alone. Taking a request back or sweeping it
+        # leaves the id, since a note once asked about is never deleted. Each start fills
+        # it from the requests still here, in one transaction with the table.
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._connection.execute(NOTES_NAMED_TABLE)
+            self._connection.execute(NOTES_NAMED_FROM_REQUESTS)
+            self._connection.commit()
+        except BaseException:
+            self._connection.rollback()
+            raise
 
     @classmethod
     def open(cls, path: Path, clock: Clock) -> "HelpRequestsStore":
@@ -173,9 +193,10 @@ class HelpRequestsStore:
         Then the writer is reserved on this store's own connection, the note
         is looked for in the file, and the request is written, all in that
         one transaction: the connection's own scope would begin nothing until
-        the insert, which would leave the look outside it. A name that is no
-        note of this record is ``UnknownCaptureReference`` and nothing is
-        written. Whatever the file refuses is rolled back whole.
+        the insert, which would leave the look outside it. The note's id is
+        kept as asked about in the same transaction. A name that is no note
+        of this record, including a deleted note's id, is ``UnknownCaptureReference``
+        and nothing is written. Whatever the file refuses is rolled back whole.
         """
         name = None if capture_id is None else capture_id_from(capture_id)
         request = HelpRequest(
@@ -200,6 +221,8 @@ class HelpRequestsStore:
                         name,
                     ),
                 )
+                if name is not None:
+                    self._connection.execute(NOTE_NAMED_ONCE, (name,))
                 self._connection.commit()
             except BaseException:
                 self._connection.rollback()

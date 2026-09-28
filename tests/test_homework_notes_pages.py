@@ -111,7 +111,7 @@ def test_her_week_offers_the_way_in_and_shows_the_oldest_notes_outside_the_week(
         change_note(client, names[1], "archive")
         fewer = client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text
 
-    assert f'href="{NEW_NOTE_PAGE}">Add homework</a>' in empty
+    assert f'href="{NEW_NOTE_PAGE}">Write down homework</a>' in empty
     assert f'<a href="{NOTES_PAGE}">Homework notes</a>' in empty
     assert "Homework notes (0)" not in empty
     assert 'id="homework-notes"' not in empty
@@ -149,7 +149,7 @@ def test_with_every_assignment_done_and_an_empty_week_the_notes_are_still_there(
     assert "Homework notes (1)" in notes_section(done)
     assert done.index('id="homework-notes"') < done.index("Reported done (")
     assert "No assignments are recorded as due" in nothing_due
-    assert f'href="{NEW_NOTE_PAGE}">Add homework</a>' in nothing_due
+    assert f'href="{NEW_NOTE_PAGE}">Write down homework</a>' in nothing_due
     assert "Homework notes (1)" in notes_section(with_a_note)
 
 

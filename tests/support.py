@@ -44,20 +44,21 @@ from blossom.agent.graph import (
 )
 from blossom.app import create_app
 from blossom.assignment_status import AssignmentStatus, statuses_for
-from blossom.candidates import candidate_readings, reader
+from blossom.candidates import candidate_readings, reader, readings_for, row_reader
 from blossom.captures import (
     STUDENT,
     CaptureChanged,
     CaptureCreated,
     CaptureDetails,
     CapturePromoted,
+    CaptureUnlinked,
     candidate_basis,
     new_capture_id,
 )
 from blossom.clock import Clock, FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
-from blossom.intake import PASTE_DAY
+from blossom.intake import PASTE_DAY, identity
 from blossom.noticing import Noticing, Verdict
 from blossom.plan_checks import check_plan
 from blossom.plan_reading import anchor_for
@@ -1095,3 +1096,69 @@ def waiting_note(
     )
     assert isinstance(clarified, CaptureChanged)
     return name
+
+
+NOTE_DETAILS = CaptureDetails(course="Geometry", title="Questions 4-8", kind="HOMEWORK")
+"""A class and a title for a note that is to become homework of its own."""
+
+
+def promote_note(store: ProjectStateStore, name: str, revision: int = 1) -> str:
+    """Add a waiting note to homework as new homework, as she does it; the new assignment's
+    id."""
+    done = store.promote_capture(
+        name,
+        NOTE_DETAILS,
+        expected_revision=revision,
+        basis=candidate_basis(candidate_readings(store, NOTE_DETAILS)),
+        candidates=reader(store),
+        choice="new",
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=NOTE_AT,
+        today=NOTE_DAY,
+    )
+    assert isinstance(done, CapturePromoted), done
+    return done.assignment_id
+
+
+def link_note(store: ProjectStateStore, name: str, revision: int = 1) -> Assignment:
+    """Join a waiting note to homework the school lists, put on record for it; that
+    homework."""
+    target = Assignment(
+        assignment_id=identity("Humanities", "Summer reading log", "2026-09-25"),
+        course="Humanities",
+        title="Summer reading log",
+        due_date=date(2026, 9, 25),
+        dependencies=[],
+        reported_submission_status="not_started",
+        origins={"record": SourceChannel.LMS},
+    )
+    store.put_on_record([target], {})
+    done = store.link_capture(
+        name,
+        target=target.assignment_id,
+        expected_revision=revision,
+        basis=candidate_basis(readings_for(store, [target])),
+        shown=row_reader(store),
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=NOTE_AT,
+        today=NOTE_DAY,
+    )
+    assert isinstance(done, CapturePromoted), done
+    return target
+
+
+def unlink_note(store: ProjectStateStore, name: str, revision: int = 1) -> None:
+    """Join a waiting note to homework, then take it off again, so it waits once more."""
+    target = link_note(store, name, revision)
+    done = store.unlink_capture(
+        name,
+        expected_revision=revision + 1,
+        leaving=target.assignment_id,
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=NOTE_AT,
+        today=NOTE_DAY,
+    )
+    assert isinstance(done, CaptureUnlinked), done

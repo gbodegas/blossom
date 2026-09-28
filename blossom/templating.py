@@ -18,6 +18,7 @@ from blossom.routes.navigation import (
     note_add_action,
     note_add_href,
     note_anchor,
+    note_delete_href,
     note_details_action,
     note_help_href,
     note_href,
@@ -87,6 +88,7 @@ def page_templates() -> Jinja2Templates:
     templates.env.globals["note_href"] = note_href
     templates.env.globals["note_help_href"] = note_help_href
     templates.env.globals["note_action"] = note_action
+    templates.env.globals["note_delete_href"] = note_delete_href
     templates.env.globals["note_add_href"] = note_add_href
     templates.env.globals["note_add_action"] = note_add_action
     templates.env.globals["note_search_href"] = note_search_href

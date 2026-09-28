@@ -156,7 +156,7 @@
           <button type="submit" class="secondary">Too much right now</button>
         </form>
       {% endif %}
-      {% if viewer != "parent" %}<a class="to-help" href="{{ new_note_page }}">Add homework</a>{% endif %}
+      {% if viewer != "parent" %}<a class="to-help" href="{{ new_note_page }}">Write down homework</a>{% endif %}
       <a class="to-help" href="#ask-for-help">Ask for help</a>
     </div>
     {#
@@ -325,7 +325,7 @@
   <h2 class="list-heading">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
 
   {% if not view.assignments %}
-    <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.{% if viewer != "parent" %} Heard about something? <a href="{{ new_note_page }}">Add homework</a>{% endif %}</p>
+    <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.{% if viewer != "parent" %} Heard about something? <a href="{{ new_note_page }}">Write down homework</a>{% endif %}</p>
   {% endif %}
 
   {#
@@ -423,13 +423,30 @@
         due date, kind, and note about the work that you or a parent gave on that page, as for
         any homework. Nothing else leaves.
       </p>
+      {% if viewer == "parent" %}
+      <p>
+        Her updates and notes are kept in the family's own file. You can read them on the
+        family page, what she says about turning work in and her homework notes included,
+        the ones she put away and their history too. She can delete a homework note that
+        was never used, with its history, from its own page; a used note can only be
+        archived. Only a deleted note's id stays, so the same form can't save it again,
+        and a backup made before she deleted it may still hold it. Done means she has
+        finished her part; it does not turn work in, and her school record is separate.
+        Saying she turned something in is her own report: it sends nothing to the school.
+      </p>
+      {% else %}
       <p>
         Your updates and notes are kept in the family's own file. Your parents can read them
         on the family page, what you say about turning work in and your homework notes
-        included, the ones you put away and their history too. Done means you have
-        finished your part; it does not turn work in, and your school record is separate.
-        Saying you turned something in is your own report: it sends nothing to the school.
+        included, the ones you put away and their history too. You can delete a homework
+        note that was never used, with its history, from its own page; a used note can
+        only be archived. Only a deleted note's id stays, so the same form can't save it
+        again, and a backup made before you deleted it may still hold it. Done means you
+        have finished your part; it does not turn work in, and your school record is
+        separate. Saying you turned something in is your own report: it sends nothing to
+        the school.
       </p>
+      {% endif %}
       <p>"Too much right now" takes one press, no rating, no reason, and you can take it back.</p>
     </details>
   {% endif %}

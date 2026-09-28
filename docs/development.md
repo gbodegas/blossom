@@ -54,15 +54,18 @@ With the app running as the README describes:
 - <http://127.0.0.1:8000/student/homework-notes> is her homework notes, with
   the ones she put away under `/archived`, the ones in homework under
   `/added`, the form for a new one under `/new`, and each note on a page of
-  its own under its id, where asking for help about it is `/help`, giving
+  its own under its id, where asking for help about it is `/help`, the page
+  that asks before deleting a note never used is `/delete`, giving
   it details or adding it to homework is `/add`, and finding homework already
   here to join it to is `/search`, with the search words and the page of
   results in the address. A parent's way to those last two pages is
   <http://127.0.0.1:8000/parent/homework-notes/{id}/add> and `/search` beside
   it, linked from the family page. Joining a note to homework found, moving
   it, and unlinking it are presses under `/student/actions/homework-notes/{id}`
-  and `/parent/actions/homework-notes/{id}`, `/link` and `/unlink`. Reading
-  any of the pages writes nothing.
+  and `/parent/actions/homework-notes/{id}`, `/link` and `/unlink`. Deleting
+  a note she never used is a press on
+  `/student/actions/homework-notes/{id}/delete`, which a parent can't make.
+  Reading any of the pages writes nothing.
 - <http://127.0.0.1:8000/student/help-requests> lists her requests for help
   as JSON, the open ones and those resolved within two weeks; a POST there
   asks, with an optional note, and a DELETE takes one back while nobody has
@@ -171,10 +174,16 @@ Three files under `.local/` outlive a restart:
   any words she added, kept for a week and removable from her page, and so
   do her requests for help with what a parent did with each, kept until
   resolved and for two weeks after. Her homework notes are here as well: each
-  note as it stands, its first words, and every change to it. There is no way
-  to delete a note from a page, putting one away keeps it, and nothing sweeps
-  them, so a copy of this file made as a backup holds her notes and their
-  history too, for as long as that copy is kept.
+  note as it stands, its first words, and every change to it, kept until she
+  deletes one that was never used. Never used means never added to homework,
+  never linked to it, and never named by a request for help, even one taken
+  back or long resolved. Deleting removes the note and its history; only its
+  id stays, so the form that saved it can't save it again. A used note can
+  only be archived, putting one away keeps it, and nothing sweeps them, so a
+  copy of this file made as a backup holds her notes and their history too,
+  a deleted note included if the copy was made before she deleted it. A note
+  saved before notes could be deleted can only be archived, since nothing
+  shows it was never asked about.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
   and an expired draft's state goes with it, so it holds only what is

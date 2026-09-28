@@ -17,7 +17,8 @@ are for that later step; nothing here sets or infers them.
 Every change is an event with what stood before it and after it, and who made
 it: the student, a parent, or the household when the sign-in is off and the
 application cannot say which person pressed. The record's store writes a
-change and its event together.
+change and its event together. A note that was never used can be deleted
+with all of that; its id alone is kept, so the same form can't make it again.
 
 This module holds the types and the rules. It reads no file and no clock.
 """
@@ -970,6 +971,42 @@ class CaptureNotJoined:
     an assignment of its own, which is not moved this way. Nothing was written."""
 
     capture: Capture
+
+
+CaptureUse = Literal["added", "linked", "was_linked", "asked", "unknown"]
+"""Why a note is kept rather than deleted: it made homework of its own, it is linked to
+homework on record, it was linked before, a request for help named it, or it was saved
+before Blossom kept the evidence and nothing shows it was never used."""
+
+
+@dataclass(frozen=True)
+class CaptureDeleted:
+    """The note and every change to it were removed, and its id alone was kept."""
+
+    capture_id: str
+
+
+@dataclass(frozen=True)
+class CaptureAlreadyDeleted:
+    """The note was deleted before: nothing was written."""
+
+    capture_id: str
+
+
+@dataclass(frozen=True)
+class CaptureInUse:
+    """The note was used, or can't be shown never to have been, so it is kept: nothing
+    was written. ``capture`` is the note as the refusing transaction read it."""
+
+    capture: Capture
+    use: CaptureUse
+
+
+@dataclass(frozen=True)
+class CaptureWasDeleted:
+    """The id is a deleted note's. A save under it makes nothing, whatever it sends."""
+
+    capture_id: str
 
 
 @dataclass(frozen=True)

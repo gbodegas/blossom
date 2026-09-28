@@ -17,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from blossom.authored_text import TextRefused
+from blossom.candidates import candidate_readings, reader, readings_for, row_reader
 from blossom.captures import (
     ARCHIVE,
     CREATE,
@@ -27,25 +28,41 @@ from blossom.captures import (
     Author,
     Capture,
     CaptureAlreadyCreated,
+    CaptureAlreadyDeleted,
     CaptureChanged,
     CaptureConflict,
     CaptureCreated,
+    CaptureDeleted,
     CaptureIdTaken,
+    CaptureInUse,
     CaptureNotSaved,
     CaptureUnchanged,
+    CaptureWasDeleted,
     FieldSource,
     NotACaptureId,
     NoWords,
     UnknownCapture,
     UnreadableCapture,
+    candidate_basis,
     capture_id_from,
+    derived_assignment_id,
     new_capture_id,
 )
 from blossom.noticing import planning_digest, read_everything, week_from
 from blossom.reconciliation import SourceChannel
 from blossom.stores import captures as captures_store
-from blossom.stores.project_state import ProjectStateStore
-from tests.support import PRACTICE, PRACTICE_LOG, fixture_clock, practice_store
+from blossom.stores.help_requests import HelpRequestsStore, UnknownCaptureReference
+from blossom.stores.project_state import Assignment, ProjectStateStore
+from tests.support import (
+    NOTE_DETAILS,
+    PRACTICE,
+    PRACTICE_LOG,
+    fixture_clock,
+    link_note,
+    practice_store,
+    promote_note,
+    unlink_note,
+)
 
 MONDAY = date(2026, 9, 14)
 AT = datetime(2026, 9, 14, 21, 0, tzinfo=UTC)
@@ -65,7 +82,7 @@ def create(
     *,
     on: int = 0,
     authored_by: str = STUDENT,
-) -> CaptureCreated | CaptureAlreadyCreated | CaptureIdTaken:
+) -> CaptureCreated | CaptureAlreadyCreated | CaptureIdTaken | CaptureWasDeleted:
     return store.create_capture(
         capture_id,
         text,
@@ -540,7 +557,13 @@ def test_the_store_of_the_record_says_how_long_it_keeps_her_notes_and_why() -> N
 
     assert "academic year" in policy
     assert "homework notes" in policy
-    for said in ("every change", "putting one away keeps it", "nothing sweeps them", "backup"):
+    for said in (
+        "every change",
+        "putting one away keeps it",
+        "nothing sweeps them",
+        "backup",
+        "deletes one that was never used",
+    ):
         assert said in policy
         assert said in " ".join(guide.split())
 
@@ -1257,3 +1280,473 @@ def test_each_list_of_notes_is_one_statement_however_many_there_are(
     assert len(waiting.notes) + len(put_away.notes) == count
     assert len(named.notes) == count
     assert len(seen) == 3
+
+
+# ------------------------------------------------------------------ deleting a note never used
+
+
+def delete(
+    store: ProjectStateStore, name: str, revision: int
+) -> CaptureDeleted | CaptureAlreadyDeleted | CaptureInUse | CaptureConflict:
+    return store.delete_capture(name, expected_revision=revision)
+
+
+def everything(store: ProjectStateStore) -> list[str]:
+    """The whole file as statements, to show a refusal wrote nothing anywhere."""
+    return list(store._connection.iterdump())
+
+
+def asked(_store: ProjectStateStore, name: str, path: pathlib.Path) -> None:
+    HelpRequestsStore.open(path, fixture_clock()).ask(MONDAY, None, capture_id=name)
+
+
+def asked_and_taken_back(_store: ProjectStateStore, name: str, path: pathlib.Path) -> None:
+    requests = HelpRequestsStore.open(path, fixture_clock())
+    made = requests.ask(MONDAY, "which questions?", capture_id=name)
+    assert requests.take_back(made.request_id)
+
+
+def test_a_note_never_used_goes_with_its_whole_history_and_leaves_only_its_id(
+    store: ProjectStateStore,
+) -> None:
+    name, other = new_capture_id(), new_capture_id()
+    created(create(store, name))
+    created(create(store, other, "Bring the signed form"))
+    changed(edit(store, name, "Geometry questions 4-9", None, None, 1, on=1))
+    before = rows(store)
+
+    outcome = delete(store, name, 2)
+
+    assert outcome == CaptureDeleted(name)
+    notes, events = rows(store)
+    assert [row[0] for row in notes] == [other]
+    assert [row for row in events if row[2] == name] == []
+    assert [row for row in before[1] if row[2] == other] == events
+    assert store.capture(name) is None
+    assert store.capture_history(name) == []
+    assert store.capture_deleted(name)
+    assert not store.capture_deleted(other)
+    columns = [
+        str(row[1]) for row in store._connection.execute("PRAGMA table_info(deleted_captures)")
+    ]
+    assert columns == ["capture_id"]
+    assert store._connection.execute("SELECT * FROM deleted_captures").fetchall() == [(name,)]
+
+
+def test_an_archived_note_never_used_can_be_deleted(store: ProjectStateStore) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    changed(archive(store, name, 1))
+
+    assert delete(store, name, 2) == CaptureDeleted(name)
+    assert store.archived_captures().notes == []
+
+
+def test_a_note_given_details_and_nothing_more_was_never_used(store: ProjectStateStore) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    clarified = store.clarify_capture(
+        name,
+        NOTE_DETAILS,
+        expected_revision=1,
+        authored_by=STUDENT,
+        channel=SourceChannel.STUDENT_REPORT,
+        now=AT,
+        today=MONDAY,
+    )
+    assert isinstance(clarified, CaptureChanged)
+
+    assert store.capture_use(name) is None
+    assert delete(store, name, 2) == CaptureDeleted(name)
+
+
+@pytest.mark.parametrize(
+    ("use", "why"),
+    [
+        (lambda store, name, path: promote_note(store, name), "added"),
+        (lambda store, name, path: link_note(store, name), "linked"),
+        (lambda store, name, path: unlink_note(store, name), "was_linked"),
+        (asked, "asked"),
+        (asked_and_taken_back, "asked"),
+    ],
+    ids=["added", "linked", "unlinked", "asked", "asked and taken back"],
+)
+def test_a_note_that_was_ever_used_is_kept_and_nothing_is_written(
+    use: Callable[[ProjectStateStore, str, pathlib.Path], object],
+    why: str,
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "record.sqlite3"
+    store = practice_store(path)
+    name = new_capture_id()
+    created(create(store, name))
+    use(store, name, path)
+    standing = store.capture(name)
+    assert standing is not None
+    before = everything(store)
+
+    outcome = delete(store, name, standing.revision)
+
+    assert isinstance(outcome, CaptureInUse)
+    assert (outcome.capture, outcome.use) == (standing, why)
+    assert store.capture_use(name) == why
+    assert everything(store) == before
+
+
+def test_a_page_that_is_behind_deletes_nothing(store: ProjectStateStore) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    now = changed(edit(store, name, "Geometry questions 4-9", None, None, 1, on=1))
+    before = everything(store)
+
+    outcome = delete(store, name, 1)
+
+    assert outcome == CaptureConflict(now)
+    assert everything(store) == before
+
+
+def test_a_delete_sent_again_is_already_done_and_writes_nothing(store: ProjectStateStore) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    assert delete(store, name, 1) == CaptureDeleted(name)
+    before = everything(store)
+
+    assert delete(store, name, 1) == CaptureAlreadyDeleted(name)
+    assert delete(store, name, 7) == CaptureAlreadyDeleted(name)
+    assert everything(store) == before
+
+
+def test_a_name_that_is_no_note_is_not_deleted(store: ProjectStateStore) -> None:
+    with pytest.raises(UnknownCapture):
+        delete(store, new_capture_id(), 1)
+    with pytest.raises(NotACaptureId):
+        delete(store, "not-a-note", 1)
+    assert store._connection.execute("SELECT * FROM deleted_captures").fetchall() == []
+
+
+@pytest.mark.parametrize("words", [WORDS, "Something else entirely"])
+def test_the_first_save_sent_again_after_a_delete_makes_nothing(
+    store: ProjectStateStore, words: str
+) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    assert delete(store, name, 1) == CaptureDeleted(name)
+    before = everything(store)
+
+    outcome = create(store, name, words, on=1)
+
+    assert outcome == CaptureWasDeleted(name)
+    assert everything(store) == before
+
+
+def test_no_other_change_finds_a_deleted_note(store: ProjectStateStore) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    assert delete(store, name, 1) == CaptureDeleted(name)
+
+    changes: list[Callable[[], object]] = [
+        lambda: edit(store, name, "again", None, None, 1),
+        lambda: archive(store, name, 1),
+        lambda: restore(store, name, 1),
+    ]
+    for change in changes:
+        with pytest.raises(UnknownCapture):
+            change()
+
+
+def test_a_deleted_note_leaves_none_of_its_words_in_the_file(tmp_path: pathlib.Path) -> None:
+    """On a connection that did not ask for it, the delete turns on overwriting what it frees."""
+    path = tmp_path / "record.sqlite3"
+    store = ProjectStateStore(sqlite3.connect(path, check_same_thread=False), fixture_clock())
+    store._connection.execute("PRAGMA secure_delete=OFF")
+    name = new_capture_id()
+    first, then = "Zebra quartz violin homework", "Zebra quartz violin homework, revised"
+    created(create(store, name, first))
+    changed(edit(store, name, then, "Xylophone guild", None, 1))
+    assert b"Zebra quartz violin" in path.read_bytes()
+
+    assert delete(store, name, 2) == CaptureDeleted(name)
+
+    assert store._connection.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    assert b"Zebra quartz violin" not in path.read_bytes()
+    assert b"Xylophone guild" not in path.read_bytes()
+
+
+def test_notes_from_before_can_only_be_archived_and_new_ones_can_be_deleted(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A file from before holds nothing that shows a note was never asked about, so its notes
+    stay archive-only; a start that meets the tables again changes nothing."""
+    path = tmp_path / "record.sqlite3"
+    store = practice_store(path)
+    old, put_away = new_capture_id(), new_capture_id()
+    created(create(store, old))
+    created(create(store, put_away))
+    changed(archive(store, put_away, 1))
+    for table in ("deleted_captures", "captures_of_unknown_use"):
+        store._connection.execute(f"DROP TABLE {table}")
+    store._connection.commit()
+    before = rows(store)
+    store._connection.close()
+
+    again = practice_store(path)
+    fresh = new_capture_id()
+    created(create(again, fresh))
+    again._connection.close()
+    once_more = practice_store(path)
+
+    assert {"deleted_captures", "captures_of_unknown_use"} <= schema_of(path)
+    assert [row for row in rows(once_more)[0] if row[0] != fresh] == before[0]
+    assert once_more.capture_use(old) == "unknown"
+    assert once_more.capture_use(put_away) == "unknown"
+    assert once_more.capture_use(fresh) is None
+    kept = delete(once_more, old, 1)
+    assert isinstance(kept, CaptureInUse)
+    assert kept.use == "unknown"
+    assert delete(once_more, fresh, 1) == CaptureDeleted(fresh)
+
+
+def test_a_start_refused_the_new_tables_leaves_the_file_as_it_was(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "record.sqlite3"
+    store = practice_store(path)
+    old = new_capture_id()
+    created(create(store, old))
+    for table in ("deleted_captures", "captures_of_unknown_use"):
+        store._connection.execute(f"DROP TABLE {table}")
+    store._connection.commit()
+    before = rows(store)
+    store._connection.close()
+    refused = sqlite3.connect(path, factory=Refusing, check_same_thread=False)
+    refused.refuse = "INSERT OR IGNORE INTO captures_of_unknown_use"
+
+    with pytest.raises(sqlite3.OperationalError, match="refused"):
+        ProjectStateStore(refused, fixture_clock())
+    refused.close()
+
+    assert not {"deleted_captures", "captures_of_unknown_use"} & schema_of(path)
+    again = practice_store(path)
+    assert rows(again)[0] == before[0]
+    assert again.capture_use(old) == "unknown"
+
+
+def test_a_note_whose_line_of_changes_is_broken_is_not_deleted(store: ProjectStateStore) -> None:
+    name = new_capture_id()
+    created(create(store, name))
+    changed(edit(store, name, "Geometry questions 4-9", None, None, 1))
+    store._connection.execute(
+        "DELETE FROM capture_events WHERE capture_id = ? AND operation = 'edit'", (name,)
+    )
+    store._connection.commit()
+    before = everything(store)
+
+    with pytest.raises(UnreadableCapture):
+        delete(store, name, 2)
+    with pytest.raises(UnreadableCapture):
+        store.capture_use(name)
+    assert everything(store) == before
+
+
+class Refusing(sqlite3.Connection):
+    """A connection that refuses one statement, or the commit, when told to."""
+
+    refuse: str | None = None
+    refuse_commit = False
+
+    def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:
+        if self.refuse is not None and " ".join(sql.split()).startswith(self.refuse):
+            msg = "refused"
+            raise sqlite3.OperationalError(msg)
+        return super().execute(sql, parameters)  # type: ignore[arg-type]
+
+    def commit(self) -> None:
+        if self.refuse_commit:
+            msg = "refused"
+            raise sqlite3.OperationalError(msg)
+        super().commit()
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [
+        "INSERT INTO deleted_captures",
+        "DELETE FROM capture_events",
+        "DELETE FROM homework_captures",
+        "commit",
+    ],
+)
+def test_a_delete_the_file_refuses_at_any_step_leaves_everything(
+    refused: str, tmp_path: pathlib.Path
+) -> None:
+    path = tmp_path / "record.sqlite3"
+    connection = sqlite3.connect(path, factory=Refusing, check_same_thread=False)
+    store = ProjectStateStore(connection, fixture_clock())
+    name = new_capture_id()
+    created(create(store, name))
+    changed(edit(store, name, "Geometry questions 4-9", None, None, 1))
+    before = everything(store)
+    if refused == "commit":
+        connection.refuse_commit = True
+    else:
+        connection.refuse = refused
+
+    with pytest.raises(CaptureNotSaved):
+        delete(store, name, 2)
+
+    connection.refuse, connection.refuse_commit = None, False
+    assert not connection.in_transaction
+    assert everything(store) == before
+    assert not store.capture_deleted(name)
+    assert delete(store, name, 2) == CaptureDeleted(name)
+
+
+class Pausing(sqlite3.Connection):
+    """A connection that, the first time it runs a statement starting so, runs ``then`` first:
+    the other connection's turn, taken while this one's transaction is open."""
+
+    at: str | None = None
+    then: Callable[[], None] | None = None
+
+    def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:
+        if (
+            self.at is not None
+            and self.then is not None
+            and " ".join(sql.split()).startswith(self.at)
+        ):
+            turn, self.then = self.then, None
+            turn()
+        return super().execute(sql, parameters)  # type: ignore[arg-type]
+
+
+def two_stores(
+    path: pathlib.Path,
+) -> tuple[ProjectStateStore, Pausing, ProjectStateStore, HelpRequestsStore]:
+    """The record's store twice over the one file, the first on a pausing connection, and the
+    help store, the last two waiting almost not at all for the writer."""
+    practice_store(path)._connection.close()
+    paused = sqlite3.connect(path, factory=Pausing, check_same_thread=False)
+    first = ProjectStateStore(paused, fixture_clock())
+    other = ProjectStateStore(
+        sqlite3.connect(path, timeout=0.05, check_same_thread=False), fixture_clock()
+    )
+    help_store = HelpRequestsStore(
+        sqlite3.connect(path, timeout=0.05, check_same_thread=False), fixture_clock()
+    )
+    return first, paused, other, help_store
+
+
+def competing(
+    other: ProjectStateStore, help_store: HelpRequestsStore, name: str
+) -> dict[str, Callable[[], object]]:
+    """Each change a second device can make to the note, from its own connection."""
+    target = Assignment(
+        assignment_id="assignment-reading-log-competing",
+        course="Humanities",
+        title="Summer reading log",
+        due_date=date(2026, 9, 25),
+        dependencies=[],
+        reported_submission_status="not_started",
+    )
+    other.put_on_record([target], {})
+    link_basis = candidate_basis(readings_for(other, [target]))
+    promote_basis = candidate_basis(candidate_readings(other, NOTE_DETAILS))
+    return {
+        "promote": lambda: other.promote_capture(
+            name,
+            NOTE_DETAILS,
+            expected_revision=1,
+            basis=promote_basis,
+            candidates=reader(other),
+            choice="new",
+            authored_by=STUDENT,
+            channel=SourceChannel.STUDENT_REPORT,
+            now=AT,
+            today=MONDAY,
+        ),
+        "link": lambda: other.link_capture(
+            name,
+            target=target.assignment_id,
+            expected_revision=1,
+            basis=link_basis,
+            shown=row_reader(other),
+            authored_by=STUDENT,
+            channel=SourceChannel.STUDENT_REPORT,
+            now=AT,
+            today=MONDAY,
+        ),
+        "help": lambda: help_store.ask(MONDAY, None, capture_id=name),
+        "edit": lambda: edit(other, name, "Geometry questions 4-9", None, None, 1),
+        "archive": lambda: archive(other, name, 1),
+        "replay": lambda: create(other, name),
+    }
+
+
+COMPETITORS = ["promote", "link", "help", "edit", "archive", "replay"]
+
+
+@pytest.mark.parametrize("competitor", COMPETITORS)
+def test_a_change_from_another_connection_waits_for_the_delete_and_then_finds_no_note(
+    competitor: str, tmp_path: pathlib.Path
+) -> None:
+    """The delete reserves the writer before it reads: another connection's change can't get
+    in between, and once the delete is done it finds no note to change or name."""
+    first, paused, other, help_store = two_stores(tmp_path / "record.sqlite3")
+    name = new_capture_id()
+    created(create(first, name))
+    change = competing(other, help_store, name)[competitor]
+    blocked: list[BaseException] = []
+
+    def between() -> None:
+        try:
+            change()
+        except (CaptureNotSaved, sqlite3.OperationalError) as error:
+            blocked.append(error)
+
+    paused.at, paused.then = "SELECT 1 FROM deleted_captures", between
+    assert delete(first, name, 1) == CaptureDeleted(name)
+
+    assert len(blocked) == 1
+    if competitor == "help":
+        with pytest.raises(UnknownCaptureReference):
+            change()
+    elif competitor == "replay":
+        assert change() == CaptureWasDeleted(name)
+    else:
+        with pytest.raises(UnknownCapture):
+            change()
+    assert first.capture(name) is None
+    assert first.capture_history(name) == []
+    assert first._connection.execute(
+        "SELECT COUNT(*) FROM homework_captures WHERE capture_id = ?", (name,)
+    ).fetchone() == (0,)
+    help_rows = help_store._connection.execute(
+        "SELECT COUNT(*) FROM help_requests WHERE capture_id = ?", (name,)
+    ).fetchone()
+    assert tuple(help_rows) == (0,)
+    assert other.one_assignment(derived_assignment_id(name)) is None
+
+
+@pytest.mark.parametrize("competitor", COMPETITORS)
+def test_a_change_another_connection_made_first_is_found_by_the_delete(
+    competitor: str, tmp_path: pathlib.Path
+) -> None:
+    first, _, other, help_store = two_stores(tmp_path / "record.sqlite3")
+    name = new_capture_id()
+    created(create(first, name))
+    competing(other, help_store, name)[competitor]()
+    standing = first.capture(name)
+    assert standing is not None
+    before = everything(first)
+
+    outcome = delete(first, name, 1)
+
+    expected: dict[str, object] = {
+        "promote": CaptureInUse(standing, "added"),
+        "link": CaptureInUse(standing, "linked"),
+        "help": CaptureInUse(standing, "asked"),
+        "edit": CaptureConflict(standing),
+        "archive": CaptureConflict(standing),
+        "replay": CaptureDeleted(name),
+    }
+    assert outcome == expected[competitor]
+    if competitor != "replay":
+        assert everything(first) == before

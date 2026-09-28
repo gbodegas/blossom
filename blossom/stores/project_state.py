@@ -636,8 +636,10 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         "Keep structured assignment state for the academic year, then archive. Her homework "
         "notes are on another schedule, because a note is her own record of something she "
         "heard and nothing else holds it: each note, its first words, and every change to it "
-        "are kept until the household removes the file. No page deletes a note, putting one "
-        "away keeps it, and nothing sweeps them, so a backup of the file holds them as well."
+        "are kept until she deletes one that was never used or the household removes the "
+        "file. A used note can only be put away, putting one away keeps it, and nothing "
+        "sweeps them, so a backup of the file holds them as well, a deleted note included "
+        "if the backup was made before it went."
     )
 
     def __init__(
