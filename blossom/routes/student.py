@@ -1863,7 +1863,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
         return gone_page(
             request,
             state,
-            origin.back,
+            origin.back if origin.detail else ReturnTo("week", origin.week),
             assignment_id,
             card=CardState(assignment_id, status=chosen, note=note),
         )

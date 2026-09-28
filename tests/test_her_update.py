@@ -29,6 +29,7 @@ from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceChannel
 from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
+from blossom.routes.navigation import week_href
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.parent import PLAN_INCLUDES_DONE as SHE_REPORTS
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
@@ -1597,3 +1598,90 @@ def test_a_save_refused_for_a_newer_update_heads_her_words_as_unsaved(where: str
     assert too_long.status_code == 422
     assert UNSAVED_HEADING not in too_long.text
     assert UNSAVED_HEADING not in changing
+
+
+UNDO = "/student/actions/assignments/{}/undo-report"
+
+
+@pytest.mark.parametrize("where", ["this week", "another week", "details from another week"])
+def test_a_save_for_homework_gone_meanwhile_goes_back_to_the_week_the_form_was_on(
+    where: str,
+) -> None:
+    later = date(2026, 9, 7)
+    with browser() as client:
+        entered = client.post(
+            "/parent/inbox/keep",
+            data={"course": "Art", "title": "Poster", "due_date": "2026-09-10"},
+        )
+        assert entered.status_code == 303
+        poster = next(
+            item.assignment_id
+            for item in state_of(client).project_state.all_assignments()
+            if item.title == "Poster"
+        )
+        name = ESSAY if where == "this week" else poster
+        if where == "details from another week":
+            opened = f"/student/assignments/{name}?return_to=week&week={later.isoformat()}"
+            form = whole_form(client.get(opened, headers=PAGE_HEADERS).text, REPORT.format(name))
+        else:
+            params = {"week": later.isoformat()} if where == "another week" else {}
+            page = client.get(PAGE, params=params, headers=PAGE_HEADERS).text
+            form = whole_form(card_for(page, name), REPORT.format(name))
+        week = later if where != "this week" else date.fromisoformat(form["week"])
+        store = state_of(client).project_state
+        store._connection.execute("DELETE FROM assignments WHERE assignment_id=?", (name,))
+        store._connection.commit()
+        answer = client.post(
+            REPORT.format(name),
+            data={**form, "status": "done", "note": "Typed before it went."},
+            headers=PAGE_HEADERS,
+        )
+
+    assert answer.status_code == 404
+    assert GONE in answer.text
+    assert f'href="{escape(week_href(week, name, show=name))}"' in answer.text
+    assert "Back to the week" in answer.text
+
+
+@pytest.mark.parametrize("where", ["week", "details"])
+@pytest.mark.parametrize("meanwhile", ["undone", "changed"])
+def test_a_stale_undo_heads_nothing_as_her_unsaved_update(where: str, meanwhile: str) -> None:
+    opened = f"/student/assignments/{ESSAY}" if where == "details" else PAGE
+    with browser() as client:
+        report(client, ESSAY, "done")
+        undo = whole_form(client.get(opened, headers=PAGE_HEADERS).text, UNDO.format(ESSAY))
+        if meanwhile == "undone":
+            assert client.post(UNDO.format(ESSAY), data=undo).status_code == 303
+        else:
+            report(client, ESSAY, "not_yet")
+        stale = client.post(UNDO.format(ESSAY), data=undo, headers=PAGE_HEADERS)
+    shown = stale.text if where == "details" else card_for(stale.text, ESSAY)
+
+    assert stale.status_code == 409
+    assert (ALREADY_UNDONE if meanwhile == "undone" else CANNOT_UNDO) in stale.text
+    assert UNSAVED_HEADING not in stale.text
+    assert ("<legend>Your update<span" in shown) is (meanwhile == "undone")
+
+
+@pytest.mark.parametrize("where", ["week", "details"])
+def test_a_save_refused_after_an_undo_elsewhere_heads_her_words_as_unsaved(where: str) -> None:
+    opened = f"/student/assignments/{ESSAY}" if where == "details" else PAGE
+    change = "1" if where == "details" else ESSAY
+    with browser() as client:
+        report(client, ESSAY, "done")
+        changing = client.get(f"{opened}?change={change}", headers=PAGE_HEADERS).text
+        fields = whole_form(changing, REPORT.format(ESSAY))
+        undo = whole_form(client.get(opened, headers=PAGE_HEADERS).text, UNDO.format(ESSAY))
+        assert client.post(UNDO.format(ESSAY), data=undo).status_code == 303
+        refused = client.post(
+            REPORT.format(ESSAY),
+            data={**fields, "status": "not_yet", "note": "kept from the old page"},
+            headers=PAGE_HEADERS,
+        )
+    shown = refused.text if where == "details" else card_for(refused.text, ESSAY)
+
+    assert refused.status_code == 409
+    assert SAVED_ELSEWHERE in shown
+    assert shown.count(UNSAVED_HEADING) == 1
+    assert shown.index(UNSAVED_HEADING) < shown.index('value="not_yet" checked')
+    assert ">kept from the old page</textarea>" in shown

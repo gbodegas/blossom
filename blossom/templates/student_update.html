@@ -97,7 +97,7 @@
       A save refused because another update was saved first shows that update
       above, as it stands, and her own choice and words here, headed as not saved.
     #}
-    {% if here and card.saved_elsewhere %}<h3 class="update-heading">Your unsaved update</h3>{% endif %}
+    {% if here and card.change and card.saved_elsewhere %}<h3 class="update-heading">Your unsaved update</h3>{% endif %}
     <form method="post" action="{{ ctx.report_action }}" class="report">
       <fieldset class="choice"{% if at_status %} aria-describedby="update-problem-{{ key }}"{% endif %}>
         <legend>Your update<span class="visually-hidden"> on {{ assignment.title }}</span></legend>
