@@ -300,6 +300,8 @@ article h2 {
   font-size: 0.92rem;
 }
 
+/* A notice can name homework whose title is one long word, and breaks it where it
+   must, so the page never scrolls sideways. */
 .confidence {
   border-left: 3px solid var(--slate-ink);
   border-radius: var(--radius-small);
@@ -307,6 +309,7 @@ article h2 {
   margin-block: 0.8rem;
   background: var(--slate-bg);
   color: var(--slate-ink);
+  overflow-wrap: anywhere;
 }
 
 .confidence.disagree {
@@ -863,6 +866,7 @@ label {
 }
 
 input[type="date"],
+input[type="password"],
 input[type="text"] {
   font: inherit;
   font-family: var(--font-body);
@@ -1140,6 +1144,7 @@ select {
 
 input[type="text"],
 input[type="date"],
+input[type="password"],
 textarea,
 select {
   border-color: var(--field-edge);

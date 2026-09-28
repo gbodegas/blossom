@@ -352,7 +352,7 @@
         #}
         <article class="draft" id="{% if row.assignment_id in listed %}hand-in{% else %}update{% endif %}-{{ row.assignment_id }}" tabindex="-1">
           <p class="course">{{ row.course }}</p>
-          <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to="family") }}" aria-label="Turning it in: {{ row.title }}, {{ row.course }}">{{ row.title }}</a></strong></p>
+          <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to="family") }}">{{ row.title }}<span class="visually-hidden">, {{ row.course }}: Turning it in</span></a></strong></p>
           <p>{{ turned_in_words(row.hand_in) }}</p>
         </article>
       {% endfor %}
@@ -402,8 +402,7 @@
           </label>
           <div class="actions">
             {% if not draft.stale %}
-              <button type="submit" name="decision" value="approve" class="primary"
-                      aria-label="Say the plan for {{ evening }}{{ which }} looks good">Looks good</button>
+              <button type="submit" name="decision" value="approve" class="primary">Looks good<span class="visually-hidden">: the plan for {{ evening }}{{ which }}</span></button>
             {% endif %}
             <button type="submit" name="decision" value="refuse" class="secondary"
                     aria-label="Ask for a change to the plan for {{ evening }}{{ which }}">Ask for a change</button>

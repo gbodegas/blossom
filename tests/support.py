@@ -743,6 +743,70 @@ class _FormReader(HTMLParser):
             self._fields = None
 
 
+class _Names(HTMLParser):
+    """Each button, link and summary of a page: the words it shows, and the name a screen
+    reader or voice control uses, which is its label when it has one and else its words,
+    visually hidden ones included."""
+
+    def __init__(self, page: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.controls: list[tuple[str, str]] = []
+        self._open: list[tuple[str, str | None, list[str], list[str]]] = []
+        self._hidden = 0
+        self._spans: list[bool] = []
+        self.feed(page)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        given = dict(attrs)
+        if tag in ("button", "a", "summary"):
+            self._open.append((tag, given.get("aria-label"), [], []))
+        elif tag == "span":
+            hides = "visually-hidden" in (given.get("class") or "").split()
+            self._spans.append(hides)
+            self._hidden += hides
+
+    def handle_data(self, data: str) -> None:
+        for _, _, shown, heard in self._open:
+            heard.append(data)
+            if not self._hidden:
+                shown.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "span" and self._spans:
+            self._hidden -= self._spans.pop()
+        elif self._open and self._open[-1][0] == tag:
+            _, label, shown, heard = self._open.pop()
+            words = " ".join("".join(shown).split())
+            name = " ".join((label if label is not None else "".join(heard)).split())
+            if words:
+                self.controls.append((words, name))
+
+
+def control_names(page: str) -> list[tuple[str, str]]:
+    """Each button, link and summary of a page as (the words it shows, its name)."""
+    return _Names(page).controls
+
+
+def names_without_their_words(page: str) -> list[tuple[str, str]]:
+    """The controls whose name leaves out the words they show, as (shown, name). WCAG 2.5.3
+    asks that a control's name contain its visible label."""
+    return [
+        (words, name)
+        for words, name in _Names(page).controls
+        if words.casefold() not in name.casefold()
+    ]
+
+
+def names_not_led_by_their_words(page: str) -> list[tuple[str, str]]:
+    """The controls whose name doesn't start with the words they show: Blossom's convention,
+    which is stricter than WCAG, so a name reads the way the control looks."""
+    return [
+        (words, name)
+        for words, name in _Names(page).controls
+        if not name.casefold().startswith(words.casefold())
+    ]
+
+
 def whole_form(html: str, action: str) -> dict[str, str]:
     """Everything the one form with this action would send with no button pressed, hidden
     and visible alike, read the way a browser reads the page."""
