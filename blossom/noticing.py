@@ -180,6 +180,29 @@ def in_week(assignment: Assignment, noticing: Noticing, start: date) -> bool:
     return any(start <= given <= end for given in (assignment.due_date, *noticing.observed_dates))
 
 
+@dataclass(frozen=True)
+class PlanningWindow:
+    """Today's planning window: the household's day through six days later, both included,
+    which is the week ``in_week`` reads from today. It is today's whichever week a page
+    shows."""
+
+    start: date
+    end: date
+
+    def said(self) -> str:
+        """The window as a sentence names it, as a week's range is named: the last day with
+        its year, and the first with its own when the window reaches into a new year."""
+        first = f"{self.start:%B} {self.start.day}"
+        if self.start.year != self.end.year:
+            first = f"{first}, {self.start.year}"
+        return f"{first} to {self.end:%B} {self.end.day}, {self.end.year}"
+
+
+def planning_window(today: date) -> PlanningWindow:
+    """The planning window of the household's day ``today``."""
+    return PlanningWindow(today, today + DUE_THIS_WEEK_SPAN)
+
+
 @dataclass(frozen=True, kw_only=True)
 class Week:
     """The week as both readers see it, with what the sources said about each item."""

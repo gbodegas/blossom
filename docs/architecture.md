@@ -1352,7 +1352,14 @@ page does, and moves to the weeks either side. The planner reads a different
 window, the evening it plans and the six days after, because a plan made on a
 Sunday has to see the week ahead; her page says through which day a plan
 looks. Both go through `read_week`, so they never differ about whether an
-item is in a window, only about where the window starts.
+item is in a window, only about where the window starts. Every week her page
+shows names today's planning window by its days, from `planning_window` in
+`blossom/noticing.py`: under Today's controls on this week, and under the link
+back to this week on another, which has no Today panel. The last day carries
+its year, and the first its own when the window reaches into a new year. A Not
+yet and a note added to homework say whether the work can be in today's plan
+by the planner's own rule, so undated work is in and a source's date inside
+the window counts; work outside it is named with the window's days.
 
 **Not built:** a calendar policy. Nothing yet knows about no-school days,
 bedtimes, or a term calendar. Durations that cross a daylight-saving night

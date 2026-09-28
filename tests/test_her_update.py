@@ -180,13 +180,16 @@ def test_not_yet_says_what_it_means_inside_and_outside_todays_window() -> None:
         later = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
         history = state_of(client).project_state.student_reports(poster)
 
-    assert "This stays in work to plan when it is in the planning window." in card_for(here, ESSAY)
-    assert "Updates shown are the latest on record." not in here
+    assert "Still unfinished. It can be included in today's plan." in card_for(here, ESSAY)
+    assert "Updates show the latest saved information" not in here
     assert answer.status_code == 303
     assert answer.headers["location"].startswith(f"{PAGE}?week=2026-09-07&saved={poster}")
-    assert "Updates shown are the latest on record." in later
-    assert "Saved as Not yet. This assignment is outside today's planning window." in card_for(
-        later, poster
+    assert (
+        "Updates show the latest saved information, even when you view a different week." in later
+    )
+    assert (
+        "Saved as Not yet. It is outside today's planning window (August 19 to August 25, 2026)."
+        in card_for(later, poster)
     )
     assert "Reported August 19" in card_for(later, poster)
     assert [item.reported_on for item in history] == [PLAN_DATE]
@@ -1365,7 +1368,9 @@ def test_a_not_yet_in_the_window_brings_the_plan_button_back_and_one_outside_doe
 
     assert outside.status_code == 303
     assert asks_for_nothing(still_nothing), still_nothing
-    assert "outside today's planning window" in card_for(later_week, poster)
+    assert "outside today's planning window (August 19 to August 25, 2026)." in card_for(
+        later_week, poster
+    )
     assert 'action="/student/actions/plan"' in back
     assert ">Plan again</button>" in back
     assert "A plan is ready." in back
