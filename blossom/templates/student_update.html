@@ -111,9 +111,9 @@
       <input type="hidden" name="{{ name }}" value="{{ value }}">
       {% endfor %}
       <div class="actions">
-        <button type="submit" class="primary">Save update<span class="visually-hidden"> for {{ assignment.title }}</span></button>
+        <button type="submit" class="primary">Save update<span class="visually-hidden"> for {{ assignment.title }}, {{ assignment.course }}</span></button>
         {% if standing %}
-          <a class="cancel" href="{{ ctx.cancel_href }}">Keep it as it is<span class="visually-hidden">: your update on {{ assignment.title }}</span></a>
+          <a class="cancel" href="{{ ctx.cancel_href }}">Keep it as it is<span class="visually-hidden">: your update on {{ assignment.title }}, {{ assignment.course }}</span></a>
         {% endif %}
       </div>
     </form>

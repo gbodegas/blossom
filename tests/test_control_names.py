@@ -6,9 +6,11 @@ import re
 
 import pytest
 
+from blossom.routes.navigation import assignment_anchor
 from blossom.routes.runs import plan_graphs
 from blossom.settings import REPOSITORY_ROOT
 from tests.support import (
+    ESSAY,
     ESSAY_ID,
     ESSAY_TITLE,
     HER_PAGE,
@@ -16,12 +18,14 @@ from tests.support import (
     PLAN_DATE,
     accepting,
     browser,
+    card_for,
     control_names,
     fixture_week_plan,
     names_not_led_by_their_words,
     names_without_their_words,
     report,
     scripted_graphs,
+    store_of,
     whole_form,
 )
 
@@ -90,22 +94,107 @@ def test_every_control_s_name_holds_the_words_it_shows(pages: dict[str, str]) ->
     assert {state: found for state, found in failing.items() if found} == {}
 
 
+def essay_part(page: str) -> str:
+    """The essay's card on a page of several, or else the whole page."""
+    if f'id="{assignment_anchor(ESSAY_ID)}"' in page:
+        return card_for(page, ESSAY_ID)
+    return page
+
+
 def test_each_repeated_control_names_what_it_is_about(pages: dict[str, str]) -> None:
-    """A control shown once per assignment or plan says which one in its name."""
+    """A control shown once per assignment names its title and course, and Looks good its plan."""
+    about = f"{ESSAY_TITLE}, {ESSAY.course}"
+    repeated = {
+        state: [
+            (words, name)
+            for words, name in control_names(essay_part(page))
+            if words in REPEATED or words == ESSAY_TITLE
+        ]
+        for state, page in pages.items()
+    }
     bare = {
         state: [
             (words, name)
-            for words, name in control_names(page)
-            if (words in REPEATED or words == ESSAY_TITLE) and len(name) <= len(words) + 2
+            for words, name in found
+            if about not in name and not name.startswith("Looks good: the plan for ")
         ]
-        for state, page in pages.items()
+        for state, found in repeated.items()
     }
     turning_in = [
         name for words, name in control_names(pages["family, hand-in"]) if words == ESSAY_TITLE
     ]
 
+    assert [state for state, found in repeated.items() if not found] == []
     assert {state: found for state, found in bare.items() if found} == {}
     assert any(name.endswith("Turning it in") for name in turning_in)
+
+
+PRACTICE_COURSES = ("History", "Science", "Art & <Design>")
+NAMESAKE_NAMES = (
+    ("week, new", "Save update", "Save update for Practice, {}"),
+    ("details, new", "Save update", "Save update for Practice, {}"),
+    ("week, change", "Keep it as it is", "Keep it as it is: your update on Practice, {}"),
+    ("details, change", "Keep it as it is", "Keep it as it is: your update on Practice, {}"),
+    ("update, returned", "Save update", "Save update for Practice, {}"),
+    ("update, returned", "Keep it as it is", "Keep it as it is: your update on Practice, {}"),
+    ("hand-in, not now", "Not now", "Not now: the hand-in status for Practice, {}"),
+    ("hand-in, returned", "Not now", "Not now: the hand-in status for Practice, {}"),
+    ("hand-in, keep", "Keep it as it is", "Keep it as it is: the hand-in status for Practice, {}"),
+)
+
+
+@pytest.fixture
+def namesakes() -> dict[str, dict[str, str]]:
+    """Three assignments called Practice, in three courses and due this week, each seen in
+    every state that shows a control repeated per assignment: its card, or its page."""
+    shown: dict[str, dict[str, str]] = {}
+    with browser(key=True) as client:
+        for course in PRACTICE_COURSES:
+            kept = client.post(
+                "/parent/inbox/keep",
+                data={"course": course, "title": "Practice", "due_date": "2026-08-21"},
+            )
+            assert kept.status_code == 303, kept.text[:300]
+        for item in store_of(client).all_assignments():
+            if item.title != "Practice":
+                continue
+            key, details = item.assignment_id, f"/student/assignments/{item.assignment_id}"
+            update = f"/student/actions/assignments/{key}/report"
+            hand_in = f"/student/actions/assignments/{key}/hand-in"
+            seen = shown[item.course] = {}
+            seen["week, new"] = card_for(client.get(HER_PAGE).text, key)
+            seen["details, new"] = client.get(details).text
+            report(client, key, "done")
+            card = card_for(client.get(HER_PAGE, params={"change": key}).text, key)
+            seen["week, change"] = card
+            seen["details, change"] = client.get(details, params={"change": "1"}).text
+            too_long = {**whole_form(card, update), "status": "done", "note": "x" * 501}
+            returned = client.post(update, data=too_long, headers=PAGE_HEADERS)
+            assert returned.status_code == 422, returned.text[:300]
+            seen["update, returned"] = card_for(returned.text, key)
+            opened = client.get(details, params={"hand_in": "change"}).text
+            seen["hand-in, not now"] = opened
+            state = re.findall(r'name="state" value="([^"]+)"', opened)[0]
+            chosen = {**whole_form(opened, hand_in), "state": state}
+            too_long = {**chosen, "note": "x" * 501}
+            returned = client.post(hand_in, data=too_long, headers=PAGE_HEADERS)
+            assert returned.status_code == 422, returned.text[:300]
+            seen["hand-in, returned"] = returned.text
+            client.post(hand_in, data=chosen, headers=PAGE_HEADERS)
+            seen["hand-in, keep"] = client.get(details, params={"hand_in": "change"}).text
+    return shown
+
+
+@pytest.mark.parametrize(("state", "words", "name"), NAMESAKE_NAMES)
+def test_same_titled_assignments_are_told_apart_by_course(
+    namesakes: dict[str, dict[str, str]], state: str, words: str, name: str
+) -> None:
+    named = {
+        course: [heard for shown, heard in control_names(seen[state]) if shown == words]
+        for course, seen in namesakes.items()
+    }
+
+    assert named == {course: [name.format(course)] for course in PRACTICE_COURSES}
 
 
 def test_every_control_s_name_starts_with_the_words_it_shows(pages: dict[str, str]) -> None:
