@@ -28,6 +28,7 @@
                maxlength="{{ note_max_length }}"
                aria-describedby="{% if question_error %}note-problem {% endif %}help-question-hint"
                {% if question_error %}aria-invalid="true"{% endif %}>
+        <input type="hidden" name="request_id" value="{{ request_id }}">
         <p class="note" id="help-question-hint">Your parents see this question and can open the note. Nothing is sent until you press the button, and nothing goes to the school or to the planning model.</p>
         <div class="actions">
           <button type="submit" class="primary">Ask for help about this note</button>

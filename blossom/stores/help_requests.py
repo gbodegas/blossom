@@ -24,11 +24,18 @@ the request and begun before the note is looked for. Nothing is written
 through two connections at once, and a name that is no note of this record
 writes nothing. Putting the note away later does not remove the reference,
 and a note that cannot be read later does not take the request with it.
+
+Each form that asks carries an id of its own, and the request is kept under
+it. The same form sent again makes no second request, and an id once used
+never makes another, even after its request is taken back or gone: only the
+id is kept for that, and nothing else of the request.
 """
 
 import logging
+import re
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -113,6 +120,64 @@ NOTES_NAMED_FROM_REQUESTS: Final = """
     SELECT capture_id FROM help_requests WHERE capture_id IS NOT NULL
 """
 NOTE_NAMED_ONCE: Final = "INSERT OR IGNORE INTO notes_named_by_requests (capture_id) VALUES (?)"
+IDS_TABLE: Final = "CREATE TABLE IF NOT EXISTS help_request_ids (request_id TEXT PRIMARY KEY)"
+IDS_FROM_REQUESTS: Final = (
+    "INSERT OR IGNORE INTO help_request_ids (request_id) SELECT request_id FROM help_requests"
+)
+RESERVE_ID: Final = "INSERT OR IGNORE INTO help_request_ids (request_id) VALUES (?)"
+RETAINED_ONE: Final = """
+    SELECT * FROM help_requests
+    WHERE request_id=? AND (state<>'resolved' OR resolved_at >= ?)
+"""
+REQUEST_ID: Final = re.compile(r"[0-9a-f]{32}")
+"""The shape of an id a form carries: 32 lowercase hex digits, as ``new_request_id`` makes."""
+
+
+class NotARequestId(ValueError):
+    """Raised for an id no form of these pages carries."""
+
+
+def new_request_id() -> str:
+    """A fresh id for one form that asks for help. Making one writes nothing."""
+    return uuid4().hex
+
+
+def request_id_from(value: str) -> str:
+    """The id a form sent, held to the shape ``new_request_id`` makes, or ``NotARequestId``."""
+    if REQUEST_ID.fullmatch(value) is None:
+        msg = "not a help request id"
+        raise NotARequestId(msg)
+    return value
+
+
+@dataclass(frozen=True)
+class HelpAsked:
+    """A request made now, under the form's id."""
+
+    request: HelpRequest
+
+
+@dataclass(frozen=True)
+class HelpAlreadyAsked:
+    """The same form sent again: the request it made, as it stands now. Nothing is written."""
+
+    request: HelpRequest
+
+
+@dataclass(frozen=True)
+class HelpFormChanged:
+    """The form's id made a request with other words or about another note. Nothing is
+    written."""
+
+    request: HelpRequest
+
+
+@dataclass(frozen=True)
+class HelpFormUsed:
+    """The form's id made a request that was taken back or has gone. Nothing is written."""
+
+
+AskOutcome = HelpAsked | HelpAlreadyAsked | HelpFormChanged | HelpFormUsed
 
 
 class UnknownCaptureReference(LookupError):
@@ -128,7 +193,8 @@ class HelpRequestsStore:
         "Keep a request until a parent resolves it, and for fourteen days after, so the word "
         "back can be read; nothing older stays, and nothing is ever derived from how often "
         "she asks. The id of a note a request named is kept after the request goes, and "
-        "nothing else of it, so that note is never deleted."
+        "nothing else of it, so that note is never deleted. The id of every request is kept "
+        "for good, and nothing else of it, so a form sent again never asks twice."
     )
 
     def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
@@ -158,13 +224,15 @@ class HelpRequestsStore:
         if "capture_id" not in columns:
             self._connection.execute("ALTER TABLE help_requests ADD COLUMN capture_id TEXT")
         self._connection.commit()
-        # The notes a request ever named, by id alone. Taking a request back or sweeping it
-        # leaves the id, since a note once asked about is never deleted. Each start fills
-        # it from the requests still here, in one transaction with the table.
+        # The notes a request ever named, and the ids every request was asked under, by
+        # id alone. Taking a request back or sweeping it leaves both. Each start fills
+        # them from the requests still here, in one transaction with the tables.
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             self._connection.execute(NOTES_NAMED_TABLE)
             self._connection.execute(NOTES_NAMED_FROM_REQUESTS)
+            self._connection.execute(IDS_TABLE)
+            self._connection.execute(IDS_FROM_REQUESTS)
             self._connection.commit()
         except BaseException:
             self._connection.rollback()
@@ -187,20 +255,40 @@ class HelpRequestsStore:
     def ask(
         self, evening: date, note: str | None = None, *, capture_id: str | None = None
     ) -> HelpRequest:
-        """Keep one request, asked now about ``evening``, and about one note when it names one.
+        """Keep one request under a fresh id, asked now about ``evening``, and about one note
+        when it names one: ``ask_once`` for a caller with no form to send twice."""
+        outcome = self.ask_once(new_request_id(), evening, note, capture_id=capture_id)
+        if not isinstance(outcome, HelpAsked):
+            msg = "a fresh help request id was already used"
+            raise RuntimeError(msg)
+        return outcome.request
 
-        A name is held to the shape of a note's id before anything is read.
-        Then the writer is reserved on this store's own connection, the note
-        is looked for in the file, and the request is written, all in that
-        one transaction: the connection's own scope would begin nothing until
-        the insert, which would leave the look outside it. The note's id is
-        kept as asked about in the same transaction. A name that is no note
-        of this record, including a deleted note's id, is ``UnknownCaptureReference``
-        and nothing is written. Whatever the file refuses is rolled back whole.
+    def ask_once(
+        self,
+        request_id: str,
+        evening: date,
+        note: str | None = None,
+        *,
+        capture_id: str | None = None,
+    ) -> AskOutcome:
+        """Keep one request for the form whose id this is, and never a second.
+
+        The id and a name are held to their shapes before anything is read.
+        Then the writer is reserved on this store's own connection, and in
+        that one transaction the id is reserved, the note is looked for, the
+        request is written and the note's id is kept as asked about. An id
+        already used is not a new request: the same form sent again, with the
+        same words about the same note, is the request it made, as it stands;
+        other words or another note is a form that already asked; and an id
+        whose request was taken back or has gone asks nothing again. A name
+        that is no note of this record, including a deleted note's id, is
+        ``UnknownCaptureReference``. Whatever the file refuses is rolled back
+        whole, and the id is left unused.
         """
+        form = request_id_from(request_id)
         name = None if capture_id is None else capture_id_from(capture_id)
         request = HelpRequest(
-            request_id=uuid4().hex,
+            request_id=form,
             evening=evening,
             asked_at=self._clock.now(),
             note=note,
@@ -209,6 +297,10 @@ class HelpRequestsStore:
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                if self._connection.execute(RESERVE_ID, (form,)).rowcount != 1:
+                    outcome = self._asked_before(form, note, name)
+                    self._connection.rollback()
+                    return outcome
                 if name is not None and not self._note_on_record(name):
                     raise UnknownCaptureReference(name)
                 self._connection.execute(
@@ -227,7 +319,18 @@ class HelpRequestsStore:
             except BaseException:
                 self._connection.rollback()
                 raise
-        return request
+        return HelpAsked(request)
+
+    def _asked_before(self, form: str, note: str | None, name: str | None) -> AskOutcome:
+        """What an id already used stands for, read inside the caller's transaction."""
+        row = self._connection.execute(RETAINED_ONE, (form, self._cutoff())).fetchone()
+        if row is None:
+            return HelpFormUsed()
+        standing = request_from(row)
+        same_words = spaced(row["note"]) == spaced(note)
+        if same_words and row["capture_id"] == name:
+            return HelpAlreadyAsked(standing)
+        return HelpFormChanged(standing)
 
     def _note_on_record(self, capture_id: str) -> bool:
         """Whether the file holds a note of this id, read through this connection, inside the
@@ -365,6 +468,12 @@ class HelpRequestsStore:
     def _cutoff(self) -> str:
         """The oldest resolution still within retention, by the store's clock."""
         return (self._clock.now() - timedelta(days=HELP_RETENTION_DAYS)).isoformat()
+
+
+def spaced(words: str | None) -> str:
+    """Words with every run of spaces, tabs and line breaks said once, for telling a form sent
+    again from one with other words."""
+    return " ".join((words or "").split())
 
 
 def request_from(row: sqlite3.Row) -> HelpRequest:

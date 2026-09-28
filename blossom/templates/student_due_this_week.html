@@ -210,26 +210,44 @@
       <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
     {% endif %}
 
-    <form method="post" action="/student/actions/ask-for-help" class="ask" id="ask-for-help" tabindex="-1">
-      <label for="help-note">A note for your parents (optional)</label>
-      <input id="help-note" type="text" name="note" maxlength="{{ note_max_length }}" placeholder="A short note">
-      <button type="submit" class="secondary">Ask for help</button>
-    </form>
+    {#
+      Asking is hers. A parent reading her page sees her requests and where to answer
+      them, and no form. Her form carries an id of its own, so sending it twice asks
+      once; a refused form comes back with her words and what went wrong beside them.
+    #}
+    {% set help_form = help_form if help_form is defined else none %}
+    {% set help_result = help_result if help_result is defined else none %}
+    {% if viewer == "parent" %}
+      <p class="note" id="ask-for-help" tabindex="-1">Her requests for help are below. You can answer them on <a href="{{ family_help }}">Family review</a>.</p>
+    {% else %}
+      {% if help_form and help_form.problem %}
+        <p class="problem" role="alert" id="help-problem"{% if not help_form.at_words %} tabindex="-1" autofocus{% endif %}>{{ help_form.problem }}</p>
+      {% endif %}
+      <form method="post" action="/student/actions/ask-for-help" class="ask" id="ask-for-help" tabindex="-1">
+        <label for="help-note">A note for your parents (optional)</label>
+        <input id="help-note" type="text" name="note" value="{{ help_form.words if help_form else "" }}" maxlength="{{ note_max_length }}" placeholder="A short note"{% if help_form and help_form.problem %} aria-describedby="help-problem"{% endif %}{% if help_form and help_form.at_words %} aria-invalid="true" autofocus{% endif %}>
+        <input type="hidden" name="request_id" value="{{ help_request_id if help_request_id is defined else "" }}">
+        <button type="submit" class="secondary">Ask for help</button>
+      </form>
+    {% endif %}
     {% set open_requests = view.help_requests|rejectattr("state", "equalto", "resolved")|list %}
     {% set resolved_requests = view.help_requests|selectattr("state", "equalto", "resolved")|list %}
+    {% set asker = "She" if viewer == "parent" else "You" %}
     {% if open_requests %}
       <ul class="help">
         {% for ask in open_requests %}
-          <li>
-            <strong>You asked for help</strong> at {{ ask.asked_local|clock }}
+          <li id="help-{{ ask.request_id }}">
+            {% if help_result == ask.request_id %}<p class="note update-result" role="status" id="help-result" tabindex="-1">{{ already_sent }}</p>{% endif %}
+            <strong>{{ asker }} asked for help</strong> at {{ ask.asked_local|clock }}
             on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
             {% if ask.about_note %}{% with about = ask.about_note %}{% include "help_about_note.html" %}{% endwith %}{% endif %}
             {% if ask.state == "requested" %}
               Waiting for a parent to respond.
-              <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
-                <button type="submit" class="secondary"
-                        aria-label="Take back the request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it back</button>
-              </form>
+              {% if viewer != "parent" %}
+                <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
+                  <button type="submit" class="secondary">Take it back<span class="visually-hidden">: your request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}</span></button>
+                </form>
+              {% endif %}
             {% else %}
               <strong>A parent is on it.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
             {% endif %}
@@ -241,12 +259,13 @@
       <a href="/student/due-this-week?refreshed=1">Refresh replies</a>. Refresh to see updates. Save or send your note first.
     </p>
     {% if resolved_requests %}
-      <details class="steps resolved">
+      <details class="steps resolved"{% if resolved_requests|selectattr("request_id", "equalto", help_result)|list %} open{% endif %}>
         <summary>Resolved requests</summary>
         <ul class="help">
           {% for ask in resolved_requests %}
-            <li>
-              <strong>You asked for help</strong> at {{ ask.asked_local|clock }}
+            <li id="help-{{ ask.request_id }}">
+              {% if help_result == ask.request_id %}<p class="note update-result" role="status" id="help-result" tabindex="-1">{{ already_sent }}</p>{% endif %}
+              <strong>{{ asker }} asked for help</strong> at {{ ask.asked_local|clock }}
               on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
               {% if ask.about_note %}
                 {% with about = ask.about_note %}

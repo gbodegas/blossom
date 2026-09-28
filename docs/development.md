@@ -69,7 +69,12 @@ With the app running as the README describes:
 - <http://127.0.0.1:8000/student/help-requests> lists her requests for help
   as JSON, the open ones and those resolved within two weeks; a POST there
   asks, with an optional note, and a DELETE takes one back while nobody has
-  taken it up.
+  taken it up. A POST may carry a `request_id`, 32 lowercase hex digits: the
+  same id sent again answers 200 with the request it made, and other words
+  or an id whose request was taken back or has gone answer 409, so nothing is
+  asked twice. Without one, every POST asks again, so retrying it isn't safe.
+  Her page's forms always send an id. Asking and taking back are hers: a
+  parent signed in gets 403.
   The parent's side is `/parent/help-requests`, with `/accept` and
   `/resolve` under each request.
 - <http://127.0.0.1:8000/parent> is the parent's page: read the plan she has,
@@ -173,7 +178,10 @@ Three files under `.local/` outlive a restart:
   published over is closed as superseded, so one plan waits per evening. Her "too much" signals live here too, with
   any words she added, kept for a week and removable from her page, and so
   do her requests for help with what a parent did with each, kept until
-  resolved and for two weeks after. Her homework notes are here as well: each
+  resolved and for two weeks after. The id of every request is kept for good,
+  and nothing else of it, so a form sent again or an old tab never asks twice;
+  requests taken back before ids were kept left none. Her homework notes are
+  here as well: each
   note as it stands, its first words, and every change to it, kept until she
   deletes one that was never used. Never used means never added to homework,
   never linked to it, and never named by a request for help, even one taken

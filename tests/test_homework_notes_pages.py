@@ -6,6 +6,7 @@ model, makes no plan stale, and costs a page no read per note.
 import pathlib
 import re
 import sqlite3
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -77,8 +78,11 @@ def change_note(client: TestClient, name: str, step: str, **typed: str) -> Answe
 
 
 def ask_about(client: TestClient, name: str, question: str = "") -> Answer:
+    """One press from a fresh form: its own request id and her question."""
     return client.post(
-        note_action(name, "ask-for-help"), data={"note": question}, headers=PAGE_HEADERS
+        note_action(name, "ask-for-help"),
+        data={"note": question, "request_id": uuid4().hex},
+        headers=PAGE_HEADERS,
     )
 
 
@@ -372,7 +376,7 @@ def test_a_request_for_help_that_is_refused_keeps_her_question_whatever_became_o
                 tried.append("write")
                 raise UnknownCaptureReference(name)
 
-            monkeypatch.setattr(state.help_requests, "ask", left)
+            monkeypatch.setattr(state.help_requests, "ask_once", left)
         seen: list[str] = []
         store._connection.set_trace_callback(seen.append)
         answer = client.post(action, data={**opened, "note": question}, headers=PAGE_HEADERS)
@@ -439,7 +443,7 @@ def own_row(page: str, *, family: bool, resolved: bool) -> str:
     if resolved:
         summary = "Resolved in the last two weeks" if family else "Resolved requests"
         rows = page.split(f"<summary>{summary}</summary>", 1)[1].split("</details>", 1)[0]
-        return rows.split("<li>", 1)[1].split("</li>", 1)[0]
+        return rows.split("<li", 1)[1].split("</li>", 1)[0]
     if family:
         return page.split('<article class="draft help-', 1)[1].split("</article>", 1)[0]
     return page.split('<ul class="help">', 1)[1].split("</li>", 1)[0]
@@ -869,7 +873,7 @@ def test_a_request_the_file_refuses_is_said_with_her_question_kept_and_nothing_r
             msg = "the file refused"
             raise sqlite3.OperationalError(msg)
 
-        monkeypatch.setattr(state.help_requests, "ask", refuses)
+        monkeypatch.setattr(state.help_requests, "ask_once", refuses)
         state.project_state._connection.set_trace_callback(seen.append)
         answer = client.post(action, data=fields, headers=PAGE_HEADERS)
         state.project_state._connection.set_trace_callback(None)
@@ -893,3 +897,90 @@ def test_a_request_the_file_refuses_is_said_with_her_question_kept_and_nothing_r
     assert sent == []
     assert again.status_code == 303
     assert [(item.capture_id, item.note) for item in asked] == [(name, "<b>which</b> part first?")]
+
+
+# ------------------------------------------------------------ one request per form, about a note
+
+ALREADY_SENT = "That request was already sent."
+FORM_USED = "This form was already used. Open a new help form to ask again."
+FORM_SENT_OTHER_WORDS = "This form already sent a request"
+
+
+def help_form(client: TestClient, name: str) -> dict[str, str]:
+    """What the note's Ask for help form sends, a fresh id among them."""
+    return whole_form(client.get(note_help_href(name)).text, note_action(name, "ask-for-help"))
+
+
+def test_the_same_note_form_sent_again_asks_once() -> None:
+    with browser() as client:
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form = {**help_form(client, name), "note": "which part?"}
+        first = client.post(action, data=form, headers=PAGE_HEADERS)
+        again = client.post(action, data=form, headers=PAGE_HEADERS)
+        landed = client.get(again.headers["location"]).text
+        sent = state_of(client).help_requests.open_requests()
+
+    assert first.status_code == 303
+    assert again.status_code == 303
+    assert len(sent) == 1
+    assert ALREADY_SENT in landed
+    assert escape(NOTE_ASKED) not in landed
+
+
+@pytest.mark.parametrize("case", ["other words", "taken back"])
+def test_a_note_form_that_already_asked_keeps_her_question_and_asks_nothing_more(
+    case: str,
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form = help_form(client, name)
+        client.post(action, data={**form, "note": "which part?"}, headers=PAGE_HEADERS)
+        request_id = state_of(client).help_requests.open_requests()[0].request_id
+        if case == "taken back":
+            client.post(f"/student/actions/take-back-help/{request_id}")
+        words = "the second part" if case == "other words" else "which part?"
+        refused = client.post(action, data={**form, "note": words}, headers=PAGE_HEADERS)
+        again = whole_form(refused.text, action)
+        sent = state_of(client).help_requests.open_requests()
+
+    assert refused.status_code == 409
+    assert (FORM_SENT_OTHER_WORDS if case == "other words" else FORM_USED) in refused.text
+    assert again["note"] == words
+    assert again["request_id"] != form["request_id"]
+    assert len(sent) == (1 if case == "other words" else 0)
+
+
+@pytest.mark.parametrize("shape", ["no id", "id twice", "question twice", "bad id"])
+def test_a_note_form_that_is_not_whole_asks_nothing_and_keeps_the_first_question(
+    shape: str,
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form_id = help_form(client, name)["request_id"]
+        first = ("note", "First synthetic question")
+        fields = {
+            "no id": [first],
+            "id twice": [first, ("request_id", form_id), ("request_id", form_id)],
+            "question twice": [
+                first,
+                ("note", "Second synthetic question"),
+                ("request_id", form_id),
+            ],
+            "bad id": [first, ("request_id", "not-an-id")],
+        }[shape]
+        refused = client.post(
+            action,
+            content="&".join(f"{key}={value.replace(' ', '+')}" for key, value in fields),
+            headers={**PAGE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        again = whole_form(refused.text, action)
+        sent = state_of(client).help_requests.open_requests()
+
+    assert refused.status_code == 422
+    assert again["note"] == "First synthetic question"
+    assert "Second synthetic question" not in refused.text
+    assert again["request_id"] not in ("", "not-an-id", form_id)
+    assert sent == []

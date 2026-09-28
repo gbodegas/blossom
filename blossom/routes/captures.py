@@ -93,7 +93,10 @@ from blossom.routes.navigation import (
     note_href,
 )
 from blossom.routes.student import (
+    ALREADY_SENT,
     BAD_FORM,
+    FORM_SENT_OTHER_WORDS,
+    FORM_USED,
     NOT_HERS_TO_UPDATE,
     ReturnLink,
     State,
@@ -101,7 +104,17 @@ from blossom.routes.student import (
     templates,
     viewer_of,
 )
-from blossom.stores.help_requests import NOTE_MAX_LENGTH, UnknownCaptureReference
+from blossom.stores.help_requests import (
+    NOTE_MAX_LENGTH,
+    HelpAlreadyAsked,
+    HelpAsked,
+    HelpFormChanged,
+    HelpFormUsed,
+    NotARequestId,
+    UnknownCaptureReference,
+    new_request_id,
+    request_id_from,
+)
 from blossom.stores.project_state import Assignment
 
 logger = logging.getLogger(__name__)
@@ -206,7 +219,7 @@ pressed, which a form sent with the Enter key does not carry."""
 CREATE_FIELDS: Final = WORDS_AND_DAY | PRESSED_OR_PENDING | {"capture_id"}
 EDIT_FIELDS: Final = WORDS_AND_DAY | PRESSED_OR_PENDING | {"revision"}
 MOVE_FIELDS: Final = frozenset({"revision"})
-HELP_FIELDS: Final = frozenset({"note"})
+HELP_FIELDS: Final = frozenset({"note", "request_id"})
 
 SAID: Final[dict[str, tuple[str, str | None]]] = {
     "saved": (NOTE_SAVED, CREATE),
@@ -615,6 +628,7 @@ def note_page(
     said: str | None = None,
     event: str | None = None,
     asked: str | None = None,
+    asked_again: bool = False,
     edit: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -653,7 +667,7 @@ def note_page(
     if mine and result is None and asked:
         request_made = state.help_requests.get(asked[:TOKEN_MAX_LENGTH])
         if request_made is not None and request_made.capture_id == note.capture_id:
-            result = NoteResult(NOTE_ASKED, stands=True)
+            result = NoteResult(ALREADY_SENT if asked_again else NOTE_ASKED, stands=True)
     deletable = use_unknown = False
     if mine:
         try:
@@ -885,15 +899,26 @@ def one_note(
     said: str | None = None,
     event: str | None = None,
     asked: str | None = None,
+    again: str | None = None,
     edit: str | None = None,
 ) -> HTMLResponse:
     """One note. ``said`` and ``event`` are what a save did and the change it made or found,
-    looked up in the note's history; ``edit`` opens the form; nothing here writes."""
+    looked up in the note's history; ``asked`` a request made from it, looked up too, and
+    ``again`` that it was sent twice; ``edit`` opens the form; nothing here writes."""
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    return note_page(request, state, name, said=said, event=event, asked=asked, edit=edit == "1")
+    return note_page(
+        request,
+        state,
+        name,
+        said=said,
+        event=event,
+        asked=asked,
+        asked_again=again == "1",
+        edit=edit == "1",
+    )
 
 
 @router.get(
@@ -932,7 +957,8 @@ def help_page(
     typed it. Rendering it sends nothing. ``question_error`` says the problem is about the
     question itself, so the alert links to it and the field points back.
     ``before_the_refusal`` says the note shown was read before a write the file refused
-    and was not read again, so the page says when it was read and not that it stands."""
+    and was not read again, so the page says when it was read and not that it stands. Each
+    time it is made, its form gets a fresh id."""
     return templates.TemplateResponse(
         request,
         "student_note_help.html",
@@ -945,6 +971,7 @@ def help_page(
             "viewer": viewer_of(request),
             "not_hers": NOT_HERS_TO_UPDATE,
             "note_max_length": NOTE_MAX_LENGTH,
+            "request_id": new_request_id(),
             "sample": state.settings.sample,
         },
         status_code=status_code,
@@ -1343,7 +1370,10 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     the note already read, so it reads no store again. Where no note can be
     shown, since it cannot be read, left the record before or during the
     write, or the file cannot be read, the answer is the page that needs no
-    note, with her question, and nothing is sent.
+    note, with her question, and nothing is sent. The form carries an id the
+    page gave it: the same form sent again is the request it made, and one
+    that already asked with other words, or whose request was taken back or
+    has gone, sends nothing and keeps her question in a fresh form.
     A parent is answered 403 and nothing is sent in her name.
     """
     fields, whole = await fields_of(request, HELP_FIELDS)
@@ -1376,19 +1406,26 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
             status_code=status.HTTP_403_FORBIDDEN,
         )
     words = question.strip()
-    if not whole or len(words) > NOTE_MAX_LENGTH:
+    try:
+        form = request_id_from(fields.get("request_id", ""))
+    except NotARequestId:
+        form = None
+    sound = whole and form is not None
+    if form is None or not sound or len(words) > NOTE_MAX_LENGTH:
         return help_page(
             request,
             state,
             note,
             question=question,
-            problem=QUESTION_TOO_LONG if whole else BAD_FORM,
-            question_error=whole,
+            problem=QUESTION_TOO_LONG if sound else BAD_FORM,
+            question_error=sound,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     try:
         async with state.decision_lock:
-            asked = state.help_requests.ask(state.clock.today(), words or None, capture_id=name)
+            outcome = state.help_requests.ask_once(
+                form, state.clock.today(), words or None, capture_id=name
+            )
     except UnknownCaptureReference:
         return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
     except Exception:
@@ -1402,7 +1439,18 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
             before_the_refusal=True,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-    return RedirectResponse(
-        note_href(name, fragment=NOTE_RESULT, asked=asked.request_id),
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
+    match outcome:
+        case HelpAsked(request=asked):
+            where = note_href(name, fragment=NOTE_RESULT, asked=asked.request_id)
+        case HelpAlreadyAsked(request=asked):
+            where = note_href(name, fragment=NOTE_RESULT, asked=asked.request_id, again="1")
+        case HelpFormChanged() | HelpFormUsed():
+            return help_page(
+                request,
+                state,
+                note,
+                question=question,
+                problem=FORM_USED if isinstance(outcome, HelpFormUsed) else FORM_SENT_OTHER_WORDS,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+    return RedirectResponse(where, status_code=status.HTTP_303_SEE_OTHER)
