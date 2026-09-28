@@ -6,6 +6,8 @@ model, makes no plan stale, and costs a page no read per note.
 import pathlib
 import re
 import sqlite3
+from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +15,7 @@ from markupsafe import escape
 
 from blossom.app import create_app
 from blossom.captures import new_capture_id
+from blossom.routes import captures as note_routes
 from blossom.routes.captures import (
     HELP_NOT_ASKED,
     NOTE_ASKED,
@@ -31,7 +34,12 @@ from blossom.routes.navigation import (
 )
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.runs import plan_graphs
-from blossom.routes.student import ASSIGNMENTS_CHANGED
+from blossom.routes.student import (
+    ASSIGNMENTS_CHANGED,
+    HELP_FORM_NOT_WHOLE,
+    NOT_HERS_TO_ASK,
+    NOT_HERS_TO_UPDATE,
+)
 from blossom.stores.help_requests import UnknownCaptureReference
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
@@ -78,8 +86,11 @@ def change_note(client: TestClient, name: str, step: str, **typed: str) -> Answe
 
 
 def ask_about(client: TestClient, name: str, question: str = "") -> Answer:
+    """One press from a fresh form: its own request id and her question."""
     return client.post(
-        note_action(name, "ask-for-help"), data={"note": question}, headers=PAGE_HEADERS
+        note_action(name, "ask-for-help"),
+        data={"note": question, "request_id": uuid4().hex},
+        headers=PAGE_HEADERS,
     )
 
 
@@ -373,7 +384,7 @@ def test_a_request_for_help_that_is_refused_keeps_her_question_whatever_became_o
                 tried.append("write")
                 raise UnknownCaptureReference(name)
 
-            monkeypatch.setattr(state.help_requests, "ask", left)
+            monkeypatch.setattr(state.help_requests, "ask_once", left)
         seen: list[str] = []
         store._connection.set_trace_callback(seen.append)
         answer = client.post(action, data={**opened, "note": question}, headers=PAGE_HEADERS)
@@ -435,12 +446,119 @@ def test_signed_in_the_same_endpoints_say_a_readable_note_is_readable_and_a_dama
         assert answer.json()["about_note"] == expected[name]
 
 
+@pytest.mark.parametrize("whole", [True, False], ids=["whole", "no id"])
+@pytest.mark.parametrize(
+    "what",
+    ["readable", "archived", "not an id", "no such note", "deleted", "unreadable"],
+)
+def test_a_parent_asking_about_a_note_is_refused_before_the_note_is_looked_up(
+    what: str, whole: bool, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parent's press is answered 403 from the address alone, whatever became of the note."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        if what == "archived":
+            assert change_note(client, name, "archive").status_code == 303
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        state = state_of(client)
+        store = state.project_state
+        about = {"not an id": "note-1", "no such note": new_capture_id()}.get(what, name)
+        if what == "deleted":
+            store._connection.execute("DELETE FROM homework_captures WHERE capture_id = ?", (name,))
+        elif what == "unreadable":
+            store._connection.execute(
+                "UPDATE homework_captures SET attribution = 'no json' WHERE capture_id = ?", (name,)
+            )
+        store._connection.commit()
+        tried: list[str] = []
+
+        def looked_up(*args: object, **kwargs: object) -> None:
+            tried.append("lookup")
+            msg = "a parent's press looked the note up"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(store, "sound_capture_history", looked_up)
+        fields = {"note": "from a parent", "request_id": uuid4().hex}
+        if not whole:
+            del fields["request_id"]
+        seen: list[str] = []
+        store._connection.set_trace_callback(seen.append)
+        answers = [
+            client.post(note_action(about, "ask-for-help"), data=fields, headers=PAGE_HEADERS)
+            for _ in range(2)
+        ]
+        store._connection.set_trace_callback(None)
+        monkeypatch.undo()
+        help_rows = [
+            state.help_requests._connection.execute(statement).fetchone()[0]
+            for statement in (
+                "SELECT count(*) FROM help_requests",
+                "SELECT count(*) FROM help_request_ids",
+                "SELECT count(*) FROM notes_named_by_requests",
+            )
+        ]
+
+    for answer in answers:
+        assert answer.status_code == 403
+        assert str(escape(NOT_HERS_TO_ASK)) in answer.text
+        assert str(escape(NOT_HERS_TO_UPDATE)) not in answer.text
+        assert (f'href="{note_href(about)}"' in answer.text) is (what != "not an id")
+    assert [line for line in seen if "capture" in line] == []
+    assert tried == []
+    assert help_rows == [0, 0, 0]
+
+
+@pytest.mark.parametrize(
+    ("body", "kind"),
+    [
+        (
+            b"--synthetic\r\nContent-Disposition: form-data\r\n\r\nno end",
+            "multipart/form-data; boundary=synthetic",
+        ),
+        (b"note=from+a+parent&note=twice", "application/x-www-form-urlencoded"),
+        (b"", "application/x-www-form-urlencoded"),
+    ],
+    ids=["broken multipart", "note twice", "empty"],
+)
+def test_a_parent_asking_about_a_note_is_refused_before_the_form_is_read(
+    body: bytes, kind: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+
+        async def unread(*args: object, **kwargs: object) -> None:
+            msg = "a parent's form was read"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(note_routes, "fields_of", unread)
+        refused = client.post(
+            note_action(name, "ask-for-help"),
+            content=body,
+            headers={**PAGE_HEADERS, "Content-Type": kind},
+        )
+        monkeypatch.undo()
+        held = help_held(client)
+
+    assert refused.status_code == 403
+    assert str(escape(NOT_HERS_TO_ASK)) in refused.text
+    assert f'href="{note_href(name)}"' in refused.text
+    assert "from a parent" not in refused.text
+    assert held == ([], 0)
+
+
 def own_row(page: str, *, family: bool, resolved: bool) -> str:
     """The one request's own row: its list item or its card, and nothing else of the page."""
     if resolved:
         summary = "Resolved in the last two weeks" if family else "Resolved requests"
         rows = page.split(f"<summary>{summary}</summary>", 1)[1].split("</details>", 1)[0]
-        return rows.split("<li>", 1)[1].split("</li>", 1)[0]
+        return rows.split("<li", 1)[1].split("</li>", 1)[0]
     if family:
         return page.split('<article class="draft help-', 1)[1].split("</article>", 1)[0]
     return page.split('<ul class="help">', 1)[1].split("</li>", 1)[0]
@@ -872,7 +990,7 @@ def test_a_request_the_file_refuses_is_said_with_her_question_kept_and_nothing_r
             msg = "the file refused"
             raise sqlite3.OperationalError(msg)
 
-        monkeypatch.setattr(state.help_requests, "ask", refuses)
+        monkeypatch.setattr(state.help_requests, "ask_once", refuses)
         state.project_state._connection.set_trace_callback(seen.append)
         answer = client.post(action, data=fields, headers=PAGE_HEADERS)
         state.project_state._connection.set_trace_callback(None)
@@ -896,3 +1014,339 @@ def test_a_request_the_file_refuses_is_said_with_her_question_kept_and_nothing_r
     assert sent == []
     assert again.status_code == 303
     assert [(item.capture_id, item.note) for item in asked] == [(name, "<b>which</b> part first?")]
+
+
+# ------------------------------------------------------------ one request per form, about a note
+
+ALREADY_SENT = "That request was already sent."
+FORM_USED = "This form was already used. Open a new help form to ask again."
+FORM_SENT_OTHER_WORDS = "This form already sent a request"
+
+
+def help_form(client: TestClient, name: str) -> dict[str, str]:
+    """What the note's Ask for help form sends, a fresh id among them."""
+    return whole_form(client.get(note_help_href(name)).text, note_action(name, "ask-for-help"))
+
+
+def help_held(client: TestClient) -> tuple[list[object], int]:
+    """Every request the store holds as it stands, and how many form ids it keeps."""
+    held = state_of(client).help_requests
+    ids = held._connection.execute("SELECT count(*) FROM help_request_ids").fetchone()[0]
+    return [*held.open_requests(), *held.recently_resolved()], ids
+
+
+def help_row(page: str, request_id: str) -> str:
+    start = page.index(f'<li id="help-{request_id}">')
+    return page[start : page.index("</li>", start)]
+
+
+@pytest.mark.parametrize("next_day", [False, True], ids=["same day", "after midnight"])
+@pytest.mark.parametrize(
+    ("steps", "reply", "stands"),
+    [
+        ([], None, "Waiting for a parent to respond."),
+        (["accept"], None, "A parent is on it."),
+        (["accept"], "Review the graph together after dinner.", "A parent is on it."),
+        (["accept", "resolve"], None, "Resolved."),
+        (["accept", "resolve"], "Page 12 has the steps.", "Resolved."),
+    ],
+    ids=["requested", "taken up", "taken up with a reply", "resolved", "resolved with a reply"],
+)
+def test_the_same_note_form_sent_again_lands_on_the_request_as_it_stands(
+    steps: list[str],
+    reply: str | None,
+    stands: str,
+    next_day: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form = {**help_form(client, name), "note": "Which part comes first?"}
+        first = client.post(action, data=form, headers=PAGE_HEADERS)
+        asked = state_of(client).help_requests.open_requests()[0]
+        for step in steps:
+            said = {"response": reply} if reply and step == steps[-1] else {}
+            moved = client.post(f"/parent/help-requests/{asked.request_id}/{step}", json=said)
+            assert moved.status_code == 200, moved.text
+        before = help_held(client)
+        if next_day:
+            clock = state_of(client).clock
+            monkeypatch.setattr(clock, "_instant", clock.now() + timedelta(days=1))
+        again = client.post(action, data=form, headers=PAGE_HEADERS)
+        landed = client.get(again.headers["location"])
+        after = help_held(client)
+
+    assert first.status_code == 303
+    assert again.status_code == 303
+    assert again.headers["location"] == f"{HER_PAGE}?asked_again={asked.request_id}#help-result"
+    assert landed.status_code == 200
+    assert landed.text.count(ALREADY_SENT) == 1
+    row = help_row(landed.text, asked.request_id)
+    assert f'id="help-result" tabindex="-1">{ALREADY_SENT}' in row
+    assert "Which part comes first?" in row
+    assert stands in row
+    assert (f"They said: <q>{escape(reply)}</q>" in row) is (reply is not None)
+    assert f'href="{note_href(name)}"' in row
+    if "resolve" in steps:
+        assert '<details class="steps resolved" open>' in landed.text
+    assert after == before
+
+
+@pytest.mark.parametrize("case", ["other words", "taken back"])
+def test_a_note_form_that_already_asked_keeps_her_question_and_asks_nothing_more(
+    case: str,
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form = help_form(client, name)
+        client.post(action, data={**form, "note": "which part?"}, headers=PAGE_HEADERS)
+        request_id = state_of(client).help_requests.open_requests()[0].request_id
+        if case == "taken back":
+            client.post(f"/student/actions/take-back-help/{request_id}")
+        words = "the second part" if case == "other words" else "which part?"
+        refused = client.post(action, data={**form, "note": words}, headers=PAGE_HEADERS)
+        again = whole_form(refused.text, action)
+        sent = state_of(client).help_requests.open_requests()
+
+    assert refused.status_code == 409
+    assert (FORM_SENT_OTHER_WORDS if case == "other words" else FORM_USED) in refused.text
+    assert again["note"] == words
+    assert again["request_id"] != form["request_id"]
+    assert len(sent) == (1 if case == "other words" else 0)
+
+
+@pytest.mark.parametrize(
+    "shape", ["no id", "id twice", "question twice", "bad id", "unknown field"]
+)
+def test_a_note_form_that_is_not_whole_asks_nothing_and_keeps_the_first_question(
+    shape: str,
+) -> None:
+    with browser() as client:
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form_id = help_form(client, name)["request_id"]
+        first = ("note", "First synthetic question")
+        fields = {
+            "no id": [first],
+            "id twice": [first, ("request_id", form_id), ("request_id", form_id)],
+            "question twice": [
+                first,
+                ("note", "Second synthetic question"),
+                ("request_id", form_id),
+            ],
+            "bad id": [first, ("request_id", "not-an-id")],
+            "unknown field": [first, ("request_id", form_id), ("status", "done")],
+        }[shape]
+        refused = client.post(
+            action,
+            content="&".join(f"{key}={value.replace(' ', '+')}" for key, value in fields),
+            headers={**PAGE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        again = whole_form(refused.text, action)
+        sent = state_of(client).help_requests.open_requests()
+
+    assert refused.status_code == 422
+    assert str(escape(HELP_FORM_NOT_WHOLE)) in refused.text
+    assert again["note"] == "First synthetic question"
+    assert "Second synthetic question" not in refused.text
+    assert again["request_id"] not in ("", "not-an-id", form_id)
+    assert sent == []
+
+
+def test_a_note_question_sent_as_a_file_asks_nothing_and_says_why() -> None:
+    with browser() as client:
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form_id = help_form(client, name)["request_id"]
+        refused = client.post(
+            action,
+            data={"request_id": form_id},
+            files={"note": ("question.txt", b"file words", "text/plain")},
+            headers=PAGE_HEADERS,
+        )
+        held = help_held(client)
+
+    assert refused.status_code == 422
+    assert str(escape(HELP_FORM_NOT_WHOLE)) in refused.text
+    assert "file words" not in refused.text
+    assert held == ([], 0)
+
+
+@pytest.mark.parametrize("sent", ["the same words", "other words", "taken back"])
+@pytest.mark.parametrize("what", ["unreadable", "gone", "read_failure"])
+def test_a_note_form_sent_again_is_answered_by_its_id_whatever_became_of_the_note(
+    what: str, sent: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with browser() as client:
+        state = state_of(client)
+        store = state.project_state
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form = {**help_form(client, name), "note": "Which part comes first?"}
+        assert client.post(action, data=form, headers=PAGE_HEADERS).status_code == 303
+        asked = state.help_requests.open_requests()[0]
+        if sent == "taken back":
+            client.post(f"/student/actions/take-back-help/{asked.request_id}")
+        before = help_held(client)
+        if what == "read_failure":
+
+            def unread(*args: object, **kwargs: object) -> None:
+                msg = "the file cannot be read"
+                raise sqlite3.OperationalError(msg)
+
+            monkeypatch.setattr(store, "sound_capture_history", unread)
+        else:
+            store._connection.execute(
+                {
+                    "unreadable": "UPDATE homework_captures SET attribution = 'no json' "
+                    "WHERE capture_id = ?",
+                    "gone": "DELETE FROM homework_captures WHERE capture_id = ?",
+                }[what],
+                (name,),
+            )
+            store._connection.commit()
+        words = "Where do I start?" if sent == "other words" else "Which part comes first?"
+        again = client.post(action, data={**form, "note": words}, headers=PAGE_HEADERS)
+        monkeypatch.undo()
+        landed = client.get(again.headers.get("location", HER_PAGE))
+        after = help_held(client)
+
+    assert after == before
+    if sent == "the same words":
+        assert again.status_code == 303
+        assert again.headers["location"] == f"{HER_PAGE}?asked_again={asked.request_id}#help-result"
+        assert landed.status_code == 200
+        row = help_row(landed.text, asked.request_id)
+        assert f'id="help-result" tabindex="-1">{ALREADY_SENT}' in row
+        assert "Which part comes first?" in row
+    else:
+        fresh = f"{HER_PAGE}#ask-for-help"
+        assert again.status_code == 409
+        assert (FORM_USED if sent == "taken back" else FORM_SENT_OTHER_WORDS) in again.text
+        assert f"readonly>{words}</textarea>" in again.text
+        assert f'<a href="{fresh}">Open a new help form</a>' in again.text
+        assert (f'href="{note_href(name)}"' in again.text) is (what != "gone")
+        assert whole_form(landed.text, "/student/actions/ask-for-help")["request_id"]
+
+
+@pytest.mark.parametrize("signed", [False, True], ids=["sign-in off", "signed in"])
+@pytest.mark.parametrize("what", ["unreadable", "read_failure", "not found"])
+@pytest.mark.parametrize("sent", ["other words", "taken back"])
+def test_a_note_form_that_already_asked_says_so_through_failed_reads_and_after_they_end(
+    sent: str, what: str, signed: bool, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = create_app(signed_in_household(tmp_path)) if signed else browser().app
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        if signed:
+            client.post("/sign-in", data={"passphrase": HERS})
+        state = state_of(client)
+        store = state.project_state
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form = {**help_form(client, name), "note": "Synthetic first question"}
+        assert client.post(action, data=form, headers=PAGE_HEADERS).status_code == 303
+        asked = state.help_requests.open_requests()[0]
+        if sent == "taken back":
+            client.post(f"/student/actions/take-back-help/{asked.request_id}")
+        words = "Changed synthetic question" if sent == "other words" else form["note"]
+        before = help_held(client)
+        kept = store._connection.execute(
+            "SELECT attribution FROM homework_captures WHERE capture_id = ?", (name,)
+        ).fetchone()[0]
+        if what == "unreadable":
+            store._connection.execute(
+                "UPDATE homework_captures SET attribution = 'no json' WHERE capture_id = ?",
+                (name,),
+            )
+            store._connection.commit()
+        else:
+
+            def unread(*args: object, **kwargs: object) -> None:
+                if what == "read_failure":
+                    msg = "the file cannot be read"
+                    raise sqlite3.OperationalError(msg)
+
+            monkeypatch.setattr(store, "sound_capture_history", unread)
+        failed = [
+            client.post(action, data={**form, "note": words}, headers=PAGE_HEADERS)
+            for _ in range(2)
+        ]
+        monkeypatch.undo()
+        store._connection.execute(
+            "UPDATE homework_captures SET attribution = ? WHERE capture_id = ?", (kept, name)
+        )
+        store._connection.commit()
+        recovered = client.post(action, data={**form, "note": words}, headers=PAGE_HEADERS)
+        held = help_held(client)
+        fresh = whole_form(client.get(note_help_href(name)).text, action)
+        sent_fresh = client.post(action, data={**fresh, "note": words}, headers=PAGE_HEADERS)
+        after = help_held(client)
+        now = state.help_requests.open_requests()
+
+    problem = FORM_USED if sent == "taken back" else FORM_SENT_OTHER_WORDS
+    link = f"{HER_PAGE}#ask-for-help"
+    for answer in failed:
+        assert answer.status_code == 409
+        assert problem in answer.text
+        assert f"readonly>{words}</textarea>" in answer.text
+        assert f'<a href="{link}">Open a new help form</a>' in answer.text
+    assert recovered.status_code == 409
+    assert problem in recovered.text
+    again = whole_form(recovered.text, action)
+    assert again["note"] == words
+    assert again["request_id"] not in (form["request_id"], fresh["request_id"])
+    assert held == before
+    assert sent_fresh.status_code == 303
+    assert after[1] == before[1] + 1
+    assert len(after[0]) == len(before[0]) + 1
+    assert [item.note for item in now if item.request_id == fresh["request_id"]] == [words]
+
+
+def test_a_note_form_whose_id_cannot_be_looked_up_asks_nothing_and_keeps_the_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with browser() as client:
+        state = state_of(client)
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form = {**help_form(client, name), "note": "Which part comes first?"}
+
+        def unread(*args: object, **kwargs: object) -> None:
+            msg = "the file cannot be read"
+            raise sqlite3.OperationalError(msg)
+
+        monkeypatch.setattr(state.help_requests, "already_asked", unread)
+        answer = client.post(action, data=form, headers=PAGE_HEADERS)
+        monkeypatch.undo()
+        held = help_held(client)
+
+    assert answer.status_code == 500
+    assert str(escape(HELP_NOT_ASKED)) in answer.text
+    assert "Which part comes first?" in answer.text
+    assert held == ([], 0)
+
+
+def test_the_later_of_two_crossed_sends_of_a_note_form_lands_on_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with browser() as client:
+        state = state_of(client)
+        name = save_note(client)
+        action = note_action(name, "ask-for-help")
+        form = {**help_form(client, name), "note": "Which part comes first?"}
+        assert client.post(action, data=form, headers=PAGE_HEADERS).status_code == 303
+        asked = state.help_requests.open_requests()[0]
+        before = help_held(client)
+        monkeypatch.setattr(state.help_requests, "already_asked", lambda *_, **__: None)
+        again = client.post(action, data=form, headers=PAGE_HEADERS)
+        monkeypatch.undo()
+        landed = client.get(again.headers["location"])
+        after = help_held(client)
+
+    assert again.status_code == 303
+    assert again.headers["location"] == f"{HER_PAGE}?asked_again={asked.request_id}#help-result"
+    row = help_row(landed.text, asked.request_id)
+    assert f'id="help-result" tabindex="-1">{ALREADY_SENT}' in row
+    assert after == before

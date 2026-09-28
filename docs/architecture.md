@@ -534,7 +534,7 @@ still answers the structured side for one that would.
 | `DraftsStore` | Every draft that reached the gate, as its text and, in a nullable versioned column, the plan as data; every decision about it; and every run's record of what each node expected and found | Wired and tested; a file at `BLOSSOM_DATABASE_PATH` |
 | `TraceStore` | The framework's trace of each run: every node and model call with inputs, outputs, and errors, redacted on the way in | Wired and tested; a file at `BLOSSOM_TRACE_PATH`, swept after two weeks |
 | `WorkloadSignalsStore` | Her presses of the "too much" control: which evening, when, nothing about her | Wired and tested; in the drafts file, swept after a week, deletable by her |
-| `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, the parent's word back, and the id of the homework note a request is about, never the note's words | Wired and tested; in the drafts file, kept until resolved and swept two weeks after |
+| `HelpRequestsStore` | Her requests for help: when, her words if any, where each stands, the parent's word back, and the id of the homework note a request is about, never the note's words | Wired and tested; in the drafts file, kept until resolved and swept two weeks after; each request's id alone is kept for good |
 
 They are separate because their retention and access rules differ, not for
 tidiness. `ReflectionsStore.write` refuses any subject other than `SYSTEM`, so
@@ -1310,6 +1310,16 @@ when the household clock is pinned. A resolved request is kept for
 the cutoff is applied on every read as well as in the hourly sweep; an open
 request is kept until someone resolves it, since a question nobody has
 answered is not old news. Nothing counts requests or groups them by anything.
+
+Each form that asks carries an id the page made for it. The request is kept
+under that id in one transaction with the id's own record, the look for the
+note, and the note's use. The same form sent again, with the same words about
+the same note, answers with the request it made as it stands; other words, or
+an id whose request was taken back or has gone, ask nothing again.
+`help_request_ids` keeps each id for good and nothing else of the request, and
+a file from before gains the ids of the requests still in it. Asking and taking
+back are hers: a parent signed in is refused on her page and in JSON, and reads
+her requests there with a link to Family review.
 
 **Not built:** a request reaches the parent's page and nowhere else. The
 design's notification to a parent, and her seeing that it went, are not

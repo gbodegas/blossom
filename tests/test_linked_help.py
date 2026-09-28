@@ -146,9 +146,9 @@ def test_a_file_with_no_notes_in_it_has_no_note_to_name() -> None:
 def test_the_note_is_looked_for_inside_the_transaction_that_writes_the_request(
     stores: tuple[ProjectStateStore, HelpRequestsStore],
 ) -> None:
-    """The writer is reserved first, on the help store's own connection, then the note is
-    read, then the request is written, and only then is it all committed. A connection's
-    own scope would begin nothing until the insert, leaving the read outside."""
+    """The writer is reserved first, on the help store's own connection, then the form's id,
+    then the note is read, then the request is written, and only then is it all committed. A
+    connection's own scope would begin nothing until the insert, leaving the read outside."""
     record, help_store = stores
     name = note_in(record)
     seen: list[str] = []
@@ -163,8 +163,15 @@ def test_the_note_is_looked_for_inside_the_transaction_that_writes_the_request(
     read = next(
         index for index, statement in enumerate(said) if "FROM homework_captures" in statement
     )
-    wrote = next(index for index, statement in enumerate(said) if statement.startswith("INSERT"))
-    assert 0 < read < wrote < len(said) - 1
+    reserved = next(
+        index for index, statement in enumerate(said) if "INTO help_request_ids" in statement
+    )
+    wrote = next(
+        index
+        for index, statement in enumerate(said)
+        if statement.startswith("INSERT INTO help_requests")
+    )
+    assert 0 < reserved < read < wrote < len(said) - 1
     assert not help_store._connection.in_transaction
 
 

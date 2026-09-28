@@ -1,24 +1,42 @@
 """Asking for help: one press from her page, a state a parent moves, each step shown to her."""
 
+import pathlib
 import sqlite3
 from datetime import timedelta
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 from pydantic import ValidationError
 
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
+from blossom.routes import student as student_routes
 from blossom.stores.help_requests import (
     HELP_RETENTION_DAYS,
     NOTE_MAX_LENGTH,
     HelpRequestsStore,
     RequestClosed,
 )
-from tests.support import OBSERVED_AT, PLAN_DATE, SAME_ORIGIN, ZONE, fixture_clock, fixture_settings
+from tests.support import (
+    HERS,
+    OBSERVED_AT,
+    PLAN_DATE,
+    SAME_ORIGIN,
+    THEIRS,
+    ZONE,
+    Answer,
+    fixture_clock,
+    fixture_settings,
+    signed_in_household,
+    whole_form,
+)
 
 PAGE = "/student/due-this-week"
+ASK = "/student/actions/ask-for-help"
+FORM_TYPE = "application/x-www-form-urlencoded"
 
 
 def store_in_memory(clock: FrozenClock | None = None) -> HelpRequestsStore:
@@ -30,6 +48,11 @@ def store_in_memory(clock: FrozenClock | None = None) -> HelpRequestsStore:
 def browser() -> TestClient:
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
+
+
+def ask_form(client: TestClient) -> dict[str, str]:
+    """The fields her page's Ask for help form sends, a fresh id among them."""
+    return whole_form(client.get(PAGE).text, ASK)
 
 
 # ------------------------------------------------------------------ the store
@@ -130,6 +153,8 @@ def test_the_store_offers_no_way_to_read_a_pattern() -> None:
 
     assert offered == {
         "ask",
+        "ask_once",
+        "already_asked",
         "take_back",
         "accept",
         "resolve",
@@ -219,10 +244,8 @@ def test_her_note_is_capped_at_the_boundary() -> None:
         over_json = client.post(
             "/student/help-requests", json={"note": "w" * (NOTE_MAX_LENGTH + 1)}
         )
-        over_form = client.post(
-            "/student/actions/ask-for-help", data={"note": "w" * (NOTE_MAX_LENGTH + 1)}
-        )
-        at_cap = client.post("/student/actions/ask-for-help", data={"note": "w" * NOTE_MAX_LENGTH})
+        over_form = client.post(ASK, data={**ask_form(client), "note": "w" * (NOTE_MAX_LENGTH + 1)})
+        at_cap = client.post(ASK, data={**ask_form(client), "note": "w" * NOTE_MAX_LENGTH})
         word_back = client.post(
             "/parent/help-requests/nobody/resolve", json={"response": "w" * (NOTE_MAX_LENGTH + 1)}
         )
@@ -260,7 +283,7 @@ def test_a_parents_word_back_is_capped_on_the_form_too() -> None:
 def test_her_page_offers_the_press_and_then_lists_the_request_with_a_way_back() -> None:
     with browser() as client:
         before = client.get(PAGE).text
-        asked = client.post("/student/actions/ask-for-help", data={"note": "  the outline  "})
+        asked = client.post(ASK, data={**ask_form(client), "note": "  the outline  "})
         after = client.get(PAGE).text
         request_id = client.get("/student/help-requests").json()[0]["request_id"]
         taken_back = client.post(f"/student/actions/take-back-help/{request_id}")
@@ -274,6 +297,8 @@ def test_her_page_offers_the_press_and_then_lists_the_request_with_a_way_back() 
     assert "<q>the outline</q>" in after
     assert "Waiting for a parent to respond." in after
     assert f'action="/student/actions/take-back-help/{request_id}"' in after
+    assert '>Take it back<span class="visually-hidden">: your request from ' in after
+    assert 'aria-label="Take back' not in after
     assert taken_back.status_code == 303
     assert "You asked for help" not in again
 
@@ -339,3 +364,384 @@ def test_requests_live_in_the_drafts_file_stamped_by_the_real_clock() -> None:
     assert len(held) == 1
     assert held[0].evening == PLAN_DATE
     assert held[0].asked_at.date() > PLAN_DATE
+
+
+# ------------------------------------------------------------------ hers to ask, once per form
+
+ALREADY_SENT = "That request was already sent."
+FORM_USED = "This form was already used. Open a new help form to ask again."
+FORM_SENT_OTHER_WORDS = "This form already sent a request"
+
+
+def requests_held(client: TestClient) -> list[tuple[object, ...]]:
+    state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+    found = state.help_requests._connection.execute("SELECT * FROM help_requests ORDER BY 1")
+    return [tuple(row) for row in found.fetchall()]
+
+
+def signed_in(tmp_path: pathlib.Path) -> TestClient:
+    client = TestClient(
+        create_app(signed_in_household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    )
+    client.__enter__()
+    client.post("/sign-in", data={"passphrase": HERS})
+    return client
+
+
+def as_a_parent(client: TestClient) -> None:
+    client.post("/sign-out")
+    client.post("/sign-in", data={"passphrase": THEIRS})
+
+
+def posted(client: TestClient, fields: list[tuple[str, str]]) -> Answer:
+    return client.post(ASK, content=urlencode(fields), headers={"Content-Type": FORM_TYPE})
+
+
+def test_a_parent_can_not_ask_or_take_back_in_her_name(tmp_path: pathlib.Path) -> None:
+    client = signed_in(tmp_path)
+    try:
+        form = ask_form(client)
+        hers = client.post(ASK, data={**ask_form(client), "note": "hers"})
+        request_id = client.get("/student/help-requests").json()[0]["request_id"]
+        as_a_parent(client)
+        before = requests_held(client)
+        page = client.get(PAGE).text
+        asked = client.post(ASK, data={**form, "note": "from a parent"})
+        asked_json = client.post("/student/help-requests", json={"note": "from a parent"})
+        taken_back = client.post(f"/student/actions/take-back-help/{request_id}")
+        taken_back_json = client.delete(f"/student/help-requests/{request_id}")
+        after = requests_held(client)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert hers.status_code == 303
+    for refused in (asked, asked_json, taken_back, taken_back_json):
+        assert refused.status_code == 403
+    assert after == before
+    assert f'action="{ASK}"' not in page
+    assert "/student/actions/take-back-help/" not in page
+    assert "<q>hers</q>" in page
+    assert 'href="/parent#help-she-asked-for"' in page
+
+
+HELP_JSON = "/student/help-requests"
+JSON_TYPE = {"Content-Type": "application/json"}
+BROKEN_FORM = {"Content-Type": "multipart/form-data; boundary=synthetic"}
+BROKEN_BODY = b"--synthetic\r\nContent-Disposition: form-data\r\n\r\nno end"
+OVERLONG = b'{"note": "' + b"x" * (NOTE_MAX_LENGTH + 1) + b'"}'
+
+
+async def unread(*args: object, **kwargs: object) -> None:
+    msg = "the body was read before the reader was known"
+    raise AssertionError(msg)
+
+
+@pytest.mark.parametrize(
+    ("where", "body", "headers"),
+    [
+        (ASK, BROKEN_BODY, BROKEN_FORM),
+        (ASK, b"note=from+a+parent&note=twice", {"Content-Type": FORM_TYPE}),
+        (ASK, b"", {"Content-Type": FORM_TYPE}),
+        (HELP_JSON, b"{not json", JSON_TYPE),
+        (HELP_JSON, OVERLONG, JSON_TYPE),
+        (HELP_JSON, b'{"request_id": "not-an-id"}', JSON_TYPE),
+        (HELP_JSON, b'{"status": "done"}', JSON_TYPE),
+        (HELP_JSON, b'{"note": "from a parent"}', {"Content-Type": "text/plain"}),
+        (HELP_JSON, b"", {}),
+        (HELP_JSON, b"\xff\xfe{", JSON_TYPE),
+    ],
+    ids=[
+        "form broken multipart",
+        "form note twice",
+        "form empty",
+        "json malformed",
+        "json overlong",
+        "json bad id",
+        "json unknown field",
+        "json as plain text",
+        "json empty",
+        "json not utf-8",
+    ],
+)
+def test_a_parent_is_refused_before_the_body_is_read(
+    where: str,
+    body: bytes,
+    headers: dict[str, str],
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = signed_in(tmp_path)
+    try:
+        as_a_parent(client)
+        before = requests_held(client)
+        monkeypatch.setattr(student_routes, "fields_of", unread)
+        refused = client.post(where, content=body, headers=headers)
+        monkeypatch.undo()
+        after = requests_held(client)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert refused.status_code == 403
+    assert "Sign in as the student to ask for help or take a request back." in refused.text
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("body", "headers", "status_code", "problem"),
+    [
+        (b"", {}, 201, None),
+        (b"null", JSON_TYPE, 201, None),
+        (b'{"note": "hers"}', JSON_TYPE, 201, None),
+        (b'{"note": "hers"}', {"Content-Type": "application/json; charset=utf-8"}, 201, None),
+        (b'{"note": "hers"}', {"Content-Type": "application/problem+json"}, 201, None),
+        (b'{"note": "hers"}', {}, 422, ("model_attributes_type", ["body"])),
+        (b"{not json", JSON_TYPE, 422, ("json_invalid", ["body", 1])),
+        (OVERLONG, JSON_TYPE, 422, ("string_too_long", ["body", "note"])),
+        (b'{"status": "done"}', JSON_TYPE, 422, ("extra_forbidden", ["body", "status"])),
+        (
+            b'{"request_id": "not-an-id"}',
+            JSON_TYPE,
+            422,
+            ("string_pattern_mismatch", ["body", "request_id"]),
+        ),
+        (
+            b'{"note": "hers"}',
+            {"Content-Type": "text/plain"},
+            422,
+            ("model_attributes_type", ["body"]),
+        ),
+        (b"\xff\xfe{", JSON_TYPE, 400, None),
+    ],
+    ids=[
+        "empty",
+        "null",
+        "json",
+        "json with charset",
+        "a json subtype",
+        "no content type",
+        "malformed",
+        "overlong",
+        "unknown field",
+        "bad id",
+        "plain text",
+        "not utf-8",
+    ],
+)
+def test_her_json_ask_reads_its_body_as_the_framework_does(
+    body: bytes,
+    headers: dict[str, str],
+    status_code: int,
+    problem: tuple[str, list[str | int]] | None,
+    tmp_path: pathlib.Path,
+) -> None:
+    client = signed_in(tmp_path)
+    try:
+        answer = client.post(HELP_JSON, content=body, headers=headers)
+        held = requests_held(client)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert answer.status_code == status_code
+    assert len(held) == (1 if status_code == 201 else 0)
+    if problem is not None:
+        first = answer.json()["detail"][0]
+        assert (first["type"], first["loc"]) == problem
+
+
+def test_she_can_not_take_up_or_resolve_her_own_request(tmp_path: pathlib.Path) -> None:
+    client = signed_in(tmp_path)
+    try:
+        client.post(ASK, data={**ask_form(client), "note": "hers"})
+        request_id = client.get("/student/help-requests").json()[0]["request_id"]
+        before = requests_held(client)
+        answers = [
+            client.post(f"/parent/actions/help/{request_id}", data={"step": "accept"}),
+            client.post(f"/parent/actions/help/{request_id}", data={"step": "resolve"}),
+            client.post(f"/parent/help-requests/{request_id}/accept", json={}),
+            client.post(f"/parent/help-requests/{request_id}/resolve", json={}),
+        ]
+        after = requests_held(client)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert all(answer.status_code == 403 for answer in answers)
+    assert after == before
+
+
+FIRST = ("note", "First synthetic words")
+NOT_WHOLE_SAID = (
+    "That form carried a field twice, left one out, or had one this page doesn't send, "
+    "so nothing was sent."
+)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["note twice", "no id", "id twice", "bad id", "unknown field"],
+)
+def test_an_ask_form_that_is_not_whole_sends_nothing_and_keeps_her_first_words(
+    shape: str,
+) -> None:
+    with browser() as client:
+        form_id = ask_form(client)["request_id"]
+        fields = {
+            "note twice": [FIRST, ("note", "Second synthetic words"), ("request_id", form_id)],
+            "no id": [FIRST],
+            "id twice": [FIRST, ("request_id", form_id), ("request_id", form_id)],
+            "bad id": [FIRST, ("request_id", "not-an-id")],
+            "unknown field": [FIRST, ("request_id", form_id), ("channel", "LMS")],
+        }[shape]
+        answer = posted(client, fields)
+        again = whole_form(answer.text, ASK)
+        held = requests_held(client)
+
+    assert answer.status_code == 422
+    assert held == []
+    assert str(escape(NOT_WHOLE_SAID)) in answer.text
+    assert again["note"] == "First synthetic words"
+    assert "Second synthetic words" not in answer.text
+    assert again["request_id"] not in ("", "not-an-id", form_id)
+
+
+def test_a_note_sent_as_a_file_sends_nothing_and_shows_none_of_it() -> None:
+    with browser() as client:
+        form = ask_form(client)
+        answer = client.post(
+            ASK,
+            data={"request_id": form["request_id"]},
+            files={"note": ("note.txt", b"file words", "text/plain")},
+        )
+        held = requests_held(client)
+
+    assert answer.status_code == 422
+    assert "file words" not in answer.text
+    assert str(escape(NOT_WHOLE_SAID)) in answer.text
+    assert held == []
+
+
+def test_an_overlong_note_keeps_her_words_by_the_field() -> None:
+    words = "Zebra quartz " * 40 + "violin"
+    with browser() as client:
+        answer = client.post(ASK, data={**ask_form(client), "note": words})
+        held = requests_held(client)
+    start = answer.text.index('id="help-note"')
+    field = answer.text[answer.text.rindex("<input", 0, start) : answer.text.index(">", start)]
+
+    assert answer.status_code == 422
+    assert held == []
+    assert f'value="{words}"' in field
+    assert 'aria-invalid="true"' in field
+    assert "help-problem" in field
+    assert "autofocus" in field
+    assert f"A note is at most {NOTE_MAX_LENGTH} characters" in answer.text
+
+
+def test_a_send_the_file_refuses_keeps_her_words(monkeypatch: pytest.MonkeyPatch) -> None:
+    with browser() as client:
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+
+        def refuses(*_: object, **__: object) -> None:
+            msg = "disk I/O error"
+            raise sqlite3.OperationalError(msg)
+
+        form = ask_form(client)
+        monkeypatch.setattr(state.help_requests, "ask_once", refuses)
+        answer = client.post(ASK, data={**form, "note": "Zebra quartz violin"})
+        monkeypatch.undo()
+        held = requests_held(client)
+
+    assert answer.status_code == 500
+    assert 'value="Zebra quartz violin"' in answer.text
+    assert "could not be sent" in answer.text
+    assert held == []
+
+
+def test_the_same_form_sent_again_makes_one_request() -> None:
+    with browser() as client:
+        form = {**ask_form(client), "note": "the outline"}
+        first = client.post(ASK, data=form)
+        again = client.post(ASK, data=form)
+        landed = client.get(again.headers["location"]).text
+        held = requests_held(client)
+
+    assert first.status_code == 303
+    assert again.status_code == 303
+    assert len(held) == 1
+    assert landed.count(ALREADY_SENT) == 1
+
+
+def test_the_same_form_after_a_parent_took_it_up_shows_it_as_it_stands() -> None:
+    with browser() as client:
+        form = {**ask_form(client), "note": "the outline"}
+        client.post(ASK, data=form)
+        request_id = client.get("/student/help-requests").json()[0]["request_id"]
+        client.post(f"/parent/help-requests/{request_id}/accept", json={"response": "After dinner"})
+        before = requests_held(client)
+        again = client.post(ASK, data=form)
+        landed = client.get(again.headers["location"]).text
+        after = requests_held(client)
+
+    assert again.status_code == 303
+    assert after == before
+    assert ALREADY_SENT in landed
+    assert "A parent is on it." in landed
+
+
+def test_the_same_form_with_other_words_is_refused_and_keeps_them() -> None:
+    with browser() as client:
+        form = ask_form(client)
+        client.post(ASK, data={**form, "note": "the outline"})
+        refused = client.post(ASK, data={**form, "note": "the conclusion too"})
+        again = whole_form(refused.text, ASK)
+        held = requests_held(client)
+
+    assert refused.status_code == 409
+    assert FORM_SENT_OTHER_WORDS in refused.text
+    assert again["note"] == "the conclusion too"
+    assert again["request_id"] != form["request_id"]
+    assert len(held) == 1
+
+
+def test_a_form_whose_request_was_taken_back_asks_nothing_again() -> None:
+    with browser() as client:
+        form = {**ask_form(client), "note": "the outline"}
+        client.post(ASK, data=form)
+        request_id = client.get("/student/help-requests").json()[0]["request_id"]
+        client.post(f"/student/actions/take-back-help/{request_id}")
+        replayed = client.post(ASK, data=form)
+        again = whole_form(replayed.text, ASK)
+        held = requests_held(client)
+
+    assert replayed.status_code == 409
+    assert FORM_USED in replayed.text
+    assert again["note"] == "the outline"
+    assert again["request_id"] != form["request_id"]
+    assert held == []
+
+
+def test_a_fresh_form_with_the_same_words_asks_again() -> None:
+    with browser() as client:
+        client.post(ASK, data={**ask_form(client), "note": "the outline"})
+        client.post(ASK, data={**ask_form(client), "note": "the outline"})
+        held = requests_held(client)
+
+    assert len(held) == 2
+
+
+def test_json_with_an_id_asks_once_and_without_one_asks_every_time() -> None:
+    with browser() as client:
+        form_id = ask_form(client)["request_id"]
+        made = client.post("/student/help-requests", json={"note": "json", "request_id": form_id})
+        same = client.post("/student/help-requests", json={"note": "json", "request_id": form_id})
+        other = client.post("/student/help-requests", json={"note": "else", "request_id": form_id})
+        malformed = client.post("/student/help-requests", json={"request_id": "not-an-id"})
+        client.delete(f"/student/help-requests/{form_id}")
+        spent = client.post("/student/help-requests", json={"note": "json", "request_id": form_id})
+        plain = [client.post("/student/help-requests", json={"note": "again"}) for _ in range(2)]
+        held = requests_held(client)
+
+    assert (made.status_code, same.status_code) == (201, 200)
+    assert same.json()["request"]["request_id"] == form_id
+    assert (other.status_code, malformed.status_code, spent.status_code) == (409, 422, 409)
+    assert [answer.status_code for answer in plain] == [201, 201]
+    assert len(held) == 2

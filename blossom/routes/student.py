@@ -46,17 +46,16 @@ signed in sees her update and cannot make one in her name.
 """
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
-from typing import Annotated, Final, cast
+from typing import Annotated, Any, Final, cast
 
 from fastapi import (
     APIRouter,
     Body,
     Depends,
-    Form,
     HTTPException,
     Query,
     Request,
@@ -64,6 +63,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from blossom.anthropic_client import model_configured
@@ -129,7 +129,18 @@ from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
 from blossom.stores.drafts import DraftRecord
-from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
+from blossom.stores.help_requests import (
+    NOTE_MAX_LENGTH,
+    HelpAlreadyAsked,
+    HelpAsked,
+    HelpFormChanged,
+    HelpFormUsed,
+    HelpRequest,
+    NotARequestId,
+    RequestClosed,
+    new_request_id,
+    request_id_from,
+)
 from blossom.stores.project_state import (
     DONE,
     DUE_THIS_WEEK_SPAN,
@@ -227,6 +238,21 @@ BAD_FORM: Final = (
     "That form carried a field twice, or one this page does not send, so nothing was saved. "
     "Choose and save again."
 )
+NOT_HERS_TO_ASK: Final = "Sign in as the student to ask for help or take a request back."
+HELP_FORM_NOT_WHOLE: Final = (
+    "That form carried a field twice, left one out, or had one this page doesn't send, so "
+    "nothing was sent. Your words are below; ask again."
+)
+HELP_NOT_SENT: Final = "Your request could not be sent, and nothing was changed. Try again."
+ALREADY_SENT: Final = "That request was already sent."
+FORM_SENT_OTHER_WORDS: Final = (
+    "This form already sent a request with other words, so these weren't sent. Ask again "
+    "to send them as a new request."
+)
+FORM_USED: Final = "This form was already used. Open a new help form to ask again."
+ASK_FIELDS: Final = frozenset({"note", "request_id"})
+"""What her Ask for help forms send: her words, blank allowed, and the id the page gave the
+form, each once."""
 CANNOT_UNDO: Final = (
     "Your update has changed, so it cannot be undone from that page. The card shows what stands."
 )
@@ -368,11 +394,13 @@ async def withdraw_workload_signal(signal_id: str, state: State) -> Response:
 
 
 class HelpRequestBody(BaseModel):
-    """Optional words with a request for help. The request itself needs no body."""
+    """Optional words with a request for help, and the id of the form that asks, if any.
+    The request itself needs no body."""
 
     model_config = ConfigDict(extra="forbid")
 
     note: str | None = Field(default=None, max_length=NOTE_MAX_LENGTH)
+    request_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
 
 class HelpRequestResponse(BaseModel):
@@ -444,17 +472,60 @@ def help_requests_shown(
     return [help_view(state, request, about) for request in requests]
 
 
-@router.post("/help-requests", status_code=status.HTTP_201_CREATED)
+class HersToAsk(APIRoute):
+    """A route only she may call. The framework reads and checks a JSON body before the
+    handler or any dependency runs, so a parent is answered 403 here, before the body
+    is read."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        """The framework's handler, reached only once the reader may ask."""
+        handle = super().get_route_handler()
+
+        async def hers(request: Request) -> Response:
+            if viewer_of(request) == "parent":
+                raise HTTPException(status.HTTP_403_FORBIDDEN, detail=NOT_HERS_TO_ASK)
+            return await handle(request)
+
+        return hers
+
+
 def ask_for_help(
-    state: State, payload: Annotated[HelpRequestBody | None, Body()] = None
+    request: Request,
+    response: Response,
+    state: State,
+    payload: Annotated[HelpRequestBody | None, Body()] = None,
 ) -> HelpRequestResponse:
-    """Ask for help today. ``payload`` is optional so an empty POST works."""
+    """Ask for help today. ``payload`` is optional so an empty POST works. With a
+    ``request_id`` the same id sent again is the request it made, 200, and never a second;
+    without one every POST asks again, so a retry is not safe. ``HersToAsk`` answers a
+    parent 403 before the body is read."""
     note = None if payload is None else payload.note
-    request = state.help_requests.ask(state.clock.today(), note)
+    form = None if payload is None else payload.request_id
+    if form is None:
+        asked = state.help_requests.ask(state.clock.today(), note)
+    else:
+        match state.help_requests.ask_once(form, state.clock.today(), note):
+            case HelpAsked(request=asked):
+                pass
+            case HelpAlreadyAsked(request=asked):
+                response.status_code = status.HTTP_200_OK
+            case HelpFormChanged():
+                raise HTTPException(status.HTTP_409_CONFLICT, detail=FORM_SENT_OTHER_WORDS)
+            case HelpFormUsed():
+                raise HTTPException(status.HTTP_409_CONFLICT, detail=FORM_USED)
     return HelpRequestResponse(
         principal=Principal.STUDENT,
-        request=help_view(state, request, notes_named_by(state, [request])),
+        request=help_view(state, asked, notes_named_by(state, [asked])),
     )
+
+
+router.add_api_route(
+    "/help-requests",
+    ask_for_help,
+    methods=["POST"],
+    status_code=status.HTTP_201_CREATED,
+    route_class_override=HersToAsk,
+)
 
 
 @router.get("/help-requests")
@@ -464,8 +535,11 @@ def her_help_requests(state: State) -> list[HelpRequestView]:
 
 
 @router.delete("/help-requests/{request_id}", status_code=status.HTTP_204_NO_CONTENT)
-def take_back_help(request_id: str, state: State) -> Response:
-    """Take a request back while nobody has taken it up; 409 once a parent has."""
+def take_back_help(request: Request, request_id: str, state: State) -> Response:
+    """Take a request back while nobody has taken it up; 409 once a parent has. A parent is
+    answered 403: the request is hers to take back."""
+    if viewer_of(request) == "parent":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=NOT_HERS_TO_ASK)
     try:
         removed = state.help_requests.take_back(request_id)
     except RequestClosed as error:
@@ -953,6 +1027,16 @@ def parent_reads(request: Request) -> bool:
 
 
 @dataclass(frozen=True)
+class HelpForm:
+    """Her Ask for help form as a refusal shows it again: her words as typed, what went
+    wrong, and whether it was her words themselves, which then take the cursor."""
+
+    words: str = ""
+    problem: str | None = None
+    at_words: bool = False
+
+
+@dataclass(frozen=True)
 class CardState:
     """What one card shows beyond its record: a confirmation, its form open, or a problem.
 
@@ -1045,6 +1129,8 @@ def student_page(
     card: CardState | None = None,
     plan_asked: bool = False,
     turning_in: ListCard | None = None,
+    help_form: HelpForm | None = None,
+    help_result: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
@@ -1061,7 +1147,9 @@ def student_page(
     marks beside its rows. The record is read once too, and all of those are
     about that one reading. A card's problem is said at the top too, with a link
     to the card, so it is met on a page that opens at its top; the card named is
-    shown even when its dates have taken it out of the week.
+    shown even when its dates have taken it out of the week. ``help_form`` is her Ask for
+    help form as a refusal shows it again, beside the form, and ``help_result`` names a
+    request a form sent twice had made. Each Ask for help form gets a fresh id.
     """
     viewer = viewer_of(request)
     today = state.clock.today()
@@ -1136,6 +1224,11 @@ def student_page(
             "no_plan_now": NO_PLAN_NOW,
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
+            "help_form": help_form or HelpForm(),
+            "help_request_id": new_request_id(),
+            "help_result": help_result,
+            "already_sent": ALREADY_SENT,
+            "family_help": f"{FAMILY_PAGE}#help-she-asked-for",
             "update_note_max_length": UPDATE_NOTE_MAX_LENGTH,
             "card": card,
             "sample": state.settings.sample,
@@ -1191,6 +1284,9 @@ def due_this_week(
     hand_in_event: Annotated[
         str | None, Query(description="the event that press made; looked up, never trusted")
     ] = None,
+    asked_again: Annotated[
+        str | None, Query(description="the request a help form sent twice had made; a note")
+    ] = None,
 ) -> HTMLResponse:
     """Render her week and today's plan.
 
@@ -1205,7 +1301,8 @@ def due_this_week(
     no plan is saved. A GET never makes a plan. The rest name one card: what a
     save or an undo just did to it, which the server chose and the address only
     carries, or that its form is to be open, or that it is to be in view, with
-    the fold around it open.
+    the fold around it open. ``asked_again`` names the request a help form sent twice
+    had made, said beside that request when it is on the page.
     """
     was_refreshed = refreshed == "1"
     asked = show_plan == "1"
@@ -1218,6 +1315,7 @@ def due_this_week(
             card=card,
             plan_asked=asked,
             turning_in=receipt_asked(hand_in_said, about, hand_in_event),
+            help_result=None if asked_again is None else asked_again[:TOKEN_MAX_LENGTH],
         )
     try:
         chosen = date.fromisoformat(week.strip())
@@ -2026,27 +2124,106 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
 
 
 @router.post("/actions/ask-for-help", response_class=HTMLResponse, include_in_schema=False)
-def ask_for_help_from_the_page(
-    request: Request, state: State, note: Annotated[str, Form()] = ""
-) -> Response:
-    """The other press on her page. A blank note is no note; a long one is said, not cut."""
-    words = note.strip()
-    if len(words) > NOTE_MAX_LENGTH:
+async def ask_for_help_from_the_page(request: Request, state: State) -> Response:
+    """The other press on her page. A blank note is no note; a long one is said, not cut.
+
+    A parent is answered 403 before the form is read. Her form is read whole,
+    her words and the id the page gave the form, each once, before anything
+    is looked up; a form that is not whole sends nothing and
+    comes back with her first words in a fresh form. The same form sent again
+    is the request it made, said beside it, and never a second; a form that
+    already asked with other words, or whose request was taken back or has
+    gone, sends nothing and keeps her words.
+    """
+    if viewer_of(request) == "parent":
         return student_page(
+            request, state, problem=NOT_HERS_TO_ASK, status_code=status.HTTP_403_FORBIDDEN
+        )
+    fields, whole = await fields_of(request, ASK_FIELDS)
+    words = fields.get("note", "")
+    try:
+        form = request_id_from(fields.get("request_id", ""))
+    except NotARequestId:
+        form = None
+    if not whole or form is None:
+        return help_again(
             request,
             state,
-            problem=f"A note is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}.",
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            HelpForm(words, HELP_FORM_NOT_WHOLE),
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    state.help_requests.ask(state.clock.today(), words or None)
-    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+    note = words.strip()
+    if len(note) > NOTE_MAX_LENGTH:
+        return help_again(
+            request,
+            state,
+            HelpForm(
+                words,
+                f"A note is at most {NOTE_MAX_LENGTH} characters; this one is {len(note)}.",
+                at_words=True,
+            ),
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    try:
+        outcome = state.help_requests.ask_once(form, state.clock.today(), note or None)
+    except Exception:
+        logger.exception("her request for help could not be sent")
+        return help_again(
+            request,
+            state,
+            HelpForm(words, HELP_NOT_SENT),
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    match outcome:
+        case HelpAsked():
+            return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+        case HelpAlreadyAsked(request=asked):
+            return RedirectResponse(
+                f"{PAGE}?asked_again={asked.request_id}#help-result",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        case HelpFormChanged():
+            problem = FORM_SENT_OTHER_WORDS
+        case HelpFormUsed():
+            problem = FORM_USED
+    return help_again(request, state, HelpForm(words, problem), status.HTTP_409_CONFLICT)
+
+
+def help_again(
+    request: Request, state: ApplicationState, form: HelpForm, status_code: int
+) -> HTMLResponse:
+    """Her page with her Ask for help form shown again, her words in a fresh form and what
+    went wrong beside them. When her page can't be made, the page that reads no store."""
+    try:
+        return student_page(request, state, help_form=form, status_code=status_code)
+    except Exception:
+        logger.exception("her page could not be read back after a request for help")
+        return templates.TemplateResponse(
+            request,
+            "student_update_recovery.html",
+            {
+                "card": None,
+                "hand_in_card": None,
+                "heading": "Request not sent",
+                "note_problem": form.problem,
+                "help_question": form.words,
+                "ways_back": [ReturnLink(PAGE, "Back to the week")],
+                "sample": state.settings.sample,
+            },
+            status_code=status_code,
+        )
 
 
 @router.post(
     "/actions/take-back-help/{request_id}", response_class=HTMLResponse, include_in_schema=False
 )
 def take_back_help_from_the_page(request: Request, request_id: str, state: State) -> Response:
-    """Remove a request from her page while nobody has taken it up; otherwise the page says why."""
+    """Remove a request from her page while nobody has taken it up; otherwise the page says why.
+    A parent is answered 403: the request is hers to take back."""
+    if viewer_of(request) == "parent":
+        return student_page(
+            request, state, problem=NOT_HERS_TO_ASK, status_code=status.HTTP_403_FORBIDDEN
+        )
     try:
         removed = state.help_requests.take_back(request_id)
     except RequestClosed as error:

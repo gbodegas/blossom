@@ -71,7 +71,7 @@ from blossom.routes.navigation import (
     note_href,
     note_search_href,
 )
-from blossom.routes.student import BAD_FORM, NOT_HERS_TO_UPDATE
+from blossom.routes.student import BAD_FORM, NOT_HERS_TO_ASK, NOT_HERS_TO_UPDATE
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
     HER_PAGE,
@@ -1430,7 +1430,8 @@ def test_a_parent_reads_every_note_and_changes_none(tmp_path: pathlib.Path) -> N
     assert "a note she put away" in reads[3].text
     assert "Sign in as the student" in reads[4].text
     assert [answer.status_code for answer in writes] == [403] * 5
-    assert all(escape(NOT_HERS_TO_UPDATE) in answer.text for answer in writes)
+    assert all(escape(NOT_HERS_TO_UPDATE) in answer.text for answer in writes[:4])
+    assert escape(NOT_HERS_TO_ASK) in writes[4].text
     assert after == before
     assert asked == []
 

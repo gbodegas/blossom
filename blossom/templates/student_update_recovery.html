@@ -46,6 +46,9 @@
     <label for="kept-help-question">Your question, as typed</label>
     <textarea id="kept-help-question" rows="3" readonly>{{ help_question }}</textarea>
   {% endif %}
+  {% if help_fresh_form is defined and help_fresh_form %}
+    <p class="return"><a href="{{ help_fresh_form }}">Open a new help form</a></p>
+  {% endif %}
   {% if help_note is defined and help_note %}
     <p class="return"><a href="{{ note_href(help_note) }}">Back to the note</a></p>
   {% endif %}
