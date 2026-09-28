@@ -6,6 +6,7 @@ model, makes no plan stale, and costs a page no read per note.
 import pathlib
 import re
 import sqlite3
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -31,7 +32,7 @@ from blossom.routes.navigation import (
 )
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.runs import plan_graphs
-from blossom.routes.student import ASSIGNMENTS_CHANGED
+from blossom.routes.student import ASSIGNMENTS_CHANGED, NOT_HERS_TO_UPDATE
 from blossom.stores.help_requests import UnknownCaptureReference
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
@@ -436,6 +437,70 @@ def test_signed_in_the_same_endpoints_say_a_readable_note_is_readable_and_a_dama
     for answer in moved:
         assert answer.status_code == 200
         assert answer.json()["about_note"] == expected[name]
+
+
+@pytest.mark.parametrize("whole", [True, False], ids=["whole", "no id"])
+@pytest.mark.parametrize(
+    "what",
+    ["readable", "archived", "not an id", "no such note", "deleted", "unreadable"],
+)
+def test_a_parent_asking_about_a_note_is_refused_before_the_note_is_looked_up(
+    what: str, whole: bool, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parent's press is answered 403 from the address alone, whatever became of the note."""
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        if what == "archived":
+            assert change_note(client, name, "archive").status_code == 303
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        state = state_of(client)
+        store = state.project_state
+        about = {"not an id": "note-1", "no such note": new_capture_id()}.get(what, name)
+        if what == "deleted":
+            store._connection.execute("DELETE FROM homework_captures WHERE capture_id = ?", (name,))
+        elif what == "unreadable":
+            store._connection.execute(
+                "UPDATE homework_captures SET attribution = 'no json' WHERE capture_id = ?", (name,)
+            )
+        store._connection.commit()
+        tried: list[str] = []
+
+        def looked_up(*args: object, **kwargs: object) -> None:
+            tried.append("lookup")
+            msg = "a parent's press looked the note up"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(store, "sound_capture_history", looked_up)
+        fields = {"note": "from a parent", "request_id": uuid4().hex}
+        if not whole:
+            del fields["request_id"]
+        seen: list[str] = []
+        store._connection.set_trace_callback(seen.append)
+        answers = [
+            client.post(note_action(about, "ask-for-help"), data=fields, headers=PAGE_HEADERS)
+            for _ in range(2)
+        ]
+        store._connection.set_trace_callback(None)
+        monkeypatch.undo()
+        help_rows = [
+            state.help_requests._connection.execute(statement).fetchone()[0]
+            for statement in (
+                "SELECT count(*) FROM help_requests",
+                "SELECT count(*) FROM help_request_ids",
+                "SELECT count(*) FROM notes_named_by_requests",
+            )
+        ]
+
+    for answer in answers:
+        assert answer.status_code == 403
+        assert str(escape(NOT_HERS_TO_UPDATE)) in answer.text
+        assert (f'href="{note_href(about)}"' in answer.text) is (what != "not an id")
+    assert [line for line in seen if "capture" in line] == []
+    assert tried == []
+    assert help_rows == [0, 0, 0]
 
 
 def own_row(page: str, *, family: bool, resolved: bool) -> str:
@@ -911,21 +976,69 @@ def help_form(client: TestClient, name: str) -> dict[str, str]:
     return whole_form(client.get(note_help_href(name)).text, note_action(name, "ask-for-help"))
 
 
-def test_the_same_note_form_sent_again_asks_once() -> None:
+def help_held(client: TestClient) -> tuple[list[object], int]:
+    """Every request the store holds as it stands, and how many form ids it keeps."""
+    held = state_of(client).help_requests
+    ids = held._connection.execute("SELECT count(*) FROM help_request_ids").fetchone()[0]
+    return [*held.open_requests(), *held.recently_resolved()], ids
+
+
+def help_row(page: str, request_id: str) -> str:
+    start = page.index(f'<li id="help-{request_id}">')
+    return page[start : page.index("</li>", start)]
+
+
+@pytest.mark.parametrize("next_day", [False, True], ids=["same day", "after midnight"])
+@pytest.mark.parametrize(
+    ("steps", "reply", "stands"),
+    [
+        ([], None, "Waiting for a parent to respond."),
+        (["accept"], None, "A parent is on it."),
+        (["accept"], "Review the graph together after dinner.", "A parent is on it."),
+        (["accept", "resolve"], None, "Resolved."),
+        (["accept", "resolve"], "Page 12 has the steps.", "Resolved."),
+    ],
+    ids=["requested", "taken up", "taken up with a reply", "resolved", "resolved with a reply"],
+)
+def test_the_same_note_form_sent_again_lands_on_the_request_as_it_stands(
+    steps: list[str],
+    reply: str | None,
+    stands: str,
+    next_day: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with browser() as client:
         name = save_note(client)
         action = note_action(name, "ask-for-help")
-        form = {**help_form(client, name), "note": "which part?"}
+        form = {**help_form(client, name), "note": "Which part comes first?"}
         first = client.post(action, data=form, headers=PAGE_HEADERS)
+        asked = state_of(client).help_requests.open_requests()[0]
+        for step in steps:
+            said = {"response": reply} if reply and step == steps[-1] else {}
+            moved = client.post(f"/parent/help-requests/{asked.request_id}/{step}", json=said)
+            assert moved.status_code == 200, moved.text
+        before = help_held(client)
+        if next_day:
+            clock = state_of(client).clock
+            monkeypatch.setattr(clock, "_instant", clock.now() + timedelta(days=1))
         again = client.post(action, data=form, headers=PAGE_HEADERS)
-        landed = client.get(again.headers["location"]).text
-        sent = state_of(client).help_requests.open_requests()
+        landed = client.get(again.headers["location"])
+        after = help_held(client)
 
     assert first.status_code == 303
     assert again.status_code == 303
-    assert len(sent) == 1
-    assert ALREADY_SENT in landed
-    assert escape(NOTE_ASKED) not in landed
+    assert again.headers["location"] == f"{HER_PAGE}?asked_again={asked.request_id}#help-result"
+    assert landed.status_code == 200
+    assert landed.text.count(ALREADY_SENT) == 1
+    row = help_row(landed.text, asked.request_id)
+    assert f'id="help-result" tabindex="-1">{ALREADY_SENT}' in row
+    assert "Which part comes first?" in row
+    assert stands in row
+    assert (f"They said: <q>{escape(reply)}</q>" in row) is (reply is not None)
+    assert f'href="{note_href(name)}"' in row
+    if "resolve" in steps:
+        assert '<details class="steps resolved" open>' in landed.text
+    assert after == before
 
 
 @pytest.mark.parametrize("case", ["other words", "taken back"])

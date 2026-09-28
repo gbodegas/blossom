@@ -93,7 +93,6 @@ from blossom.routes.navigation import (
     note_href,
 )
 from blossom.routes.student import (
-    ALREADY_SENT,
     BAD_FORM,
     FORM_SENT_OTHER_WORDS,
     FORM_USED,
@@ -628,7 +627,6 @@ def note_page(
     said: str | None = None,
     event: str | None = None,
     asked: str | None = None,
-    asked_again: bool = False,
     edit: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -667,7 +665,7 @@ def note_page(
     if mine and result is None and asked:
         request_made = state.help_requests.get(asked[:TOKEN_MAX_LENGTH])
         if request_made is not None and request_made.capture_id == note.capture_id:
-            result = NoteResult(ALREADY_SENT if asked_again else NOTE_ASKED, stands=True)
+            result = NoteResult(NOTE_ASKED, stands=True)
     deletable = use_unknown = False
     if mine:
         try:
@@ -899,26 +897,15 @@ def one_note(
     said: str | None = None,
     event: str | None = None,
     asked: str | None = None,
-    again: str | None = None,
     edit: str | None = None,
 ) -> HTMLResponse:
     """One note. ``said`` and ``event`` are what a save did and the change it made or found,
-    looked up in the note's history; ``asked`` a request made from it, looked up too, and
-    ``again`` that it was sent twice; ``edit`` opens the form; nothing here writes."""
+    looked up in the note's history; ``edit`` opens the form; nothing here writes."""
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    return note_page(
-        request,
-        state,
-        name,
-        said=said,
-        event=event,
-        asked=asked,
-        asked_again=again == "1",
-        edit=edit == "1",
-    )
+    return note_page(request, state, name, said=said, event=event, asked=asked, edit=edit == "1")
 
 
 @router.get(
@@ -1371,13 +1358,23 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     shown, since it cannot be read, left the record before or during the
     write, or the file cannot be read, the answer is the page that needs no
     note, with her question, and nothing is sent. The form carries an id the
-    page gave it: the same form sent again is the request it made, and one
-    that already asked with other words, or whose request was taken back or
-    has gone, sends nothing and keeps her question in a fresh form.
-    A parent is answered 403 and nothing is sent in her name.
+    page gave it: the same form sent again sends nothing more and lands on
+    the request it made, as it stands now, on her week. One that already
+    asked with other words, or whose request was taken back or has gone,
+    sends nothing and keeps her question in a fresh form.
+    A parent is answered 403 before the note is looked up, on the page that
+    needs no note, and nothing is sent in her name.
     """
     fields, whole = await fields_of(request, HELP_FIELDS)
     question = fields.get("note", "")
+    if viewer_of(request) == "parent":
+        try:
+            shown: str | None = capture_id_from(capture_id)
+        except NotACaptureId:
+            shown = None
+        return help_not_sent(
+            request, state, NOT_HERS_TO_UPDATE, question, shown, status.HTTP_403_FORBIDDEN
+        )
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
@@ -1396,15 +1393,6 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     if found is None:
         return help_not_sent(request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND)
     note = found[0]
-    if viewer_of(request) == "parent":
-        return help_page(
-            request,
-            state,
-            note,
-            question=question,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
     words = question.strip()
     try:
         form = request_id_from(fields.get("request_id", ""))
@@ -1443,7 +1431,7 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
         case HelpAsked(request=asked):
             where = note_href(name, fragment=NOTE_RESULT, asked=asked.request_id)
         case HelpAlreadyAsked(request=asked):
-            where = note_href(name, fragment=NOTE_RESULT, asked=asked.request_id, again="1")
+            where = address(WEEK_PAGE, "help-result", asked_again=asked.request_id)
         case HelpFormChanged() | HelpFormUsed():
             return help_page(
                 request,
