@@ -76,7 +76,13 @@ from blossom.captures import (
     what_remains,
 )
 from blossom.dependencies import ApplicationState
-from blossom.noticing import expect_due_date, in_week, notice_due_date
+from blossom.noticing import (
+    PlanningWindow,
+    expect_due_date,
+    in_week,
+    notice_due_date,
+    planning_window,
+)
 from blossom.pairing import pair
 from blossom.reconciliation import SourceChannel
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
@@ -145,7 +151,8 @@ LINK_CHANGED: Final = (
 UNLINKED: Final = (
     "Unlinked. This note is back in Homework notes, and the homework it was joined to is unchanged."
 )
-OUT_OF_THE_WINDOW: Final = "Saved here. It is not in today's planning window."
+OUT_OF_THE_WINDOW: Final = "Saved here. It is outside today's planning window ({window})."
+"""Said of homework the planner would not take today, with the window's days."""
 WINDOW_UNKNOWN: Final = (
     "A claim about its date cannot be read right now, so whether it is in today's planning "
     "window is not known."
@@ -715,6 +722,7 @@ def note_page(
             due_date="" if note.due_date is None else note.due_date.isoformat(),
             revision=note.revision,
         )
+    homework = in_homework(state, note)
     return templates.TemplateResponse(
         request,
         "student_note.html",
@@ -726,10 +734,14 @@ def note_page(
             "result": result,
             "viewer": viewer,
             "mine": mine,
-            "in_homework": in_homework(state, note),
+            "in_homework": homework,
             "deletable": deletable,
             "use_unknown": NOTE_USE_UNKNOWN if use_unknown else None,
-            "out_of_the_window": OUT_OF_THE_WINDOW,
+            "out_of_the_window": (
+                None
+                if homework is None or homework.window is None
+                else OUT_OF_THE_WINDOW.format(window=homework.window.said())
+            ),
             "window_unknown": WINDOW_UNKNOWN,
             "ways_back": ways_back(
                 request, added=note.assignment_id is not None and not note.archived
@@ -758,6 +770,8 @@ class InHomework:
     moved or unlinked, rather than made into an assignment of its own, which cannot."""
     current: Assignment | None = None
     """The assignment as it stands, when it is on record, so a page can name it."""
+    window: PlanningWindow | None = None
+    """Today's planning window as the page read it, which a sentence about it names."""
 
 
 def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
@@ -774,10 +788,12 @@ def in_homework(state: ApplicationState, note: Capture) -> InHomework | None:
     if item is None or claimed is None:
         return InHomework(note.assignment_id, on_record=False, in_window=False, joined=joined)
     noticed = notice_due_date(expect_due_date(item), claimed.records.get(note.assignment_id, []))
+    window = planning_window(state.clock.today())
     return InHomework(
         note.assignment_id,
         on_record=True,
-        in_window=in_week(item, noticed, state.clock.today()),
+        in_window=in_week(item, noticed, window.start),
+        window=window,
         claims_unreadable=note.assignment_id in claimed.unreadable,
         joined=joined,
         current=item,

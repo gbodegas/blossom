@@ -80,6 +80,7 @@ from blossom.noticing import (
     in_week,
     monday_of,
     notice_due_date,
+    planning_window,
     read_date,
     read_everything,
     reconcile_dates,
@@ -1222,6 +1223,9 @@ def student_page(
             "new_note_page": NEW_NOTE_PAGE,
             "viewer": viewer,
             "no_plan_now": NO_PLAN_NOW,
+            # Today's window, which every week shown names, and the planner reads.
+            "planning_window": planning_window(view.today).said(),
+            "parent": parent_reads(request),
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
             "help_form": help_form or HelpForm(),
@@ -1634,6 +1638,7 @@ def detail_page(
                 if not claim.active
             ],
             "ctx": detail_context(assignment_id, back, viewer, link),
+            "planning_window": planning_window(today).said(),
             "instructions_review": (
                 instructions_review_href(assignment_id) if family_chooses else None
             ),

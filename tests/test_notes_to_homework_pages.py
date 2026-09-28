@@ -41,7 +41,6 @@ from blossom.routes.captures import (
     NOTE_RESTORED_IN_HOMEWORK,
     NOTE_SAVED_EARLIER,
     NOTE_UNREADABLE,
-    OUT_OF_THE_WINDOW,
     WINDOW_UNKNOWN,
 )
 from blossom.routes.navigation import (
@@ -94,6 +93,9 @@ from tests.support import (
 FAMILY = "/parent"
 WORDS = "Geometry questions 4-8, heard from a classmate"
 OTHER = "__another__"
+OUTSIDE_TODAYS_WINDOW = (
+    "Saved here. It is outside today's planning window (August 19 to August 25, 2026)."
+)
 
 
 def save_note(client: TestClient, text: str = WORDS) -> str:
@@ -418,8 +420,8 @@ def test_an_assignment_due_outside_the_window_says_it_is_saved_and_not_in_tonigh
 
     banner = landed.split('id="note-result"')[1].split("</p>")[0]
     assert escape(ADDED_TO_HOMEWORK) in banner
-    assert escape(OUT_OF_THE_WINDOW) in banner
-    assert landed.count(str(escape(OUT_OF_THE_WINDOW))) == 2
+    assert escape(OUTSIDE_TODAYS_WINDOW) in banner
+    assert landed.count(str(escape(OUTSIDE_TODAYS_WINDOW))) == 2
 
 
 @pytest.mark.parametrize(
@@ -1939,8 +1941,8 @@ def test_a_note_in_homework_says_the_assignment_is_unchanged_never_that_it_is_in
         assert f'href="{ADDED_NOTES_PAGE}"' in page
         # The window is said once, by the paragraph about the assignment, and not by a
         # result that is about the note's words or its place among the lists.
-        assert escape(OUT_OF_THE_WINDOW) not in result(page)
-        assert str(escape(OUT_OF_THE_WINDOW)) in page
+        assert escape(OUTSIDE_TODAYS_WINDOW) not in result(page)
+        assert str(escape(OUTSIDE_TODAYS_WINDOW)) in page
     assert escape(NOTE_SAVED_EARLIER) in result(earlier)
     assert escape(NOTE_EDITED) in result(unlinked_page)
     assert f'href="{note_href(name)}"' in added_list
@@ -2141,9 +2143,9 @@ def test_a_note_whose_claim_cannot_be_read_says_the_window_is_not_known(
     assert escape(ADDED_TO_HOMEWORK) in banner
     assert escape(WINDOW_UNKNOWN) in banner
     assert landed.count(str(escape(WINDOW_UNKNOWN))) == 2
-    assert escape(OUT_OF_THE_WINDOW) not in landed
+    assert escape(OUTSIDE_TODAYS_WINDOW) not in landed
     assert page.count(str(escape(WINDOW_UNKNOWN))) == 1
-    assert escape(OUT_OF_THE_WINDOW) not in page
+    assert escape(OUTSIDE_TODAYS_WINDOW) not in page
     assert "This note is in homework." in page
 
 

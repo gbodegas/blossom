@@ -159,6 +159,7 @@
       {% if viewer != "parent" %}<a class="to-help" href="{{ new_note_page }}">Write down homework</a>{% endif %}
       <a class="to-help" href="#ask-for-help">Ask for help</a>
     </div>
+    <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
     {#
       The places that hold what is left to do beside the plan, under the
       controls and never in the masthead. Each link goes to a page of its
@@ -325,7 +326,15 @@
     </section>
   {% endif %}
   {% else %}
+    {#
+      Today's planning window is named once near the top of every week shown:
+      under Today's controls on this week, and here on another, under the link
+      back to this week that stands where Today's panel would be. It is
+      today's window whichever week is shown, and never moves down beside the
+      cards.
+    #}
     <p class="return"><a href="/student/due-this-week">Return to this week and today's plan</a></p>
+    <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
   {% endif %}
 
   {#
@@ -358,7 +367,7 @@
   {% set done_cards = view.assignments|selectattr("update_status", "equalto", "done")|list %}
   {% set to_check = (view.assignments + view.assigned_this_week)|selectattr("check_school")|list %}
   {% if not view.week.current and (view.assignments or view.assigned_this_week) %}
-    <p class="note">Updates shown are the latest on record.</p>
+    <p class="note">Updates show the latest saved information, even when you view a different week.</p>
   {% endif %}
   {% if to_check %}
     <p class="confidence disagree" role="status">
@@ -424,12 +433,26 @@
 
   {% if view.week.current %}
     <details class="steps">
-      <summary>How Blossom uses your information</summary>
+      <summary>How Blossom uses {% if parent %}her{% else %}your{% endif %} information</summary>
       {#
         The link in the plan panel points at this paragraph rather than the
         disclosure around it, so a browser that reveals the target's fold on
         a fragment jump opens it; the script does the same on the click.
       #}
+      {% if parent %}
+      <p id="what-is-shared">
+        Planning takes a minute or two. It sends her week, the household's rules, the
+        planner's notes about its past plans, her updates of Not yet on that work with any
+        note she wrote, and, when she has said today is too much, that she said so, to the
+        model provider; when the first plan needs another try, the plan it made and what was
+        wrong with it go too. Work she reports as Done is left out, note and all. What she
+        says about turning work in, her next step and note with it, is never sent. The words
+        of her homework notes are never sent either, whatever they say, and no plan is made
+        from a note. Only once a note is added to homework does anything of it go: the class,
+        title, due date, kind, and note about the work that she or a parent gave on that
+        page, as for any homework. Nothing else leaves.
+      </p>
+      {% else %}
       <p id="what-is-shared">
         Planning takes a minute or two. It sends your week, the household's rules, the
         planner's notes about its past plans, your updates of Not yet on that work with any
@@ -442,7 +465,8 @@
         due date, kind, and note about the work that you or a parent gave on that page, as for
         any homework. Nothing else leaves.
       </p>
-      {% if viewer == "parent" %}
+      {% endif %}
+      {% if parent %}
       <p>
         Her updates and notes are kept in the family's own file. You can read them on the
         family page, what she says about turning work in and her homework notes included,

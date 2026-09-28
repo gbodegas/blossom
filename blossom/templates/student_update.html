@@ -62,8 +62,8 @@
     {% endif %}
     <p class="effect">
       {% if assignment.update_status == "done" %}This is out of work to plan. {% if ctx.viewer == "parent" %}Her{% else %}Your{% endif %} school record is separate.
-      {% elif assignment.in_planning_window %}This stays in work to plan when it is in the planning window.
-      {% else %}Saved as Not yet. This assignment is outside today's planning window.{% endif %}
+      {% elif assignment.in_planning_window %}Still unfinished. It can be included in today's plan.
+      {% else %}Saved as Not yet. It is outside today's planning window ({{ planning_window }}).{% endif %}
     </p>
     {% if assignment.checked_on %}
       <p class="checked-line">A parent marked this checked with {% if ctx.viewer == "parent" %}her{% else %}you{% endif %} on {{ day(assignment.checked_on) }}.{% if assignment.check_note %} The note with it: <q>{{ assignment.check_note }}</q>{% endif %}</p>

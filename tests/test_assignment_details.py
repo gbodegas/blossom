@@ -105,7 +105,8 @@ def test_details_show_the_current_record_with_its_facts_her_update_and_the_way_b
         f'<a href="/student/due-this-week?week={FIXTURE_WEEK}&amp;show={ESSAY_ID}'
         f'#assignment-{ESSAY_ID}">Back to the week</a>'
     ) in text
-    assert "Current assignment record. Updates shown are the latest on record." in text
+    assert "Current assignment record." not in text
+    assert '<h2 class="update-heading">What is on record now</h2>' in text
     assert "Friday, August 21, 2026" in text
     assert "<strong>The school reports this missing.</strong>" in text
     assert '<h2 class="update-heading">Your update</h2>' in text
@@ -143,7 +144,6 @@ def test_the_update_comes_before_the_long_evidence_and_every_fact_is_there_once(
 
     in_order = [
         "<h1>",
-        "Current assignment record.",
         "<strong>Check this date.</strong>",
         '<h2 class="update-heading">Your update</h2>',
         '<span class="pill">Your update: Done</span>',

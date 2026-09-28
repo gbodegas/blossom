@@ -39,13 +39,12 @@
   <article class="assignment detail confidence-{{ assignment.deadline_confidence|lower }}" id="{{ assignment_anchor(assignment.assignment_id) }}">
     <p class="course">{{ assignment.course }}</p>
     <h1>{{ assignment.title }}</h1>
-    <p class="note">Current assignment record. Updates shown are the latest on record.</p>
     {% with due_with_year = true, facts_level = 3, part = "date" %}{% include "student_card_facts.html" %}{% endwith %}
     <h2 class="update-heading">{% if ctx.viewer == "parent" %}Student update{% else %}Your update{% endif %}</h2>
     {% include "student_update.html" %}
     {% include "student_hand_in.html" %}
     <section class="evidence" id="evidence" tabindex="-1">
-      <h2 class="update-heading">What is on record</h2>
+      <h2 class="update-heading">What is on record now</h2>
       {% with due_with_year = true, facts_level = 3, part = "evidence" %}{% include "student_card_facts.html" %}{% endwith %}
       {#
         The homework notes this assignment was added from, or that were joined
