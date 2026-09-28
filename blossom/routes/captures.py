@@ -658,7 +658,14 @@ def note_page(
     if mine:
         try:
             use = state.project_state.capture_use(note.capture_id)
-        except (UnknownCapture, UnreadableCapture, sqlite3.Error):
+        except UnknownCapture:
+            # Deleted from another tab after the note was read: nothing of it is shown.
+            if form is not None:
+                return plain_failure(
+                    request, state, NOTE_GONE, form, refusal(status_code, gone=True)
+                )
+            return gone(request, state, capture_id)
+        except (UnreadableCapture, sqlite3.Error):
             logger.exception("whether the note %s was used could not be read", capture_id)
         else:
             deletable, use_unknown = use is None, use == "unknown"

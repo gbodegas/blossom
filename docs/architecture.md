@@ -914,6 +914,24 @@ is the latest the result is what stands, once something newer follows it is
 said as something done earlier, and a revision number, another note's id, or
 anything else a person could put in the address says nothing.
 
+A note that was never used can be deleted: never added to homework, never
+linked, and never named by a request for help. Use is read from what lasts,
+not from what stands now. A promote or link event stays in the line of
+changes after an unlink, and the help store's `notes_named_by_requests`
+keeps the id of every note a request named, written in the same transaction
+as the request, after the request is taken back or swept. Notes already in a
+file when those tables first arrive are listed in `captures_of_unknown_use`
+and can only be archived, since a request taken back leaves nothing to show
+it happened. The delete is one transaction that reserves the writer first:
+the note and its line of changes must read as sound, the note must never
+have been used, and the revision must be the one the page showed. Then its
+id goes into `deleted_captures`, its changes and the note are removed, and
+the connection overwrites the pages it frees. Only the id stays. A first save
+under that id makes nothing, whatever it sends, and a request for help that
+names it finds no note, since every change to a note checks for it inside its
+own transaction. Her list says the note was deleted only when the record
+holds its id as deleted, so an address alone claims nothing.
+
 A note on record that cannot be read is said as unavailable wherever it is
 opened, its own page and the help page alike, and is never said to be off the
 record; a request for help about it is refused and sends nothing. A change in

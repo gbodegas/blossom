@@ -54,15 +54,18 @@ With the app running as the README describes:
 - <http://127.0.0.1:8000/student/homework-notes> is her homework notes, with
   the ones she put away under `/archived`, the ones in homework under
   `/added`, the form for a new one under `/new`, and each note on a page of
-  its own under its id, where asking for help about it is `/help`, giving
+  its own under its id, where asking for help about it is `/help`, the page
+  that asks before deleting a note never used is `/delete`, giving
   it details or adding it to homework is `/add`, and finding homework already
   here to join it to is `/search`, with the search words and the page of
   results in the address. A parent's way to those last two pages is
   <http://127.0.0.1:8000/parent/homework-notes/{id}/add> and `/search` beside
   it, linked from the family page. Joining a note to homework found, moving
   it, and unlinking it are presses under `/student/actions/homework-notes/{id}`
-  and `/parent/actions/homework-notes/{id}`, `/link` and `/unlink`. Reading
-  any of the pages writes nothing.
+  and `/parent/actions/homework-notes/{id}`, `/link` and `/unlink`. Deleting
+  a note she never used is a press on
+  `/student/actions/homework-notes/{id}/delete`, which a parent can't make.
+  Reading any of the pages writes nothing.
 - <http://127.0.0.1:8000/student/help-requests> lists her requests for help
   as JSON, the open ones and those resolved within two weeks; a POST there
   asks, with an optional note, and a DELETE takes one back while nobody has

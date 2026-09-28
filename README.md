@@ -96,8 +96,10 @@ it turned in and undo that choice too.
 **Homework notes.** Not every assignment makes it into the portal. She can
 jot down something she heard in class or from a classmate, in her own words.
 A class and date are optional. She can edit it, put it away, or ask for help.
-Her parents can read it but can't change it. A note stays a note, and out of
-every plan, until she or a parent adds it to homework.
+A note she wrote by mistake can be deleted, with its history, as long as it
+was never added to homework, linked, or asked about; a used note can only be
+put away. Her parents can read it but can't change it. A note stays a note,
+and out of every plan, until she or a parent adds it to homework.
 
 **Add it to homework.** From a note, she can open a form that shows her words
 and asks for the class, a title, and optionally a due date, a kind, and a

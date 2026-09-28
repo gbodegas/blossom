@@ -314,3 +314,17 @@ def test_a_file_from_before_names_every_note_its_requests_named(tmp_path: pathli
 
     assert named_by_requests(again) == [name]
     assert named_by_requests(once_more) == [name]
+
+
+def test_a_request_is_use_even_before_the_help_store_has_kept_its_note(
+    stores: tuple[ProjectStateStore, HelpRequestsStore],
+) -> None:
+    """A file whose help store has not started since the ids were kept still shows the
+    request itself, which is enough to keep the note."""
+    store, help_store = stores
+    name = note_in(store)
+    help_store.ask(PLAN_DATE, None, capture_id=name)
+    help_store._connection.execute("DROP TABLE notes_named_by_requests")
+    help_store._connection.commit()
+
+    assert store.capture_use(name) == "asked"

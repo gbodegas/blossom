@@ -2017,3 +2017,49 @@ def test_what_is_kept_says_a_note_never_used_can_be_deleted_to_each_reader(
     assert "She can delete a homework note that was never used" in their_week
     for page in (week, their_week):
         assert "Only a deleted note's id stays, so the same form can't save it again" in page
+
+
+def test_an_archived_note_that_can_not_be_deleted_is_not_told_to_be_archived() -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client)
+        page = client.get(note_href(name)).text
+        client.post(
+            note_action(name, "archive"),
+            data=form_fields(page, note_action(name, "archive")),
+            headers=PAGE_HEADERS,
+        )
+        store._connection.execute(
+            "INSERT INTO captures_of_unknown_use (capture_id) VALUES (?)", (name,)
+        )
+        store._connection.commit()
+        asked = client.get(note_delete_href(name))
+
+    assert asked.status_code == 409
+    assert said_first(
+        asked.text,
+        "It was saved before notes could be deleted, and Blossom can't tell whether it was "
+        "used, so it can't be deleted. It stays archived.",
+    )
+
+
+def test_a_note_deleted_between_its_page_s_reads_is_said_to_be_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another tab deletes the note after the page read it and before it read how the note was
+    used: the page says the note was deleted and shows none of it."""
+    with browser() as client:
+        store = state_of(client).project_state
+        name = saved_note(client, "Zebra quartz violin questions")
+        used = store.capture_use
+
+        def deleted_first(capture_id: str) -> object:
+            store.delete_capture(capture_id, expected_revision=1)
+            return used(capture_id)
+
+        monkeypatch.setattr(store, "capture_use", deleted_first)
+        page = client.get(note_href(name))
+
+    assert page.status_code == 404
+    assert said_first(page.text, NOTE_DELETED_GONE)
+    assert "Zebra quartz violin" not in page.text
