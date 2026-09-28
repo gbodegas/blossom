@@ -251,3 +251,66 @@ def test_a_reference_that_is_no_id_as_the_store_writes_it_is_kept_as_unreadable_
     assert (sound.capture_id, sound.capture_reference_unreadable) == (name, False)
     plain = requests.ask(MONDAY, "about no note")
     assert (plain.capture_id, plain.capture_reference_unreadable) == (None, False)
+
+
+# ------------------------------------------------------------------ what a request leaves behind
+
+
+def named_by_requests(help_store: HelpRequestsStore) -> list[str]:
+    found = help_store._connection.execute(
+        "SELECT capture_id FROM notes_named_by_requests ORDER BY capture_id"
+    )
+    return [str(row[0]) for row in found.fetchall()]
+
+
+def test_a_note_a_request_named_stays_named_after_the_request_goes(
+    stores: tuple[ProjectStateStore, HelpRequestsStore],
+) -> None:
+    store, help_store = stores
+    taken_back, swept, never = note_in(store), note_in(store, "Bring the form"), note_in(store)
+    first = help_store.ask(PLAN_DATE, "which questions?", capture_id=taken_back)
+    assert help_store.take_back(first.request_id)
+    second = help_store.ask(PLAN_DATE, None, capture_id=swept)
+    help_store.resolve(second.request_id, "Questions 4-8")
+    help_store._connection.execute(
+        "UPDATE help_requests SET resolved_at = '2020-01-01T00:00:00+00:00'"
+    )
+    help_store._connection.commit()
+    help_store.ask(PLAN_DATE, "about nothing in particular")
+
+    assert help_store.sweep() == 1
+    assert sorted(named_by_requests(help_store)) == sorted([taken_back, swept])
+    columns = help_store._connection.execute("PRAGMA table_info(notes_named_by_requests)")
+    assert [str(row[1]) for row in columns] == ["capture_id"]
+    assert store.capture_use(taken_back) == "asked"
+    assert store.capture_use(swept) == "asked"
+    assert store.capture_use(never) is None
+
+
+def test_a_request_refused_names_no_note(
+    stores: tuple[ProjectStateStore, HelpRequestsStore],
+) -> None:
+    _, help_store = stores
+
+    with pytest.raises(UnknownCaptureReference):
+        help_store.ask(PLAN_DATE, None, capture_id=new_capture_id())
+
+    assert named_by_requests(help_store) == []
+
+
+def test_a_file_from_before_names_every_note_its_requests_named(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "record.sqlite3"
+    store = practice_store(path)
+    name = note_in(store)
+    help_store = HelpRequestsStore.open(path, fixture_clock())
+    help_store.ask(PLAN_DATE, None, capture_id=name)
+    help_store.ask(PLAN_DATE, "no note")
+    help_store._connection.execute("DROP TABLE notes_named_by_requests")
+    help_store._connection.commit()
+    help_store.close()
+
+    again = HelpRequestsStore.open(path, fixture_clock())
+    once_more = HelpRequestsStore.open(path, fixture_clock())
+
+    assert named_by_requests(again) == [name]
+    assert named_by_requests(once_more) == [name]

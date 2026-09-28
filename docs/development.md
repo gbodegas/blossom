@@ -171,10 +171,16 @@ Three files under `.local/` outlive a restart:
   any words she added, kept for a week and removable from her page, and so
   do her requests for help with what a parent did with each, kept until
   resolved and for two weeks after. Her homework notes are here as well: each
-  note as it stands, its first words, and every change to it. There is no way
-  to delete a note from a page, putting one away keeps it, and nothing sweeps
-  them, so a copy of this file made as a backup holds her notes and their
-  history too, for as long as that copy is kept.
+  note as it stands, its first words, and every change to it, kept until she
+  deletes one that was never used. Never used means never added to homework,
+  never linked to it, and never named by a request for help, even one taken
+  back or long resolved. Deleting removes the note and its history; only its
+  id stays, so the form that saved it can't save it again. A used note can
+  only be archived, putting one away keeps it, and nothing sweeps them, so a
+  copy of this file made as a backup holds her notes and their history too,
+  a deleted note included if the copy was made before she deleted it. Notes
+  saved before deleting was possible can only be archived, since nothing
+  shows they were never asked about.
 - `checkpoints.sqlite3` holds a graph's saved state, including a pause at the
   approval gate. It is cleared as soon as a run ends or a decision is made,
   and an expired draft's state goes with it, so it holds only what is

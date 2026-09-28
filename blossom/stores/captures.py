@@ -22,6 +22,12 @@ refused. An edit is compared whole, the words with the class and the day, so
 the same three again are already saved whatever page sent them, and anything
 else from a page that is behind is refused and overwrites nothing. An archive
 and a restore move a note and never touch its words.
+
+A note that was never used can be deleted: never homework, never linked, and
+never named by a request for help. The note and every change go, and its id
+alone is kept in ``deleted_captures`` so a first save sent again makes nothing.
+Notes saved before that evidence was kept are listed in
+``captures_of_unknown_use`` and can only be archived.
 """
 
 import json
@@ -48,17 +54,22 @@ from blossom.captures import (
     CandidateDecision,
     Capture,
     CaptureAlreadyCreated,
+    CaptureAlreadyDeleted,
     CaptureChanged,
     CaptureConflict,
     CaptureCreated,
+    CaptureDeleted,
     CaptureDetails,
     CaptureEvent,
     CaptureHistoryReading,
     CaptureIdTaken,
+    CaptureInUse,
     CaptureNotSaved,
     CaptureOperation,
     CaptureSnapshot,
     CaptureUnchanged,
+    CaptureUse,
+    CaptureWasDeleted,
     CaptureWords,
     FieldSource,
     UnknownCapture,
@@ -169,6 +180,19 @@ ADD_EVENT_DECISION: Final = "ALTER TABLE capture_events ADD COLUMN decision TEXT
 """What was chosen about homework already on record, kept with the change that added a note
 to homework. A table from before this gains the column, empty in every row it had."""
 ADD_EVENT_CHANNEL: Final = "ALTER TABLE capture_events ADD COLUMN channel TEXT"
+
+DELETED_NAMED: Final = "SELECT 1 FROM deleted_captures WHERE capture_id = ?"
+OF_UNKNOWN_USE: Final = "SELECT 1 FROM captures_of_unknown_use WHERE capture_id = ?"
+USED_BY_EVENTS: Final = (
+    "SELECT DISTINCT operation FROM capture_events "
+    "WHERE capture_id = ? AND operation IN ('promote', 'link', 'unlink')"
+)
+HELP_TABLES: Final = """
+    SELECT name FROM sqlite_master
+    WHERE type = 'table' AND name IN ('help_requests', 'notes_named_by_requests')
+"""
+NAMED_BY_A_REQUEST: Final = "SELECT 1 FROM help_requests WHERE capture_id = ?"
+NAMED_BY_A_REQUEST_ONCE: Final = "SELECT 1 FROM notes_named_by_requests WHERE capture_id = ?"
 """The tree a press by search or an unlink came through, kept with its event. A table from
 before this gains the column, empty in every row it had, and each such row reads with none."""
 
@@ -505,6 +529,26 @@ class CaptureRecords:
             ON capture_events (capture_id, sequence)
             """
         )
+        # The ids of deleted notes, and the notes from before Blossom kept what shows a note
+        # was used: the first start that makes these tables finds every note already here
+        # to be one whose use can't be shown, in the same transaction as the tables.
+        from_before = (
+            self._connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deleted_captures'"
+            ).fetchone()
+            is None
+        )
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS deleted_captures (capture_id TEXT PRIMARY KEY)"
+        )
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS captures_of_unknown_use (capture_id TEXT PRIMARY KEY)"
+        )
+        if from_before:
+            self._connection.execute(
+                "INSERT OR IGNORE INTO captures_of_unknown_use (capture_id) "
+                "SELECT capture_id FROM homework_captures"
+            )
         held = {
             str(row[1]) for row in self._connection.execute("PRAGMA table_info(capture_events)")
         }
@@ -549,6 +593,22 @@ class CaptureRecords:
             if note is None:
                 return None
             return note, self._validated_capture_history_locked(note).events
+
+    def capture_deleted(self, capture_id: str) -> bool:
+        """Whether a note of this id was deleted. Its id is all that is kept of it."""
+        name = capture_id_from(capture_id)
+        with self._lock:
+            return self._connection.execute(DELETED_NAMED, (name,)).fetchone() is not None
+
+    def capture_use(self, capture_id: str) -> CaptureUse | None:
+        """Why a note is kept rather than deleted, or ``None`` for a note never used, read
+        in one snapshot. A note or a line of changes that can't be read is
+        ``UnreadableCapture``, which shows nothing about its use."""
+        name = capture_id_from(capture_id)
+        with self.reading():
+            standing = self._required_capture_locked(name)
+            self._validated_capture_history_locked(standing)
+            return self._use_locked(standing)
 
     def captures_of_assignment(self, assignment_id: str) -> CaptureReadings:
         """The notes that are this assignment's: the one it was made from, and any joined to
@@ -663,7 +723,7 @@ class CaptureRecords:
         channel: SourceChannel,
         now: datetime,
         today: date,
-    ) -> CaptureCreated | CaptureAlreadyCreated | CaptureIdTaken:
+    ) -> CaptureCreated | CaptureAlreadyCreated | CaptureIdTaken | CaptureWasDeleted:
         """Save a note for the first time, once.
 
         The id and the words are held to their rules before anything is read.
@@ -671,13 +731,16 @@ class CaptureRecords:
         is a note's already is either this same save again, everything it
         sent being what that note's first save sent, which writes nothing and
         returns the note as it stands now, edited or archived as it may be,
-        or it is another save, which is refused. Otherwise the first event
-        and the note are written together.
+        or it is another save, which is refused. An id of a deleted note makes
+        nothing again, whatever is sent. Otherwise the first event and the
+        note are written together.
         """
         name = capture_id_from(capture_id)
         words = kept_words(text, course, due_date)
         try:
             with self._lock, self._writing():
+                if self._connection.execute(DELETED_NAMED, (name,)).fetchone():
+                    return CaptureWasDeleted(name)
                 standing = self._capture_locked(name)
                 if standing is not None:
                     same = standing.initial == words
@@ -843,6 +906,72 @@ class CaptureRecords:
         return self._move_capture(
             capture_id, False, expected_revision, authored_by, now=now, today=today
         )
+
+    def delete_capture(
+        self, capture_id: str, *, expected_revision: int
+    ) -> CaptureDeleted | CaptureAlreadyDeleted | CaptureInUse | CaptureConflict:
+        """Delete a note that was never used, with every change to it, keeping its id alone.
+
+        One transaction that reserves the writer before it reads. A note
+        deleted before is already done. Otherwise the note and its whole line
+        of changes must read as sound, it must never have been used, and the
+        page's revision must be the note's; then its id is kept as deleted,
+        its changes and the note are removed, and the connection overwrites
+        what it frees. A line that can't be read is ``UnreadableCapture``,
+        since it shows nothing about how the note was used.
+        """
+        name = capture_id_from(capture_id)
+        try:
+            with self._lock:
+                self._connection.execute("PRAGMA secure_delete=ON")
+                with self._writing():
+                    if self._connection.execute(DELETED_NAMED, (name,)).fetchone():
+                        return CaptureAlreadyDeleted(name)
+                    standing = self._required_capture_locked(name)
+                    self._validated_capture_history_locked(standing)
+                    use = self._use_locked(standing)
+                    if use is not None:
+                        return CaptureInUse(standing, use)
+                    if standing.revision != expected_revision:
+                        return CaptureConflict(standing)
+                    self._connection.execute(
+                        "INSERT INTO deleted_captures (capture_id) VALUES (?)", (name,)
+                    )
+                    self._connection.execute(
+                        "DELETE FROM capture_events WHERE capture_id = ?", (name,)
+                    )
+                    self._connection.execute(
+                        "DELETE FROM homework_captures WHERE capture_id = ?", (name,)
+                    )
+                    return CaptureDeleted(name)
+        except UnreadableCapture:
+            raise
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            raise CaptureNotSaved(name, error) from error
+
+    def _use_locked(self, standing: Capture) -> CaptureUse | None:
+        """Why a note is kept, from what the file holds inside the caller's transaction:
+        homework it is in or was ever in, a request for help that ever named it, and the
+        notes saved before any of that was kept. Nothing current alone decides it: a
+        link removed and a request resolved or taken back still count."""
+        name = standing.capture_id
+        done = {str(row[0]) for row in self._connection.execute(USED_BY_EVENTS, (name,))}
+        if PROMOTE in done or standing.assignment_id == derived_assignment_id(name):
+            return "added"
+        if standing.assignment_id is not None:
+            return "linked"
+        if done:
+            return "was_linked"
+        tables = {str(row[0]) for row in self._connection.execute(HELP_TABLES)}
+        for table, statement in (
+            ("help_requests", NAMED_BY_A_REQUEST),
+            ("notes_named_by_requests", NAMED_BY_A_REQUEST_ONCE),
+        ):
+            if table in tables and self._connection.execute(statement, (name,)).fetchone():
+                return "asked"
+        if self._connection.execute(OF_UNKNOWN_USE, (name,)).fetchone():
+            return "unknown"
+        return None
 
     def _move_capture(
         self,
