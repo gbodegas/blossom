@@ -1948,6 +1948,64 @@ def test_a_stale_choice_beside_the_results_leaves_each_press_with_its_consequenc
     assert ">Link to this homework<" in found.split(f'id="found-{second.assignment_id}"')[1]
 
 
+@pytest.mark.parametrize("chosen", ["the link now", "linked elsewhere"])
+@pytest.mark.parametrize("reader", ["hers", "family", "hers signed in", "parent signed in"])
+def test_a_sentence_on_what_a_press_does_shows_only_beside_a_press(
+    reader: str, chosen: str, tmp_path: pathlib.Path
+) -> None:
+    """After a stale move, the chosen row and the results say what a press does only where
+    they hold a press, including when the homework chosen is the note's link now."""
+    family = reader in ("family", "parent signed in")
+    signed_in = reader.endswith("signed in")
+    client = (
+        TestClient(
+            create_app(signed_in_household(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+        )
+        if signed_in
+        else browser()
+    )
+    with client:
+        if signed_in:
+            client.post("/sign-in", data={"passphrase": HERS})
+        name = save_note(client)
+        if reader == "parent signed in":
+            client.post("/sign-out")
+            client.post("/sign-in", data={"passphrase": THEIRS})
+        log = on_record(client)
+        first = on_record(client, course="Math", title="Drill one", due=date(2026, 9, 1))
+        second = on_record(client, course="Math", title="Drill two", due=date(2026, 9, 2))
+
+        def move(target: Assignment, words: str) -> dict[str, str]:
+            page = search(client, name, words, family=family)
+            return press_of(page, name, target.assignment_id, family=family)
+
+        action = note_link_action(name, family=family)
+        assert client.post(action, data=move(log, "reading")).status_code == 303
+        press = move(first, "drill")
+        store = state_of(client).project_state
+        store._connection.execute(
+            "UPDATE assignments SET title = 'Novel study' WHERE assignment_id = ?",
+            (first.assignment_id,),
+        )
+        store._connection.commit()
+        other_tab = move(first, "novel") if chosen == "the link now" else move(second, "drill")
+        assert client.post(action, data=other_tab).status_code == 303
+        answers = [client.post(action, data=press) for _ in range(2)]
+    press_here = chosen == "linked elsewhere"
+    sentence = "This moves the note's link from"
+
+    for answer in answers:
+        beside = answer.text.split('id="search-chosen"')[1].split('id="search-results"')[0]
+        found = answer.text.split('id="search-results"')[1]
+        assert answer.status_code == 409
+        assert (sentence in beside, ">Move the link here<" in beside) == (press_here, press_here)
+        assert (sentence in found, ">Move the link here<" in found) == (
+            not press_here,
+            not press_here,
+        )
+        assert answer.text.count(sentence) == 1
+
+
 def repeated_ids(page: str) -> list[str]:
     ids = re.findall(r'<[^>]*\sid="([^"]+)"', page)
     return sorted({one for one in ids if ids.count(one) > 1})

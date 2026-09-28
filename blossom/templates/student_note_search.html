@@ -99,7 +99,7 @@
     {% elif chosen_row %}
       {# The homework chosen, read with this page, shown beside the results when the words find it no more. #}
       <h2 class="update-heading" id="search-chosen">The homework chosen, as it stands now</h2>
-      {% if may_write %}{{ consequence("search-chosen-consequence") }}{% endif %}
+      {% if may_write and chosen_row.row.assignment_id != leaving %}{{ consequence("search-chosen-consequence") }}{% endif %}
       <ol class="history-list">
         {{ found_row(chosen_row, "chosen") }}
       </ol>
