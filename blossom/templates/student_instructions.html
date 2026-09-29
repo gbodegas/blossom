@@ -3,11 +3,13 @@
   anything is asked about the work. What applies is said whole, in the one
   order, each with the school channel its own row came from, or only that it
   is the school's when the row keeps no channel. That none applies, or that
-  they cannot be read, is said, never both. What waits for a parent's review
-  is listed in the open under its own heading, a school note left in the old
-  note field among it, and is never said as applying; a short line at the top
-  says how many wait while the instructions can be read. What was said
-  before is the one thing folded.
+  they cannot be read, is said, never both; when they cannot be read and a
+  school note left in the old note field can, it is the list that is said to
+  have failed, and the note below to be unreviewed. What waits for a
+  parent's review is listed in the open under its own heading, a school note
+  left in the old note field among it, and is never said as applying; a
+  short line at the top says how many wait while the instructions can be
+  read. What was said before is the one thing folded.
 
   ``words`` is the assignment's words view; ``to_a_parent`` says whose voice
   the page speaks in; ``review_href`` is the family's review, given only on
@@ -23,7 +25,9 @@
   {% for line in words.current %}
     <p class="from-teacher">{{ from_the(line) }}: <q class="authored-text">{{ line.text }}</q></p>
   {% endfor %}
-  {% if words.unreadable %}
+  {% if words.unreadable and words.left_in_the_note_field %}
+    <p class="source">Blossom can't read the instruction list right now. The older school note below has not been reviewed.</p>
+  {% elif words.unreadable %}
     <p class="source">The school's instructions for this assignment cannot be read right now, so they are not shown.</p>
   {% elif not words.current %}
     <p class="source">No instruction from the school applies now.</p>
