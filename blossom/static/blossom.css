@@ -414,8 +414,8 @@ article h2 {
    44 pixels to press as a button: padding the height out and margining it
    back in leaves the text where it was. On an assignment's details that is
    the date warning's link, the summary's, the notes', and the line that says
-   how many instructions wait; in Help, Ask again, a refusal's link, and the
-   family review link a parent reads. */
+   how many instructions wait; in Help, a refusal's link and the family review
+   link a parent reads. */
 .notice a,
 .refresh a,
 .return a,
@@ -423,7 +423,6 @@ article h2 {
 #problem-summary a,
 .detail-notes a,
 .school-instructions .source a,
-.help-panel .help-request a.ask-again,
 .help-panel .problem a,
 .help-panel #ask-for-help a {
   display: inline-block;
@@ -742,6 +741,16 @@ a.assignment-link:focus-visible {
    requests below. These margins keep the press areas from reaching into each other. */
 .help-panel .refresh {
   margin: 1.75rem 0 1rem;
+}
+
+/* In a request's row, Open homework note and Ask again can sit on lines next to each
+   other. Each keeps its 44 pixels to press inside its own line, which grows to hold
+   them, so neither reaches into the other. */
+.help-panel .help-request a.ask-again,
+.help-panel .help-about-note a {
+  display: inline-block;
+  padding: 0.8rem 0;
+  margin: 0;
 }
 
 .evidence {
