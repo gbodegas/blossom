@@ -592,6 +592,11 @@ def help_view(
         state=request.state,
         accepted_at=request.accepted_at,
         resolved_at=request.resolved_at,
+        resolved_local=(
+            None
+            if request.resolved_at is None
+            else request.resolved_at.astimezone(state.clock.zone)
+        ),
         response=request.response,
     )
 

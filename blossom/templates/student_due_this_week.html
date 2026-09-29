@@ -33,9 +33,6 @@
   {% if view.week.current %}
   <section class="panel today" id="today" tabindex="-1">
     <h2>Today, {{ view.today.strftime("%A, %B") }} {{ view.today.day }}</h2>
-    {% if refreshed_at %}
-      <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
-    {% endif %}
     {#
       One line says where today stands, and a parent's words get a place of
       their own. A parent's review is shown, never waited for: the plan is
@@ -170,8 +167,12 @@
           </form>
         {% endif %}
       {% endif %}
+      {#
+        Help is below the homework, one link away. She lands on her form; a
+        parent, who has no form here, lands on the section with her requests.
+      #}
       {% if viewer != "parent" %}<a class="to-help" href="{{ new_note_page }}">Write down homework</a>{% endif %}
-      <a class="to-help" href="#ask-for-help">Ask for help</a>
+      {% if viewer != "parent" %}<a class="to-help" href="#ask-for-help">Ask for help</a>{% else %}<a class="to-help" href="#help">Her help requests</a>{% endif %}
     </div>
     <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
     {#
@@ -185,6 +186,16 @@
       in.
     #}
     <p class="support-links"><a href="{{ to_turn_in_page }}">To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</a><a href="{{ notes_page }}">Homework notes{% if homework_notes or homework_notes_unreadable %} ({{ homework_notes|length + homework_notes_unreadable|length }}){% endif %}</a></p>
+    {#
+      Help updates: her open requests and those a parent resolved in the last
+      seven days, counted and one link away, whoever reads. Nothing here says
+      what they are, or that anyone has read them. There is no count when
+      there is nothing to count, or when her requests could not be read.
+    #}
+    {% set help_updates = view.help_open|length + view.help_recent|length %}
+    {% if help_updates %}
+      <p class="support-links help-updates-link"><a href="#help-updates">Help updates ({{ help_updates }})</a></p>
+    {% endif %}
     {% if view.nothing_to_plan %}
     {% elif view.can_plan %}
       <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
@@ -204,9 +215,9 @@
       plan read by its rows and one read as text, whatever a parent decided
       and whether or not its work is done. It is a native fold she can close
       on the page, and nothing remembers that she did. It sits after the
-      notices and the controls and before everything about help, which stays
-      one link away from the controls however long the plan is. The text is
-      the record as saved; nothing is cut or rewritten here.
+      notices and the controls; help is below the homework, one link away
+      from the controls however long the plan is. The text is the record as
+      saved; nothing is cut or rewritten here.
 
       The fold has an id of its own, the same whichever plan it holds, and
       that is where her links to today's plan land: a way back written under
@@ -226,77 +237,6 @@
     {% elif plan_asked %}
       <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
     {% endif %}
-
-    {#
-      Asking is hers. A parent reading her page sees her requests and where to answer
-      them, and no form. Her form carries an id of its own, so sending it twice asks
-      once; a refused form comes back with her words and what went wrong beside them.
-    #}
-    {% set help_form = help_form if help_form is defined else none %}
-    {% set help_result = help_result if help_result is defined else none %}
-    {% if viewer == "parent" %}
-      <p class="note" id="ask-for-help" tabindex="-1">Her requests for help are below. You can answer them on <a href="{{ family_help }}">Family review</a>.</p>
-    {% else %}
-      {% if help_form and help_form.problem %}
-        <p class="problem" role="alert" id="help-problem"{% if not help_form.at_words %} tabindex="-1" autofocus{% endif %}>{{ help_form.problem }}</p>
-      {% endif %}
-      <form method="post" action="/student/actions/ask-for-help" class="ask" id="ask-for-help" tabindex="-1">
-        <label for="help-note">A note for your parents (optional)</label>
-        <input id="help-note" type="text" name="note" value="{{ help_form.words if help_form else "" }}" maxlength="{{ note_max_length }}" placeholder="A short note"{% if help_form and help_form.problem %} aria-describedby="help-problem"{% endif %}{% if help_form and help_form.at_words %} aria-invalid="true" autofocus{% endif %}>
-        <input type="hidden" name="request_id" value="{{ help_request_id if help_request_id is defined else "" }}">
-        <button type="submit" class="secondary">Ask for help</button>
-      </form>
-    {% endif %}
-    {% set open_requests = view.help_requests|rejectattr("state", "equalto", "resolved")|list %}
-    {% set resolved_requests = view.help_requests|selectattr("state", "equalto", "resolved")|list %}
-    {% set asker = "She" if viewer == "parent" else "You" %}
-    {% if open_requests %}
-      <ul class="help">
-        {% for ask in open_requests %}
-          <li id="help-{{ ask.request_id }}">
-            {% if help_result == ask.request_id %}<p class="note update-result" role="status" id="help-result" tabindex="-1">{{ already_sent }}</p>{% endif %}
-            <strong>{{ asker }} asked for help</strong> at {{ ask.asked_local|clock }}
-            on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
-            {% if ask.about_note %}{% with about = ask.about_note %}{% include "help_about_note.html" %}{% endwith %}{% endif %}
-            {% if ask.state == "requested" %}
-              Waiting for a parent to respond.
-              {% if viewer != "parent" %}
-                <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
-                  <button type="submit" class="secondary">Take it back<span class="visually-hidden">: your request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}</span></button>
-                </form>
-              {% endif %}
-            {% else %}
-              <strong>A parent is on it.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
-            {% endif %}
-          </li>
-        {% endfor %}
-      </ul>
-    {% endif %}
-    <p class="note refresh">
-      <a href="/student/due-this-week?refreshed=1">Refresh replies</a>. Refresh to see updates. Save or send your note first.
-    </p>
-    {% if resolved_requests %}
-      <details class="steps resolved"{% if resolved_requests|selectattr("request_id", "equalto", help_result)|list %} open{% endif %}>
-        <summary>Resolved requests</summary>
-        <ul class="help">
-          {% for ask in resolved_requests %}
-            <li id="help-{{ ask.request_id }}">
-              {% if help_result == ask.request_id %}<p class="note update-result" role="status" id="help-result" tabindex="-1">{{ already_sent }}</p>{% endif %}
-              <strong>{{ asker }} asked for help</strong> at {{ ask.asked_local|clock }}
-              on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
-              {% if ask.about_note %}
-                {% with about = ask.about_note %}
-                  {% include "help_about_note.html" %}
-                {% endwith %}
-              {% endif %}
-              <strong>Resolved.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
-            </li>
-          {% endfor %}
-        </ul>
-        <p class="note">A resolved request stays here for two weeks, then goes.</p>
-      </details>
-    {% endif %}
-
   </section>
 
   {#
@@ -448,6 +388,105 @@
   {% endif %}
 
   {% if view.week.current %}
+    {#
+      Help, after the homework: her form, her requests and what a parent did
+      with each. Asking and taking a request back are hers; a parent reading
+      her page sees her requests, read only, and where to answer them. Her
+      form carries an id of its own, so sending it twice asks once; a refused
+      form comes back with her words and what went wrong beside them.
+
+      Open requests and those resolved in the last seven days are the help
+      updates; one resolved seven days ago or more moves to the fold below,
+      where it stays until the store's two weeks are up. A line a sent form
+      left in the address is checked against the requests read here and said
+      beside the request it names, or at the top when none here is that one;
+      it never opens a control. A refusal is said here and takes the focus,
+      and a fold holding the request a line or a refusal names is open.
+    #}
+    {% set asker = "She" if parent else "You" %}
+    <section class="panel help-panel" id="help" tabindex="-1">
+      <h2>Help</h2>
+      {% if refreshed_at %}
+        <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
+      {% endif %}
+      {% if help_form and help_form.problem %}
+        <p class="problem" role="alert" id="help-problem"{% if not help_form.at_words %} tabindex="-1" autofocus{% endif %}>{{ help_form.problem }}</p>
+      {% elif help_problem %}
+        <p class="problem" role="alert" id="help-problem" tabindex="-1" autofocus>{{ help_problem.said }}{% if help_problem.request_id %} <a href="#help-{{ help_problem.request_id }}">Go to the request.</a>{% endif %}</p>
+      {% endif %}
+      {% if help_result and not help_result.request_id %}
+        <p class="note update-result" role="status" id="help-result" tabindex="-1">{{ help_result.said }}</p>
+      {% endif %}
+      {% if viewer == "parent" %}
+        {% if view.help_unavailable %}
+          <p class="problem" id="ask-for-help" tabindex="-1">Her requests for help can't be read right now. Refresh replies to try again. You can also open <a href="{{ family_help }}">Family review</a>.</p>
+        {% elif view.help_open or view.help_recent or view.help_earlier %}
+          <p class="note" id="ask-for-help" tabindex="-1">Her requests for help are below. You can answer open ones on <a href="{{ family_help }}">Family review</a>.</p>
+        {% else %}
+          <p class="note" id="ask-for-help" tabindex="-1">No requests for help to show. When she asks, you can answer on <a href="{{ family_help }}">Family review</a>.</p>
+        {% endif %}
+      {% else %}
+        <form method="post" action="/student/actions/ask-for-help" class="ask" id="ask-for-help" tabindex="-1">
+          <label for="help-note">A note for your parents (optional)</label>
+          <input id="help-note" type="text" name="note" value="{{ help_form.words if help_form else "" }}" maxlength="{{ note_max_length }}" placeholder="A short note"{% if help_form and help_form.problem %} aria-describedby="help-problem"{% endif %}{% if help_form and help_form.at_words %} aria-invalid="true" autofocus{% endif %}>
+          <input type="hidden" name="request_id" value="{{ help_request_id }}">
+          <button type="submit" class="secondary">Ask for help</button>
+        </form>
+      {% endif %}
+      {% if view.help_unavailable %}
+        {% if not parent %}<p class="problem">Your requests for help can't be read right now. Refresh replies to check them before you ask again.</p>{% endif %}
+      {% elif view.help_open or view.help_recent %}
+        <div id="help-updates" tabindex="-1">
+          <h3>Help updates</h3>
+          <ul class="help">
+            {% for ask in view.help_open + view.help_recent %}
+              <li class="help-request" id="help-{{ ask.request_id }}" tabindex="-1">
+                {% if help_result and help_result.request_id == ask.request_id %}<p class="note update-result" role="status" id="help-result" tabindex="-1">{{ help_result.said }}</p>{% endif %}
+                <strong>{{ asker }} asked for help</strong> at {{ ask.asked_local|clock }}
+                on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
+                {% if ask.about_note %}{% with about = ask.about_note %}{% include "help_about_note.html" %}{% endwith %}{% endif %}
+                {% if ask.state == "requested" %}
+                  Waiting for a parent to respond.
+                  {% if viewer != "parent" %}
+                    <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
+                      <button type="submit" class="secondary">Take it back<span class="visually-hidden">: your request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}</span></button>
+                    </form>
+                  {% endif %}
+                {% elif ask.state == "accepted" %}
+                  <strong>A parent is on it.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
+                {% else %}
+                  {% set closed = ask.resolved_local %}
+                  <strong>A parent closed this request on {{ closed.strftime("%A, %B") }} {{ closed.day }}{% if closed.year != view.today.year %}, {{ closed.year }}{% endif %}.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
+                  {% if viewer != "parent" %}<a class="ask-again" href="#ask-for-help">Ask again</a>{% endif %}
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+      <p class="note refresh">
+        <a href="/student/due-this-week?refreshed=1#help">Refresh replies</a>. Refresh to see updates.{% if not parent %} Save or send your note first.{% endif %}
+      </p>
+      {% if view.help_earlier %}
+        <details class="steps resolved" id="help-older"{% if help_fold_open %} open{% endif %}>
+          <summary>Older closed requests ({{ view.help_earlier|length }})</summary>
+          <ul class="help">
+            {% for ask in view.help_earlier %}
+              <li class="help-request" id="help-{{ ask.request_id }}" tabindex="-1">
+                {% if help_result and help_result.request_id == ask.request_id %}<p class="note update-result" role="status" id="help-result" tabindex="-1">{{ help_result.said }}</p>{% endif %}
+                <strong>{{ asker }} asked for help</strong> at {{ ask.asked_local|clock }}
+                on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}{% if ask.note %}: <q>{{ ask.note }}</q>{% endif %}.
+                {% if ask.about_note %}{% with about = ask.about_note %}{% include "help_about_note.html" %}{% endwith %}{% endif %}
+                {% set closed = ask.resolved_local %}
+                <strong>A parent closed this request on {{ closed.strftime("%A, %B") }} {{ closed.day }}{% if closed.year != view.today.year %}, {{ closed.year }}{% endif %}.</strong>{% if ask.response %} They said: <q>{{ ask.response }}</q>{% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+          <p class="note">A closed request moves here seven days after it was closed and goes two weeks after it was closed.</p>
+        </details>
+      {% endif %}
+    </section>
+
     <details class="steps">
       <summary>How Blossom uses {% if parent %}her{% else %}your{% endif %} information</summary>
       {#

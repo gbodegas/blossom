@@ -525,6 +525,8 @@ class HelpRequestView(BaseModel):
     state: HelpState
     accepted_at: AwareDatetime | None = None
     resolved_at: AwareDatetime | None = None
+    resolved_local: AwareDatetime | None = None
+    """When a parent resolved it, in the household's zone, which is the day her page says."""
     response: str | None = None
     about_note: HelpNoteView | None = None
     """The homework note the request is about, when it is about one."""
@@ -621,9 +623,15 @@ class StudentDueThisWeekView(BaseModel):
     can_plan: bool = False
     too_much: WorkloadSignalView | None = None
     signals: list[WorkloadSignalView] = []
-    help_requests: list[HelpRequestView] = []
-    """Her requests for help still open, oldest first, then those resolved within
-    two weeks, most recent first, so she sees each step a parent takes."""
+    help_open: list[HelpRequestView] = []
+    """Her requests for help still open, oldest first, so she sees each step a parent takes."""
+    help_recent: list[HelpRequestView] = []
+    """Those a parent resolved less than seven days ago, most recently resolved first."""
+    help_earlier: list[HelpRequestView] = []
+    """Those resolved longer ago and still kept, most recently resolved first."""
+    help_unavailable: bool = False
+    """Whether her requests could not be read for this page. The three lists are then empty
+    because nothing could be read, not because there is nothing to show."""
     viewer: str = "anyone"
     can_update: bool = True
     nothing_to_plan: bool = False

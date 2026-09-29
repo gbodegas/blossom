@@ -52,6 +52,11 @@ logger = logging.getLogger(__name__)
 HELP_RETENTION_DAYS: Final = 14
 """How long a resolved request is kept: long enough for the word back to be read."""
 
+HELP_RECENT_DAYS: Final = 7
+"""How long a resolved request stays among her help updates, counted from when it was
+resolved. After that it is kept apart, with those resolved earlier, until retention
+takes it."""
+
 NOTE_MAX_LENGTH: Final = 500
 """The most that is kept of her note or a parent's word back: a sentence or two,
 the same cap as everywhere else words are typed into this application."""
@@ -130,12 +135,33 @@ RETAINED_ONE: Final = """
     SELECT * FROM help_requests
     WHERE request_id=? AND (state<>'resolved' OR resolved_at >= ?)
 """
+RETAINED_ALL: Final = """
+    SELECT * FROM help_requests
+    WHERE state<>'resolved' OR resolved_at >= ?
+"""
 REQUEST_ID: Final = re.compile(r"[0-9a-f]{32}")
 """The shape of an id a form carries: 32 lowercase hex digits, as ``new_request_id`` makes."""
 
 
 class NotARequestId(ValueError):
     """Raised for an id no form of these pages carries."""
+
+
+class UnreadableHelpRequest(ValueError):
+    """Raised when a kept row cannot be read as a request. Its message names nothing the
+    row holds, so saying it gives out none of her words."""
+
+    def __init__(self) -> None:
+        super().__init__("a kept help request cannot be read")
+
+
+@dataclass(frozen=True)
+class HelpHeld:
+    """Every request kept, from one statement, and the instant its cutoff was taken from, so
+    whatever is worked out from their ages uses that same moment."""
+
+    requests: tuple[HelpRequest, ...]
+    now: datetime
 
 
 def new_request_id() -> str:
@@ -357,16 +383,16 @@ class HelpRequestsStore:
         """Remove a request nobody has taken up yet. False when there is none to remove.
 
         Once a parent has taken it up, the request is theirs to resolve; taking
-        it back then is refused, since the parent may already be on it.
+        it back then is refused, since the parent may already be on it. The
+        request is read with the retention cutoff, as ``get`` reads it, so one
+        resolved past retention that the sweep has not reached yet is none.
         """
         with self._lock, self._connection:
-            row = self._connection.execute(
-                "SELECT state FROM help_requests WHERE request_id=?", (request_id,)
-            ).fetchone()
+            row = self._connection.execute(RETAINED_ONE, (request_id, self._cutoff())).fetchone()
             if row is None:
                 return False
             if row["state"] != "requested":
-                raise RequestClosed(self._read(request_id), "taken back")
+                raise RequestClosed(request_from(row), "taken back")
             self._connection.execute("DELETE FROM help_requests WHERE request_id=?", (request_id,))
         return True
 
@@ -452,6 +478,19 @@ class HelpRequestsStore:
             ).fetchall()
         return [request_from(row) for row in rows]
 
+    def retained(self) -> HelpHeld:
+        """Every request kept, open or resolved within retention, in one statement, with the
+        instant the cutoff was taken from. It reads and never writes, so reading them resets
+        nothing. A row that cannot be read as a request is ``UnreadableHelpRequest``."""
+        with self._lock:
+            now = self._clock.now()
+            rows = self._connection.execute(RETAINED_ALL, (self._cutoff(now),)).fetchall()
+        try:
+            requests = tuple(request_from(row) for row in rows)
+        except ValueError as fault:
+            raise UnreadableHelpRequest from fault
+        return HelpHeld(requests, now)
+
     def sweep(self) -> int:
         """Delete every resolved request past retention; return how many went."""
         with self._lock, self._connection:
@@ -479,9 +518,11 @@ class HelpRequestsStore:
             raise KeyError(msg)
         return request_from(row)
 
-    def _cutoff(self) -> str:
-        """The oldest resolution still within retention, by the store's clock."""
-        return (self._clock.now() - timedelta(days=HELP_RETENTION_DAYS)).isoformat()
+    def _cutoff(self, now: datetime | None = None) -> str:
+        """The oldest resolution still within retention, by the store's clock, or from ``now``
+        when the caller has read the clock already."""
+        read = self._clock.now() if now is None else now
+        return (read - timedelta(days=HELP_RETENTION_DAYS)).isoformat()
 
 
 def spaced(words: str | None) -> str:

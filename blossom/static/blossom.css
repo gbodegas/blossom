@@ -414,14 +414,18 @@ article h2 {
    44 pixels to press as a button: padding the height out and margining it
    back in leaves the text where it was. On an assignment's details that is
    the date warning's link, the summary's, the notes', and the line that says
-   how many instructions wait. */
+   how many instructions wait; in Help, Ask again, a refusal's link, and the
+   family review link a parent reads. */
 .notice a,
 .refresh a,
 .return a,
 .assignment.detail .confidence a,
 #problem-summary a,
 .detail-notes a,
-.school-instructions .source a {
+.school-instructions .source a,
+.help-panel .help-request a.ask-again,
+.help-panel .problem a,
+.help-panel #ask-for-help a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: -0.8rem 0;
@@ -716,6 +720,28 @@ a.assignment-link:focus-visible {
 .detail .problem[tabindex="-1"]:focus {
   outline: 2px solid var(--blue-action);
   outline-offset: 4px;
+}
+
+/* Help's places to land: the section, each row, result or problem in it that a
+   link or a redirect names, and the family page's list of her requests. Plain
+   :focus, since a fragment arrival after a click need not match :focus-visible. */
+.help-panel:focus,
+.help-panel [tabindex="-1"]:focus,
+#help-she-asked-for:focus {
+  outline: 2px solid var(--blue-action);
+  outline-offset: 4px;
+}
+
+/* Help breaks a long word, hers or a parent's word back, rather than widen the page. */
+.help-panel {
+  overflow-wrap: anywhere;
+}
+
+/* In Help, Refresh replies sits between other links and controls with press areas of
+   their own: Family review, Ask again or the Ask button above it, and the fold of older
+   requests below. These margins keep the press areas from reaching into each other. */
+.help-panel .refresh {
+  margin: 1.75rem 0 1rem;
 }
 
 .evidence {

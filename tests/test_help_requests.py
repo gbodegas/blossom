@@ -1,6 +1,7 @@
 """Asking for help: one press from her page, a state a parent moves, each step shown to her."""
 
 import pathlib
+import re
 import sqlite3
 from datetime import timedelta
 from urllib.parse import urlencode
@@ -37,6 +38,8 @@ from tests.support import (
 PAGE = "/student/due-this-week"
 ASK = "/student/actions/ask-for-help"
 FORM_TYPE = "application/x-www-form-urlencoded"
+CLOSED_ON = r"<strong>A parent closed this request on \w+day, \w+ \d+(, \d{4})?\.</strong>"
+"""A closure's words on her page. The store stamps it by the real clock, so its day varies."""
 
 
 def store_in_memory(clock: FrozenClock | None = None) -> HelpRequestsStore:
@@ -161,6 +164,7 @@ def test_the_store_offers_no_way_to_read_a_pattern() -> None:
         "get",
         "open_requests",
         "recently_resolved",
+        "retained",
         "sweep",
         "open",
         "close",
@@ -207,8 +211,8 @@ def test_a_parent_takes_it_up_and_resolves_it_and_she_sees_each_step() -> None:
     assert taken_up.json()["state"] == "accepted"
     assert "<strong>A parent is on it.</strong> They said: <q>coming</q>" in on_it
     assert resolved.json()["state"] == "resolved"
-    assert "<strong>Resolved.</strong> They said: <q>all sorted</q>" in after
-    assert "A resolved request stays here for two weeks" in after
+    assert re.search(CLOSED_ON + r" They said: <q>all sorted</q>", after)
+    assert '<a href="#help-updates">Help updates (1)</a>' in after
     assert again.status_code == 409
 
 
@@ -292,7 +296,7 @@ def test_her_page_offers_the_press_and_then_lists_the_request_with_a_way_back() 
     assert 'action="/student/actions/ask-for-help"' in before
     assert "You asked for help" not in before
     assert asked.status_code == 303
-    assert asked.headers["location"] == PAGE
+    assert asked.headers["location"] == f"{PAGE}?asked={request_id}#help-result"
     assert "<strong>You asked for help</strong>" in after
     assert "<q>the outline</q>" in after
     assert "Waiting for a parent to respond." in after
@@ -332,7 +336,7 @@ def test_the_parents_page_lists_what_is_open_and_moves_it_with_two_buttons() -> 
     assert "No open help requests." in after
     assert "Resolved in the last two weeks" in after
     assert "Resolved with <q>sorted</q>" in after
-    assert "<strong>Resolved.</strong> They said: <q>sorted</q>" in hers
+    assert re.search(CLOSED_ON + r" They said: <q>sorted</q>", hers)
 
 
 def test_taking_back_a_request_that_is_not_there_is_said_on_her_page() -> None:
