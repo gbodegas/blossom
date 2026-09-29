@@ -485,8 +485,8 @@ def test_a_parent_reads_the_details_and_cannot_save_and_her_device_is_not_sent_t
 ) -> None:
     """A device with no sign-in is sent to sign in. A parent's device reads the details with
     the way back to the family page, sees no form, and is answered 403 on a save made up by
-    hand, on the details it named. Her device asking for a way back to the family page gets
-    her week instead; an altered cookie is no sign-in at all."""
+    hand, on her current week whatever page it named. Her device asking for a way back to
+    the family page gets her week instead; an altered cookie is no sign-in at all."""
     settings = signed_in_household(tmp_path)
     with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
         anonymous = client.get(DETAILS, headers=PAGE_HEADERS)
@@ -525,7 +525,8 @@ def test_a_parent_reads_the_details_and_cannot_save_and_her_device_is_not_sent_t
     assert "Back to family review" in by_default
     assert forged.status_code == 403
     assert NOT_HERS_TO_UPDATE in forged.text
-    assert f"<h1>{ESSAY_TITLE}</h1>" in forged.text
+    assert "<h1>Student week</h1>" in forged.text
+    assert f"<h1>{ESSAY_TITLE}</h1>" not in forged.text
     assert "Back to the week" in hers
     assert "/parent" not in hers.split('<main id="main">', 1)[1].split("</main>", 1)[0]
     assert altered.status_code == 303

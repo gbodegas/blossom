@@ -48,7 +48,9 @@ With the app running as the README describes:
   `today`, or `family`), `week`, and `plan_id`, checked on the server; nothing
   else is read as an address, and a value these pages do not make falls back
   to her week, or to the family page for a parent who is signed in. A parent
-  reads the details and cannot save from them. There is no JSON route for it.
+  reads the details and cannot save from them: a parent's save, hand-in
+  update, or Undo gets 403 on her week before the form is read. There is no
+  JSON route for it.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
   to `/student/plans` makes one.
 - <http://127.0.0.1:8000/student/homework-notes> is her homework notes, with
@@ -65,6 +67,9 @@ With the app running as the README describes:
   and `/parent/actions/homework-notes/{id}`, `/link` and `/unlink`. Deleting
   a note she never used is a press on
   `/student/actions/homework-notes/{id}/delete`, which a parent can't make.
+  A parent signed in gets 403 on every press under
+  `/student/actions/homework-notes`, before the form is read, and she gets the
+  same on the presses under `/parent/actions/homework-notes/{id}`.
   Reading any of the pages writes nothing.
 - <http://127.0.0.1:8000/student/help-requests> lists her requests for help
   as JSON, the open ones and those resolved within two weeks; a POST there

@@ -2171,7 +2171,12 @@ def could_not(
 async def report_from_the_page(request: Request, assignment_id: str, state: State) -> Response:
     """Her update on one assignment: Done or Not yet, with a note if she wants one.
 
-    The form is read whole before anything else: its fields, each once, and
+    A parent signed in is told the update is hers to make, 403, on her
+    current week, from the sign-in and the route alone: before the form is
+    read, before the assignment is looked up, and without the decision lock,
+    whatever page the form came from. Nothing is written.
+
+    For anyone else the form is read whole first: its fields, each once, and
     nothing more. It carries the last event the page showed, which must be
     one of this assignment's, so a save lands on the chain the page showed
     or is shown what changed: the same update as the one standing is already
@@ -2181,9 +2186,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     operation under the decision lock, so two devices saving together get
     one save and one refusal. A write the file refuses is answered with the
     component and her words, and never with a word of a save. An assignment
-    not on record now is answered 404 with her choice and words to copy. A
-    parent signed in is told the update is hers to make, 403, and nothing
-    is written.
+    not on record now is answered 404 with her choice and words to copy.
 
     One route serves the card on her week and the assignment's details. The
     form says which it came from, and that decides only where the result is
@@ -2193,19 +2196,14 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     that names a page to go back to that these pages do not make is refused,
     422, with her input kept.
     """
+    if viewer_of(request) == "parent":
+        return student_page(
+            request, state, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
+        )
     fields, whole = await fields_of(
         request, REPORT_FIELDS, may_be_absent=NOTHING_CHOSEN | FROM_DETAILS
     )
     origin = origin_of(request, fields)
-    if viewer_of(request) == "parent":
-        return result_page(
-            request,
-            state,
-            assignment_id,
-            origin,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
     said = fields.get("status", "").strip()
     note = fields.get("note", "")
     words = normalize_note(note)
@@ -2296,26 +2294,22 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
 async def undo_report_from_the_page(request: Request, assignment_id: str, state: State) -> Response:
     """Take her latest update back, restoring what stood before it.
 
-    The form is read whole, its fields each once. The button names the
-    update it takes back, which must be one of this assignment's; one that
-    is not the latest, or is itself an undo, meets a 409 that says the update
-    has changed, with the component as it stands, since what she meant to
-    take back is not what is there. A write the file refuses is said as
-    that, and never as an undo. A parent is answered 403. The result is
-    shown where the form was, her week or the assignment's details, and an
-    undo never sends her to another week.
+    A parent is answered 403 on her current week before the form is read or
+    the assignment looked up, and nothing is written. For anyone else the
+    form is read whole, its fields each once. The button names the update it
+    takes back, which must be one of this assignment's; one that is not the
+    latest, or is itself an undo, meets a 409 that says the update has
+    changed, with the component as it stands, since what she meant to take
+    back is not what is there. A write the file refuses is said as that, and
+    never as an undo. The result is shown where the form was, her week or
+    the assignment's details, and an undo never sends her to another week.
     """
+    if viewer_of(request) == "parent":
+        return student_page(
+            request, state, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
+        )
     fields, whole = await fields_of(request, UNDO_FIELDS, may_be_absent=FROM_DETAILS)
     origin = origin_of(request, fields)
-    if viewer_of(request) == "parent":
-        return result_page(
-            request,
-            state,
-            assignment_id,
-            origin,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
     named = fields.get("report_id", "").strip()
 
     def refused(problem: str, code: int, *, saved_elsewhere: bool = False) -> Response:

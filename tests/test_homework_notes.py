@@ -133,9 +133,10 @@ def tables(store: ProjectStateStore) -> tuple[list[tuple[object, ...]], list[tup
     return notes.fetchall(), events.fetchall()
 
 
-def said_first(page: str, sentence: str) -> bool:
-    """A refusal said once, as the one thing on the page given the focus."""
-    place = page.index('id="note-problem"')
+def said_first(page: str, sentence: str, *, at: str = "note-problem") -> bool:
+    """A refusal said once, as the one thing on the page given the focus: the note's own
+    problem line, or ``at`` another page's."""
+    place = page.index(f'id="{at}"')
     return (
         page.count(str(escape(sentence))) == 1
         and page.index(str(escape(sentence))) > place
@@ -1639,7 +1640,8 @@ def test_a_parent_can_read_her_note_and_can_not_delete_it(tmp_path: pathlib.Path
     assert asked.status_code == 403
     assert said_first(asked.text, NOT_HERS_TO_UPDATE)
     assert pressed.status_code == 403
-    assert said_first(pressed.text, NOT_HERS_TO_UPDATE)
+    assert "<h1>Note not changed</h1>" in pressed.text
+    assert said_first(pressed.text, NOT_HERS_TO_UPDATE, at="problem-summary")
     assert after == before
 
 
@@ -2014,7 +2016,12 @@ def test_a_signed_in_reader_is_told_a_note_sqlite_can_not_read_is_unavailable(
 
     for pressed, answer in enumerate(answers):
         assert answer.status_code == expected
-        assert said_first(answer.text, NOTE_UNREADABLE if pressed else NOTE_CANNOT_BE_READ)
+        if pressed:
+            # A parent's press is refused before the note is read, so it says whose the
+            # change is and nothing about the note.
+            assert said_first(answer.text, NOT_HERS_TO_UPDATE, at="problem-summary")
+        else:
+            assert said_first(answer.text, NOTE_CANNOT_BE_READ)
         assert "Zebra quartz violin" not in answer.text
     assert after == before
 
@@ -2211,9 +2218,15 @@ def test_a_refused_change_to_a_note_sqlite_can_not_read_back_changes_nothing(
         client.__exit__(None, None, None)
 
     assert answer.status_code == expected
-    assert said_first(answer.text, NOTE_UNREADABLE)
     assert "Zebra quartz violin" not in answer.text
     assert after == before
+    if case.endswith("parent"):
+        # A parent is refused before the note is read, so a note the file can't read is
+        # never looked at, and the refusal says whose the change is.
+        assert said_first(answer.text, NOT_HERS_TO_UPDATE, at="problem-summary")
+        assert not logged_unreadable(caplog, name)
+        return
+    assert said_first(answer.text, NOTE_UNREADABLE)
     assert logged_unreadable(caplog, name)
 
 

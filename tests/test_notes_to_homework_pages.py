@@ -2244,9 +2244,10 @@ def test_the_details_saved_on_her_note_say_who_supplied_them_to_the_reader(
     button: str, tmp_path: pathlib.Path
 ) -> None:
     """The details saved on the note say who supplied them in the reader's terms, never the
-    tree's. A parent whose press on her details page is refused, with a form that carries no
-    revision, is shown the details saved on the note, and the ones she supplied say so; she,
-    meeting a conflict on her own page, is shown them without being told her own are hers."""
+    tree's. A parent whose press on the family's details page is refused for a form that
+    carries no revision is shown the details saved on the note, and the ones she supplied say
+    so; she, meeting a conflict on her own page, is shown them without being told her own are
+    hers."""
     send = add if button == "add" else save_details
     app = create_app(signed_in_household(tmp_path))
     with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
@@ -2259,13 +2260,13 @@ def test_the_details_saved_on_her_note_say_who_supplied_them_to_the_reader(
         client.post("/sign-in", data={"passphrase": THEIRS})
         without_revision = {key: value for key, value in her_form.items() if key != "revision"}
         before = rows(client)
-        parents = send(client, name, without_revision)
+        parents = send(client, name, without_revision, family=True)
         after = rows(client)
 
     def saved(page: str) -> str:
         return page.split("Saved on the note now</h3>")[1].split("<h3")[0]
 
-    assert parents.status_code == 403
+    assert parents.status_code == 422
     assert after == before
     assert "Geometry" in saved(parents.text)
     assert "added by the student" in saved(parents.text)

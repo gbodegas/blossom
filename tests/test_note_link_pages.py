@@ -1190,12 +1190,12 @@ def test_a_stale_unlink_names_what_it_asked_beside_the_link_that_stands(
 
 
 @pytest.mark.parametrize("family", [False, True])
-def test_the_other_persons_unlink_is_refused_where_the_press_lives(
+def test_the_other_persons_unlink_is_refused_on_the_page_that_reads_no_store(
     family: bool, tmp_path: pathlib.Path
 ) -> None:
-    """The refusal of who pressed is said on the details page, the unlink press's own page,
-    with the homework the form named kept; a name that is no note keeps it on the page that
-    reads no store."""
+    """The refusal of who pressed is said before the note is read, on the page that reads no
+    store, with the homework the form named kept as sent, to copy, under a heading that says
+    it was not saved; the way back to the note is offered for a name of a note's shape."""
     app = create_app(signed_in_household(tmp_path))
     with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
         client.post("/sign-in", data={"passphrase": HERS})
@@ -1214,15 +1214,17 @@ def test_the_other_persons_unlink_is_refused_where_the_press_lives(
         )
         after = rows(client)
 
-    assert refused.status_code == 403
-    assert "Sign in as" in refused.text
-    assert "<h1>Add a note to homework</h1>" in refused.text
-    asked = f'Unlink requested for <span class="authored-text">{log.assignment_id}</span>'
-    assert asked in refused.text
-    assert refused.text.count(" autofocus") == 1
-    assert no_note.status_code == 403
     shown = f'Link shown on your form: <span class="authored-text">{log.assignment_id}</span>'
-    assert shown in no_note.text
+    for answer in (refused, no_note):
+        assert answer.status_code == 403
+        assert "Sign in as" in answer.text
+        assert "<h1>Nothing was saved</h1>" in answer.text
+        assert '<h2 class="update-heading">Your unsaved details</h2>' in answer.text
+        assert shown in answer.text
+        assert answer.text.count(" autofocus") == 1
+    assert "<h1>Add a note to homework</h1>" not in refused.text
+    assert f'<a href="{note_href(name)}">Back to the note</a>' in refused.text
+    assert "Back to the note" not in no_note.text
     assert after == before
 
 

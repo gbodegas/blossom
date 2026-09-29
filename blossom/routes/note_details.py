@@ -72,7 +72,7 @@ from blossom.routes.captures import (
     unreadable,
     ways_back,
 )
-from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
+from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of, kept_fields_of
 from blossom.routes.hand_in import accepted_at
 from blossom.routes.navigation import NOTE_RESULT, note_href
 from blossom.routes.student import (
@@ -584,10 +584,14 @@ def plain_details(
     status_code: int,
     *,
     back_to_the_note: bool = True,
+    refused: bool = False,
 ) -> HTMLResponse:
     """The page for a refused press whenever the page with the form cannot be made: the note
     cannot be read, it is not on record, or the file cannot be read. It reads no store, tries
-    nothing again, and keeps every detail that was typed or chosen, to copy."""
+    nothing again, and keeps every detail that was typed or chosen, to copy. ``refused`` says
+    the page answers a press by the one the tree is not open to, whose details are a copy of
+    that request, said under a heading of their own as not saved, and only when the copy
+    holds something to show."""
     return templates.TemplateResponse(
         request,
         "student_update_recovery.html",
@@ -596,6 +600,7 @@ def plain_details(
             "hand_in_card": None,
             "note_problem": problem,
             "details_form": form,
+            "unsaved_copy": refused,
             "help_note": form.capture_id if back_to_the_note else None,
             "ways_back": ways_back(request),
             "sample": state.settings.sample,
@@ -649,13 +654,12 @@ def details_page(
     When the page is the answer to a refused press, ``form`` holds what was
     typed, and a note that cannot be shown does not take that with it: the
     answer is then the page that reads no store, with every detail kept. It
-    says what became of the note, except to the one who may not write here,
-    who is told that. ``found`` is the note and its line when the caller read them
-    already, inside the reading this page then shares; ``unlink_request`` is what a
-    refused unlink asked, said apart from the link that stands.
+    says what became of the note. ``found`` is the note and its line when the
+    caller read them already, inside the reading this page then shares;
+    ``unlink_request`` is what a refused unlink asked, said apart from the link
+    that stands.
     """
     store = state.project_state
-    turned_away = status_code == status.HTTP_403_FORBIDDEN
     try:
         found = found if found is not None else store.sound_capture_history(capture_id)
     except sqlite3.Error:
@@ -670,7 +674,7 @@ def details_page(
             request,
             state,
             form,
-            problem if turned_away and problem else NOTE_UNREADABLE,
+            NOTE_UNREADABLE,
             standing_in(status_code, status.HTTP_500_INTERNAL_SERVER_ERROR),
         )
     if found is None:
@@ -680,7 +684,7 @@ def details_page(
             request,
             state,
             form,
-            problem if turned_away and problem else NOTE_GONE,
+            NOTE_GONE,
             standing_in(status_code, status.HTTP_404_NOT_FOUND),
             back_to_the_note=False,
         )
@@ -803,7 +807,7 @@ def on_arrival(
 ) -> HTMLResponse | int:
     """The revision a press goes on from, or the answer to one that is refused before anything
     it typed is weighed, because the form is not one these pages make. The refusal keeps
-    what was typed. Who pressed is settled before this, before the note's name is read."""
+    what was typed. Who pressed is settled before this, before the form is read."""
     form = ready.form
     if (
         not whole
@@ -824,23 +828,32 @@ def on_arrival(
     return form.revision
 
 
-def refused_press(
-    request: Request, state: ApplicationState, way: Way, fields: dict[str, str], capture_id: str
+async def refused_press(
+    request: Request, state: ApplicationState, way: Way, capture_id: str
 ) -> HTMLResponse | None:
-    """The answer to a press through the other person's tree, made before the note's name is
-    read, so what was typed is kept whether or not the name is a note's: the page with the
-    form when the note can be shown, the page that reads no store otherwise, 403 either way
-    and nothing written. ``None`` for a press by someone the tree is open to."""
+    """The answer to a press through the other person's tree, 403, from the sign-in and the
+    tree alone: made before the form is read, the note looked up, or the decision lock
+    taken, and nothing written. The page reads no store. The note's name is checked for its
+    shape and nothing more, to offer the way back to it. What the press typed is shown to
+    copy only as far as ``kept_fields_of`` reads it, within its bound, once the refusal is
+    settled; whatever that finds, the answer is the same 403. ``None`` for a press by
+    someone the tree is open to."""
     if way.open_to(viewer_of(request)):
         return None
-    form = prepared(fields, capture_id, revision_of(fields)).form
+    kept = await kept_fields_of(request, ADD_FIELDS) or {}
     try:
-        name = capture_id_from(capture_id)
+        name: str | None = capture_id_from(capture_id)
     except NotACaptureId:
-        return plain_details(
-            request, state, form, way.refusal, status.HTTP_403_FORBIDDEN, back_to_the_note=False
-        )
-    return details_or_plain(request, state, name, way, form, way.refusal, status.HTTP_403_FORBIDDEN)
+        name = None
+    return plain_details(
+        request,
+        state,
+        prepared(kept, name or "", None).form,
+        way.refusal,
+        status.HTTP_403_FORBIDDEN,
+        back_to_the_note=name is not None,
+        refused=True,
+    )
 
 
 def open_details(
@@ -862,10 +875,10 @@ async def save_details(
 ) -> Response:
     """Save a note's details from the revision the page showed. Her words are no part of the
     form. The tree the press came through is the channel, and who pressed is the sign-in."""
-    fields, whole = await fields_of(request, ADD_FIELDS, may_be_absent=ADD_MAY_BE_ABSENT)
-    refused = refused_press(request, state, way, fields, capture_id)
+    refused = await refused_press(request, state, way, capture_id)
     if refused is not None:
         return refused
+    fields, whole = await fields_of(request, ADD_FIELDS, may_be_absent=ADD_MAY_BE_ABSENT)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
@@ -951,10 +964,10 @@ async def add_to_homework(
     fingerprint of what the page showed goes to the store with it, and the
     store compares it inside its transaction.
     """
-    fields, whole = await fields_of(request, ADD_FIELDS, may_be_absent=ADD_MAY_BE_ABSENT)
-    refused = refused_press(request, state, way, fields, capture_id)
+    refused = await refused_press(request, state, way, capture_id)
     if refused is not None:
         return refused
+    fields, whole = await fields_of(request, ADD_FIELDS, may_be_absent=ADD_MAY_BE_ABSENT)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:

@@ -1156,11 +1156,6 @@ DETAILS_CASES: dict[str, tuple[Callable[[TestClient], Answer], str, int, str, st
         "Your hand-in update could not be saved.",
     ),
     "saved": (saved, "her", 200, "", ""),
-    # Interim: a parent's save is refused here, on the details, with the summary taking the
-    # focus. Refusing a parent's report, hand-in, and Undo on her current week, before the
-    # form or the assignment is read, replaces these two cases.
-    "a parent's save": (a_parents_save, "a parent", 403, SUMMARY, "Sign in as the student"),
-    "a parent's hand-in": (a_parents_hand_in, "a parent", 403, SUMMARY, "Sign in as the student"),
 }
 
 
@@ -1201,9 +1196,6 @@ def test_on_the_details_a_refusal_takes_the_focus_at_its_summary_or_its_field(
         assert (
             hand_in_problem == f'<p class="problem" id="hand-in-problem-{ESSAY_ID}" tabindex="-1">'
         )
-    if reader == "a parent":
-        assert 'href="#' not in summary_of(page)
-        assert update_problem == hand_in_problem == ""
 
 
 def test_a_failed_write_whose_page_cannot_be_read_back_focuses_its_own_explanation(
@@ -1312,6 +1304,11 @@ def week_parents_save(client: TestClient) -> Answer:
     )
 
 
+def gone_parents_save(client: TestClient) -> Answer:
+    gone(client)
+    return a_parents_save(client)
+
+
 def week_undo_on_gone_work(client: TestClient) -> Answer:
     reported(store_of(client), "done")
     card = card_for(client.get(HER_PAGE, headers=PAGE_HEADERS).text, ESSAY_ID)
@@ -1339,6 +1336,9 @@ WEEK_CASES: dict[str, tuple[Callable[[TestClient], Answer], str, int, int, str]]
     ),
     "saved": (week_saved, "her", 200, 0, ""),
     "a parent's save": (week_parents_save, "a parent", 403, 1, ""),
+    "a parent's save from the details": (a_parents_save, "a parent", 403, 1, ""),
+    "a parent's hand-in from the details": (a_parents_hand_in, "a parent", 403, 1, ""),
+    "a parent's save on work gone": (gone_parents_save, "a parent", 403, 1, ""),
     "an Undo on work gone from the record": (week_undo_on_gone_work, "her", 404, 1, ""),
 }
 
@@ -1373,6 +1373,10 @@ def test_on_her_week_a_refusal_is_said_at_the_top_and_on_the_card_as_it_is(
         assert WEEK_PROBLEM in page[page.index('<section class="panel apart">') :]
     if case == "an Undo on work gone from the record":
         assert "That assignment is not on record, so nothing was changed." in page
+    if reader == "a parent":
+        assert "<h1>Student week</h1>" in page
+        assert '<p class="problem" role="alert">Sign in as the student to update.</p>' in page
+        assert "This assignment is not on record now." not in page
 
 
 # ------------------------------------------------------------- the page for work gone
@@ -1437,20 +1441,12 @@ def gone_hand_in_undo(client: TestClient) -> Answer:
     return client.post(UNDO_HAND_IN, data=form_fields(page, UNDO_HAND_IN), headers=PAGE_HEADERS)
 
 
-def gone_parents_save(client: TestClient) -> Answer:
-    gone(client)
-    return a_parents_save(client)
-
-
 GONE_PRESSES: dict[str, tuple[Callable[[TestClient], Answer], str]] = {
     "a save from the details": (gone_details_save, "her"),
     "a save from her week": (gone_week_save, "her"),
     "an Undo from the details": (gone_details_undo, "her"),
     "a hand-in save": (gone_hand_in, "her"),
     "a hand-in Undo": (gone_hand_in_undo, "her"),
-    # Interim: a parent's save on work gone is answered here, 404, until a parent's report is
-    # refused on her current week before the assignment is looked up.
-    "a parent's save": (gone_parents_save, "a parent"),
 }
 
 

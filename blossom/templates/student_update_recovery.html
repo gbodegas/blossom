@@ -9,7 +9,8 @@
   record, tries the save again, or says anything was saved. The sentence is the
   one thing on the page that matters, so it takes the focus as the page
   arrives, with no script, as a refusal does on the pages this one stands in
-  for.
+  for. A press refused for who made it is answered here too, before anything
+  of the record is read.
 #}
 {% block content %}
   <h1>{{ heading if heading is defined and heading else "Update not saved" }}</h1>
@@ -34,13 +35,25 @@
   {% if note_form is defined and note_form %}
     {% with kept = note_form %}{% include "student_note_kept.html" %}{% endwith %}
   {% endif %}
-  {# The details typed for a note, when the page that holds their form cannot be made. #}
-  {% if details_form is defined and details_form %}
-    {% with kept = details_form %}{% include "student_note_details_kept.html" %}{% endwith %}
-  {% endif %}
-  {# The search words and the choice from the page that links a note to homework found. #}
-  {% if search_form is defined and search_form %}
-    {% with kept = search_form %}{% include "student_note_search_kept.html" %}{% endwith %}
+  {#
+    The details typed for a note, when the page that holds their form cannot be
+    made, and the search words and the choice from the page that links a note to
+    homework found. A press by the one a tree is not open to shows a copy of
+    what that same request typed, under a heading that says it was not saved,
+    and only when the copy holds something to show.
+  #}
+  {% set copied %}
+    {%- if details_form is defined and details_form %}{% with kept = details_form %}{% include "student_note_details_kept.html" %}{% endwith %}{% endif -%}
+    {%- if search_form is defined and search_form %}{% with kept = search_form %}{% include "student_note_search_kept.html" %}{% endwith %}{% endif -%}
+  {% endset %}
+  {% if unsaved_copy is defined and unsaved_copy %}
+    {% if copied | trim %}
+      <h2 class="update-heading">Your unsaved details</h2>
+      <p class="note">These details were not saved. Everything typed is here to copy.</p>
+      {{ copied }}
+    {% endif %}
+  {% else %}
+    {{ copied }}
   {% endif %}
   {% if help_question is defined and help_question %}
     <label for="kept-help-question">Your question, as typed</label>

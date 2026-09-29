@@ -116,7 +116,11 @@ work, and a window with nothing left ends a run before any model is asked. A
 Done beside a school report of Missing is something for the family to check,
 said on both pages and decided by neither. The form is a form alone, a parent
 signed in reads her update and cannot make one, and nothing writes her
-account but her own device. Where her Done stands beside a Missing, a parent
+account but her own device. A parent's save, hand-in update, or Undo, from a
+page left open when the sign-in changed as from anywhere else, is answered
+403 on her current week from the sign-in and the route alone: no form is
+read, the assignment it names is not looked up, and the decision lock is not
+taken. Where her Done stands beside a Missing, a parent
 can mark the pair checked on the family page, with a note her card shows. The
 check is a chain of the family's own events in a table of its own, made
 against a basis worked out from her events and the school's reports, the
@@ -130,9 +134,9 @@ page showed. A check changes neither account, no plan, and no digest.
 What she says about turning work in is a fourth account. Its forms are on an
 assignment's details and nowhere else, in a section after her update,
 `student_hand_in.html`, through two routes of their own in
-`blossom/routes/hand_in.py` that follow her work update's: the form read
-whole, who may save decided from the sign-in, one operation under the
-decision lock, a redirect to a result the address lands on, and a refusal
+`blossom/routes/hand_in.py` that follow her work update's: who may save
+decided first, from the sign-in, then the form read whole, one operation under
+the decision lock, a redirect to a result the address lands on, and a refusal
 that keeps what she chose and wrote, a moved head shown with what stands
 above a form headed as not saved. An Undo already taken back is said to be
 that, from the head the refusing save read, and her work update's Undo says
@@ -1057,7 +1061,11 @@ the form, with its mark, only so that another refusal can show it again.
 
 A note's id is a UUID and its routes take it as one path segment. A note is
 no assignment, makes no claim about a date, and is read by no model: the
-pages read notes beside the record and never into it.
+pages read notes beside the record and never into it. A parent reads every
+note and changes none: a first save, an edit, an archive, a restore, or a
+delete pressed by a parent is answered 403 from the sign-in and the route
+alone, before the form is read or the note looked up, on a page that reads no
+store and offers the way back to the note when its name has a note's shape.
 
 ### From a note to homework
 
@@ -1068,11 +1076,15 @@ asked. `blossom/routes/note_details.py` holds one page in two trees,
 tree a press comes through is the channel it is recorded on, her report or a
 family entry, and nothing a form carries can say otherwise; who pressed is
 the sign-in, and the household while the sign-in is off. Signed in as the
-other person, a press writes nothing and is answered 403 with what was typed
-shown back, and who pressed is settled before the note's name is read, so a
-name that is no note's changes nothing about that answer. For her pressing a
-family form, opened by a parent on the same
-device before she signed in, that answer needs the route, so the gate lets
+other person, a press writes nothing and is answered 403 before its form is
+read, the note looked up, or the decision lock taken, on a page that reads no
+store. What it typed is shown back only as a copy of that same request, read
+once the refusal is settled and only when it is a page's form of one declared
+length within 16 KiB, counted as it streams in and given up the moment it runs
+past that length or ends short of it; whatever that read finds, the answer is
+the same 403, and a name that is no note's changes nothing about it. For her
+pressing a family form, opened by a parent on the same device before she
+signed in, that answer needs the route, so the gate lets
 those two presses alone through to it; the family's page itself, and every
 other press under the family's tree, stay the gate's to refuse.
 
@@ -1108,13 +1120,13 @@ after the note is in homework and the assignment does not follow them.
 A press is prepared whole before anything about it is refused: the class
 chosen and typed, the title, the day in the one spelling a date control holds
 or said back when it does not read, the kind, the note, and the choice. Every
-refusal shows that same form, a form refused whole and a press by the one who
-may not write here included, so a returned form can be sent again with nothing
-typed twice. When the page with the form cannot be made, because the note
-cannot be read, is not on record, or the classes cannot be read, the answer is
+refusal to the one who may write here shows that same form, a form refused
+whole included, so a returned form can be sent again with nothing typed twice.
+When the page with the form cannot be made, because the note cannot be read,
+is not on record, or the classes cannot be read, the answer is
 one page that reads no store, tries nothing again, and shows every value to
 copy, with the refusal's own status: 404 for a note that is gone, 500 for one
-that cannot be read or a file that cannot be, 422 and 403 as they were. A day
+that cannot be read or a file that cannot be, and 422 as it was. A day
 in the control beside the tick that leaves the day out is two instructions,
 and neither is taken: nothing is saved, and the form goes back with both and
 asks for one. The read that tells a class the list does not hold now from
@@ -1284,9 +1296,10 @@ one it chose, apart from the link that stands and from any fresh press, whose
 fields are the record's; a note that is gone or cannot be read takes the
 refusal to the page that reads no store, with the homework the form named
 kept. Who pressed
-is settled before the note's name is read, as on the details page, and the
-gate lets her sign-in reach the family's link and unlink presses to be refused
-there with the words kept.
+is settled first, before the form is read, as on the details page: the other
+person's link or unlink is refused on the page that reads no store, with the
+same bounded copy of the words, and the gate lets her sign-in reach the
+family's link and unlink presses to be refused there.
 
 A school paste that names homework made from a note asks before it saves.
 Until a parent says whether the school's row is the same homework or different

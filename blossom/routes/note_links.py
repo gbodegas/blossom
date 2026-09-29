@@ -13,9 +13,10 @@ note's claims. A note that made its own assignment stays with it.
 
 Both trees have the pages: hers under ``/student``, the family's under
 ``/parent``. The tree a press came through is the channel and who pressed is
-the sign-in, as on the details page. Who pressed is settled before the
-note's name is read, so the other person's press is refused with what was
-typed kept whether or not the name is a note's.
+the sign-in, as on the details page. Who pressed is settled first, before
+the form is read or the note looked up: the other person's press is refused
+on a page that reads no store, with what it typed kept as far as a bounded
+copy of that same request reads it, whether or not the name is a note's.
 """
 
 import logging
@@ -56,7 +57,7 @@ from blossom.routes.captures import (
     unreadable,
     ways_back,
 )
-from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
+from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of, kept_fields_of
 from blossom.routes.hand_in import accepted_at
 from blossom.routes.navigation import NOTE_RESULT, address, note_href, note_search_href
 from blossom.routes.note_details import (
@@ -310,11 +311,19 @@ def row_of(item: CandidateReading, *, parent: bool) -> FoundRow:
 
 
 def plain_search(
-    request: Request, state: ApplicationState, form: SearchForm, problem: str, status_code: int
+    request: Request,
+    state: ApplicationState,
+    form: SearchForm,
+    problem: str,
+    status_code: int,
+    *,
+    refused: bool = False,
 ) -> HTMLResponse:
     """The page for a refused press whenever the search page cannot be made: the note cannot
     be read, or it is not on record. It reads no store, tries nothing again, and keeps the
-    search words and the choice, to copy."""
+    search words and the choice, to copy. ``refused`` says the page answers a press by the
+    one the tree is not open to, whose words are a copy of that request, said under a
+    heading of their own as not saved, and only when the copy holds something to show."""
     try:
         name: str | None = capture_id_from(form.capture_id)
     except NotACaptureId:
@@ -328,6 +337,7 @@ def plain_search(
             "heading": "Nothing was saved",
             "note_problem": problem,
             "search_form": form,
+            "unsaved_copy": refused,
             "help_note": name,
             "ways_back": ways_back(request),
             "sample": state.settings.sample,
@@ -369,15 +379,31 @@ def search_or_plain(
         return plain_search(request, state, form, problem, status_code)
 
 
-def refused_press(
-    request: Request, state: ApplicationState, way: Way, form: SearchForm
+async def refused_press(
+    request: Request,
+    state: ApplicationState,
+    way: Way,
+    capture_id: str,
+    allowed: frozenset[str],
 ) -> HTMLResponse | None:
-    """The answer to a press through the other person's tree, made before the note's name
-    is read, so what was typed is kept whether or not the name is a note's. ``None`` for a
-    press by someone the tree is open to."""
+    """The answer to a link or unlink press through the other person's tree, 403, from the
+    sign-in and the tree alone: made before the form is read, the note looked up, or the
+    decision lock taken, and nothing written. The page reads no store; the note's name is
+    checked for its shape only, to offer the way back to it. The search words and the
+    choice are shown to copy only as far as ``kept_fields_of`` reads them, within its
+    bound, once the refusal is settled. ``None`` for a press by someone the tree is open
+    to."""
     if way.open_to(viewer_of(request)):
         return None
-    return search_or_plain(request, state, way, form, way.refusal, status.HTTP_403_FORBIDDEN)
+    kept = await kept_fields_of(request, allowed) or {}
+    return plain_search(
+        request,
+        state,
+        form_of(capture_id, kept),
+        way.refusal,
+        status.HTTP_403_FORBIDDEN,
+        refused=True,
+    )
 
 
 def form_of(capture_id: str, fields: dict[str, str]) -> SearchForm:
@@ -399,11 +425,11 @@ async def link_to_homework(
     """Join the note to the homework chosen, or move it there from the homework the page
     showed as its link. The store holds the press to the note's revision and to the row as
     it was shown, inside its own transaction; the page shows what it found again."""
-    fields, whole = await fields_of(request, LINK_FIELDS, may_be_absent=LINK_MAY_BE_ABSENT)
-    form = form_of(capture_id, fields)
-    refused = refused_press(request, state, way, form)
+    refused = await refused_press(request, state, way, capture_id, LINK_FIELDS)
     if refused is not None:
         return refused
+    fields, whole = await fields_of(request, LINK_FIELDS, may_be_absent=LINK_MAY_BE_ABSENT)
+    form = form_of(capture_id, fields)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
@@ -525,14 +551,15 @@ async def unlink_from_homework(
     request: Request, capture_id: str, state: ApplicationState, way: Way
 ) -> Response:
     """Unlink the note from the homework the page showed as its link, so it waits again with
-    its details kept. A refusal is said on the details page, where the press lives, and on
-    the page that reads no store when that one cannot be made."""
+    its details kept. Who pressed is settled first, before the form is read, and the other
+    person's press is refused on the page that reads no store. Any other refusal is said on
+    the details page, where the press lives, and on the page that reads no store when that
+    one cannot be made."""
+    refused = await refused_press(request, state, way, capture_id, UNLINK_FIELDS)
+    if refused is not None:
+        return refused
     fields, whole = await fields_of(request, UNLINK_FIELDS)
     form = form_of(capture_id, fields)
-    # Who pressed is settled first, before the note's name is read, and said where the
-    # press lives: on the details page, or on the page that reads no store.
-    if not way.open_to(viewer_of(request)):
-        return unlink_or_plain(request, state, way, form, way.refusal, status.HTTP_403_FORBIDDEN)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
