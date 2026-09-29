@@ -1081,8 +1081,11 @@ read, the note looked up, or the decision lock taken, on a page that reads no
 store. What it typed is shown back only as a copy of that same request, read
 once the refusal is settled and only when it is a page's form of one declared
 length within 16 KiB, counted as it streams in and given up the moment it runs
-past that length or ends short of it; whatever that read finds, the answer is
-the same 403, and a name that is no note's changes nothing about it. For her
+past that length or ends short of it. The read has five seconds in all from its
+start, which a chunk arriving does not restart: a body not all come by then is
+dropped and the refusal answers at once, the client still connected. Whatever
+that read finds, the answer is the same 403, and a name that is no note's
+changes nothing about it. For her
 pressing a family form, opened by a parent on the same device before she
 signed in, that answer needs the route, so the gate lets
 those two presses alone through to it; the family's page itself, and every

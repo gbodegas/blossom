@@ -15,10 +15,12 @@ at every door.
 A press by someone the route is not open to is refused before its form is
 read, and a refusal about a note can still show what that press typed. That
 copy is read by a second function here, only after the refusal is fixed and
-only as far as a small bound: it never reads a body the first way, whole
-and unbounded, and nothing it finds or fails to find changes the refusal.
+only as far as a small bound in bytes and in time: it never reads a body the
+first way, whole and unbounded, and nothing it finds or fails to find changes
+the refusal.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Final
@@ -32,6 +34,10 @@ TOKEN_MAX_LENGTH: Final = 200
 """Longer than any id the store makes or a seed carries; a longer one is not looked up."""
 COPY_LIMIT: Final = 16 * 1024
 """The most of a refused press's body its copy reads, in bytes as sent."""
+COPY_DEADLINE: Final = 5.0
+"""How long, in seconds, a refused press's copy may take to be read. The time is counted
+once, from the moment its body starts being read, and a chunk that arrives does not start
+it again: past it the copy is given up and the refusal stands without one."""
 URL_ENCODED: Final = "application/x-www-form-urlencoded"
 """The one kind of body a refused press's copy is read from: the kind a page's form sends."""
 
@@ -74,9 +80,13 @@ async def kept_fields_of(request: Request, allowed: frozenset[str]) -> dict[str,
     It is then read chunk by chunk and counted as it comes, never past that length: the copy
     is given up the moment the body runs longer than it said, and when it ends shorter, the
     client goes away, or the parser refuses it. So no more than ``COPY_LIMIT`` bytes are
-    ever held, whatever a client sends. Each allowed field keeps its first value, decoded
-    as every form here is, bytes that are not UTF-8 read as the replacement character.
-    Nothing is checked beyond that, nothing is looked up, and nothing is logged.
+    ever held, whatever a client sends. Reading and parsing share one deadline,
+    ``COPY_DEADLINE``, started as the body starts being read: a body that has not all come
+    by then is given up, what came of it is dropped, and nothing goes on reading. Only that
+    deadline is caught here; a request canceled from outside stays canceled. Each allowed
+    field keeps its first value, decoded as every form here is, bytes that are not UTF-8
+    read as the replacement character. Nothing is checked beyond that, nothing is looked
+    up, and nothing is logged.
     """
     headers = request.headers
     kinds = headers.getlist("content-type")
@@ -92,10 +102,14 @@ async def kept_fields_of(request: Request, allowed: frozenset[str]) -> dict[str,
     declared = declared_length(lengths[0])
     if declared is None:
         return None
-    body = await bounded_body(request, declared)
-    if body is None:
+    try:
+        async with asyncio.timeout(COPY_DEADLINE):
+            body = await bounded_body(request, declared)
+            if body is None:
+                return None
+            return await fields_in(body, headers, allowed)
+    except TimeoutError:
         return None
-    return await fields_in(body, headers, allowed)
 
 
 def media_type(given: str) -> str:

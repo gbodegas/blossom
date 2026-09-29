@@ -15,9 +15,11 @@ was. Her own presses, and every press with the sign-in off, are answered as they
 The fixture week through the app, a pinned day, synthetic words, and no model.
 """
 
+import asyncio
 import logging
 import pathlib
 import sqlite3
+import time
 from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import closing, contextmanager
@@ -1461,3 +1463,234 @@ def test_a_parents_update_hand_in_or_undo_lands_on_her_current_week(
     check_untouched(watch, press, subject)
     assert "Week of September 14" not in answer.text
     assert after == before
+
+
+# ------------------------------------------------------------------ 5. the copy's deadline
+
+
+SHORT_DEADLINE: Final = 0.4
+"""The deadline these tests give the copy, so a body that stalls is seen out quickly. The
+application's own is pinned below as it is, and a real server is timed against it apart."""
+CLOCK_TICK: Final = 0.05
+"""How early an event loop may run a timer: it runs every timer due within its clock's
+resolution, which is about 16 milliseconds on Windows."""
+
+
+@dataclass(frozen=True)
+class Paced:
+    """What the application answered a body that arrived at its own pace."""
+
+    status_code: int
+    text: str
+    headers: dict[str, str]
+    answered_after: float
+    """Seconds from the press to the start of the answer."""
+    reads_left_waiting: int
+    """Reads of the body still waiting when the application finished: none, when nothing
+    goes on reading after the answer."""
+    said_gone: bool
+    """Whether the client was ever said to have gone."""
+
+
+def press_scope(client: TestClient, path: str, headers: list[tuple[str, str | bytes]]) -> Scope:
+    """A signed-in press on this client, as a server hands it to the application."""
+    cookie = "; ".join(f"{name}={value}" for name, value in client.cookies.items())
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"origin", b"http://testserver"),
+            (b"accept", b"text/html"),
+            (b"cookie", cookie.encode("latin-1")),
+            *[(name.lower().encode("latin-1"), raw(value)) for name, value in headers],
+        ],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+    }
+
+
+def paced(
+    client: TestClient,
+    path: str,
+    steps: list[tuple[float, bytes]],
+    headers: list[tuple[str, str | bytes]],
+    *,
+    then: Literal["end", "stay", "disconnect"],
+) -> Paced:
+    """Send a press straight to the application, each chunk of its body after its own pause,
+    then the end of the body, nothing more with the connection kept open, or the client
+    going away. Time the answer, and count the reads still waiting when it is done."""
+    scope = press_scope(client, path, headers)
+    queue = list(steps)
+
+    async def run() -> Paced:
+        waiting = 0
+        gone = False
+        status = 0
+        said: dict[str, str] = {}
+        answer = bytearray()
+        started = time.monotonic()
+        answered = -1.0
+
+        async def receive() -> Message:
+            nonlocal waiting, gone
+            waiting += 1
+            try:
+                if queue:
+                    pause, chunk = queue.pop(0)
+                    await asyncio.sleep(pause)
+                    last = not queue and then == "end"
+                    return {"type": "http.request", "body": chunk, "more_body": not last}
+                if then == "disconnect":
+                    gone = True
+                    return {"type": "http.disconnect"}
+                await asyncio.Event().wait()
+                raise AssertionError  # pragma: no cover
+            finally:
+                waiting -= 1
+
+        async def send(message: Message) -> None:
+            nonlocal status, answered
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                answered = time.monotonic() - started
+                said.update(
+                    (name.decode("latin-1"), value.decode("latin-1"))
+                    for name, value in message.get("headers", [])
+                )
+            elif message["type"] == "http.response.body":
+                answer.extend(message.get("body", b""))
+
+        await client.app(scope, receive, send)
+        return Paced(status, answer.decode("utf-8"), said, answered, waiting, gone)
+
+    portal = client.portal
+    assert portal is not None
+    return portal.call(run)
+
+
+def trickled(body: bytes, pieces: int, pause: float) -> list[tuple[float, bytes]]:
+    return [(pause, piece) for piece in in_pieces(body, pieces)]
+
+
+def deadline_cases(
+    press: str, seeded: Seeded
+) -> dict[str, tuple[list[tuple[float, bytes]], str, str | None]]:
+    """Each pace a body of 600 bytes can come at, how the connection ends, and the words the
+    copy is to show, or ``None`` when no copy is to be made."""
+    small = sized(press, seeded, 600)
+    return {
+        "no body arrives": ([], "stay", None),
+        "a part arrives, then nothing": ([(0.0, small[:300])], "stay", None),
+        "it trickles in past the deadline": (trickled(small, 6, SHORT_DEADLINE / 3), "end", None),
+        "it arrives whole within the deadline": (
+            trickled(small, 3, SHORT_DEADLINE / 8),
+            "end",
+            TYPED[press],
+        ),
+        "the client goes away": ([(0.0, small[:300])], "disconnect", None),
+    }
+
+
+@pytest.mark.parametrize("press", NOTE_PRESSES)
+@pytest.mark.parametrize("tree", ["hers, by a parent", "the family's, by her"])
+def test_the_refusal_copy_is_given_up_at_its_deadline(
+    tree: str, press: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The copy has one deadline, counted from the moment its body starts being read and
+    never restarted by a chunk that arrives. A body that never comes, stops partway, or is
+    still arriving when the deadline passes gives the same 403 without a copy, answered at
+    the deadline while the client is still there, with nothing left reading. A body whole
+    within the deadline keeps its copy. No store is read and the lock is not taken."""
+    monkeypatch.setattr(form_routes, "COPY_DEADLINE", SHORT_DEADLINE)
+    family = tree == "the family's, by her"
+    with household(tmp_path, "her" if family else "parent") as client:
+        seeded = seed(client)
+        subject = subject_of(press, "known", seeded)
+        path = press_path(press, subject, family=family)
+        small = sized(press, seeded, 600)
+        headers = [FORM_HEADER, ("content-length", str(len(small)))]
+        before = everything_kept(client)
+        results: dict[str, Paced] = {}
+        for name, (steps, then, typed) in deadline_cases(press, seeded).items():
+            with watched(client) as watch:
+                answer = paced(client, path, steps, headers, then=then)  # type: ignore[arg-type]
+            results[name] = answer
+            check_refused(press, answer, subject=subject, typed=typed, family=family)
+            check_untouched(watch, press, subject)
+            assert answer.reads_left_waiting == 0, name
+            assert watch.copied == ([] if typed is None else [600]), (name, watch.copied)
+        after = everything_kept(client)
+
+    assert after == before
+    for name in (
+        "no body arrives",
+        "a part arrives, then nothing",
+        "it trickles in past the deadline",
+    ):
+        answer = results[name]
+        assert not answer.said_gone, name
+        assert SHORT_DEADLINE - CLOCK_TICK <= answer.answered_after < SHORT_DEADLINE + 1.0, (
+            name,
+            answer.answered_after,
+        )
+    assert (
+        results["it arrives whole within the deadline"].answered_after < SHORT_DEADLINE - CLOCK_TICK
+    )
+    assert results["the client goes away"].said_gone
+    assert results["the client goes away"].answered_after < SHORT_DEADLINE
+
+
+def test_the_copy_deadline_is_five_seconds() -> None:
+    assert form_routes.COPY_DEADLINE == 5.0
+
+
+def test_a_press_canceled_while_its_copy_is_read_stays_canceled(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deadline gives up the copy on its own time and nothing else: when the request
+    itself is canceled from outside while the copy is being read, it stays canceled: it
+    ends by the cancel it was given, a ``BaseException`` and no ``Exception``, and no answer
+    is started for it."""
+    monkeypatch.setattr(form_routes, "COPY_DEADLINE", 30.0)
+    with household(tmp_path, "parent") as client:
+        seeded = seed(client)
+        subject = subject_of("details", "known", seeded)
+        scope = press_scope(
+            client, press_path("details", subject), [FORM_HEADER, ("content-length", "600")]
+        )
+
+        async def run() -> tuple[object, list[str]]:
+            sent: list[str] = []
+            reading = asyncio.Event()
+
+            async def receive() -> Message:
+                reading.set()
+                await asyncio.Event().wait()
+                raise AssertionError  # pragma: no cover
+
+            async def send(message: Message) -> None:
+                sent.append(message["type"])
+
+            task = asyncio.ensure_future(client.app(scope, receive, send))
+            await asyncio.wait_for(reading.wait(), 5)
+            task.cancel()
+            (ended,) = await asyncio.gather(task, return_exceptions=True)
+            return ended, sent
+
+        portal = client.portal
+        assert portal is not None
+        ended, sent = portal.call(run)
+
+    assert isinstance(ended, BaseException)
+    assert not isinstance(ended, Exception)
+    assert sent == []
