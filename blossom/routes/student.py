@@ -309,6 +309,11 @@ BAD_RETURN: Final = (
 )
 GONE: Final = "This assignment is not on record now."
 NO_PLAN_NOW: Final = "No plan is saved for today now."
+WEEK_UNREADABLE: Final = "This week cannot be shown right now"
+WEEK_UNREADABLE_WHY: Final = (
+    "The record cannot be read right now, so the week, its updates and current date "
+    "information are not shown. Try again in a moment."
+)
 TURNING_IT_IN: Final = "turning-it-in"
 """The id of the section on an assignment's details that holds her hand-in account."""
 ASK_FOR_HELP: Final = "ask-for-help"
@@ -1357,6 +1362,8 @@ def student_page(
     # named to it: the week, the planning window, the plan's notice and
     # marks, and whether the plan still fits all come out of that reading.
     record = state.drafts.latest_for(today)
+    # Kept for a page that cannot read the record after this, which shows it as saved.
+    request.state.plans_read = () if record is None else (record,)
     # The assignment an address says a press was about is named to the reading too, so a
     # result is checked against that assignment's own events even when it is off the record.
     about = () if turning_in is None or turning_in.asked is None else (turning_in.asked.about,)
@@ -1524,44 +1531,104 @@ def due_this_week(
     the fold around it open. ``asked`` names the request a help form just made, and
     ``asked_again`` the one a help form sent twice had made; the first is read when both
     are there. Either is said in Help, beside that request when it is on the page, and at
-    the top of Help when it is not.
+    the top of Help when it is not. When the record cannot be read, the page says so and
+    offers the same address again.
     """
-    was_refreshed = refreshed == "1"
-    plan_asked = show_plan == "1"
-    card = card_shown(saved, same, undone, change, show)
-    marker = marker_from(asked, asked_again)
-    if week is None:
-        return student_page(
-            request,
-            state,
-            refreshed=was_refreshed,
-            card=card,
-            plan_asked=plan_asked,
-            turning_in=receipt_asked(hand_in_said, about, hand_in_event),
-            help_marker=marker,
-        )
     try:
-        chosen = date.fromisoformat(week.strip())
-    except ValueError:
+        was_refreshed = refreshed == "1"
+        plan_asked = show_plan == "1"
+        card = card_shown(saved, same, undone, change, show)
+        marker = marker_from(asked, asked_again)
+        if week is None:
+            return student_page(
+                request,
+                state,
+                refreshed=was_refreshed,
+                card=card,
+                plan_asked=plan_asked,
+                turning_in=receipt_asked(hand_in_said, about, hand_in_event),
+                help_marker=marker,
+            )
+        try:
+            chosen = date.fromisoformat(week.strip())
+        except ValueError:
+            return student_page(
+                request,
+                state,
+                problem=NOT_A_WEEK,
+                card=card,
+                help_marker=marker,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        if not showable(chosen):
+            return student_page(
+                request,
+                state,
+                problem=BEYOND_THE_CALENDAR,
+                card=card,
+                help_marker=marker,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         return student_page(
-            request,
-            state,
-            problem=NOT_A_WEEK,
-            card=card,
-            help_marker=marker,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            request, state, week=chosen, card=card, plan_asked=plan_asked, help_marker=marker
         )
-    if not showable(chosen):
-        return student_page(
+    except sqlite3.Error as error:
+        return week_unreadable(
             request,
-            state,
-            problem=BEYOND_THE_CALENDAR,
-            card=card,
-            help_marker=marker,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            error,
+            again=address(
+                WEEK_PAGE,
+                week=week,
+                show_plan=show_plan,
+                refreshed=refreshed,
+                saved=saved,
+                same=same,
+                undone=undone,
+                change=change,
+                show=show,
+                hand_in_said=hand_in_said,
+                about=about,
+                hand_in_event=hand_in_event,
+                asked=asked,
+                asked_again=asked_again,
+            ),
         )
-    return student_page(
-        request, state, week=chosen, card=card, plan_asked=plan_asked, help_marker=marker
+
+
+def week_unreadable(request: Request, error: sqlite3.Error, *, again: str) -> HTMLResponse:
+    """Her week when the record cannot be read as the page is made: the failure said once,
+    with the way to try again, and today's plan as saved when it was read first. Nothing is
+    read here, and the failure is logged by its kind alone."""
+    logger.warning("her week could not be read: %s", type(error).__name__)
+    parent = parent_reads(request)
+    read: tuple[DraftRecord, ...] = getattr(request.state, "plans_read", ())
+    return templates.TemplateResponse(
+        request,
+        "plans_unavailable.html",
+        {
+            "page": "student",
+            "heading": WEEK_UNREADABLE,
+            "alert": WEEK_UNREADABLE_WHY,
+            "again": again,
+            "parent": parent,
+            "todays": True,
+            "plans": [
+                (
+                    record,
+                    read_plan(
+                        record,
+                        reader="family" if parent else "student",
+                        link_for=lambda name: details_href(name, return_to="today"),
+                        evidence_for=lambda name: details_href(
+                            name, fragment=EVIDENCE, return_to="today"
+                        ),
+                        dates_unread=True,
+                    ),
+                )
+                for record in read
+            ],
+        },
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
 
 

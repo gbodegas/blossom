@@ -314,6 +314,15 @@ every change in its sources. Replaced, superseded, and past plans keep their
 labels and links and say nothing about now. The pages build all of this from
 the reading they already make, with no extra statements.
 
+When a GET of her week or the family page can't read the record, the page
+answers 503 with one sentence that takes the focus and a Try again link to the
+same address. A plan the page had already read stays on it as saved: its rows
+as planned, their labels, and its decision, with one sentence that current
+date information can't be read and nothing else about now. That's today's plan
+on her week and each evening's plan in force on the family page. The page
+reads nothing more, and never says that a save happened or that there's no
+plan. A form's press that shows a page again isn't handled this way.
+
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update
 component, handed a context object that says who may update, where its forms

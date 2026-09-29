@@ -30,7 +30,7 @@ from datetime import date
 from typing import Literal
 
 from blossom.clock import spoken_time
-from blossom.plan_dates import SOURCE_LIMIT, DatesNow, RowNow, row_now
+from blossom.plan_dates import DATES_UNREAD, SOURCE_LIMIT, DatesNow, RowNow, row_now
 from blossom.plan_snapshot import PlanSnapshot, SavedReview, read_snapshot
 from blossom.plan_text import one_line, plain
 from blossom.stores.drafts import DraftRecord
@@ -129,6 +129,9 @@ class PlanReading:
     live: bool
     """Whether the plan is still in force for its evening, so its rows say what stands about
     their dates now."""
+    dates_unread: bool
+    """Whether the page could not read the record, so the rows say only what was planned and
+    the plan says once that current date information cannot be read."""
     structured: bool
     unavailable: bool
     """Whether a snapshot is saved and cannot be used, which the page says in a sentence."""
@@ -147,9 +150,12 @@ class PlanReading:
         return any(row.done for row in self.blocks) or any(row.done for row in self.deferrals)
 
     @property
-    def limit(self) -> str | None:
-        """The one sentence that says a saved plan cannot compare every change in its
-        sources, when a row restates what they say now."""
+    def dates_note(self) -> str | None:
+        """The plan's one sentence on what its rows cannot say about the dates now: that
+        current date information cannot be read, or, when a row restates what the sources
+        say now, that a saved plan cannot compare every change in them."""
+        if self.dates_unread:
+            return DATES_UNREAD
         lines = [row.now for row in self.blocks] + [row.now for row in self.deferrals]
         return SOURCE_LIMIT if any(line and line.restates for line in lines) else None
 
@@ -194,6 +200,7 @@ def read_plan(
     on_record: Collection[str] | None = None,
     done: Mapping[str, DoneMark] | None = None,
     now: DatesNow | None = None,
+    dates_unread: bool = False,
 ) -> PlanReading:
     """The reading of one draft for one page.
 
@@ -204,9 +211,10 @@ def read_plan(
     ``on_record`` is every assignment id on record now: an id not among them
     gets no link. ``now`` is the page's word that the plan is in force for
     its evening, with what stands about the dates; each assignment's rows
-    then say what applies, one line for all of them. A draft without a usable
-    snapshot gets the text reading, with no links, marks, or current lines,
-    whatever else is handed in.
+    then say what applies, one line for all of them. ``dates_unread`` is the
+    page's word that it could not read the record, and is never given with
+    ``now``. A draft without a usable snapshot gets the text reading, with no
+    links, marks, or current lines, whatever else is handed in.
     """
     found = read_snapshot(
         record.draft_id,
@@ -222,6 +230,7 @@ def read_plan(
             reader=reader,
             current=current,
             live=False,
+            dates_unread=False,
             structured=False,
             unavailable=found.unavailable,
             body=record.body,
@@ -245,6 +254,7 @@ def read_plan(
         reader=reader,
         current=current,
         live=now is not None,
+        dates_unread=dates_unread,
         structured=True,
         unavailable=False,
         body=record.body,

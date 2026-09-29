@@ -40,6 +40,8 @@ SOURCE_LIMIT: Final = (
 )
 """Said once in a plan whose rows restate present evidence: a saved plan keeps the dates it
 asked about, not the claims behind them, so it cannot say which source changed or when."""
+DATES_UNREAD: Final = "Current date information cannot be read right now."
+"""Said once in a plan a page shows as saved because the record could not be read."""
 
 
 class Doubt(StrEnum):

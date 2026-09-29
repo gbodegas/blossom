@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Blossom - {{ heading }}{% endblock %}
+{#
+  Her week or the family page when the record cannot be read as the page is made: what
+  happened, in a sentence that takes the focus as the page arrives, with the way to try
+  again; and any plan the page had read before that, shown as saved, with its rows as
+  planned, their labels, its decision, and a sentence that current date information cannot
+  be read. ``plans`` holds each such draft with its reading; ``todays`` says the plan is her
+  week's plan for today, in the place her links to it land on. Nothing here reads a store,
+  tries anything again, or says that anything was saved or sent, is current, or is not
+  there. Try again is the reader's own press, to the same address.
+#}
+{% macro decided(draft) %}
+  {% if parent %}
+    <p class="decision-line"><strong>{% if draft.decision == "approved" %}Looks good.{% elif draft.decision == "rejected" %}Change asked.{% else %}Waiting for your review.{% endif %}</strong>{% if draft.reason and draft.decision in ("approved", "rejected") %} Reason: {{ draft.reason|ended }}{% endif %}</p>
+  {% else %}
+    <p class="note">{% if draft.decision == "approved" %}Looks good.{% elif draft.decision == "rejected" %}A change is asked for; plan again when you are ready.{% else %}A parent has not reviewed it yet.{% endif %}{% if draft.reason and draft.decision in ("approved", "rejected") %} <q>{{ draft.reason }}</q>{% endif %}</p>
+  {% endif %}
+{% endmacro %}
+{% block content %}
+  <h1>{{ heading }}</h1>
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ alert }} <a href="{{ again }}">Try again</a></p>
+  {% if plans %}
+    {% if todays %}
+      <section class="panel" id="{{ todays_plan_id }}" tabindex="-1">
+        <h2>Today's plan</h2>
+        {% for draft, reading in plans %}
+          {{ decided(draft) }}
+          {% with review_open = false %}{% include "plan_reading.html" %}{% endwith %}
+        {% endfor %}
+      </section>
+    {% else %}
+      <section class="panel">
+        <h2>Plans for today and later evenings</h2>
+        {% for draft, reading in plans %}
+          <article class="draft">
+            <h3>{{ draft.plan_date.strftime("%A, %B") }} {{ draft.plan_date.day }}, {{ draft.plan_date.year }}</h3>
+            {{ decided(draft) }}
+            {% with review_open = true, plan_level = 4 %}{% include "plan_reading.html" %}{% endwith %}
+          </article>
+        {% endfor %}
+      </section>
+    {% endif %}
+  {% endif %}
+{% endblock %}

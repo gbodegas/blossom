@@ -47,8 +47,8 @@
       {% if reading.annotated %}
         <p class="plan-note plan-updates">{% if hers %}Your{% else %}Her{% endif %} updates are shown beside the saved plan. Its times have not changed.</p>
       {% endif %}
-      {% if reading.limit %}
-        <p class="plan-note">{{ reading.limit }}</p>
+      {% if reading.dates_note %}
+        <p class="plan-note">{{ reading.dates_note }}</p>
       {% endif %}
       {% if not reading.current %}
         <p class="plan-note">This is the saved plan. Assignment links open the current record.</p>
