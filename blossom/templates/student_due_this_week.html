@@ -418,7 +418,9 @@
         <p class="note update-result" role="status" id="help-result" tabindex="-1">{{ help_result.said }}</p>
       {% endif %}
       {% if viewer == "parent" %}
-        {% if view.help_open or view.help_recent or view.help_earlier or view.help_unavailable %}
+        {% if view.help_unavailable %}
+          <p class="problem" id="ask-for-help" tabindex="-1">Her requests for help can't be read right now. Refresh replies to try again. You can also open <a href="{{ family_help }}">Family review</a>.</p>
+        {% elif view.help_open or view.help_recent or view.help_earlier %}
           <p class="note" id="ask-for-help" tabindex="-1">Her requests for help are below. You can answer open ones on <a href="{{ family_help }}">Family review</a>.</p>
         {% else %}
           <p class="note" id="ask-for-help" tabindex="-1">No requests for help to show. When she asks, you can answer on <a href="{{ family_help }}">Family review</a>.</p>
@@ -432,7 +434,7 @@
         </form>
       {% endif %}
       {% if view.help_unavailable %}
-        <p class="problem">{% if parent %}Her requests for help can't be read right now. Refresh replies to try again.{% else %}Your requests for help can't be read right now. Refresh replies to check them before you ask again.{% endif %}</p>
+        {% if not parent %}<p class="problem">Your requests for help can't be read right now. Refresh replies to check them before you ask again.</p>{% endif %}
       {% elif view.help_open or view.help_recent %}
         <div id="help-updates" tabindex="-1">
           <h3>Help updates</h3>

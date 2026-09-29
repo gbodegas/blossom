@@ -876,14 +876,23 @@ def test_a_parent_on_a_failed_read_keeps_the_link_and_reads_about_her(
         _, failed, _, _ = good_and_failed(client, fault, monkeypatch)
 
     part = section(failed)
+    said = element(failed, "p", "ask-for-help")
     assert PARENT_LINK in today(failed)
     assert "Help updates" not in failed
     assert f'action="{ASK}"' not in failed
-    assert '<a href="/parent#help-she-asked-for">Family review</a>' in part
-    assert "Her requests for help can't be read right now. Refresh replies to try again." in words(
-        part
+    assert said.startswith('<p class="problem" id="ask-for-help" tabindex="-1">')
+    assert words(said) == (
+        "Her requests for help can't be read right now. Refresh replies to try again. "
+        "You can also open Family review."
     )
+    assert part.count('<a href="/parent#help-she-asked-for">Family review</a>') == 1
+    assert '<a href="/parent#help-she-asked-for">Family review</a>' in said
+    assert words(part).count("can't be read right now") == 1
+    assert "are below" not in part
+    assert "No requests for help to show" not in part
+    assert '<a href="/student/due-this-week?refreshed=1#help">Refresh replies</a>' in part
     assert "Your requests" not in part
+    assert "autofocus" not in failed
 
 
 def test_a_row_that_can_not_be_read_is_logged_once_without_its_words(
@@ -1141,6 +1150,7 @@ def test_the_help_section_is_outlined_on_focus_its_links_are_tall_and_its_words_
         assert selector in targets
     assert ".help-panel .help-request a.ask-again" in tall
     assert ".help-panel .problem a" in tall
+    assert ".help-panel #ask-for-help a" in tall
     assert ".help-panel" in wrapping(CSS)
 
 
