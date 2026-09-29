@@ -66,6 +66,7 @@ from tests.support import (
     browser,
     composed_plan,
     control_names,
+    files_in,
     fixture_settings,
     lands_on,
     plan_on,
@@ -75,10 +76,12 @@ from tests.support import (
     scripted_graphs,
     signed_in,
     state_of,
+    store_of,
     two_sittings,
     waiting_note,
     walkthrough,
     walkthrough_plan,
+    words,
 )
 
 LMS, EMAIL = SourceChannel.LMS, SourceChannel.EMAIL
@@ -102,14 +105,9 @@ PLAIN_A = "Recorded due August 21, 2026."
 UNDATED_A = f"No due date on record. Check this date. {LINK}"
 PLANNED_CUE = [record(LMS, "2026-08-21"), record(FAMILY, "2026-08-22")]
 NOTE_TIME = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
-PATHS = ("BLOSSOM_DATABASE_PATH", "BLOSSOM_CHECKPOINT_PATH", "BLOSSOM_TRACE_PATH")
 
 
 # ------------------------------------------------------------- reading a row back
-
-
-def words(html: str) -> str:
-    return " ".join(unescape(re.sub(r"<[^>]+>", " ", html)).split()).replace(" .", ".")
 
 
 def row_of(plan: str, dom_id: str) -> str:
@@ -151,10 +149,6 @@ def article_of(page: str, record_: DraftRecord) -> str:
 
 
 # ------------------------------------------------------------- the record between plan and page
-
-
-def store_of(client: TestClient) -> ProjectStateStore:
-    return state_of(client).project_state
 
 
 def essay_is(
@@ -206,12 +200,6 @@ def fingerprint_now(client: TestClient, evening: date) -> str:
 
 
 # ------------------------------------------------------------- the walkthrough, labeled by id
-
-
-def files_in(tmp_path: pathlib.Path) -> dict[str, str]:
-    """The three files of one household, so a second app can open them on another day or
-    with the sign-in on."""
-    return {name: str(tmp_path / f"{name.lower()}.sqlite3") for name in PATHS}
 
 
 @pytest.mark.parametrize("reader", ["her, sign-in off", "a parent on her week", "family page"])

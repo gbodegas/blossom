@@ -9,7 +9,6 @@ and read back as words.
 import re
 from collections.abc import Sequence
 from datetime import date
-from html import unescape
 from typing import cast
 
 import pytest
@@ -49,6 +48,8 @@ from tests.support import (
     drafts_in_memory,
     plan_block,
     record,
+    to_details,
+    words,
 )
 
 LMS, EMAIL = SourceChannel.LMS, SourceChannel.EMAIL
@@ -152,10 +153,6 @@ def saved_plan(
     return found
 
 
-def to_details(assignment_id: str) -> str:
-    return details_href(assignment_id, return_to="today")
-
-
 def to_evidence(assignment_id: str) -> str:
     return details_href(assignment_id, fragment="evidence", return_to="today")
 
@@ -185,10 +182,6 @@ def history_reading(record: DraftRecord, now: Everything) -> PlanReading:
 
 def rendered(reading: PlanReading) -> str:
     return page_templates().get_template("plan_reading.html").render(reading=reading)
-
-
-def words(html: str) -> str:
-    return " ".join(unescape(re.sub(r"<[^>]+>", " ", html)).split()).replace(" .", ".")
 
 
 def row_lines(html: str, dom_id: str) -> tuple[str, str | None, str]:
@@ -740,6 +733,11 @@ def test_the_labels_are_strong_and_the_link_names_its_assignment() -> None:
 
     assert '<p class="plan-now"><strong>As things stand:</strong> Since' in row
     assert "<strong>Check this date.</strong>" in row
+    assert (
+        '<a class="assignment-link" '
+        'href="/student/assignments/assignment-canal-essay?return_to=today" '
+        'aria-label="Canal Era comparison essay, World History">'
+    ) in row
     assert (
         '<a class="assignment-link details-link" '
         'href="/student/assignments/assignment-canal-essay?return_to=today#evidence" '

@@ -39,7 +39,9 @@ from tests.support import (
     browser,
     composed_plan,
     drafts_in_memory,
+    files_in,
     fixture_settings,
+    main_of,
     plan_on,
     planned,
     record,
@@ -82,11 +84,6 @@ NEVER = (
 )
 """What a page that could not read the record never says or offers: that a save or a send
 happened, that there is no plan, anything about the record as it stands, or a control."""
-PATHS = ("BLOSSOM_DATABASE_PATH", "BLOSSOM_CHECKPOINT_PATH", "BLOSSOM_TRACE_PATH")
-
-
-def main_of(page: str) -> str:
-    return page.split('<main id="main">', 1)[1].split("</main>", 1)[0]
 
 
 def words(html: str) -> str:
@@ -129,10 +126,6 @@ def assert_recovery(page: str, alert: str, again: str) -> str:
     for never in NEVER:
         assert never not in main, never
     return main
-
-
-def files_in(folder: pathlib.Path) -> dict[str, str]:
-    return {name: str(folder / f"{name.lower()}.sqlite3") for name in PATHS}
 
 
 # ------------------------------------------------------------- her week

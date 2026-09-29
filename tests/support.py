@@ -64,7 +64,7 @@ from blossom.plan_checks import check_plan
 from blossom.plan_reading import anchor_for
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
-from blossom.routes.navigation import assignment_anchor
+from blossom.routes.navigation import assignment_anchor, details_href
 from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
@@ -541,6 +541,16 @@ def browser(*, key: bool = False, **environ: str) -> TestClient:
     return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
 
 
+PATHS = ("BLOSSOM_DATABASE_PATH", "BLOSSOM_CHECKPOINT_PATH", "BLOSSOM_TRACE_PATH")
+"""The settings that place one household's three files."""
+
+
+def files_in(folder: pathlib.Path) -> dict[str, str]:
+    """The three files of one household under ``folder``, so a second app can open them
+    on another day or with the sign-in on."""
+    return {name: str(folder / f"{name.lower()}.sqlite3") for name in PATHS}
+
+
 def signed_in_household(tmp_path: pathlib.Path) -> Settings:
     """The pinned day with the sign-in on, its files under ``tmp_path``. For a run the
     state guard stands behind: a folder handed in is the caller's word, not a check."""
@@ -681,6 +691,16 @@ def hidden(html: str, name: str) -> str:
     match = re.search(rf'name="{name}" value="([^"]*)"', html)
     assert match is not None, name
     return match.group(1)
+
+
+def main_of(page: str) -> str:
+    """The page's main part, where every fact and control of the page is."""
+    return page.split('<main id="main">', 1)[1].split("</main>", 1)[0]
+
+
+def words(html: str) -> str:
+    """A piece of a page as the words it reads, with tags dropped and entities undone."""
+    return " ".join(unescape(re.sub(r"<[^>]+>", " ", html)).split()).replace(" .", ".")
 
 
 def lands_on(page: str, address: str) -> str:
@@ -1063,6 +1083,11 @@ def planned(client: TestClient) -> DraftRecord:
     record = state_of(client).drafts.latest_for(PLAN_DATE)
     assert record is not None
     return record
+
+
+def to_details(assignment_id: str) -> str:
+    """The address a row of today's plan links to for one assignment."""
+    return details_href(assignment_id, return_to="today")
 
 
 def plan_on(page: str, record: DraftRecord) -> str:
