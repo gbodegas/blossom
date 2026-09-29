@@ -1126,6 +1126,100 @@ def test_the_copy_keeps_the_first_value_and_says_undecodable_bytes_as_a_replacem
     check_refused(press, replaced, subject=subject, typed="Wren\ufffd\ufffds words")
 
 
+COPIED_DAYS: Final[dict[str, tuple[str, list[tuple[str, str]]]]] = {
+    "a day as a page writes one": ("2026-08-21", []),
+    "a day in another spelling": ("20260819", []),
+    "a day in another spelling beside the tick": (
+        "20260819",
+        [("date_pending", "1"), ("without_date", "1")],
+    ),
+    "words that are no day": ("next Wednesday", []),
+    "words past the length a page says back": ("x" * 240 + "TAIL", []),
+    "a day with spaces around it": ("  2026-08-21 ", []),
+    "words on two lines": ("Friday\nor Monday", []),
+    "markup": ("<b>Friday</b> & Wren's", []),
+}
+"""Due dates a refused press may send, each with the fields sent beside it."""
+TREES: Final = ("hers, by a parent", "the family's, by her")
+
+
+def refused_copy(
+    tmp_path: pathlib.Path, tree: str, press: str, form: list[tuple[str, str]]
+) -> tuple[Answer, str]:
+    """A refused details or add press with this form, and the id it named."""
+    family = tree == TREES[1]
+    with household(tmp_path, "her" if family else "parent") as client:
+        seeded = seed(client)
+        subject = subject_of(press, "known", seeded)
+        path = press_path(press, subject, family=family)
+        return sent(client, path, urlencode(form).encode(), URL_ENCODED), subject
+
+
+@pytest.mark.parametrize("given", list(COPIED_DAYS))
+@pytest.mark.parametrize("press", ["details", "add"])
+@pytest.mark.parametrize("tree", TREES)
+def test_the_copy_keeps_the_due_date_as_it_was_sent(
+    tree: str, press: str, given: str, tmp_path: pathlib.Path
+) -> None:
+    due, beside = COPIED_DAYS[given]
+    form = [("title", "Copy test"), ("due_date", due), *beside]
+    answer, subject = refused_copy(tmp_path, tree, press, form)
+
+    check_refused(press, answer, subject=subject, typed="Copy test", family=tree == TREES[1])
+    page = main_of(answer.text)
+    assert f'Due date, as given: <span class="authored-text">{escape(due)}</span>' in page
+    assert page.count("Due date, as") == 1
+
+
+@pytest.mark.parametrize(
+    "carried",
+    ["next Wednesday", "x" * 240 + "TAIL", "2026-08-21", "Friday\nor Monday"],
+    ids=["words", "words past the length a page says back", "a day", "words on two lines"],
+)
+@pytest.mark.parametrize("press", ["details", "add"])
+@pytest.mark.parametrize("tree", TREES)
+def test_the_copy_keeps_the_day_words_a_page_carried_as_they_were_sent(
+    tree: str, press: str, carried: str, tmp_path: pathlib.Path
+) -> None:
+    form = [
+        ("title", "Copy test"),
+        ("date_pending", "1"),
+        ("date_refused", carried),
+        ("due_date", "2026-08-22"),
+    ]
+    answer, subject = refused_copy(tmp_path, tree, press, form)
+
+    check_refused(press, answer, subject=subject, typed="Copy test", family=tree == TREES[1])
+    page = main_of(answer.text)
+    assert f'Due date, as typed: <q class="authored-text">{escape(carried)}</q>.</p>' in page
+    assert 'Due date, as given: <span class="authored-text">2026-08-22</span>' in page
+    assert "which is not a date" not in page
+
+
+@pytest.mark.parametrize("press", ["details", "add"])
+@pytest.mark.parametrize("tree", TREES)
+def test_the_copy_keeps_every_typed_value_as_it_was_sent(
+    tree: str, press: str, tmp_path: pathlib.Path
+) -> None:
+    typed = {
+        "course_choice": " Art ",
+        "course_other": " " + "c" * 80 + " ",
+        "title": "  " + "t" * 250 + "  ",
+        "note": " " + "n" * 600 + "\n\tlast\n",
+    }
+    chosen = [("kind", "HOMEWORK"), ("candidate", "separate")]
+    answer, subject = refused_copy(tmp_path, tree, press, [*typed.items(), *chosen])
+
+    check_refused(press, answer, subject=subject, typed=typed["title"], family=tree == TREES[1])
+    page = main_of(answer.text)
+    assert f'Class, as chosen: <span class="authored-text">{typed["course_choice"]}</span>' in page
+    assert f'Class, as typed: <span class="authored-text">{typed["course_other"]}</span>' in page
+    assert f'value="{typed["title"]}" readonly' in page
+    assert f"readonly>{typed['note']}</textarea>" in page
+    assert "Kind, as chosen: Homework" in page
+    assert "Choice, as made: keep it as a separate assignment." in page
+
+
 # ------------------------------------------------------------------ 5. her, and nobody known
 
 

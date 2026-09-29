@@ -226,6 +226,9 @@ class DetailsForm:
     problem: str | None = None
     field: str | None = None
     unsaved: bool = False
+    copied: bool = False
+    """Whether this is the copy a refused press gets, whose values are shown as sent and whose
+    day words are not judged."""
 
 
 def details_date_controls_are_valid(fields: dict[str, str]) -> bool:
@@ -367,6 +370,23 @@ def prepared(fields: dict[str, str], capture_id: str, revision: int | None) -> P
     if marked and not without:
         return PreparedDetails(form, None, DATE_NEEDS_A_CHOICE)
     return PreparedDetails(form)
+
+
+def copied(fields: dict[str, str], capture_id: str) -> DetailsForm:
+    """The copy of what a refused press sent, each value as it came. Nothing is trimmed,
+    cut, or read as a day, so a date in any spelling is shown as typed."""
+    return DetailsForm(
+        capture_id=capture_id,
+        course_choice=fields.get("course_choice", ""),
+        course_other=fields.get("course_other", ""),
+        title=fields.get("title", ""),
+        due_date=fields.get("due_date", ""),
+        kind=fields.get("kind", ""),
+        note=fields.get("note", ""),
+        date_refused=fields.get("date_refused") or None,
+        candidate=fields.get("candidate", ""),
+        copied=True,
+    )
 
 
 def form_for(note: Capture, courses: list[str]) -> DetailsForm:
@@ -848,7 +868,7 @@ async def refused_press(
     return plain_details(
         request,
         state,
-        prepared(kept, name or "", None).form,
+        copied(kept, name or ""),
         way.refusal,
         status.HTTP_403_FORBIDDEN,
         back_to_the_note=name is not None,

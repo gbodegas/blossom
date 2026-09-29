@@ -1085,7 +1085,8 @@ past that length or ends short of it. The read has five seconds in all from its
 start, which a chunk arriving does not restart: a body not all come by then is
 dropped and the refusal answers at once, the client still connected. Whatever
 that read finds, the answer is the same 403, and a name that is no note's
-changes nothing about it. For her
+changes nothing about it. The copy shows each value as it was sent: a date
+isn't read, respelled, or cut, and the page doesn't say whether it reads. For her
 pressing a family form, opened by a parent on the same device before she
 signed in, that answer needs the route, so the gate lets
 those two presses alone through to it; the family's page itself, and every
