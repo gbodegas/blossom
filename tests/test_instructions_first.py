@@ -94,6 +94,12 @@ UNAVAILABLE = (
     '<p class="source">The school\'s instructions for this assignment cannot be read right '
     "now, so they are not shown.</p>"
 )
+UNREADABLE_BESIDE_A_NOTE = (
+    '<p class="source">Blossom can\'t read the instruction list right now. The older school '
+    "note below has not been reviewed.</p>"
+)
+"""What the details say when the kept instructions cannot be read and a school note left in
+the old note field can: the list is what failed, and the note below is still unreviewed."""
 ONE_WAITS = (
     '<p class="source">1 instruction from the school is waiting for a parent\'s review. It '
     'does not apply until then. <a href="#waiting-instructions">Read the waiting instruction'
@@ -687,8 +693,8 @@ for _mark in (None, "LMS", "EMAIL"):
     )
     CASES[f"old note field, {_mark or 'no'} mark, beside a set that cannot be read"] = (
         old_note(_mark, "unreadable"),
-        [UNAVAILABLE, WAITING_HEADING, old_note_item(LEGACY, _mark)],
-        [NONE_APPLIES, "is waiting", str(escape(A)), "Review school instructions"],
+        [UNREADABLE_BESIDE_A_NOTE, WAITING_HEADING, old_note_item(LEGACY, _mark)],
+        [UNAVAILABLE, NONE_APPLIES, "is waiting", str(escape(A)), "Review school instructions"],
     )
 
 
@@ -719,6 +725,8 @@ def test_the_instructions_are_said_whole_with_where_each_came_from(
     for piece in never:
         assert piece not in page, piece
     assert not (NONE_APPLIES in page and UNAVAILABLE in page)
+    assert not (NONE_APPLIES in page and UNREADABLE_BESIDE_A_NOTE in page)
+    assert not (UNAVAILABLE in page and UNREADABLE_BESIDE_A_NOTE in page)
     section = page[page.index(HEADING) : page.index('id="update-or-turn-in"')]
     for line in applying_lines(section):
         assert "waiting" not in line
@@ -738,7 +746,8 @@ def test_the_instructions_are_said_whole_with_where_each_came_from(
     assert ("These are the school's words." in page) == something_kept
     if something_kept:
         assert f"nor {to_whom} own updates." in page
-    offers_review = reader == "a parent" and something_kept and UNAVAILABLE not in page
+    set_unread = case == "unreadable" or case.endswith("cannot be read")
+    offers_review = reader == "a parent" and something_kept and not set_unread
     assert ("Review school instructions</a>" in page) == offers_review
     if case == "one applies":
         assert f"From the school: {quoted(A)}" in card
@@ -747,8 +756,9 @@ def test_the_instructions_are_said_whole_with_where_each_came_from(
     if case in ("one waiting", "two waiting"):
         assert CARD_FOLD in card
         assert in_a_fold(card, str(quoted(C)))
-    if case == "unreadable":
+    if set_unread:
         assert UNAVAILABLE in card
+        assert UNREADABLE_BESIDE_A_NOTE not in card
 
 
 def test_each_line_keeps_the_channel_of_its_own_row() -> None:
@@ -1382,6 +1392,7 @@ def test_a_look_at_work_not_on_record_asks_for_no_focus(address: str) -> None:
     page = main_of(answer.text)
     assert f"{GONE_TAG}This assignment is not on record now.</p>" in page
     assert focused_on_arrival(answer.text) == []
+    assert answer.text.count('id="problem-summary"') == 1
     assert page.count('role="alert"') == 1
     assert re.search(r'tabindex="[1-9]', page) is None
 
@@ -1456,6 +1467,7 @@ def test_after_a_press_on_work_not_on_record_its_explanation_takes_the_focus(
     assert answer.status_code == 404
     page = main_of(answer.text)
     assert focused_on_arrival(answer.text) == [GONE_TAG[:-1] + " autofocus>"]
+    assert answer.text.count('id="problem-summary"') == 1
     assert page.count('role="alert"') == 1
     assert "This assignment is not on record now." in page
     assert re.search(r'tabindex="[1-9]', page) is None
