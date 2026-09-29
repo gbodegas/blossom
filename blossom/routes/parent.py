@@ -78,6 +78,7 @@ from blossom.routes.navigation import (
     EVIDENCE,
     FAMILY_PAGE,
     address,
+    asked_address,
     details_href,
     instructions_review_href,
     segment,
@@ -1093,20 +1094,7 @@ def review(
         return review_unreadable(
             request,
             error,
-            again=address(
-                FAMILY_PAGE,
-                refreshed=refreshed,
-                added=added,
-                updated=updated,
-                unchanged=unchanged,
-                kept_note=kept_note,
-                linked=linked,
-                checked=checked,
-                checked_already=checked_already,
-                reopened=reopened,
-                focus=focus,
-                plan=plan,
-            ),
+            again=asked_address(FAMILY_PAGE, request.scope["query_string"]),
         )
 
 

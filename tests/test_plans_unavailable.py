@@ -12,10 +12,12 @@ import sqlite3
 from collections import Counter
 from collections.abc import Callable
 from datetime import date
+from html import unescape
 from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.types import Receive, Scope, Send
 
 from blossom.app import create_app
 from blossom.drafts import DraftStatus
@@ -52,6 +54,7 @@ from tests.support import (
     two_sittings,
     walkthrough,
     walkthrough_plan,
+    words,
 )
 
 HER_ALERT = (
@@ -84,10 +87,6 @@ NEVER = (
 )
 """What a page that could not read the record never says or offers: that a save or a send
 happened, that there is no plan, anything about the record as it stands, or a control."""
-
-
-def words(html: str) -> str:
-    return " ".join(re.sub(r"<[^>]+>", " ", html).split())
 
 
 def failing(*_: object, **__: object) -> None:
@@ -189,7 +188,7 @@ def test_her_week_says_nothing_about_plans_when_none_was_read(
     main = assert_recovery(shown.text, HER_ALERT, "/student/due-this-week?show_plan=1")
     assert "todays-plan" not in main
     assert "plan-reading" not in main
-    assert "Today" not in words(main)
+    assert words(main) == f"This week cannot be shown right now {HER_ALERT} Try again"
     assert (calls["latest_for"], calls["read_everything"]) == (1, 0)
 
 
@@ -404,7 +403,7 @@ def test_the_family_page_keeps_every_plan_in_force_as_saved_when_a_later_read_fa
             shown = client.get("/parent?plan=x&refreshed=1", headers=PAGE_HEADERS)
 
     assert shown.status_code == 503
-    main = assert_recovery(shown.text, FAMILY_ALERT, "/parent?refreshed=1&amp;plan=x")
+    main = assert_recovery(shown.text, FAMILY_ALERT, "/parent?plan=x&amp;refreshed=1")
     assert "<h1>Family review</h1>" in main
     assert "<h2>Plans for today and later evenings</h2>" in main
     assert anchor_for(replaced.draft_id) not in main
@@ -451,6 +450,135 @@ def test_the_family_page_says_nothing_about_plans_when_none_was_read(
     assert "Plans for today" not in main
     assert "plan-reading" not in main
     assert (calls["review_snapshot"], calls["read_everything"]) == (1, 0)
+
+
+# ------------------------------------------------------------- Try again
+
+
+def try_again_of(page: str) -> str:
+    """The address the page's Try again link asks for."""
+    found = re.search(r'<a href="([^"]*)">Try again</a>', page)
+    assert found is not None
+    return unescape(found.group(1))
+
+
+def said(page: str) -> str:
+    """The words of the page's main part without the time of day, which can move on
+    between two asks."""
+    return re.sub(r"\b\d{1,2}:\d{2}\b", "", words(main_of(page)))
+
+
+@pytest.mark.parametrize(
+    ("path", "asked"),
+    [
+        (HER_PAGE, ""),
+        (HER_PAGE, "?week="),
+        (HER_PAGE, "?week=&show_plan=1"),
+        (HER_PAGE, "?show_plan="),
+        (HER_PAGE, "?week=2026-08-24&week="),
+        (HER_PAGE, "?unknown=1&show_plan=1"),
+        (HER_PAGE, "?show=%22%3E%3Cb%3Ex%3C%2Fb%3E"),
+        ("/parent", ""),
+        ("/parent", "?plan=&refreshed=1"),
+        ("/parent", "?plan=x&refreshed=1"),
+        ("/parent", "?focus=&unknown=1"),
+        ("/parent", "?refreshed=1&refreshed="),
+    ],
+)
+def test_try_again_asks_for_the_address_as_it_was_asked(
+    path: str, asked: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Try again keeps the query as sent: blank values, repeats, order and other fields."""
+    routes = student_routes if path == HER_PAGE else parent_routes
+    alert = HER_ALERT if path == HER_PAGE else FAMILY_ALERT
+    with browser(key=True) as client:
+        walkthrough(client)
+        direct = client.get(path + asked, headers=PAGE_HEADERS)
+        with monkeypatch.context() as broken:
+            broken.setattr(routes, "read_everything", failing)
+            shown = client.get(path + asked, headers=PAGE_HEADERS)
+            still = client.get(try_again_of(shown.text), headers=PAGE_HEADERS)
+        retried = client.get(try_again_of(shown.text), headers=PAGE_HEADERS)
+
+    assert shown.status_code == still.status_code == 503
+    assert_recovery(shown.text, alert, (path + asked).replace("&", "&amp;"))
+    assert try_again_of(still.text) == try_again_of(shown.text) == path + asked
+    assert "<b>x</b>" not in shown.text
+    assert retried.status_code == direct.status_code
+    assert said(retried.text) == said(direct.text)
+
+
+def test_a_blank_week_is_said_again_when_the_record_reads() -> None:
+    """A blank week pressed through Try again is said as not a date, as it was asked."""
+    with browser(key=True) as client:
+        with pytest.MonkeyPatch.context() as broken:
+            broken.setattr(student_routes, "read_everything", failing)
+            shown = client.get(f"{HER_PAGE}?week=", headers=PAGE_HEADERS)
+        retried = client.get(try_again_of(shown.text), headers=PAGE_HEADERS)
+
+    assert retried.status_code == 422
+    assert student_routes.NOT_A_WEEK in retried.text
+
+
+def sent_raw(client: TestClient, query: bytes) -> TestClient:
+    """A client for the same app whose requests carry ``query`` as their query bytes, as a
+    client that escapes nothing would send them."""
+    app = client.app
+
+    async def raw(scope: Scope, receive: Receive, send: Send) -> None:
+        await app({**scope, "query_string": query}, receive, send)
+
+    return TestClient(raw, follow_redirects=False, raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize(
+    ("path", "query", "again"),
+    [
+        (HER_PAGE, b"show=caf\xc3\xa9", "?show=caf%C3%A9"),
+        ("/parent", b"plan=caf\xe9&refreshed=1", "?plan=caf%E9&refreshed=1"),
+        (HER_PAGE, b"week=&a#b", "?week=&a%23b"),
+        ("/parent", b"plan=x#frag&refreshed=1", "?plan=x%23frag&refreshed=1"),
+        (HER_PAGE, b'show="<b>x</b>" y', "?show=%22%3Cb%3Ex%3C/b%3E%22%20y"),
+    ],
+)
+def test_try_again_escapes_only_what_a_browser_would_in_a_query_sent_raw(
+    path: str, query: bytes, again: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes = student_routes if path == HER_PAGE else parent_routes
+    with browser(key=True) as client:
+        monkeypatch.setattr(routes, "read_everything", failing)
+        shown = sent_raw(client, query).get(path, headers=PAGE_HEADERS)
+
+    assert shown.status_code == 503
+    assert try_again_of(shown.text) == path + again
+    assert "<b>x</b>" not in shown.text
+
+
+@pytest.mark.parametrize(
+    ("who", "path", "asked"),
+    [
+        ("her", HER_PAGE, "?week=&show_plan=1"),
+        ("a parent", HER_PAGE, "?week="),
+        ("a parent", "/parent", "?plan=&refreshed=1"),
+    ],
+)
+def test_a_signed_in_reader_gets_the_address_as_it_was_asked(
+    who: str, path: str, asked: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = fixture_settings(
+        BLOSSOM_TODAY=PLAN_DATE.isoformat(),
+        BLOSSOM_STUDENT_PASSPHRASE=HERS,
+        BLOSSOM_PARENT_PASSPHRASE=THEIRS,
+        **files_in(tmp_path),
+    )
+    routes = student_routes if path == HER_PAGE else parent_routes
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
+        signed_in(client, HERS if who == "her" else THEIRS)
+        monkeypatch.setattr(routes, "read_everything", failing)
+        shown = client.get(path + asked, headers=PAGE_HEADERS)
+
+    assert shown.status_code == 503
+    assert try_again_of(shown.text) == path + asked
 
 
 # ------------------------------------------------------------- a POST is not this page's

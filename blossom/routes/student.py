@@ -112,6 +112,7 @@ from blossom.routes.navigation import (
     WEEK_PAGE,
     ReturnTo,
     address,
+    asked_address,
     assignment_anchor,
     details_href,
     instructions_review_href,
@@ -1576,22 +1577,7 @@ def due_this_week(
         return week_unreadable(
             request,
             error,
-            again=address(
-                WEEK_PAGE,
-                week=week,
-                show_plan=show_plan,
-                refreshed=refreshed,
-                saved=saved,
-                same=same,
-                undone=undone,
-                change=change,
-                show=show,
-                hand_in_said=hand_in_said,
-                about=about,
-                hand_in_event=hand_in_event,
-                asked=asked,
-                asked_again=asked_again,
-            ),
+            again=asked_address(WEEK_PAGE, request.scope["query_string"]),
         )
 
 

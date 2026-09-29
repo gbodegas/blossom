@@ -26,6 +26,8 @@ WEEK_PAGE: Final = "/student/due-this-week"
 FAMILY_PAGE: Final = "/parent"
 UNRESERVED: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 """The characters a path segment may carry as they are; every other one is escaped."""
+QUERY_KEPT: Final = frozenset({ord(kept) for kept in UNRESERVED | set("!$%&'()*+,/:;=?@[\\]^`{|}")})
+"""The bytes a browser sends in a query as they are; every other one is escaped."""
 
 Target = Literal["week", "today", "family", "to_turn_in"]
 TARGETS: Final[tuple[str, ...]] = ("week", "today", "family", "to_turn_in")
@@ -81,6 +83,14 @@ def address(path: str, fragment: str = "", **query: str | None) -> str:
     given = {name: value for name, value in query.items() if value}
     made = URL(path).include_query_params(**given) if given else URL(path)
     return str(made.replace(fragment=fragment) if fragment else made)
+
+
+def asked_address(path: str, query: bytes) -> str:
+    """An address on this site from a path and a query as a request sent it, blank values,
+    repeated fields and their order kept. Only bytes a browser would escape are escaped,
+    so the address never ends early or fails to read."""
+    kept = "".join(chr(byte) if byte in QUERY_KEPT else f"%{byte:02X}" for byte in query)
+    return f"{path}?{kept}" if kept else path
 
 
 def instructions_review_href(assignment_id: str, *, result: str | None = None) -> str:
