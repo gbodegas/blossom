@@ -853,6 +853,14 @@ lands. A signal that is gone was taken back or aged out, and the store does
 not say which, so the message names both rather than putting an action on her
 that she may not have taken.
 
+Giving a signal and taking it back are hers alone. A parent signed in is
+answered 403 by the routes her page's buttons post to and by both JSON
+routes, before a body is read or a signal looked up, and nothing changes: no
+signal, no budget, no waiting plan. The JSON routes refuse in their route
+class, `HersToSignal`, since the framework reads a body before any handler
+runs. On her page a parent reads what she said, in words about her, and
+meets none of her buttons.
+
 Words she adds are capped at `DETAIL_MAX_LENGTH`, five hundred characters, at
 the boundary and in the store, so a request cannot grow the file or every
 later page. The store keeps a signal for `SIGNAL_RETENTION_DAYS`, seven, stamped and swept
@@ -861,7 +869,7 @@ applies the same cutoff, so a signal past its week stops counting whether or
 not a sweep has run since. The sweep runs at startup and then every hour the
 process is up, with the trace sweep and the saved-state rules, so nothing
 waits for a restart to be gone. Her page lists
-everything still kept, each with a way to remove it, and the JSON routes list
+everything still kept, each with a way for her to remove it, and the JSON routes list
 and delete the same. The store answers one question for the planner, whether
 an evening was signaled, and offers nothing about patterns: no query groups
 signals by weekday or counts them over a month, because a record like that

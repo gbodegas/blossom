@@ -99,7 +99,8 @@ With the app running as the README describes:
 - <http://127.0.0.1:8000/docs> is the interactive API page, where the
   parent's routes can be driven directly. The "too much" signal is sent by
   posting to `/student/workload-signals` with no body; the same path lists
-  the signals still kept, and a delete on one removes it.
+  the signals still kept, and a delete on one removes it. Giving and taking
+  back a signal are hers: a parent signed in gets 403.
 
 With neither passphrase set, nothing here has a login: the views are separate
 pages, and anyone who can reach the server can open all of them. That is the
