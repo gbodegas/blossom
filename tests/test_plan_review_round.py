@@ -477,7 +477,7 @@ def test_change_save_and_undo_on_the_details_keep_the_way_back_they_came_with(or
             "family plan": f"return_to=family&plan_id={record.draft_id}",
         }[origin]
         page = client.get(f"{DETAILS}?{query}", headers=PAGE_HEADERS).text
-        start = page.index(f'<form method="get" action="{DETAILS}"')
+        start = page.index(f'<form method="get" action="{DETAILS}#update-or-turn-in"')
         change = dict(
             re.findall(
                 r'<input type="hidden" name="([^"]+)" value="([^"]*)">',

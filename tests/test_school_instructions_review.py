@@ -346,7 +346,7 @@ def test_her_sign_in_reads_the_instructions_and_never_the_control(tmp_path: path
         theirs = client.get(details_href(ESSAY_ID, return_to="family"), headers=PAGE_HEADERS)
 
     assert hers.status_code == 200
-    assert "From the school:" in hers.text
+    assert "From the school portal:" in hers.text
     assert str(escape(A)) in hers.text
     assert "Review school instructions" not in hers.text
     assert PAGE not in hers.text
@@ -402,7 +402,7 @@ def test_an_assignment_with_no_instruction_offers_nothing_to_review(tmp_path: pa
         page = client.get(PAGE, headers=PAGE_HEADERS)
 
     assert "Review school instructions</a>" not in details.text
-    assert "From the school:" not in details.text
+    assert '<p class="from-teacher">From the school' not in details.text
     assert page.status_code == 200
     assert "No instruction from the school is saved for this assignment." in page.text
     assert f'action="{ACTION}"' not in page.text

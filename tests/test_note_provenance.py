@@ -158,7 +158,7 @@ def test_the_page_says_whose_words_a_note_is_to_whoever_reads_it() -> None:
     assert "From the teacher" not in pages[first.assignment_id].split("Heard in class")[0][-80:]
     assert "A parent wrote: <q>Signed on Sunday.</q>" in pages[second.assignment_id]
     assert (
-        'From the school: <q class="authored-text">Cite two sources.</q>'
+        'From the school portal: <q class="authored-text">Cite two sources.</q>'
         in pages[third.assignment_id]
     )
 

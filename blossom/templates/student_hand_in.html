@@ -14,7 +14,9 @@
   and the page says which one goes with which choice. It carries the last event the page showed, so a save lands on the
   chain the page showed or is shown what changed, with what she chose and
   wrote still in the form under a heading that says it is not saved. A parent
-  signed in reads all of it and is told the update is hers to make.
+  signed in reads all of it and is told the update is hers to make. A problem
+  here is said as an alert once, by the summary at the top of the details, and
+  the line here is plain text the summary links to.
 
   ``assignment.hand_in`` is what the record says, ``hand_in_card`` what this
   visit adds to it, and ``hand_in_links`` and ``hand_in_fields`` the ways on
@@ -47,7 +49,7 @@
       <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1">{{ hc.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
     {% endif %}
     {% if hc and hc.problem %}
-      <p class="problem" role="alert" id="hand-in-problem-{{ key }}" tabindex="-1">{{ hc.problem }}</p>
+      <p class="problem" id="hand-in-problem-{{ key }}" tabindex="-1">{{ hc.problem }}</p>
     {% endif %}
     {% if hi.unavailable %}
       <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record for this assignment cannot be read right now, so it is not shown. Nothing was changed, and nothing can be saved here until it can be read.</p>

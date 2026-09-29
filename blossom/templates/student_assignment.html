@@ -4,71 +4,101 @@
 {#
   One assignment's current record, in the order she needs it: the way back,
   what the assignment is, its date with where it came from and the warning
-  when it is in doubt, and then her update with its controls, and what she
-  says about turning it in, before anything long. The longer evidence
-  follows, each source's claim, what each school channel reports, and the
-  teacher's or a parent's note, all of it, and the history of her updates
-  and the school's closes the page. Each fact is shown
-  once. The facts, the update, and the history are the parts her week's cards
-  use; nothing here is a second form. Everything shown is the record as it
-  stands now, whichever plan or page the reader came from, and the page says
-  so. What a save did is said at the update, where the address lands, with
-  the way back beside it. A problem with the update is said at the top with a
-  link to it, as well as beside the field it is about.
+  when it is in doubt, and a jump to her update, then what the work is: the
+  school's instructions, whole and each with where it came from, the notes on
+  it, and the way to help. Her update with its controls and what she says
+  about turning it in come next, then the longer evidence, each source's
+  claim and what each school channel reports, and the history of her updates
+  and the school's closes the page. Each fact is shown once. The facts, the
+  update, and the history are the parts her week's cards use; nothing here
+  is a second form, and nothing about the update is folded. Everything shown
+  is the record as it stands now, whichever plan or page the reader came
+  from, and the page says so. What a save did is said at the update, where
+  the address lands, with the way back beside it. A problem with the update
+  is said at the top with a link to it, and beside the field it is about.
 #}
 {% block content %}
   <p class="return"><a href="{{ back.href }}">{{ back.label }}</a>{% if back.note %} <span class="note">{{ back.note }}</span>{% endif %}</p>
   {#
     One summary at the top for whatever could not be done, her update's or her
     hand-in update's, since the section it is about can be a screen or two
-    down. It links to the field it is about, which then has the cursor, or to
-    the section's own words when it is about no one field, a change made
-    elsewhere, a stale Undo, a form these pages did not make, a save the file
-    refused; then the summary itself takes the focus as the page arrives, with
-    no script. A record that cannot be read shows no form, so a field refused
-    on one is treated the same way, and the link goes to the section's words
-    and what she sent. One thing on the page is ever given the focus.
+    down. It is the page's one alert. It links to the field it is about, which
+    then has the cursor, or to the section's own words when it is about no one
+    field, a change made elsewhere, a stale Undo, a form these pages did not
+    make, a save the file refused; then the summary itself takes the focus as
+    the page arrives, with no script. A refusal with nothing of hers on the
+    page, a parent's, links nowhere. A record that cannot be read shows no
+    form, so a field refused on one is treated the same way, and the link goes
+    to the section's words and what she sent. One thing on the page is ever
+    given the focus.
   #}
   {% set hand_in_problem = hand_in_card.problem if hand_in_card else none %}
   {% set trouble = problem or (card.problem if card else none) or hand_in_problem %}
   {% if trouble %}
     {% set hand_in_field = hand_in_card.field if (hand_in_card and hand_in_problem and not problem and not (card and card.problem) and not assignment.hand_in.unavailable) else none %}
     {% set hand_in_general = hand_in_problem and not problem and not (card and card.problem) and not hand_in_field %}
-    <p class="problem" role="alert" id="problem-summary" tabindex="-1"{% if hand_in_general %} autofocus{% endif %}>{{ trouble }}{% if card and card.problem %} <a href="#update-problem-{{ assignment.assignment_id }}">Go to the update.</a>{% elif hand_in_field == "next_action" %} <a href="#next-action-{{ assignment.assignment_id }}">Go to the next step.</a>{% elif hand_in_field == "note" %} <a href="#hand-in-note-{{ assignment.assignment_id }}">Go to the note.</a>{% elif hand_in_field == "state" %} <a href="#hand-in-state-{{ assignment.assignment_id }}">Go to the choices.</a>{% elif hand_in_general %} <a href="#hand-in-problem-{{ assignment.assignment_id }}">Go to Turning it in.</a>{% endif %}</p>
+    {% set update_field = card and card.problem and card.field and ctx.can_update %}
+    <p class="problem" role="alert" id="problem-summary" tabindex="-1"{% if not update_field and not hand_in_field %} autofocus{% endif %}>{{ trouble }}{% if card and card.problem %} <a href="#update-problem-{{ assignment.assignment_id }}">Go to the update.</a>{% elif hand_in_field == "next_action" %} <a href="#next-action-{{ assignment.assignment_id }}">Go to the next step.</a>{% elif hand_in_field == "note" %} <a href="#hand-in-note-{{ assignment.assignment_id }}">Go to the note.</a>{% elif hand_in_field == "state" %} <a href="#hand-in-state-{{ assignment.assignment_id }}">Go to the choices.</a>{% elif hand_in_general %} <a href="#hand-in-problem-{{ assignment.assignment_id }}">Go to Turning it in.</a>{% endif %}</p>
   {% endif %}
   <article class="assignment detail confidence-{{ assignment.deadline_confidence|lower }}" id="{{ assignment_anchor(assignment.assignment_id) }}">
     <p class="course">{{ assignment.course }}</p>
     <h1>{{ assignment.title }}</h1>
     {% with due_with_year = true, facts_level = 3, part = "date" %}{% include "student_card_facts.html" %}{% endwith %}
-    <h2 class="update-heading">{% if ctx.viewer == "parent" %}Student update{% else %}Your update{% endif %}</h2>
+    {#
+      The way past everything long to her update and Turning it in, before the
+      first instruction: a plain link to the heading below, which takes the
+      focus, so the next Tab reaches the update's first control.
+    #}
+    <p class="jump"><a href="#{{ update_or_turn_in_id }}">{% if ctx.viewer == "parent" %}Her update and turning it in{% else %}Update or turn in{% endif %}</a></p>
+    {% with words = assignment.words, to_a_parent = ctx.viewer == "parent", review_href = instructions_review %}{% include "student_instructions.html" %}{% endwith %}
+    {#
+      The notes on the assignment: a parent's words or hers typed with it, and
+      the homework notes it was added from, or that were joined to it as the
+      same homework: her words as they stand, the day each was saved, and the
+      way to the note with its history. They are evidence beside the record.
+      Nothing of them is copied into the assignment, and changing a note
+      changes nothing here. A note that cannot be read is said to be that.
+    #}
+    {% set typed_note = assignment.words.note if assignment.words.note_by in ("parent", "student") else none %}
+    {% if typed_note or from_notes or from_notes_unreadable %}
+      <div class="detail-notes">
+        <h2 class="update-heading">Notes</h2>
+        {% if typed_note and assignment.words.note_by == "parent" %}
+          <p class="from-teacher">A parent wrote: <q>{{ typed_note }}</q></p>
+        {% elif typed_note %}
+          <p class="from-teacher">{% if ctx.viewer == "parent" %}She wrote{% else %}You wrote{% endif %}: <q>{{ typed_note }}</q></p>
+        {% endif %}
+        {% if from_notes or from_notes_unreadable %}
+          <h3 class="update-heading">{% if ctx.viewer == "parent" %}From her homework note{% else %}From your homework note{% endif %}{% if from_notes|length > 1 %}s{% endif %}</h3>
+          {% for note, made_here in from_notes %}
+            <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
+            <p class="note">Saved {{ note.created_on.strftime("%B") }} {{ note.created_on.day }}, {{ note.created_on.year }}, as a homework note{% if note.archived %}, since archived{% endif %}. {% if made_here %}This assignment was added from it.{% else %}It was joined to this assignment as the same homework, which changed nothing on the assignment.{% endif %} <a href="{{ note_href(note.capture_id) }}">Open the note</a></p>
+          {% endfor %}
+          {% if from_notes_unreadable == 1 %}
+            <p class="problem">1 homework note of this assignment cannot be read right now, so it is not shown.</p>
+          {% elif from_notes_unreadable %}
+            <p class="problem">{{ from_notes_unreadable }} homework notes of this assignment cannot be read right now, so they are not shown.</p>
+          {% endif %}
+        {% endif %}
+      </div>
+    {% endif %}
+    {#
+      Help is hers to ask for on her week, and a parent answers it on the
+      family page. The link carries nothing of this assignment.
+    #}
+    <p class="support-links"><a href="{{ help_href }}">{% if ctx.viewer == "parent" %}Help she asked for{% else %}Ask for help{% endif %}</a></p>
+    <h2 class="update-heading" id="{{ update_or_turn_in_id }}" tabindex="-1">{% if ctx.viewer == "parent" %}Student update{% else %}Your update{% endif %}</h2>
     {% include "student_update.html" %}
     {% include "student_hand_in.html" %}
     <section class="evidence" id="evidence" tabindex="-1">
       <h2 class="update-heading">What is on record now</h2>
       {% with due_with_year = true, facts_level = 3, part = "evidence" %}{% include "student_card_facts.html" %}{% endwith %}
       {#
-        The homework notes this assignment was added from, or that were joined
-        to it as the same homework: her words as they stand, the day each was
-        saved, and the way to the note with its history. They are evidence
-        beside the record. Nothing of them is copied into the assignment, and
-        changing a note changes nothing here.
-      #}
-      {% if from_notes or from_notes_unreadable %}
-        <h3 class="update-heading">{% if ctx.viewer == "parent" %}From her homework note{% else %}From your homework note{% endif %}{% if from_notes|length > 1 %}s{% endif %}</h3>
-        {% for note, made_here in from_notes %}
-          <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
-          <p class="note">Saved {{ note.created_on.strftime("%B") }} {{ note.created_on.day }}, {{ note.created_on.year }}, as a homework note{% if note.archived %}, since archived{% endif %}. {% if made_here %}This assignment was added from it.{% else %}It was joined to this assignment as the same homework, which changed nothing on the assignment.{% endif %} <a href="{{ note_href(note.capture_id) }}">Open the note</a></p>
-        {% endfor %}
-        {% if from_notes_unreadable %}
-          <p class="problem">{{ from_notes_unreadable }} homework note{% if from_notes_unreadable != 1 %}s{% endif %} of this assignment cannot be read right now. Nothing was changed.</p>
-        {% endif %}
-      {% endif %}
-      {#
         Claims about the date that were withdrawn: history, said apart from the claims that
         count, which the record's date, the plan, and the warnings above are read from.
       #}
       {% if claim_history_unavailable %}
-        <p class="problem">Date history cannot be read right now. The current record is shown above. Nothing was changed.</p>
+        <p class="problem">Date history cannot be read right now. The current record is shown above.</p>
       {% endif %}
       {% if withdrawn_claims %}
         <h3 class="update-heading">Withdrawn claims about the date</h3>

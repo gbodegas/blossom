@@ -3,6 +3,8 @@
   what the school reports, the teacher's words, and her own update last.
   Included by her page for every card in the week, the active ones and
   the ones she has reported done alike, so the two groups read the same.
+  Beside Details, a link to the instructions on the details, while any of the
+  school's words apply or wait for a parent's review, with the same way back.
 #}
     <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}" id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
       <p class="course">{{ assignment.course }}</p>
@@ -13,7 +15,8 @@
         this week while the record puts it in another year.
       #}
       {% with due_with_year = assignment.due_date and assignment.due_date.year not in (view.week.start.year, view.week.end.year), facts_level = 3 %}{% include "student_card_facts.html" %}{% endwith %}
-      <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a></p>
+      <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a></p>{% if assignment.words.to_read %}
+      <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, fragment=instructions_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Read instructions: {{ assignment.title }}, {{ assignment.course }}">Read instructions</a></p>{% endif %}
       {% include "student_hand_in_line.html" %}
       {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
     </article>

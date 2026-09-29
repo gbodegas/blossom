@@ -23,11 +23,33 @@ from blossom.drafts import Decision, DraftStatus
 from blossom.hand_in import HandInProjection
 from blossom.intake import spoken_report
 from blossom.plan_reading import no_plan_title
-from blossom.reconciliation import CHANNEL_NAMES, SourceConfidence
-from blossom.school_instructions import InstructionsStanding
+from blossom.reconciliation import CHANNEL_NAMES, SCHOOL_CHANNELS, SourceChannel, SourceConfidence
+from blossom.school_instructions import InstructionsStanding, SchoolInstruction
 from blossom.stores.drafts import DraftRecord, RunRecord
 from blossom.stores.help_requests import HelpState
 from blossom.stores.project_state import Assignment, AssignmentKind, NoteBy, StatusReport
+
+
+class InstructionLineView(BaseModel):
+    """One of the school's instructions as a page shows it: its words, and the school channel
+    its own kept row names, or nothing when the row names none. Each line is made from one
+    row, so the channel beside the words is always that row's."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str
+    channel: SourceChannel | None
+
+    @classmethod
+    def of(cls, row: SchoolInstruction) -> "InstructionLineView":
+        """The line for one kept instruction."""
+        return cls(text=row.text, channel=row.channel)
+
+    @property
+    def source(self) -> str | None:
+        """The channel as a person reads it, "school portal" or "school email"; ``None`` when
+        the row keeps no channel, and the page then says only that it is the school's."""
+        return None if self.channel is None else CHANNEL_NAMES[self.channel]
 
 
 class SchoolWordsView(BaseModel):
@@ -36,25 +58,51 @@ class SchoolWordsView(BaseModel):
 
     ``current`` are the school's instructions that apply, in the one order;
     ``earlier`` those said before, and ``awaiting`` those waiting for a
-    parent's review, in the order kept; ``unreadable`` says they cannot be
-    read, and then none is shown. ``note`` is her note or a parent's, with
-    ``note_by``; a school note left in the old note field is shown apart, as
-    not yet reviewed.
+    parent's review, in the order kept, each with the channel of its own row;
+    ``unreadable`` says they cannot be read, and then none is shown. ``note``
+    is her note or a parent's, with ``note_by``; a school note left in the old
+    note field is shown apart, as not yet reviewed, with ``note_channel`` the
+    school channel its mark names, when it names one.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    current: list[str] = []
-    earlier: list[str] = []
-    awaiting: list[str] = []
+    current: list[InstructionLineView] = []
+    earlier: list[InstructionLineView] = []
+    awaiting: list[InstructionLineView] = []
     unreadable: bool = False
     note: str | None = None
     note_by: NoteBy | None = None
+    note_channel: SourceChannel | None = None
 
     @property
     def any_instruction(self) -> bool:
         """Whether there is anything of the school's to say, that none can be read included."""
         return bool(self.current or self.earlier or self.awaiting or self.unreadable)
+
+    @property
+    def left_in_the_note_field(self) -> bool:
+        """Whether the note is the school's, left in the old note field: one no one has
+        reviewed, which waits beside the kept ones and never applies."""
+        return self.note is not None and self.note_by == "teacher"
+
+    @property
+    def note_source(self) -> str | None:
+        """The channel that note's mark names, as a person reads it, or ``None``."""
+        return None if self.note_channel is None else CHANNEL_NAMES[self.note_channel]
+
+    @property
+    def waiting(self) -> int:
+        """How many of the school's words wait for a parent's review: the kept ones, and a
+        school note left in the old note field."""
+        return len(self.awaiting) + int(self.left_in_the_note_field)
+
+    @property
+    def to_read(self) -> bool:
+        """Whether any of the school's words apply or wait for a parent's review: what a
+        link to the details' instructions is for. Words said before, and a set that cannot
+        be read, are no reason for one."""
+        return bool(self.current) or self.waiting > 0
 
 
 def school_words(
@@ -62,13 +110,15 @@ def school_words(
 ) -> SchoolWordsView:
     """The school's words and anyone's note on one assignment, from one reading."""
     shown = None if unreadable else standing
+    mark = item.origins.get("note")
     return SchoolWordsView(
-        current=[] if shown is None else list(shown.texts),
-        earlier=[] if shown is None else [row.text for row in shown.history],
-        awaiting=[] if shown is None else [row.text for row in shown.awaiting],
+        current=[] if shown is None else [InstructionLineView.of(row) for row in shown.current],
+        earlier=[] if shown is None else [InstructionLineView.of(row) for row in shown.history],
+        awaiting=[] if shown is None else [InstructionLineView.of(row) for row in shown.awaiting],
         unreadable=unreadable,
         note=item.note or None,
         note_by=item.note_by if item.note else None,
+        note_channel=mark if item.note and mark in SCHOOL_CHANNELS else None,
     )
 
 

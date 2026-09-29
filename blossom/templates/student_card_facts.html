@@ -10,11 +10,12 @@
 
   ``part`` is which of the facts to show. A card shows them all, in the order
   it always has. The details show the short ones first, the date, where it
-  came from in a line, and the warning when it is in doubt, then her update,
-  and then the longer evidence: each source's claim, what each school channel
-  reports, and the note. Every condition is written once, here, and each
-  piece under it belongs to one part or the other, so the two readings cannot
-  come to disagree about a fact, and no fact is shown twice on one page.
+  came from in a line, and the warning when it is in doubt, then the school's
+  instructions and the notes in sections of their own, then her update, and
+  then the longer evidence: each source's claim and what each school channel
+  reports. Every condition is written once, here, and each piece under it
+  belongs to one part or the other, so the two readings cannot come to
+  disagree about a fact, and no fact is shown twice on one page.
 
   The claims about the date are the one piece the two readings size apart. A
   card lists them only when the date is in doubt, sources that disagree or a
@@ -167,10 +168,10 @@
       {% set read_by_a_parent = (viewer is defined and viewer == "parent") or (ctx is defined and ctx.viewer == "parent") %}
       {#
         The school's instructions and anyone's note, apart, through the one part
-        every page that lists the assignment shares; the control is on the
-        family's reading of the details only.
+        every page that lists the assignment shares. The details say them in
+        their own sections above her update, so their evidence leaves them out.
       #}
-      {% with words = assignment.words, to_a_parent = read_by_a_parent, review_href = (instructions_review if instructions_review is defined else none) %}{% include "school_words.html" %}{% endwith %}
+      {% if part|default("all") == "all" %}{% with words = assignment.words, to_a_parent = read_by_a_parent, review_href = none %}{% include "school_words.html" %}{% endwith %}{% endif %}
       {% if assignment.entered_by_a_parent %}
         <p class="source">Entered by a parent.</p>
       {% endif %}
