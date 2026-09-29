@@ -21,7 +21,7 @@ from markupsafe import escape
 
 from blossom.dependencies import STATE_ATTRIBUTE
 from blossom.routes import student as student_routes
-from blossom.routes.navigation import note_action, note_help_href
+from blossom.routes.navigation import note_action, note_help_href, note_href
 from blossom.settings import REPOSITORY_ROOT
 from blossom.stores import help_requests as help_store
 from blossom.stores.help_requests import HelpRequest, HelpRequestsStore, RequestClosed
@@ -1148,7 +1148,6 @@ def test_the_help_section_is_outlined_on_focus_its_links_are_tall_and_its_words_
         "#help-she-asked-for:focus",
     ):
         assert selector in targets
-    assert ".help-panel .help-request a.ask-again" in tall
     assert ".help-panel .problem a" in tall
     assert ".help-panel #ask-for-help a" in tall
     assert ".help-panel" in wrapping(CSS)
@@ -1174,6 +1173,52 @@ def test_the_refresh_line_keeps_its_press_area_clear_of_every_neighbor() -> None
     assert ".refresh a" in in_sentence_rule(CSS)
     assert above > 2 * reach
     assert below > reach
+
+
+def own_line_rule(css: str) -> list[str]:
+    """The selectors of the rule that keeps a link's 44 pixels to press inside its own line."""
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain):
+        declared = {line.strip() for line in inside.split("\n") if line.strip()}
+        if {"display: inline-block;", "padding: 0.8rem 0;", "margin: 0;"} <= declared:
+            return [part.strip() for part in head.split(",")]
+    msg = "no rule keeps a link's press area inside its line"
+    raise AssertionError(msg)
+
+
+def test_ask_again_and_the_note_link_keep_their_press_areas_inside_their_own_lines() -> None:
+    """In a request's row the two links can sit on lines next to each other."""
+    own = own_line_rule(CSS)
+    shared = in_sentence_rule(CSS)
+
+    for selector in (".help-panel .help-request a.ask-again", ".help-panel .help-about-note a"):
+        assert selector in own
+        assert selector not in shared
+
+
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_a_request_about_a_note_holds_its_links_where_the_rule_finds_them(
+    reader: Reader, tmp_path: pathlib.Path
+) -> None:
+    with household(tmp_path, reader) as client:
+        store, _ = pinned_help(client)
+        note = waiting_note(store_of(client), course="Art", title="Sketch", text="Synthetic")
+        recent = asked(store, "Synthetic question", note)
+        store.resolve(recent, "Synthetic reply")
+        waiting = asked(store, "Synthetic waiting", note)
+        page = client.get(PAGE).text
+
+    hers = reader != "parent"
+    link = f'<a href="{note_href(note)}">Open homework note</a>'
+    for request_id in (recent, waiting):
+        shown = row(page, request_id)
+        about = re.search(r'<span class="help-about-note">(.*?)</span>', shown, re.S)
+        assert about is not None
+        assert link in about.group(1)
+        assert shown.startswith('<li class="help-request"')
+    assert (ASK_AGAIN in row(page, recent)) is hers
+    if hers:
+        assert row(page, recent).index(link) < row(page, recent).index(ASK_AGAIN)
 
 
 # ------------------------------------------------------------------ one read, no writes
