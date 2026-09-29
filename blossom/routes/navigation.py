@@ -198,6 +198,9 @@ card's Read instructions link lands."""
 UPDATE_OR_TURN_IN: Final = "update-or-turn-in"
 """The id of the heading over her update on an assignment's details, with Turning it in right
 after it: where the jump at the top of the details, Change, and Keep it as it is land."""
+EVIDENCE: Final = "evidence"
+"""The id of the part of an assignment's details that lists every claim about its date: where
+a saved plan's link to what is on record now lands."""
 
 
 def result_anchor(assignment_id: str) -> str:

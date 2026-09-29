@@ -1068,3 +1068,123 @@ def test_a_draft_names_the_work_its_plan_speaks_about_and_an_older_file_names_no
     assert named.plan_assignment_ids == ["assignment-b", "assignment-a"]
     assert empty is not None
     assert empty.plan_assignment_ids == []
+
+
+# ------------------------------------------------------------- the plan in force for each evening
+
+
+def plan(
+    store: DraftsStore,
+    name: str,
+    evening: date,
+    *,
+    decision: str | None = None,
+    created: datetime = CREATED,
+) -> None:
+    """A draft for ``evening`` saved, published, and decided when ``decision`` says so."""
+    save_and_publish(
+        store,
+        Draft(draft_id=name, body=name, created_at=created),
+        thread_id=f"t-{name}",
+        plan_date=evening,
+        outcome="accepted",
+    )
+    if decision is not None:
+        store.record_decision(
+            name,
+            status=DraftStatus.APPROVED_FOR_MANUAL_SEND
+            if decision == "approved"
+            else DraftStatus.DRAFT,
+            decision=decision,  # type: ignore[arg-type]
+            reason=None,
+        )
+
+
+def in_force(store: DraftsStore, today: date, evenings: int = 7) -> frozenset[str]:
+    """What ``latest_for`` names for today and each later evening, read one by one."""
+    found = (store.latest_for(today + timedelta(days=days)) for days in range(evenings))
+    return frozenset(item.draft_id for item in found if item is not None)
+
+
+def test_the_plan_in_force_for_each_evening_is_the_latest_published_whatever_was_decided() -> None:
+    """Today's approved plan replaced by a second; tomorrow's the same; a refused and an
+    approved plan for later evenings, each alone; and one plan kept for yesterday."""
+    tomorrow, later, last = (PLAN_DATE + timedelta(days=days) for days in (1, 2, 3))
+    store = store_in_memory()
+    try:
+        plan(store, "draft:yesterday", PLAN_DATE - timedelta(days=1))
+        plan(store, "draft:today-first", PLAN_DATE, decision="approved")
+        plan(store, "draft:today-second", PLAN_DATE)
+        plan(store, "draft:tomorrow-first", tomorrow, decision="approved")
+        plan(store, "draft:tomorrow-second", tomorrow)
+        plan(store, "draft:refused", later, decision="rejected")
+        plan(store, "draft:approved", last, decision="approved")
+        before = {item.draft_id: item for item in (*store.waiting(), *store.decided())}
+        snapshot = store.review_snapshot(PLAN_DATE)
+        after = {item.draft_id: item for item in (*store.waiting(), *store.decided())}
+        expected = in_force(store, PLAN_DATE)
+    finally:
+        store.close()
+
+    assert (
+        snapshot.operative
+        == expected
+        == {
+            "draft:today-second",
+            "draft:tomorrow-second",
+            "draft:refused",
+            "draft:approved",
+        }
+    )
+    assert snapshot.current_id == "draft:today-second"
+    assert after == before
+    assert before["draft:refused"].decision == "rejected"
+    assert before["draft:today-first"].decision == "approved"
+    assert before["draft:yesterday"].decision is None
+
+
+def test_the_order_published_decides_between_plans_made_and_decided_at_one_instant() -> None:
+    """Two plans for one evening with the same made and decided times, whose ids sort the
+    other way round from the order they were published in."""
+    evening = PLAN_DATE + timedelta(days=4)
+    store = store_in_memory()
+    try:
+        plan(store, "draft:z", evening, decision="approved")
+        plan(store, "draft:a", evening, decision="approved")
+        snapshot = store.review_snapshot(PLAN_DATE)
+        latest = store.latest_for(evening)
+        first, second = store.get("draft:z"), store.get("draft:a")
+    finally:
+        store.close()
+
+    assert first is not None
+    assert second is not None
+    assert (first.created_at, first.decided_at) == (second.created_at, second.decided_at)
+    assert latest is not None
+    assert snapshot.operative == {latest.draft_id} == {"draft:a"}
+
+
+def test_the_plans_in_force_move_with_the_household_day() -> None:
+    tomorrow = PLAN_DATE + timedelta(days=1)
+    store = store_in_memory()
+    try:
+        plan(store, "draft:today", PLAN_DATE)
+        plan(store, "draft:tomorrow", tomorrow, decision="approved")
+        plan(store, "draft:tomorrow-again", tomorrow)
+        store.record_waiting(
+            Draft(draft_id="draft:saved-only", body="s", created_at=CREATED),
+            thread_id="t-saved-only",
+            plan_date=tomorrow,
+            outcome="accepted",
+        )
+        today = store.review_snapshot(PLAN_DATE)
+        next_day = store.review_snapshot(tomorrow)
+        expected = (in_force(store, PLAN_DATE), in_force(store, tomorrow))
+    finally:
+        store.close()
+
+    assert (today.operative, next_day.operative) == expected
+    assert next_day.operative == {"draft:tomorrow-again"}
+    assert "draft:today" not in next_day.operative
+    assert "draft:saved-only" not in today.operative | next_day.operative
+    assert next_day.current_id == "draft:tomorrow-again"

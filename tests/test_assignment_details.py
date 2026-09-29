@@ -237,7 +237,7 @@ def test_a_change_to_the_record_shows_on_the_details_and_not_on_the_saved_plan()
     assert f">{ESSAY_TITLE}</a>" in saved_row
     assert "second draft" not in saved_row[: saved_row.index("</ol>")]
     gone_rows = gone_plan[gone_plan.index('class="plan-rows"') :]
-    assert "Current assignment record unavailable." in gone_rows
+    assert "This assignment is not on record now." in gone_rows
     assert f"/student/assignments/{ESSAY_ID}?" not in gone_rows[: gone_rows.index("</ol>")]
     assert ESSAY_TITLE in gone_rows
     assert gone.status_code == 404

@@ -88,6 +88,7 @@ from blossom.noticing import (
     week_from,
 )
 from blossom.pairing import pair
+from blossom.plan_dates import DatesNow, dates_now
 from blossom.plan_reading import DoneMark, PlanReading, Reader, anchor_for, long_date, read_plan
 from blossom.principals import Principal
 from blossom.reconciliation import (
@@ -101,6 +102,7 @@ from blossom.reconciliation import (
 )
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.navigation import (
+    EVIDENCE,
     FAMILY_PAGE,
     NEW_NOTE_PAGE,
     NOTES_PAGE,
@@ -776,6 +778,7 @@ def read_a_plan(
     current: bool,
     today: date,
     everything: Everything | None = None,
+    dates: DatesNow | None = None,
 ) -> PlanRead:
     """Her projection of a draft and its reading, from one reading of the record.
 
@@ -790,7 +793,9 @@ def read_a_plan(
     the caller's word that this is today's working plan, the one reading that
     shows marks, and ``today`` is the household day the caller's page read,
     once, so a page rendered across midnight is about one day from its heading
-    to its plan.
+    to its plan. ``dates`` is what stands about the plan's dates in that same
+    reading, which the rows show beside what was planned; a caller hands it in
+    for the plan in force for its evening and for no other.
     """
     stale = None
     store = state.project_state
@@ -830,8 +835,10 @@ def read_a_plan(
         reader=reader,
         current=current,
         link_for=lambda name: details_href(name, return_to="today"),
+        evidence_for=lambda name: details_href(name, fragment=EVIDENCE, return_to="today"),
         on_record=updates.on_record,
         done=done_marks(updates),
+        now=dates,
     )
     return PlanRead(view=view, reading=reading)
 
@@ -1376,6 +1383,8 @@ def student_page(
             current=True,
             today=today,
             everything=everything,
+            # Today's latest plan is the plan in force for today by the store's own rule.
+            dates=dates_now(everything, record.plan_assignment_ids or ()),
         )
     )
     view = build_student_due_this_week_view(

@@ -613,7 +613,8 @@ details.plan .body {
 }
 
 /* A saved plan read by its rows: one column in time order on every screen,
-   each row with its time, its assignment, its due date, and its reason. A
+   each row with its time, its assignment, its due date, what stands about
+   that date now when the plan is in force, and its reason. A
    row whose assignment she now reports as Done keeps its place and its
    words, with a quiet tinted edge, a small label, and the day of the
    report; nothing is struck out or faded, and the link stays a link. Long
@@ -649,6 +650,7 @@ details.plan .body {
 
 .plan-what,
 .plan-due,
+.plan-now,
 .plan-mark,
 .plan-mark-words {
   margin: 0.15rem 0;

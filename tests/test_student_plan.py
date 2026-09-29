@@ -348,11 +348,15 @@ def test_the_plan_is_set_out_for_reading_and_nothing_is_lost() -> None:
         'href="/student/assignments/assignment-canal-essay?return_to=today" '
         'aria-label="Canal Era comparison essay, World History">Canal Era comparison essay</a>'
     ) in page
-    assert '<p class="plan-due">Due August 21, 2026</p>' in page
+    assert (
+        '<p class="plan-due">Recorded due August 21, 2026. <strong>Check this date.</strong> '
+        '<a class="assignment-link details-link" '
+        'href="/student/assignments/assignment-canal-essay?return_to=today#evidence"'
+    ) in page
     assert "return_to=family&amp;plan_id=draft%3Aplan%3A2026-08-19%3A" in theirs
     assert '<p class="plan-why">' in page
-    assert '<h3 class="plan-heading">Saved for another day</h3>' in page
-    assert '<h4 class="plan-heading">Saved for another day</h4>' in theirs
+    assert '<h3 class="plan-heading">Not in this evening\'s plan</h3>' in page
+    assert '<h4 class="plan-heading">Not in this evening\'s plan</h4>' in theirs
     assert "<summary>Original saved text</summary>" in page
     assert "<summary>Original saved text</summary>" in theirs
     assert "<summary>Blossom's review notes</summary>" in page

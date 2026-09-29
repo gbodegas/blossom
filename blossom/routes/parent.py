@@ -68,11 +68,13 @@ from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.noticing import Everything, read_everything
 from blossom.pairing import pair
+from blossom.plan_dates import DatesNow, dates_now
 from blossom.plan_reading import DoneMark, PlanReading, read_plan
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.navigation import (
     ADDED_NOTES_PAGE,
     ARCHIVED_NOTES_PAGE,
+    EVIDENCE,
     FAMILY_PAGE,
     address,
     details_href,
@@ -327,6 +329,7 @@ def read_a_plan(
     current: bool,
     everything: Everything | None = None,
     today: date | None = None,
+    dates: DatesNow | None = None,
 ) -> PlanRead:
     """A draft as the parent sees it, whether it still fits the evening, and its reading.
 
@@ -340,7 +343,9 @@ def read_a_plan(
     other plan is history, read with no updates at all, and takes from the
     reading only which ids are on record. ``today`` is the household day
     the caller's page read, once, so which plan is current and whether a
-    plan has passed are about the same day.
+    plan has passed are about the same day. ``dates`` is what stands about
+    the dates in the same reading, handed in for a plan in force for its
+    evening, today's or a later one's, whatever was decided about it.
     """
     store = state.project_state
     with store.exclusively():
@@ -369,8 +374,12 @@ def read_a_plan(
         reader="family",
         current=current,
         link_for=lambda name: details_href(name, return_to="family", plan_id=record.draft_id),
+        evidence_for=lambda name: details_href(
+            name, fragment=EVIDENCE, return_to="family", plan_id=record.draft_id
+        ),
         on_record=None if everything is None else everything.ids,
         done=marks,
+        now=dates,
     )
     return PlanRead(view=view, reading=reading)
 
@@ -722,6 +731,12 @@ def review_page(
         )
         notes = state.project_state.outstanding_captures()
         named = notes_named_by(state, asked)
+    # What stands about the dates is worked out once, from the same reading, for every
+    # assignment the plans in force speak about: today's and each later evening's.
+    live = [record for record in shown if record.draft_id in records.operative]
+    dates = dates_now(
+        everything, [name for record in live for name in record.plan_assignment_ids or ()]
+    )
     plans = {
         record.draft_id: read_a_plan(
             state,
@@ -729,6 +744,7 @@ def review_page(
             current=record.draft_id == records.current_id,
             everything=everything,
             today=today,
+            dates=dates if record.draft_id in records.operative else None,
         )
         for record in shown
     }

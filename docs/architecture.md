@@ -293,6 +293,27 @@ today, a plan for another day, and the text as composed carry no marks.
 Showing a plan writes nothing, and a mark is never a new approval: the stale
 checks and their refusals are as they were.
 
+A plan read by its rows shows each row's due date as the run read it, as
+"Recorded due". When the plan asked for a date to be clarified, every row of
+that assignment says "Check this date." and links to the details' list of what
+the sources say. `blossom/plan_dates.py` holds the one rule for when a date is
+in doubt: the composer words its clarifications from it, and the pages apply
+it again to their own reading.
+
+A plan still in force for its evening can also say, on a line of its own, what
+is true now. That's the last published plan for today or a later evening that
+no later one displaced, whatever was decided about it, and `review_snapshot`
+finds it in the same statement it already runs. The line can say that the
+recorded date changed, what the readable sources give, that a value isn't a
+date, or that a claim can't be read. A changed date and an unreadable claim
+always show. The sources show only when the plan's fingerprint doesn't match
+its week recomputed from the same reading, and never as agreement beside
+something that can't be read. A snapshot keeps the words of its questions but
+not the claims behind them, so such a plan says once that it can't compare
+every change in its sources. Replaced, superseded, and past plans keep their
+labels and links and say nothing about now. The pages build all of this from
+the reading they already make, with no extra statements.
+
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update
 component, handed a context object that says who may update, where its forms
