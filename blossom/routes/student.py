@@ -88,6 +88,7 @@ from blossom.noticing import (
     week_from,
 )
 from blossom.pairing import pair
+from blossom.plan_dates import DatesNow, dates_now
 from blossom.plan_reading import DoneMark, PlanReading, Reader, anchor_for, long_date, read_plan
 from blossom.principals import Principal
 from blossom.reconciliation import (
@@ -101,6 +102,7 @@ from blossom.reconciliation import (
 )
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.navigation import (
+    EVIDENCE,
     FAMILY_PAGE,
     NEW_NOTE_PAGE,
     NOTES_PAGE,
@@ -110,6 +112,7 @@ from blossom.routes.navigation import (
     WEEK_PAGE,
     ReturnTo,
     address,
+    asked_address,
     assignment_anchor,
     details_href,
     instructions_review_href,
@@ -307,6 +310,11 @@ BAD_RETURN: Final = (
 )
 GONE: Final = "This assignment is not on record now."
 NO_PLAN_NOW: Final = "No plan is saved for today now."
+WEEK_UNREADABLE: Final = "This week cannot be shown right now"
+WEEK_UNREADABLE_WHY: Final = (
+    "The record cannot be read right now, so the week, its updates and current date "
+    "information are not shown. Try again in a moment."
+)
 TURNING_IT_IN: Final = "turning-it-in"
 """The id of the section on an assignment's details that holds her hand-in account."""
 ASK_FOR_HELP: Final = "ask-for-help"
@@ -776,6 +784,7 @@ def read_a_plan(
     current: bool,
     today: date,
     everything: Everything | None = None,
+    dates: DatesNow | None = None,
 ) -> PlanRead:
     """Her projection of a draft and its reading, from one reading of the record.
 
@@ -790,7 +799,9 @@ def read_a_plan(
     the caller's word that this is today's working plan, the one reading that
     shows marks, and ``today`` is the household day the caller's page read,
     once, so a page rendered across midnight is about one day from its heading
-    to its plan.
+    to its plan. ``dates`` is what stands about the plan's dates in that same
+    reading, which the rows show beside what was planned; a caller hands it in
+    for the plan in force for its evening and for no other.
     """
     stale = None
     store = state.project_state
@@ -830,8 +841,10 @@ def read_a_plan(
         reader=reader,
         current=current,
         link_for=lambda name: details_href(name, return_to="today"),
+        evidence_for=lambda name: details_href(name, fragment=EVIDENCE, return_to="today"),
         on_record=updates.on_record,
         done=done_marks(updates),
+        now=dates,
     )
     return PlanRead(view=view, reading=reading)
 
@@ -1350,6 +1363,8 @@ def student_page(
     # named to it: the week, the planning window, the plan's notice and
     # marks, and whether the plan still fits all come out of that reading.
     record = state.drafts.latest_for(today)
+    # Kept for a page that cannot read the record after this, which shows it as saved.
+    request.state.plans_read = () if record is None else (record,)
     # The assignment an address says a press was about is named to the reading too, so a
     # result is checked against that assignment's own events even when it is off the record.
     about = () if turning_in is None or turning_in.asked is None else (turning_in.asked.about,)
@@ -1376,6 +1391,8 @@ def student_page(
             current=True,
             today=today,
             everything=everything,
+            # Today's latest plan is the plan in force for today by the store's own rule.
+            dates=dates_now(everything, record.plan_assignment_ids or ()),
         )
     )
     view = build_student_due_this_week_view(
@@ -1515,44 +1532,89 @@ def due_this_week(
     the fold around it open. ``asked`` names the request a help form just made, and
     ``asked_again`` the one a help form sent twice had made; the first is read when both
     are there. Either is said in Help, beside that request when it is on the page, and at
-    the top of Help when it is not.
+    the top of Help when it is not. When the record cannot be read, the page says so and
+    offers the same address again.
     """
-    was_refreshed = refreshed == "1"
-    plan_asked = show_plan == "1"
-    card = card_shown(saved, same, undone, change, show)
-    marker = marker_from(asked, asked_again)
-    if week is None:
-        return student_page(
-            request,
-            state,
-            refreshed=was_refreshed,
-            card=card,
-            plan_asked=plan_asked,
-            turning_in=receipt_asked(hand_in_said, about, hand_in_event),
-            help_marker=marker,
-        )
     try:
-        chosen = date.fromisoformat(week.strip())
-    except ValueError:
+        was_refreshed = refreshed == "1"
+        plan_asked = show_plan == "1"
+        card = card_shown(saved, same, undone, change, show)
+        marker = marker_from(asked, asked_again)
+        if week is None:
+            return student_page(
+                request,
+                state,
+                refreshed=was_refreshed,
+                card=card,
+                plan_asked=plan_asked,
+                turning_in=receipt_asked(hand_in_said, about, hand_in_event),
+                help_marker=marker,
+            )
+        try:
+            chosen = date.fromisoformat(week.strip())
+        except ValueError:
+            return student_page(
+                request,
+                state,
+                problem=NOT_A_WEEK,
+                card=card,
+                help_marker=marker,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        if not showable(chosen):
+            return student_page(
+                request,
+                state,
+                problem=BEYOND_THE_CALENDAR,
+                card=card,
+                help_marker=marker,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         return student_page(
-            request,
-            state,
-            problem=NOT_A_WEEK,
-            card=card,
-            help_marker=marker,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            request, state, week=chosen, card=card, plan_asked=plan_asked, help_marker=marker
         )
-    if not showable(chosen):
-        return student_page(
+    except sqlite3.Error as error:
+        return week_unreadable(
             request,
-            state,
-            problem=BEYOND_THE_CALENDAR,
-            card=card,
-            help_marker=marker,
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            error,
+            again=asked_address(WEEK_PAGE, request.scope["query_string"]),
         )
-    return student_page(
-        request, state, week=chosen, card=card, plan_asked=plan_asked, help_marker=marker
+
+
+def week_unreadable(request: Request, error: sqlite3.Error, *, again: str) -> HTMLResponse:
+    """Her week when the record cannot be read as the page is made: the failure said once,
+    with the way to try again, and today's plan as saved when it was read first. Nothing is
+    read here, and the failure is logged by its kind alone."""
+    logger.warning("her week could not be read: %s", type(error).__name__)
+    parent = parent_reads(request)
+    read: tuple[DraftRecord, ...] = getattr(request.state, "plans_read", ())
+    return templates.TemplateResponse(
+        request,
+        "plans_unavailable.html",
+        {
+            "page": "student",
+            "heading": WEEK_UNREADABLE,
+            "alert": WEEK_UNREADABLE_WHY,
+            "again": again,
+            "parent": parent,
+            "todays": True,
+            "plans": [
+                (
+                    record,
+                    read_plan(
+                        record,
+                        reader="family" if parent else "student",
+                        link_for=lambda name: details_href(name, return_to="today"),
+                        evidence_for=lambda name: details_href(
+                            name, fragment=EVIDENCE, return_to="today"
+                        ),
+                        dates_unread=True,
+                    ),
+                )
+                for record in read
+            ],
+        },
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
 
 

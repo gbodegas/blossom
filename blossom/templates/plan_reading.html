@@ -9,20 +9,30 @@
   otherwise.
 
   A structured plan keeps every saved row where it was, with its time, its
-  assignment, and its reason. A row of today's working plan whose assignment
-  she now reports as Done says so beside the row, with the day of the report,
-  and labels the reason as the reason when planned; nothing is struck out,
-  faded, moved, or folded, and the link stays a link. The text as composed is
-  kept whole in a fold of its own and is never annotated. A plan without a
-  usable snapshot is shown as its saved text, with a sentence that says why.
+  assignment, the due date the plan was made with, and its reason. A row whose
+  date the plan asked about says Check this date. there, with a link to what
+  the sources say now. On a plan still in force for its evening, a row with
+  something to say about its date now says it on a line of its own after the
+  saved one, with that link when the row has none yet; a row with nothing to
+  say gets no line. A row of today's working plan whose assignment she now
+  reports as Done says so after those, with the day of the report, and labels
+  the reason as the reason when planned; nothing is struck out, faded, moved,
+  or folded, and the link stays a link. The text as composed is kept whole in
+  a fold of its own and is never annotated. A plan without a usable snapshot
+  is shown as its saved text, with a sentence that says why.
 #}
 {% set level = plan_level|default(3) %}
 {% set hers = reading.reader == "student" %}
 {% macro named(work) %}
   <span class="plan-item">{{ work.course }} &middot; {% if work.href %}<a class="assignment-link" href="{{ work.href }}" aria-label="{{ work.link_name }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %}</span>{% if work.reference %} <span class="plan-ref">{{ work.reference }}</span>{% endif %}
 {% endmacro %}
-{% macro due(work) %}
-  <p class="plan-due">{% if work.due_date %}Due {{ work.due_date|long_date }}{% else %}No due date on record{% endif %}{% if work.unavailable %}. Current assignment record unavailable.{% endif %}</p>
+{% macro evidence(work) %}<a class="assignment-link details-link" href="{{ work.evidence }}" aria-label="See what is on record now for {{ work.link_name }}">See what is on record now</a>{% endmacro %}
+{% macro dates(row) %}
+  {% set work = row.work %}
+  <p class="plan-due">{% if work.due_date %}Recorded due {{ work.due_date|long_date }}.{% else %}No due date on record.{% endif %}{% if work.cued %} <strong>Check this date.</strong>{% endif %}{% if work.unavailable %} This assignment is not on record now.{% elif work.cued and work.evidence %} {{ evidence(work) }}{% endif %}</p>
+  {% if row.now %}
+    <p class="plan-now"><strong>As things stand:</strong> {{ row.now.words|join(" ") }}{% if row.now.check %}{% if row.now.words %} {% endif %}<strong>Check this date.</strong>{% endif %}{% if work.evidence and not work.cued %} {{ evidence(work) }}{% endif %}</p>
+  {% endif %}
 {% endmacro %}
 {% macro mark(done) %}
   <p class="plan-mark"><span class="pill">Reported done</span> Reported {{ done.reported_on|long_date }}{% if done.restored_on %}, restored {{ done.restored_on|long_date }}{% endif %}</p>
@@ -37,6 +47,9 @@
       {% if reading.annotated %}
         <p class="plan-note plan-updates">{% if hers %}Your{% else %}Her{% endif %} updates are shown beside the saved plan. Its times have not changed.</p>
       {% endif %}
+      {% if reading.dates_note %}
+        <p class="plan-note">{{ reading.dates_note }}</p>
+      {% endif %}
       {% if not reading.current %}
         <p class="plan-note">This is the saved plan. Assignment links open the current record.</p>
       {% endif %}
@@ -46,7 +59,7 @@
             <li class="plan-block{% if row.done %} reported-done{% endif %}" id="{{ row.dom_id }}">
               <p class="plan-when"><strong>{{ row.span }}</strong></p>
               <p class="plan-what">{{ named(row.work) }}</p>
-              {{ due(row.work) }}
+              {{ dates(row) }}
               {% if row.done %}
                 {{ mark(row.done) }}
                 <p class="plan-mark-words">{% if hers %}You report this as Done. You can skip this block.{% else %}She reports this as Done. She can skip this block.{% endif %}</p>
@@ -59,12 +72,12 @@
         <p class="plan-note">Nothing is scheduled tonight.</p>
       {% endif %}
       {% if reading.deferrals %}
-        <h{{ level }} class="plan-heading">Saved for another day</h{{ level }}>
+        <h{{ level }} class="plan-heading">Not in this evening's plan</h{{ level }}>
         <ul class="plan-rows">
           {% for row in reading.deferrals %}
             <li class="plan-deferral{% if row.done %} reported-done{% endif %}" id="{{ row.dom_id }}">
               <p class="plan-what">{{ named(row.work) }}</p>
-              {{ due(row.work) }}
+              {{ dates(row) }}
               {% if row.done %}
                 {{ mark(row.done) }}
                 <p class="plan-mark-words">{% if hers %}You now report this as Done. It is out of work to plan.{% else %}She now reports this as Done. It is out of work to plan.{% endif %}</p>

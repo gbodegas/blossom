@@ -46,6 +46,7 @@ Without that, the visibility policy is stated but not observable.
 """
 
 import logging
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -68,13 +69,16 @@ from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
 from blossom.intake import TEXT_MAX_LENGTH
 from blossom.noticing import Everything, read_everything
 from blossom.pairing import pair
+from blossom.plan_dates import DatesNow, dates_now
 from blossom.plan_reading import DoneMark, PlanReading, read_plan
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.navigation import (
     ADDED_NOTES_PAGE,
     ARCHIVED_NOTES_PAGE,
+    EVIDENCE,
     FAMILY_PAGE,
     address,
+    asked_address,
     details_href,
     instructions_review_href,
     segment,
@@ -180,6 +184,10 @@ ASSIGNMENTS_CHANGED: Final = (
 )
 PLAN_INCLUDES_DONE: Final = "This plan includes work she now reports as Done."
 PLAN_WINDOW_DONE: Final = "Some work in this plan's window is now reported Done."
+FAMILY_UNREADABLE_WHY: Final = (
+    "The record cannot be read right now, so reviews, updates and current date information "
+    "are not shown. Try again in a moment."
+)
 RECENT_DAYS: Final = 14
 """How many household days an update of hers stays under "Recent updates", and a check of
 the family's under "Checked recently"."""
@@ -327,6 +335,7 @@ def read_a_plan(
     current: bool,
     everything: Everything | None = None,
     today: date | None = None,
+    dates: DatesNow | None = None,
 ) -> PlanRead:
     """A draft as the parent sees it, whether it still fits the evening, and its reading.
 
@@ -340,7 +349,9 @@ def read_a_plan(
     other plan is history, read with no updates at all, and takes from the
     reading only which ids are on record. ``today`` is the household day
     the caller's page read, once, so which plan is current and whether a
-    plan has passed are about the same day.
+    plan has passed are about the same day. ``dates`` is what stands about
+    the dates in the same reading, handed in for a plan in force for its
+    evening, today's or a later one's, whatever was decided about it.
     """
     store = state.project_state
     with store.exclusively():
@@ -369,8 +380,12 @@ def read_a_plan(
         reader="family",
         current=current,
         link_for=lambda name: details_href(name, return_to="family", plan_id=record.draft_id),
+        evidence_for=lambda name: details_href(
+            name, fragment=EVIDENCE, return_to="family", plan_id=record.draft_id
+        ),
         on_record=None if everything is None else everything.ids,
         done=marks,
+        now=dates,
     )
     return PlanRead(view=view, reading=reading)
 
@@ -710,6 +725,8 @@ def review_page(
     today = state.clock.today()
     records = state.drafts.review_snapshot(today)
     shown = (*records.waiting, *records.decided)
+    # Kept for a page that cannot read the record after this, which shows them as saved.
+    request.state.plans_read = [record for record in shown if record.draft_id in records.operative]
     working = next((record for record in shown if record.draft_id == records.current_id), None)
     # What she added as homework notes is read beside the record, in the same snapshot,
     # and is no part of it. The notes her requests are about come in one more statement.
@@ -722,6 +739,12 @@ def review_page(
         )
         notes = state.project_state.outstanding_captures()
         named = notes_named_by(state, asked)
+    # What stands about the dates is worked out once, from the same reading, for every
+    # assignment the plans in force speak about: today's and each later evening's.
+    live = [record for record in shown if record.draft_id in records.operative]
+    dates = dates_now(
+        everything, [name for record in live for name in record.plan_assignment_ids or ()]
+    )
     plans = {
         record.draft_id: read_a_plan(
             state,
@@ -729,6 +752,7 @@ def review_page(
             current=record.draft_id == records.current_id,
             everything=everything,
             today=today,
+            dates=dates if record.draft_id in records.operative else None,
         )
         for record in shown
     }
@@ -1040,7 +1064,8 @@ def review(
         str | None, Query(description="the plan whose folds to open; changes nothing")
     ] = None,
 ) -> HTMLResponse:
-    """The parent's page: what she asked for, what is waiting, and the folds below."""
+    """The parent's page: what she asked for, what is waiting, and the folds below. When the
+    record cannot be read, a page that says so and offers the same address again."""
     said = [
         (CHECK_CONFIRMATIONS[name], value)
         for name, value in (
@@ -1050,19 +1075,65 @@ def review(
         )
         if value
     ]
-    return review_page(
+    try:
+        return review_page(
+            request,
+            state,
+            refreshed=refreshed == "1",
+            added=a_count(added),
+            updated=a_count(updated),
+            unchanged=a_count(unchanged),
+            kept_note=kept_note == "1",
+            linked=a_count(linked),
+            check=CheckState(said[0][1], said=said[0][0])
+            if said
+            else (CheckState(focus) if focus else None),
+            open_plan=plan,
+        )
+    except sqlite3.Error as error:
+        return review_unreadable(
+            request,
+            error,
+            again=asked_address(FAMILY_PAGE, request.scope["query_string"]),
+        )
+
+
+def review_unreadable(request: Request, error: sqlite3.Error, *, again: str) -> HTMLResponse:
+    """The family page when the record cannot be read as the page is made: the failure said
+    once, with the way to try again, and each evening's plan in force as saved when the plans
+    were read first. Nothing is read here, and the failure is logged by its kind alone."""
+    logger.warning("the family page could not be read: %s", type(error).__name__)
+    read: list[DraftRecord] = getattr(request.state, "plans_read", [])
+    return templates.TemplateResponse(
         request,
-        state,
-        refreshed=refreshed == "1",
-        added=a_count(added),
-        updated=a_count(updated),
-        unchanged=a_count(unchanged),
-        kept_note=kept_note == "1",
-        linked=a_count(linked),
-        check=CheckState(said[0][1], said=said[0][0])
-        if said
-        else (CheckState(focus) if focus else None),
-        open_plan=plan,
+        "plans_unavailable.html",
+        {
+            "page": "parent",
+            "heading": "Family review",
+            "alert": FAMILY_UNREADABLE_WHY,
+            "again": again,
+            "parent": True,
+            "todays": False,
+            "plans": [
+                (record, saved_reading(record))
+                for record in sorted(read, key=lambda item: item.plan_date)
+            ],
+        },
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
+def saved_reading(record: DraftRecord) -> PlanReading:
+    """A plan as the family page shows it when the record cannot be read: its rows as
+    planned, with links that are only the way to each assignment's details."""
+    return read_plan(
+        record,
+        reader="family",
+        link_for=lambda name: details_href(name, return_to="family", plan_id=record.draft_id),
+        evidence_for=lambda name: details_href(
+            name, fragment=EVIDENCE, return_to="family", plan_id=record.draft_id
+        ),
+        dates_unread=True,
     )
 
 

@@ -23,7 +23,7 @@ No model takes part. The rules fit in one function, and
 
 import json
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import StrEnum
@@ -417,16 +417,26 @@ def read_everything(
     )
 
 
-def week_from(everything: Everything, start: date) -> Week:
-    """The week from ``start`` out of one reading: state each record's date, set the
-    sources against it, then select. Every assignment on record is considered, because
-    the sources decide the window along with the record."""
-    noticed = {
+def noticings_of(everything: Everything) -> dict[str, Noticing]:
+    """Each assignment on record set against its sources' claims, by id: what every week out
+    of one reading is chosen by."""
+    return {
         item.assignment_id: notice_due_date(
             expect_due_date(item), everything.records[item.assignment_id]
         )
         for item in everything.assignments
     }
+
+
+def week_from(
+    everything: Everything, start: date, *, noticed: Mapping[str, Noticing] | None = None
+) -> Week:
+    """The week from ``start`` out of one reading: state each record's date, set the
+    sources against it, then select. Every assignment on record is considered, because
+    the sources decide the window along with the record. ``noticed`` is that comparison
+    already made from the same reading, for a reader that takes several weeks from it."""
+    if noticed is None:
+        noticed = noticings_of(everything)
     assignments = [
         item for item in everything.assignments if in_week(item, noticed[item.assignment_id], start)
     ]

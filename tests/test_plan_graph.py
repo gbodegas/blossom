@@ -157,7 +157,7 @@ def test_a_good_plan_reaches_the_gate_in_one_round() -> None:
         "4:30 PM to 5:30 PM, set aside for Canal Era comparison essay (World History, due Aug 21)"
         in body
     )
-    assert "Waiting for another day:" in body
+    assert "Not in this evening's plan:" in body
     assert "Quadratic modeling problem set" in body
     assert "did not settle" not in body
 

@@ -83,6 +83,9 @@ class ReviewSnapshot(NamedTuple):
     current_id: str | None
     """The last draft published for the day that no later one displaced, whatever was
     decided about it; ``None`` when the day has none."""
+    operative: frozenset[str]
+    """The same for the day and every later evening: each evening's plan in force, waiting,
+    approved, or refused, which a page shows beside what stands now."""
 
 
 class AlreadyDecided(RuntimeError):
@@ -752,14 +755,14 @@ class DraftsStore:
         """What waits, what was decided, and the day's working plan, from one read.
 
         One statement reads every draft with its steps, under the store's
-        lock, and the three answers are worked out from those rows in
-        memory by the rules the separate reads follow: waiting is published
-        and undecided, oldest first; decided is most recent decision first;
-        the day's plan is the last in the published order for that day that
-        was not superseded. A publication or a decision from anywhere lands
-        wholly before this reading or wholly after it, so a page built from
-        it agrees with itself, which three reads one after another cannot
-        promise.
+        lock, and the answers are worked out from those rows in memory by
+        the rules the separate reads follow: waiting is published and
+        undecided, oldest first; decided is most recent decision first; an
+        evening's plan is the last in the published order for that evening
+        that was not superseded, the day's and each later evening's alike.
+        A publication or a decision from anywhere lands wholly before this
+        reading or wholly after it, so a page built from it agrees with
+        itself, which separate reads one after another cannot promise.
         """
         with self._lock:
             rows = self._connection.execute(EVERY_DRAFT).fetchall()
@@ -779,16 +782,19 @@ class DraftsStore:
             key=lambda item: item.draft_id,
         )
         decided.sort(key=lambda item: item.decided_at or item.created_at, reverse=True)
-        todays = [
-            item
-            for item in records.values()
-            if item.plan_date == today and item.published and item.decision != "superseded"
-        ]
-        latest = max(todays, key=lambda item: placed[item.draft_id] or 0, default=None)
+        ahead: dict[date, list[DraftRecord]] = {}
+        for item in records.values():
+            if item.plan_date >= today and item.published and item.decision != "superseded":
+                ahead.setdefault(item.plan_date, []).append(item)
+        latest = {
+            evening: max(found, key=lambda item: placed[item.draft_id] or 0)
+            for evening, found in ahead.items()
+        }
         return ReviewSnapshot(
             waiting=tuple(waiting),
             decided=tuple(decided),
-            current_id=None if latest is None else latest.draft_id,
+            current_id=latest[today].draft_id if today in latest else None,
+            operative=frozenset(item.draft_id for item in latest.values()),
         )
 
     def latest_for(self, plan_date: date) -> DraftRecord | None:

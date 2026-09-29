@@ -114,7 +114,7 @@ def test_the_queue_shows_the_waiting_draft_with_its_text() -> None:
     assert detail["decision"] is None
     assert detail["body"].startswith("Plan for Wednesday, August 19")
     assert "Canal Era comparison essay" in detail["body"]
-    assert "Waiting for another day:" in detail["body"]
+    assert "Not in this evening's plan:" in detail["body"]
     assert "thread_id" not in detail
 
 

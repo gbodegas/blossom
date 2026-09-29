@@ -11,12 +11,15 @@ linked or annotated, because a line of text does not say which assignment it
 is about.
 
 What is saved and what stands now are kept apart here. The rows come from the
-snapshot and never change. A row of the plan a page presents as today's
-working plan can carry one current fact beside it, that she reports its
-assignment as Done, with the day of that report; a plan shown as history
-carries none, whatever her updates say now. Nothing here reads a store or
-decides which plan is current: a view hands in the record, the marks, and
-the ids on record, and gets back what the template shows.
+snapshot and never change, each with the due date the run read and, when the
+plan asked about that date, a label saying so. A row of a plan still in force
+for its evening can say beside that what stands about its date now, from the
+page's reading of the record, and a row of the plan a page presents as today's
+working plan can say that she reports its assignment as Done, with the day of
+that report; a plan shown as history carries neither, whatever the record and
+her updates say now. Nothing here reads a store or decides which plan is
+current or in force: a view hands in the record, the marks, the ids on record,
+and what stands about the dates, and gets back what the template shows.
 """
 
 import re
@@ -27,6 +30,7 @@ from datetime import date
 from typing import Literal
 
 from blossom.clock import spoken_time
+from blossom.plan_dates import DATES_UNREAD, SOURCE_LIMIT, DatesNow, RowNow, row_now
 from blossom.plan_snapshot import PlanSnapshot, SavedReview, read_snapshot
 from blossom.plan_text import one_line, plain
 from blossom.stores.drafts import DraftRecord
@@ -69,6 +73,12 @@ class NamedWork:
     needs_date: bool = False
     """Whether another assignment in the plan has the same title, so a line that names
     this one by title says its course and its due date."""
+    cued: bool = False
+    """Whether the plan asked for this assignment's date to be clarified, by its id, which
+    every row of it says beside the date."""
+    evidence: str | None = None
+    """The part of its details that lists what the sources say now; ``None`` when no such
+    assignment is on record now."""
 
 
 @dataclass(frozen=True)
@@ -80,6 +90,9 @@ class BlockRow:
     work: NamedWork
     rationale: str
     done: DoneMark | None = None
+    now: RowNow | None = None
+    """What stands about the date now, on a plan still in force; shared by every row of one
+    assignment."""
 
 
 @dataclass(frozen=True)
@@ -90,6 +103,7 @@ class DeferralRow:
     work: NamedWork
     reason: str
     done: DoneMark | None = None
+    now: RowNow | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +126,12 @@ class PlanReading:
     current: bool
     """Whether the page presents this as today's working plan, the one reading that shows
     her updates beside the rows."""
+    live: bool
+    """Whether the plan is still in force for its evening, so its rows say what stands about
+    their dates now."""
+    dates_unread: bool
+    """Whether the page could not read the record, so the rows say only what was planned and
+    the plan says once that current date information cannot be read."""
     structured: bool
     unavailable: bool
     """Whether a snapshot is saved and cannot be used, which the page says in a sentence."""
@@ -128,6 +148,16 @@ class PlanReading:
     def annotated(self) -> bool:
         """Whether any row carries a current mark, which the plan then explains once."""
         return any(row.done for row in self.blocks) or any(row.done for row in self.deferrals)
+
+    @property
+    def dates_note(self) -> str | None:
+        """The plan's one sentence on what its rows cannot say about the dates now: that
+        current date information cannot be read, or, when a row restates what the sources
+        say now, that a saved plan cannot compare every change in them."""
+        if self.dates_unread:
+            return DATES_UNREAD
+        lines = [row.now for row in self.blocks] + [row.now for row in self.deferrals]
+        return SOURCE_LIMIT if any(line and line.restates for line in lines) else None
 
     @property
     def done_work(self) -> list[NamedWork]:
@@ -166,17 +196,25 @@ def read_plan(
     reader: Reader,
     current: bool = False,
     link_for: Callable[[str], str] | None = None,
+    evidence_for: Callable[[str], str] | None = None,
     on_record: Collection[str] | None = None,
     done: Mapping[str, DoneMark] | None = None,
+    now: DatesNow | None = None,
+    dates_unread: bool = False,
 ) -> PlanReading:
     """The reading of one draft for one page.
 
     ``current`` is the view's word that this is today's working plan; only
     then are ``done`` marks put beside rows, each occurrence of an assignment
     getting the same mark. ``link_for`` makes the address of an assignment's
-    details and ``on_record`` is every assignment id on record now: an id not
-    among them gets no link. A draft without a usable snapshot gets the text
-    reading, with no links and no marks, whatever else is handed in.
+    details and ``evidence_for`` the address of what its sources say, and
+    ``on_record`` is every assignment id on record now: an id not among them
+    gets no link. ``now`` is the page's word that the plan is in force for
+    its evening, with what stands about the dates; each assignment's rows
+    then say what applies, one line for all of them. ``dates_unread`` is the
+    page's word that it could not read the record, and is never given with
+    ``now``. A draft without a usable snapshot gets the text reading, with no
+    links, marks, or current lines, whatever else is handed in.
     """
     found = read_snapshot(
         record.draft_id,
@@ -191,19 +229,32 @@ def read_plan(
             anchor=anchor,
             reader=reader,
             current=current,
+            live=False,
+            dates_unread=False,
             structured=False,
             unavailable=found.unavailable,
             body=record.body,
         )
     snapshot = found.snapshot
     marks = dict(done or {}) if current else {}
-    names = named_work(snapshot, link_for, on_record)
+    cued = {item.assignment_id for item in snapshot.clarifications}
+    names = named_work(snapshot, link_for, on_record, evidence_for=evidence_for, cued=cued)
+    lines: dict[str, RowNow | None] = {}
+    if now is not None:
+        changed = now.inputs_changed(record.plan_date, record.inputs_digest)
+        lines = {
+            name: row_now(saved.due_date, name in cued, now.by_id[name], inputs_changed=changed)
+            for name, saved in snapshot.assignments.items()
+            if name in now.by_id
+        }
     ordered = sorted(enumerate(snapshot.plan.blocks), key=lambda pair: pair[1].starts_at)
     return PlanReading(
         draft_id=record.draft_id,
         anchor=anchor,
         reader=reader,
         current=current,
+        live=now is not None,
+        dates_unread=dates_unread,
         structured=True,
         unavailable=False,
         body=record.body,
@@ -216,6 +267,7 @@ def read_plan(
                 work=names[block.assignment_id],
                 rationale=one_line(block.rationale),
                 done=marks.get(block.assignment_id),
+                now=lines.get(block.assignment_id),
             )
             for index, block in ordered
         ],
@@ -225,6 +277,7 @@ def read_plan(
                 work=names[item.assignment_id],
                 reason=one_line(item.reason),
                 done=marks.get(item.assignment_id),
+                now=lines.get(item.assignment_id),
             )
             for index, item in enumerate(snapshot.plan.deferred)
         ],
@@ -248,6 +301,9 @@ def named_work(
     snapshot: PlanSnapshot,
     link_for: Callable[[str], str] | None,
     on_record: Collection[str] | None,
+    *,
+    evidence_for: Callable[[str], str] | None = None,
+    cued: Collection[str] = (),
 ) -> dict[str, NamedWork]:
     """Each assignment the plan speaks about as its rows name it.
 
@@ -282,5 +338,7 @@ def named_work(
             unavailable=gone,
             link_name=heard,
             needs_date=same_title[item.title] > 1,
+            cued=assignment_id in cued,
+            evidence=None if evidence_for is None or gone else evidence_for(assignment_id),
         )
     return names

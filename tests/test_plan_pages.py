@@ -55,6 +55,13 @@ HISTORY = "This is the saved plan. Assignment links open the current record."
 EARLIER_FORMAT = "This plan uses the earlier text format."
 UNAVAILABLE = "The saved text is shown because this plan's structured view is unavailable."
 WHEN_PLANNED = '<span class="plan-why-label">Reason when planned:</span>'
+NOT_ON_TEXT = (
+    "Check this date",
+    "Recorded due",
+    "As things stand",
+    "This saved plan does not keep enough detail",
+)
+"""What a plan read by its rows shows about its dates, and a plan read as text never does."""
 
 
 def rows(plan: str) -> list[str]:
@@ -125,7 +132,11 @@ def test_both_essay_blocks_are_marked_and_nothing_else_once_she_reports_the_essa
     assert "the outline first, while she is fresh" in marked[0]
     for index, row in enumerate(marked):
         if index not in essay_rows:
-            assert row == unmarked[index]
+            # Her Done moves the week's fingerprint, so the other rows whose dates the plan
+            # asked about say what stands about them now, and nothing else changes.
+            saved_part = re.sub(r'<p class="plan-now">.*?</p>', "", row)
+            assert saved_part.split() == unmarked[index].split()
+            assert ('<p class="plan-now">' in row) is (index in (4, 6, 7))
             assert "Reported done" not in row
     namesake_row = next(row for row in marked if f"/{namesake}?" in row)
     assert ESSAY_TITLE in namesake_row
@@ -457,6 +468,9 @@ def test_a_plan_without_a_usable_snapshot_reads_as_its_saved_text_and_keeps_its_
     text = plan_on(hers.text, broken)
     assert sentence in text
     assert "set aside for" in text
+    for page in (hers.text, family.text):
+        for current in (*NOT_ON_TEXT, "#evidence"):
+            assert current not in plan_on(page, broken)
     assert "Reported done" not in text
     assert "/student/assignments/" not in text
     assert "Original saved text" not in text
@@ -491,6 +505,9 @@ def test_a_plan_paused_from_before_snapshots_is_decided_as_it_was_and_stays_text
     assert EARLIER_FORMAT in plan_on(family, record)
     assert EARLIER_FORMAT in plan_on(hers, record)
     assert "set aside for" in plan_on(hers, record)
+    for page in (family, hers):
+        for current in NOT_ON_TEXT:
+            assert current not in plan_on(page, record)
 
 
 # ------------------------------------------------------------- nothing left; reading writes nothing

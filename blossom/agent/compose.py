@@ -29,6 +29,7 @@ from blossom.drafts import Draft
 from blossom.heuristic_relevance import CriticVerdict, Judgment
 from blossom.noticing import Noticing
 from blossom.plan_checks import PlanVerification
+from blossom.plan_dates import Doubt, doubt_of
 from blossom.plan_snapshot import (
     SNAPSHOT_VERSION,
     PlanSnapshot,
@@ -45,7 +46,7 @@ from blossom.tools import create_draft
 
 CLARIFY = "Dates needing clarification:"
 NOTHING_TONIGHT = "Nothing is scheduled tonight."
-WAITING = "Waiting for another day:"
+WAITING = "Not in this evening's plan:"
 REVIEW = "The reviewer's notes:"
 UNSETTLED = "The reviewer did not settle on this plan. Its notes are at the end."
 
@@ -132,7 +133,8 @@ def wording(
     only the family's record has, or one the sources spoke about in words the
     comparator could not read: lack of corroboration alone does not call for a
     word with the school. How far a date can be trusted stays on her page
-    beside the item.
+    beside the item. ``doubt_of`` is that rule, and a page reads it again
+    against the record as it stands.
     """
     noticed_by_id = {item.assignment_id: item for item in noticings}
     intro: list[str] = []
@@ -147,15 +149,18 @@ def wording(
         """Why this item's date needs a word with someone, or ``None`` when it does not."""
         noticed = noticed_by_id.get(item.assignment_id)
         claims = "; ".join(noticed.spoken) if noticed is not None else ""
-        if item.due_date is None:
-            if noticed is not None and noticed.contradicted:
+        recorded = "" if item.due_date is None else short_date(item.due_date)
+        match doubt_of(item.due_date, noticed, confidence.get(item.assignment_id)):
+            case Doubt.UNDATED:
+                return "the date needs asking about"
+            case Doubt.UNDATED_CLAIMED:
                 return f"the date needs asking about; the sources say {claims}"
-            return "the date needs asking about"
-        if noticed is not None and noticed.contradicted:
-            return f"recorded as due {short_date(item.due_date)}, but the sources say {claims}"
-        if confidence.get(item.assignment_id) == SourceConfidence.SOURCES_DISAGREE:
-            return f"the sources give different dates: {claims}"
-        return None
+            case Doubt.CONTRADICTED:
+                return f"recorded as due {recorded}, but the sources say {claims}"
+            case Doubt.DISAGREE:
+                return f"the sources give different dates: {claims}"
+            case None:
+                return None
 
     clarifications = [
         SavedClarification(assignment_id=item.assignment_id, text=reason)

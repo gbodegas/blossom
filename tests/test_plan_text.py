@@ -2,6 +2,8 @@
 
 from datetime import time
 
+import pytest
+
 from blossom.agent.compose import compose_draft
 from blossom.clock import spoken_time
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
@@ -54,13 +56,36 @@ def test_a_composed_draft_comes_apart_along_its_shapes() -> None:
         ("4:30 PM to 5:30 PM", "Canal Era comparison essay (World History, due Aug 21)")
     ]
     assert text.blocks[0].rationale == "the essay first, while the afternoon is quiet"
-    assert [section.title for section in text.sections] == ["Waiting for another day"]
+    assert [section.title for section in text.sections] == ["Not in this evening's plan"]
     assert text.sections[0].items[0].text.startswith("Quadratic modeling problem set")
     assert text.review is not None
     finding = next(item for item in text.review.items if item.label)
     assert finding.label == "support rules (could not assess)"
     assert finding.text == "no rules were given"
     assert text.review.items[0].text.startswith("The reviewer did not consider:")
+    assert text.other == []
+
+
+@pytest.mark.parametrize("heading", ["Waiting for another day:", "Not in this evening's plan:"])
+def test_the_heading_over_work_put_off_reads_as_a_section_in_older_and_newer_text(
+    heading: str,
+) -> None:
+    body = "\n".join(
+        [
+            "Plan for Wednesday, August 19, 2026",
+            "",
+            "4:30 PM to 5:00 PM, set aside for Canal Era comparison essay (World History, "
+            "due Aug 21)",
+            "    the outline first",
+            "",
+            heading,
+            "- Syllabus, signed (English, no due date on record): ask what the date is",
+        ]
+    )
+    text = present_plan(body)
+
+    assert [section.heading for section in text.sections] == [heading]
+    assert text.sections[0].items[0].text.startswith("Syllabus, signed")
     assert text.other == []
 
 
