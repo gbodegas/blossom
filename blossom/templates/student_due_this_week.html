@@ -129,7 +129,14 @@
         Blossom's review could not settle every point. Open the plan to read its notes.
       </p>
     {% endif %}
-    {% if view.too_much %}
+    {% if view.too_much and parent %}
+      <p class="confidence disagree">
+        <strong>She said it was too much</strong> at {{ view.too_much.given_local|clock }}.
+        Her next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
+        {% if not view.plan and not view.nothing_to_plan %}Nothing has been planned yet; the next plan will be the shorter one.{% endif %}
+        {% if view.too_much.detail %}She added <q>{{ view.too_much.detail }}</q>.{% endif %}
+      </p>
+    {% elif view.too_much %}
       <p class="confidence disagree">
         <strong>You said it was too much</strong> at {{ view.too_much.given_local|clock }}.
         Your next plan for today is held to {{ view.budget_minutes }} minutes instead of {{ view.full_budget_minutes }}.
@@ -147,14 +154,21 @@
           <button type="submit" class="primary">{{ plan_label }}</button>
         </form>
       {% endif %}
-      {% if view.too_much %}
-        <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="action">
-          <button type="submit" class="secondary">Take it back</button>
-        </form>
-      {% else %}
-        <form method="post" action="/student/actions/too-much" class="action">
-          <button type="submit" class="secondary">Too much right now</button>
-        </form>
+      {#
+        Saying today is too much, and taking it back, are hers alone. A parent
+        reads what she said above and meets neither control, and nothing takes
+        their place.
+      #}
+      {% if viewer != "parent" %}
+        {% if view.too_much %}
+          <form method="post" action="/student/actions/take-back/{{ view.too_much.signal_id }}" class="action">
+            <button type="submit" class="secondary">Take it back</button>
+          </form>
+        {% else %}
+          <form method="post" action="/student/actions/too-much" class="action">
+            <button type="submit" class="secondary">Too much right now</button>
+          </form>
+        {% endif %}
       {% endif %}
       {% if viewer != "parent" %}<a class="to-help" href="{{ new_note_page }}">Write down homework</a>{% endif %}
       <a class="to-help" href="#ask-for-help">Ask for help</a>
@@ -174,6 +188,8 @@
     {% if view.nothing_to_plan %}
     {% elif view.can_plan %}
       <p class="notice">Planning uses the model provider. <a href="#what-is-shared">What is shared</a></p>
+    {% elif parent %}
+      <p class="notice">Planning is unavailable right now. Everything else here still works.</p>
     {% else %}
       <p class="notice">
         Planning is unavailable right now. Everything else here still works, and "Too much
@@ -202,7 +218,7 @@
       <details class="plan" open id="{{ todays_plan_id }}" tabindex="-1">
         <summary>Today's saved plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
         <p class="note">
-          {% if view.plan.too_much %}Kept to a shorter evening because you said today was too much.{% endif %}
+          {% if view.plan.too_much %}Kept to a shorter evening because {% if parent %}she{% else %}you{% endif %} said today was too much.{% endif %}
           Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
         </p>
         {% with reading = plan_reading, review_open = false %}{% include "plan_reading.html" %}{% endwith %}
@@ -490,7 +506,11 @@
         the school.
       </p>
       {% endif %}
+      {% if parent %}
+      <p>"Too much right now" takes her one press, no rating, no reason, and she can take it back.</p>
+      {% else %}
       <p>"Too much right now" takes one press, no rating, no reason, and you can take it back.</p>
+      {% endif %}
     </details>
   {% endif %}
 
@@ -502,11 +522,13 @@
           <li>
             Too much on {{ signal.evening.strftime("%A, %B") }} {{ signal.evening.day }}, {{ signal.evening.year }},
             said at {{ signal.given_local|clock }}.
-            {% if signal.detail %}You added <q>{{ signal.detail }}</q>.{% endif %}
+            {% if signal.detail %}{% if parent %}She{% else %}You{% endif %} added <q>{{ signal.detail }}</q>.{% endif %}
+            {% if viewer != "parent" %}
             <form method="post" action="/student/actions/take-back/{{ signal.signal_id }}" class="inline">
               <button type="submit" class="secondary"
                       aria-label="Remove the signal from {{ signal.evening.strftime("%A, %B") }} {{ signal.evening.day }} at {{ signal.given_local|clock }}">Remove</button>
             </form>
+            {% endif %}
           </li>
         {% endfor %}
       </ul>

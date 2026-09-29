@@ -50,7 +50,7 @@ from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
-from typing import Annotated, Any, Final, cast
+from typing import Annotated, Any, ClassVar, Final, cast
 
 from fastapi import (
     APIRouter,
@@ -210,6 +210,13 @@ SIGNALED_SINCE: Final = (
     "You have said today is too much, and this plan was made for the full evening. "
     "Your current plan has not changed yet. Make a smaller plan when you are ready."
 )
+SHE_SIGNALED_SINCE: Final = (
+    "She has said today is too much, and this plan was made for the full evening. "
+    "Her current plan has not changed yet. Make a smaller plan when she is ready."
+)
+"""The same notice to a parent reading her week. ``SIGNAL_ENDED`` names nobody and is
+said to everyone alike: a signal is gone when she takes it back and when its week is
+over, and it never says which."""
 SIGNAL_ENDED: Final = (
     "This plan was kept to the smaller evening for a signal that is not there now. "
     "It stays until a new one is made; plan again for the full evening."
@@ -240,6 +247,7 @@ BAD_FORM: Final = (
     "Choose and save again."
 )
 NOT_HERS_TO_ASK: Final = "Sign in as the student to ask for help or take a request back."
+NOT_HERS_TO_SIGNAL: Final = "Sign in as the student to say today is too much or take it back."
 HELP_FORM_NOT_WHOLE: Final = (
     "That form carried a field twice, left one out, or had one this page doesn't send, so "
     "nothing was sent. Your words are below; ask again."
@@ -352,6 +360,39 @@ def signal_view(state: ApplicationState, signal: WorkloadSignal) -> WorkloadSign
     )
 
 
+class HersAlone(APIRoute):
+    """A route only she may call. The framework reads and checks a JSON body before the
+    handler or any dependency runs, so a parent is answered 403 here, before the body
+    is read or anything the route names is looked up. Each kind says what to do in its
+    own words."""
+
+    refusal: ClassVar[str]
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        """The framework's handler, reached only once the reader is her."""
+        handle = super().get_route_handler()
+        refusal = self.refusal
+
+        async def hers(request: Request) -> Response:
+            if viewer_of(request) == "parent":
+                raise HTTPException(status.HTTP_403_FORBIDDEN, detail=refusal)
+            return await handle(request)
+
+        return hers
+
+
+class HersToAsk(HersAlone):
+    """Asking for help: hers alone."""
+
+    refusal = NOT_HERS_TO_ASK
+
+
+class HersToSignal(HersAlone):
+    """Saying today is too much, and taking it back: hers alone."""
+
+    refusal = NOT_HERS_TO_SIGNAL
+
+
 async def record_signal(state: ApplicationState, detail: str | None) -> WorkloadSignal:
     """Keep one press, about today by the household's clock.
 
@@ -369,7 +410,6 @@ async def withdraw_signal(state: ApplicationState, signal_id: str) -> bool:
         return state.workload_signals.withdraw(signal_id)
 
 
-@router.post("/workload-signals", status_code=status.HTTP_201_CREATED)
 async def register_workload_signal(
     state: State,
     payload: Annotated[WorkloadSignalRequest | None, Body()] = None,
@@ -380,18 +420,35 @@ async def register_workload_signal(
     return WorkloadSignalResponse(principal=Principal.STUDENT, signal=signal_view(state, signal))
 
 
+router.add_api_route(
+    "/workload-signals",
+    register_workload_signal,
+    methods=["POST"],
+    status_code=status.HTTP_201_CREATED,
+    route_class_override=HersToSignal,
+)
+
+
 @router.get("/workload-signals")
 def held_workload_signals(state: State) -> list[WorkloadSignalView]:
     """Every signal still kept, most recent first: what she can see and take back."""
     return [signal_view(state, signal) for signal in state.workload_signals.held()]
 
 
-@router.delete("/workload-signals/{signal_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def withdraw_workload_signal(signal_id: str, state: State) -> Response:
     """Take a signal back. It is gone, not marked; the record is hers to remove."""
     if not await withdraw_signal(state, signal_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no signal {signal_id!r}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+router.add_api_route(
+    "/workload-signals/{signal_id}",
+    withdraw_workload_signal,
+    methods=["DELETE"],
+    status_code=status.HTTP_204_NO_CONTENT,
+    route_class_override=HersToSignal,
+)
 
 
 class HelpRequestBody(BaseModel):
@@ -471,23 +528,6 @@ def help_requests_shown(
     requests = help_requests_held(state) if held is None else held
     about = notes_named_by(state, requests) if named is None else named
     return [help_view(state, request, about) for request in requests]
-
-
-class HersToAsk(APIRoute):
-    """A route only she may call. The framework reads and checks a JSON body before the
-    handler or any dependency runs, so a parent is answered 403 here, before the body
-    is read."""
-
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        """The framework's handler, reached only once the reader may ask."""
-        handle = super().get_route_handler()
-
-        async def hers(request: Request) -> Response:
-            if viewer_of(request) == "parent":
-                raise HTTPException(status.HTTP_403_FORBIDDEN, detail=NOT_HERS_TO_ASK)
-            return await handle(request)
-
-        return hers
 
 
 def ask_for_help(
@@ -629,7 +669,7 @@ def read_a_plan(
         )
     match found:
         case Staleness.SIGNALED_SINCE:
-            stale = SIGNALED_SINCE
+            stale = SHE_SIGNALED_SINCE if reader == "family" else SIGNALED_SINCE
         case Staleness.SIGNAL_ENDED:
             stale = SIGNAL_ENDED
         case Staleness.ASSIGNMENTS_CHANGED:
@@ -2246,14 +2286,24 @@ def take_back_help_from_the_page(request: Request, request_id: str, state: State
 
 
 @router.post("/actions/too-much", response_class=HTMLResponse, include_in_schema=False)
-async def too_much_from_the_page(state: State) -> Response:
-    """The one control on her page. Records the signal and returns to the page, which shows it."""
+async def too_much_from_the_page(request: Request, state: State) -> Response:
+    """The one control on her page. Records the signal and returns to the page, which shows it.
+    A parent is answered 403 before anything is read or kept: the signal is hers to give."""
+    if viewer_of(request) == "parent":
+        return student_page(
+            request, state, problem=NOT_HERS_TO_SIGNAL, status_code=status.HTTP_403_FORBIDDEN
+        )
     await record_signal(state, None)
     return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/actions/take-back/{signal_id}", response_class=HTMLResponse, include_in_schema=False)
-async def take_back_from_the_page(signal_id: str, state: State) -> Response:
-    """Remove a signal from her page. A signal already gone is not an error here."""
+async def take_back_from_the_page(request: Request, signal_id: str, state: State) -> Response:
+    """Remove a signal from her page. A signal already gone is not an error here. A parent
+    is answered 403 before the signal is looked up: the signal is hers to take back."""
+    if viewer_of(request) == "parent":
+        return student_page(
+            request, state, problem=NOT_HERS_TO_SIGNAL, status_code=status.HTTP_403_FORBIDDEN
+        )
     await withdraw_signal(state, signal_id)
     return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
