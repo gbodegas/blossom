@@ -26,7 +26,7 @@ WEEK_PAGE: Final = "/student/due-this-week"
 FAMILY_PAGE: Final = "/parent"
 UNRESERVED: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 """The characters a path segment may carry as they are; every other one is escaped."""
-QUERY_KEPT: Final = frozenset({ord(kept) for kept in UNRESERVED | set("!$%&'()*+,/:;=?@[\\]^`{|}")})
+QUERY_KEPT: Final = frozenset({ord(kept) for kept in UNRESERVED | set("!$%&()*+,/:;=?@[\\]^`{|}")})
 """The bytes a browser sends in a query as they are; every other one is escaped."""
 
 Target = Literal["week", "today", "family", "to_turn_in"]

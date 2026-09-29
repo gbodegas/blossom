@@ -25,6 +25,7 @@ from blossom.plan_reading import anchor_for, read_plan
 from blossom.reconciliation import SourceChannel
 from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
+from blossom.routes.navigation import asked_address
 from blossom.routes.runs import plan_graphs
 from blossom.stores.drafts import DraftRecord
 from blossom.templating import page_templates
@@ -483,6 +484,7 @@ def said(page: str) -> str:
         ("/parent", "?plan=x&refreshed=1"),
         ("/parent", "?focus=&unknown=1"),
         ("/parent", "?refreshed=1&refreshed="),
+        ("/parent", "?plan=it%27s&refreshed=1"),
     ],
 )
 def test_try_again_asks_for_the_address_as_it_was_asked(
@@ -539,6 +541,10 @@ def sent_raw(client: TestClient, query: bytes) -> TestClient:
         (HER_PAGE, b"week=&a#b", "?week=&a%23b"),
         ("/parent", b"plan=x#frag&refreshed=1", "?plan=x%23frag&refreshed=1"),
         (HER_PAGE, b'show="<b>x</b>" y', "?show=%22%3Cb%3Ex%3C/b%3E%22%20y"),
+        ("/parent", b"x='", "?x=%27"),
+        (HER_PAGE, b"show=it's&week=", "?show=it%27s&week="),
+        ("/parent", b"'=1&plan='x'", "?%27=1&plan=%27x%27"),
+        (HER_PAGE, b"show=%27&show='", "?show=%27&show=%27"),
     ],
 )
 def test_try_again_escapes_only_what_a_browser_would_in_a_query_sent_raw(
@@ -555,11 +561,49 @@ def test_try_again_escapes_only_what_a_browser_would_in_a_query_sent_raw(
 
 
 @pytest.mark.parametrize(
+    ("path", "query", "again"),
+    [
+        ("/parent", b"x='", "?x=%27"),
+        (HER_PAGE, b"show=it's&week=", "?show=it%27s&week="),
+        ("/parent", b"plan='&refreshed=1&plan=%27", "?plan=%27&refreshed=1&plan=%27"),
+    ],
+)
+def test_an_apostrophe_sent_raw_is_asked_for_again_as_a_browser_sends_it(
+    path: str, query: bytes, again: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Try again escapes an apostrophe as a browser does and asks for the same page."""
+    routes = student_routes if path == HER_PAGE else parent_routes
+    with browser(key=True) as client:
+        walkthrough(client)
+        direct = sent_raw(client, query).get(path, headers=PAGE_HEADERS)
+        with monkeypatch.context() as broken:
+            broken.setattr(routes, "read_everything", failing)
+            shown = sent_raw(client, query).get(path, headers=PAGE_HEADERS)
+            still = client.get(try_again_of(shown.text), headers=PAGE_HEADERS)
+        retried = client.get(try_again_of(shown.text), headers=PAGE_HEADERS)
+
+    assert shown.status_code == still.status_code == 503
+    assert try_again_of(still.text) == try_again_of(shown.text) == path + again
+    assert retried.status_code == direct.status_code
+    assert said(retried.text) == said(direct.text)
+
+
+def test_try_again_escapes_exactly_the_bytes_a_browser_escapes_in_a_query() -> None:
+    """Controls, space, quotes, #, <, > and every byte past ~ are escaped; the rest are kept."""
+    escaped = [
+        byte for byte in range(256) if asked_address("/p", bytes([byte])) != f"/p?{chr(byte)}"
+    ]
+    assert escaped == [*range(0x21), *b"\"#'<>", *range(0x7F, 256)]
+    assert all(asked_address("/p", bytes([byte])) == f"/p?%{byte:02X}" for byte in escaped)
+
+
+@pytest.mark.parametrize(
     ("who", "path", "asked"),
     [
         ("her", HER_PAGE, "?week=&show_plan=1"),
         ("a parent", HER_PAGE, "?week="),
         ("a parent", "/parent", "?plan=&refreshed=1"),
+        ("a parent", "/parent", "?plan=it%27s"),
     ],
 )
 def test_a_signed_in_reader_gets_the_address_as_it_was_asked(
