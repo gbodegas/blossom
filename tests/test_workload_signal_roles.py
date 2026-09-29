@@ -13,13 +13,16 @@ from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import timedelta
 from typing import Any, Literal, Protocol
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.routing import BaseRoute
 
 from blossom.app import create_app
+from blossom.clock import FrozenClock
 from blossom.plans import DailyPlan
 from blossom.routes import student as student_routes
 from blossom.routes.runs import plan_graphs
@@ -182,6 +185,30 @@ def rows(client: TestClient) -> list[tuple[object, ...]]:
 def one_of_hers(client: TestClient, detail: str | None = None) -> str:
     """A signal of hers for today, kept straight in the store, whoever is signed in."""
     return state_of(client).workload_signals.record(PLAN_DATE, detail).signal_id
+
+
+def hers_in_turn(client: TestClient, monkeypatch: pytest.MonkeyPatch, *details: str) -> list[str]:
+    """Her signals for today, kept a second apart in the order given, so which one is latest
+    rests on neither the host clock nor how the ids sort."""
+    store = state_of(client).workload_signals
+    start, zone = store._clock.now(), store._clock.zone
+    signal_ids: list[str] = []
+    for step, detail in enumerate(details):
+        monkeypatch.setattr(store, "_clock", FrozenClock(start + timedelta(seconds=step), zone))
+        signal_ids.append(store.record(PLAN_DATE, detail).signal_id)
+    return signal_ids
+
+
+def back_to_back(client: TestClient, monkeypatch: pytest.MonkeyPatch, clock: str, ids: str) -> None:
+    """The store's clock stands still or runs, and its next two ids sort with or against
+    the order they're made in: the ways two signals given back to back could tie."""
+    store = state_of(client).workload_signals
+    if clock == "still":
+        monkeypatch.setattr(store, "_clock", FrozenClock(store._clock.now(), store._clock.zone))
+    made = [UUID(hex="1" * 32), UUID(hex="e" * 32)]
+    if ids == "falling":
+        made.reverse()
+    monkeypatch.setattr("blossom.stores.workload_signals.uuid4", iter(made).__next__)
 
 
 def never(*args: object, **kwargs: object) -> None:
@@ -533,13 +560,15 @@ def test_a_parents_refused_press_leaves_her_evening_as_it_was(
 # ------------------------------------------------------------------- the page
 
 
+@pytest.mark.parametrize("ids", ["rising", "falling"])
+@pytest.mark.parametrize("clock", ["running", "still"])
 def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
-    tmp_path: pathlib.Path,
+    clock: str, ids: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with household(tmp_path, "parent") as client:
+        back_to_back(client, monkeypatch, clock, ids)
         none_yet = client.get(PAGE).text
-        one_of_hers(client, "the essay and two quizzes")
-        one_of_hers(client, "a late night")
+        hers_in_turn(client, monkeypatch, "the essay and two quizzes", "a late night")
         signaled = client.get(PAGE).text
 
     assert f'action="{TOO_MUCH}"' not in none_yet
@@ -566,14 +595,18 @@ def test_a_parent_meets_no_signal_control_and_reads_what_she_said(
     assert "autofocus" not in signaled
 
 
+@pytest.mark.parametrize("ids", ["rising", "falling"])
+@pytest.mark.parametrize("clock", ["running", "still"])
 @pytest.mark.parametrize("reader", ["her", "open"])
 def test_she_and_the_open_household_keep_every_control_and_word(
-    reader: Reader, tmp_path: pathlib.Path
+    reader: Reader, clock: str, ids: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with household(tmp_path, reader) as client:
+        back_to_back(client, monkeypatch, clock, ids)
         none_yet = client.get(PAGE).text
-        first = one_of_hers(client, "the essay and two quizzes")
-        latest = one_of_hers(client, "a late night")
+        first, latest = hers_in_turn(
+            client, monkeypatch, "the essay and two quizzes", "a late night"
+        )
         signaled = client.get(PAGE).text
 
     assert f'action="{TOO_MUCH}"' in none_yet
