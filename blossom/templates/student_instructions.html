@@ -1,0 +1,58 @@
+{#
+  The school's instructions for one assignment on its details, before
+  anything is asked about the work. What applies is said whole, in the one
+  order, each with the school channel its own row came from, or only that it
+  is the school's when the row keeps no channel. That none applies, or that
+  they cannot be read, is said, never both. What waits for a parent's review
+  is listed in the open under its own heading, a school note left in the old
+  note field among it, and is never said as applying; a short line at the top
+  says how many wait while the instructions can be read. What was said
+  before is the one thing folded.
+
+  ``words`` is the assignment's words view; ``to_a_parent`` says whose voice
+  the page speaks in; ``review_href`` is the family's review, given only on
+  the family's own reading, and offered while the instructions can be read.
+  The heading is where a card's Read instructions link lands.
+#}
+{% macro from_the(line) %}From the {{ line.source or "school" }}{% endmacro %}
+<h2 class="update-heading" id="{{ instructions_id }}" tabindex="-1">Instructions from the school</h2>
+<div class="school-instructions">
+  {% if words.waiting and not words.unreadable %}
+    <p class="source">{% if words.waiting == 1 %}1 instruction from the school is waiting for a parent's review. It does not apply until then. <a href="#waiting-instructions">Read the waiting instruction</a>{% else %}{{ words.waiting }} instructions from the school are waiting for a parent's review. They do not apply until then. <a href="#waiting-instructions">Read the waiting instructions</a>{% endif %}</p>
+  {% endif %}
+  {% for line in words.current %}
+    <p class="from-teacher">{{ from_the(line) }}: <q class="authored-text">{{ line.text }}</q></p>
+  {% endfor %}
+  {% if words.unreadable %}
+    <p class="source">The school's instructions for this assignment cannot be read right now, so they are not shown.</p>
+  {% elif not words.current %}
+    <p class="source">No instruction from the school applies now.</p>
+  {% endif %}
+  {% if words.waiting %}
+    <h3 class="update-heading" id="waiting-instructions" tabindex="-1">Waiting for a parent's review</h3>
+    <ul>
+      {% for line in words.awaiting %}
+        <li>{{ from_the(line) }}, waiting for a parent's review: <q class="authored-text">{{ line.text }}</q> <span class="source">It does not apply until then.</span></li>
+      {% endfor %}
+      {% if words.left_in_the_note_field %}
+        <li>Found in the old note field{% if words.note_source %}, from the {{ words.note_source }}{% endif %}, not yet reviewed: <q class="authored-text">{{ words.note }}</q> <span class="source">It is the school's, and it does not apply until a parent reviews it.</span></li>
+      {% endif %}
+    </ul>
+  {% endif %}
+  {% if words.any_instruction %}
+    <p class="source">These are the school's words. Which of them apply is chosen by the family; the choice changes neither the school's record nor {% if to_a_parent %}her{% else %}your{% endif %} own updates.</p>
+    {% if review_href and not words.unreadable %}
+      <p class="support-links"><a href="{{ review_href }}">Review school instructions</a></p>
+    {% endif %}
+  {% endif %}
+  {% if words.earlier %}
+    <details class="earlier-instructions">
+      <summary>Earlier instructions from the school</summary>
+      <ul>
+        {% for line in words.earlier %}
+          <li>{{ from_the(line) }}, earlier: <q class="authored-text">{{ line.text }}</q> <span class="source">It does not apply now.</span></li>
+        {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+</div>

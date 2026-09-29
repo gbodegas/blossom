@@ -109,7 +109,9 @@ def test_details_show_the_current_record_with_its_facts_her_update_and_the_way_b
     assert '<h2 class="update-heading">What is on record now</h2>' in text
     assert "Friday, August 21, 2026" in text
     assert "<strong>The school reports this missing.</strong>" in text
-    assert '<h2 class="update-heading">Your update</h2>' in text
+    assert (
+        '<h2 class="update-heading" id="update-or-turn-in" tabindex="-1">Your update</h2>' in text
+    )
     assert '<span class="pill">Your update: Done</span>' in text
     assert "Reported August 19, 2026" in text
     assert "You wrote: <q>Handed in Tuesday.</q>" in text
@@ -121,13 +123,13 @@ def test_details_show_the_current_record_with_its_facts_her_update_and_the_way_b
     assert len(checks) == 1
 
 
-def test_the_update_comes_before_the_long_evidence_and_every_fact_is_there_once() -> None:
+def test_the_instructions_come_before_the_update_and_every_fact_is_there_once() -> None:
     """Sources that disagree, a school Missing, a long instruction from the teacher, and a
-    history of updates: the title, the date with its warning, and then her update come
-    first; the sources' claims, the school's word, and the note follow, each once; the
-    history closes the page. The warning points at the claims below it. On an ordinary
-    arrival at an assignment with no update the form is there with nothing chosen, the
-    note folded, and no field asking for the cursor."""
+    history of updates: the title, the date with its warning, the jump to the update, and
+    the instruction come first, then her update; the sources' claims and the school's word
+    follow, each once; the history closes the page. The warning points at the claims below
+    it. On an ordinary arrival at an assignment with no update the form is there with
+    nothing chosen, the note folded, and no field asking for the cursor."""
     instruction = "Bring the annotated map and cite two of the readings. " * 40
     with browser() as client:
         store = state_of(client).project_state
@@ -145,13 +147,15 @@ def test_the_update_comes_before_the_long_evidence_and_every_fact_is_there_once(
     in_order = [
         "<h1>",
         "<strong>Check this date.</strong>",
-        '<h2 class="update-heading">Your update</h2>',
+        '<p class="jump"><a href="#update-or-turn-in">Update or turn in</a></p>',
+        '<h2 class="update-heading" id="instructions" tabindex="-1">',
+        "Bring the annotated map",
+        '<h2 class="update-heading" id="update-or-turn-in" tabindex="-1">Your update</h2>',
         '<span class="pill">Your update: Done</span>',
         ">Change</button>",
         '<section class="evidence" id="evidence" tabindex="-1">',
         "What the sources say</h3>",
         "<strong>The school reports this missing.</strong>",
-        "Bring the annotated map",
         "<summary>Update history<span",
     ]
     places = [page.index(piece) for piece in in_order]
@@ -276,7 +280,7 @@ def test_she_saves_changes_and_undoes_on_the_details_and_comes_back_to_them() ->
         first = client.get(f"{DETAILS}?return_to=today", headers=PAGE_HEADERS).text
         saved = save(client, first, "done", "Both parts.\r\nOn paper.")
         after = client.get(saved.headers["location"], headers=PAGE_HEADERS).text
-        change = form_fields(after, DETAILS)
+        change = form_fields(after, f"{DETAILS}#update-or-turn-in")
         editor = client.get(DETAILS, params=change, headers=PAGE_HEADERS).text
         same = save(client, editor, "done", "Both parts.\nOn paper.")
         cancel = re.search(r'<a class="cancel" href="([^"]+)"', editor)
@@ -512,7 +516,9 @@ def test_a_parent_reads_the_details_and_cannot_save_and_her_device_is_not_sent_t
 
     assert anonymous.status_code == 303
     assert anonymous.headers["location"].startswith("/sign-in")
-    assert '<h2 class="update-heading">Student update</h2>' in theirs
+    assert (
+        '<h2 class="update-heading" id="update-or-turn-in" tabindex="-1">Student update</h2>'
+    ) in theirs
     assert "Sign in as the student to update." in theirs
     assert "<legend>" not in theirs
     assert f'href="/parent?focus={ESSAY_ID}#update-{ESSAY_ID}">Back to family review</a>' in theirs

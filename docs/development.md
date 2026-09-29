@@ -495,15 +495,22 @@ them; an instruction longer than any paste, kept from before, travels by its
 row, in a choice shown as not saved too, even while its card waits on which
 homework it is.
 
-Her card, the assignment's details, the lists of work due later, and the
-family page's rows show the instructions that apply as "From the school", in
-the order of their words, which means nothing else, with any said before, or
-waiting for review, in a fold beneath. The page says these are the school's
-words, and that which of them apply is the family's choice, which changes
-neither the school's record nor her own updates. The family's reading of the
-details, and the family page's rows, offer "Review school instructions",
-where a parent, or the household with the sign-in off, can restore an earlier
-instruction, retire one, settle one waiting for review, or say none applies;
+Her card, the lists of work due later, and the family page's rows show the
+instructions that apply as "From the school", in the order of their words,
+which means nothing else, with any said before, or waiting for review, in a
+fold beneath. The assignment's details say them first, before her update, in
+the same order, each named by the channel its own row came from, "From the
+school portal" or "From the school email", or "From the school" when the row
+keeps none; what waits for a parent's review, a school note left in the old
+note field included, is listed in the open under its own heading, and only
+what was said before is folded. A card or a row whose instructions apply or
+wait links to them with "Read instructions". The page says these are the
+school's words, and that which of them apply is the family's choice, which
+changes neither the school's record nor her own updates. The family's
+reading of the details, and the family page's rows, offer "Review school
+instructions", where a parent, or the household with the sign-in off, can
+restore an earlier instruction, retire one, settle one waiting for review, or
+say none applies;
 opening it writes nothing, and it saves by the same rule as the paste. A save
 returns to the page with what it did, said as standing only while nothing has
 changed since, and signed by the running Blossom, so an address worked out by
