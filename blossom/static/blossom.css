@@ -415,7 +415,9 @@ article h2 {
    back in leaves the text where it was. */
 .notice a,
 .refresh a,
-.return a {
+.return a,
+.help-panel .help-request a.ask-again,
+.help-panel .problem a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: -0.8rem 0;
@@ -697,6 +699,21 @@ a.assignment-link:focus-visible {
 .evidence:focus {
   outline: 2px solid var(--blue-action);
   outline-offset: 4px;
+}
+
+/* Help's places to land: the section, each row, result or problem in it that a
+   link or a redirect names, and the family page's list of her requests. Plain
+   :focus, since a fragment arrival after a click need not match :focus-visible. */
+.help-panel:focus,
+.help-panel [tabindex="-1"]:focus,
+#help-she-asked-for:focus {
+  outline: 2px solid var(--blue-action);
+  outline-offset: 4px;
+}
+
+/* Help breaks a long word, hers or a parent's word back, rather than widen the page. */
+.help-panel {
+  overflow-wrap: anywhere;
 }
 
 .evidence {

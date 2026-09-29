@@ -2,6 +2,7 @@
 words a button or link shows, as WCAG 2.5.3 asks, and Blossom's names start with them. The
 sign-in field and the family page's notices use the shared field and wrapping rules."""
 
+import pathlib
 import re
 
 import pytest
@@ -16,15 +17,19 @@ from tests.support import (
     HER_PAGE,
     PAGE_HEADERS,
     PLAN_DATE,
+    THEIRS,
     accepting,
     browser,
     card_for,
+    client_for,
     control_names,
     fixture_week_plan,
     names_not_led_by_their_words,
     names_without_their_words,
     report,
     scripted_graphs,
+    signed_in,
+    signed_in_household,
     store_of,
     whole_form,
 )
@@ -41,7 +46,11 @@ STATES = (
     "to turn in",
     "family",
     "family, hand-in",
+    "week, help",
+    "week, help, parent",
 )
+HELP_STATES = ("week, help", "week, help, parent")
+"""Her week's help, where no control is repeated per assignment."""
 REPEATED = (
     "Save update",
     "Keep it as it is",
@@ -53,9 +62,10 @@ REPEATED = (
 
 
 @pytest.fixture
-def pages() -> dict[str, str]:
+def pages(tmp_path: pathlib.Path) -> dict[str, str]:
     """Her week, the details, To turn in and the family page, in every state that shows a
-    control whose name adds context to its words."""
+    control whose name adds context to its words, and her week's help as she and a parent
+    read it."""
     with browser(key=True) as client:
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
             lambda: [fixture_week_plan()], lambda: [accepting()]
@@ -76,6 +86,13 @@ def pages() -> dict[str, str]:
         shown["hand-in, keep"] = client.get(DETAILS, params={"hand_in": "change"}).text
         shown["to turn in"] = client.get("/student/to-turn-in").text
         shown["family, hand-in"] = client.get("/parent").text
+        client.post("/student/help-requests", json={"note": "Synthetic question"})
+        made = client.post("/student/help-requests", json={"note": "Synthetic closed"})
+        client.post(f"/parent/help-requests/{made.json()['request']['request_id']}/resolve")
+        shown["week, help"] = client.get(HER_PAGE).text
+    with client_for(signed_in_household(tmp_path)) as client:
+        signed_in(client, THEIRS)
+        shown["week, help, parent"] = client.get(HER_PAGE).text
     return shown
 
 
@@ -86,6 +103,10 @@ def test_the_states_show_the_controls_they_are_for(pages: dict[str, str]) -> Non
     assert ">Keep it as it is" in pages["hand-in, keep"]
     assert 'aria-label="Turning it in: ' not in pages["to turn in"]
     assert ">Looks good" in pages["family"]
+    assert ">Take it back<span" in pages["week, help"]
+    assert ">Ask again<" in pages["week, help"]
+    assert ">Help updates (2)<" in pages["week, help"]
+    assert ">Her help requests<" in pages["week, help, parent"]
 
 
 def test_every_control_s_name_holds_the_words_it_shows(pages: dict[str, str]) -> None:
@@ -111,6 +132,7 @@ def test_each_repeated_control_names_what_it_is_about(pages: dict[str, str]) -> 
             if words in REPEATED or words == ESSAY_TITLE
         ]
         for state, page in pages.items()
+        if state not in HELP_STATES
     }
     bare = {
         state: [

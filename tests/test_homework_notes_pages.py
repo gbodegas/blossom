@@ -555,8 +555,8 @@ def test_a_parent_asking_about_a_note_is_refused_before_the_form_is_read(
 
 def own_row(page: str, *, family: bool, resolved: bool) -> str:
     """The one request's own row: its list item or its card, and nothing else of the page."""
-    if resolved:
-        summary = "Resolved in the last two weeks" if family else "Resolved requests"
+    if resolved and family:
+        summary = "Resolved in the last two weeks"
         rows = page.split(f"<summary>{summary}</summary>", 1)[1].split("</details>", 1)[0]
         return rows.split("<li", 1)[1].split("</li>", 1)[0]
     if family:
@@ -1036,7 +1036,7 @@ def help_held(client: TestClient) -> tuple[list[object], int]:
 
 
 def help_row(page: str, request_id: str) -> str:
-    start = page.index(f'<li id="help-{request_id}">')
+    start = page.index(f'<li class="help-request" id="help-{request_id}" tabindex="-1">')
     return page[start : page.index("</li>", start)]
 
 
@@ -1047,8 +1047,8 @@ def help_row(page: str, request_id: str) -> str:
         ([], None, "Waiting for a parent to respond."),
         (["accept"], None, "A parent is on it."),
         (["accept"], "Review the graph together after dinner.", "A parent is on it."),
-        (["accept", "resolve"], None, "Resolved."),
-        (["accept", "resolve"], "Page 12 has the steps.", "Resolved."),
+        (["accept", "resolve"], None, "A parent closed this request on "),
+        (["accept", "resolve"], "Page 12 has the steps.", "A parent closed this request on "),
     ],
     ids=["requested", "taken up", "taken up with a reply", "resolved", "resolved with a reply"],
 )
@@ -1088,8 +1088,7 @@ def test_the_same_note_form_sent_again_lands_on_the_request_as_it_stands(
     assert stands in row
     assert (f"They said: <q>{escape(reply)}</q>" in row) is (reply is not None)
     assert f'href="{note_href(name)}"' in row
-    if "resolve" in steps:
-        assert '<details class="steps resolved" open>' in landed.text
+    assert 'id="help-older"' not in landed.text
     assert after == before
 
 

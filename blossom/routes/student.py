@@ -46,6 +46,7 @@ signed in sees her update and cannot make one in her name.
 """
 
 import logging
+import sqlite3
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -131,14 +132,17 @@ from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.help_requests import (
+    HELP_RECENT_DAYS,
     NOTE_MAX_LENGTH,
     HelpAlreadyAsked,
     HelpAsked,
     HelpFormChanged,
     HelpFormUsed,
+    HelpHeld,
     HelpRequest,
     NotARequestId,
     RequestClosed,
+    UnreadableHelpRequest,
     new_request_id,
     request_id_from,
 )
@@ -254,6 +258,21 @@ HELP_FORM_NOT_WHOLE: Final = (
 )
 HELP_NOT_SENT: Final = "Your request could not be sent, and nothing was changed. Try again."
 ALREADY_SENT: Final = "That request was already sent."
+SENT: Final = "Sent. Your parents can see the request."
+NOT_ON_THIS_PAGE: Final = "That request is not on this page now."
+CANNOT_CHECK: Final = "That request can't be checked right now."
+"""The lines for the request an address names, checked against the page's one reading:
+sent, for one she has just sent that still waits for a parent; already sent, beside any
+other request on the page; not on this page, when no request there is that one; and can't
+be checked, when that reading failed."""
+ALREADY_RESPONDING: Final = (
+    "A parent is already responding to this request, so it cannot be taken back. "
+    "Nothing was changed."
+)
+ALREADY_CLOSED: Final = (
+    "This request is already closed, so it cannot be taken back. Nothing was changed."
+)
+NOT_HERE_ANY_MORE: Final = "That request is not here any more; nothing was changed."
 FORM_SENT_OTHER_WORDS: Final = (
     "This form already sent a request with other words, so these weren't sent. Ask again "
     "to send them as a new request."
@@ -507,27 +526,137 @@ def help_view(
         state=request.state,
         accepted_at=request.accepted_at,
         resolved_at=request.resolved_at,
+        resolved_local=(
+            None
+            if request.resolved_at is None
+            else request.resolved_at.astimezone(state.clock.zone)
+        ),
         response=request.response,
     )
 
 
-def help_requests_held(state: ApplicationState) -> list[HelpRequest]:
-    """Open requests oldest first, then those resolved within two weeks, as the store holds
-    them, so a page can name the notes they are about to its one reading."""
-    return [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
-
-
-def help_requests_shown(
-    state: ApplicationState,
-    held: list[HelpRequest] | None = None,
-    named: NamedCaptures | None = None,
-) -> list[HelpRequestView]:
-    """What she sees: open requests oldest first, then those resolved within two weeks. A
-    caller that read the notes they name with its own reading passes them; otherwise they
-    are read here, once for all of them."""
-    requests = help_requests_held(state) if held is None else held
-    about = notes_named_by(state, requests) if named is None else named
+def help_requests_shown(state: ApplicationState) -> list[HelpRequestView]:
+    """Her requests as the JSON route lists them: open ones oldest first, then those resolved
+    within two weeks, with the notes they name read once for all of them."""
+    requests = [*state.help_requests.open_requests(), *state.help_requests.recently_resolved()]
+    about = notes_named_by(state, requests)
     return [help_view(state, request, about) for request in requests]
+
+
+@dataclass(frozen=True)
+class HelpGroups:
+    """Her requests as the Help section on her week shows them: those still open, oldest
+    first; those resolved less than ``HELP_RECENT_DAYS`` ago; and those resolved earlier and
+    still kept. Each list of resolved requests is most recently resolved first."""
+
+    open: list[HelpRequest]
+    recent: list[HelpRequest]
+    earlier: list[HelpRequest]
+
+    def every(self) -> list[HelpRequest]:
+        """Every request in the three lists, in the order the section shows them."""
+        return [*self.open, *self.recent, *self.earlier]
+
+
+def help_groups(held: HelpHeld) -> HelpGroups:
+    """Her requests sorted for her page by the instant they were read at, and by nothing
+    else: a resolved request is recent while less than ``HELP_RECENT_DAYS`` have passed
+    since it was resolved, and among the earlier ones from that moment on, whatever was
+    asked after it. Requests stamped alike keep the order of their ids. Pure: it reads no
+    clock and no store."""
+    recent_for = timedelta(days=HELP_RECENT_DAYS)
+    waiting = sorted(
+        (request for request in held.requests if request.open),
+        key=lambda request: (request.asked_at, request.request_id),
+    )
+    resolved = sorted(
+        (
+            (request.resolved_at, request)
+            for request in held.requests
+            if not request.open and request.resolved_at is not None
+        ),
+        key=lambda pair: pair[1].request_id,
+    )
+    resolved.sort(key=lambda pair: pair[0], reverse=True)
+    recent: list[HelpRequest] = []
+    earlier: list[HelpRequest] = []
+    for when, request in resolved:
+        (recent if held.now - when < recent_for else earlier).append(request)
+    return HelpGroups(waiting, recent, earlier)
+
+
+def help_read(state: ApplicationState) -> HelpGroups | None:
+    """Her requests for her week, from the one statement a page makes for them, or ``None``
+    when that read fails: the file refuses it, or a row cannot be read as a request. The
+    failure is logged in one line that names its kind and none of her words, and nothing is
+    read again for it. Any other exception is not caught here."""
+    try:
+        held = state.help_requests.retained()
+    except (sqlite3.Error, UnreadableHelpRequest) as error:
+        logger.warning("her requests for help could not be read: %s", type(error).__name__)
+        return None
+    return help_groups(held)
+
+
+@dataclass(frozen=True)
+class HelpMarker:
+    """What an address says a help form did, sent a new request (``fresh``) or was sent
+    again, and the id it names. A note, checked against the page's one reading and never
+    trusted: nothing is written, counted or logged for it, and no control reads it."""
+
+    request_id: str
+    fresh: bool
+
+
+def marker_from(asked: str | None, asked_again: str | None) -> HelpMarker | None:
+    """What an address says a help form did: ``asked`` when it names a request, else
+    ``asked_again``, else nothing."""
+    if asked is not None:
+        return HelpMarker(asked, fresh=True)
+    if asked_again is not None:
+        return HelpMarker(asked_again, fresh=False)
+    return None
+
+
+@dataclass(frozen=True)
+class HelpResult:
+    """The one line a marker gets: what it says, and the request whose row holds it, or
+    ``None`` for the top of the Help section."""
+
+    said: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class HelpProblem:
+    """What a press in the Help section could not do, said there with the focus: a refused
+    take-back, with the request it named while that request's row is on the page, or a
+    parent's press from a page left open."""
+
+    said: str
+    request_id: str | None = None
+
+
+def help_result_for(
+    marker: HelpMarker | None, groups: HelpGroups | None, *, hers: bool
+) -> HelpResult | None:
+    """The line for what an address says a form did, from the page's one reading. Sent only
+    for a request just sent, read by her, that still waits for a parent; already sent beside
+    any other request on the page, whose row says where it stands; and a line at the top of
+    Help when the reading failed or no request on the page is the one named."""
+    if marker is None:
+        return None
+    if groups is None:
+        return HelpResult(CANNOT_CHECK)
+    try:
+        wanted = request_id_from(marker.request_id)
+    except NotARequestId:
+        return HelpResult(NOT_ON_THIS_PAGE)
+    named = next((item for item in groups.every() if item.request_id == wanted), None)
+    if named is None:
+        return HelpResult(NOT_ON_THIS_PAGE)
+    fresh = marker.fresh and hers and named.state == "requested"
+    return HelpResult(SENT if fresh else ALREADY_SENT, named.request_id)
 
 
 def ask_for_help(
@@ -948,7 +1077,8 @@ def build_student_due_this_week_view(
     plan: StudentPlanView | None | Unread = UNREAD,
     today: date | None = None,
     everything: Everything | None = None,
-    help_requests: list[HelpRequestView] | None = None,
+    groups: HelpGroups | None | Unread = UNREAD,
+    named: NamedCaptures | None = None,
 ) -> StudentDueThisWeekView:
     """Assemble the student's weekly view from the stores ``ApplicationState``
     opened at startup; nothing is opened or seeded per request. ``week`` is any
@@ -962,7 +1092,9 @@ def build_student_due_this_week_view(
     the keyboard as the gate says. ``focus`` is the assignment a save, an
     undo, or a link named: when it is on record and in neither list of the
     week shown, its dates having changed meanwhile, it is built apart so the
-    page can still show it.
+    page can still show it. ``groups`` is her requests for help as the
+    caller read them, ``None`` when that read failed, and ``named`` the notes
+    they name; each is read here when left out.
     """
     today = state.clock.today() if today is None else today
     frame = week_shown(today, week)
@@ -1021,6 +1153,14 @@ def build_student_due_this_week_view(
     tonight = state.workload_signals.for_evening(today)
     household = state.settings
     still_to_turn_in = to_turn_in(found)
+    if isinstance(groups, Unread):
+        groups = help_read(state)
+    if named is None:
+        named = NamedCaptures({}, []) if groups is None else notes_named_by(state, groups.every())
+
+    def help_views(requests: list[HelpRequest]) -> list[HelpRequestView]:
+        return [help_view(state, request, named) for request in requests]
+
     return StudentDueThisWeekView(
         generated_at=datetime.now(UTC),
         today=today,
@@ -1036,7 +1176,10 @@ def build_student_due_this_week_view(
         can_plan=model_configured(state.settings),
         too_much=signal_view(state, tonight[-1]) if tonight else None,
         signals=[signal_view(state, signal) for signal in state.workload_signals.held()],
-        help_requests=help_requests_shown(state) if help_requests is None else help_requests,
+        help_open=[] if groups is None else help_views(groups.open),
+        help_recent=[] if groups is None else help_views(groups.recent),
+        help_earlier=[] if groups is None else help_views(groups.earlier),
+        help_unavailable=groups is None,
         viewer=viewer,
         can_update=viewer != "parent",
         nothing_to_plan=not window.active(),
@@ -1171,7 +1314,8 @@ def student_page(
     plan_asked: bool = False,
     turning_in: ListCard | None = None,
     help_form: HelpForm | None = None,
-    help_result: str | None = None,
+    help_marker: HelpMarker | None = None,
+    help_problem: HelpProblem | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
@@ -1189,8 +1333,10 @@ def student_page(
     about that one reading. A card's problem is said at the top too, with a link
     to the card, so it is met on a page that opens at its top; the card named is
     shown even when its dates have taken it out of the week. ``help_form`` is her Ask for
-    help form as a refusal shows it again, beside the form, and ``help_result`` names a
-    request a form sent twice had made. Each Ask for help form gets a fresh id.
+    help form as a refusal shows it again, beside the form; ``help_marker`` is what the
+    address says a help form did, checked against the page's one reading of her requests;
+    and ``help_problem`` is what a press in the Help section could not do, said there. Each
+    Ask for help form gets a fresh id, which needs no read.
     """
     viewer = viewer_of(request)
     today = state.clock.today()
@@ -1202,9 +1348,10 @@ def student_page(
     # result is checked against that assignment's own events even when it is off the record.
     about = () if turning_in is None or turning_in.asked is None else (turning_in.asked.about,)
     # Her homework notes are read beside the record, in the same snapshot, and are no part
-    # of it: nothing a plan, a digest, or a brief is made from ever holds one. The notes
-    # her requests for help are about come in one more statement, however many there are.
-    held = help_requests_held(state)
+    # of it: nothing a plan, a digest, or a brief is made from ever holds one. Her requests
+    # for help come in one statement, and the notes they are about in one more, however
+    # many there are; when the requests can't be read, neither is anything they name.
+    groups = help_read(state)
     with state.project_state.reading():
         everything = read_everything(
             state.project_state,
@@ -1212,7 +1359,7 @@ def student_page(
             also=(*(() if record is None else record.plan_assignment_ids or ()), *about),
         )
         notes = state.project_state.outstanding_captures()
-        named = notes_named_by(state, held)
+        named = NamedCaptures({}, []) if groups is None else notes_named_by(state, groups.every())
     todays = (
         None
         if record is None
@@ -1233,8 +1380,18 @@ def student_page(
         plan=None if todays is None else todays.view,
         today=today,
         everything=everything,
-        help_requests=help_requests_shown(state, held, named),
+        groups=groups,
+        named=named,
     )
+    help_result = help_result_for(help_marker, groups, hers=not parent_reads(request))
+    on_page = set() if groups is None else {item.request_id for item in groups.every()}
+    folded = set() if groups is None else {item.request_id for item in groups.earlier}
+    if help_problem is not None and help_problem.request_id not in on_page:
+        help_problem = replace(help_problem, request_id=None)
+    named_rows = {
+        None if help_result is None else help_result.request_id,
+        None if help_problem is None else help_problem.request_id,
+    }
     about_a_card = card is not None and card.problem is not None and problem is None
     listed = [*view.assignments, *view.assigned_this_week, *([view.apart] if view.apart else [])]
     return templates.TemplateResponse(
@@ -1271,7 +1428,8 @@ def student_page(
             "help_form": help_form or HelpForm(),
             "help_request_id": new_request_id(),
             "help_result": help_result,
-            "already_sent": ALREADY_SENT,
+            "help_problem": help_problem,
+            "help_fold_open": bool(named_rows & folded),
             "family_help": f"{FAMILY_PAGE}#help-she-asked-for",
             "update_note_max_length": UPDATE_NOTE_MAX_LENGTH,
             "card": card,
@@ -1328,6 +1486,9 @@ def due_this_week(
     hand_in_event: Annotated[
         str | None, Query(description="the event that press made; looked up, never trusted")
     ] = None,
+    asked: Annotated[
+        str | None, Query(description="the request a help form just made; a note, checked")
+    ] = None,
     asked_again: Annotated[
         str | None, Query(description="the request a help form sent twice had made; a note")
     ] = None,
@@ -1345,21 +1506,24 @@ def due_this_week(
     no plan is saved. A GET never makes a plan. The rest name one card: what a
     save or an undo just did to it, which the server chose and the address only
     carries, or that its form is to be open, or that it is to be in view, with
-    the fold around it open. ``asked_again`` names the request a help form sent twice
-    had made, said beside that request when it is on the page.
+    the fold around it open. ``asked`` names the request a help form just made, and
+    ``asked_again`` the one a help form sent twice had made; the first is read when both
+    are there. Either is said in Help, beside that request when it is on the page, and at
+    the top of Help when it is not.
     """
     was_refreshed = refreshed == "1"
-    asked = show_plan == "1"
+    plan_asked = show_plan == "1"
     card = card_shown(saved, same, undone, change, show)
+    marker = marker_from(asked, asked_again)
     if week is None:
         return student_page(
             request,
             state,
             refreshed=was_refreshed,
             card=card,
-            plan_asked=asked,
+            plan_asked=plan_asked,
             turning_in=receipt_asked(hand_in_said, about, hand_in_event),
-            help_result=None if asked_again is None else asked_again[:TOKEN_MAX_LENGTH],
+            help_marker=marker,
         )
     try:
         chosen = date.fromisoformat(week.strip())
@@ -1369,6 +1533,7 @@ def due_this_week(
             state,
             problem=NOT_A_WEEK,
             card=card,
+            help_marker=marker,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     if not showable(chosen):
@@ -1377,9 +1542,12 @@ def due_this_week(
             state,
             problem=BEYOND_THE_CALENDAR,
             card=card,
+            help_marker=marker,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
-    return student_page(request, state, week=chosen, card=card, plan_asked=asked)
+    return student_page(
+        request, state, week=chosen, card=card, plan_asked=plan_asked, help_marker=marker
+    )
 
 
 def week_named(given: str) -> date | None:
@@ -2172,17 +2340,20 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
 async def ask_for_help_from_the_page(request: Request, state: State) -> Response:
     """The other press on her page. A blank note is no note; a long one is said, not cut.
 
-    A parent is answered 403 before the form is read. Her form is read whole,
-    her words and the id the page gave the form, each once, before anything
-    is looked up; a form that is not whole sends nothing and
-    comes back with her first words in a fresh form. The same form sent again
-    is the request it made, said beside it, and never a second; a form that
-    already asked with other words, or whose request was taken back or has
-    gone, sends nothing and keeps her words.
+    A parent is answered 403 before the form is read, the refusal said in Help. Her form
+    is read whole, her words and the id the page gave the form, each once, before
+    anything is looked up; a form that is not whole sends nothing and comes back with
+    her first words in a fresh form. A new request lands on its own row, and the same
+    form sent again is the request it made, said beside it, and never a second; a form
+    that already asked with other words, or whose request was taken back or has gone,
+    sends nothing and keeps her words.
     """
     if viewer_of(request) == "parent":
         return student_page(
-            request, state, problem=NOT_HERS_TO_ASK, status_code=status.HTTP_403_FORBIDDEN
+            request,
+            state,
+            help_problem=HelpProblem(NOT_HERS_TO_ASK),
+            status_code=status.HTTP_403_FORBIDDEN,
         )
     fields, whole = await fields_of(request, ASK_FIELDS)
     words = fields.get("note", "")
@@ -2220,8 +2391,11 @@ async def ask_for_help_from_the_page(request: Request, state: State) -> Response
             status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     match outcome:
-        case HelpAsked():
-            return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+        case HelpAsked(request=asked):
+            return RedirectResponse(
+                f"{PAGE}?asked={asked.request_id}#help-result",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
         case HelpAlreadyAsked(request=asked):
             return RedirectResponse(
                 f"{PAGE}?asked_again={asked.request_id}#help-result",
@@ -2263,26 +2437,35 @@ def help_again(
     "/actions/take-back-help/{request_id}", response_class=HTMLResponse, include_in_schema=False
 )
 def take_back_help_from_the_page(request: Request, request_id: str, state: State) -> Response:
-    """Remove a request from her page while nobody has taken it up; otherwise the page says why.
-    A parent is answered 403: the request is hers to take back."""
+    """Remove a request from her page while nobody has taken it up, and return to Help.
+    Otherwise Help says why, in words chosen by where the request stands and never by the
+    store's message, with a way to the request when its row is on the page. A parent is
+    answered 403 before anything is read: the request is hers to take back."""
     if viewer_of(request) == "parent":
         return student_page(
-            request, state, problem=NOT_HERS_TO_ASK, status_code=status.HTTP_403_FORBIDDEN
+            request,
+            state,
+            help_problem=HelpProblem(NOT_HERS_TO_ASK),
+            status_code=status.HTTP_403_FORBIDDEN,
         )
     try:
         removed = state.help_requests.take_back(request_id)
     except RequestClosed as error:
+        said = ALREADY_RESPONDING if error.request.state == "accepted" else ALREADY_CLOSED
         return student_page(
-            request, state, problem=str(error), status_code=status.HTTP_409_CONFLICT
+            request,
+            state,
+            help_problem=HelpProblem(said, error.request.request_id),
+            status_code=status.HTTP_409_CONFLICT,
         )
     if not removed:
         return student_page(
             request,
             state,
-            problem="That request is not here any more; nothing was changed.",
+            help_problem=HelpProblem(NOT_HERE_ANY_MORE),
             status_code=status.HTTP_404_NOT_FOUND,
         )
-    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(f"{PAGE}#help", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/actions/too-much", response_class=HTMLResponse, include_in_schema=False)

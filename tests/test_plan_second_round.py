@@ -361,9 +361,9 @@ def return_href(page: str, label: str) -> str:
 
 
 def slot_of(page: str) -> str:
-    """Today's plan slot on her week: from its stable id to the help form after it."""
+    """Today's plan slot on her week: from its stable id to the close of Today."""
     start = page.index(SLOT)
-    return page[start : page.index('id="ask-for-help"', start)]
+    return page[start : page.index("</section>", start)]
 
 
 def made_at(record: DraftRecord) -> str:

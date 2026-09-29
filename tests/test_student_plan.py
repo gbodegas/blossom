@@ -387,7 +387,7 @@ def test_a_refresh_says_when() -> None:
     assert any(stamp in hers for stamp in accepted), "the real clock, not the pinned one"
     assert any(stamp in theirs for stamp in accepted)
     assert "Refreshed at" not in plain
-    assert 'href="/student/due-this-week?refreshed=1">Refresh replies</a>' in plain
+    assert 'href="/student/due-this-week?refreshed=1#help">Refresh replies</a>' in plain
 
 
 def test_what_is_shared_points_inside_its_fold() -> None:
@@ -498,15 +498,20 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
         page = client.get(PAGE).text
 
     panel, _, rest = page.partition('<h2 class="list-heading">')
+    help_at = rest.index('<section class="panel help-panel" id="help" tabindex="-1">')
+    help_part = rest[help_at : rest.index("<summary>How Blossom uses your information</summary>")]
     assert "Today, Wednesday, August 19" in panel
-    assert 'action="/student/actions/ask-for-help"' in panel
-    assert "A note for your parents (optional)" in panel
-    assert "<summary>Resolved requests</summary>" in panel
-    assert "the essay outline" in panel.split("<summary>Resolved requests</summary>", 1)[1]
-    assert (
-        "Waiting for a parent to respond."
-        in panel.split("<summary>Resolved requests</summary>", 1)[0]
+    assert '<a class="to-help" href="#ask-for-help">Ask for help</a>' in panel
+    assert '<a href="#help-updates">Help updates (2)</a>' in panel
+    assert 'action="/student/actions/ask-for-help"' not in panel
+    assert "the essay outline" not in panel
+    assert rest.index("Canal Era comparison essay") < help_at
+    assert 'action="/student/actions/ask-for-help"' in help_part
+    assert "A note for your parents (optional)" in help_part
+    assert help_part.index("Waiting for a parent to respond.") < help_part.index(
+        "the essay outline"
     )
+    assert "A parent closed this request on " in help_part
     assert "Planning uses the model provider." in panel
     assert 'href="#what-is-shared"' in panel
     assert 'id="what-is-shared"' in rest
@@ -605,7 +610,7 @@ def test_refresh_is_a_link_on_both_pages_and_a_visit_marks_nothing() -> None:
         state = client.get("/student/help-requests").json()[0]["state"]
         hers_after = client.get(PAGE).text
 
-    assert '<a href="/student/due-this-week?refreshed=1">Refresh replies</a>' in hers
+    assert '<a href="/student/due-this-week?refreshed=1#help">Refresh replies</a>' in hers
     assert "Refresh to see updates. Save or send your note first." in hers
     assert '<a href="/parent?refreshed=1">Refresh requests</a>' in theirs
     assert state == "requested"

@@ -1325,7 +1325,25 @@ when the household clock is pinned. A resolved request is kept for
 `HELP_RETENTION_DAYS`, fourteen, long enough for the word back to be read, and
 the cutoff is applied on every read as well as in the hourly sweep; an open
 request is kept until someone resolves it, since a question nobody has
-answered is not old news. Nothing counts requests or groups them by anything.
+answered is not old news. The store keeps no count of requests and looks for
+no pattern in them.
+
+On her week, help is one section below the homework, `#help`: her form, then
+the help updates, her open requests oldest first and those resolved less than
+`HELP_RECENT_DAYS`, seven, ago, most recently resolved first, and then a fold
+of those resolved earlier and still kept. Today links there and counts the
+updates, with no words of any request and no claim that anyone has read them.
+The page reads the requests in one statement, `retained`, which returns the
+instant its cutoff used, and `help_groups` sorts them by that instant alone;
+reading writes nothing. A form that asks lands on its own row with `?asked=`,
+one sent again with `?asked_again=`; either is checked against that one read
+and said beside the row it names, or at the top of Help when none is that
+one, and it is a note and never a permission. A refused take-back is said in
+Help, worded by where the request stands, and takes the focus. `take_back`
+reads with the retention cutoff, so a request resolved past retention before
+the sweep is missing. When the requests can't be read, the rest of the week
+still shows, Help says so and keeps her form, and nothing more about them is
+read.
 
 Each form that asks carries an id the page made for it. The request is kept
 under that id in one transaction with the id's own record, the look for the
