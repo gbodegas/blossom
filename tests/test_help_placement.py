@@ -1154,6 +1154,28 @@ def test_the_help_section_is_outlined_on_focus_its_links_are_tall_and_its_words_
     assert ".help-panel" in wrapping(CSS)
 
 
+def margins_of(css: str, selector: str) -> tuple[float, float]:
+    """The top and bottom margin, in rem, of the rule naming this selector."""
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain):
+        if selector in [part.strip() for part in head.split(",")]:
+            found = re.search(r"margin: ([\d.]+)rem 0 ([\d.]+)rem;", inside)
+            if found:
+                return float(found.group(1)), float(found.group(2))
+    msg = f"no margins for {selector}"
+    raise AssertionError(msg)
+
+
+def test_the_refresh_line_keeps_its_press_area_clear_of_every_neighbor() -> None:
+    """Refresh replies sits between links and controls, some of them as tall as it is."""
+    reach = 0.8
+    above, below = margins_of(CSS, ".help-panel .refresh")
+
+    assert ".refresh a" in in_sentence_rule(CSS)
+    assert above > 2 * reach
+    assert below > reach
+
+
 # ------------------------------------------------------------------ one read, no writes
 
 

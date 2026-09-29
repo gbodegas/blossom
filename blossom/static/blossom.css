@@ -737,6 +737,13 @@ a.assignment-link:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* In Help, Refresh replies sits between other links and controls with press areas of
+   their own: Family review, Ask again or the Ask button above it, and the fold of older
+   requests below. These margins keep the press areas from reaching into each other. */
+.help-panel .refresh {
+  margin: 1.75rem 0 1rem;
+}
+
 .evidence {
   margin-top: 1.25rem;
   min-width: 0;
