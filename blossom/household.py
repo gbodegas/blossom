@@ -342,8 +342,8 @@ FAMILY_PRESSES_SHE_MAY_REACH: Final = re.compile(
 """The four presses under the family's tree that her sign-in may reach: a form about a note
 opened by a parent and pressed after she signed in on the same device, for its details,
 for adding it, for linking it to homework found, or for unlinking it. Their route refuses
-her before it reads the form's words for anything, writes nothing, and answers with what
-she typed shown back to her, which the gate's refusal could not. The page itself, and every
+her before it reads the form, writes nothing, and answers with a bounded copy of what she
+typed shown back to her, which the gate's refusal could not. The page itself, and every
 other press under the family's tree, stay the gate's to refuse."""
 
 

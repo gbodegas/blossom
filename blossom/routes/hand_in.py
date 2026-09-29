@@ -4,8 +4,9 @@ Done means she finished her part and turns nothing in, so what she says about
 delivery has forms of its own. They are on the assignment's details and
 nowhere else, so every result is shown there, at the section the forms sit
 in, with the way back the details carried. The routes follow her work
-update's: the form is read whole before anything else, who may save is
-decided from the sign-in and never from the form, the save is one operation
+update's: who may save is decided first, from the sign-in and never from the
+form, and a parent's press is answered on her current week before the form
+is read; for anyone else the form is read whole, the save is one operation
 under the decision lock, a success is a redirect to a page that says what
 stands, and a refusal is the same section with what she chose and wrote
 still in it. A parent reads the section and is told the update is hers to
@@ -376,7 +377,10 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     """What she says about turning one assignment in, with one next step and a note if she
     wants them.
 
-    The form is read whole. It carries the last hand-in event the page
+    A parent signed in is answered 403 on her current week from the sign-in
+    and the route alone, before the form is read or the assignment looked up,
+    whatever page the form came from, and nothing is written. For anyone
+    else the form is read whole. It carries the last hand-in event the page
     showed, which must be one of this assignment's. The same state, action,
     and note as what stands is already saved, with nothing written and no new
     day; a page whose head has moved on is answered 409 with what stands now
@@ -384,34 +388,20 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     overwritten; anything else is appended. A next step left in the form
     beside another state is not kept, and the page says so beside the field.
     Words the record will not keep are said beside the field they are in,
-    422, with everything else as she left it. A parent signed in is answered
-    403. Her work update is not read and not changed.
+    422, with everything else as she left it. Her work update is not read
+    and not changed.
     """
-    fields, whole = await fields_of(request, HAND_IN_FIELDS, may_be_absent=NOTHING_CHOSEN)
     viewer = viewer_of(request)
+    if viewer == "parent":
+        return student_page(
+            request, state, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
+        )
+    fields, whole = await fields_of(request, HAND_IN_FIELDS, may_be_absent=NOTHING_CHOSEN)
     back, valid = read_return(fields, viewer=viewer, showable=showable)
     view, view_known = shown_on(fields)
     valid = valid and view_known
     view = view if view in LIST_VIEWS else None
     pressed = Attempt("turn_in", assignment_id)
-    if viewer == "parent" and view is not None:
-        return on_the_list(
-            request,
-            state,
-            view,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
-            attempt=pressed,
-        )
-    if viewer == "parent":
-        return detail_page(
-            request,
-            state,
-            assignment_id,
-            back,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
     said = fields.get("state", "").strip()
     action = fields.get("next_action", "")
     note = fields.get("note", "")
@@ -552,12 +542,17 @@ async def undo_hand_in_from_the_page(
     answered 409 and nothing is written: when the latest event is the undo
     of that very update, the page says it was already undone; anything else
     says the update has changed. It is never aimed at a newer update
-    instead. A parent is answered 403.
+    instead. A parent is answered 403 on her current week before the form
+    is read or the assignment looked up, and nothing is written.
     """
+    viewer = viewer_of(request)
+    if viewer == "parent":
+        return student_page(
+            request, state, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
+        )
     fields, whole = await fields_of(
         request, HAND_IN_UNDO_FIELDS, may_be_absent=RETURN_FIELDS | SHOWN_ON
     )
-    viewer = viewer_of(request)
     back, valid = read_return(fields, viewer=viewer, showable=showable)
     view, view_known = shown_on(fields)
     valid = valid and view_known
@@ -566,24 +561,6 @@ async def undo_hand_in_from_the_page(
     pressed = Attempt(
         "undo", assignment_id, target=named if 0 < len(named) <= TOKEN_MAX_LENGTH else None
     )
-    if viewer == "parent" and view is not None:
-        return on_the_list(
-            request,
-            state,
-            view,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
-            attempt=pressed,
-        )
-    if viewer == "parent":
-        return detail_page(
-            request,
-            state,
-            assignment_id,
-            back,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
 
     def refused(problem: str, code: int) -> Response:
         if view is not None:

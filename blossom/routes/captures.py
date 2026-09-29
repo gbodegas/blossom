@@ -8,11 +8,13 @@ take the note with it and is never dropped without her say: the form comes
 back whole, and the next save needs a day that reads or her explicit choice
 to save without one.
 
-The routes follow her other forms: the form is read whole before anything
-else, who may write is decided from the sign-in and never from the form, the
-write is one operation under the decision lock, a success is a redirect to a
-page that says what stands, and a refusal keeps every readable word. A parent
-reads every note, archived ones and history included, and changes none. A
+The routes follow her other forms: who may write is decided first, from the
+sign-in and never from the form, and a parent's press is refused before its
+form is read or the note it names is looked up; for anyone else the form is
+read whole, the write is one operation under the decision lock, a success is
+a redirect to a page that says what stands, and a refusal keeps every
+readable word. A parent reads every note, archived ones and history
+included, and changes none. A
 result names the change the save made, or for a save that wrote nothing the
 change it found standing, by the id the record gave that change, which no
 page can work out. The page that answers looks that id up in the note's own
@@ -199,6 +201,8 @@ NOTE_CHANGED_NOT_DELETED: Final = (
     "This note changed while you were away, so it wasn't deleted. This page shows it as it "
     "stands now."
 )
+NOTE_NOT_CHANGED: Final = "Note not changed"
+"""The heading of the page that refuses a parent's change to her note, which reads no store."""
 NOTE_USE_UNKNOWN: Final = (
     "This note was saved before notes could be deleted, and Blossom can't tell whether it "
     "was used, so it can't be deleted."
@@ -591,6 +595,31 @@ def help_not_sent(
             "sample": state.settings.sample,
         },
         status_code=status_code if mine else status.HTTP_403_FORBIDDEN,
+    )
+
+
+def note_refused(request: Request, state: ApplicationState, capture_id: str) -> HTMLResponse:
+    """The page for a parent's edit, archive, restore, or delete of her note, 403. It is made
+    from the sign-in and the address alone: no store is read and no form, so it says the same
+    whatever the note is or the form carried. The name's shape decides whether the way back
+    to the note is offered, and nothing else about it is looked at."""
+    try:
+        shown: str | None = capture_id_from(capture_id)
+    except NotACaptureId:
+        shown = None
+    return templates.TemplateResponse(
+        request,
+        "student_update_recovery.html",
+        {
+            "card": None,
+            "hand_in_card": None,
+            "heading": NOTE_NOT_CHANGED,
+            "note_problem": NOT_HERS_TO_UPDATE,
+            "help_note": shown,
+            "ways_back": ways_back(request),
+            "sample": state.settings.sample,
+        },
+        status_code=status.HTTP_403_FORBIDDEN,
     )
 
 
@@ -1008,23 +1037,25 @@ async def save_a_new_note(request: Request, state: State) -> Response:
     stands now. The same id with anything else in it is refused with both
     shown, and her words come back in a form with an id of its own, to save
     as another note if she wants them. The id of a deleted note is answered
-    409 whatever it sends, with a way to a new note. A parent is answered 403.
+    409 whatever it sends, with a way to a new note. A parent is answered 403
+    on the page a parent reads here, which holds no form and no words, before
+    the form is read.
     """
-    fields, whole = await fields_of(request, CREATE_FIELDS, may_be_absent=PRESSED_OR_PENDING)
     viewer = viewer_of(request)
+    if viewer == "parent":
+        return new_note_page(
+            request,
+            state,
+            NoteForm(capture_id="", problem=NOT_HERS_TO_UPDATE),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    fields, whole = await fields_of(request, CREATE_FIELDS, may_be_absent=PRESSED_OR_PENDING)
     try:
         name = capture_id_from(fields.get("capture_id", ""))
     except NotACaptureId:
         name, whole = new_capture_id(), False
     ready = prepared(fields, name)
     form = ready.form
-    if viewer == "parent":
-        return new_note_page(
-            request,
-            state,
-            replace(form, problem=NOT_HERS_TO_UPDATE),
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
     if not whole or not date_controls_are_valid(fields):
         return new_note_page(
             request,
@@ -1106,22 +1137,17 @@ async def edit_a_note(request: Request, capture_id: str, state: State) -> Respon
     that is behind is answered 409 with the note as it stands and her words
     kept in a form that names the newer revision, to save again if she
     still wants them; nothing is overwritten and an archived note is not
-    brought back. A parent is answered 403.
+    brought back. A parent is answered 403 before the form is read or the
+    note looked up.
     """
+    viewer = viewer_of(request)
+    if viewer == "parent":
+        return note_refused(request, state, capture_id)
     fields, whole = await fields_of(request, EDIT_FIELDS, may_be_absent=PRESSED_OR_PENDING)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    viewer = viewer_of(request)
-    if viewer == "parent":
-        return note_page(
-            request,
-            state,
-            name,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
     revision = revision_of(fields)
     ready = prepared(fields, name, revision)
     form = ready.form
@@ -1185,21 +1211,16 @@ async def move_a_note(
 ) -> Response:
     """Archive or restore, from the revision the page showed. Already where it was asked to
     be is already done; a page that is behind is answered 409 with the note as it stands,
-    whose own button names the newer revision."""
+    whose own button names the newer revision. A parent is answered 403 before the form is
+    read or the note looked up."""
+    viewer = viewer_of(request)
+    if viewer == "parent":
+        return note_refused(request, state, capture_id)
     fields, whole = await fields_of(request, MOVE_FIELDS)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    viewer = viewer_of(request)
-    if viewer == "parent":
-        return note_page(
-            request,
-            state,
-            name,
-            problem=NOT_HERS_TO_UPDATE,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
     revision = revision_of(fields)
     if not whole or revision is None:
         return note_page(
@@ -1325,17 +1346,16 @@ async def delete_a_note(request: Request, capture_id: str, state: State) -> Resp
     409 with the reason and a page that is behind 409 with the note as it
     stands, whose own page asks again. A note deleted before is already
     done. What a delete did is said on her list, from the record. A parent
-    is answered 403 and nothing is deleted.
+    is answered 403 before the form is read or the note looked up, and
+    nothing is deleted.
     """
+    if viewer_of(request) == "parent":
+        return note_refused(request, state, capture_id)
     fields, whole = await fields_of(request, MOVE_FIELDS)
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    if viewer_of(request) == "parent":
-        return note_page(
-            request, state, name, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
-        )
     revision = revision_of(fields)
     if not whole or revision is None:
         return note_page(
