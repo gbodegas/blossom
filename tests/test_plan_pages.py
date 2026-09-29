@@ -132,7 +132,7 @@ def test_both_essay_blocks_are_marked_and_nothing_else_once_she_reports_the_essa
     assert "Reported done" not in namesake_row
     assert YOURS_BESIDE in hers
     assert HERS_BESIDE in plan_on(family, record)
-    assert '<details class="plan" open id="todays-plan" tabindex="-1">' in hers
+    assert '<div id="todays-plan" tabindex="-1">' in hers
     assert (
         f'In it: <a class="assignment-link" href="/student/assignments/{ESSAY_ID}?return_to=today" '
         f'aria-label="{ESSAY_TITLE}, World History, due August 21, 2026">{ESSAY_TITLE}</a> '

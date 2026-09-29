@@ -219,21 +219,25 @@
       from the controls however long the plan is. The text is the record as
       saved; nothing is cut or rewritten here.
 
-      The fold has an id of its own, the same whichever plan it holds, and
-      that is where her links to today's plan land: a way back written under
-      one plan is followed later, when another may have taken its place. The
-      plan inside keeps the id made from its draft. When a link asks for the
-      plan on a day that has none, the place is still there and says so.
+      The place around the fold has an id of its own, the same whichever plan
+      it holds, and that is where her links to today's plan land: a way back
+      written under one plan is followed later, when another may have taken
+      its place. The place takes the focus and the fold doesn't, since a fold
+      that can take the focus keeps Tab out of everything inside it. The plan
+      inside keeps the id made from its draft. When a link asks for the plan
+      on a day that has none, the place is still there and says so.
     #}
     {% if view.plan %}
-      <details class="plan" open id="{{ todays_plan_id }}" tabindex="-1">
-        <summary>Today's saved plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
-        <p class="note">
-          {% if view.plan.too_much %}Kept to a shorter evening because {% if parent %}she{% else %}you{% endif %} said today was too much.{% endif %}
-          Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
-        </p>
-        {% with reading = plan_reading, review_open = false %}{% include "plan_reading.html" %}{% endwith %}
-      </details>
+      <div id="{{ todays_plan_id }}" tabindex="-1">
+        <details class="plan" open>
+          <summary>Today's saved plan <span class="summary-meta">made at {{ view.plan.made_local|clock }}</span></summary>
+          <p class="note">
+            {% if view.plan.too_much %}Kept to a shorter evening because {% if parent %}she{% else %}you{% endif %} said today was too much.{% endif %}
+            Looks ahead through {{ view.plan_horizon_end.strftime("%A, %B") }} {{ view.plan_horizon_end.day }}.
+          </p>
+          {% with reading = plan_reading, review_open = false %}{% include "plan_reading.html" %}{% endwith %}
+        </details>
+      </div>
     {% elif plan_asked %}
       <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
     {% endif %}

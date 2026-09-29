@@ -411,12 +411,28 @@ def test_the_way_back_to_today_lands_on_whichever_plan_is_todays_when_it_is_foll
     assert landed.status_code == 200
     assert landed.text.count(SLOT) == 1
     slot = slot_of(landed.text)
-    assert slot.startswith('id="todays-plan" tabindex="-1"')
-    assert '<details class="plan" open ' in landed.text[: landed.text.index(SLOT) + len(SLOT)]
+    assert slot.startswith('id="todays-plan" tabindex="-1">')
+    assert re.match(r'id="todays-plan" tabindex="-1">\s*<details class="plan" open>', slot)
     assert f'id="{anchor_for(second.draft_id)}"' in slot
     assert anchor_for(first.draft_id) not in landed.text
     assert made_at(second) in slot
     assert slot_of(ordinary) == slot
+
+
+@pytest.mark.parametrize("address", [HER_PAGE, f"{HER_PAGE}?show_plan=1"])
+def test_the_place_the_plan_links_land_on_holds_the_fold_and_the_fold_takes_no_focus(
+    address: str,
+) -> None:
+    """A fold that can take the focus keeps Tab out of everything in it, so the place can."""
+    with browser(key=True) as client:
+        walkthrough(client)
+        planned(client)
+        page = client.get(address, headers=PAGE_HEADERS).text
+
+    place = re.search(r'<(\w+) id="todays-plan"([^>]*)>\s*<details class="plan"([^>]*)>', page)
+    assert place is not None
+    assert place.groups() == ("div", ' tabindex="-1"', " open")
+    assert page.count('id="todays-plan"') == 1
 
 
 def test_view_todays_plan_points_at_the_slot_too() -> None:
