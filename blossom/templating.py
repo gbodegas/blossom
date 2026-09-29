@@ -10,7 +10,9 @@ from blossom.clock import spoken_time
 from blossom.plan_reading import long_date
 from blossom.plan_text import present_plan
 from blossom.routes.navigation import (
+    INSTRUCTIONS,
     TODAYS_PLAN,
+    UPDATE_OR_TURN_IN,
     assignment_anchor,
     details_href,
     hand_in_result_anchor,
@@ -70,6 +72,8 @@ def page_templates() -> Jinja2Templates:
     ``result_anchor`` and ``hand_in_result_anchor`` for the places a save's redirect lands
     on, so a page and the address sent to it name a place the same way, ``todays_plan_id``
     and ``todays_plan_href`` for the place on her week that holds today's plan,
+    ``instructions_id`` and ``update_or_turn_in_id`` for the places on an assignment's
+    details that its links land on,
     ``asset_tag`` for the files a page links, ``wire`` for an instruction's words as a
     form carries them, ``step_label`` and ``step_sentence`` for a run's steps as a parent
     reads them, and the test ``in_words`` for words a form carries as they are."""
@@ -101,4 +105,6 @@ def page_templates() -> Jinja2Templates:
     templates.env.globals["week_href"] = week_href
     templates.env.globals["todays_plan_id"] = TODAYS_PLAN
     templates.env.globals["todays_plan_href"] = todays_plan_href
+    templates.env.globals["instructions_id"] = INSTRUCTIONS
+    templates.env.globals["update_or_turn_in_id"] = UPDATE_OR_TURN_IN
     return templates

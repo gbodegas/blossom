@@ -135,14 +135,17 @@ def test_a_parents_note_and_the_schools_words_are_shown_apart(tmp_path: pathlib.
         page = client.get(details_href(ESSAY_ID), headers=PAGE_HEADERS).text
         found = store.school_instruction_readings([ESSAY_ID]).readable[ESSAY_ID]
 
-    assert f'From the school: <q class="authored-text">{escape(A)}</q>' in page
+    assert f'From the school portal: <q class="authored-text">{escape(A)}</q>' in page
     assert f"A parent wrote: <q>{escape(TYPED)}</q>" in page
     assert found.texts == (A,)
 
 
-def test_an_instruction_waiting_for_review_is_folded_and_applies_to_nothing(
+def test_an_instruction_waiting_for_review_is_shown_apart_and_applies_to_nothing(
     tmp_path: pathlib.Path,
 ) -> None:
+    """The details list what waits for a parent's review in the open, under its own
+    heading and apart from what applies; her week's card keeps it folded with the earlier
+    ones."""
     settings = signed_in_household(tmp_path)
     with client_for(settings) as client:
         kept(store_of(client), A, applies=frozenset({A}))
@@ -156,8 +159,23 @@ def test_an_instruction_waiting_for_review_is_folded_and_applies_to_nothing(
     with client_for(settings) as client:
         signed_in(client, HERS)
         page = client.get(details_href(ESSAY_ID), headers=PAGE_HEADERS).text
+        week = client.get(HER_PAGE, headers=PAGE_HEADERS).text
 
-    shown, folded = page.split(
+    applies, waits = page.split(
+        '<h3 class="update-heading" id="waiting-instructions" tabindex="-1">'
+        "Waiting for a parent's review</h3>",
+        1,
+    )
+    assert f'From the school portal: <q class="authored-text">{escape(A)}</q>' in applies
+    assert str(escape(C)) not in applies
+    assert (
+        f"<li>From the school email, waiting for a parent's review: "
+        f'<q class="authored-text">{escape(C)}</q> '
+        '<span class="source">It does not apply until then.</span></li>'
+    ) in waits.split("</ul>", 1)[0]
+    assert "<details" not in waits.split("</ul>", 1)[0]
+    card = card_for(week, ESSAY_ID)
+    shown, folded = card.split(
         "<summary>Instructions from the school waiting for review, and earlier ones</summary>", 1
     )
     assert f'From the school: <q class="authored-text">{escape(A)}</q>' in shown
@@ -372,6 +390,6 @@ def test_a_school_note_no_one_chose_is_shown_apart_and_never_as_applying(
         page = client.get(details_href(ESSAY_ID), headers=PAGE_HEADERS).text
 
     found = f'<q class="authored-text">{escape(legacy)}</q>'
-    assert f"Found in the old note field, not yet reviewed: {found}" in page
+    assert f"Found in the old note field, from the school portal, not yet reviewed: {found}" in page
     assert "it does not apply until a parent reviews it" in page
     assert f'From the school: <q class="authored-text">{escape(legacy)}</q>' not in page

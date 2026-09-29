@@ -5,12 +5,14 @@
   The page for an assignment that is not on record, asked for by a link or
   named by a form after it was taken off: said plainly, with a safe way back.
   When a form brought her here, what she chose and wrote is shown so it can
-  be copied. There is no form, and nothing is put back on record.
+  be copied. There is no form, and nothing is put back on record. The one
+  explanation can take the focus on every arrival, and takes it as the page
+  arrives only after a form's press (``pressed``), with no script.
 #}
 {% block content %}
   <p class="return"><a href="{{ back.href }}">{{ back.label }}</a></p>
   <h1>Assignment</h1>
-  <p class="problem" role="alert">{{ problem }}</p>
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1"{% if pressed %} autofocus{% endif %}>{{ problem }}</p>
   {% if card and card.status %}
     <p>Your choice: {% if card.status == "done" %}Done{% else %}Not yet{% endif %}. It was not saved.</p>
   {% endif %}

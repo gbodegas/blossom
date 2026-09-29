@@ -418,7 +418,7 @@
             {% include "student_claim_warning.html" %}
             {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
             {% with words = assignment.words, to_a_parent = report_contexts[assignment.assignment_id].viewer == "parent", review_href = none %}{% include "school_words.html" %}{% endwith %}
-            <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
+            <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>{% if assignment.words.to_read %} <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, fragment=instructions_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Read instructions: {{ assignment.title }}, {{ assignment.course }}">Read instructions</a>{% endif %}
             {% include "student_hand_in_line.html" %}
             {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
           </li>
@@ -436,7 +436,7 @@
                 {% include "student_claim_warning.html" %}
                 {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
                 {% with words = assignment.words, to_a_parent = report_contexts[assignment.assignment_id].viewer == "parent", review_href = none %}{% include "school_words.html" %}{% endwith %}
-                <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>
+                <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a>{% if assignment.words.to_read %} <a class="details-link assignment-link" href="{{ details_href(assignment.assignment_id, fragment=instructions_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Read instructions: {{ assignment.title }}, {{ assignment.course }}">Read instructions</a>{% endif %}
                 {% include "student_hand_in_line.html" %}
                 {% with ctx = report_contexts[assignment.assignment_id] %}{% include "student_update.html" %}{% endwith %}
               </li>

@@ -50,7 +50,7 @@ from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
-from typing import Annotated, Any, ClassVar, Final, cast
+from typing import Annotated, Any, ClassVar, Final, Literal, cast
 
 from fastapi import (
     APIRouter,
@@ -105,6 +105,7 @@ from blossom.routes.navigation import (
     NOTES_PAGE,
     TO_TURN_IN,
     TO_TURN_IN_PAGE,
+    UPDATE_OR_TURN_IN,
     WEEK_PAGE,
     ReturnTo,
     address,
@@ -289,6 +290,11 @@ GONE: Final = "This assignment is not on record now."
 NO_PLAN_NOW: Final = "No plan is saved for today now."
 TURNING_IT_IN: Final = "turning-it-in"
 """The id of the section on an assignment's details that holds her hand-in account."""
+ASK_FOR_HELP: Final = "ask-for-help"
+"""The id of the place on her week that holds her Ask for help form, or a parent's line
+about her requests."""
+FAMILY_HELP: Final = f"{FAMILY_PAGE}#help-she-asked-for"
+"""The help she asked for, on the family page, where a parent answers it."""
 HAND_IN_SAVED: Final = "Your hand-in update is saved."
 HAND_IN_ALREADY_SAVED: Final = "Already saved."
 HAND_IN_UNDONE: Final = "Your hand-in update is undone."
@@ -1428,6 +1434,10 @@ class ReportContext:
     post_fields: list[tuple[str, str]]
     """What rides along on a save and an undo: the week, or that the result is to be shown
     on the details with the way back from there."""
+    place: Literal["week", "details"]
+    """Which page the component is on, her week or an assignment's details. It decides how a
+    problem with the update is said, and nothing else: on the details as plain text beside
+    the form, which the summary at the top links to; on her week as an alert of its own."""
     with_year: bool = False
     """Whether days are said with their year, as a page with no week above it needs."""
     back: "ReturnLink | None" = None
@@ -1463,6 +1473,7 @@ def week_context(assignment_id: str, week: date, viewer: str) -> ReportContext:
         change_fields=[("week", week.isoformat()), ("change", assignment_id)],
         cancel_href=week_href(week, assignment_id, show=assignment_id),
         post_fields=[("week", week.isoformat())],
+        place="week",
     )
 
 
@@ -1474,8 +1485,9 @@ def detail_context(
 
     Change is a GET form, and a browser writes a GET form's fields over any
     query in its action, so the way back rides in the form's hidden fields
-    beside the flag that opens the editor, and the action is the bare
-    address of the details."""
+    beside the flag that opens the editor, and the action is the address of
+    the details with no query. Change and Keep it as it is both land on the
+    heading over her update, below the school's instructions."""
     report, undo = report_actions(assignment_id)
     carried = back.fields()
     return ReportContext(
@@ -1483,13 +1495,14 @@ def detail_context(
         can_update=viewer != "parent",
         report_action=report,
         undo_action=undo,
-        change_action=details_href(assignment_id),
+        change_action=details_href(assignment_id, fragment=UPDATE_OR_TURN_IN),
         change_fields=[
             *[(name, value) for name, value in carried.items() if value],
             ("change", "1"),
         ],
-        cancel_href=details_href(assignment_id, **carried),
+        cancel_href=details_href(assignment_id, fragment=UPDATE_OR_TURN_IN, **carried),
         post_fields=[("report_view", "detail"), *carried.items()],
+        place="details",
         with_year=True,
         back=link,
         history_apart=True,
@@ -1556,12 +1569,17 @@ def gone_page(
 ) -> HTMLResponse:
     """The small page for an assignment that is not on record: said plainly, 404, with a
     safe way back and, when a form brought her here, what she chose and wrote, so it can
-    be copied. No form, and nothing is put back on record."""
+    be copied. No form, and nothing is put back on record.
+
+    The explanation takes the focus when a form's press brought her here,
+    whatever the form carried, and never on a look by link, whatever the
+    address carries."""
     return templates.TemplateResponse(
         request,
         "student_assignment_gone.html",
         {
             "problem": GONE,
+            "pressed": request.method == "POST",
             "card": card,
             "hand_in_card": hand_in,
             "back": way_back(
@@ -1678,6 +1696,10 @@ def detail_page(
                 if not claim.active
             ],
             "ctx": detail_context(assignment_id, back, viewer, link),
+            # Help is hers to ask for on her week, and a parent's to answer on the family page.
+            "help_href": (
+                FAMILY_HELP if viewer == "parent" else address(WEEK_PAGE, fragment=ASK_FOR_HELP)
+            ),
             "planning_window": planning_window(today).said(),
             "instructions_review": (
                 instructions_review_href(assignment_id) if family_chooses else None

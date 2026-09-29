@@ -18,6 +18,11 @@
   update, where the forms and links go, what rides along with them, and
   whether days are said with their year. A card on her week and the
   assignment's details hand in one each, so this is the one form there is.
+  ``ctx.place`` says which of the two it is, and decides how a problem is
+  said and nothing else. On the details the summary at the top is the one
+  alert and the focus; the problem here is plain text beside the form, which
+  the summary links to and which takes the focus when the link is followed.
+  On her week the problem here is an alert of its own.
 #}
 {% macro day(value) %}{{ value.strftime("%B") }} {{ value.day }}{% if ctx.with_year %}, {{ value.year }}{% endif %}{% endmacro %}
 {% set here = card and card.assignment_id == assignment.assignment_id %}
@@ -50,7 +55,7 @@
     {% endif %}
   {% endif %}
   {% if here and card.problem %}
-    <p class="problem" role="alert" id="update-problem-{{ key }}">{{ card.problem }}</p>
+    {% if ctx.place == "details" %}<p class="problem" id="update-problem-{{ key }}" tabindex="-1">{{ card.problem }}</p>{% else %}<p class="problem" role="alert" id="update-problem-{{ key }}">{{ card.problem }}</p>{% endif %}
   {% endif %}
   {% if standing %}
     <p class="update-summary">

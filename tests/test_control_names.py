@@ -5,6 +5,7 @@ sign-in field and the family page's notices use the shared field and wrapping ru
 import re
 
 import pytest
+from fastapi.testclient import TestClient
 
 from blossom.routes.navigation import assignment_anchor
 from blossom.routes.runs import plan_graphs
@@ -45,11 +46,21 @@ STATES = (
 REPEATED = (
     "Save update",
     "Keep it as it is",
+    "Read instructions",
     "Not now",
     "Open Turning it in",
     "Review and update in Turning it in",
     "Looks good",
 )
+
+
+def with_an_instruction(client: TestClient, assignment_id: str) -> None:
+    """One instruction of the school's kept for an assignment, which applies as a first one
+    does, so its cards offer Read instructions."""
+    store = store_of(client)
+    item = store.one_assignment(assignment_id)
+    assert item is not None
+    store.put_on_record([item.model_copy(update={"note": "Bring the packet."})], {})
 
 
 @pytest.fixture
@@ -60,6 +71,7 @@ def pages() -> dict[str, str]:
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
             lambda: [fixture_week_plan()], lambda: [accepting()]
         )
+        with_an_instruction(client, ESSAY_ID)
         client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         shown = {"family": client.get("/parent").text}
         shown["week, new"] = client.get(HER_PAGE).text
@@ -132,6 +144,8 @@ def test_each_repeated_control_names_what_it_is_about(pages: dict[str, str]) -> 
 PRACTICE_COURSES = ("History", "Science", "Art & <Design>")
 NAMESAKE_NAMES = (
     ("week, new", "Save update", "Save update for Practice, {}"),
+    ("week, new", "Read instructions", "Read instructions: Practice, {}"),
+    ("week, change", "Read instructions", "Read instructions: Practice, {}"),
     ("details, new", "Save update", "Save update for Practice, {}"),
     ("week, change", "Keep it as it is", "Keep it as it is: your update on Practice, {}"),
     ("details, change", "Keep it as it is", "Keep it as it is: your update on Practice, {}"),
@@ -162,6 +176,7 @@ def namesakes() -> dict[str, dict[str, str]]:
             update = f"/student/actions/assignments/{key}/report"
             hand_in = f"/student/actions/assignments/{key}/hand-in"
             seen = shown[item.course] = {}
+            with_an_instruction(client, key)
             seen["week, new"] = card_for(client.get(HER_PAGE).text, key)
             seen["details, new"] = client.get(details).text
             report(client, key, "done")

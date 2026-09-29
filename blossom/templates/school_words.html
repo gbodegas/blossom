@@ -1,10 +1,12 @@
 {#
   The school's instructions for one assignment and anyone's own note on it,
-  apart, one part for every page that lists the assignment: her card, its
-  details, the rows of work due later, and the family's rows. ``words`` is
-  the assignment's words view; ``to_a_parent`` says whose voice the page
-  speaks in; ``review_href`` is the family's review, given only on the
-  family's own reading, and offered while the instructions can be read.
+  apart, one part for every page that lists the assignment: her card, the
+  rows of work due later, and the family's rows. An assignment's details say
+  the same words in sections of their own, ``student_instructions.html`` and
+  the notes, before her update. ``words`` is the assignment's words view;
+  ``to_a_parent`` says whose voice the page speaks in; ``review_href`` is the
+  family's review, given only on the family's own reading, and offered while
+  the instructions can be read.
 
   Those that apply are said as the school's, in the one order; those said
   before and any waiting for review are folded in a native disclosure; that
@@ -14,8 +16,8 @@
 #}
 {% if words.any_instruction %}
   <div class="school-instructions">
-    {% for text in words.current %}
-      <p class="from-teacher">From the school: <q class="authored-text">{{ text }}</q></p>
+    {% for line in words.current %}
+      <p class="from-teacher">From the school: <q class="authored-text">{{ line.text }}</q></p>
     {% endfor %}
     {% if words.unreadable %}
       <p class="source">The school's instructions for this assignment cannot be read right now, so they are not shown.</p>
@@ -26,11 +28,11 @@
       <details class="earlier-instructions">
         <summary>{% if words.awaiting %}Instructions from the school waiting for review, and earlier ones{% else %}Earlier instructions from the school{% endif %}</summary>
         <ul>
-          {% for text in words.awaiting %}
-            <li><q class="authored-text">{{ text }}</q> <span class="source">Waiting for a parent's review; it does not apply until then.</span></li>
+          {% for line in words.awaiting %}
+            <li><q class="authored-text">{{ line.text }}</q> <span class="source">Waiting for a parent's review; it does not apply until then.</span></li>
           {% endfor %}
-          {% for text in words.earlier %}
-            <li><q class="authored-text">{{ text }}</q> <span class="source">Earlier; does not apply now.</span></li>
+          {% for line in words.earlier %}
+            <li><q class="authored-text">{{ line.text }}</q> <span class="source">Earlier; does not apply now.</span></li>
           {% endfor %}
         </ul>
       </details>

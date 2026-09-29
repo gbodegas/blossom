@@ -295,8 +295,15 @@ checks and their refusals are as they were.
 
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update
-component, handed a context object that says who may update and where its
-forms and links go. The details' evidence lists every claim a source has made
+component, handed a context object that says who may update, where its forms
+and links go, and which page it is on. They say what the work is before they
+ask about it: under the date, a jump to her update, then the school's
+instructions, the notes, and the way to help, then her update and Turning it
+in, then the evidence. On the details a refusal is said once as an alert, by
+the summary at the top, which takes the focus unless a field does; on her
+week the card's problem line is an alert of its own. The small page for work
+not on record focuses its explanation after a form's press and never on a
+look by link. The details' evidence lists every claim a source has made
 about the date, the ones that agree included, where a card lists claims only
 when the date is in doubt. The two report routes serve cards and details
 alike; a form says which it came from, and that decides only where its result

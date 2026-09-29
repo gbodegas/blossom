@@ -192,6 +192,14 @@ def note_anchor(capture_id: str) -> str:
     return f"note-{segment(capture_id)}"
 
 
+INSTRUCTIONS: Final = "instructions"
+"""The id of the heading over the school's instructions on an assignment's details, where a
+card's Read instructions link lands."""
+UPDATE_OR_TURN_IN: Final = "update-or-turn-in"
+"""The id of the heading over her update on an assignment's details, with Turning it in right
+after it: where the jump at the top of the details, Change, and Keep it as it is land."""
+
+
 def result_anchor(assignment_id: str) -> str:
     """The id of the place on a page that says what a save or an undo did to one
     assignment's update, which a redirect lands on. The page writes the id with this and
