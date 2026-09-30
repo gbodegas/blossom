@@ -433,6 +433,20 @@ article h2 {
   margin: -0.8rem 0;
 }
 
+/* On her week, the line of school reports to check names one link for each
+   assignment, in a sentence that wraps onto several lines when it names
+   several. Each link stays in the words around it and wraps with them, padded
+   out to the same 44 pixels to press. Padding an inline link moves no text,
+   and the sentence's lines are spaced wider than a padded link is tall, so no
+   link's area reaches into another's on the line above or below. */
+.to-check {
+  line-height: 3rem;
+}
+
+.to-check a {
+  padding: 0.8rem 0;
+}
+
 /* The jump at the top of an assignment's details, past the instructions to her
    update, as tall as a button. */
 .jump a {

@@ -377,7 +377,7 @@ def test_each_decision_button_says_which_draft_it_decides() -> None:
         two_waiting = client.get("/parent").text
 
     named = (
-        r'>Looks good<span class="visually-hidden">: (the plan for [^<]+)</span>'
+        r'aria-label="Looks good: (the plan for [^"]+)">Looks good</button>'
         r'|aria-label="(Ask for a change to the plan for [^"]+)"'
     )
 

@@ -59,7 +59,8 @@
         </form>
       {% endif %}
       {% set review = mine and refusal and refusal.operation == "turn_in" and not refusal.retry and not about.hand_in.unavailable %}
-      <p class="note"><a class="assignment-link" href="{{ details_href(about.assignment_id, fragment="turning-it-in", return_to=back, hand_in=("change" if review else none)) }}">{% if review %}Review and update in Turning it in{% else %}Open Turning it in{% endif %}<span class="visually-hidden">: {{ about.title }}, {{ about.course }}</span></a></p>
+      {% set link_words = "Review and update in Turning it in" if review else "Open Turning it in" %}
+      <p class="note"><a class="assignment-link" href="{{ details_href(about.assignment_id, fragment="turning-it-in", return_to=back, hand_in=("change" if review else none)) }}" aria-label="{{ link_words }}: {{ about.title }}, {{ about.course }}">{{ link_words }}</a></p>
     </div>
   {% endif %}
 {% endmacro %}
@@ -89,7 +90,7 @@
       {% set hi = row.hand_in %}
       <li class="to-turn-in-row" id="to-turn-in-{{ row.assignment_id }}" tabindex="-1">
         <p class="course">{{ row.course }}</p>
-        <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=back) }}">{{ row.title }}<span class="visually-hidden">, {{ row.course }}: Turning it in</span></a></strong></p>
+        <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=back) }}" aria-label="{{ row.title }}, {{ row.course }}: Turning it in">{{ row.title }}</a></strong></p>
         <p class="effect">Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}</p>
         <p class="note">
           {% if mine %}You{% else %}She{% endif %} reported Still to turn in on {{ on(hi.reported_on) }}.
@@ -120,5 +121,5 @@
   <p class="note">Sign in as the student to update.</p>
 {% endif %}
 {% if unreadable %}
-  <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record cannot be read right now for: {% for row in unreadable %}<a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=back) }}">{{ row.title }}<span class="visually-hidden">, {{ row.course }}: Turning it in</span></a> ({{ row.course }}){% if not loop.last %}, {% endif %}{% endfor %}. It may belong on this list.</p>
+  <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record cannot be read right now for: {% for row in unreadable %}<a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=back) }}" aria-label="{{ row.title }}, {{ row.course }}: Turning it in">{{ row.title }}</a> ({{ row.course }}){% if not loop.last %}, {% endif %}{% endfor %}. It may belong on this list.</p>
 {% endif %}

@@ -1,23 +1,29 @@
 """Every control says its own words. The name a screen reader or voice control uses holds the
-words a button or link shows, as WCAG 2.5.3 asks, and Blossom's names start with them. The
-sign-in field and the family page's notices use the shared field and wrapping rules."""
+words a button or link shows, as WCAG 2.5.3 asks, and Blossom's names start with them. Words
+hidden from sight start with a space, since a browser sets them off with one, and a name that
+goes on with punctuation is said whole in a label. The sign-in field and the family page's
+notices use the shared field and wrapping rules."""
 
 import pathlib
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 
-from blossom.routes.navigation import assignment_anchor
+from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
+from blossom.routes.navigation import TO_TURN_IN_PAGE, assignment_anchor
 from blossom.routes.runs import plan_graphs
-from blossom.settings import REPOSITORY_ROOT
+from blossom.settings import REPOSITORY_ROOT, TEMPLATE_PATH
+from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
     DETAILS,
     ESSAY,
     ESSAY_ID,
     ESSAY_TITLE,
     HER_PAGE,
+    NOW,
     PAGE_HEADERS,
     PLAN_DATE,
     THEIRS,
@@ -26,13 +32,18 @@ from tests.support import (
     card_for,
     client_for,
     control_names,
+    due,
     field_names,
     fixture_week_plan,
+    form_fields,
+    household_client,
+    main_of,
     names_not_led_by_their_words,
     names_without_their_words,
     report,
     school_missing,
     scripted_graphs,
+    sign_in_as,
     signed_in,
     signed_in_household,
     store_of,
@@ -160,7 +171,9 @@ def essay_part(page: str) -> str:
     """The essay's card on a page of several, after the line of school reports to check when
     the page has one, or else the whole page."""
     if f'id="{assignment_anchor(ESSAY_ID)}"' in page:
-        line = re.search(r'<p class="confidence disagree" role="status">.*?</p>', page, re.S)
+        line = re.search(
+            r'<p class="confidence disagree(?: to-check)?" role="status">.*?</p>', page, re.S
+        )
         return (line.group(0) if line else "") + card_for(page, ESSAY_ID)
     return page
 
@@ -276,7 +289,7 @@ def namesakes() -> dict[str, dict[str, str]]:
 def to_check_link(page: str, assignment_id: str) -> str:
     """The one link in the line of school reports to check that brings this assignment into
     view."""
-    line = re.search(r'<p class="confidence disagree" role="status">.*?</p>', page, re.S)
+    line = re.search(r'<p class="confidence disagree to-check" role="status">.*?</p>', page, re.S)
     assert line is not None
     found: list[str] = [
         link
@@ -356,6 +369,203 @@ def test_keep_it_as_it_is_and_not_now_say_their_whole_name_in_a_label(
 def test_every_control_s_name_starts_with_the_words_it_shows(pages: dict[str, str]) -> None:
     failing = {state: names_not_led_by_their_words(page) for state, page in pages.items()}
     assert {state: found for state, found in failing.items() if found} == {}
+
+
+HIDDEN_WORDS = re.compile(r'class="visually-hidden">(?!\s)([^<]{0,30})')
+"""Hidden words that start with anything but a space, and what they say."""
+
+
+def test_no_template_starts_its_hidden_words_with_punctuation() -> None:
+    """A browser sets hidden words off with a space, so words that start with punctuation
+    would read with a space before it: every hidden part of a name starts with a space."""
+    found = {
+        template.name: HIDDEN_WORDS.findall(template.read_text(encoding="utf-8"))
+        for template in sorted(TEMPLATE_PATH.glob("**/*.html"))
+    }
+
+    assert len(found) > 20
+    assert {name: hidden for name, hidden in found.items() if hidden} == {}
+
+
+def test_no_page_starts_its_hidden_words_with_punctuation(pages: dict[str, str]) -> None:
+    found = {state: HIDDEN_WORDS.findall(page) for state, page in pages.items()}
+    assert {state: hidden for state, hidden in found.items() if hidden} == {}
+
+
+def test_the_name_reader_sets_hidden_words_off_with_a_space_as_a_browser_does() -> None:
+    """What these tests read as a name is what the browser computes: hidden words that start
+    with a space read as written, and those that start with punctuation read with a space
+    before it, which is why the controls here say such names in a label instead."""
+    page = (
+        '<a href="#one">Practice<span class="visually-hidden"> for History</span></a>'
+        '<a href="#two">Practice<span class="visually-hidden">, History</span></a>'
+        '<a href="#three" aria-label="Practice, History">Practice</a>'
+    )
+
+    assert control_names(page) == [
+        ("Practice", "Practice for History"),
+        ("Practice", "Practice , History"),
+        ("Practice", "Practice, History"),
+    ]
+
+
+PRACTICE_KEYS = {
+    "History": "assignment-practice-history",
+    "Science": "assignment-practice-science",
+    "Art & <Design>": "assignment-practice-art",
+}
+"""Three assignments called Practice, by course."""
+TITLE_LINKS = sorted(f"Practice, {course}: Turning it in" for course in PRACTICE_KEYS)
+"""The names of the three titles as links to their Turning it in."""
+TO_THE_SECTION = {
+    "refused": "Review and update in Turning it in",
+    "undo refused": "Open Turning it in",
+}
+"""The words of the way to Turning it in beside a refused press and a refused Undo."""
+
+
+def handed(store: ProjectStateStore, key: str, state: HandInState, note: str | None = None) -> None:
+    """A hand-in update saved from another device, on the one that stands."""
+    readable = store.hand_in_readings([key]).readable
+    head = readable[key].head_id if key in readable else None
+    kept = store.record_hand_in(
+        key, state, None, note, expected_head=head, now=NOW, today=PLAN_DATE
+    )
+    assert isinstance(kept, HandInSaved), kept
+
+
+def refused_undo(client: TestClient, key: str) -> str:
+    """Her Undo beside the result of turning it in, refused because another device has said
+    something newer since: the page that says so."""
+    turn_in = f"/student/actions/assignments/{key}/hand-in"
+    undo = f"/student/actions/assignments/{key}/undo-hand-in"
+    page = client.get(TO_TURN_IN_PAGE).text
+    row = page[page.index(f'id="to-turn-in-{key}"') :]
+    pressed = client.post(turn_in, data=form_fields(row, turn_in), headers=PAGE_HEADERS)
+    assert pressed.status_code == 303, pressed.text[:300]
+    fields = form_fields(client.get(pressed.headers["location"]).text, undo)
+    handed(store_of(client), key, TURNED_IN, "On the desk")
+    refused = client.post(undo, data=fields, headers=PAGE_HEADERS)
+    assert refused.status_code == 409, refused.text[:300]
+    return refused.text
+
+
+def refused_press(client: TestClient, key: str) -> str:
+    """Her press on a row that another device has since said has nothing to turn in: the
+    page that refuses it."""
+    turn_in = f"/student/actions/assignments/{key}/hand-in"
+    handed(store_of(client), key, NEEDS_HAND_IN)
+    page = client.get(TO_TURN_IN_PAGE).text
+    handed(store_of(client), key, "not_required")
+    row = page[page.index(f'id="to-turn-in-{key}"') :]
+    refused = client.post(turn_in, data=form_fields(row, turn_in), headers=PAGE_HEADERS)
+    assert refused.status_code == 409, refused.text[:300]
+    return refused.text
+
+
+def turning_in_seen(reader: str, tmp_path: pathlib.Path) -> dict[str, str]:
+    """What ``reader`` is shown of the three Practice assignments, each still to turn in:
+    the rows of To turn in on its page and on her week, the family page's Turning work in
+    where the reader opens it, the line that names them once their records cannot be read,
+    and where she presses, what a refused press and a refused Undo say beside the refusal."""
+    seen: dict[str, str] = {}
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = store_of(client)
+        on = PLAN_DATE + timedelta(days=2)
+        store.put_on_record(
+            [
+                due(key, "Practice", on).model_copy(update={"course": course})
+                for course, key in PRACTICE_KEYS.items()
+            ],
+            {},
+        )
+        for key in PRACTICE_KEYS.values():
+            handed(store, key, NEEDS_HAND_IN)
+        seen["to turn in"] = client.get(TO_TURN_IN_PAGE).text
+        seen["week, to turn in"] = client.get(HER_PAGE).text
+        if reader != "her":
+            seen["family, turning in"] = client.get("/parent").text
+        if reader != "parent":
+            for course, key in PRACTICE_KEYS.items():
+                seen[f"undo refused, {course}"] = refused_undo(client, key)
+                seen[f"refused, {course}"] = refused_press(client, key)
+        store._connection.execute("UPDATE hand_in_events SET state = 'invalid-state'")
+        store._connection.commit()
+        seen["unreadable"] = client.get(TO_TURN_IN_PAGE).text
+        seen["week, unreadable"] = client.get(HER_PAGE).text
+    return seen
+
+
+def about_the_refusal(page: str) -> str:
+    """What a refusal says about the assignment it was about, beside the refusal."""
+    start = page.index('id="to-turn-in-about"')
+    return page[start : page.index("</div>", start)]
+
+
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_the_links_to_turning_it_in_say_their_whole_name_in_a_label(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """A title that links to its Turning it in goes on with the course, and the way to the
+    section beside a refusal with the title: each says its name in a label that reads as
+    written, visible words first, and three assignments called Practice are told apart."""
+    seen = turning_in_seen(reader, tmp_path)
+    titles = {
+        state: sorted(name for words, name in control_names(main_of(page)) if words == "Practice")
+        for state, page in seen.items()
+        if not state.startswith(("refused", "undo refused"))
+    }
+    to_the_section = {
+        state: control_names(about_the_refusal(page))
+        for state, page in seen.items()
+        if state.startswith(("refused", "undo refused"))
+    }
+    expected = {
+        f"{kind}, {course}": [(words, f"{words}: Practice, {course}")]
+        for kind, words in TO_THE_SECTION.items()
+        for course in PRACTICE_KEYS
+    }
+
+    assert titles == dict.fromkeys(titles, TITLE_LINKS)
+    assert len(titles) == (4 if reader == "her" else 5)
+    assert to_the_section == ({} if reader == "parent" else expected)
+    for state, page in seen.items():
+        assert 'Practice<span class="visually-hidden">' not in page, state
+        assert "Turning it in<span" not in page, state
+        if state in titles:
+            for course in PRACTICE_KEYS:
+                label = f'aria-label="Practice, {escape(course)}: Turning it in">Practice</a>'
+                assert label in page, (state, course)
+    for state, found in to_the_section.items():
+        words = found[0][0]
+        course = state.split(", ", 1)[1]
+        label = f'aria-label="{words}: Practice, {escape(course)}">{words}</a>'
+        assert label in seen[state], state
+
+
+@pytest.mark.parametrize("reader", ["parent", "open"])
+def test_looks_good_says_its_whole_name_in_a_label(reader: str, tmp_path: pathlib.Path) -> None:
+    """The plan's evening goes on from the button's words with a colon, so the whole name is
+    in a label that reads as written, for a parent signed in and with the sign-in off."""
+    files = {
+        "BLOSSOM_DATABASE_PATH": str(tmp_path / "blossom.sqlite3"),
+        "BLOSSOM_CHECKPOINT_PATH": str(tmp_path / "checkpoints.sqlite3"),
+        "BLOSSOM_TRACE_PATH": str(tmp_path / "traces.sqlite3"),
+    }
+    with browser(key=True, **files) as client:
+        made = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        assert made.status_code == 303, made.text[:300]
+        page = client.get("/parent").text
+    if reader == "parent":
+        with client_for(signed_in_household(tmp_path)) as client:
+            signed_in(client, THEIRS)
+            page = client.get("/parent").text
+    name = "Looks good: the plan for Wednesday, August 19"
+
+    assert [heard for shown, heard in control_names(page) if shown == "Looks good"] == [name]
+    assert f'aria-label="{name}">Looks good</button>' in page
+    assert "Looks good<span" not in page
 
 
 def rules_naming(css: str, selector: str) -> list[tuple[str, str]]:

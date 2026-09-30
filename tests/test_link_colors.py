@@ -21,12 +21,14 @@ one that ends the hand-in line's sentence takes a box that stays in the line,
 and so do the titles that lead the rows of her To turn in list and of the
 family page's updates, the family page's link to adding assignments, the line
 of links under the homework notes, and the link that ends each homework note's
-row.
+row. Each link in her week's line of school reports to check stays in the words
+of its sentence as an inline box, padded out to 44 pixels, in lines spaced wider
+than that, so a sentence that wraps never lays one link's area over another's.
 """
 
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 
 import pytest
@@ -43,10 +45,12 @@ from tests.support import (
     PLAN_DATE,
     QUIZ_ID,
     browser,
+    due,
     form_fields,
     hidden,
     planned,
     report,
+    rules_named,
     school_said,
     state_of,
     walkthrough,
@@ -306,6 +310,10 @@ class Sheet:
     """The same for each rule that sets how an element is laid out."""
     heights: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
     """The same for each rule that sets a minimum height."""
+    paddings: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    """The same for each rule that sets a padding, by its shorthand, as the sheet writes it."""
+    line_heights: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    """The same for each rule that sets a line height."""
 
 
 def blocks(css: str) -> list[tuple[str, str]]:
@@ -326,12 +334,12 @@ def blocks(css: str) -> list[tuple[str, str]]:
 
 
 def read_sheet(css: str) -> Sheet:
-    """Every rule that sets ``color``, a background, ``display``, or ``min-height``, in source
-    order, each with the media condition it sits under, and the sheet's custom
-    properties. A rule inside a media query applies only where the query holds, so a
-    link whose only color comes from one is still the browser's color on every other
-    screen; ``color_of`` is asked about one screen at a time. Font faces and keyframes
-    hold no rules for elements and are passed over."""
+    """Every rule that sets ``color``, a background, ``display``, ``min-height``, ``padding``,
+    or ``line-height``, in source order, each with the media condition it sits under, and the
+    sheet's custom properties. A rule inside a media query applies only where the query
+    holds, so a link whose only color comes from one is still the browser's color on every
+    other screen; ``color_of`` is asked about one screen at a time. Font faces and
+    keyframes hold no rules for elements and are passed over."""
     sheet = Sheet()
     plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
     order = 0
@@ -371,6 +379,12 @@ def read_sheet(css: str) -> Sheet:
                     sheet.displays.append((selector(head), declared["display"], order, media))
                 if "min-height" in declared:
                     sheet.heights.append((selector(head), declared["min-height"], order, media))
+                if "padding" in declared:
+                    sheet.paddings.append((selector(head), declared["padding"], order, media))
+                if "line-height" in declared:
+                    sheet.line_heights.append(
+                        (selector(head), declared["line-height"], order, media)
+                    )
 
     read(plain, None)
     return sheet
@@ -1130,3 +1144,149 @@ def test_the_height_check_fails_when_the_lists_rule_stops_doing_its_work(
             expected = place in short and width > fine_up_to
             is_short = short_of_a_control(sheet, link, View(width), IN_THE_LINE)
             assert is_short == expected, (name, place, width)
+
+
+TEXT_PX = (20.0, 22.0)
+"""The least and the most height an inline link's words take in the body font at the root
+size, the box its padding is added to: Edge draws it 20 or 21 pixels tall, and a pixel is
+kept to spare."""
+TO_CHECK_TITLES = (
+    "Comparing the Canal Era and the railroads that followed it",
+    "Lab report on plant growth under colored light",
+    "Chapter review questions for the unit on fractions and decimals",
+    "Reading log for the independent novel, chapters one through six",
+    "Map of the watershed with labeled tributaries and towns",
+    "Vocabulary sentences for words eleven through twenty",
+)
+TO_CHECK_RULES = ".to-check {\n  line-height: 3rem;\n}\n\n.to-check a {\n  padding: 0.8rem 0;\n}"
+TO_CHECK: dict[int, str] = {}
+
+
+@pytest.fixture
+def to_check() -> dict[int, str]:
+    """Her week with one, two, three and six finished assignments with long titles that the
+    school reports missing, so that many links in the line of school reports to check. Kept
+    once rendered, as ``rendered`` is."""
+    if TO_CHECK:
+        return TO_CHECK
+    for count in (1, 2, 3, 6):
+        with browser() as client:
+            store = state_of(client).project_state
+            names = [f"assignment-to-check-{number}" for number in range(count)]
+            on = PLAN_DATE + timedelta(days=1)
+            store.put_on_record(
+                [due(name, title, on) for name, title in zip(names, TO_CHECK_TITLES, strict=False)],
+                {},
+            )
+            for name in names:
+                report(client, name, "done")
+                store.record_status_reports(
+                    name, [school_said("missing", SourceChannel.EMAIL, PLAN_DATE)]
+                )
+            TO_CHECK[count] = client.get(HER_PAGE, headers=PAGE_HEADERS).text
+    return TO_CHECK
+
+
+def links_to_check(page: str) -> list[Element]:
+    """The links in her week's line of school reports to check: a notice of its own in the
+    page's main part."""
+    return [
+        link
+        for link in links_in(page)
+        if link.parent is not None
+        and "confidence" in link.parent.classes
+        and link.parent.parent is not None
+        and link.parent.parent.tag == "main"
+    ]
+
+
+def top_and_bottom(value: str | None) -> float:
+    """The top and bottom of a padding shorthand together, in CSS pixels; none set is none."""
+    if value is None:
+        return 0.0
+    sides = value.split()
+    if not 1 <= len(sides) <= 4:
+        raise UnreadMedia(value)
+    bottom = sides[2] if len(sides) > 2 else sides[0]
+    return sum(0.0 if side == "0" else height_px(side) for side in (sides[0], bottom))
+
+
+def line_px(value: str | None) -> float:
+    """A line height in CSS pixels, for text at the root size: a plain number is so many times
+    the text, and a line with no rule of its own keeps the body's 1.6."""
+    if value is None:
+        return 1.6 * ROOT_FONT_PX
+    if re.fullmatch(r"\d*\.?\d+", value):
+        return float(value) * ROOT_FONT_PX
+    return height_px(value)
+
+
+def padded_in_its_line(sheet: Sheet, link: Element, view: View) -> bool:
+    """Whether ``link`` on ``view`` stays an inline box in the words around it, padded above
+    and below to at least a control's height, in a sentence whose lines are spaced wider
+    than the tallest such link, so its area reaches into no other line."""
+    display = winning(sheet.displays, sheet, link, "link", view)
+    padding = top_and_bottom(winning(sheet.paddings, sheet, link, "link", view))
+    sentence = link.parent
+    assert sentence is not None
+    spacing = line_px(winning(sheet.line_heights, sheet, sentence, "link", view))
+    shortest, tallest = (text + padding for text in TEXT_PX)
+    return display in (None, "inline") and shortest >= TOUCH_HEIGHT_PX and tallest <= spacing
+
+
+def test_the_school_reports_to_check_are_in_text_of_the_root_size() -> None:
+    """The size the heights here are worked out for: no rule on the notice, its line, or its
+    links sets a text size of its own."""
+    for rule in ("body", ".confidence", ".confidence.disagree", ".to-check", ".to-check a"):
+        for inside in rules_named(rule):
+            assert "font-size" not in inside, rule
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_each_school_report_to_check_is_as_tall_as_a_control_in_its_own_line(
+    to_check: dict[int, str], width: int
+) -> None:
+    """With one link or six, at each width, with or without less motion: 44 pixels, in the
+    words of the sentence, and none reaching into the line above or below."""
+    sheet = read_sheet(stylesheet())
+
+    for count, page in to_check.items():
+        found = links_to_check(page)
+        assert len(found) == count
+        for link in found:
+            assert link.attributes["aria-label"].endswith(": school report to check"), link.text
+            for view in (View(width), View(width, reduced_motion=True)):
+                assert padded_in_its_line(sheet, link, view), (count, link.text, view)
+
+
+@pytest.mark.parametrize(
+    ("becomes", "fine_up_to"),
+    [
+        pytest.param(
+            TO_CHECK_RULES.replace(".to-check {", ".to-checks {"), 0, id="lines-left-close"
+        ),
+        pytest.param(TO_CHECK_RULES.replace("3rem", "2.75rem"), 0, id="lines-too-close"),
+        pytest.param(TO_CHECK_RULES.replace(".to-check a {", ".to-check b {"), 0, id="links-left"),
+        pytest.param(TO_CHECK_RULES.replace("0.8rem 0", "0.5rem 0"), 0, id="too-short"),
+        pytest.param(
+            TO_CHECK_RULES.replace("  padding:", "  display: inline-block;\n  padding:"),
+            0,
+            id="out-of-the-words",
+        ),
+        pytest.param(
+            f"@media (max-width: 30rem) {{\n{TO_CHECK_RULES}\n}}", 480, id="only-on-a-phone"
+        ),
+    ],
+)
+def test_the_check_fails_when_the_school_reports_rules_stop_doing_their_work(
+    to_check: dict[int, str], becomes: str, fine_up_to: int
+) -> None:
+    """Every link to check falls short on each screen the broken rules leave it."""
+    css = stylesheet()
+    assert css.count(TO_CHECK_RULES) == 1
+    sheet = read_sheet(css.replace(TO_CHECK_RULES, becomes))
+
+    for page in to_check.values():
+        for link in links_to_check(page):
+            kept = [padded_in_its_line(sheet, link, View(width)) for width in WIDTHS]
+            assert kept == [width <= fine_up_to for width in WIDTHS], link.text
