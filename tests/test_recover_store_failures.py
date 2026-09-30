@@ -10,18 +10,21 @@ pinned clock, and a failure made at the store call, or a second connection holdi
 """
 
 import pathlib
+import re
 import sqlite3
 import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
+from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.routes import hand_in as hand_in_routes
 from blossom.routes import parent as parent_routes
 from blossom.routes import runs as run_routes
@@ -29,6 +32,7 @@ from blossom.routes import student as student_routes
 from blossom.routes.navigation import details_href, week_href
 from tests.support import (
     ESSAY_ID,
+    ESSAY_TITLE,
     FIXTURE_WEEK,
     HER_PAGE,
     MISSING_EMAIL,
@@ -45,10 +49,12 @@ from tests.support import (
     form_fields,
     hidden,
     household_client,
+    main_of,
     planned,
     quiet_client,
     refusing,
     report,
+    rules_named,
     sign_in_as,
     state_of,
     store_free_page,
@@ -61,6 +67,7 @@ UNDO = f"/student/actions/assignments/{ESSAY_ID}/undo-report"
 HAND_IN = f"/student/actions/assignments/{ESSAY_ID}/hand-in"
 UNDO_HAND_IN = f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in"
 DETAILS = f"/student/assignments/{ESSAY_ID}"
+TO_TURN_IN = "/student/to-turn-in"
 GONE_ID = "assignment-not-here"
 TYPED = "Kept <b>words</b>\nand a second line"
 LONG = "n" * 501
@@ -831,6 +838,48 @@ def test_a_decision_on_a_decided_draft_keeps_its_409_and_the_reason_without_the_
     assert after == before
 
 
+@pytest.mark.parametrize("case", ["a request already closed", "no such request"])
+@pytest.mark.parametrize("reader", ["parent", "open"])
+def test_a_request_named_in_a_refusal_is_named_whole_on_family_review_and_its_stand_in(
+    case: str, reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step on a request that is closed, or not on record, is refused with the request's
+    whole id, on the family page and on its stand-in alike: nothing of it is cut."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        state = state_of(client)
+        asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
+        if case == "a request already closed":
+            state.help_requests.resolve(asked, None)
+            named, said = asked, f"request '{asked}' is resolved, so it cannot be taken up"
+        else:
+            named = uuid4().hex
+            said = f"no help request '{named}'"
+        path = f"/parent/actions/help/{named}"
+        page = client.post(path, data={"step": "accept", "response": ""}, headers=PAGE_HEADERS)
+        monkeypatch.setattr(state.drafts, "review_snapshot", refusing(sqlite3.OperationalError))
+        stand_in = client.post(path, data={"step": "accept", "response": ""}, headers=PAGE_HEADERS)
+
+    status = 409 if case == "a request already closed" else 404
+    assert page.status_code == status
+    assert len(named) == 32
+    assert f'<p class="problem" role="alert" id="problem">{escape(said)}</p>' in main_of(page.text)
+    store_free_page(stand_in, status=status, heading="Family review", alert=f"{said}. {FAMILY}")
+
+
+def test_family_reviews_alerts_break_a_long_word_where_they_must() -> None:
+    """A refusal on Family review can name a request by its id, one word of 32 characters,
+    wider than a phone's line: the family page's alert and its stand-in's break such a word
+    where they must, so the page never scrolls sideways and nothing is cut, and a problem
+    anywhere else keeps its own rules. The browser shows what this gives; here the rule is
+    pinned."""
+    for selector in ("#problem", "#problem-summary"):
+        assert any("overflow-wrap: anywhere;" in inside for inside in rules_named(selector)), (
+            selector
+        )
+    assert not any("overflow-wrap" in inside for inside in rules_named(".problem"))
+
+
 # ------------------------------------------------------------- a plan that could not be made
 
 
@@ -1161,6 +1210,81 @@ def test_a_step_with_no_reply_that_the_file_would_not_keep_promises_no_reply(
     assert after_the_failure(seen) == []
 
 
+STEP_FAILED = "That could not be saved, and nothing was changed. Try again."
+REPLIES = {"typed": TYPED, "blank": "", "spaces": "   "}
+STEP_REFUSALS = {
+    "a request already closed": (409, "accept"),
+    "no such request": (404, "accept"),
+    "a step no page sends": (422, "sideways"),
+}
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reply"),
+    [
+        *[(step, reply) for step in ("accept", "resolve") for reply in REPLIES],
+        *[(refusal, reply) for refusal in STEP_REFUSALS for reply in ("typed", "blank")],
+    ],
+)
+@pytest.mark.parametrize("reader", ["parent", "open"])
+def test_a_reply_is_said_to_be_below_only_when_one_was_typed(
+    reader: str,
+    outcome: str,
+    reply: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A take-up or a resolve the file refused says the reply is below only when one was
+    typed, and shows it there; a refusal whose family page can't be read shows a typed reply
+    and never says it is below. With no reply typed, neither the sentence nor the box."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        state = state_of(client)
+        asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
+        named = "0" * 32 if outcome == "no such request" else asked
+        if outcome == "a request already closed":
+            state.help_requests.resolve(asked, None)
+        step = STEP_REFUSALS[outcome][1] if outcome in STEP_REFUSALS else outcome
+        before = every_row(database_of(client))
+        with Statements(state) as seen:
+            if outcome in STEP_REFUSALS:
+                monkeypatch.setattr(
+                    state.drafts, "review_snapshot", refusing(sqlite3.DatabaseError, seen)
+                )
+            else:
+                monkeypatch.setattr(
+                    state.help_requests, outcome, refusing(sqlite3.OperationalError, seen)
+                )
+            answer = client.post(
+                f"/parent/actions/help/{named}",
+                data={"step": step, "response": REPLIES[reply]},
+                headers=PAGE_HEADERS,
+            )
+        monkeypatch.undo()
+        after = every_row(database_of(client))
+
+    refused = {
+        "a request already closed": f"request '{asked}' is resolved, so it cannot be taken up.",
+        "no such request": f"no help request '{named}'.",
+        "a step no page sends": "'sideways' is not one of the two moves, accept or resolve.",
+    }
+    if outcome in STEP_REFUSALS:
+        status, said = STEP_REFUSALS[outcome][0], f"{refused[outcome]} {FAMILY}"
+    else:
+        status, said = 500, HELP_STEP_FAILED if reply == "typed" else STEP_FAILED
+    main = store_free_page(answer, status=status, heading="Family review", alert=said)
+    below = reply == "typed" and outcome not in STEP_REFUSALS
+    assert ("Your reply is below." in main) is below
+    if reply == "typed":
+        assert '<label for="kept-reply">Reply, as typed</label>' in main
+        assert f'<textarea id="kept-reply" rows="3" readonly>{escape(TYPED)}</textarea>' in main
+    else:
+        assert "<textarea" not in main
+        assert "reply" not in main.lower()
+    assert after_the_failure(seen) == []
+    assert after == before
+
+
 # ------------------------------------------------------------- a page that is only read
 
 
@@ -1432,6 +1556,79 @@ def test_a_damaged_note_row_keeps_the_list_at_200() -> None:
 
     assert answer.status_code == 200
     assert "1 homework note cannot be read right now." in answer.text
+
+
+RECORD_PAGES = {
+    "her hand-in record on the list": [TO_TURN_IN, f"{HER_PAGE}?week={FIXTURE_WEEK}"],
+    "a claim about the date": [f"{HER_PAGE}?week={FIXTURE_WEEK}", DETAILS],
+    "her hand-in record on the details": [DETAILS],
+}
+
+
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+@pytest.mark.parametrize("record", list(RECORD_PAGES))
+def test_a_record_that_cannot_be_read_is_said_on_a_page_that_stands_with_no_word_of_a_change(
+    record: str, reader: str, tmp_path: pathlib.Path
+) -> None:
+    """A record that can't be read is said where it would be shown: which record, what is
+    left out for it, and what can't be saved until it can be read. A page that is only read
+    says nothing about a change, since nothing was pressed."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        state = state_of(client)
+        store = state.project_state
+        if record == "a claim about the date":
+            store.record_claims(
+                ESSAY_ID,
+                [
+                    SourceRecord(
+                        channel=SourceChannel.EMAIL,
+                        asserted_value="2026-08-28",
+                        observed_at=state.clock.now(),
+                        confidence=0.8,
+                        seen_in="day header",
+                    )
+                ],
+            )
+            store._connection.execute(
+                "UPDATE date_claims SET active = 2 WHERE assignment_id = ?", (ESSAY_ID,)
+            )
+        else:
+            hand_in_saved(client, NEEDS_HAND_IN, None)
+            store._connection.execute(
+                "UPDATE hand_in_events SET state = 'invalid-state' WHERE assignment_id = ?",
+                (ESSAY_ID,),
+            )
+        store._connection.commit()
+        before = every_row(database_of(client))
+        answers = [client.get(page, headers=PAGE_HEADERS) for page in RECORD_PAGES[record]]
+        after = every_row(database_of(client))
+
+    whose = "Her" if reader == "parent" else "Your"
+    for answer in answers:
+        assert answer.status_code == 200
+        main = main_of(answer.text)
+        assert "Nothing was changed" not in main
+        if record == "a claim about the date":
+            assert (
+                '<p class="source">A claim about this date cannot be read right now. The date is '
+                "shown without it.</p>"
+            ) in main
+        elif record == "her hand-in record on the list":
+            found = re.search(
+                rf'<p class="problem">{whose} hand-in record cannot be read right now for: .*?</p>',
+                main,
+                re.S,
+            )
+            assert found is not None
+            assert ESSAY_TITLE in found.group()
+            assert found.group().endswith(". It may belong on this list.</p>")
+        else:
+            assert (
+                f'<p class="problem">{whose} hand-in record for this assignment cannot be read '
+                "right now, so it is not shown. Nothing can be saved here until it can be read.</p>"
+            ) in main
+    assert after == before
 
 
 # ------------------------------------------------------------- the file held by another program

@@ -15,13 +15,21 @@ import re
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
+from datetime import date
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.captures import STUDENT, CaptureCreated, UnknownCapture, UnreadableCapture
+from blossom.captures import (
+    STUDENT,
+    CaptureCreated,
+    CaptureNotSaved,
+    UnknownCapture,
+    UnreadableCapture,
+)
+from blossom.hand_in import NEEDS_HAND_IN
 from blossom.reconciliation import SourceChannel
 from blossom.routes import note_details as details_routes
 from blossom.routes import note_links as link_routes
@@ -36,8 +44,8 @@ from blossom.routes.navigation import (
     note_link_action,
     note_search_href,
     note_unlink_action,
+    week_href,
 )
-from blossom.settings import REPOSITORY_ROOT
 from tests.support import (
     NOTE_AT,
     NOTE_DAY,
@@ -55,7 +63,9 @@ from tests.support import (
     main_of,
     promote_note,
     refusing,
+    rules_named,
     sign_in_as,
+    spy_on_stores,
     state_of,
     store_free_page,
     ways_back_of,
@@ -77,6 +87,7 @@ NOTE_NOT_SHOWN = "This homework note can't be shown right now."
 FORM_NOT_SHOWN = "The form can't be shown right now. What was typed is still here."
 SEARCH_NOT_SHOWN = "The search can't be shown right now. Your search words are still here."
 NOT_SAVED = "That could not be saved, and nothing was changed. What was typed is still here."
+NOT_A_PARENTS_PRESS = "Sign in as a parent to add details here. Nothing was saved."
 TYPED = "Kept <b>words</b>\nand a second line"
 READS = [("OperationalError", sqlite3.OperationalError), ("DatabaseError", sqlite3.DatabaseError)]
 
@@ -909,6 +920,189 @@ def test_a_link_to_homework_gone_from_the_record_is_said_as_before_when_the_sear
     )
 
 
+# ------------------------------------------------------------- an unlink whose note can't be shown
+
+
+UNLINKS = {
+    "a form that is not whole": (
+        422,
+        "That form carried a field twice, or one this page does not send, so nothing was saved.",
+    ),
+    "a page that is behind": (409, "This note changed while you were away, so nothing was saved."),
+    "a note not joined to homework": (
+        409,
+        "This note is not joined to homework that was here before it, so there is no link to "
+        "change or to unlink. Nothing was changed.",
+    ),
+    "a note not on record": (404, NOT_SAVED),
+    "a write the file refuses": (500, NOT_SAVED),
+}
+"""Each way an unlink is refused or not saved, its status, and its words where its note's
+details are not shown."""
+READS_AGAIN = [
+    ("sound_capture_history", sqlite3.OperationalError),
+    ("all_assignments", sqlite3.DatabaseError),
+]
+"""Where an unlink's details fail as they are read again for its answer: the note's own read,
+or a later read of the page, and the two kinds of failure a read meets. A note not on record
+has no page to read after its own read, so it meets only the first."""
+UNLINK_TREES = [("her", False), ("parent", True), ("open", False), ("open", True)]
+"""Who presses an unlink, and through which tree: her own tree is hers, the family's a
+parent's, and both are open with the sign-in off."""
+
+
+def unlink_press(
+    client: TestClient, case: str, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, dict[str, str], str]:
+    """A note joined to homework, and the unlink press ``case`` makes: the name it is made on,
+    the form, and the homework the form names."""
+    store = state_of(client).project_state
+    name = a_note(client)
+    homework = link_note(store, name).assignment_id
+    now = revision_of(client, name)
+    form = {"revision": str(now), "from": homework}
+    if case == "a form that is not whole":
+        form = {**form, "status": "done"}
+    elif case == "a page that is behind":
+        form = {**form, "revision": str(now - 1)}
+    elif case == "a note not joined to homework":
+        name = a_note(client, "Reading log")
+        form = {**form, "revision": "1"}
+    elif case == "a note not on record":
+        name = str(uuid4())
+    elif case == "a write the file refuses":
+
+        def refused(capture_id: str, **_: object) -> None:
+            raise CaptureNotSaved(capture_id, sqlite3.OperationalError("database is locked"))
+
+        monkeypatch.setattr(store, "unlink_capture", refused)
+    return name, form, homework
+
+
+@pytest.mark.parametrize(
+    ("case", "place", "kind"),
+    [
+        (case, place, kind)
+        for case in UNLINKS
+        for place, kind in READS_AGAIN
+        if case != "a note not on record" or place == "sound_capture_history"
+    ],
+)
+@pytest.mark.parametrize(("reader", "family"), UNLINK_TREES)
+def test_an_unlink_whose_details_cannot_be_read_says_after_its_words_that_the_note_cannot_be_shown(
+    case: str,
+    place: str,
+    kind: type[Exception],
+    reader: str,
+    family: bool,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unlink refused, or one the file would not save, whose details then can't be read
+    is said on the page that reads no store: its own words and status, then once that the
+    note can't be shown, and nothing about search words or typing the press never had."""
+    status, said = UNLINKS[case]
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        name, form, homework = unlink_press(client, case, monkeypatch)
+        before = every_row(database_of(client))
+        with Statements(state_of(client)) as seen:
+            monkeypatch.setattr(state_of(client).project_state, place, refusing(kind, seen))
+            answer = client.post(
+                note_unlink_action(name, family=family), data=form, headers=PAGE_HEADERS
+            )
+        monkeypatch.undo()
+        after = every_row(database_of(client))
+
+    main = store_free_page(
+        answer, status=status, heading="Nothing was saved", alert=f"{said} {NOTE_NOT_SHOWN}"
+    )
+    assert main.count(str(escape(NOTE_NOT_SHOWN))) == 1
+    assert f'Link shown on your form: <span class="authored-text">{homework}</span>' in main
+    assert "Search words" not in main
+    assert "Homework chosen" not in main
+    assert after_the_failure(seen) == []
+    assert after == before
+
+
+@pytest.mark.parametrize(("reader", "family"), [("her", False), ("parent", True)])
+@pytest.mark.parametrize("case", ["a form that is not whole", "a write the file refuses"])
+def test_an_unlink_while_the_file_is_held_says_the_note_cannot_be_shown_and_lands_once_after(
+    case: str, reader: str, family: bool, tmp_path: pathlib.Path
+) -> None:
+    """With the file held by another program, an unlink that is not whole is refused and a
+    whole one is not saved, and either way its details can't be read back: the page says so
+    after the unlink's own words. Once the file is free, the whole press unlinks once."""
+    status, said = UNLINKS[case]
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        store = state_of(client).project_state
+        name = a_note(client)
+        homework = link_note(store, name).assignment_id
+        whole = {"revision": str(revision_of(client, name)), "from": homework}
+        form = {**whole, "status": "done"} if case == "a form that is not whole" else whole
+        action = note_unlink_action(name, family=family)
+        before = every_row(database_of(client))
+        with HeldByAnother(database_of(client)):
+            answer = client.post(action, data=form, headers=PAGE_HEADERS)
+        after = every_row(database_of(client))
+        again = client.post(action, data=whole, headers=PAGE_HEADERS)
+        found = store.sound_capture_history(name)
+
+    store_free_page(
+        answer, status=status, heading="Nothing was saved", alert=f"{said} {NOTE_NOT_SHOWN}"
+    )
+    assert after == before
+    assert again.status_code == 303
+    assert found is not None
+    assert found[0].assignment_id is None
+
+
+@pytest.mark.parametrize(
+    ("case", "status", "said"),
+    [
+        ("her press in the family's tree", 403, NOT_A_PARENTS_PRESS),
+        ("a name that is no note's", 404, "This homework note is not on record."),
+        ("a note not on record, its later reads failing", 404, NOT_SAVED),
+    ],
+)
+def test_an_unlink_whose_details_are_never_read_adds_no_line_about_the_note(
+    case: str,
+    status: int,
+    said: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unlink answered before its details are read, or whose note is not on record, meets
+    no page that fails, so its words stand alone."""
+    with household_client("her", tmp_path) as client:
+        sign_in_as(client, "her")
+        name = a_note(client)
+        homework = link_note(state_of(client).project_state, name).assignment_id
+        form = {"revision": str(revision_of(client, name)), "from": homework}
+        action = note_unlink_action(name)
+        if case == "her press in the family's tree":
+            action = note_unlink_action(name, family=True)
+        elif case == "a name that is no note's":
+            action = note_unlink_action("not-a-note")
+        else:
+            action = note_unlink_action(str(uuid4()))
+        with Statements(state_of(client)) as seen:
+            for place in ("sound_capture_history", "all_assignments"):
+                monkeypatch.setattr(
+                    state_of(client).project_state, place, refusing(sqlite3.OperationalError, seen)
+                )
+            if case == "a note not on record, its later reads failing":
+                monkeypatch.setattr(
+                    state_of(client).project_state, "sound_capture_history", lambda _: None
+                )
+            answer = client.post(action, data=form, headers=PAGE_HEADERS)
+
+    main = store_free_page(answer, status=status, heading="Nothing was saved", alert=said)
+    assert str(escape(NOTE_NOT_SHOWN)) not in main
+    assert "FAILED HERE" not in seen
+
+
 # ------------------------------------------------------------- a note that can't be decoded
 
 
@@ -981,7 +1175,9 @@ def test_an_unlink_refused_whose_details_cannot_be_read_is_said_without_them(
         monkeypatch.undo()
         after = every_row(database_of(client))
 
-    main = store_free_page(answer, status=status, heading="Nothing was saved", alert=said)
+    main = store_free_page(
+        answer, status=status, heading="Nothing was saved", alert=f"{said} {NOTE_NOT_SHOWN}"
+    )
     assert homework.assignment_id in main
     assert after_the_failure(seen) == []
     assert after == before
@@ -1158,19 +1354,143 @@ def test_a_save_on_homework_gone_from_the_record_keeps_her_words_when_today_cann
     assert after_the_failure(seen) == []
 
 
+GONE = "assignment-not-here"
+WEEK_DEFAULT = (week_href(None, GONE, show=GONE), "Back to the week")
+FAMILY_DEFAULT = (f"/parent?focus={GONE}#update-{GONE}", "Back to family review")
+CHECKED_BACKS = [
+    (
+        {"return_to": "week", "week": "2026-08-10"},
+        (week_href(date(2026, 8, 10), GONE, show=GONE), "Back to the week"),
+        False,
+    ),
+    ({"return_to": "to_turn_in"}, ("/student/to-turn-in#to-turn-in", "Back to To turn in"), False),
+    ({"return_to": "today"}, ("/student/due-this-week#today", "Back to Today"), True),
+    ({"return_to": "family"}, FAMILY_DEFAULT, False),
+    (
+        {"return_to": "family", "plan_id": "draft:a"},
+        ("/parent?plan=draft%3Aa#plan-draft-a", "Back to family review"),
+        True,
+    ),
+]
+"""Each way back these pages write, where the gone page's link leads while no plan can be
+read, and whether the link tries to read one on the way. Her own device never writes the
+family page's."""
+UNCHECKED_BACKS = [
+    {},
+    {"return_to": "month"},
+    {"return_to": "WEEK"},
+    {"return_to": "week", "week": "2026-13-01"},
+    {"return_to": "week", "week": "0001-01-03"},
+    {"return_to": "today", "week": "2026-08-17"},
+    {"return_to": "week", "plan_id": "draft:a"},
+    {"return_to": "family", "plan_id": "p" * 201},
+    {"week": "2026-08-17"},
+    {"plan_id": "draft:a"},
+]
+"""A way back left out, and ways back no page of these writes: a place that is not one of
+the four, a week that is no day or none her week can show, a week or a plan beside a place
+that takes neither, a plan too long to be one, and a week or a plan with no place."""
+FAMILY_FOR_HER = [{"return_to": "family"}, {"return_to": "family", "plan_id": "draft:a"}]
+"""The family page named by her own signed-in device, which no page of hers writes."""
+GONE_PRESSES = [
+    ("details", "her"),
+    ("details", "parent"),
+    ("details", "open"),
+    *[
+        (press, reader)
+        for press in ("update", "undo", "hand-in", "hand-in undo")
+        for reader in ("her", "open")
+    ],
+]
+"""What reaches the gone page, and who: the details asked for by anyone, and each press the
+details make, by anyone they are open to."""
+
+
+def gone_press(client: TestClient, press: str, back: dict[str, str]) -> Answer:
+    """``press`` on work gone from the record, from its details, carrying ``back`` as its way
+    back."""
+    if press == "details":
+        return client.get(f"/student/assignments/{GONE}", params=back, headers=PAGE_HEADERS)
+    route, fields = {
+        "update": (
+            "report",
+            {"status": "done", "note": TYPED, "expected_report_id": "", "report_view": "detail"},
+        ),
+        "undo": ("undo-report", {"report_id": "report-not-here", "report_view": "detail"}),
+        "hand-in": (
+            "hand-in",
+            {"state": NEEDS_HAND_IN, "next_action": "", "note": TYPED, "expected_hand_in_id": ""},
+        ),
+        "hand-in undo": ("undo-hand-in", {"hand_in_id": "hand-in-not-here"}),
+    }[press]
+    return client.post(
+        f"/student/actions/assignments/{GONE}/{route}",
+        data={**fields, "return_to": "", "week": "", "plan_id": "", **back},
+        headers=PAGE_HEADERS,
+    )
+
+
+def fail_the_plans(monkeypatch: pytest.MonkeyPatch, client: TestClient, calls: list[str]) -> None:
+    """Mark every store call in ``calls``, and make both reads of a plan a way back can make
+    fail, marked where they fail."""
+    state = state_of(client)
+    spy_on_stores(monkeypatch, state, calls)
+    monkeypatch.setattr(state.drafts, "latest_for", refusing(sqlite3.OperationalError, calls))
+    monkeypatch.setattr(state.drafts, "get", refusing(sqlite3.DatabaseError, calls))
+
+
+@pytest.mark.parametrize(("press", "reader"), GONE_PRESSES)
+def test_the_gone_pages_way_back_follows_the_checked_way_back_with_no_call_after_a_failure(
+    press: str, reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Work gone from the record is said on its small page with the way back the address or
+    the form carried, checked. When the plan that way back looks up can't be read, the link
+    is made from the checked values alone, and nothing is asked of any store after the
+    failure."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        for back, (href, label), reads in CHECKED_BACKS:
+            if reader == "her" and back in FAMILY_FOR_HER:
+                continue
+            with Statements(state_of(client)) as seen:
+                fail_the_plans(monkeypatch, client, seen)
+                answer = gone_press(client, press, back)
+            monkeypatch.undo()
+
+            assert answer.status_code == 404, (back, answer.text[:300])
+            main = main_of(answer.text)
+            assert "This assignment is not on record now." in main
+            assert ways_back_of(main) == [(str(escape(href)), label)], back
+            assert ("FAILED HERE" in seen) is reads, back
+            if reads:
+                assert after_the_failure(seen) == [], back
+
+
+@pytest.mark.parametrize(("press", "reader"), GONE_PRESSES)
+def test_the_gone_pages_way_back_is_the_safe_default_when_none_these_pages_make_is_named(
+    press: str, reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A way back left out, or one no page of these writes, gives the reader's safe default,
+    the family page at the row for a parent and her week for anyone else, and looks no plan
+    up, so a plan that can't be read changes nothing."""
+    href, label = FAMILY_DEFAULT if reader == "parent" else WEEK_DEFAULT
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        for back in UNCHECKED_BACKS + (FAMILY_FOR_HER if reader == "her" else []):
+            calls: list[str] = []
+            fail_the_plans(monkeypatch, client, calls)
+            answer = gone_press(client, press, back)
+            monkeypatch.undo()
+
+            assert answer.status_code == 404, (back, answer.text[:300])
+            main = main_of(answer.text)
+            assert "This assignment is not on record now." in main
+            assert ways_back_of(main) == [(str(escape(href)), label)], back
+            assert "FAILED HERE" not in calls, back
+            assert not [call for call in calls if call.startswith("drafts.")], (back, calls)
+
+
 # ------------------------------------------------------------- the small page's Try again
-
-
-def rules_named(selector: str) -> list[str]:
-    """The declarations of every rule of the stylesheet whose selector list holds
-    ``selector`` itself."""
-    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
-    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
-    return [
-        inside
-        for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain)
-        if selector in (part.strip() for part in head.split(","))
-    ]
 
 
 def test_the_small_pages_explanation_is_outlined_and_its_try_again_is_as_tall_as_a_control() -> (

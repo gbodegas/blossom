@@ -120,5 +120,5 @@
   <p class="note">Sign in as the student to update.</p>
 {% endif %}
 {% if unreadable %}
-  <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record cannot be read right now for: {% for row in unreadable %}<a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=back) }}">{{ row.title }}<span class="visually-hidden">, {{ row.course }}: Turning it in</span></a> ({{ row.course }}){% if not loop.last %}, {% endif %}{% endfor %}. It may belong on this list. Nothing was changed.</p>
+  <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record cannot be read right now for: {% for row in unreadable %}<a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to=back) }}">{{ row.title }}<span class="visually-hidden">, {{ row.course }}: Turning it in</span></a> ({{ row.course }}){% if not loop.last %}, {% endif %}{% endfor %}. It may belong on this list.</p>
 {% endif %}

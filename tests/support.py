@@ -24,6 +24,7 @@ from typing import Annotated, Any, Protocol
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from langchain_core.callbacks.manager import CallbackManager
@@ -1436,3 +1437,43 @@ def store_free_page(
     for never in STORE_FREE_NEVER:
         assert never not in main, never
     return main
+
+
+STORES = ("project_state", "drafts", "workload_signals", "help_requests")
+"""The four stores a page reads the household's file through."""
+
+
+def spy_on_stores(
+    monkeypatch: pytest.MonkeyPatch, state: ApplicationState, calls: list[str]
+) -> None:
+    """Mark in ``calls`` every public method of the four stores as it is called, by store and
+    method, so a page can be shown to call none of them after a marked failure."""
+    for store_name in STORES:
+        store = getattr(state, store_name)
+        for name in dir(type(store)):
+            if name.startswith("_") or not callable(getattr(store, name)):
+                continue
+            real = getattr(store, name)
+
+            def counted(
+                *given: object,
+                real: Callable[..., object] = real,
+                called: str = f"{store_name}.{name}",
+                **named: object,
+            ) -> object:
+                calls.append(called)
+                return real(*given, **named)
+
+            monkeypatch.setattr(store, name, counted)
+
+
+def rules_named(selector: str) -> list[str]:
+    """The declarations of every rule of the stylesheet whose selector list holds
+    ``selector`` itself."""
+    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    return [
+        inside
+        for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain)
+        if selector in (part.strip() for part in head.split(","))
+    ]

@@ -2061,8 +2061,7 @@ def test_a_refused_form_that_reads_no_store_names_the_assignment_the_choice_join
 # ------------------------------------------------------------------ the rows of work due later
 
 DATE_CLAIM_UNREADABLE = (
-    "A claim about this date cannot be read right now. The date is shown without it. "
-    "Nothing was changed."
+    "A claim about this date cannot be read right now. The date is shown without it.</p>"
 )
 
 

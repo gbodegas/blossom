@@ -52,7 +52,7 @@
       <p class="problem" id="hand-in-problem-{{ key }}" tabindex="-1">{{ hc.problem }}</p>
     {% endif %}
     {% if hi.unavailable %}
-      <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record for this assignment cannot be read right now, so it is not shown. Nothing was changed, and nothing can be saved here until it can be read.</p>
+      <p class="problem">{% if mine %}Your{% else %}Her{% endif %} hand-in record for this assignment cannot be read right now, so it is not shown. Nothing can be saved here until it can be read.</p>
       {#
         A save refused over such a record has no form to come back to, so what
         she chose and wrote is shown as she sent it, read-only, never what is

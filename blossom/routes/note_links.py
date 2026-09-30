@@ -51,6 +51,7 @@ from blossom.homework_search import QUERY_MAX_LENGTH, found, page_number, page_o
 from blossom.routes.captures import (
     NOTE_CHANGED,
     NOTE_GONE,
+    NOTE_NOT_SHOWN,
     NOTE_UNREADABLE,
     gone,
     note_unavailable,
@@ -365,7 +366,8 @@ def plain_search(
     search words and the choice, to copy. ``refused`` says the page answers a press by the
     one the tree is not open to, whose words are a copy of that request, said under a
     heading of their own as not saved, and only when the copy holds something to show.
-    ``line`` says the search page can't be shown, after the refusal's own words."""
+    ``line`` says which page can't be shown, the search or the note's, after the refusal's
+    own words."""
     try:
         name: str | None = capture_id_from(form.capture_id)
     except NotACaptureId:
@@ -572,7 +574,9 @@ def unlink_or_plain(
 ) -> HTMLResponse:
     """The details page, where the unlink press lives, with the refusal said first and the
     record read once for what stands now; when that page cannot be made, or the name is no
-    note's, the plain page that reads no store, with the homework the form named kept."""
+    note's, the plain page that reads no store, with the homework the form named kept. When
+    the page fails as it is read, the refusal or the failed save is said as it reads without
+    it, then that the note can't be shown."""
     try:
         name = capture_id_from(form.capture_id)
     except NotACaptureId:
@@ -601,7 +605,12 @@ def unlink_or_plain(
     except Exception:
         logger.exception("the details page could not be read back after a refused unlink")
         return plain_search(
-            request, state, form, SEARCH_WITHOUT_THE_PAGE.get(problem, problem), status_code
+            request,
+            state,
+            form,
+            SEARCH_WITHOUT_THE_PAGE.get(problem, problem),
+            status_code,
+            line=NOTE_NOT_SHOWN,
         )
 
 
