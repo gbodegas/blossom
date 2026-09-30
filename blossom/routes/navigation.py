@@ -225,6 +225,14 @@ def hand_in_result_anchor(assignment_id: str) -> str:
     return f"hand-in-result-{segment(assignment_id)}"
 
 
+def update_choice_anchor(assignment_id: str) -> str:
+    """The id of the group of choices in her update's form for one assignment, where Change
+    on a card of her week and an address that asks to change the card land. The page writes
+    the id with this and the form names it with this, so the two agree whatever the
+    assignment's id holds."""
+    return f"update-choice-{segment(assignment_id)}"
+
+
 @dataclass(frozen=True)
 class ReturnTo:
     """Where an assignment's details send their reader back to, as data."""

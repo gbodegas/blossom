@@ -31,6 +31,7 @@ from blossom.routes import runs as run_routes
 from blossom.routes import student as student_routes
 from blossom.routes.navigation import details_href, week_href
 from tests.support import (
+    DETAILS,
     ESSAY_ID,
     ESSAY_TITLE,
     FIXTURE_WEEK,
@@ -38,6 +39,8 @@ from tests.support import (
     MISSING_EMAIL,
     PAGE_HEADERS,
     PLAN_DATE,
+    REPORT,
+    UNDO,
     HeldByAnother,
     Statements,
     after_the_failure,
@@ -62,11 +65,8 @@ from tests.support import (
     ways_back_of,
 )
 
-REPORT = f"/student/actions/assignments/{ESSAY_ID}/report"
-UNDO = f"/student/actions/assignments/{ESSAY_ID}/undo-report"
 HAND_IN = f"/student/actions/assignments/{ESSAY_ID}/hand-in"
 UNDO_HAND_IN = f"/student/actions/assignments/{ESSAY_ID}/undo-hand-in"
-DETAILS = f"/student/assignments/{ESSAY_ID}"
 TO_TURN_IN = "/student/to-turn-in"
 GONE_ID = "assignment-not-here"
 TYPED = "Kept <b>words</b>\nand a second line"

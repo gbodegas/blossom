@@ -59,7 +59,9 @@ from tests.support import (
     HERS,
     PAGE_HEADERS,
     PLAN_DATE,
+    QUIZ_ID,
     SAME_ORIGIN,
+    SYLLABUS_ID,
     THEIRS,
     ZONE,
     accepting,
@@ -87,11 +89,8 @@ from tests.support import (
 LMS, EMAIL = SourceChannel.LMS, SourceChannel.EMAIL
 FAMILY = SourceChannel.PARENT_ENTRY
 A19, A20, A21, A22, A23 = (date(2026, 8, day) for day in (19, 20, 21, 22, 23))
-QUIZ_ID = "assignment-vocabulary-quiz"
 TEXTBOOK_ID = "assignment-textbook-cover"
-SYLLABUS_ID = "assignment-signed-syllabus"
 ALGEBRA_ID = "assignment-algebra-set"
-READING_LOG_ID = "assignment-reading-log"
 SCIENCE_ID = "assignment-science-fair-proposal"
 LINK = "See what is on record now"
 X = "A claim about this date cannot be read right now, so what the sources say is not fully known."

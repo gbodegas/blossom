@@ -301,7 +301,8 @@ def test_her_page_offers_the_press_and_then_lists_the_request_with_a_way_back() 
     assert "<q>the outline</q>" in after
     assert "Waiting for a parent to respond." in after
     assert f'action="/student/actions/take-back-help/{request_id}"' in after
-    assert '>Take it back<span class="visually-hidden">: your request from ' in after
+    assert 'aria-label="Take it back: your request from ' in after
+    assert ">Take it back</button>" in after
     assert 'aria-label="Take back' not in after
     assert taken_back.status_code == 303
     assert "You asked for help" not in again

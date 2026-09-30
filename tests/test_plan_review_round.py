@@ -29,6 +29,7 @@ from blossom.routes.runs import plan_graphs
 from blossom.routes.student import BAD_RETURN, NOT_SAVED, NOT_UNDONE
 from blossom.stores.drafts import DraftsStore
 from tests.support import (
+    DETAILS,
     ESSAY_ID,
     FIXTURE_TIMEZONE,
     FIXTURE_WEEK,
@@ -50,7 +51,6 @@ from tests.support import (
     walkthrough,
 )
 
-DETAILS = f"/student/assignments/{ESSAY_ID}"
 ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
 UNAVAILABLE = "The saved text is shown because this plan's structured view is unavailable."
 

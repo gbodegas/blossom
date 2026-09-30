@@ -14,7 +14,7 @@ import json
 import pathlib
 import re
 import sqlite3
-from datetime import UTC, date, datetime
+from datetime import date
 from html import unescape
 from urllib.parse import urlencode
 
@@ -59,6 +59,7 @@ from tests.support import (
     ESSAY_ID,
     ESSAY_TITLE,
     HERS,
+    NOW,
     PAGE_HEADERS,
     PLAN_DATE,
     THEIRS,
@@ -76,7 +77,6 @@ from tests.support import (
 A = "Outline three causes before drafting."
 B = "Compare two canals in the conclusion."
 C = "Cite the map handout."
-NOW = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
 TODAY = date(2026, 8, 19)
 PAGE = instructions_review_href(ESSAY_ID)
 ACTION = instructions_action_href(ESSAY_ID)

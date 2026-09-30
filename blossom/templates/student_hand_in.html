@@ -36,6 +36,7 @@
 {% set at_state = hc and hc.field == "state" %}
 {% set at_action = hc and hc.field == "next_action" %}
 {% set at_note = hc and hc.field == "note" %}
+{% set keep_words = "Not now" if hi.state is none else "Keep it as it is" %}
 {#
   After a Done save on this page her update's result offers the hand-in update
   once, beside what she just did. It stands in for this section's own opener
@@ -142,13 +143,13 @@
           {% endfor %}
           <div class="actions">
             <button type="submit" class="primary" aria-label="{% if hc.unsaved %}Save again: your hand-in update{% else %}Save hand-in update{% endif %} for {{ assignment.title }}, {{ assignment.course }}">{% if hc.unsaved %}Save again{% else %}Save hand-in update{% endif %}</button>
-            <a class="cancel" href="{{ hand_in_links.keep }}">{% if hi.state is none %}Not now{% else %}Keep it as it is{% endif %}<span class="visually-hidden">: the hand-in status for {{ assignment.title }}, {{ assignment.course }}</span></a>
+            <a class="cancel" href="{{ hand_in_links.keep }}" aria-label="{{ keep_words }}: the hand-in status for {{ assignment.title }}, {{ assignment.course }}">{{ keep_words }}</a>
           </div>
         </form>
       {% endif %}
       {% if hi.history|length > 1 %}
         <details class="steps history">
-          <summary>Hand-in history<span class="visually-hidden"> for {{ assignment.title }}</span></summary>
+          <summary>Hand-in history<span class="visually-hidden"> for {{ assignment.title }}, {{ assignment.course }}</span></summary>
           <p class="history-label">{% if mine %}Your hand-in updates{% else %}Student hand-in updates{% endif %}</p>
           <ol>
             {% for row in hi.history %}

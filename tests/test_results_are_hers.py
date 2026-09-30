@@ -36,11 +36,15 @@ from blossom.routes.student import (
 )
 from blossom.to_turn_in import BACK_ON_THE_LIST, TURNED_IN_FROM_THE_LIST
 from tests.support import (
+    DETAILS,
     ESSAY_ID,
     HER_PAGE,
     HERS,
+    LATER_WEEK,
     PAGE_HEADERS,
+    REPORT,
     THEIRS,
+    UNDO,
     Answer,
     browser,
     card_for,
@@ -56,14 +60,10 @@ from tests.support import (
     whole_form,
     words,
 )
+from tests.support import READING_LOG_ID as LOG
 
 READERS: Final = ("her", "a parent", "sign-in off")
-LOG: Final = "assignment-reading-log"
-LATER_WEEK: Final = "2026-08-24"
-DETAILS: Final = f"/student/assignments/{ESSAY_ID}"
 ACTIONS: Final = f"/student/actions/assignments/{ESSAY_ID}"
-REPORT: Final = f"{ACTIONS}/report"
-UNDO: Final = f"{ACTIONS}/undo-report"
 HAND_IN: Final = f"{ACTIONS}/hand-in"
 UNDO_HAND_IN: Final = f"{ACTIONS}/undo-hand-in"
 DONE: Final = "Student update: Done"
