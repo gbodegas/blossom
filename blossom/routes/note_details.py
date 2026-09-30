@@ -66,6 +66,7 @@ from blossom.routes.captures import (
     NOTE_GONE,
     NOTE_UNREADABLE,
     gone,
+    note_unavailable,
     reads_as_a_day,
     revision_of,
     shown_day,
@@ -74,13 +75,16 @@ from blossom.routes.captures import (
 )
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of, kept_fields_of
 from blossom.routes.hand_in import accepted_at
-from blossom.routes.navigation import NOTE_RESULT, note_href
+from blossom.routes.navigation import NOTE_RESULT, asked_address, note_add_href, note_href
 from blossom.routes.student import (
     BAD_FORM,
     NOT_HERS_TO_UPDATE,
+    WITHOUT_THE_PAGE,
+    ReturnLink,
     State,
     parent_reads,
     templates,
+    unavailable_page,
     viewer_of,
 )
 from blossom.stores.project_state import Assignment
@@ -141,6 +145,52 @@ ALREADY_IN_HOMEWORK: Final = (
     "This note is already in homework, so nothing was saved. What it was added with is shown "
     "here, and what was typed is kept to copy."
 )
+
+DETAILS_UNAVAILABLE: Final = "This page can't be shown right now. Try again in a moment."
+"""What the details page says when the file can't be read as it is made."""
+FORM_NOT_SHOWN: Final = "The form can't be shown right now. What was typed is still here."
+"""The line a refusal adds after its own words when the details page can't be read."""
+DETAILS_WITHOUT_THE_PAGE: Final[dict[str, str]] = {
+    **WITHOUT_THE_PAGE,
+    CHOOSE_ABOUT_THESE: (
+        "Homework with this class and title is already here, so nothing was added yet."
+    ),
+    CHOICE_IS_PAST: (
+        "The homework that choice was about has changed since the page was opened, so nothing "
+        "was added yet."
+    ),
+    NEEDS_A_CLASS: "Nothing was saved, because no class was chosen.",
+    CLASS_NOT_OFFERED: (
+        "Nothing was saved, because the class chosen before is not in the list now."
+    ),
+    CLASS_TYPED_AND_CHOSEN: "Nothing was saved, because a class is chosen and another is typed.",
+    NEEDS_A_TITLE: "Nothing was added, because the homework needs a title.",
+    LONG_CLASS: (
+        f"Nothing was saved, because the class is longer than {CAPTURE_COURSE_MAX_LENGTH} "
+        "characters."
+    ),
+    LONG_TITLE: (
+        f"Nothing was saved, because the title is longer than {CAPTURE_TITLE_MAX_LENGTH} "
+        "characters."
+    ),
+    LONG_NOTE: (
+        f"Nothing was saved, because the note is longer than {CAPTURE_NOTE_MAX_LENGTH} characters."
+    ),
+    ONE_LINE: "Nothing was saved, because the class or the title is on more than one line.",
+    UNKEPT: "Nothing was saved, because it has a character Blossom cannot keep.",
+    NOT_A_KIND: "Nothing was saved, because neither Homework nor Task was chosen.",
+    DATE_UNREADABLE: "That date could not be read, so nothing was saved yet.",
+    DATE_AND_TICK: (
+        "Nothing was saved, because a date was picked and the box that leaves the due date "
+        "out was ticked."
+    ),
+    DATE_NEEDS_A_CHOICE: "Nothing was saved, because a date was given that could not be read.",
+    NOTE_CHANGED: "This note changed while you were away, so nothing was saved.",
+    ALREADY_IN_HOMEWORK: "This note is already in homework, so nothing was saved.",
+}
+"""Each refusal of the details page, as it reads where that page is not shown: a sentence
+that points at the page goes, and a rule about a field says what was not saved and why.
+Any other refusal reads the same in both places."""
 
 ADD_MAY_BE_ABSENT: Final = frozenset({"date_pending", "date_refused", "without_date", "candidate"})
 """What a browser leaves out of the form: the mark and the refused words when no day was
@@ -605,13 +655,15 @@ def plain_details(
     *,
     back_to_the_note: bool = True,
     refused: bool = False,
+    line: str | None = None,
 ) -> HTMLResponse:
     """The page for a refused press whenever the page with the form cannot be made: the note
     cannot be read, it is not on record, or the file cannot be read. It reads no store, tries
     nothing again, and keeps every detail that was typed or chosen, to copy. ``refused`` says
     the page answers a press by the one the tree is not open to, whose details are a copy of
     that request, said under a heading of their own as not saved, and only when the copy
-    holds something to show."""
+    holds something to show. ``line`` says the details page can't be shown, after the
+    refusal's own words."""
     return templates.TemplateResponse(
         request,
         "student_update_recovery.html",
@@ -619,6 +671,7 @@ def plain_details(
             "card": None,
             "hand_in_card": None,
             "note_problem": problem,
+            "page_line": line,
             "details_form": form,
             "unsaved_copy": refused,
             "help_note": form.capture_id if back_to_the_note else None,
@@ -682,19 +735,19 @@ def details_page(
     store = state.project_state
     try:
         found = found if found is not None else store.sound_capture_history(capture_id)
-    except sqlite3.Error:
+    except sqlite3.Error as error:
         if form is not None:
             raise
-        logger.exception("the note %s could not be read to add it to homework", capture_id)
-        return unreadable(request, state, status_code)
+        return note_unavailable(request, state, note_add_href(capture_id, family=way.family), error)
     except UnreadableCapture:
         if form is None:
             return unreadable(request, state, status_code)
+        # A save the file refused keeps its own words; a refusal says the note can't be read.
         return plain_details(
             request,
             state,
             form,
-            NOTE_UNREADABLE,
+            problem if problem == NOT_SAVED else NOTE_UNREADABLE,
             standing_in(status_code, status.HTTP_500_INTERNAL_SERVER_ERROR),
         )
     if found is None:
@@ -789,7 +842,9 @@ def details_or_plain(
     choosing: bool = False,
 ) -> HTMLResponse:
     """The page with a refusal said first, tried once; when the page cannot be read back, the
-    plain page that reads no store and keeps everything that was typed."""
+    plain page that reads no store and keeps everything that was typed. A refusal that points
+    at the page is said there as it reads without it, with the line that says the page can't
+    be shown; a save the file refused, and any other message, stays as it is."""
     try:
         return details_page(
             request,
@@ -803,7 +858,16 @@ def details_or_plain(
         )
     except Exception:
         logger.exception("a note's details page could not be read back after a refusal")
-        return plain_details(request, state, form, problem, status_code)
+        if problem not in DETAILS_WITHOUT_THE_PAGE:
+            return plain_details(request, state, form, problem, status_code)
+        return plain_details(
+            request,
+            state,
+            form,
+            DETAILS_WITHOUT_THE_PAGE[problem],
+            status_code,
+            line=FORM_NOT_SHOWN,
+        )
 
 
 def classes_on_record(state: ApplicationState) -> list[str] | None:
@@ -879,12 +943,27 @@ async def refused_press(
 def open_details(
     request: Request, capture_id: str, state: ApplicationState, way: Way
 ) -> HTMLResponse:
-    """Open the page. It writes nothing."""
+    """Open the page. It writes nothing. When the file can't be read as the page is made,
+    503, with the same address to ask for again."""
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    return details_page(request, state, name, way)
+    try:
+        return details_page(request, state, name, way)
+    except sqlite3.Error as error:
+        return unavailable_page(
+            request,
+            state,
+            error,
+            heading="Add a note to homework",
+            alert=DETAILS_UNAVAILABLE,
+            again=asked_address(
+                note_add_href(name, family=way.family), request.scope["query_string"]
+            ),
+            ways_back=[*ways_back(request), ReturnLink(note_href(name), "Back to the note")],
+            family=way.family,
+        )
 
 
 # ------------------------------------------------------------------ the writes

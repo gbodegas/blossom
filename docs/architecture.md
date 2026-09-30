@@ -999,6 +999,17 @@ a note's history that cannot be read makes the note's page say the same. The
 endpoints that answer a request for help in JSON read the notes their requests
 name, once for all of them, as the two pages do.
 
+That sentence is kept for a note whose row can't be decoded, with its 200.
+When the file itself can't be read, a note's pages, the page that asks before
+deleting, and the pages that add it to homework or search for its homework
+answer 503 with a Try again link to the same address, and never say whether a
+save or a request the address names happened. The note's page reads the note,
+the request an address names, and the homework the note is in first, and asks
+whether the note can be deleted last: when only that check fails, the page
+stands without Delete and says the check can't be made, to her and never to a
+parent, and nothing is read after it. A refusal whose page can't be read is
+said without that page, with what was typed kept.
+
 A note's changes are one line or nothing is added to them. Every write to a
 note on record, the same form again included, first reads that note's changes
 through the store's own connection, inside the transaction that reserved the

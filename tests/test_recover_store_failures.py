@@ -10,7 +10,6 @@ pinned clock, and a failure made at the store call, or a second connection holdi
 """
 
 import pathlib
-import re
 import sqlite3
 import time
 from collections import Counter
@@ -32,32 +31,29 @@ from tests.support import (
     ESSAY_ID,
     FIXTURE_WEEK,
     HER_PAGE,
-    HERS,
     MISSING_EMAIL,
     PAGE_HEADERS,
     PLAN_DATE,
-    THEIRS,
-    Answer,
     HeldByAnother,
     Statements,
     after_the_failure,
     browser,
     card_for,
-    client_for,
+    database_of,
     every_row,
     fixture_settings,
     form_fields,
     hidden,
-    main_of,
+    household_client,
     planned,
     quiet_client,
     refusing,
     report,
-    signed_in,
-    signed_in_household,
+    sign_in_as,
     state_of,
-    the_alert,
+    store_free_page,
     walkthrough,
+    ways_back_of,
 )
 
 REPORT = f"/student/actions/assignments/{ESSAY_ID}/report"
@@ -73,59 +69,12 @@ HER_WEEK = "Her week can't be shown right now."
 THIS_ASSIGNMENT = "This assignment can't be shown right now."
 YOUR_LIST = "Your To turn in list can't be shown right now."
 FAMILY = "Family review can't be shown right now."
-NEVER = (
-    "Internal Server Error",
-    "is saved",
-    "Already saved",
-    "is undone",
-    "shows what stands",
-    "as it stands now",
-    "Here it is",
-    "Review it",
-    "Choose and save again",
-    "choose and save from here",
-    "Archive it instead",
-    "Go to the",
-    "Press again from the list",
-)
-"""What no page that reads no store says: a save, or a pointer to a page it does not show."""
 TRIED = [
     ("the first read", "latest_for", sqlite3.OperationalError),
     ("a later read", "read_everything", sqlite3.DatabaseError),
 ]
 """Where her week fails as the page for a press is made: the drafts, which the page reads
 first, or the record read after them, and the two kinds of failure a read meets."""
-
-
-def db_of(client: TestClient) -> pathlib.Path:
-    return pathlib.Path(state_of(client).settings.database_path)
-
-
-def open_household(tmp_path: pathlib.Path) -> TestClient:
-    """The fixture week with the sign-in off, its file under ``tmp_path``."""
-    return client_for(
-        fixture_settings(
-            BLOSSOM_TODAY=PLAN_DATE.isoformat(),
-            BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
-            BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
-            BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
-        )
-    )
-
-
-def as_reader(reader: str, tmp_path: pathlib.Path) -> TestClient:
-    """A client for ``reader``: her or a parent signed in, or the household with the
-    sign-in off. Entered by the caller."""
-    if reader == "open":
-        return open_household(tmp_path)
-    return client_for(signed_in_household(tmp_path))
-
-
-def sign_in_as(client: TestClient, reader: str) -> None:
-    if reader == "her":
-        signed_in(client, HERS)
-    elif reader == "parent":
-        signed_in(client, THEIRS)
 
 
 def fail_week(
@@ -140,27 +89,6 @@ def fail_week(
         monkeypatch.setattr(state_of(client).drafts, "latest_for", refusing(kind, marks))
     else:
         monkeypatch.setattr(student_routes, "read_everything", refusing(kind, marks))
-
-
-def returns(main: str) -> list[tuple[str, str]]:
-    """The ways back a page offers, in order, as href and words."""
-    found = re.findall(r'<p class="return"><a href="([^"]*)">([^<]*)</a></p>', main)
-    return [(href, label) for href, label in found]
-
-
-def check_page(answer: Answer, *, status: int, heading: str, alert: str) -> str:
-    """What every page that reads no store holds and never holds; its main part."""
-    assert answer.status_code == status, (answer.status_code, answer.text[:600])
-    main = main_of(answer.text)
-    assert f"<h1>{heading}</h1>" in main
-    assert the_alert(answer.text) == alert
-    assert answer.text.count("autofocus") == 1
-    assert 'tabindex="' not in main.replace('tabindex="-1"', "")
-    assert "<form" not in main
-    assert "<button" not in main
-    for never in NEVER:
-        assert never not in main, never
-    return main
 
 
 # ------------------------------------------------------------- a refusal on her week
@@ -269,17 +197,17 @@ def test_a_refusal_on_her_week_is_said_without_the_week_when_the_week_cannot_be_
 ) -> None:
     del where
     press = WEEK_PRESSES[case]
-    with as_reader(reader, tmp_path) as client:
+    with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         path, data = week_press(client, case)
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             fail_week(monkeypatch, client, place, kind, seen)
             answer = client.post(path, data=data, headers=PAGE_HEADERS)
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
-    main = check_page(
+    main = store_free_page(
         answer, status=press.status, heading="Update not saved", alert=f"{press.said} {YOUR_WEEK}"
     )
     shown = "Done" if press.choice == "Done" else press.choice
@@ -293,7 +221,7 @@ def test_a_refusal_on_her_week_is_said_without_the_week_when_the_week_cannot_be_
         press.about,
         show=press.about,
     )
-    assert returns(main) == [(str(escape(back)), "Back to the week")]
+    assert ways_back_of(main) == [(str(escape(back)), "Back to the week")]
     assert after_the_failure(seen) == []
     assert after == before
 
@@ -301,7 +229,7 @@ def test_a_refusal_on_her_week_is_said_without_the_week_when_the_week_cannot_be_
 def test_a_refusal_on_her_week_is_the_week_as_before_when_the_week_reads(
     tmp_path: pathlib.Path,
 ) -> None:
-    with as_reader("her", tmp_path) as client:
+    with household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
         answer = client.post(path, data=data, headers=PAGE_HEADERS)
@@ -419,19 +347,21 @@ def test_a_parents_press_on_her_week_keeps_its_403_when_her_week_cannot_be_read(
 ) -> None:
     del where
     press = PARENT_PRESSES[case]
-    with as_reader("parent", tmp_path) as client:
+    with household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             fail_week(monkeypatch, client, place, kind, seen)
             answer = client.post(
                 press.path, data={"status": "done", "note": TYPED}, headers=PAGE_HEADERS
             )
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
-    main = check_page(answer, status=403, heading=press.heading, alert=f"{press.said} {HER_WEEK}")
-    assert returns(main) == [(press.back, "Back to her week")]
+    main = store_free_page(
+        answer, status=403, heading=press.heading, alert=f"{press.said} {HER_WEEK}"
+    )
+    assert ways_back_of(main) == [(press.back, "Back to her week")]
     assert "Kept" not in main
     assert "<textarea" not in main
     assert after_the_failure(seen) == []
@@ -571,18 +501,18 @@ def test_a_refusal_on_the_details_is_said_without_them_when_they_cannot_be_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     status, said = DETAILS_PRESSES[case]
-    with as_reader(reader, tmp_path) as client:
+    with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         path, data, kept = details_press(client, case)
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             store = state_of(client).project_state
             monkeypatch.setattr(store, place, refusing(kind, seen))
             answer = client.post(path, data=data, headers=PAGE_HEADERS)
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
-    main = check_page(
+    main = store_free_page(
         answer, status=status, heading="Update not saved", alert=f"{said} {THIS_ASSIGNMENT}"
     )
     if "note" in kept:
@@ -597,7 +527,7 @@ def test_a_refusal_on_the_details_is_said_without_them_when_they_cannot_be_read(
         assert f"readonly>{escape(kept['next step'])}</textarea>" in main
     if "hand-in note" in kept:
         assert f"readonly>{escape(kept['hand-in note'])}</textarea>" in main
-    assert returns(main) == [
+    assert ways_back_of(main) == [
         (str(escape(details_href(ESSAY_ID, return_to="week"))), "Back to the assignment"),
         (str(escape(week_href(None, ESSAY_ID, show=ESSAY_ID))), "Back to the week"),
     ]
@@ -667,10 +597,10 @@ def test_a_refusal_on_the_list_is_said_without_it_when_it_cannot_be_read(
     case: str, reader: str, view: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     status, said = LIST_PRESSES[case]
-    with as_reader(reader, tmp_path) as client:
+    with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         path, data, about = list_press(client, case, view)
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             if view == "list":
                 monkeypatch.setattr(
@@ -682,10 +612,12 @@ def test_a_refusal_on_the_list_is_said_without_it_when_it_cannot_be_read(
                 )
             answer = client.post(path, data=data, headers=PAGE_HEADERS)
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
     line = YOUR_LIST if view == "list" else YOUR_WEEK
-    main = check_page(answer, status=status, heading="Update not saved", alert=f"{said} {line}")
+    main = store_free_page(
+        answer, status=status, heading="Update not saved", alert=f"{said} {line}"
+    )
     first = (
         ("/student/to-turn-in#to-turn-in", "Back to To turn in")
         if view == "list"
@@ -694,7 +626,7 @@ def test_a_refusal_on_the_list_is_said_without_it_when_it_cannot_be_read(
     opened = details_href(
         about, fragment="turning-it-in", return_to="to_turn_in" if view == "list" else "week"
     )
-    assert returns(main) == [first, (str(escape(opened)), "Open this assignment")]
+    assert ways_back_of(main) == [first, (str(escape(opened)), "Open this assignment")]
     assert after_the_failure(seen) == []
     assert after == before
 
@@ -840,9 +772,9 @@ def test_a_refusal_on_family_review_is_said_without_it_when_it_cannot_be_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     press = FAMILY_PRESSES[case]
-    with as_reader(reader, tmp_path) as client:
+    with household_client(reader, tmp_path) as client:
         path, data, said = family_press(client, case, reader)
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             if place == "review_snapshot":
                 monkeypatch.setattr(state_of(client).drafts, place, refusing(kind, seen))
@@ -850,9 +782,9 @@ def test_a_refusal_on_family_review_is_said_without_it_when_it_cannot_be_read(
                 monkeypatch.setattr(parent_routes, place, refusing(kind, seen))
             answer = client.post(path, data=data, headers=PAGE_HEADERS)
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=press.status,
         heading="Family review",
@@ -864,7 +796,7 @@ def test_a_refusal_on_family_review_is_said_without_it_when_it_cannot_be_read(
         label, typed = press.kept
         assert f">{label}</label>" in main
         assert f"readonly>{escape(typed)}</textarea>" in main
-    assert returns(main) == [("/parent", "Return to Family review")]
+    assert ways_back_of(main) == [("/parent", "Return to Family review")]
     assert after_the_failure(seen) == []
     assert after == before
 
@@ -877,7 +809,7 @@ def test_a_decision_on_a_decided_draft_keeps_its_409_and_the_reason_without_the_
         made = planned(client)
         decide = f"/parent/actions/decide/{made.draft_id}"
         assert client.post(decide, data={"decision": "approve", "reason": ""}).status_code == 303
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
                 state_of(client).drafts,
@@ -886,9 +818,9 @@ def test_a_decision_on_a_decided_draft_keeps_its_409_and_the_reason_without_the_
             )
             answer = client.post(decide, data={"decision": "refuse", "reason": TYPED})
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=409,
         heading="Family review",
@@ -909,28 +841,28 @@ def test_her_plan_that_failed_on_the_way_is_said_without_her_week_when_it_cannot
         walkthrough(client)
         monkeypatch.setattr(run_routes, "read_week", refusing(sqlite3.OperationalError))
         readable = client.post("/student/actions/plan", headers=PAGE_HEADERS)
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
                 state_of(client).drafts, "latest_for", refusing(sqlite3.OperationalError, seen)
             )
             answer = client.post("/student/actions/plan", headers=PAGE_HEADERS)
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
     assert readable.status_code == 500
     assert (
         "Blossom could not make a plan: something went wrong on the way. The plan already "
         "here, if any, is unchanged."
     ) in readable.text
-    main = check_page(
+    main = store_free_page(
         answer,
         status=500,
         heading="Plan not made",
         alert=f"Blossom could not make a plan: something went wrong on the way. {YOUR_WEEK}",
     )
     assert "already here" not in main
-    assert returns(main) == [(HER_PAGE, "Back to my week")]
+    assert ways_back_of(main) == [(HER_PAGE, "Back to my week")]
     assert after_the_failure(seen) == []
     assert after == before
 
@@ -938,7 +870,7 @@ def test_her_plan_that_failed_on_the_way_is_said_without_her_week_when_it_cannot
 def test_her_plan_refused_before_a_run_keeps_its_status_without_her_week(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with as_reader("parent", tmp_path) as client:
+    with household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
@@ -947,7 +879,7 @@ def test_her_plan_refused_before_a_run_keeps_its_status_without_her_week(
             answer = client.post("/student/actions/plan", headers=PAGE_HEADERS)
         monkeypatch.undo()
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=503,
         heading="Plan not made",
@@ -956,7 +888,7 @@ def test_her_plan_refused_before_a_run_keeps_its_status_without_her_week(
             f"not set. {HER_WEEK}"
         ),
     )
-    assert returns(main) == [(HER_PAGE, "Back to her week")]
+    assert ways_back_of(main) == [(HER_PAGE, "Back to her week")]
     assert after_the_failure(seen) == []
 
 
@@ -966,7 +898,7 @@ def test_a_family_plan_that_failed_on_the_way_is_said_without_family_review(
     with browser(key=True) as client:
         walkthrough(client)
         monkeypatch.setattr(run_routes, "read_week", refusing(sqlite3.OperationalError))
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
                 state_of(client).drafts,
@@ -975,9 +907,9 @@ def test_a_family_plan_that_failed_on_the_way_is_said_without_family_review(
             )
             answer = client.post("/parent/actions/plan", data={"plan_date": ""})
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=500,
         heading="Family review",
@@ -999,7 +931,7 @@ TAKE_BACK_FAILED = "Your request could not be taken back, and nothing was change
 def test_a_request_the_file_would_not_take_back_is_said_in_help_and_can_be_taken_back_once(
     reader: str, kind: type[Exception], tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with as_reader(reader, tmp_path) as client:
+    with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         help_requests = state_of(client).help_requests
         asked = help_requests.ask(PLAN_DATE, "which part?").request_id
@@ -1024,13 +956,13 @@ def test_a_request_the_file_would_not_take_back_is_said_in_help_and_can_be_taken
     ) in refused.text
     assert refused.text.count("autofocus") == 1
     assert still == [asked]
-    main = check_page(
+    main = store_free_page(
         unread,
         status=500,
         heading="Request not taken back",
         alert=f"{TAKE_BACK_FAILED} {YOUR_WEEK}",
     )
-    assert returns(main) == [(f"{HER_PAGE}#help", "Back to my week")]
+    assert ways_back_of(main) == [(f"{HER_PAGE}#help", "Back to my week")]
     assert after_the_failure(seen) == []
     assert again.status_code == 303
     assert twice.status_code == 404
@@ -1066,16 +998,18 @@ def test_a_refused_take_back_keeps_its_status_and_sentence_without_her_week(
             help_requests.resolve(asked, None)
         else:
             asked = "0" * 32
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
                 student_routes, "read_everything", refusing(sqlite3.DatabaseError, seen)
             )
             answer = client.post(f"/student/actions/take-back-help/{asked}")
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
-    check_page(answer, status=status, heading="Request not taken back", alert=f"{said} {YOUR_WEEK}")
+    store_free_page(
+        answer, status=status, heading="Request not taken back", alert=f"{said} {YOUR_WEEK}"
+    )
     assert after_the_failure(seen) == []
     assert after == before
 
@@ -1085,12 +1019,12 @@ def test_a_take_back_whose_commit_the_file_refuses_is_rolled_back_and_said_in_he
 ) -> None:
     """Another program reads the file through the commit: the delete is refused at commit,
     rolled back, and said so; the page itself still reads."""
-    with as_reader("her", tmp_path) as client:
+    with household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         help_requests = state_of(client).help_requests
         asked = help_requests.ask(PLAN_DATE, "which part?").request_id
         path = f"/student/actions/take-back-help/{asked}"
-        with HeldByAnother(db_of(client), reading=True):
+        with HeldByAnother(database_of(client), reading=True):
             refused = client.post(path, headers=PAGE_HEADERS)
         still = [item.request_id for item in help_requests.open_requests()]
         again = client.post(path, headers=PAGE_HEADERS)
@@ -1139,8 +1073,10 @@ def test_a_signal_the_file_would_not_keep_is_said_at_the_top_and_kept_once_after
     assert refused.status_code == 500
     assert f'<p class="problem" role="alert">{SIGNAL_FAILED}</p>' in refused.text
     assert kept == held
-    main = check_page(unread, status=500, heading="Not saved", alert=f"{SIGNAL_FAILED} {YOUR_WEEK}")
-    assert returns(main) == [(HER_PAGE, "Back to my week")]
+    main = store_free_page(
+        unread, status=500, heading="Not saved", alert=f"{SIGNAL_FAILED} {YOUR_WEEK}"
+    )
+    assert ways_back_of(main) == [(HER_PAGE, "Back to my week")]
     assert after_the_failure(seen) == []
     assert again.status_code == 303
     assert len(left) == (1 if press == "too much" else 0)
@@ -1165,7 +1101,7 @@ def test_a_reply_the_file_would_not_keep_is_kept_on_the_page_that_reads_no_store
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: Counter[str] = Counter()
-    with as_reader(reader, tmp_path) as client:
+    with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         state = state_of(client)
         asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
@@ -1177,19 +1113,19 @@ def test_a_reply_the_file_would_not_keep_is_kept_on_the_page_that_reads_no_store
             return real(*given, **named)
 
         monkeypatch.setattr(state.drafts, "review_snapshot", counted)
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state) as seen:
             monkeypatch.setattr(state.help_requests, step, refusing(kind, seen))
             answer = client.post(path, data={"step": step, "response": TYPED})
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
         again = client.post(path, data={"step": step, "response": TYPED})
         moved = state.help_requests.get(asked)
 
-    main = check_page(answer, status=500, heading="Family review", alert=HELP_STEP_FAILED)
+    main = store_free_page(answer, status=500, heading="Family review", alert=HELP_STEP_FAILED)
     assert '<label for="kept-reply">Reply, as typed</label>' in main
     assert f'<textarea id="kept-reply" rows="3" readonly>{escape(TYPED)}</textarea>' in main
-    assert returns(main) == [("/parent", "Return to Family review")]
+    assert ways_back_of(main) == [("/parent", "Return to Family review")]
     assert calls["review_snapshot"] == 0
     assert after_the_failure(seen) == []
     assert after == before
@@ -1211,7 +1147,7 @@ def test_a_step_with_no_reply_that_the_file_would_not_keep_promises_no_reply(
                 f"/parent/actions/help/{asked}", data={"step": "resolve", "response": "  "}
             )
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=500,
         heading="Family review",
@@ -1263,7 +1199,7 @@ def test_her_notes_that_cannot_be_read_are_said_to_be_so_with_a_way_to_ask_again
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = f"/student/homework-notes{which}"
-    with as_reader(reader, tmp_path) as client:
+    with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
@@ -1273,10 +1209,10 @@ def test_her_notes_that_cannot_be_read_are_said_to_be_so_with_a_way_to_ask_again
         monkeypatch.undo()
         readable = client.get(path, headers=PAGE_HEADERS)
 
-    main = check_page(answer, status=503, heading=heading, alert=notes_alert(reader))
+    main = store_free_page(answer, status=503, heading=heading, alert=notes_alert(reader))
     assert f'<a href="{path}?b=2&amp;a=">Try again</a>' in main
     week = "Back to her week" if reader == "parent" else "Back to my week"
-    assert returns(main) == [(HER_PAGE, week)]
+    assert ways_back_of(main) == [(HER_PAGE, week)]
     assert "Nothing was" not in main
     assert after_the_failure(seen) == []
     assert readable.status_code == 200
@@ -1296,14 +1232,14 @@ def test_her_notes_after_a_delete_that_cannot_be_read_neither_say_nor_deny_the_d
     deletes. Pressed again once the record reads, the delete says it was done already."""
     with browser() as client:
         name = a_deleted_note(client) if how == "after a delete" else HAND_TYPED_NOTE
-        before = every_row(db_of(client))
+        before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
                 state_of(client).project_state, read, refusing(sqlite3.DatabaseError, seen)
             )
             answer = client.get(f"/student/homework-notes?{marker}={name}", headers=PAGE_HEADERS)
         monkeypatch.undo()
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
         if how == "after a delete":
             pressed = client.post(
                 f"/student/actions/homework-notes/{name}/delete", data={"revision": "1"}
@@ -1311,9 +1247,9 @@ def test_her_notes_after_a_delete_that_cannot_be_read_neither_say_nor_deny_the_d
             assert pressed.status_code == 303
             landed = client.get(pressed.headers["location"], headers=PAGE_HEADERS)
             assert "That note was already deleted." in landed.text
-            assert every_row(db_of(client)) == after
+            assert every_row(database_of(client)) == after
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=503,
         heading="Homework notes",
@@ -1341,7 +1277,7 @@ def test_a_marker_the_list_would_not_check_is_not_said_on_the_page_that_cannot_r
         )
         answer = client.get(f"/student/homework-notes?deleted={given}", headers=PAGE_HEADERS)
 
-    check_page(answer, status=503, heading="Homework notes", alert=notes_alert("her"))
+    store_free_page(answer, status=503, heading="Homework notes", alert=notes_alert("her"))
 
 
 DETAIL_RETURNS = [
@@ -1384,14 +1320,14 @@ def test_the_details_that_cannot_be_read_offer_the_way_back_the_address_names(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with as_reader(reader, tmp_path) as client:
+    with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(state_of(client).project_state, read, refusing(kind, seen))
             answer = client.get(DETAILS, params=query, headers=PAGE_HEADERS)
         monkeypatch.undo()
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=503,
         heading="Assignment",
@@ -1399,7 +1335,7 @@ def test_the_details_that_cannot_be_read_offer_the_way_back_the_address_names(
     )
     again = details_href(ESSAY_ID, **query) if query else DETAILS
     assert f'<a href="{escape(again)}">Try again</a>' in main
-    assert returns(main) == [(str(escape(back[0])), back[1])]
+    assert ways_back_of(main) == [(str(escape(back[0])), back[1])]
     assert after_the_failure(seen) == []
 
 
@@ -1415,7 +1351,7 @@ def test_the_details_after_a_save_that_cannot_be_read_say_nothing_of_the_save(
         )
         answer = client.get(DETAILS, params={"said": said, "hand_in": "saved"})
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=503,
         heading="Assignment",
@@ -1435,13 +1371,13 @@ def test_the_details_way_back_to_today_reads_nothing_when_the_plan_cannot_be_rea
             answer = client.get(DETAILS, params={"return_to": "today"}, headers=PAGE_HEADERS)
         monkeypatch.undo()
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=503,
         heading="Assignment",
         alert="This assignment can't be shown right now. Try again in a moment. Try again",
     )
-    assert returns(main) == [("/student/due-this-week#today", "Back to Today")]
+    assert ways_back_of(main) == [("/student/due-this-week#today", "Back to Today")]
     assert after_the_failure(seen) == []
 
 
@@ -1449,7 +1385,7 @@ def test_the_details_way_back_to_today_reads_nothing_when_the_plan_cannot_be_rea
 def test_her_to_turn_in_list_that_cannot_be_read_says_so_with_a_way_to_ask_again(
     reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with as_reader(reader, tmp_path) as client:
+    with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
@@ -1462,7 +1398,7 @@ def test_her_to_turn_in_list_that_cannot_be_read_says_so_with_a_way_to_ask_again
         monkeypatch.undo()
 
     whose = "Her" if reader == "parent" else "Your"
-    main = check_page(
+    main = store_free_page(
         answer,
         status=503,
         heading="To turn in",
@@ -1473,7 +1409,7 @@ def test_her_to_turn_in_list_that_cannot_be_read_says_so_with_a_way_to_ask_again
         "Try again</a>"
     ) in main
     week = "Back to her week" if reader == "parent" else "Back to my week"
-    assert returns(main) == [(HER_PAGE, week)]
+    assert ways_back_of(main) == [(HER_PAGE, week)]
     assert "turned in" not in main.lower().replace("to turn in", "")
     assert after_the_failure(seen) == []
 
@@ -1501,17 +1437,17 @@ def test_a_damaged_note_row_keeps_the_list_at_200() -> None:
 def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keeps_her_words(
     tmp_path: pathlib.Path,
 ) -> None:
-    with as_reader("her", tmp_path) as client:
+    with household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
         path, data = week_press(client, "nothing chosen")
-        before = every_row(db_of(client))
-        with Statements(state_of(client)) as seen, HeldByAnother(db_of(client)):
+        before = every_row(database_of(client))
+        with Statements(state_of(client)) as seen, HeldByAnother(database_of(client)):
             started = time.monotonic()
             answer = client.post(path, data=data, headers=PAGE_HEADERS)
             took = time.monotonic() - started
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
 
-    main = check_page(
+    main = store_free_page(
         answer,
         status=422,
         heading="Update not saved",
@@ -1528,21 +1464,21 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
 def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
     tmp_path: pathlib.Path,
 ) -> None:
-    with as_reader("parent", tmp_path) as client:
+    with household_client("parent", tmp_path) as client:
         sign_in_as(client, "parent")
         state = state_of(client)
         asked = state.help_requests.ask(PLAN_DATE, "which part?").request_id
         path = f"/parent/actions/help/{asked}"
-        before = every_row(db_of(client))
-        with Statements(state) as seen, HeldByAnother(db_of(client)):
+        before = every_row(database_of(client))
+        with Statements(state) as seen, HeldByAnother(database_of(client)):
             started = time.monotonic()
             answer = client.post(path, data={"step": "accept", "response": TYPED})
             took = time.monotonic() - started
-        after = every_row(db_of(client))
+        after = every_row(database_of(client))
         again = client.post(path, data={"step": "accept", "response": TYPED})
         moved = state.help_requests.get(asked)
 
-    main = check_page(answer, status=500, heading="Family review", alert=HELP_STEP_FAILED)
+    main = store_free_page(answer, status=500, heading="Family review", alert=HELP_STEP_FAILED)
     assert f"readonly>{escape(TYPED)}</textarea>" in main
     assert took < 9
     ran = [line for line in seen if line.strip().upper() != "ROLLBACK"]
@@ -1557,11 +1493,11 @@ def test_a_parents_reply_while_the_file_is_held_is_kept_and_lands_once_after(
 def test_her_notes_while_the_file_is_held_say_they_cannot_be_shown(
     tmp_path: pathlib.Path,
 ) -> None:
-    with as_reader("her", tmp_path) as client:
+    with household_client("her", tmp_path) as client:
         sign_in_as(client, "her")
-        with HeldByAnother(db_of(client)):
+        with HeldByAnother(database_of(client)):
             answer = client.get("/student/homework-notes", headers=PAGE_HEADERS)
         readable = client.get("/student/homework-notes", headers=PAGE_HEADERS)
 
-    check_page(answer, status=503, heading="Homework notes", alert=notes_alert("her"))
+    store_free_page(answer, status=503, heading="Homework notes", alert=notes_alert("her"))
     assert readable.status_code == 200

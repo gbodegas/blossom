@@ -415,12 +415,13 @@ article h2 {
    back in leaves the text where it was. On an assignment's details that is
    the date warning's link, the summary's, the notes', and the line that says
    how many instructions wait; in Help, a refusal's link and the family review
-   link a parent reads. */
+   link a parent reads; on a note's small page, Try again. */
 .notice a,
 .refresh a,
 .return a,
 .assignment.detail .confidence a,
 #problem-summary a,
+#note-problem a,
 .detail-notes a,
 .school-instructions .source a,
 .help-panel .problem a,
@@ -718,6 +719,7 @@ a.assignment-link:focus-visible {
 #waiting-instructions:focus,
 #update-or-turn-in:focus,
 #problem-summary:focus,
+#note-problem:focus,
 .detail .problem[tabindex="-1"]:focus {
   outline: 2px solid var(--blue-action);
   outline-offset: 4px;

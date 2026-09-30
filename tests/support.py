@@ -1360,3 +1360,85 @@ def the_alert(page: str) -> str:
         re.S,
     )
     return "" if found is None else words(found.group(1))
+
+
+def database_of(client: TestClient) -> pathlib.Path:
+    """The household's file the application on this client keeps its record in."""
+    return pathlib.Path(state_of(client).settings.database_path)
+
+
+def household_client(reader: str, tmp_path: pathlib.Path) -> TestClient:
+    """The fixture week for ``reader``, its files under ``tmp_path``: the sign-in on for her
+    and a parent, who sign in with ``sign_in_as``, and off for ``open``. Entered by the
+    caller. For a run the state guard stands behind."""
+    require_protection("household_client")
+    if reader != "open":
+        return client_for(signed_in_household(tmp_path))
+    return client_for(
+        fixture_settings(
+            BLOSSOM_TODAY=PLAN_DATE.isoformat(),
+            BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
+            BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
+            BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+        )
+    )
+
+
+def sign_in_as(client: TestClient, reader: str) -> None:
+    """Sign her or a parent in on this client; the household with the sign-in off needs
+    nothing."""
+    if reader == "her":
+        signed_in(client, HERS)
+    elif reader == "parent":
+        signed_in(client, THEIRS)
+
+
+def ways_back_of(main: str) -> list[tuple[str, str]]:
+    """The ways back a page offers, in order, as href and words."""
+    found = re.findall(r'<p class="return"><a href="([^"]*)">([^<]*)</a></p>', main)
+    return [(href, label) for href, label in found]
+
+
+STORE_FREE_NEVER = (
+    "Internal Server Error",
+    "is saved",
+    "Already saved",
+    "is undone",
+    "shows what stands",
+    "as it stands now",
+    "Here it is",
+    "Review it",
+    "Choose and save again",
+    "choose and save from here",
+    "Archive it instead",
+    "Go to the",
+    "Press again from the list",
+    "Check the details and add it again",
+    "choose again",
+)
+"""What no page that reads no store says: a save, or a pointer to a page it does not show."""
+
+
+def store_free_page(
+    answer: Answer, *, status: int, heading: str, alert: str, alert_id: str = "problem-summary"
+) -> str:
+    """What every page that reads no store holds and never holds: its status, its heading,
+    one focused explanation with these words, no control, and no pointer to a page it does
+    not show. Its main part."""
+    assert answer.status_code == status, (answer.status_code, answer.text[:600])
+    main = main_of(answer.text)
+    assert f"<h1>{heading}</h1>" in main, main[:600]
+    found = re.search(
+        rf'<p class="problem" role="alert" id="{alert_id}" tabindex="-1" autofocus>(.*?)</p>',
+        main,
+        re.S,
+    )
+    assert found is not None, main[:600]
+    assert words(found.group(1)) == alert, words(found.group(1))
+    assert answer.text.count("autofocus") == 1
+    assert 'tabindex="' not in main.replace('tabindex="-1"', "")
+    assert "<form" not in main
+    assert "<button" not in main
+    for never in STORE_FREE_NEVER:
+        assert never not in main, never
+    return main

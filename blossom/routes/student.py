@@ -1845,7 +1845,15 @@ def gone_page(
 
     The explanation takes the focus when a form's press brought her here,
     whatever the form carried, and never on a look by link, whatever the
-    address carries."""
+    address carries. When the plan the way back looks up can't be read, the
+    way back is made from the address alone and nothing more is read."""
+    try:
+        link = way_back(
+            state, back, assignment_id, today=state.clock.today() if today is None else today
+        )
+    except sqlite3.Error as error:
+        logger.warning("a way back could not be read: %s", type(error).__name__)
+        link = plain_way_back(back, assignment_id)
     return templates.TemplateResponse(
         request,
         "student_assignment_gone.html",
@@ -1854,9 +1862,7 @@ def gone_page(
             "pressed": request.method == "POST",
             "card": card,
             "hand_in_card": hand_in,
-            "back": way_back(
-                state, back, assignment_id, today=state.clock.today() if today is None else today
-            ),
+            "back": link,
             "sample": state.settings.sample,
         },
         status_code=status.HTTP_404_NOT_FOUND,
@@ -2308,10 +2314,11 @@ def unavailable_page(
     alert: str,
     again: str,
     ways_back: list[ReturnLink],
+    family: bool = False,
 ) -> HTMLResponse:
-    """A page of hers that is only read, when a read for it fails: 503, what can't be shown,
-    the same address to ask for again, and the ways back. Nothing is read here, and the
-    failure is logged by its kind alone."""
+    """A page that is only read, when a read for it fails: 503, what can't be shown, the same
+    address to ask for again, and the ways back; ``family`` for a page in the family's tree.
+    Nothing is read here, and the failure is logged by its kind alone."""
     logger.warning("%s could not be read: %s", heading, type(error).__name__)
     return templates.TemplateResponse(
         request,
@@ -2321,6 +2328,7 @@ def unavailable_page(
             "alert": alert,
             "again": again,
             "ways_back": ways_back,
+            "family": family,
             "sample": state.settings.sample,
         },
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

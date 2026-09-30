@@ -281,7 +281,7 @@
         <p class="note"><a href="{{ notes_page }}">View all {{ homework_notes|length + homework_notes_unreadable|length }} homework notes</a></p>
       {% endif %}
       {% if homework_notes_unreadable %}
-        <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now. Nothing was changed.</p>
+        <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now.</p>
       {% endif %}
     </section>
   {% endif %}
