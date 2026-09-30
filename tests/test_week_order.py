@@ -22,6 +22,7 @@ from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from html import unescape
 from typing import Final
 from urllib.parse import parse_qs, urlsplit
 
@@ -53,6 +54,7 @@ from tests.support import (
     lands_on,
     main_of,
     report,
+    school_missing,
     scripted_graphs,
     signed_in,
     signed_in_household,
@@ -69,6 +71,10 @@ LOG: Final = "assignment-reading-log"
 ALGEBRA: Final = "assignment-algebra-set"
 QUIZ: Final = "assignment-vocabulary-quiz"
 SYLLABUS: Final = "assignment-signed-syllabus"
+FAIR: Final = "assignment-science-fair-proposal"
+COVER: Final = "assignment-textbook-cover"
+ESCAPED: Final = "set/2 it's #1? é"
+FAR: Final = "far-set"
 NOWHERE: Final = "assignment-nowhere"
 LATER_WEEK: Final = "2026-08-24"
 FAR_WEEK: Final = "2026-10-05"
@@ -87,7 +93,6 @@ CSS: Final = REPOSITORY_ROOT / "blossom" / "static" / "blossom.css"
 
 HEADING: Final = '<h2 class="list-heading" id="homework" tabindex="-1">Due this week</h2>'
 THAT_WEEK: Final = '<h2 class="list-heading" id="homework" tabindex="-1">Due that week</h2>'
-SEE_HOMEWORK: Final = '<p><a class="to-help" href="#homework">See homework</a></p>'
 TOP_FOCUSED: Final = '<p class="problem week-problem" role="alert" tabindex="-1" autofocus>'
 TOP_PLAIN_ALERT: Final = '<p class="problem week-problem" role="alert">'
 TOP_BESIDE_A_CARD: Final = '<p class="problem week-problem">'
@@ -287,6 +292,41 @@ def folds_open_around(page: str, tag: str) -> bool:
         else:
             opened.append(found.group(0))
     return all(re.search(r"\sopen(?=[\s>])", fold) for fold in opened)
+
+
+TAB_STOP: Final = re.compile(
+    r"<(?:a\b[^>]*\shref=|button\b|select\b|textarea\b|summary\b"
+    r'|input\b(?![^>]*type="hidden"))'
+)
+
+
+def next_tab_stop(page: str, after: int) -> int:
+    """Where the next Tab goes from a place on the page: the first control after it. A
+    closed fold's summary counts and everything else inside that fold is skipped."""
+    closed = 0
+    for found in re.finditer(r"<[^<>]+>", page[after:]):
+        tag = found.group(0)
+        if tag.startswith("<details"):
+            closed += 1 if closed or not re.search(r"\sopen(?=[\s>])", tag) else 0
+        elif tag == "</details>":
+            closed = max(closed - 1, 0)
+        elif closed > 1 or (closed and not tag.startswith("<summary")):
+            continue
+        elif TAB_STOP.match(tag):
+            return after + found.start()
+    return -1
+
+
+def item_of(page: str, title: str) -> tuple[int, int]:
+    """Where the card or the row due later with this title starts and ends on the page."""
+    for opening, name, ending in (
+        ("<article ", f"<h2>{title}</h2>", "</article>"),
+        ("<li id=", f"<strong>{title}</strong>", "</li>"),
+    ):
+        if name in page:
+            place = page.index(name)
+            return page.rindex(opening, 0, place), page.index(ending, place)
+    raise AssertionError(title)
 
 
 def outlined() -> set[str]:
@@ -543,10 +583,15 @@ def no_plan_one_later_row_left(client: TestClient) -> None:
     reported(store_of(client), "not_yet", LOG)
 
 
-SHOWN: Final[dict[str, Callable[[TestClient], None]]] = {
-    "the fixture week": lambda client: None,
-    "one unfinished card": no_plan_one_card_left,
-    "only an unfinished row due later": no_plan_one_later_row_left,
+def see_homework(name: str) -> str:
+    """See homework as it links to the card or row with this id."""
+    return f'<p><a class="to-help" href="#assignment-{name}">See homework</a></p>'
+
+
+SHOWN: Final[dict[str, tuple[Callable[[TestClient], None], str]]] = {
+    "the fixture week": (lambda client: None, FAIR),
+    "one unfinished card": (no_plan_one_card_left, COVER),
+    "only an unfinished row due later": (no_plan_one_later_row_left, LOG),
 }
 
 
@@ -555,22 +600,128 @@ SHOWN: Final[dict[str, Callable[[TestClient], None]]] = {
 def test_with_no_plan_and_work_left_see_homework_links_to_the_homework(
     case: str, reader: str, tmp_path: pathlib.Path
 ) -> None:
-    """In the plan's place, a plain link to the heading of the week's homework. It has no
-    id of its own and asks for no focus."""
+    """In the plan's place, a plain link to the first card or row still to do. It has no id
+    of its own and asks for no focus, and the homework's heading keeps its id."""
+    make, first = SHOWN[case]
     with reading(reader, tmp_path) as client:
-        SHOWN[case](client)
+        make(client)
         page = main_of(page_of(client))
         asked = main_of(page_of(client, show_plan="1"))
 
     today = page[at(page, TODAY) : page.index("</section>", at(page, TODAY))]
-    assert page.count(SEE_HOMEWORK) == 1
-    assert today.rstrip().endswith(SEE_HOMEWORK)
+    assert page.count(see_homework(first)) == 1
+    assert today.rstrip().endswith(see_homework(first))
+    landing = lands_on(page, f"#assignment-{first}")
+    assert landing.endswith(f'id="assignment-{first}" tabindex="-1">')
     assert lands_on(page, "#homework") == HEADING.removesuffix("Due this week</h2>")
     assert NO_PLAN_YET in today
     assert "autofocus" not in page
     assert 'id="todays-plan"' not in page
     no_plan = '<p class="note" id="todays-plan" tabindex="-1" role="status">'
-    assert asked.index(f"{no_plan}No plan is saved for today now.</p>") < asked.index(SEE_HOMEWORK)
+    said = asked.index(f"{no_plan}No plan is saved for today now.</p>")
+    assert said < asked.index(see_homework(first))
+
+
+def finished_but_missing(store: ProjectStateStore, name: str) -> None:
+    """Her Done on this work, beside the school's word that it is missing."""
+    reported(store, "done", name)
+    store.record_status_reports(name, [school_missing(PLAN_DATE)])
+
+
+def the_first_card_done(client: TestClient) -> dict[str, str]:
+    reported(store_of(client), "done", FAIR)
+    return {}
+
+
+def a_school_report_above_the_cards(client: TestClient) -> dict[str, str]:
+    finished_but_missing(store_of(client), ESSAY_ID)
+    return {}
+
+
+def a_school_report_and_one_card_left(client: TestClient) -> dict[str, str]:
+    no_plan_one_card_left(client)
+    finished_but_missing(store_of(client), ESSAY_ID)
+    return {}
+
+
+def reported_done_above_the_row_left(client: TestClient) -> dict[str, str]:
+    no_plan_one_later_row_left(client)
+    return {}
+
+
+def both_above_the_row_left(client: TestClient) -> dict[str, str]:
+    no_plan_one_later_row_left(client)
+    finished_but_missing(store_of(client), ESSAY_ID)
+    return {}
+
+
+def a_school_report_on_a_row_due_later(client: TestClient) -> dict[str, str]:
+    no_plan_one_later_row_left(client)
+    finished_but_missing(store_of(client), ALGEBRA)
+    return {}
+
+
+def only_rows_due_later(client: TestClient) -> dict[str, str]:
+    off_the_record(store_of(client), FAIR, COVER, ESSAY_ID, QUIZ, SYLLABUS)
+    return {}
+
+
+def an_id_a_browser_escapes(client: TestClient) -> dict[str, str]:
+    store = store_of(client)
+    everything_done(store)
+    store.put_on_record([due(ESCAPED, "Set two, question one", date(2026, 8, 21))], {})
+    return {}
+
+
+def a_card_shown_apart(client: TestClient) -> dict[str, str]:
+    store_of(client).put_on_record([due(FAR, "Far set", date(2026, 10, 7))], {})
+    return {"show": FAR}
+
+
+WORK_LEFT: Final[dict[str, tuple[Callable[[TestClient], dict[str, str]], str]]] = {
+    "the fixture week": (lambda client: {}, FAIR),
+    "the first card Done": (the_first_card_done, COVER),
+    "a school report to check above the cards": (a_school_report_above_the_cards, FAIR),
+    "a school report to check and one card left": (a_school_report_and_one_card_left, COVER),
+    "Reported done above the only row left": (reported_done_above_the_row_left, LOG),
+    "a school report and Reported done above the row left": (both_above_the_row_left, LOG),
+    "a school report on a row due later": (a_school_report_on_a_row_due_later, LOG),
+    "nothing due this week, rows due later": (only_rows_due_later, ALGEBRA),
+    "an id a browser escapes": (an_id_a_browser_escapes, ESCAPED),
+    "a card shown apart": (a_card_shown_apart, FAIR),
+}
+
+
+@pytest.mark.parametrize("reader", READERS)
+@pytest.mark.parametrize("case", list(WORK_LEFT))
+def test_after_see_homework_the_next_tab_is_inside_the_first_work_left(
+    case: str, reader: str, tmp_path: pathlib.Path
+) -> None:
+    """See homework lands on the first card or row still to do, outside every fold, so the
+    next Tab is inside it whatever sits above it under the heading, which stays in place."""
+    make, first = WORK_LEFT[case]
+    with reading(reader, tmp_path) as client:
+        params = make(client)
+        titles = {item.assignment_id: item.title for item in store_of(client).all_assignments()}
+        page = main_of(page_of(client, **params))
+
+    links = re.findall(r'<a class="to-help" href="([^"]*)">See homework</a>', page)
+    assert len(links) == 1, links
+    landing = lands_on(page, unescape(links[0]))
+    assert landing, links[0]
+    start, end = item_of(page, titles[first])
+    stop = next_tab_stop(page, page.index(landing) + len(landing))
+    assert start < stop < end, page[stop : stop + 160]
+    assert page.index(landing) == start
+    assert landing.endswith(' tabindex="-1">')
+    assert folds_open_around(page, landing)
+    assert '<details class="steps reported-done" open' not in page
+    heading = at(page, HEADING)
+    assert lands_on(page, "#homework") == HEADING.removesuffix("Due this week</h2>")
+    if "school report" in case:
+        assert heading < page.index("to check:</strong>") < start
+    if "Reported done" in case:
+        assert heading < page.index("<summary>Reported done (5)</summary>") < start
 
 
 def later_work_keeps_the_plan_button(client: TestClient) -> None:
@@ -659,11 +810,14 @@ def test_every_place_the_week_links_to_is_there_to_land_on(
 
 
 def test_the_homework_heading_is_an_outlined_place_to_land() -> None:
-    """The heading, the top line, a card's problem line and a result line each show an
-    outline when they take the focus, and the top line's link is as tall as a control."""
+    """The heading, a card or a row due later, the top line, a card's problem line and a
+    result line each show an outline when they take the focus, and the top line's link is
+    as tall as a control."""
     selectors = outlined()
     for selector in (
         ".list-heading:focus",
+        '.assignment[tabindex="-1"]:focus',
+        '.assigned li[tabindex="-1"]:focus',
         ".week-problem:focus",
         '.update .problem[tabindex="-1"]:focus',
         ".update-result:focus",
@@ -1221,7 +1375,7 @@ def test_a_plan_the_button_could_not_make_is_said_at_the_top_with_the_focus(
     assert asked == TOP_FOCUSED
     assert top_line(page).startswith(TOP_FOCUSED + said), top_line(page)
     assert page.count('role="alert"') == 1
-    assert SEE_HOMEWORK in page
+    assert see_homework(FAIR) in page
 
 
 @pytest.mark.parametrize("week", ["not a day", "", "0001-01-01"])

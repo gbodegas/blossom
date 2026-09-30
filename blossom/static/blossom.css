@@ -714,9 +714,10 @@ a.assignment-link:focus-visible {
   font-weight: 600;
 }
 
-/* Places a press or a link lands on. On her week: the homework's heading, the
-   problem at the top when no card holds it, and a card's problem line. Plain
-   :focus, since a fragment arrival after a click need not match :focus-visible. */
+/* Places a press or a link lands on. On her week: the homework's heading, a card
+   or a row due later, the problem at the top when no card holds it, and a card's
+   problem line. Plain :focus, since a fragment arrival after a click need not
+   match :focus-visible. */
 .ask:focus,
 .update-result:focus,
 .evidence:focus,
@@ -726,6 +727,8 @@ a.assignment-link:focus-visible {
 #problem-summary:focus,
 .detail .problem[tabindex="-1"]:focus,
 .list-heading:focus,
+.assignment[tabindex="-1"]:focus,
+.assigned li[tabindex="-1"]:focus,
 .week-problem:focus,
 .update .problem[tabindex="-1"]:focus {
   outline: 2px solid var(--blue-action);

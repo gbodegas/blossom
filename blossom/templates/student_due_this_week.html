@@ -231,9 +231,11 @@
       on a day that has none, the place is still there and says so.
 
       With no plan, and work left in the week shown, a card still to do or a
-      row due later still to do, the plan's place links down to the week's
-      homework, whoever reads. The link has no id of its own, so the place a
-      link to today's plan lands on is there only when that link asked for it.
+      row due later still to do, the plan's place links down to the first of
+      them, whoever reads. It lands on that card or row itself, so the next Tab
+      is inside it and not on a school report or a fold of finished work above
+      it. The link has no id of its own, so the place a link to today's plan
+      lands on is there only when that link asked for it.
     #}
     {% if view.plan %}
       <div id="{{ todays_plan_id }}" tabindex="-1">
@@ -250,8 +252,9 @@
       {% if plan_asked %}
         <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
       {% endif %}
-      {% if (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
-        <p><a class="to-help" href="#homework">See homework</a></p>
+      {% set work_left = (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
+      {% if work_left %}
+        <p><a class="to-help" href="#{{ assignment_anchor(work_left[0].assignment_id) }}">See homework</a></p>
       {% endif %}
     {% endif %}
   </section>
@@ -281,8 +284,8 @@
   {% endif %}
 
   {#
-    The week's homework starts at its heading, the place See homework links
-    to, on every week shown.
+    The week's homework starts at its heading, a place to land on every week
+    shown.
   #}
   <h2 class="list-heading" id="homework" tabindex="-1">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
 
