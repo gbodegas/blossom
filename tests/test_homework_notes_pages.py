@@ -136,8 +136,8 @@ def test_her_week_offers_the_way_in_and_shows_the_oldest_notes_outside_the_week(
     assert "It is not in a plan yet." in shown
     assert shown.count("Add the class and title to put this in a plan.") == 3
     assert not [words for words in ("Ready to add", "Link to", "Search homework") if words in shown]
-    assert week.index('id="today"') < week.index('id="homework-notes"')
-    assert week.index('id="homework-notes"') < week.index('class="list-heading"')
+    assert week.index('id="today"') < week.index('class="list-heading"')
+    assert week.index('class="list-heading"') < week.index('id="homework-notes"')
     assert "Homework notes (3)" in notes_section(fewer)
     assert "View all" not in notes_section(fewer)
 
@@ -159,7 +159,7 @@ def test_with_every_assignment_done_and_an_empty_week_the_notes_are_still_there(
 
     assert 'action="/student/actions/plan"' not in done
     assert "Homework notes (1)" in notes_section(done)
-    assert done.index('id="homework-notes"') < done.index("Reported done (")
+    assert done.index("Reported done (") < done.index('id="homework-notes"')
     assert "No assignments are recorded as due" in nothing_due
     assert f'href="{NEW_NOTE_PAGE}">Write down homework</a>' in nothing_due
     assert "Homework notes (1)" in notes_section(with_a_note)

@@ -361,7 +361,7 @@ def test_help_is_one_section_after_the_homework_and_before_the_privacy_fold() ->
 
     assert page.count(SECTION) == 1
     at = page.index(SECTION)
-    assert page.index('<h2 class="list-heading">') < page.index('<section class="panel assigned">')
+    assert page.index('<h2 class="list-heading"') < page.index('<section class="panel assigned">')
     assert page.index('<section class="panel assigned">') < at
     assert at < page.index("<summary>How Blossom uses your information</summary>")
     part = section(page)

@@ -499,7 +499,7 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
         client.post("/student/help-requests")
         page = client.get(PAGE).text
 
-    panel, _, rest = page.partition('<h2 class="list-heading">')
+    panel, _, rest = page.partition('<h2 class="list-heading"')
     help_at = rest.index('<section class="panel help-panel" id="help" tabindex="-1">')
     help_part = rest[help_at : rest.index("<summary>How Blossom uses your information</summary>")]
     assert "Today, Wednesday, August 19" in panel

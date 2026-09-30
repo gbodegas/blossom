@@ -120,7 +120,7 @@ def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -
     assert '<span class="visually-hidden"> on Canal Era comparison essay</span>' in card
     assert hidden(card, "expected_report_id") == ""
     assert hidden(card, "week") == WEEK
-    assert location == f"{PAGE}?week={WEEK}&saved={ESSAY}#assignment-{ESSAY}"
+    assert location == f"{PAGE}?week={WEEK}&saved={ESSAY}#update-result-{ESSAY}"
     active, _, folded = after.partition('<details class="steps reported-done" open>')
     assert f'id="assignment-{ESSAY}"' not in active
     assert "<summary>Reported done (1)</summary>" in folded
@@ -147,10 +147,10 @@ def test_the_same_update_is_already_saved_and_a_changed_note_is_a_new_one() -> N
         changed = report(client, ESSAY, "done", "Finished, all of it.")
         history = state_of(client).project_state.student_reports(ESSAY)
 
-    assert first.endswith(f"&saved={ESSAY}#assignment-{ESSAY}")
-    assert same.endswith(f"&same={ESSAY}#assignment-{ESSAY}")
+    assert first.endswith(f"&saved={ESSAY}#update-result-{ESSAY}")
+    assert same.endswith(f"&same={ESSAY}#update-result-{ESSAY}")
     assert UPDATE_ALREADY_SAVED in card_for(page, ESSAY)
-    assert changed.endswith(f"&saved={ESSAY}#assignment-{ESSAY}")
+    assert changed.endswith(f"&saved={ESSAY}#update-result-{ESSAY}")
     assert [item.note for item in history] == ["Finished.", "Finished, all of it."]
 
 
@@ -270,10 +270,10 @@ def test_a_save_from_a_page_that_has_moved_on_is_refused_with_the_newer_update_s
     assert ">still the last page</textarea>" in card
     assert hidden(card, "expected_report_id") == history[0].report_id
     assert again.status_code == 303
-    assert again.headers["location"].endswith(f"&saved={ESSAY}#assignment-{ESSAY}")
+    assert again.headers["location"].endswith(f"&saved={ESSAY}#update-result-{ESSAY}")
     assert [item.status for item in history] == ["done", "not_yet"]
-    assert blank_twice.headers["location"].endswith(f"&saved={LOG}#assignment-{LOG}")
-    assert blank_again.headers["location"].endswith(f"&same={LOG}#assignment-{LOG}")
+    assert blank_twice.headers["location"].endswith(f"&saved={LOG}#update-result-{LOG}")
+    assert blank_again.headers["location"].endswith(f"&same={LOG}#update-result-{LOG}")
 
 
 def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
@@ -306,7 +306,9 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
         statuses = statuses_for(state_of(client).project_state, [ESSAY, LOG])
 
     assert undone.status_code == 303
-    assert undone.headers["location"] == f"{PAGE}?week={WEEK}&undone={ESSAY}#assignment-{ESSAY}"
+    assert undone.headers["location"] == (
+        f"{PAGE}?week={WEEK}&undone={ESSAY}#update-result-{ESSAY}"
+    )
     assert UPDATE_UNDONE in restored
     assert '<span class="pill">Your update: Not yet</span>' in restored
     assert "Reported August 19, restored August 19" in restored
@@ -830,7 +832,7 @@ def test_a_form_must_name_an_update_of_its_own_card_whatever_else_it_says() -> N
     assert [answer.status_code for answer in refusals] == [422] * 8
     assert all(NOT_THIS_CARDS in card_for(a.text, ESSAY) for a in refusals)
     assert stale_and_same.status_code == 303
-    assert stale_and_same.headers["location"].endswith(f"&same={ESSAY}#assignment-{ESSAY}")
+    assert stale_and_same.headers["location"].endswith(f"&same={ESSAY}#update-result-{ESSAY}")
     assert (undo_unknown.status_code, undo_another.status_code) == (422, 422)
     assert undo_stale.status_code == 409
     assert CANNOT_UNDO in card_for(undo_stale.text, ESSAY)
@@ -1015,7 +1017,8 @@ def test_change_and_errors_land_on_the_card_and_name_the_field() -> None:
     """Change goes to the card's own fragment and the way back opens the fold it sits in;
     a missing choice puts the cursor on the first choice and ties the words to the group;
     a long note marks the field, ties the words and the hint to it, and takes the cursor;
-    a refusal about neither is said at the top with a link to the card."""
+    a refusal about neither is the card's alert and takes the focus there, and the top of
+    the page repeats it with a link to the card."""
     with browser() as client:
         saved = client.get(report(client, ESSAY, "done", "Finished."), headers=PAGE_HEADERS).text
         changing = client.get(
@@ -1048,10 +1051,15 @@ def test_change_and_errors_land_on_the_card_and_name_the_field() -> None:
     assert 'value="done" checked>' in field
     top = conflict.text
     assert (
-        f'<p class="problem" role="alert">{SAVED_ELSEWHERE} '
+        f'<p class="problem week-problem">{SAVED_ELSEWHERE} '
         f'<a href="#assignment-{QUIZ}">Go to the assignment.</a></p>' in top
     )
-    assert "autofocus" not in card_for(top, QUIZ)
+    assert (
+        f'<p class="problem" role="alert" id="update-problem-{QUIZ}" tabindex="-1" '
+        f"autofocus>{SAVED_ELSEWHERE}</p>" in card_for(top, QUIZ)
+    )
+    assert top.count(" autofocus") == 1
+    assert top.count('role="alert"') == 1
 
 
 def test_the_note_limit_is_five_hundred_characters_as_the_server_counts_them() -> None:
@@ -1254,7 +1262,7 @@ def test_her_words_wrap_and_keep_their_lines_on_both_pages() -> None:
 
 def today_panel(page: str) -> str:
     start = page.index('<section class="panel today" id="today"')
-    return page[start : page.index('<h2 class="list-heading">')]
+    return page[start : page.index('<h2 class="list-heading"')]
 
 
 def finish_everything(client: TestClient) -> None:

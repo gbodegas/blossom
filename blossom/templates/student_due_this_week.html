@@ -22,12 +22,15 @@
   </div>
 
   {#
-    A problem with one card is said here as well as on the card, with a link
-    to it: a page that comes back from a form opens at its top, and the card
-    may be far below.
+    A problem with one card is said on the card, which is the alert and takes
+    the focus, and here as well, as a plain line with a link to it: the card
+    may be far below, and a browser that leaves the focus at the top still
+    shows what went wrong. A problem no card on the page can hold is said here
+    alone, as the alert, and after a press it takes the focus. A visit by
+    address asks for no focus.
   #}
   {% if problem %}
-    <p class="problem" role="alert">{{ problem }}{% if problem_target %} <a href="#{{ assignment_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}</p>
+    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ assignment_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}</p>
   {% endif %}
 
   {% if view.week.current %}
@@ -226,6 +229,13 @@
       that can take the focus keeps Tab out of everything inside it. The plan
       inside keeps the id made from its draft. When a link asks for the plan
       on a day that has none, the place is still there and says so.
+
+      With no plan, and work left in the week shown, a card still to do or a
+      row due later still to do, the plan's place links down to the first of
+      them, whoever reads. It lands on that card or row itself, so the next Tab
+      is inside it and not on a school report or a fold of finished work above
+      it. The link has no id of its own, so the place a link to today's plan
+      lands on is there only when that link asked for it.
     #}
     {% if view.plan %}
       <div id="{{ todays_plan_id }}" tabindex="-1">
@@ -238,53 +248,16 @@
           {% with reading = plan_reading, review_open = false %}{% include "plan_reading.html" %}{% endwith %}
         </details>
       </div>
-    {% elif plan_asked %}
-      <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
+    {% else %}
+      {% if plan_asked %}
+        <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
+      {% endif %}
+      {% set work_left = (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
+      {% if work_left %}
+        <p><a class="to-help" href="#{{ assignment_anchor(work_left[0].assignment_id) }}">See homework</a></p>
+      {% endif %}
     {% endif %}
   </section>
-
-  {#
-    To turn in: everything she reports as still to turn in, whatever the week
-    and whether or not its work is Done, outside the fold of finished work, so
-    finding it takes no remembered step. The first few rows, and a link to all
-    of them. With nothing to show the section is left out and the link under
-    the controls is how the list is reached; when a press here just emptied
-    it, the section stays, since it holds what the press did and its Undo.
-  #}
-  {% if view.to_turn_in or view.to_turn_in_unreadable or list_card %}
-    <section class="panel to-turn-in" id="to-turn-in" tabindex="-1">
-      <h2>To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</h2>
-      {% with rows = view.to_turn_in, unreadable = view.to_turn_in_unreadable, shown = compact_rows, origin = "week" %}{% include "student_to_turn_in_rows.html" %}{% endwith %}
-      {% if view.to_turn_in|length > compact_rows %}
-        <p class="note"><a href="{{ to_turn_in_page }}">View all {{ view.to_turn_in|length }} to turn in</a></p>
-      {% elif not view.to_turn_in and not view.to_turn_in_unreadable %}
-        <p class="empty quiet">Nothing is on {% if viewer != "parent" %}your{% else %}her{% endif %} To turn in list.</p>
-      {% endif %}
-    </section>
-  {% endif %}
-
-  {#
-    Homework notes: what she wrote down to remember, outside the week's cards
-    and the fold of finished work, since a note is no assignment and belongs
-    to no week. The oldest few, in the order they were first saved, and a link
-    to all of them. With nothing to show the section is left out and the link
-    under the controls is how the page of notes is reached. A row says the
-    note is in no plan and what it still needs to be in one. A note added to
-    homework leaves this section: its assignment is a card of the week it is
-    due in, like any other.
-  #}
-  {% if homework_notes or homework_notes_unreadable %}
-    <section class="panel homework-notes" id="homework-notes" tabindex="-1">
-      <h2>Homework notes ({{ homework_notes|length + homework_notes_unreadable|length }})</h2>
-      {% with rows = homework_notes, shown = compact_rows %}{% include "student_notes_rows.html" %}{% endwith %}
-      {% if homework_notes|length + homework_notes_unreadable|length > compact_rows %}
-        <p class="note"><a href="{{ notes_page }}">View all {{ homework_notes|length + homework_notes_unreadable|length }} homework notes</a></p>
-      {% endif %}
-      {% if homework_notes_unreadable %}
-        <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now.</p>
-      {% endif %}
-    </section>
-  {% endif %}
   {% else %}
     {#
       Today's planning window is named once near the top of every week shown:
@@ -310,7 +283,11 @@
     </section>
   {% endif %}
 
-  <h2 class="list-heading">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
+  {#
+    The week's homework starts at its heading, a place to land on every week
+    shown.
+  #}
+  <h2 class="list-heading" id="homework" tabindex="-1">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
 
   {% if not view.assignments %}
     <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.{% if viewer != "parent" %} Heard about something? <a href="{{ new_note_page }}">Write down homework</a>{% endif %}</p>
@@ -326,7 +303,7 @@
   {% set active_cards = view.assignments|rejectattr("update_status", "equalto", "done")|list %}
   {% set done_cards = view.assignments|selectattr("update_status", "equalto", "done")|list %}
   {% set to_check = (view.assignments + view.assigned_this_week)|selectattr("check_school")|list %}
-  {% if not view.week.current and (view.assignments or view.assigned_this_week) %}
+  {% if not view.week.current and (view.assignments or view.assigned_this_week or view.apart) %}
     <p class="note">Updates show the latest saved information, even when you view a different week.</p>
   {% endif %}
   {% if to_check %}
@@ -392,6 +369,53 @@
   {% endif %}
 
   {% if view.week.current %}
+    {#
+      The full lists follow the week's homework, which comes first on a crowded
+      week; Today keeps a link to each near the top.
+
+      To turn in: everything she reports as still to turn in, whatever the week
+      and whether or not its work is Done, outside the fold of finished work, so
+      finding it takes no remembered step, with every assignment Done as with
+      none. The first few rows, and a link to all of them. With nothing to show
+      the section is left out and the link under the controls is how the list
+      is reached; when a press here just emptied it, the section stays, since it
+      holds what the press did and its Undo.
+    #}
+    {% if view.to_turn_in or view.to_turn_in_unreadable or list_card %}
+      <section class="panel to-turn-in" id="to-turn-in" tabindex="-1">
+        <h2>To turn in{% if view.to_turn_in %} ({{ view.to_turn_in|length }}){% endif %}</h2>
+        {% with rows = view.to_turn_in, unreadable = view.to_turn_in_unreadable, shown = compact_rows, origin = "week" %}{% include "student_to_turn_in_rows.html" %}{% endwith %}
+        {% if view.to_turn_in|length > compact_rows %}
+          <p class="note"><a href="{{ to_turn_in_page }}">View all {{ view.to_turn_in|length }} to turn in</a></p>
+        {% elif not view.to_turn_in and not view.to_turn_in_unreadable %}
+          <p class="empty quiet">Nothing is on {% if viewer != "parent" %}your{% else %}her{% endif %} To turn in list.</p>
+        {% endif %}
+      </section>
+    {% endif %}
+
+    {#
+      Homework notes: what she wrote down to remember, outside the week's cards
+      and the fold of finished work, since a note is no assignment and belongs
+      to no week. The oldest few, in the order they were first saved, and a link
+      to all of them. With nothing to show the section is left out and the link
+      under the controls is how the page of notes is reached. A row says the
+      note is in no plan and what it still needs to be in one. A note added to
+      homework leaves this section: its assignment is a card of the week it is
+      due in, like any other.
+    #}
+    {% if homework_notes or homework_notes_unreadable %}
+      <section class="panel homework-notes" id="homework-notes" tabindex="-1">
+        <h2>Homework notes ({{ homework_notes|length + homework_notes_unreadable|length }})</h2>
+        {% with rows = homework_notes, shown = compact_rows %}{% include "student_notes_rows.html" %}{% endwith %}
+        {% if homework_notes|length + homework_notes_unreadable|length > compact_rows %}
+          <p class="note"><a href="{{ notes_page }}">View all {{ homework_notes|length + homework_notes_unreadable|length }} homework notes</a></p>
+        {% endif %}
+        {% if homework_notes_unreadable %}
+          <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now.</p>
+        {% endif %}
+      </section>
+    {% endif %}
+
     {#
       Help, after the homework: her form, her requests and what a parent did
       with each. Asking and taking a request back are hers; a parent reading

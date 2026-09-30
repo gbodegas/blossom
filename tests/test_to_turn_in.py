@@ -191,7 +191,7 @@ def test_the_list_holds_what_is_still_to_turn_in_whatever_the_work_or_the_week()
     assert listed(page) == ["done-work", "far-off"]
     assert listed(section(week)) == ["done-work", "far-off"]
     assert "To turn in (2)" in week
-    assert week.index('id="to-turn-in"') < week.index("Reported done (1)")
+    assert week.index("Reported done (1)") < week.index('id="to-turn-in"')
 
 
 def test_with_every_assignment_done_her_week_still_leads_to_what_is_left_to_turn_in() -> None:
@@ -205,13 +205,13 @@ def test_with_every_assignment_done_her_week_still_leads_to_what_is_left_to_turn
 
         week = client.get(HER_PAGE).text
 
-    today = week[week.index('id="today"') : week.index('id="to-turn-in"')]
+    today = week[week.index('id="today"') : week.index("</section>", week.index('id="today"'))]
     assert NOTHING_TO_SCHEDULE in today
     assert 'action="/student/actions/plan"' not in week
     assert f'<a href="{TO_TURN_IN_PAGE}">To turn in (1)</a>' in today
     assert listed(section(week)) == [ESSAY_ID]
     assert PRESS in section(week)
-    assert week.index('id="to-turn-in"') < week.index("Reported done (")
+    assert week.index("Reported done (") < week.index('id="to-turn-in"')
     assert "<details" not in section(week)
 
 
@@ -1541,8 +1541,9 @@ def test_her_hand_in_update_on_the_details_lands_on_its_result_for_any_id(name: 
 @pytest.mark.parametrize("name", [SLASHED, SLASHED_UNICODE], ids=["ascii", "unicode"])
 def test_a_card_on_her_week_and_the_way_back_to_it_land_on_the_card_for_any_id(name: str) -> None:
     """A save and an undo from the card answer with her week, the card named in the query
-    whole and in the fragment; the details' way back to the week lands on the card too, and
-    so does the link her week writes for something worth checking."""
+    whole and its result in the fragment, a line inside that card; the details' way back to
+    the week lands on the card, and so does the link her week writes for something worth
+    checking."""
     save, undo = report_actions(name)
     with browser(BLOSSOM_FIXTURE_PATH="") as client:
         store = special_record(client, name)
@@ -1571,8 +1572,10 @@ def test_a_card_on_her_week_and_the_way_back_to_it_land_on_the_card_for_any_id(n
     for answer, shown, word in ((saved, after_save, "saved"), (undone, after_undo, "undone")):
         address = answer.headers["location"]
         assert parse_qs(urlsplit(address).query)[word] == [name]
-        assert f'id="{assignment_anchor(name)}"' in lands_on(shown, address)
-        assert 'class="note update-result"' in card_for(shown, name)
+        result = lands_on(shown, address)
+        assert f'id="{escape(result_anchor(name))}"' in result
+        assert 'class="note update-result"' in result
+        assert result in card_for(shown, name)
     assert f'id="{assignment_anchor(name)}"' in lands_on(returned, html.unescape(way_back.group(1)))
     assert parse_qs(urlsplit(html.unescape(way_back.group(1))).query)["show"] == [name]
     assert f'id="{assignment_anchor(name)}"' in lands_on(checked, html.unescape(to_check.group(1)))
@@ -1767,14 +1770,19 @@ def test_every_way_to_a_card_lands_on_that_card_when_another_id_differs_only_by_
     assert (refused.status_code, saved.status_code, again.status_code) == (422, 303, 303)
     assert undone.status_code == 303
     for how, (page, address) in reached.items():
-        place = landed(page, address)
-        assert f'id="{assignment_anchor(target)}"' in lands_on(page, address), how
-        assert PAIR[target] in place, how
-        assert PAIR[other] not in place, how
+        tag = lands_on(page, address)
+        if how in ("a save", "the same save", "an undo"):
+            assert f'id="{escape(result_anchor(target))}"' in tag, how
+            assert 'class="note update-result"' in tag, how
+            assert tag in card_for(page, target), how
+            assert tag not in card_for(page, other), how
+        else:
+            place = landed(page, address)
+            assert f'id="{assignment_anchor(target)}"' in tag, how
+            assert PAIR[target] in place, how
+            assert PAIR[other] not in place, how
         done_now = how not in ("the way back", "the refusal's link", "an undo")
         assert in_an_open_fold(page, address) == done_now, how
-    for how in ("a save", "the same save", "an undo"):
-        assert 'class="note update-result"' in landed(*reached[how]), how
     assert parse_qs(urlsplit(reached["a save"][1]).query)["saved"] == [target]
     assert parse_qs(urlsplit(way_back).query)["show"] == [target]
     assert reports == {target: 2, other: 0}

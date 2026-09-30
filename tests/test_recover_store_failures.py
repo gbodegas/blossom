@@ -1071,7 +1071,10 @@ def test_a_signal_the_file_would_not_keep_is_said_at_the_top_and_kept_once_after
         left = signals.held()
 
     assert refused.status_code == 500
-    assert f'<p class="problem" role="alert">{SIGNAL_FAILED}</p>' in refused.text
+    assert (
+        f'<p class="problem week-problem" role="alert" tabindex="-1" autofocus>{SIGNAL_FAILED}</p>'
+        in refused.text
+    )
     assert kept == held
     main = store_free_page(
         unread, status=500, heading="Not saved", alert=f"{SIGNAL_FAILED} {YOUR_WEEK}"

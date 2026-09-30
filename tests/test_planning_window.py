@@ -90,7 +90,7 @@ def test_another_week_names_todays_window_under_its_link_back_to_this_week(week:
     assert 'id="today"' not in page
     assert page.index(">This week</a>") < page.index(WINDOW)
     assert after_the_link.lstrip().startswith(f'<p class="note planning-window">{WINDOW}')
-    assert page.index(WINDOW) < page.index('<h2 class="list-heading">')
+    assert page.index(WINDOW) < page.index('<h2 class="list-heading"')
 
 
 def test_another_week_says_its_updates_are_the_latest_saved_above_its_cards() -> None:
@@ -99,7 +99,7 @@ def test_another_week_says_its_updates_are_the_latest_saved_above_its_cards() ->
         this = client.get(HER_PAGE, headers=PAGE_HEADERS).text
 
     assert later.count(OTHER_WEEK) == 1
-    assert later.index('<h2 class="list-heading">') < later.index(OTHER_WEEK)
+    assert later.index('<h2 class="list-heading"') < later.index(OTHER_WEEK)
     assert later.index(WINDOW) < later.index(OTHER_WEEK) < later.index('class="assignment')
     assert "Updates shown are the latest on record." not in later
     assert OTHER_WEEK not in this

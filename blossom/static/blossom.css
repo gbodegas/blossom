@@ -415,7 +415,8 @@ article h2 {
    back in leaves the text where it was. On an assignment's details that is
    the date warning's link, the summary's, the notes', and the line that says
    how many instructions wait; in Help, a refusal's link and the family review
-   link a parent reads; on a note's small page, Try again. */
+   link a parent reads; at the top of her week, the link from a problem to the
+   card it is about; on a note's small page, Try again. */
 .notice a,
 .refresh a,
 .return a,
@@ -425,7 +426,8 @@ article h2 {
 .detail-notes a,
 .school-instructions .source a,
 .help-panel .problem a,
-.help-panel #ask-for-help a {
+.help-panel #ask-for-help a,
+.week-problem a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: -0.8rem 0;
@@ -701,8 +703,9 @@ a.assignment-link:focus-visible {
   color: var(--blue-action-hover);
 }
 
-/* The link from the Today controls to the help form below the plan: beside
-   the buttons and as tall as they are, so help is never a long plan away. */
+/* The links from Today down the page, to the help form and, with no plan, to the
+   week's homework: beside the buttons and as tall as they are, so neither is
+   ever a long plan away. */
 .to-help {
   display: inline-flex;
   align-items: center;
@@ -712,6 +715,10 @@ a.assignment-link:focus-visible {
   font-weight: 600;
 }
 
+/* Places a press or a link lands on. On her week: the homework's heading, a card
+   or a row due later, the problem at the top when no card holds it, and a card's
+   problem line. Plain :focus, since a fragment arrival after a click need not
+   match :focus-visible. */
 .ask:focus,
 .update-result:focus,
 .evidence:focus,
@@ -720,7 +727,12 @@ a.assignment-link:focus-visible {
 #update-or-turn-in:focus,
 #problem-summary:focus,
 #note-problem:focus,
-.detail .problem[tabindex="-1"]:focus {
+.detail .problem[tabindex="-1"]:focus,
+.list-heading:focus,
+.assignment[tabindex="-1"]:focus,
+.assigned li[tabindex="-1"]:focus,
+.week-problem:focus,
+.update .problem[tabindex="-1"]:focus {
   outline: 2px solid var(--blue-action);
   outline-offset: 4px;
 }

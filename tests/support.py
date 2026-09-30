@@ -845,22 +845,16 @@ def form_fields(html: str, action: str) -> dict[str, str]:
 
 
 def report(client: TestClient, assignment_id: str, status: str, note: str = "", **more: str) -> str:
-    """Send her update from the card as it stands and return the address it goes back to."""
+    """Send her update from the card as it stands on the week ``week`` names, the fixture
+    week unless it names another, and return the address it goes back to."""
+    week = more.pop("week", FIXTURE_WEEK)
     page = client.get(
-        HER_PAGE,
-        params={"week": more.pop("week", FIXTURE_WEEK), "change": assignment_id},
-        headers=PAGE_HEADERS,
+        HER_PAGE, params={"week": week, "change": assignment_id}, headers=PAGE_HEADERS
     ).text
     head = hidden(card_for(page, assignment_id), "expected_report_id")
     answer = client.post(
         f"/student/actions/assignments/{assignment_id}/report",
-        data={
-            "status": status,
-            "note": note,
-            "expected_report_id": head,
-            "week": FIXTURE_WEEK,
-            **more,
-        },
+        data={"status": status, "note": note, "expected_report_id": head, "week": week, **more},
     )
     assert answer.status_code == 303, (answer.status_code, answer.text[:400])
     return answer.headers["location"]

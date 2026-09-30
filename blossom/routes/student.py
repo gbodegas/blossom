@@ -1291,9 +1291,9 @@ class CardState:
     ``problem`` is what the save could not do. ``field`` says which field the
     problem is about, ``status`` or ``note``, so the page can mark that field,
     tie the words to it, and put the cursor there; a problem about neither,
-    an update saved elsewhere among them, is said at the top of the page with
-    a link to the card. ``saved_elsewhere`` marks the refusal that comes with
-    a newer update to look at.
+    an update saved elsewhere among them, takes the focus on the card, and is
+    said at the top of the page too, with a link to the card. ``saved_elsewhere``
+    marks the refusal that comes with a newer update to look at.
     """
 
     assignment_id: str
@@ -1377,6 +1377,7 @@ def student_page(
     help_form: HelpForm | None = None,
     help_marker: HelpMarker | None = None,
     help_problem: HelpProblem | None = None,
+    pressed: bool = False,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
@@ -1393,7 +1394,11 @@ def student_page(
     marks beside its rows. The record is read once too, and all of those are
     about that one reading. A card's problem is said at the top too, with a link
     to the card, so it is met on a page that opens at its top; the card named is
-    shown even when its dates have taken it out of the week. ``help_form`` is her Ask for
+    shown even when its dates have taken it out of the week. The card's own line
+    is the alert and takes the focus there, unless its field does. A problem no
+    card on the page holds is the top line's alone. ``pressed`` says a form's press
+    brought her here, and then that top line takes the focus; a visit by address
+    asks for none. ``help_form`` is her Ask for
     help form as a refusal shows it again, beside the form; ``help_marker`` is what the
     address says a help form did, checked against the page's one reading of her requests;
     and ``help_problem`` is what a press in the Help section could not do, said there. Each
@@ -1457,8 +1462,15 @@ def student_page(
         None if help_result is None else help_result.request_id,
         None if help_problem is None else help_problem.request_id,
     }
-    about_a_card = card is not None and card.problem is not None and problem is None
     listed = [*view.assignments, *view.assigned_this_week, *([view.apart] if view.apart else [])]
+    by_a_card = card is not None and card.problem is not None and problem is None
+    # A card's problem is said on the card only when the card is on the page: a form made
+    # for an id that is not on record is refused before any lookup, and has no card.
+    about_a_card = (
+        by_a_card
+        and card is not None
+        and card.assignment_id in {item.assignment_id for item in listed}
+    )
     return templates.TemplateResponse(
         request,
         "student_due_this_week.html",
@@ -1468,8 +1480,9 @@ def student_page(
                 item.assignment_id: week_context(item.assignment_id, view.week.start, viewer)
                 for item in listed
             },
-            "problem": card.problem if card is not None and about_a_card else problem,
+            "problem": card.problem if card is not None and by_a_card else problem,
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
+            "pressed": pressed,
             "plan_reading": None if todays is None else todays.reading,
             "plan_asked": plan_asked,
             "list_card": list_card_shown(turning_in, everything, viewer),
@@ -1670,13 +1683,13 @@ def week_named(given: str) -> date | None:
 
 
 def back_to_the_card(week: date | None, said: str, assignment_id: str) -> str:
-    """Where a save or an undo sends her: the week she was on, the card, and what happened.
-    The id is escaped where it goes, in the query, and the fragment is the card's own id,
-    so one that holds a hash, an ampersand, or a question mark is still one value and one
-    place."""
+    """Where a save or an undo sends her: the week she was on, the card, and what happened,
+    landing on the card's line that says it. The id is escaped where it goes, in the query,
+    and the fragment is the id that line is written with, so one that holds a hash, an
+    ampersand, or a question mark is still one value and one place."""
     return address(
         PAGE,
-        fragment=assignment_anchor(assignment_id),
+        fragment=result_anchor(assignment_id),
         week=None if week is None else week.isoformat(),
         **{said: assignment_id},
     )
@@ -2134,14 +2147,21 @@ def result_page(
             status_code=status_code,
         )
     return student_page(
-        request, state, week=origin.week, card=card, problem=problem, status_code=status_code
+        request,
+        state,
+        week=origin.week,
+        card=card,
+        problem=problem,
+        pressed=True,
+        status_code=status_code,
     )
 
 
 def after(origin: Origin, said: str, assignment_id: str) -> str:
     """Where a save or an undo sends her once it is committed: back to the page the form
-    was on, with what happened. On the details the address lands on the result itself,
-    where the way back is repeated, so neither is below a long page's first screen."""
+    was on, with what happened. The address lands on the result itself, on the details
+    with the way back repeated beside it, so neither is below a long page's first
+    screen."""
     if origin.detail:
         return details_href(
             assignment_id,
@@ -2298,6 +2318,7 @@ def not_hers(
             state,
             problem=None if in_help else problem,
             help_problem=HelpProblem(problem) if in_help else None,
+            pressed=True,
             status_code=status.HTTP_403_FORBIDDEN,
         ),
         week_not_shown(request, heading, problem, fragment="help" if in_help else ""),
@@ -2550,6 +2571,7 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
                 state,
                 week=origin.week,
                 problem=NOT_ON_RECORD,
+                pressed=True,
                 status_code=status.HTTP_404_NOT_FOUND,
             ),
             card_not_shown(
@@ -2595,7 +2617,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return shown_once(
             request,
             state,
-            lambda: student_page(request, state, problem=problem, status_code=code),
+            lambda: student_page(request, state, problem=problem, pressed=True, status_code=code),
             week_not_shown(request, PLAN_NOT_MADE, problem),
             code,
         )
@@ -2790,6 +2812,7 @@ def signal_not_saved(request: Request, state: ApplicationState) -> HTMLResponse:
             request,
             state,
             problem=SIGNAL_NOT_SAVED,
+            pressed=True,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         ),
         week_not_shown(request, NOT_SAVED_HEADING, SIGNAL_NOT_SAVED),
