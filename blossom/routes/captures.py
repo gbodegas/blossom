@@ -288,10 +288,11 @@ SAID: Final[dict[str, tuple[str, str | None]]] = {
 }
 """What an address says a save did, the sentence for it, and the kind of change the event
 it names must be in the note's history. A save that wrote nothing names the change it found
-standing, which may be of any kind. The server writes the address; the page believes none
-of it until the history bears it out, and an event id is not a number a person can count
-to: a revision in its place, or an id of another note's, says nothing. A link is joined or
-moved as its own event keeps it, whatever the address says."""
+standing, which may be of any kind: ``same`` for a save only she makes, and ``unchanged``
+for the details, which the family's tree saves too. The server writes the address; the page
+believes none of it until the history bears it out, and an event id is not a number a person
+can count to: a revision in its place, or an id of another note's, says nothing. A link is
+joined or moved as its own event keeps it, whatever the address says."""
 SAID_OF_A_NOTE_IN_HOMEWORK: Final = {
     "edited": NOTE_EDITED_IN_HOMEWORK,
     "restored": NOTE_RESTORED_IN_HOMEWORK,
@@ -1415,7 +1416,7 @@ async def edit_a_note(request: Request, capture_id: str, state: State) -> Respon
         case CaptureChanged(event=made):
             where = note_href(name, fragment=NOTE_RESULT, said="edited", event=made.event_id)
         case CaptureUnchanged(head=found):
-            where = note_href(name, fragment=NOTE_RESULT, said="unchanged", event=found.event_id)
+            where = note_href(name, fragment=NOTE_RESULT, said="same", event=found.event_id)
         case CaptureConflict(capture=note):
             return note_page(
                 request,
@@ -1474,7 +1475,7 @@ async def move_a_note(
             said = "archived" if archive else "restored"
             where = note_href(name, fragment=NOTE_RESULT, said=said, event=made.event_id)
         case CaptureUnchanged(head=found):
-            where = note_href(name, fragment=NOTE_RESULT, said="unchanged", event=found.event_id)
+            where = note_href(name, fragment=NOTE_RESULT, said="same", event=found.event_id)
         case CaptureConflict():
             return note_page(
                 request,
