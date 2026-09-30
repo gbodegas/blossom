@@ -327,6 +327,17 @@ on her week and each evening's plan in force on the family page. The page
 reads nothing more, and never says that a save happened or that there's no
 plan. A form's press that shows a page again isn't handled this way.
 
+When a press is refused and the page it's shown on can't be read, the page is
+tried once and then the answer is a page that reads no store: the refusal's own
+status, a parent's 403 included, its words as they read without that page, a
+line that says which page can't be shown, and what was chosen or typed. A
+take-back, a workload signal, or a parent's reply to her request that the file
+refuses is rolled back, so those answers say nothing was changed, and a reply
+goes straight to the family page's stand-in, which keeps it to copy. Her notes,
+an assignment's details, and her To turn in list answer 503 the same way her
+week does, with a Try again link to the same address, and never say whether a
+save or a delete the address names happened.
+
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update
 component, handed a context object that says who may update, where its forms

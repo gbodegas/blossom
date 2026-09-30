@@ -98,6 +98,7 @@ from blossom.routes.navigation import (
     NOTES_RESULT,
     WEEK_PAGE,
     address,
+    asked_address,
     note_href,
 )
 from blossom.routes.student import (
@@ -111,6 +112,7 @@ from blossom.routes.student import (
     State,
     parent_reads,
     templates,
+    unavailable_page,
     viewer_of,
 )
 from blossom.stores.help_requests import (
@@ -202,6 +204,20 @@ NOTE_CHANGED_NOT_DELETED: Final = (
     "stands now."
 )
 NOTE_NOT_CHANGED: Final = "Note not changed"
+NOTES_UNAVAILABLE: Final = "{whose} homework notes can't be shown right now. Try again in a moment."
+NOTES_UNAVAILABLE_AFTER_A_DELETE: Final = (
+    "{whose} homework notes can't be shown right now, so whether that note was deleted can't "
+    "be checked yet. Try again in a moment."
+)
+"""What one of her lists of notes says when it can't be read: that it can't be shown, and,
+when the address names a delete, that the delete can't be checked. An address proves no
+delete, so neither says whether one happened."""
+LISTS: Final[dict[str, tuple[str, str]]] = {
+    "waiting": (NOTES_PAGE, "Homework notes"),
+    "added": (ADDED_NOTES_PAGE, "Homework notes added to homework"),
+    "archived": (ARCHIVED_NOTES_PAGE, "Archived homework notes"),
+}
+"""Each list of her notes: its address and its heading."""
 """The heading of the page that refuses a parent's change to her note, which reads no store."""
 NOTE_USE_UNKNOWN: Final = (
     "This note was saved before notes could be deleted, and Blossom can't tell whether it "
@@ -927,26 +943,69 @@ def notes_list(
     )
 
 
+def names_a_delete(deleted: str | None, already: str | None) -> bool:
+    """Whether the address names a note her list would look up as deleted: one of the two
+    words holds a note's id as these pages write it. Nothing is read."""
+    for given in (deleted, already):
+        try:
+            capture_id_from(given or "")
+        except NotACaptureId:
+            continue
+        return True
+    return False
+
+
+def notes_unavailable(
+    request: Request, state: ApplicationState, which: str, error: sqlite3.Error, *, delete: bool
+) -> HTMLResponse:
+    """One of her lists of notes when the record can't be read: 503, what can't be shown,
+    whether a delete the address names can't be checked, and the same address again."""
+    path, heading = LISTS[which]
+    parent = parent_reads(request)
+    said = NOTES_UNAVAILABLE_AFTER_A_DELETE if delete else NOTES_UNAVAILABLE
+    return unavailable_page(
+        request,
+        state,
+        error,
+        heading=heading,
+        alert=said.format(whose="Her" if parent else "Your"),
+        again=asked_address(path, request.scope["query_string"]),
+        ways_back=[ReturnLink(WEEK_PAGE, "Back to her week" if parent else "Back to my week")],
+    )
+
+
 @router.get("/homework-notes", response_class=HTMLResponse, include_in_schema=False)
 def homework_notes(
     request: Request, state: State, deleted: str | None = None, already: str | None = None
 ) -> HTMLResponse:
     """Every note still to do something about, the first saved first, and what a delete
-    did when the address names a note the record holds as deleted."""
-    result = deleted_result(state, deleted, already)
-    return notes_list(request, state, which="waiting", result=result)
+    did when the address names a note the record holds as deleted. When the record can't
+    be read, the page says so and never says whether a delete happened."""
+    try:
+        result = deleted_result(state, deleted, already)
+        return notes_list(request, state, which="waiting", result=result)
+    except sqlite3.Error as error:
+        return notes_unavailable(
+            request, state, "waiting", error, delete=names_a_delete(deleted, already)
+        )
 
 
 @router.get("/homework-notes/added", response_class=HTMLResponse, include_in_schema=False)
 def added_notes(request: Request, state: State) -> HTMLResponse:
     """Every note that is in homework and not put away, kept with its history."""
-    return notes_list(request, state, which="added")
+    try:
+        return notes_list(request, state, which="added")
+    except sqlite3.Error as error:
+        return notes_unavailable(request, state, "added", error, delete=False)
 
 
 @router.get("/homework-notes/archived", response_class=HTMLResponse, include_in_schema=False)
 def archived_notes(request: Request, state: State) -> HTMLResponse:
     """Every note she put away, kept with its history. One read."""
-    return notes_list(request, state, which="archived")
+    try:
+        return notes_list(request, state, which="archived")
+    except sqlite3.Error as error:
+        return notes_unavailable(request, state, "archived", error, delete=False)
 
 
 @router.get("/homework-notes/{capture_id}", response_class=HTMLResponse, include_in_schema=False)
