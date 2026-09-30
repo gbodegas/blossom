@@ -1318,38 +1318,45 @@ def week_undo_on_gone_work(client: TestClient) -> Answer:
     return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
 
 
-WEEK_PROBLEM = f'<p class="problem" role="alert" id="update-problem-{ESSAY_ID}">'
+WEEK_PROBLEM = f'<p class="problem" role="alert" id="update-problem-{ESSAY_ID}" tabindex="-1"'
+WEEK_TOP = '<p class="problem week-problem" role="alert" tabindex="-1" autofocus>'
 # case: (make the response, reader, status, alerts, what takes the focus)
 WEEK_CASES: dict[str, tuple[Callable[[TestClient], Answer], str, int, int, str]] = {
-    "conflict": (week_conflict, "her", 409, 2, ""),
-    "conflict on a Done card": (week_conflict_on_done, "her", 409, 2, ""),
-    "conflict on the card shown apart": (week_conflict_apart, "her", 409, 2, ""),
-    "stale undo": (week_stale_undo, "her", 409, 2, ""),
-    "malformed form": (week_malformed, "her", 422, 2, ""),
-    "failed write": (week_refused_by_the_file, "her", 500, 2, ""),
+    "conflict": (week_conflict, "her", 409, 1, WEEK_PROBLEM + " autofocus>"),
+    "conflict on a Done card": (week_conflict_on_done, "her", 409, 1, WEEK_PROBLEM + " autofocus>"),
+    "conflict on the card shown apart": (
+        week_conflict_apart,
+        "her",
+        409,
+        1,
+        WEEK_PROBLEM + " autofocus>",
+    ),
+    "stale undo": (week_stale_undo, "her", 409, 1, WEEK_PROBLEM + " autofocus>"),
+    "malformed form": (week_malformed, "her", 422, 1, WEEK_PROBLEM + " autofocus>"),
+    "failed write": (week_refused_by_the_file, "her", 500, 1, WEEK_PROBLEM + " autofocus>"),
     "no choice": (
         week_no_choice,
         "her",
         422,
-        2,
+        1,
         '<input type="radio" name="status" value="done" autofocus>',
     ),
     "saved": (week_saved, "her", 200, 0, ""),
-    "a parent's save": (week_parents_save, "a parent", 403, 1, ""),
-    "a parent's save from the details": (a_parents_save, "a parent", 403, 1, ""),
-    "a parent's hand-in from the details": (a_parents_hand_in, "a parent", 403, 1, ""),
-    "a parent's save on work gone": (gone_parents_save, "a parent", 403, 1, ""),
-    "an Undo on work gone from the record": (week_undo_on_gone_work, "her", 404, 1, ""),
+    "a parent's save": (week_parents_save, "a parent", 403, 1, WEEK_TOP),
+    "a parent's save from the details": (a_parents_save, "a parent", 403, 1, WEEK_TOP),
+    "a parent's hand-in from the details": (a_parents_hand_in, "a parent", 403, 1, WEEK_TOP),
+    "a parent's save on work gone": (gone_parents_save, "a parent", 403, 1, WEEK_TOP),
+    "an Undo on work gone from the record": (week_undo_on_gone_work, "her", 404, 1, WEEK_TOP),
 }
 
 
 @pytest.mark.parametrize("case", list(WEEK_CASES))
-def test_on_her_week_a_refusal_is_said_at_the_top_and_on_the_card_as_it_is(
+def test_on_her_week_a_refusal_is_said_once_as_an_alert_where_it_takes_the_focus(
     tmp_path: pathlib.Path, case: str
 ) -> None:
-    """The same component on her week: the card's problem line stays an alert beside the
-    top one, and nothing but a field's refusal asks for the focus. The week's focus is its
-    own change."""
+    """The same component on her week: the card's problem line is the one alert and takes
+    the focus, unless a field does, and the top line repeats it with no alert. A refusal no
+    card holds is the top line's alone, which takes the focus."""
     make, reader, status, alerts, focus = WEEK_CASES[case]
     with reading(reader, tmp_path) as client:
         answer = make(client)
@@ -1365,17 +1372,18 @@ def test_on_her_week_a_refusal_is_said_at_the_top_and_on_the_card_as_it_is(
         assert asked[0].startswith(focus)
     else:
         assert asked == []
-    if alerts == 2:
+    if focus.startswith((WEEK_PROBLEM, "<input")):
         assert WEEK_PROBLEM in page
+        assert '<p class="problem week-problem">' in page
     if case == "conflict on a Done card":
         assert '<details class="steps reported-done" open>' in page
     if case == "conflict on the card shown apart":
         assert WEEK_PROBLEM in page[page.index('<section class="panel apart">') :]
     if case == "an Undo on work gone from the record":
-        assert "That assignment is not on record, so nothing was changed." in page
+        assert f"{WEEK_TOP}That assignment is not on record, so nothing was changed.</p>" in page
     if reader == "a parent":
         assert "<h1>Student week</h1>" in page
-        assert '<p class="problem" role="alert">Sign in as the student to update.</p>' in page
+        assert f"{WEEK_TOP}Sign in as the student to update.</p>" in page
         assert "This assignment is not on record now." not in page
 
 

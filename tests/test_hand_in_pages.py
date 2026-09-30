@@ -1040,7 +1040,8 @@ def test_a_row_that_is_due_later_shows_what_she_said_about_turning_it_in(
             store._connection.commit()
         returned = back_to_the_week(client, result)
 
-    row = card_for(returned, ALGEBRA_ID)
+    # The last row due later runs to the page's end, where her To turn in list follows it.
+    row = card_for(returned, ALGEBRA_ID).split('<section class="panel to-turn-in"', 1)[0]
     assert expected in row
     assert NOT_RECORDED not in row
     if kind == "still to turn in":

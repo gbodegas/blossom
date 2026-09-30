@@ -88,7 +88,11 @@ Reader = Literal["her", "parent", "open"]
 NOW: Final = datetime(2026, 8, 19, 13, 0, tzinfo=UTC)
 NOT_HERS: Final = "Sign in as the student to update."
 NOT_A_PARENTS: Final = "Sign in as a parent to add details here. Nothing was saved."
-WEEK_TOP: Final = f'<p class="problem" role="alert">{NOT_HERS}</p>'
+WEEK_TOP: Final = (
+    f'<p class="problem week-problem" role="alert" tabindex="-1" autofocus>{NOT_HERS}</p>'
+)
+"""A parent's refused update, hand-in or Undo on her week: no card holds it, so it is the
+top line's, the one alert and the one focus."""
 UNSAVED: Final = '<h2 class="update-heading">Your unsaved details</h2>'
 NOT_SAVED_SENTENCE: Final = "These details were not saved. Everything typed is here to copy."
 NOWHERE: Final = "assignment-nowhere"
@@ -498,7 +502,8 @@ def check_refused(
         assert "<h1>Student week</h1>" in page
         assert WEEK_TOP in page
         assert "August 17 to August 23, 2026" in words(page)
-        assert " autofocus" not in answer.text
+        assert answer.text.count(" autofocus") == 1
+        assert page.count('role="alert"') == 1
         assert "Wren" not in answer.text
         return
     assert page.count(" autofocus") == 1

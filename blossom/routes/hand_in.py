@@ -394,7 +394,11 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     viewer = viewer_of(request)
     if viewer == "parent":
         return student_page(
-            request, state, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
+            request,
+            state,
+            problem=NOT_HERS_TO_UPDATE,
+            pressed=True,
+            status_code=status.HTTP_403_FORBIDDEN,
         )
     fields, whole = await fields_of(request, HAND_IN_FIELDS, may_be_absent=NOTHING_CHOSEN)
     back, valid = read_return(fields, viewer=viewer, showable=showable)
@@ -548,7 +552,11 @@ async def undo_hand_in_from_the_page(
     viewer = viewer_of(request)
     if viewer == "parent":
         return student_page(
-            request, state, problem=NOT_HERS_TO_UPDATE, status_code=status.HTTP_403_FORBIDDEN
+            request,
+            state,
+            problem=NOT_HERS_TO_UPDATE,
+            pressed=True,
+            status_code=status.HTTP_403_FORBIDDEN,
         )
     fields, whole = await fields_of(
         request, HAND_IN_UNDO_FIELDS, may_be_absent=RETURN_FIELDS | SHOWN_ON

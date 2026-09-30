@@ -149,7 +149,7 @@ puts it back where it was; a record that cannot be read is named under the
 list and never dropped from it. The list is a page of its own,
 `/student/to-turn-in`, there when empty, reached from a link under the main
 controls that carries a count only when there is one, and its first rows
-are on her week after Today. A row's one press is the same save as the
+are on her week after the week's homework. A row's one press is the same save as the
 details' form, turned in with the head the row showed and no words, and a
 checked field says where its result is shown: on the list or on her week,
 at a place that is there whether or not the row still is. A form that says
@@ -335,7 +335,11 @@ ask about it: under the date, a jump to her update, then the school's
 instructions, the notes, and the way to help, then her update and Turning it
 in, then the evidence. On the details a refusal is said once as an alert, by
 the summary at the top, which takes the focus unless a field does; on her
-week the card's problem line is an alert of its own. The small page for work
+week the card's problem line is the one alert and takes the focus unless a
+field does, the top of the week repeating it as a plain line with a link to
+the card, and a refusal with no card line on the week, a parent's press among
+them, is said at the top, which takes the focus after a press. A save or an
+undo from a card lands on the card's result. The small page for work
 not on record focuses its explanation after a form's press and never on a
 look by link. The details' evidence lists every claim a source has made
 about the date, the ones that agree included, where a card lists claims only
