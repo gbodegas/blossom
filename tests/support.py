@@ -1689,3 +1689,93 @@ def help_row(page: str, request_id: str) -> str:
     """One request's row in Help, whole."""
     start = page.index(f'<li class="help-request" id="help-{request_id}" tabindex="-1">')
     return page[start : page.index("</li>", start)]
+
+
+# ------------------------------------------------------------- the family page's rows, and a check
+
+
+def row_for(page: str, assignment_id: str) -> str:
+    """One row of the assignment updates, whole: from its id to the next row's, or the
+    section's end."""
+    start = page.index(f'id="update-{assignment_id}"')
+    ends = [
+        found
+        for found in (page.find('id="update-', start + 1), page.find("</section>", start))
+        if found >= 0
+    ]
+    return page[start : min(ends)] if ends else page[start:]
+
+
+def family_page(client: TestClient) -> str:
+    return client.get("/parent", headers=PAGE_HEADERS).text
+
+
+def a_discrepancy(client: TestClient) -> None:
+    """The school's email says the essay is missing; she reports it done."""
+    told = client.post("/parent/inbox/keep", data={"text": MISSING_EMAIL})
+    assert told.status_code == 303
+    report(client, ESSAY_ID, "done", "Handed in Tuesday.")
+
+
+def action_of(row: str, ending: str) -> str:
+    """The address one of a row's two check forms is sent to, as the page wrote it."""
+    found = re.search(rf'<form method="post" action="([^"]*/{ending})"', row)
+    assert found is not None, ending
+    return unescape(found.group(1))
+
+
+def mark(client: TestClient, assignment_id: str, note: str = "") -> Answer:
+    """Mark the row checked from the family page as it stands, with the fields it carries."""
+    row = row_for(family_page(client), assignment_id)
+    return client.post(
+        action_of(row, "mark"),
+        data={
+            "basis": hidden(row, "basis"),
+            "expected_check_id": hidden(row, "expected_check_id"),
+            "note": note,
+        },
+        headers=PAGE_HEADERS,
+    )
+
+
+# ------------------------------------------------------------- a row the file holds damaged
+
+NOT_UTF8 = "text bytes that are not UTF-8"
+"""What ``spoil`` writes as a word followed by two bytes no UTF-8 decoder takes, which no
+bound value can hold: the word, ZEBRA, is there to be looked for in a log."""
+
+
+def spoil(
+    store: ProjectStateStore,
+    table: str,
+    column: str,
+    value: str,
+    assignment_id: str = ESSAY_ID,
+) -> list[tuple[object, ...]]:
+    """Write ``value`` into one column of every row an assignment has in ``table`` with
+    plain SQL, as a damaged file holds it, and hand back the table as it is stored."""
+    if value == NOT_UTF8:
+        store._connection.execute(
+            f"UPDATE {table} SET {column} = CAST(X'5A45425241FF80' AS TEXT) "  # noqa: S608
+            "WHERE assignment_id = ?",
+            (assignment_id,),
+        )
+    else:
+        store._connection.execute(
+            f"UPDATE {table} SET {column} = ? WHERE assignment_id = ?",  # noqa: S608
+            (value, assignment_id),
+        )
+    store._connection.commit()
+    return as_stored(store, table)
+
+
+def as_stored(store: ProjectStateStore, table: str) -> list[tuple[object, ...]]:
+    """Every row of ``table`` in the file's order, each text column as its stored bytes,
+    so a row that is not UTF-8 can be read back and compared too."""
+    connection = store._connection
+    kept = connection.text_factory
+    connection.text_factory = bytes
+    try:
+        return connection.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()  # noqa: S608
+    finally:
+        connection.text_factory = kept

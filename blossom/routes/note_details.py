@@ -565,7 +565,9 @@ def candidate_row(item: CandidateReading, *, parent: bool) -> CandidateRow:
     """The row for one reading, in her words for her and about her for a parent: the voice
     follows who is reading, never the tree the page's address is in on its own, since a
     parent may open her pages; with the sign-in off, the family's pages read as a parent's."""
-    if item.work_state in WORK_STATES and item.work_reported_on is not None:
+    if item.work_unavailable:
+        hers = f"{'Her' if parent else 'Your'} updates on this assignment can't be read right now."
+    elif item.work_state in WORK_STATES and item.work_reported_on is not None:
         who = "She" if parent else "You"
         hers = f"{who} said {WORK_STATES[item.work_state]} on {spoken(item.work_reported_on)}."
     else:
@@ -774,13 +776,14 @@ def details_page(
     if not shown.revision:
         shown = replace(shown, revision=note.revision, unsaved=True)
     candidates: list[CandidateReading] = []
+    given = shown.course_other if shown.course_choice == OTHER_CLASS else shown.course_choice
     try:
-        given = shown.course_other if shown.course_choice == OTHER_CLASS else shown.course_choice
         named = CaptureDetails(course=given, title=shown.title)
-        candidates = candidate_readings(store, named, assignments)
     except ValueError:
         # A class or a title the rules will not keep names no homework; the form says so.
-        candidates = []
+        named = None
+    if named is not None:
+        candidates = candidate_readings(store, named, assignments)
     viewer = viewer_of(request)
     parent = parent_reads(request)
     rows = [candidate_row(item, parent=parent) for item in candidates]

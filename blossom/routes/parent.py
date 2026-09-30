@@ -859,7 +859,7 @@ def review_page(
 
 
 def assignment_updates(everything: Everything, today: date) -> AssignmentUpdatesView:
-    """What she and the school have reported, in the family page's four groups.
+    """What she and the school have reported, in the family page's groups.
 
     Each assignment is in one group, the first that fits. Her "done" beside
     any school channel's current "missing", with no check of the family's
@@ -870,11 +870,15 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
     assignments with an event of hers in the last fourteen household days,
     a correction included, follow, by that latest event, most recent first,
     each showing the day of the update that stands, or that none does.
-    Every other assignment the school has a current statement about closes
-    the section, in the record's order. Whichever group a row is in, it
-    shows her update when she has one, what each school channel says now,
-    every channel, and the check that stands, so a row never leaves out a
-    fact it was grouped by. The rows, her events, the school's reports, and
+    Every other assignment the school has a current statement about follows,
+    in the record's order. A row whose updates or checks cannot be read goes
+    where its readable facts put it, and one they put nowhere closes the
+    section, in the record's order, so it is never out of sight and never
+    dated as recent. Every row whose updates cannot be read, and every row
+    whose checks cannot be, is named at the section's head. Whichever group
+    a row is in, it shows her update when she has one, what each school
+    channel says now, every channel, and the check that stands, so a row
+    never leaves out a fact it was grouped by. The rows, her events, the school's reports, and
     the family's checks are the ones the page read, once, for everything it
     says about the record, ``everything``: one snapshot, as her page reads
     them, in a few batched reads whatever the number of rows, so a row here
@@ -936,6 +940,12 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
         for view in views.values()
         if view.assignment_id not in shown and view.school_statements
     ]
+    shown |= {view.assignment_id for view in school}
+    unreadable = [
+        view
+        for view in views.values()
+        if view.assignment_id not in shown and (view.updates_unavailable or view.checks_unavailable)
+    ]
     # What she has said about turning work in rides along on a row worth checking
     # together, as context, and decides nothing about the check.
     check = [
@@ -947,6 +957,9 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
         checked=checked,
         recent=recent,
         school=school,
+        unreadable=unreadable,
+        updates_unreadable=[view for view in views.values() if view.updates_unavailable],
+        checks_unreadable=[view for view in views.values() if view.checks_unavailable],
         turning_in=turning_in(everything, today),
     )
 
@@ -1061,6 +1074,8 @@ def update_view(
         checked_before_note=None if before is None else before.note,
         differs=differs,
         new_missing=new_missing,
+        updates_unavailable=status.updates_unavailable,
+        checks_unavailable=status.checks_unavailable,
     )
 
 

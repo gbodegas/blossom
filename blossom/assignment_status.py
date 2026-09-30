@@ -95,6 +95,13 @@ class AssignmentStatus:
     """Every report the school has made about it, by the day reported and the order kept."""
     checks: tuple[FamilyCheck, ...] = ()
     """Every check event of the family's under the assignment, in the order kept."""
+    updates_unavailable: bool = False
+    """Whether her events under the assignment cannot be read. None of them is here then,
+    so nothing of hers stands and the work is still to plan, and a page says her updates
+    cannot be read, never that she has said nothing."""
+    checks_unavailable: bool = False
+    """Whether the family's checks under the assignment cannot be read. None of them is
+    here then, so no check stands, and a page says so and offers nothing to mark."""
 
     @property
     def status(self) -> str | None:
@@ -247,15 +254,17 @@ def statuses_for(
     under the assignments named, the school's reports, and the family's
     checks. The head, the standing report, each channel's current word,
     both histories, and the check that stands are worked out from those in
-    memory.
+    memory. Her chain and the family's checks are each read whole or named
+    as unavailable, apart from each other, so checks that cannot be read
+    leave her Done and what it means for a plan as they are.
     """
     wanted = list(dict.fromkeys(assignment_ids))
-    chains = store.student_report_chains(wanted)
+    updates = store.update_readings(wanted)
     reports = store.status_reports_by_assignment()
-    checks = store.family_check_chains(wanted)
+    checks = store.check_readings(wanted)
     statuses: dict[str, AssignmentStatus] = {}
     for assignment_id in wanted:
-        chain = chains.get(assignment_id, [])
+        chain = updates.chains.get(assignment_id, [])
         said = reports.get(assignment_id, [])
         statuses[assignment_id] = AssignmentStatus(
             assignment_id=assignment_id,
@@ -264,7 +273,9 @@ def statuses_for(
             school={report.channel: report for report in said},
             history=tuple(chain),
             school_history=tuple(said),
-            checks=tuple(checks.get(assignment_id, [])),
+            checks=tuple(checks.chains.get(assignment_id, [])),
+            updates_unavailable=assignment_id in updates.unreadable,
+            checks_unavailable=assignment_id in checks.unreadable,
         )
     return statuses
 

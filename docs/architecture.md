@@ -135,6 +135,25 @@ with what stands now. A check another parent made with other words is refused
 the same way, both notes shown. Check again reopens it, held to the basis its
 page showed. A check changes neither account, no plan, and no digest.
 
+Her events and the family's checks are read the way hand-ins are, through
+`update_readings` and `check_readings`: one read for every assignment named,
+each row's text kept as its stored bytes until that row is decoded, so a row
+that can't be decoded, text that isn't UTF-8 included, makes only its own
+assignment's chain unreadable. Nothing is read from what's left of such a
+chain, since part of a chain could say what she never said. Updates that
+can't be read count as not reported, so the work stays in the plan with none
+of their words, and no page says she reported nothing or Not yet: her card
+and the details say her updates can't be read and offer no form, and a save
+refused over them shows what she chose and wrote, read-only. The family page
+names every such row at the head of its updates, each name a link to its row,
+and lists a row no readable fact puts in a group under Records that can't be
+read. Checks that can't be read leave her Done and its place in a plan as
+they are, and a row worth checking stays worth checking, with neither Mark
+checked nor Check again. A note's candidate says her updates can't be read,
+and that is part of its fingerprint, so a choice made before they became
+readable or unreadable is asked again. The writers read the whole chain
+strictly and write nothing onto one with a bad row, whichever row it is.
+
 What she says about turning work in is a fourth account. Its forms are on an
 assignment's details and nowhere else, in a section after her update,
 `student_hand_in.html`, through two routes of their own in
@@ -194,7 +213,8 @@ what is still to turn in, however old, then what else she said in the last
 fourteen days, with no form, and a row worth checking together carries it as
 context that decides nothing. A page's one reading holds every chain, read
 once through `hand_in_readings`, which takes the rows one assignment at a
-time: a row that cannot be decoded, or a chain that does not hold, makes
+time: a row that cannot be decoded, its text not UTF-8 included, or a
+chain that does not hold, makes
 that assignment's record unreadable, named apart, said on the page as one
 that cannot be read and never shown as nothing recorded, while every other
 assignment reads as usual and no page fails for it. The writers do not come

@@ -65,6 +65,12 @@ def assignment_anchor(assignment_id: str) -> str:
     return f"assignment-{segment(assignment_id)}"
 
 
+def update_row_href(assignment_id: str) -> str:
+    """A link to an assignment's row on the family page, from the same page. The row's id is
+    the id as it is; the link escapes it as one segment, which a browser undoes to find it."""
+    return f"#update-{segment(assignment_id)}"
+
+
 NOTES_PAGE: Final = "/student/homework-notes"
 NEW_NOTE_PAGE: Final = "/student/homework-notes/new"
 ARCHIVED_NOTES_PAGE: Final = "/student/homework-notes/archived"

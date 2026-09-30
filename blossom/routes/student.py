@@ -1079,6 +1079,8 @@ def assignment_view(
         check_school=status is not None and status.check_the_school_record,
         checked_on=None if status is None or status.check is None else status.check.checked_on,
         check_note=None if status is None or status.check is None else status.check.note,
+        updates_unavailable=status is not None and status.updates_unavailable,
+        checks_unavailable=status is not None and status.checks_unavailable,
     )
 
 

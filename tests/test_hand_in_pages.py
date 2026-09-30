@@ -49,6 +49,7 @@ from tests.support import (
     FIXTURE_WEEK,
     HER_PAGE,
     HERS,
+    NOT_UTF8,
     PAGE_HEADERS,
     PLAN_DATE,
     QUIZ_ID,
@@ -58,6 +59,7 @@ from tests.support import (
     Scripted,
     a_row,
     accepting,
+    as_stored,
     browser,
     card_for,
     fixture_week_plan,
@@ -66,6 +68,7 @@ from tests.support import (
     report,
     scripted_graphs,
     signed_in_household,
+    spoil,
     state_of,
     with_clock,
 )
@@ -627,23 +630,17 @@ MALFORMED = {
     "a state that is none of the four": ("state", "invalid-state"),
     "a day that is no day": ("reported_on", "not-a-day"),
     "a note past the limit": ("note", "x" * 501),
+    "text that is not UTF-8": ("note", NOT_UTF8),
 }
 
 
 def damage(client: TestClient, column: str, value: str) -> list[tuple[object, ...]]:
     """Spoil the essay's one stored event with plain SQL, and hand back the table as it is."""
-    store = state_of(client).project_state
-    store._connection.execute(
-        f"UPDATE hand_in_events SET {column} = ? WHERE assignment_id = ?",  # noqa: S608
-        (value, ESSAY_ID),
-    )
-    store._connection.commit()
-    return store._connection.execute("SELECT * FROM hand_in_events ORDER BY sequence").fetchall()
+    return spoil(state_of(client).project_state, "hand_in_events", column, value)
 
 
 def rows(client: TestClient) -> list[tuple[object, ...]]:
-    connection = state_of(client).project_state._connection
-    return connection.execute("SELECT * FROM hand_in_events ORDER BY sequence").fetchall()
+    return as_stored(state_of(client).project_state, "hand_in_events")
 
 
 @pytest.mark.parametrize("where", [DETAILS, f"{HER_PAGE}?week={FIXTURE_WEEK}", FAMILY])

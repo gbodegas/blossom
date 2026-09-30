@@ -368,6 +368,12 @@ class StudentAssignmentView(BaseModel):
     the facts as they are; ``None`` otherwise. The family's own record, changing nothing."""
     check_note: str | None = None
     """A parent's words with that check, if any."""
+    updates_unavailable: bool = False
+    """Whether her updates on it cannot be read. Nothing of hers is shown then, and no update
+    can be made until they can be."""
+    checks_unavailable: bool = False
+    """Whether the family's checks on it cannot be read, which her card says in place of a
+    check."""
 
 
 class AssignmentUpdateView(BaseModel):
@@ -426,10 +432,16 @@ class AssignmentUpdateView(BaseModel):
     hand_in: HandInView | None = None
     """What she has said about turning it in, shown as context on a row worth checking
     together; ``None`` on every other row. It decides nothing about the check."""
+    updates_unavailable: bool = False
+    """Whether her updates on it cannot be read. The row says so in place of her update."""
+    checks_unavailable: bool = False
+    """Whether the family's checks on it cannot be read. The row says so, and offers neither
+    Mark checked nor Check again."""
 
 
 class AssignmentUpdatesView(BaseModel):
-    """The family page's section on assignment updates, in its four groups."""
+    """The family page's section on assignment updates, in its groups, with the rows whose
+    records cannot be read named at its head."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -443,6 +455,14 @@ class AssignmentUpdatesView(BaseModel):
     """Her standing reports of the last fourteen household days, most recent first."""
     school: list[AssignmentUpdateView] = []
     """Every other assignment the school has reported on, with its latest report."""
+    unreadable: list[AssignmentUpdateView] = []
+    """The rows no readable fact puts in any other group, with a record that cannot be
+    read, in the record's order: never left out, and never dated as recent."""
+    updates_unreadable: list[AssignmentUpdateView] = []
+    """Every row whose updates of hers cannot be read, wherever it is listed, in the
+    record's order, for the section to name at its head."""
+    checks_unreadable: list[AssignmentUpdateView] = []
+    """Every row whose family checks cannot be read, named the same way."""
     turning_in: list[HandInRowView] = []
     """Turning work in: everything she reports as still to turn in, the longest
     standing first and however old, then whatever else she has said about delivery
