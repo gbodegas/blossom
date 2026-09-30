@@ -312,8 +312,9 @@ def capture_from(row: tuple[object, ...]) -> Capture:
             assignment_id=held_text_or_nothing(row[17], "assignment_id"),
         )
     except (ValueError, TypeError, AttributeError) as fault:
-        msg = f"{row[0]}: {unread_because(fault)}"
-        raise UnreadableCapture(msg) from None
+        why = unread_because(fault)
+    msg = f"{row[0]}: {why}"
+    raise UnreadableCapture(msg)
 
 
 def initial_from(raw: str) -> CaptureWords:
@@ -396,8 +397,9 @@ def capture_event_from(row: tuple[object, ...]) -> CaptureEvent:
             channel=None if row[11] is None else SourceChannel(held_text(row[11], "channel")),
         )
     except (ValueError, TypeError, AttributeError) as fault:
-        msg = f"{row[1]}: {unread_because(fault)}"
-        raise UnreadableCapture(msg) from None
+        why = unread_because(fault)
+    msg = f"{row[1]}: {why}"
+    raise UnreadableCapture(msg)
 
 
 def attributed(

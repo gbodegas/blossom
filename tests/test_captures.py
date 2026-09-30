@@ -9,6 +9,7 @@ import pathlib
 import re
 import sqlite3
 import threading
+import traceback
 import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
@@ -415,6 +416,54 @@ def test_a_change_that_cannot_be_read_is_an_unreadable_note_and_never_a_crash(
         edit(store, name, "Questions 4-9", None, None, 2)
     assert store.capture(name) is not None
     assert [note.capture_id for note in store.outstanding_captures().notes] == [name]
+
+
+REFUSED_IN_NAMES = {
+    "words": (
+        "UPDATE homework_captures SET text = text || printf('%.*c', 600, 'x')",
+        "Capture: text",
+    ),
+    "class": (
+        "UPDATE homework_captures SET course = course || char(10) || course",
+        "Capture: course",
+    ),
+    "words of a change": (
+        "UPDATE capture_events SET after = json_set(after, '$.text', "
+        "json_array(json_extract(after, '$.text'))) WHERE revision = 2",
+        "CaptureSnapshot: text",
+    ),
+    "class of a change": (
+        "UPDATE capture_events SET after = json_set(after, '$.course', "
+        "json_extract(after, '$.course') || printf('%.*c', 600, 'x')) WHERE revision = 2",
+        "(CaptureDetails: course",
+    ),
+}
+"""Damage a model refuses with her words as its input, and the start of what the refusal is
+said as: the model and the field, never the words."""
+
+
+@pytest.mark.parametrize("damage", list(REFUSED_IN_NAMES))
+def test_a_note_that_cannot_be_read_names_its_fault_and_holds_none_of_her_words(
+    store: ProjectStateStore, damage: str
+) -> None:
+    name = new_capture_id()
+    created(create(store, name, "Zebra quartz violin questions", "Obsidian Choir"))
+    changed(edit(store, name, "Zebra quartz violin questions", "Obsidian Choir", day(3), 1))
+    sql, said = REFUSED_IN_NAMES[damage]
+    store._connection.execute(sql)
+    store._connection.commit()
+
+    with pytest.raises(UnreadableCapture) as unread:
+        store.sound_capture_history(name)
+    with pytest.raises(CaptureNotSaved) as refused:
+        edit(store, name, "Questions 4-9", None, None, 2)
+
+    assert said in str(unread.value)
+    assert unread.value.__cause__ is None
+    assert unread.value.__context__ is None
+    for error in (unread.value, refused.value):
+        told = "".join(traceback.format_exception(error))
+        assert [word for word in ("Zebra", "quartz", "Obsidian") if word in told] == []
 
 
 DAMAGE = {

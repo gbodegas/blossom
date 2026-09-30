@@ -490,7 +490,8 @@ other key in a damaged row came from the row."""
 def unread_because(fault: Exception) -> str:
     """Why a note or one of its changes could not be read, in names alone: the kind of
     failure, or the model that refused it with each field and the kind of refusal. A
-    damaged row can hold her words in any column, so nothing the row held is repeated."""
+    damaged row can hold her words in any column, so nothing the row held is repeated, and
+    a caller raises after its except block so the fault is neither cause nor context."""
     if not isinstance(fault, ValidationError):
         return type(fault).__name__
     refusals = []
@@ -637,8 +638,8 @@ def _kept_as_written(capture_id: str, snapshot: CaptureSnapshot) -> CaptureWords
             snapshot.text, snapshot.course, snapshot.due_date, of="the words of a change"
         )
     except ValueError as fault:
-        reason = f"a change holds words a note cannot ({unread_because(fault)})"
-        raise UnsoundCaptureHistory(capture_id, reason) from None
+        why = unread_because(fault)
+    raise UnsoundCaptureHistory(capture_id, f"a change holds words a note cannot ({why})")
 
 
 def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
