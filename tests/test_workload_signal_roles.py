@@ -54,6 +54,11 @@ FORM_TYPE = {"Content-Type": "application/x-www-form-urlencoded"}
 OVERLONG = b'{"detail": "' + b"x" * (DETAIL_MAX_LENGTH + 1) + b'"}'
 ABSENT = "0" * 32
 REFUSAL = "Sign in as the student to say today is too much or take it back."
+REFUSED_AT_THE_TOP = (
+    f'<p class="problem week-problem" role="alert" tabindex="-1" autofocus>{REFUSAL}</p>'
+)
+"""A parent's refused press said on her week: no card holds it, so it is the top line's,
+the one alert and the one focus."""
 NOT_HERS_TO_ASK = "Sign in as the student to ask for help or take a request back."
 
 Reader = Literal["her", "parent", "open"]
@@ -278,7 +283,8 @@ def test_a_parent_is_refused_on_every_signal_route_and_nothing_changes(
     assert answer.status_code == 403
     assert after == before
     if which in ("too much", "take back"):
-        assert f'<p class="problem" role="alert">{REFUSAL}</p>' in answer.text
+        assert REFUSED_AT_THE_TOP in answer.text
+        assert answer.text.count(" autofocus") == 1
         assert "<h1>Student week</h1>" in answer.text
     else:
         assert answer.json() == {"detail": REFUSAL}
@@ -518,8 +524,10 @@ def test_her_page_left_open_when_a_parent_signs_in_is_refused(tmp_path: pathlib.
     assert f'action="{TAKE_BACK}{hers}"' in left_open_with_one
     assert too_much.status_code == 403
     assert take_back.status_code == 403
-    assert f'<p class="problem" role="alert">{REFUSAL}</p>' in too_much.text
-    assert f'<p class="problem" role="alert">{REFUSAL}</p>' in take_back.text
+    assert REFUSED_AT_THE_TOP in too_much.text
+    assert REFUSED_AT_THE_TOP in take_back.text
+    assert too_much.text.count(" autofocus") == 1
+    assert take_back.text.count(" autofocus") == 1
     assert after == before
 
 

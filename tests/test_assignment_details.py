@@ -470,7 +470,7 @@ def test_her_week_cards_still_save_as_they_did_and_offer_the_details() -> None:
         f'aria-label="Details: {ESSAY_TITLE}, World History">Details</a>'
     ) in week
     assert week.count(">Details</a>") == after.count(">Details</a>") == 7
-    assert where == f"{HER_PAGE}?week={FIXTURE_WEEK}&saved={ESSAY_ID}#assignment-{ESSAY_ID}"
+    assert where == f"{HER_PAGE}?week={FIXTURE_WEEK}&saved={ESSAY_ID}#update-result-{ESSAY_ID}"
     assert form_fields(week, f"{DETAILS_ACTIONS}/report") == {
         "expected_report_id": "",
         "week": FIXTURE_WEEK,

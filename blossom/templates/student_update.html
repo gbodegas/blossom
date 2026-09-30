@@ -22,7 +22,8 @@
   said and nothing else. On the details the summary at the top is the one
   alert and the focus; the problem here is plain text beside the form, which
   the summary links to and which takes the focus when the link is followed.
-  On her week the problem here is an alert of its own.
+  On her week the problem here is the one alert, and it takes the focus as
+  the page arrives unless the field it is about does.
 #}
 {% macro day(value) %}{{ value.strftime("%B") }} {{ value.day }}{% if ctx.with_year %}, {{ value.year }}{% endif %}{% endmacro %}
 {% set here = card and card.assignment_id == assignment.assignment_id %}
@@ -55,7 +56,7 @@
     {% endif %}
   {% endif %}
   {% if here and card.problem %}
-    {% if ctx.place == "details" %}<p class="problem" id="update-problem-{{ key }}" tabindex="-1">{{ card.problem }}</p>{% else %}<p class="problem" role="alert" id="update-problem-{{ key }}">{{ card.problem }}</p>{% endif %}
+    {% if ctx.place == "details" %}<p class="problem" id="update-problem-{{ key }}" tabindex="-1">{{ card.problem }}</p>{% else %}<p class="problem" role="alert" id="update-problem-{{ key }}" tabindex="-1"{% if not (form_open and (at_status or at_note)) %} autofocus{% endif %}>{{ card.problem }}</p>{% endif %}
   {% endif %}
   {% if standing %}
     <p class="update-summary">
