@@ -1137,14 +1137,17 @@ def homework_notes(
     request: Request, state: State, deleted: str | None = None, already: str | None = None
 ) -> HTMLResponse:
     """Every note still to do something about, the first saved first, and what a delete
-    did when the address names a note the record holds as deleted. When the record can't
-    be read, the page says so and never says whether a delete happened."""
+    did when the address names a note the record holds as deleted. Only she deletes, so the
+    result is hers: a parent who opens such an address reads the list and no result. When
+    the record can't be read, the page says so and never says whether a delete happened,
+    and to a parent it says nothing of a delete at all."""
+    mine = viewer_of(request) != "parent"
     try:
-        result = deleted_result(state, deleted, already)
+        result = deleted_result(state, deleted, already) if mine else None
         return notes_list(request, state, which="waiting", result=result)
     except sqlite3.Error as error:
         return notes_unavailable(
-            request, state, "waiting", error, delete=names_a_delete(deleted, already)
+            request, state, "waiting", error, delete=mine and names_a_delete(deleted, already)
         )
 
 

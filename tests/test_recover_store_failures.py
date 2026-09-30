@@ -1392,6 +1392,40 @@ def test_her_notes_after_a_delete_that_cannot_be_read_neither_say_nor_deny_the_d
     assert after == before
 
 
+@pytest.mark.parametrize("marker", ["deleted", "already"])
+@pytest.mark.parametrize("reader", ["her", "open", "parent"])
+def test_her_notes_that_cannot_be_read_after_a_delete_name_it_to_her_alone(
+    marker: str, reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only she deletes, so a delete the address names is hers: a parent who opens such an
+    address while the record can't be read reads that her notes can't be shown, and nothing
+    of a delete."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        with Statements(state_of(client)) as seen:
+            monkeypatch.setattr(
+                state_of(client).project_state,
+                "outstanding_captures",
+                refusing(sqlite3.OperationalError, seen),
+            )
+            answer = client.get(
+                f"/student/homework-notes?{marker}={HAND_TYPED_NOTE}", headers=PAGE_HEADERS
+            )
+        monkeypatch.undo()
+
+    if reader == "parent":
+        alert = notes_alert(reader)
+    else:
+        alert = (
+            "Your homework notes can't be shown right now, so whether that note was deleted "
+            "can't be checked yet. Try again in a moment. Try again"
+        )
+    main = store_free_page(answer, status=503, heading="Homework notes", alert=alert)
+    if reader == "parent":
+        assert "was deleted" not in main
+    assert after_the_failure(seen) == []
+
+
 @pytest.mark.parametrize("given", ["", "x" * 201, "not-a-note", HAND_TYPED_NOTE + "0"])
 def test_a_marker_the_list_would_not_check_is_not_said_on_the_page_that_cannot_read(
     given: str, monkeypatch: pytest.MonkeyPatch
