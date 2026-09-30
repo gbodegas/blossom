@@ -7,7 +7,7 @@ import json
 import pathlib
 import sqlite3
 import uuid
-from datetime import UTC, date, datetime
+from datetime import date
 
 from blossom.agent.prompts import (
     CRITIC_SYSTEM,
@@ -42,6 +42,7 @@ from tests.support import (
     ESSAY_ID,
     FIXTURE_WEEK,
     HER_PAGE,
+    NOW,
     PAGE_HEADERS,
     PLAN_DATE,
     Scripted,
@@ -60,7 +61,6 @@ B = "Compare two canals in the conclusion."
 C = "Bring the map handout."
 TYPED = "Ask about the library pass."
 NAME = "assignment-instructions"
-NOW = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
 TODAY = date(2026, 8, 19)
 SHAPE_BEFORE = uuid.UUID("7d1e6a34-2c9b-4f58-a0d7-93b5e1c8f264")
 

@@ -310,7 +310,7 @@
     <p class="confidence disagree" role="status">
       <strong>{{ to_check|length }} finished assignment{% if to_check|length != 1 %}s{% endif %}
       {% if to_check|length == 1 %}has a school report{% else %}have school reports{% endif %} to check:</strong>
-      {% for item in to_check %}<a href="{{ week_href(view.week.start, item.assignment_id, show=item.assignment_id) }}">{{ item.title }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.
+      {% for item in to_check %}<a href="{{ week_href(view.week.start, item.assignment_id, show=item.assignment_id) }}" aria-label="{{ item.title }}, {{ item.course }}: school report to check">{{ item.title }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.
     </p>
   {% endif %}
   {% for assignment in active_cards %}
@@ -477,7 +477,7 @@
                   Waiting for a parent to respond.
                   {% if viewer != "parent" %}
                     <form method="post" action="/student/actions/take-back-help/{{ ask.request_id }}" class="inline">
-                      <button type="submit" class="secondary">Take it back<span class="visually-hidden">: your request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}</span></button>
+                      <button type="submit" class="secondary" aria-label="Take it back: your request from {{ ask.asked_local|clock }} on {{ ask.evening.strftime("%A, %B") }} {{ ask.evening.day }}">Take it back</button>
                     </form>
                   {% endif %}
                 {% elif ask.state == "accepted" %}

@@ -29,6 +29,7 @@ from blossom.routes.navigation import (
     note_unlink_action,
     result_anchor,
     todays_plan_href,
+    update_choice_anchor,
     week_href,
 )
 from blossom.school_instructions import to_wire, travels_in_words
@@ -70,8 +71,10 @@ def page_templates() -> Jinja2Templates:
     assignment's details, ``assignment_anchor`` for the id of an assignment's card or row,
     ``week_href`` for her week with one card in view,
     ``result_anchor`` and ``hand_in_result_anchor`` for the places a save's redirect lands
-    on, so a page and the address sent to it name a place the same way, ``todays_plan_id``
-    and ``todays_plan_href`` for the place on her week that holds today's plan,
+    on, so a page and the address sent to it name a place the same way,
+    ``update_choice_anchor`` for the group of her update's form that Change lands on,
+    ``todays_plan_id`` and ``todays_plan_href`` for the place on her week that holds
+    today's plan,
     ``instructions_id`` and ``update_or_turn_in_id`` for the places on an assignment's
     details that its links land on,
     ``asset_tag`` for the files a page links, ``wire`` for an instruction's words as a
@@ -102,6 +105,7 @@ def page_templates() -> Jinja2Templates:
     templates.env.globals["note_anchor"] = note_anchor
     templates.env.globals["result_anchor"] = result_anchor
     templates.env.globals["hand_in_result_anchor"] = hand_in_result_anchor
+    templates.env.globals["update_choice_anchor"] = update_choice_anchor
     templates.env.globals["week_href"] = week_href
     templates.env.globals["todays_plan_id"] = TODAYS_PLAN
     templates.env.globals["todays_plan_href"] = todays_plan_href

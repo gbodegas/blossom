@@ -90,9 +90,9 @@ from tests.support import (
 )
 from tests.support import FIXTURE_WEEK as WEEK
 from tests.support import HER_PAGE as PAGE
+from tests.support import QUIZ_ID as QUIZ
+from tests.support import READING_LOG_ID as LOG
 
-LOG = "assignment-reading-log"
-QUIZ = "assignment-vocabulary-quiz"
 NAMED_BY_ITS_ROW = f'aria-label="{ESSAY_TITLE}, World History">{ESSAY_TITLE}</a> (World History).'
 """How a notice names the essay on a plan read by its rows: the saved title, a link to the
 assignment's details, and the course; never the id."""
@@ -117,7 +117,9 @@ def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -
     assert "<summary>Add a note (optional)<span" in card
     assert "Up to 500 characters. Your parents can read this. Notes on work being" in card
     assert "maxlength" not in card
-    assert '<span class="visually-hidden"> on Canal Era comparison essay</span>' in card
+    assert (
+        '<span class="visually-hidden"> on Canal Era comparison essay, World History</span>' in card
+    )
     assert hidden(card, "expected_report_id") == ""
     assert hidden(card, "week") == WEEK
     assert location == f"{PAGE}?week={WEEK}&saved={ESSAY}#update-result-{ESSAY}"
@@ -130,7 +132,7 @@ def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -
     assert "Reported August 19" in saved
     assert "You wrote: <q>Turned in on paper.\nTwo pages.</q>" in saved
     assert "This is out of work to plan. Your school record is separate." in saved
-    assert ">Change</button>" in saved
+    assert ">Change<span" in saved
     assert f'action="/student/actions/assignments/{ESSAY}/undo-report"' in saved
     assert "<legend>Your update<span" not in saved
     assert [(item.status, item.note) for item in history] == [
@@ -314,7 +316,7 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
     assert "Reported August 19, restored August 19" in restored
     assert "You wrote: <q>Half left.</q>" in restored
     assert 'name="report_id"' not in restored
-    assert ">Change</button>" in restored
+    assert ">Change<span" in restored
     assert stale.status_code == 409
     assert ALREADY_UNDONE in card_for(stale.text, ESSAY)
     assert f'href="#assignment-{ESSAY}"' in stale.text
@@ -334,8 +336,11 @@ def test_the_change_button_opens_the_form_with_the_update_as_it_stands() -> None
     assert 'value="not_yet" checked>' in card
     assert ">Half left.</textarea>" in card
     assert '<span class="pill">Your update: Not yet</span>' in card
-    assert 'Keep it as it is<span class="visually-hidden">' in card
-    assert ">Change</button>" not in card
+    assert (
+        'aria-label="Keep it as it is: your update on Canal Era comparison essay, World '
+        'History">Keep it as it is</a>'
+    ) in card
+    assert ">Change<span" not in card
 
 
 def test_a_parent_signed_in_reads_her_update_and_cannot_make_one(tmp_path: pathlib.Path) -> None:
@@ -385,7 +390,7 @@ def test_a_parent_signed_in_reads_her_update_and_cannot_make_one(tmp_path: pathl
     assert "This is out of work to plan. Her school record is separate." in parent_after
     assert "This is out of work to plan. Your school record is separate." in card_for(saved, ESSAY)
     assert "Sign in as the student to update." in parent_after
-    assert ">Change</button>" not in parent_after
+    assert ">Change<span" not in parent_after
     assert "undo-report" not in parent_after
     assert undo_refused.status_code == 403
     assert len(history) == 1
@@ -459,7 +464,11 @@ def test_her_done_beside_the_schools_missing_is_something_to_check_on_both_pages
         assert told.status_code == 303
         report(client, ESSAY, "done", "Handed in Tuesday.")
         hers = client.get(PAGE, headers=PAGE_HEADERS).text
-        link = re.search(r'<a href="([^"]+)">Canal Era comparison essay</a>', hers)
+        link = re.search(
+            r'<a href="([^"]+)" aria-label="Canal Era comparison essay, World History: '
+            r'school report to check">Canal Era comparison essay</a>',
+            hers,
+        )
         assert link is not None
         followed = client.get(link.group(1).replace("&amp;", "&"), headers=PAGE_HEADERS).text
         family = client.get("/parent", headers=PAGE_HEADERS).text
@@ -1014,7 +1023,7 @@ def test_a_card_whose_dates_took_it_out_of_the_week_is_still_shown_with_the_resu
 
 
 def test_change_and_errors_land_on_the_card_and_name_the_field() -> None:
-    """Change goes to the card's own fragment and the way back opens the fold it sits in;
+    """Change goes to the group of the card's form and the way back opens the fold it sits in;
     a missing choice puts the cursor on the first choice and ties the words to the group;
     a long note marks the field, ties the words and the hint to it, and takes the cursor;
     a refusal about neither is the card's alert and takes the focus there, and the top of
@@ -1034,12 +1043,15 @@ def test_change_and_errors_land_on_the_card_and_name_the_field() -> None:
         )
 
     card = card_for(saved, ESSAY)
-    assert f'action="/student/due-this-week#assignment-{ESSAY}"' in card
+    assert f'action="/student/due-this-week#update-choice-{ESSAY}"' in card
     back = card_for(changing, ESSAY)
     assert f"week={WEEK}&amp;show={ESSAY}#assignment-{ESSAY}" in back
     assert '<details class="steps reported-done" open>' in changing
     group = card_for(unchosen.text, LOG)
-    assert f'<fieldset class="choice" aria-describedby="update-problem-{LOG}">' in group
+    assert (
+        f'<fieldset class="choice" id="update-choice-{LOG}" tabindex="-1" '
+        f'aria-describedby="update-problem-{LOG}">'
+    ) in group
     assert 'value="done" autofocus>' in group
     assert 'aria-invalid="true"' not in group
     field = card_for(too_long.text, LOG)
@@ -1138,7 +1150,7 @@ def test_the_history_fold_lists_her_updates_and_corrections_and_the_schools_repo
     assert '<p class="history-label">Student updates</p>' in parent_card
     assert "The second note." in parent_card
     assert "undo-report" not in parent_card
-    assert ">Change</button>" not in parent_card
+    assert ">Change<span" not in parent_card
 
 
 # ------------------------------------------------------------- the family page's groups

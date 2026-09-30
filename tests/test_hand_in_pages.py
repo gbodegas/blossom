@@ -43,6 +43,7 @@ from blossom.routes.student import (
 )
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
+    DETAILS,
     ESSAY_ID,
     ESSAY_TITLE,
     FIXTURE_WEEK,
@@ -50,6 +51,7 @@ from tests.support import (
     HERS,
     PAGE_HEADERS,
     PLAN_DATE,
+    QUIZ_ID,
     SAME_ORIGIN,
     THEIRS,
     Answer,
@@ -68,7 +70,6 @@ from tests.support import (
     with_clock,
 )
 
-DETAILS = f"/student/assignments/{ESSAY_ID}"
 ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
 FAMILY = "/parent"
 NOT_RECORDED = "Hand-in status not recorded."
@@ -622,7 +623,6 @@ def test_the_existing_undo_of_her_work_update_says_when_it_was_already_undone() 
 
 # ------------------------------------------- a record that cannot be read, and her words
 
-QUIZ_ID = "assignment-vocabulary-quiz"
 MALFORMED = {
     "a state that is none of the four": ("state", "invalid-state"),
     "a day that is no day": ("reported_on", "not-a-day"),

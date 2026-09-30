@@ -113,7 +113,6 @@ from blossom.routes.navigation import (
     ReturnTo,
     address,
     asked_address,
-    assignment_anchor,
     details_href,
     instructions_review_href,
     read_return,
@@ -121,6 +120,7 @@ from blossom.routes.navigation import (
     safe_default,
     segment,
     todays_plan_href,
+    update_choice_anchor,
     week_href,
 )
 from blossom.routes.runs import (
@@ -1532,11 +1532,12 @@ def student_page(
 def card_shown(
     saved: str | None, same: str | None, undone: str | None, change: str | None, show: str | None
 ) -> CardState | None:
-    """What the address says about one card, read in a fixed order and one thing at a time."""
+    """What the address says about one card, read in a fixed order and one thing at a time.
+    An id to change that is longer than any the store makes opens nothing."""
     for said, given in (("saved", saved), ("same", same), ("undone", undone)):
         if given:
             return CardState(given, said=CONFIRMATIONS[said])
-    if change:
+    if change and len(change) <= TOKEN_MAX_LENGTH:
         return CardState(change, change=True)
     if show:
         return CardState(show)
@@ -1733,8 +1734,9 @@ class ReportContext:
     on the details with the way back from there."""
     place: Literal["week", "details"]
     """Which page the component is on, her week or an assignment's details. It decides how a
-    problem with the update is said, and nothing else: on the details as plain text beside
-    the form, which the summary at the top links to; on her week as an alert of its own."""
+    problem with the update is said: on the details as plain text beside the form, which the
+    summary at the top links to; on her week as an alert of its own. On her week the form of
+    a card with no update is folded too, and opened for the card a response is about."""
     with_year: bool = False
     """Whether days are said with their year, as a page with no week above it needs."""
     back: "ReturnLink | None" = None
@@ -1759,14 +1761,15 @@ def report_actions(assignment_id: str) -> tuple[str, str]:
 
 
 def week_context(assignment_id: str, week: date, viewer: str) -> ReportContext:
-    """The component on a card of her week: results come back to the card."""
+    """The component on a card of her week: results come back to the card, and Change lands
+    on the group of the form it opens."""
     report, undo = report_actions(assignment_id)
     return ReportContext(
         viewer=viewer,
         can_update=viewer != "parent",
         report_action=report,
         undo_action=undo,
-        change_action=address(WEEK_PAGE, fragment=assignment_anchor(assignment_id)),
+        change_action=address(WEEK_PAGE, fragment=update_choice_anchor(assignment_id)),
         change_fields=[("week", week.isoformat()), ("change", assignment_id)],
         cancel_href=week_href(week, assignment_id, show=assignment_id),
         post_fields=[("week", week.isoformat())],

@@ -116,11 +116,15 @@ work, and a window with nothing left ends a run before any model is asked. A
 Done beside a school report of Missing is something for the family to check,
 said on both pages and decided by neither. The form is a form alone, a parent
 signed in reads her update and cannot make one, and nothing writes her
-account but her own device. A parent's save, hand-in update, or Undo, from a
-page left open when the sign-in changed as from anywhere else, is answered
-403 on her current week from the sign-in and the route alone: no form is
-read, the assignment it names is not looked up, and the decision lock is not
-taken. Where her Done stands beside a Missing, a parent
+account but her own device. On her week the form of a card with no update is
+folded under Update this homework, and the server opens it for an address that
+asks to change the card, a refusal, or a save refused because the card changed
+elsewhere. Closing the fold keeps what she typed only in the page: saving
+another card or leaving the page can lose it. A parent's save, hand-in update,
+or Undo, from a page left open when the sign-in changed as from anywhere else,
+is answered 403 on her current week from the sign-in and the route alone: no
+form is read, the assignment it names is not looked up, and the decision lock
+is not taken. Where her Done stands beside a Missing, a parent
 can mark the pair checked on the family page, with a note her card shows. The
 check is a chain of the family's own events in a table of its own, made
 against a basis worked out from her events and the school's reports, the

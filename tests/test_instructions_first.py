@@ -14,7 +14,7 @@ import pathlib
 import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import date
 from html import unescape
 from urllib.parse import quote, urlsplit
 
@@ -36,14 +36,20 @@ from blossom.stores.captures import CaptureReadings
 from blossom.stores.project_state import HandInReadings, ProjectStateStore, UnreadableClaim
 from blossom.views import school_words
 from tests.support import (
+    DETAILS,
     ESSAY,
     ESSAY_ID,
     ESSAY_TITLE,
     FIXTURE_WEEK,
     HER_PAGE,
     HERS,
+    NONE_APPLIES,
+    NOW,
     PAGE_HEADERS,
+    QUIZ_ID,
+    REPORT,
     THEIRS,
+    UNDO,
     Answer,
     browser,
     card_for,
@@ -56,18 +62,18 @@ from tests.support import (
     signed_in_household,
     store_of,
     walkthrough,
+    week_card,
     whole_form,
 )
+from tests.support import failed_write as week_refused_by_the_file
+from tests.support import malformed as week_malformed
+from tests.support import no_choice as week_no_choice
+from tests.support import save as week_save
 
-DETAILS = f"/student/assignments/{ESSAY_ID}"
 ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
-REPORT = f"{ACTIONS}/report"
-UNDO = f"{ACTIONS}/undo-report"
 HAND_IN = f"{ACTIONS}/hand-in"
 UNDO_HAND_IN = f"{ACTIONS}/undo-hand-in"
-QUIZ_ID = "assignment-vocabulary-quiz"
 NOWHERE = "assignment-nowhere"
-NOW = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
 TODAY = date(2026, 8, 19)
 READERS = ("her", "a parent", "sign-in off")
 
@@ -89,7 +95,6 @@ UPDATE_HEADING = '<h2 class="update-heading" id="update-or-turn-in" tabindex="-1
 STUDENT_HEADING = (
     '<h2 class="update-heading" id="update-or-turn-in" tabindex="-1">Student update</h2>'
 )
-NONE_APPLIES = '<p class="source">No instruction from the school applies now.</p>'
 UNAVAILABLE = (
     '<p class="source">The school\'s instructions for this assignment cannot be read right '
     "now, so they are not shown.</p>"
@@ -1225,21 +1230,6 @@ def test_a_failed_write_whose_page_cannot_be_read_back_focuses_its_own_explanati
     assert main_of(answer.text).count('role="alert"') == 1
 
 
-def week_card(client: TestClient, **params: str) -> str:
-    page = client.get(HER_PAGE, params={"change": ESSAY_ID, **params}, headers=PAGE_HEADERS).text
-    return card_for(page, ESSAY_ID)
-
-
-def week_save(
-    client: TestClient, card: str, status: str | None, note: str = "", **over: str
-) -> Answer:
-    fields = form_fields(card, REPORT)
-    chosen = {} if status is None else {"status": status}
-    return client.post(
-        REPORT, data={**fields, **chosen, "note": note, **over}, headers=PAGE_HEADERS
-    )
-
-
 def week_conflict(client: TestClient) -> Answer:
     card = week_card(client)
     reported(store_of(client), "not_yet")
@@ -1266,28 +1256,6 @@ def week_stale_undo(client: TestClient) -> Answer:
     card = card_for(client.get(HER_PAGE, headers=PAGE_HEADERS).text, ESSAY_ID)
     reported(store_of(client), "not_yet")
     return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
-
-
-def week_malformed(client: TestClient) -> Answer:
-    fields = form_fields(week_card(client), REPORT)
-    return client.post(
-        REPORT, data={**fields, "status": "done", "note": ["one", "two"]}, headers=PAGE_HEADERS
-    )
-
-
-def week_refused_by_the_file(client: TestClient) -> Answer:
-    card = week_card(client)
-    store = store_of(client)
-    store._connection.execute(
-        "CREATE TRIGGER refuse_reports BEFORE INSERT ON student_reports "
-        "BEGIN SELECT RAISE(ABORT, 'refused'); END"
-    )
-    store._connection.commit()
-    return week_save(client, card, "not_yet", "kept")
-
-
-def week_no_choice(client: TestClient) -> Answer:
-    return week_save(client, week_card(client), None, "kept")
 
 
 def week_saved(client: TestClient) -> Answer:

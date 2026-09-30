@@ -35,6 +35,7 @@ from blossom.routes.student import (
     UPDATE_UNDONE,
 )
 from tests.support import (
+    DETAILS,
     ESSAY_ID,
     ESSAY_TITLE,
     FIXTURE_WEEK,
@@ -42,7 +43,9 @@ from tests.support import (
     HERS,
     PAGE_HEADERS,
     PLAN_DATE,
+    QUIZ_ID,
     SAME_ORIGIN,
+    SYLLABUS_ID,
     THEIRS,
     Answer,
     browser,
@@ -54,10 +57,6 @@ from tests.support import (
     state_of,
     walkthrough,
 )
-
-DETAILS = f"/student/assignments/{ESSAY_ID}"
-SYLLABUS_ID = "assignment-signed-syllabus"
-QUIZ_ID = "assignment-vocabulary-quiz"
 
 
 def save(client: TestClient, page: str, status: str | None, note: str = "", **over: str) -> Answer:
@@ -152,7 +151,7 @@ def test_the_instructions_come_before_the_update_and_every_fact_is_there_once() 
         "Bring the annotated map",
         '<h2 class="update-heading" id="update-or-turn-in" tabindex="-1">Your update</h2>',
         '<span class="pill">Your update: Done</span>',
-        ">Change</button>",
+        ">Change<span",
         '<section class="evidence" id="evidence" tabindex="-1">',
         "What the sources say</h3>",
         "<strong>The school reports this missing.</strong>",

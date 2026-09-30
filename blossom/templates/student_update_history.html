@@ -13,7 +13,7 @@
   #}
   {% if assignment.update_history or assignment.school_history|length > 1 %}
     <details class="steps history">
-      <summary>Update history<span class="visually-hidden"> for {{ assignment.title }}</span></summary>
+      <summary>Update history<span class="visually-hidden"> for {{ assignment.title }}, {{ assignment.course }}</span></summary>
       {% if assignment.update_history %}
         <p class="history-label">{% if ctx.viewer == "parent" %}Student updates{% else %}Your updates{% endif %}</p>
         <ol>

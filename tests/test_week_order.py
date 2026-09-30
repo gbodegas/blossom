@@ -20,10 +20,9 @@ pages' own HTML. A plan is made by scripted graphs; no model is asked.
 import pathlib
 import re
 import sqlite3
-from collections.abc import Callable, Iterator
-from contextlib import closing, contextmanager
-from dataclasses import replace
-from datetime import UTC, date, datetime
+from collections.abc import Callable
+from contextlib import closing
+from datetime import date
 from html import unescape
 from typing import Final
 from urllib.parse import parse_qs, urlsplit
@@ -31,67 +30,81 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from fastapi.testclient import TestClient
 
-from blossom.app import create_app
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
 from blossom.plans import DailyPlan
 from blossom.routes.hand_in import GONE_FROM_THE_LIST
-from blossom.routes.runs import PlanGraphs, plan_graphs
+from blossom.routes.runs import PlanGraphs
 from blossom.settings import REPOSITORY_ROOT
-from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
+from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
+    DETAILS,
+    ESCAPED,
     ESSAY_ID,
     FIXTURE_WEEK,
     HER_PAGE,
-    HERS,
+    LATER_WEEK,
+    NOW,
     PAGE_HEADERS,
     PLAN_DATE,
-    SAME_ORIGIN,
+    REPORT,
     THEIRS,
+    UNDO,
     Answer,
     accepting,
+    after,
+    already_undone,
+    bad_return,
     card_for,
-    fixture_settings,
+    conflict,
+    due,
+    failed_undo,
+    failed_write,
     fixture_week_plan,
     forgetful_fixture_plan,
     form_fields,
     lands_on,
     main_of,
+    malformed,
+    no_choice,
+    not_this_cards,
+    note_too_long,
+    page_of,
+    reading,
     report,
+    reported,
+    save,
+    saved,
+    saved_again,
     school_missing,
     scripted_graphs,
     signed_in,
-    signed_in_household,
+    stale_undo,
     state_of,
     store_of,
+    undone,
     waiting_note,
+    week_card,
     whole_form,
     words,
 )
+from tests.support import QUIZ_ID as QUIZ
+from tests.support import READING_LOG_ID as LOG
+from tests.support import SYLLABUS_ID as SYLLABUS
 
 READERS: Final = ("her", "a parent", "sign-in off")
-NOW: Final = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
-LOG: Final = "assignment-reading-log"
 ALGEBRA: Final = "assignment-algebra-set"
-QUIZ: Final = "assignment-vocabulary-quiz"
-SYLLABUS: Final = "assignment-signed-syllabus"
 FAIR: Final = "assignment-science-fair-proposal"
 COVER: Final = "assignment-textbook-cover"
-ESCAPED: Final = "set/2 it's #1? é"
 FAR: Final = "far-set"
 NOWHERE: Final = "assignment-nowhere"
-LATER_WEEK: Final = "2026-08-24"
 FAR_WEEK: Final = "2026-10-05"
 ACTIONS: Final = f"/student/actions/assignments/{ESSAY_ID}"
-REPORT: Final = f"{ACTIONS}/report"
-UNDO: Final = f"{ACTIONS}/undo-report"
 HAND_IN: Final = f"{ACTIONS}/hand-in"
 UNDO_HAND_IN: Final = f"{ACTIONS}/undo-hand-in"
-DETAILS: Final = f"/student/assignments/{ESSAY_ID}"
 TO_TURN_IN_PAGE: Final = "/student/to-turn-in"
 TOO_MUCH: Final = "/student/actions/too-much"
 TAKE_BACK: Final = "/student/actions/take-back/"
 PLAN: Final = "/student/actions/plan"
-KEY: Final = "not-a-key-and-never-sent"
 CSS: Final = REPOSITORY_ROOT / "blossom" / "static" / "blossom.css"
 
 HEADING: Final = '<h2 class="list-heading" id="homework" tabindex="-1">Due this week</h2>'
@@ -117,30 +130,6 @@ SAVED_ELSEWHERE: Final = "An update was saved on another device. Review it befor
 # ------------------------------------------------------------------ the household
 
 
-@contextmanager
-def reading(
-    reader: str, tmp_path: pathlib.Path, *, graphs: Callable[..., PlanGraphs] | None = None
-) -> Iterator[TestClient]:
-    """The pinned day as one reader has it: her device or a parent's, signed in, or the
-    household with the sign-in off. ``graphs`` gives the household a key and scripted
-    graphs, so the plan button is offered and answers without a model."""
-    if reader == "sign-in off":
-        settings = fixture_settings(
-            BLOSSOM_TODAY=PLAN_DATE.isoformat(), **({"ANTHROPIC_API_KEY": KEY} if graphs else {})
-        )
-    else:
-        settings = signed_in_household(tmp_path)
-        if graphs:
-            settings = replace(settings, anthropic_api_key=KEY)
-    app = create_app(settings)
-    if graphs:
-        app.dependency_overrides[plan_graphs] = graphs
-    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
-        if reader != "sign-in off":
-            signed_in(client, HERS if reader == "her" else THEIRS)
-        yield client
-
-
 def as_a_parent(client: TestClient) -> None:
     """A parent signs in on the device she was using."""
     client.post("/sign-out")
@@ -150,23 +139,6 @@ def as_a_parent(client: TestClient) -> None:
 def planner(plan: Callable[[], DailyPlan]) -> Callable[..., PlanGraphs]:
     """Scripted graphs whose planner answers with this plan every time it is asked."""
     return scripted_graphs(lambda: [plan()] * 3, lambda: [accepting()])
-
-
-def page_of(client: TestClient, **params: str) -> str:
-    return client.get(HER_PAGE, params=params, headers=PAGE_HEADERS).text
-
-
-def reported(store: ProjectStateStore, status: str, assignment_id: str = ESSAY_ID) -> None:
-    """Her update, saved over whatever stands, as a card showing the latest saves it."""
-    events = store.student_reports(assignment_id)
-    store.report_status(
-        assignment_id,
-        status,  # type: ignore[arg-type]
-        None,
-        expected_head=events[-1].report_id if events else None,
-        now=NOW,
-        today=PLAN_DATE,
-    )
 
 
 def to_turn_in(
@@ -202,19 +174,6 @@ def off_the_record(store: ProjectStateStore, *names: str) -> None:
 def everything_done(store: ProjectStateStore) -> None:
     for item in store.all_assignments():
         reported(store, "done", item.assignment_id)
-
-
-def due(name: str, title: str, on: date, *, assigned: date | None = None) -> Assignment:
-    return Assignment(
-        assignment_id=name,
-        course="Geometry",
-        title=title,
-        due_date=on,
-        dependencies=[],
-        reported_submission_status="not_started",
-        assigned_on=assigned,
-        kind=AssignmentKind.HOMEWORK,
-    )
 
 
 def crowd(store: ProjectStateStore) -> None:
@@ -872,41 +831,6 @@ def test_another_week_says_updates_are_the_latest_whenever_it_shows_a_card() -> 
 # ------------------------------------------------------------------ a card's answer (E3)
 
 
-def week_card(client: TestClient, assignment_id: str = ESSAY_ID, **params: str) -> str:
-    return card_for(page_of(client, change=assignment_id, **params), assignment_id)
-
-
-def save(
-    client: TestClient,
-    card: str,
-    status: str | None,
-    note: str = "",
-    assignment_id: str = ESSAY_ID,
-    **over: str,
-) -> Answer:
-    action = f"/student/actions/assignments/{assignment_id}/report"
-    fields = form_fields(card, action)
-    chosen = {} if status is None else {"status": status}
-    return client.post(
-        action, data={**fields, **chosen, "note": note, **over}, headers=PAGE_HEADERS
-    )
-
-
-def refuse_writes(client: TestClient) -> None:
-    store = store_of(client)
-    store._connection.execute(
-        "CREATE TRIGGER refuse_reports BEFORE INSERT ON student_reports "
-        "BEGIN SELECT RAISE(ABORT, 'refused'); END"
-    )
-    store._connection.commit()
-
-
-def conflict(client: TestClient) -> Answer:
-    card = week_card(client)
-    reported(store_of(client), "not_yet")
-    return save(client, card, "done", "Mine.")
-
-
 def conflict_on_done(client: TestClient) -> Answer:
     reported(store_of(client), "done")
     card = week_card(client)
@@ -939,77 +863,6 @@ def conflict_due_later_done(client: TestClient) -> Answer:
     reported(store_of(client), "not_yet", LOG)
     reported(store_of(client), "done", LOG)
     return save(client, card, "done", "Mine.", LOG)
-
-
-def stale_undo(client: TestClient) -> Answer:
-    reported(store_of(client), "done")
-    card = card_for(page_of(client), ESSAY_ID)
-    reported(store_of(client), "not_yet")
-    return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
-
-
-def already_undone(client: TestClient) -> Answer:
-    reported(store_of(client), "done")
-    card = card_for(page_of(client), ESSAY_ID)
-    assert client.post(UNDO, data=form_fields(card, UNDO)).status_code == 303
-    return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
-
-
-def malformed(client: TestClient) -> Answer:
-    fields = form_fields(week_card(client), REPORT)
-    return client.post(
-        REPORT, data={**fields, "status": "done", "note": ["one", "two"]}, headers=PAGE_HEADERS
-    )
-
-
-def bad_return(client: TestClient) -> Answer:
-    return save(client, week_card(client), "done", week="not a day")
-
-
-def not_this_cards(client: TestClient) -> Answer:
-    return save(client, week_card(client), "done", expected_report_id="x" * 201)
-
-
-def failed_write(client: TestClient) -> Answer:
-    card = week_card(client)
-    refuse_writes(client)
-    return save(client, card, "not_yet", "kept")
-
-
-def failed_undo(client: TestClient) -> Answer:
-    reported(store_of(client), "done")
-    card = card_for(page_of(client), ESSAY_ID)
-    refuse_writes(client)
-    return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
-
-
-def no_choice(client: TestClient) -> Answer:
-    return save(client, week_card(client), None, "kept")
-
-
-def note_too_long(client: TestClient) -> Answer:
-    return save(client, week_card(client), "done", "x" * 501)
-
-
-def after(client: TestClient, answer: Answer) -> Answer:
-    assert answer.status_code == 303, answer.text[:300]
-    return client.get(answer.headers["location"], headers=PAGE_HEADERS)
-
-
-def saved(client: TestClient) -> Answer:
-    return save(client, week_card(client), "done")
-
-
-def saved_again(client: TestClient) -> Answer:
-    card = week_card(client)
-    assert save(client, card, "done").status_code == 303
-    return save(client, card, "done")
-
-
-def undone(client: TestClient) -> Answer:
-    reported(store_of(client), "done")
-    card = card_for(page_of(client), ESSAY_ID)
-    return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
 
 
 def saved_apart(client: TestClient) -> Answer:
