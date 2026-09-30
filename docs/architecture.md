@@ -364,7 +364,8 @@ says nothing of the request the address names, whether it is on the page, is
 not, or can't be checked, and shows her requests as it would on any visit. A
 note's page still says to a parent what a change either may make through the
 family's tree did: saving the details, adding to homework, linking and
-unlinking. The small page for work
+unlinking; once a newer change follows, it tells a parent the note was saved
+earlier without naming who saved it. The small page for work
 not on record focuses its explanation after a form's press and never on a
 look by link. The details' evidence lists every claim a source has made
 about the date, the ones that agree included, where a card lists claims only

@@ -4,8 +4,9 @@ The line Help says for the request her Ask for help form's address names, sent, 
 sent, not on this page, or can't be checked, is hers: a parent signed in over her page who
 opens that address reads Help as on any visit, and the page opens at its top. On a note's
 page a parent is shown the result of a change either may make through the family's tree,
-and never that of a change only she makes. With the sign-in off every line is said, as to
-her. The fixture week through the app, a pinned day, synthetic words, and no model.
+and never that of a change only she makes; once a newer change follows, a parent reads that
+the note was saved earlier, with no word of who saved it. With the sign-in off every line is
+said as to her. The fixture week through the app, a pinned day, synthetic words, no model.
 """
 
 import pathlib
@@ -15,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Final
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -81,6 +83,10 @@ PARENTS_UNREADABLE: Final = (
     "Her requests for help can't be read right now. Refresh replies to try again."
 )
 FOLD_OPEN: Final = '<details class="steps resolved" id="help-older" open>'
+FOLD_CLOSED: Final = FOLD_OPEN.replace(" open>", ">")
+PARENTS_EARLIER: Final = (
+    "This note was saved earlier and has changed since. This page shows it as it stands now."
+)
 WORDS: Final = "Geometry questions 4-8, heard in class"
 REFUSED: Final = "the file cannot be read"
 
@@ -269,6 +275,11 @@ def a_note(client: TestClient) -> str:
     return first_save(client)[1]["capture_id"]
 
 
+def name_of(address: str) -> str:
+    """The note an address of a note's page names."""
+    return urlsplit(address).path.rsplit("/", 1)[1]
+
+
 def pressed(client: TestClient, name: str, step: str, times: int = 1, **typed: str) -> str:
     """Her press of one of her note's own forms, ``edit``, ``archive``, ``restore`` or
     ``ask-for-help``, from the page that shows it, sent ``times`` times; the last address."""
@@ -318,11 +329,11 @@ class Said:
     said: str
 
 
-def saved(client: TestClient) -> Said:
+def first_saved(client: TestClient) -> Said:
     return Said(first_save(client)[0], NOTE_SAVED)
 
 
-def saved_again(client: TestClient) -> Said:
+def first_saved_again(client: TestClient) -> Said:
     return Said(first_save(client, times=2)[0], NOTE_ALREADY_SAVED)
 
 
@@ -423,8 +434,8 @@ def unlinked(client: TestClient) -> Said:
 
 
 HERS_ALONE: Final[dict[str, Callable[[TestClient], Said]]] = {
-    "a first save": saved,
-    "the same first save again": saved_again,
+    "a first save": first_saved,
+    "the same first save again": first_saved_again,
     "a first save, changed since": saved_and_changed_since,
     "an edit": edited,
     "an edit that changed nothing": edited_to_the_same,
@@ -514,3 +525,76 @@ def test_a_parent_reads_the_result_of_a_change_made_through_the_familys_tree(
     page = main_of(answer.text)
     assert said_first(page, where, DETAILS_SAVED if button == "details" else ADDED_TO_HOMEWORK)
     assert no_autofocus(answer.text)
+
+
+@pytest.mark.parametrize("reader", READERS)
+@pytest.mark.parametrize("surface", list(EITHERS))
+def test_a_shared_result_a_newer_change_follows_names_nobody_to_a_parent(
+    surface: str, reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Each shared result, then her edit: the result is something saved earlier, said to a
+    parent without naming who saved it, and to her and the sign-in off in their own words."""
+
+    def then_edited(client: TestClient) -> Said:
+        left = EITHERS[surface](client)
+        pressed(client, name_of(left.address), "edit", text="Changed words")
+        return left
+
+    left, answer = opened_by(reader, tmp_path, then_edited)
+
+    assert answer.status_code == 200
+    assert no_autofocus(answer.text)
+    page = main_of(answer.text)
+    said, never = (NOTE_SAVED_EARLIER, PARENTS_EARLIER)
+    if reader == "parent":
+        said, never = never, said
+    assert said_first(page, left.address, said)
+    assert never not in words(page)
+
+
+def test_an_address_naming_her_edit_with_the_details_word_reads_the_neutral_line(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Compatibility with addresses already saved: ``unchanged`` naming the change her edit
+    that wrote nothing found reads to a parent as the details' result does, in the neutral
+    line, which names nobody. Her own saves that write nothing say ``same``."""
+    with household_client("parent", tmp_path) as client:
+        sign_in_as(client, "her")
+        mine = edited_to_the_same(client).address
+        kept = mine.replace("said=same", "said=unchanged")
+        over_her_tab(client, "parent")
+        answers = [client.get(where, headers=PAGE_HEADERS) for where in (mine, kept)]
+
+    assert "said=same" in mine
+    assert 'id="note-result"' not in main_of(answers[0].text)
+    assert said_first(main_of(answers[1].text), kept, NOTE_ALREADY_SAVED)
+
+
+@pytest.mark.parametrize("reader", READERS)
+@pytest.mark.parametrize("marker", ["asked", "asked_again"])
+def test_a_request_in_the_older_fold_opens_it_for_her_and_leaves_it_closed_for_a_parent(
+    marker: str, reader: str, tmp_path: pathlib.Path
+) -> None:
+    """A parent's Help is the view with no marker: the fold stays closed with the request in
+    it, and nothing takes the focus. Her page opens it at her line."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, "her" if reader == "parent" else reader)
+        _, named = asked_before(client, "closed a week ago")
+        over_her_tab(client, reader)
+        address = f"{HER_PAGE}?{marker}={named}#help-result"
+        answer = client.get(address, headers=PAGE_HEADERS)
+        plain = client.get(HER_PAGE, headers=PAGE_HEADERS)
+
+    page = main_of(answer.text)
+    fold = page[page.index(FOLD_CLOSED.removesuffix(">")) :]
+    fold = fold[: fold.index("</details>")]
+    assert CLOSED in words(help_row(fold, named))
+    assert no_autofocus(answer.text)
+    if reader == "parent":
+        assert fold.startswith(FOLD_CLOSED)
+        assert lands_on(page, address) == ""
+        assert page == main_of(plain.text)
+    else:
+        assert fold.startswith(FOLD_OPEN)
+        assert lands_on(page, address) == HELP_RESULT
+        assert f"{HELP_RESULT}{ALREADY_SENT}" in help_row(fold, named)
