@@ -25,7 +25,9 @@
 
   She may edit, archive, and restore, and delete a note that was never used,
   after a page that asks first. A note saved before notes could be deleted
-  says it can't be deleted. A parent signed in reads all of it, the archived and
+  says it can't be deleted, and when whether a note can be deleted can't be
+  checked, the page says so where Delete would be. A parent signed in reads
+  all of it, the archived and
   the history included, and is told the note is hers to change.
 #}
 {% from "note_details_shown.html" import details_shown %}
@@ -111,6 +113,7 @@
       </div>
       {% if not note.archived %}<p class="note">Archiving takes it off your list. You can bring it back from Archived.</p>{% endif %}
       {% if deletable %}<p class="note">Made by mistake? Deleting removes it and its history for good.</p>{% endif %}
+      {% if delete_unchecked %}<p class="note">{{ delete_unchecked }}</p>{% endif %}
       {% if use_unknown %}<p class="note">{{ use_unknown }}</p>{% endif %}
       <p class="note"><a href="{{ note_help_href(note.capture_id) }}">Ask for help about this note</a>. Opening that page sends nothing.</p>
     {% endif %}

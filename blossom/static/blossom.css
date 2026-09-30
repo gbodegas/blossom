@@ -416,12 +416,13 @@ article h2 {
    the date warning's link, the summary's, the notes', and the line that says
    how many instructions wait; in Help, a refusal's link and the family review
    link a parent reads; at the top of her week, the link from a problem to the
-   card it is about. */
+   card it is about; on a note's small page, Try again. */
 .notice a,
 .refresh a,
 .return a,
 .assignment.detail .confidence a,
 #problem-summary a,
+#note-problem a,
 .detail-notes a,
 .school-instructions .source a,
 .help-panel .problem a,
@@ -726,6 +727,7 @@ a.assignment-link:focus-visible {
 #waiting-instructions:focus,
 #update-or-turn-in:focus,
 #problem-summary:focus,
+#note-problem:focus,
 .detail .problem[tabindex="-1"]:focus,
 .list-heading:focus,
 .assignment[tabindex="-1"]:focus,
@@ -897,6 +899,16 @@ button[disabled] {
   color: var(--rose-ink);
   border-radius: var(--radius-small);
   padding: 0.65rem 0.95rem;
+}
+
+/* A refusal on Family review, and on the page that stands in for it, can name a request by
+   its 32-character id, one word wider than a phone's line. The alert at the top of the
+   family page, and the one explanation a page gives as it arrives, break such a word where
+   they must, so nothing of it is cut and the page never scrolls sideways; a line that fits
+   is as it was. */
+#problem,
+#problem-summary {
+  overflow-wrap: anywhere;
 }
 
 pre.body {

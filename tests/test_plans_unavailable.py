@@ -628,10 +628,11 @@ def test_a_signed_in_reader_gets_the_address_as_it_was_asked(
 # ------------------------------------------------------------- a POST is not this page's
 
 
-def test_a_refused_post_that_shows_a_page_again_answers_as_it_did_when_the_record_fails(
+def test_a_refused_post_that_shows_a_page_again_keeps_its_status_when_the_record_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A refusal shown again after a POST still answers 500 when the record fails."""
+    """A refusal shown again after a POST keeps its own status on the page for a press, and
+    is never this page, when the record fails."""
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     with TestClient(
         app, headers=SAME_ORIGIN, raise_server_exceptions=False, follow_redirects=False
@@ -641,8 +642,10 @@ def test_a_refused_post_that_shows_a_page_again_answers_as_it_did_when_the_recor
         hers = client.post("/student/actions/plan")
         theirs = client.post("/parent/actions/decide/draft:any", data={"decision": "sideways"})
 
+    assert (hers.status_code, theirs.status_code) == (503, 422)
+    assert "<h1>Plan not made</h1>" in hers.text
+    assert "<h1>Family review</h1>" in theirs.text
     for answer in (hers, theirs):
-        assert answer.status_code == 500
         assert HER_ALERT not in answer.text
         assert FAMILY_ALERT not in answer.text
 

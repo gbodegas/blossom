@@ -294,6 +294,48 @@ refused like any other stale Undo and writing nothing, told apart from a change 
 head the refusing save read and never by comparing words."""
 NOT_SAVED: Final = "Your update could not be saved. Your words are still here. Try again."
 NOT_UNDONE: Final = "Your update could not be undone, and nothing was changed. Try again."
+TAKE_BACK_NOT_SAVED: Final = (
+    "Your request could not be taken back, and nothing was changed. Try again."
+)
+SIGNAL_NOT_SAVED: Final = "That could not be saved, and nothing was changed. Try again."
+"""What a take-back or a signal the file refused says: each store rolls back a write it
+could not finish, a refused commit included, so nothing was changed and pressing again is
+safe."""
+PLAN_FAILED: Final = (
+    "Blossom could not make a plan: something went wrong on the way. "
+    "The plan already here, if any, is unchanged."
+)
+UPDATE_NOT_SAVED: Final = "Update not saved"
+REQUEST_NOT_SENT: Final = "Request not sent"
+REQUEST_NOT_TAKEN_BACK: Final = "Request not taken back"
+PLAN_NOT_MADE: Final = "Plan not made"
+NOT_SAVED_HEADING: Final = "Not saved"
+"""The headings of the page that reads no store, each naming the press it answers."""
+YOUR_WEEK_NOT_SHOWN: Final = "Your week can't be shown right now."
+HER_WEEK_NOT_SHOWN: Final = "Her week can't be shown right now."
+ASSIGNMENT_NOT_SHOWN: Final = "This assignment can't be shown right now."
+"""The line that page adds after a press's own words: which page the press would have been
+shown on, and that it can't be shown."""
+DETAILS_UNAVAILABLE: Final = "This assignment can't be shown right now. Try again in a moment."
+WITHOUT_THE_PAGE: Final[dict[str, str]] = {
+    CHOOSE_ONE: "Nothing was saved, because neither Done nor Not yet was chosen.",
+    NOTE_TOO_LONG: (
+        f"Nothing was saved, because the note is longer than {UPDATE_NOTE_MAX_LENGTH} characters."
+    ),
+    BAD_FORM: (
+        "That form carried a field twice, or one this page does not send, so nothing was saved."
+    ),
+    SAVED_ELSEWHERE: "An update was saved on another device, so yours was not saved.",
+    NOT_THIS_CARDS: (
+        "That form names an update this assignment does not have, so nothing was saved."
+    ),
+    CANNOT_UNDO: "Your update has changed, so it cannot be undone from that page.",
+    ALREADY_UNDONE: "That update was already undone.",
+    PLAN_FAILED: "Blossom could not make a plan: something went wrong on the way.",
+}
+"""Each refusal written for a page, as it reads where that page is not shown: a sentence that
+points at the page goes, and a rule about a field says what was not saved and why. Any other
+refusal reads the same in both places."""
 FROM_DETAILS: Final = frozenset({"report_view", "return_to", "plan_id"})
 """The fields a form on an assignment's details sends beside the rest: that the result is
 to be shown there, and where its reader came from. A card on her week sends none of them,
@@ -1826,7 +1868,15 @@ def gone_page(
 
     The explanation takes the focus when a form's press brought her here,
     whatever the form carried, and never on a look by link, whatever the
-    address carries."""
+    address carries. When the plan the way back looks up can't be read, the
+    way back is made from the address alone and nothing more is read."""
+    try:
+        link = way_back(
+            state, back, assignment_id, today=state.clock.today() if today is None else today
+        )
+    except sqlite3.Error as error:
+        logger.warning("a way back could not be read: %s", type(error).__name__)
+        link = plain_way_back(back, assignment_id)
     return templates.TemplateResponse(
         request,
         "student_assignment_gone.html",
@@ -1835,9 +1885,7 @@ def gone_page(
             "pressed": request.method == "POST",
             "card": card,
             "hand_in_card": hand_in,
-            "back": way_back(
-                state, back, assignment_id, today=state.clock.today() if today is None else today
-            ),
+            "back": link,
             "sample": state.settings.sample,
         },
         status_code=status.HTTP_404_NOT_FOUND,
@@ -2017,7 +2065,9 @@ def assignment_details(
     anything else is her safe default, or a parent's. ``change`` opens the
     form on an update that stands, and ``said`` is one of the three things a
     save or an undo can have done, which the server chose and the address
-    only carries: any other word says nothing.
+    only carries: any other word says nothing. When the record can't be read,
+    503: a page that says so, offers the same address again and the way back
+    the address names, and says nothing of a save.
     """
     back, _ = read_return(
         {"return_to": return_to or "", "week": week or "", "plan_id": plan_id or ""},
@@ -2036,7 +2086,18 @@ def assignment_details(
         turning_in = HandInCard(change=True)
     elif hand_in == "remember":
         turning_in = HandInCard(change=True, state=NEEDS_HAND_IN)
-    return detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
+    try:
+        return detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
+    except sqlite3.Error as error:
+        return unavailable_page(
+            request,
+            state,
+            error,
+            heading="Assignment",
+            alert=DETAILS_UNAVAILABLE,
+            again=asked_address(details_href(assignment_id), request.scope["query_string"]),
+            ways_back=[plain_way_back(back, assignment_id)],
+        )
 
 
 @dataclass(frozen=True)
@@ -2128,37 +2189,182 @@ def plain_ways_back(origin: Origin, assignment_id: str) -> list[ReturnLink]:
     No store is read, since this is the page for when the record cannot be:
     a form from the details gets the assignment's details again, with the
     way back they carried, and the page that way back names; a card gets
-    its week with the card in view. Today is the Today panel, whichever plan
-    is there when she arrives, and a plan on the family page is named to the
-    family page, which opens it or not as it finds it.
+    its week with the card in view.
     """
-    back = origin.back
     if not origin.detail:
         return [
             ReturnLink(
                 week_href(origin.week, assignment_id, show=assignment_id), "Back to the week"
             )
         ]
-    details = ReturnLink(details_href(assignment_id, **back.fields()), "Back to the assignment")
+    details = ReturnLink(
+        details_href(assignment_id, **origin.back.fields()), "Back to the assignment"
+    )
+    return [details, plain_way_back(origin.back, assignment_id)]
+
+
+def plain_way_back(back: ReturnTo, assignment_id: str) -> ReturnLink:
+    """The page a way back names, from its checked values alone, with no store read. Today
+    is the Today panel, whichever plan is there when she arrives, and a plan on the family
+    page is named to the family page, which opens it or not as it finds it."""
     if back.target == "week":
-        return [
-            details,
-            ReturnLink(week_href(back.week, assignment_id, show=assignment_id), "Back to the week"),
-        ]
+        return ReturnLink(
+            week_href(back.week, assignment_id, show=assignment_id), "Back to the week"
+        )
     if back.target == "to_turn_in":
-        return [
-            details,
-            ReturnLink(address(TO_TURN_IN_PAGE, fragment=TO_TURN_IN), "Back to To turn in"),
-        ]
+        return ReturnLink(address(TO_TURN_IN_PAGE, fragment=TO_TURN_IN), "Back to To turn in")
     if back.target == "today":
-        return [details, ReturnLink(address(WEEK_PAGE, fragment="today"), "Back to Today")]
+        return ReturnLink(address(WEEK_PAGE, fragment="today"), "Back to Today")
     if back.plan_id is None:
         where = address(
             FAMILY_PAGE, fragment=f"update-{segment(assignment_id)}", focus=assignment_id
         )
     else:
         where = address(FAMILY_PAGE, fragment=anchor_for(back.plan_id), plan=back.plan_id)
-    return [details, ReturnLink(where, "Back to family review")]
+    return ReturnLink(where, "Back to family review")
+
+
+@dataclass(frozen=True)
+class NotShown:
+    """What a press's answer says when the page it is shown on can't be read: a heading that
+    names the press, the press's own words as they read without that page, the line that
+    says which page can't be shown, the ways back, and what she chose and typed."""
+
+    heading: str
+    said: str
+    line: str
+    ways_back: list[ReturnLink]
+    card: CardState | None = None
+    hand_in: HandInCard | None = None
+
+
+def shown_once(
+    request: Request,
+    state: ApplicationState,
+    page: Callable[[], HTMLResponse],
+    fallback: NotShown,
+    status_code: int,
+) -> HTMLResponse:
+    """The page a press is answered on, tried once. When a read for it fails, the page that
+    reads no store, with the press's own status: made from what the request already held,
+    so no store is called after the failure and nothing is tried again. The failure is
+    logged by its kind alone; any other failure is not caught here."""
+    try:
+        return page()
+    except sqlite3.Error as error:
+        logger.warning("the page for a press could not be read: %s", type(error).__name__)
+        return not_shown(request, state, fallback, status_code)
+
+
+def not_shown(
+    request: Request, state: ApplicationState, fallback: NotShown, status_code: int
+) -> HTMLResponse:
+    """The page that reads no store, for a press whose own page can't be read."""
+    return templates.TemplateResponse(
+        request,
+        "student_update_recovery.html",
+        {
+            "heading": fallback.heading,
+            "card": None
+            if fallback.card is None
+            else replace(fallback.card, problem=fallback.said),
+            "hand_in_card": (
+                None
+                if fallback.hand_in is None
+                else replace(fallback.hand_in, problem=fallback.said)
+            ),
+            "note_problem": fallback.said,
+            "page_line": fallback.line,
+            "ways_back": fallback.ways_back,
+            "sample": state.settings.sample,
+        },
+        status_code=status_code,
+    )
+
+
+def week_not_shown(request: Request, heading: str, problem: str, *, fragment: str = "") -> NotShown:
+    """What a press on her week with no card of its own says when her week can't be read: its
+    words, the line for her week in the reader's words, and the way back to it, at
+    ``fragment`` when the press was made there."""
+    parent = parent_reads(request)
+    week = "Back to her week" if parent else "Back to my week"
+    return NotShown(
+        heading,
+        WITHOUT_THE_PAGE.get(problem, problem),
+        HER_WEEK_NOT_SHOWN if parent else YOUR_WEEK_NOT_SHOWN,
+        [ReturnLink(address(WEEK_PAGE, fragment=fragment), week)],
+    )
+
+
+def card_not_shown(
+    request: Request, origin: Origin, assignment_id: str, card: CardState
+) -> NotShown:
+    """What a refused update says when the page its form came from can't be read: the
+    details, or her week."""
+    said = card.problem or ""
+    if origin.detail:
+        line = ASSIGNMENT_NOT_SHOWN
+    else:
+        line = HER_WEEK_NOT_SHOWN if parent_reads(request) else YOUR_WEEK_NOT_SHOWN
+    return NotShown(
+        UPDATE_NOT_SAVED,
+        WITHOUT_THE_PAGE.get(said, said),
+        line,
+        plain_ways_back(origin, assignment_id),
+        card=card,
+    )
+
+
+def not_hers(
+    request: Request, state: ApplicationState, heading: str, problem: str, *, in_help: bool = False
+) -> HTMLResponse:
+    """A parent's press on her week that only she may make: 403 on her current week, decided
+    from the sign-in and the route alone, the refusal at the top or, ``in_help``, in Help.
+    When her week can't be read, the page that reads no store keeps the 403."""
+    return shown_once(
+        request,
+        state,
+        lambda: student_page(
+            request,
+            state,
+            problem=None if in_help else problem,
+            help_problem=HelpProblem(problem) if in_help else None,
+            pressed=True,
+            status_code=status.HTTP_403_FORBIDDEN,
+        ),
+        week_not_shown(request, heading, problem, fragment="help" if in_help else ""),
+        status.HTTP_403_FORBIDDEN,
+    )
+
+
+def unavailable_page(
+    request: Request,
+    state: ApplicationState,
+    error: sqlite3.Error,
+    *,
+    heading: str,
+    alert: str,
+    again: str,
+    ways_back: list[ReturnLink],
+    family: bool = False,
+) -> HTMLResponse:
+    """A page that is only read, when a read for it fails: 503, what can't be shown, the same
+    address to ask for again, and the ways back; ``family`` for a page in the family's tree.
+    Nothing is read here, and the failure is logged by its kind alone."""
+    logger.warning("%s could not be read: %s", heading, type(error).__name__)
+    return templates.TemplateResponse(
+        request,
+        "page_unavailable.html",
+        {
+            "heading": heading,
+            "alert": alert,
+            "again": again,
+            "ways_back": ways_back,
+            "family": family,
+            "sample": state.settings.sample,
+        },
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 def could_not(
@@ -2225,16 +2431,11 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     is shown there with what she typed, and an assignment taken off the
     record meanwhile is said on a small page with her words to copy. A form
     that names a page to go back to that these pages do not make is refused,
-    422, with her input kept.
+    422, with her input kept. A refusal whose page can't be read is said on the
+    page that reads no store, with its status and her input.
     """
     if viewer_of(request) == "parent":
-        return student_page(
-            request,
-            state,
-            problem=NOT_HERS_TO_UPDATE,
-            pressed=True,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
+        return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
     fields, whole = await fields_of(
         request, REPORT_FIELDS, may_be_absent=NOTHING_CHOSEN | FROM_DETAILS
     )
@@ -2248,21 +2449,21 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     def refused(
         problem: str, code: int, *, field: str | None = None, saved_elsewhere: bool = False
     ) -> Response:
-        return result_page(
+        card = CardState(
+            assignment_id,
+            change=True,
+            problem=problem,
+            field=field,
+            status=chosen,
+            note=note,
+            saved_elsewhere=saved_elsewhere,
+        )
+        return shown_once(
             request,
             state,
-            assignment_id,
-            origin,
-            card=CardState(
-                assignment_id,
-                change=True,
-                problem=problem,
-                field=field,
-                status=chosen,
-                note=note,
-                saved_elsewhere=saved_elsewhere,
-            ),
-            status_code=code,
+            lambda: result_page(request, state, assignment_id, origin, card=card, status_code=code),
+            card_not_shown(request, origin, assignment_id, card),
+            code,
         )
 
     if not whole:
@@ -2338,27 +2539,22 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
     back is not what is there. A write the file refuses is said as that, and
     never as an undo. The result is shown where the form was, her week or
     the assignment's details, and an undo never sends her to another week.
+    A refusal whose page can't be read is said on the page that reads no store.
     """
     if viewer_of(request) == "parent":
-        return student_page(
-            request,
-            state,
-            problem=NOT_HERS_TO_UPDATE,
-            pressed=True,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
+        return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
     fields, whole = await fields_of(request, UNDO_FIELDS, may_be_absent=FROM_DETAILS)
     origin = origin_of(request, fields)
     named = fields.get("report_id", "").strip()
 
     def refused(problem: str, code: int, *, saved_elsewhere: bool = False) -> Response:
-        return result_page(
+        card = CardState(assignment_id, problem=problem, saved_elsewhere=saved_elsewhere)
+        return shown_once(
             request,
             state,
-            assignment_id,
-            origin,
-            card=CardState(assignment_id, problem=problem, saved_elsewhere=saved_elsewhere),
-            status_code=code,
+            lambda: result_page(request, state, assignment_id, origin, card=card, status_code=code),
+            card_not_shown(request, origin, assignment_id, card),
+            code,
         )
 
     if not whole:
@@ -2378,13 +2574,21 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
     except UnknownAssignment:
         if origin.detail:
             return gone_page(request, state, origin.back, assignment_id)
-        return student_page(
+        return shown_once(
             request,
             state,
-            week=origin.week,
-            problem=NOT_ON_RECORD,
-            pressed=True,
-            status_code=status.HTTP_404_NOT_FOUND,
+            lambda: student_page(
+                request,
+                state,
+                week=origin.week,
+                problem=NOT_ON_RECORD,
+                pressed=True,
+                status_code=status.HTTP_404_NOT_FOUND,
+            ),
+            card_not_shown(
+                request, origin, assignment_id, CardState(assignment_id, problem=NOT_ON_RECORD)
+            ),
+            status.HTTP_404_NOT_FOUND,
         )
     except UnknownReport:
         return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
@@ -2416,8 +2620,19 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     page already had stays. So is a run that failed on the way, for any other
     reason: the run has already taken back what it left by then, the failure
     goes to the process log, and the page says something went wrong rather
-    than answering with a bare error.
+    than answering with a bare error. When her week can't be read either, the
+    page that reads no store says so, with the same status.
     """
+
+    def not_made(problem: str, code: int) -> HTMLResponse:
+        return shown_once(
+            request,
+            state,
+            lambda: student_page(request, state, problem=problem, pressed=True, status_code=code),
+            week_not_shown(request, PLAN_NOT_MADE, problem),
+            code,
+        )
+
     try:
         require_work(state, state.clock.today())
         require_model(graphs)
@@ -2427,32 +2642,14 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             state,
         )
     except HTTPException as error:
-        return student_page(
-            request,
-            state,
-            problem=f"Blossom could not make a plan: {error.detail}",
-            pressed=True,
-            status_code=error.status_code,
-        )
+        return not_made(f"Blossom could not make a plan: {error.detail}", error.status_code)
     except Exception:
         logger.exception("today's plan failed on the way")
-        return student_page(
-            request,
-            state,
-            problem=(
-                "Blossom could not make a plan: something went wrong on the way. "
-                "The plan already here, if any, is unchanged."
-            ),
-            pressed=True,
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+        return not_made(PLAN_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR)
     if run.draft_id is None:
-        return student_page(
-            request,
-            state,
-            problem=ended_without_a_plan(run.outcome, parent=parent_reads(request)),
-            pressed=True,
-            status_code=status.HTTP_409_CONFLICT,
+        return not_made(
+            ended_without_a_plan(run.outcome, parent=parent_reads(request)),
+            status.HTTP_409_CONFLICT,
         )
     return RedirectResponse(f"{PAGE}?show_plan=1", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -2470,12 +2667,7 @@ async def ask_for_help_from_the_page(request: Request, state: State) -> Response
     sends nothing and keeps her words.
     """
     if viewer_of(request) == "parent":
-        return student_page(
-            request,
-            state,
-            help_problem=HelpProblem(NOT_HERS_TO_ASK),
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
+        return not_hers(request, state, REQUEST_NOT_SENT, NOT_HERS_TO_ASK, in_help=True)
     fields, whole = await fields_of(request, ASK_FIELDS)
     words = fields.get("note", "")
     try:
@@ -2560,62 +2752,80 @@ def help_again(
 def take_back_help_from_the_page(request: Request, request_id: str, state: State) -> Response:
     """Remove a request from her page while nobody has taken it up, and return to Help.
     Otherwise Help says why, in words chosen by where the request stands and never by the
-    store's message, with a way to the request when its row is on the page. A parent is
-    answered 403 before anything is read: the request is hers to take back."""
+    store's message, with a way to the request when its row is on the page. A take-back the
+    file refuses is rolled back and said the same way, 500. A parent is answered 403 before
+    anything is read: the request is hers to take back. When her week can't be read, the
+    page that reads no store says the same, with the same status."""
     if viewer_of(request) == "parent":
-        return student_page(
+        return not_hers(request, state, REQUEST_NOT_TAKEN_BACK, NOT_HERS_TO_ASK, in_help=True)
+
+    def refused(problem: HelpProblem, code: int) -> HTMLResponse:
+        return shown_once(
             request,
             state,
-            help_problem=HelpProblem(NOT_HERS_TO_ASK),
-            status_code=status.HTTP_403_FORBIDDEN,
+            lambda: student_page(request, state, help_problem=problem, status_code=code),
+            week_not_shown(request, REQUEST_NOT_TAKEN_BACK, problem.said, fragment="help"),
+            code,
         )
+
     try:
         removed = state.help_requests.take_back(request_id)
     except RequestClosed as error:
         said = ALREADY_RESPONDING if error.request.state == "accepted" else ALREADY_CLOSED
-        return student_page(
-            request,
-            state,
-            help_problem=HelpProblem(said, error.request.request_id),
-            status_code=status.HTTP_409_CONFLICT,
+        return refused(HelpProblem(said, error.request.request_id), status.HTTP_409_CONFLICT)
+    except sqlite3.Error as error:
+        logger.warning("her request could not be taken back: %s", type(error).__name__)
+        return refused(
+            HelpProblem(TAKE_BACK_NOT_SAVED, request_id), status.HTTP_500_INTERNAL_SERVER_ERROR
         )
     if not removed:
-        return student_page(
-            request,
-            state,
-            help_problem=HelpProblem(NOT_HERE_ANY_MORE),
-            status_code=status.HTTP_404_NOT_FOUND,
-        )
+        return refused(HelpProblem(NOT_HERE_ANY_MORE), status.HTTP_404_NOT_FOUND)
     return RedirectResponse(f"{PAGE}#help", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/actions/too-much", response_class=HTMLResponse, include_in_schema=False)
 async def too_much_from_the_page(request: Request, state: State) -> Response:
     """The one control on her page. Records the signal and returns to the page, which shows it.
-    A parent is answered 403 before anything is read or kept: the signal is hers to give."""
+    A parent is answered 403 before anything is read or kept: the signal is hers to give. A
+    signal the file refuses is rolled back and said at the top of her week, 500."""
     if viewer_of(request) == "parent":
-        return student_page(
-            request,
-            state,
-            problem=NOT_HERS_TO_SIGNAL,
-            pressed=True,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
-    await record_signal(state, None)
+        return not_hers(request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL)
+    try:
+        await record_signal(state, None)
+    except sqlite3.Error as error:
+        logger.warning("her signal could not be kept: %s", type(error).__name__)
+        return signal_not_saved(request, state)
     return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/actions/take-back/{signal_id}", response_class=HTMLResponse, include_in_schema=False)
 async def take_back_from_the_page(request: Request, signal_id: str, state: State) -> Response:
     """Remove a signal from her page. A signal already gone is not an error here. A parent
-    is answered 403 before the signal is looked up: the signal is hers to take back."""
+    is answered 403 before the signal is looked up: the signal is hers to take back. A
+    removal the file refuses is rolled back and said at the top of her week, 500."""
     if viewer_of(request) == "parent":
-        return student_page(
+        return not_hers(request, state, NOT_SAVED_HEADING, NOT_HERS_TO_SIGNAL)
+    try:
+        await withdraw_signal(state, signal_id)
+    except sqlite3.Error as error:
+        logger.warning("her signal could not be taken back: %s", type(error).__name__)
+        return signal_not_saved(request, state)
+    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def signal_not_saved(request: Request, state: ApplicationState) -> HTMLResponse:
+    """Her week after a signal the file refused, said at the top, 500; the page that reads
+    no store when her week can't be read either."""
+    return shown_once(
+        request,
+        state,
+        lambda: student_page(
             request,
             state,
-            problem=NOT_HERS_TO_SIGNAL,
+            problem=SIGNAL_NOT_SAVED,
             pressed=True,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
-    await withdraw_signal(state, signal_id)
-    return RedirectResponse(PAGE, status_code=status.HTTP_303_SEE_OTHER)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ),
+        week_not_shown(request, NOT_SAVED_HEADING, SIGNAL_NOT_SAVED),
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )

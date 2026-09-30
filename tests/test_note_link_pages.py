@@ -705,7 +705,11 @@ def test_a_refused_link_whose_note_sqlite_can_not_read_back_keeps_the_search(
 
     assert answer.status_code == 409
     assert "<h1>Nothing was saved</h1>" in answer.text
-    assert escape(HOMEWORK_CHANGED) in answer.text
+    assert escape(HOMEWORK_CHANGED) not in answer.text
+    assert (
+        "That homework changed since this page was made, so nothing was changed. The search "
+        "can&#39;t be shown right now. Your search words are still here."
+    ) in answer.text
     assert 'Search words, as typed: <span class="authored-text">reading</span>' in answer.text
     assert f'Homework chosen: <span class="authored-text">{log.assignment_id}</span>' in answer.text
     assert after == before

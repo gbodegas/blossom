@@ -161,7 +161,7 @@
       </article>
     {% endfor %}
     {% if homework_notes_unreadable %}
-      <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now. Nothing was changed.</p>
+      <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now.</p>
     {% endif %}
     <p class="note"><a href="{{ added_notes_page }}">Notes added to homework</a> &middot; <a href="{{ archived_notes_page }}">Archived homework notes</a></p>
   </section>

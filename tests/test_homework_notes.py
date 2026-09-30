@@ -72,6 +72,7 @@ from blossom.routes.navigation import (
     note_search_href,
 )
 from blossom.routes.student import BAD_FORM, NOT_HERS_TO_ASK, NOT_HERS_TO_UPDATE
+from blossom.stores.help_requests import new_request_id
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
     HER_PAGE,
@@ -1355,7 +1356,9 @@ def test_a_note_that_cannot_be_read_is_said_so_wherever_it_is_opened_and_never_a
 
         opened = client.get(note_help_href(name))
         asked = client.post(
-            note_action(name, "ask-for-help"), data={"note": "which part?"}, headers=PAGE_HEADERS
+            note_action(name, "ask-for-help"),
+            data={"note": "which part?", "request_id": new_request_id()},
+            headers=PAGE_HEADERS,
         )
         page = client.get(note_href(damaged))
         sent = state.help_requests.open_requests()
@@ -1976,9 +1979,16 @@ def test_a_confirmation_whose_note_sqlite_can_not_read_says_it_is_unavailable(
         deleted = store.capture_deleted(name)
         _, fields = confirmation(client, name)
 
-    assert page.status_code == 200
+    assert page.status_code == 503
     if method == "GET":
-        assert said_first(page.text, NOTE_CANNOT_BE_READ)
+        said = (
+            NOT_SHOWN
+            if read == "sound_capture_history"
+            else "Whether this note can be deleted can't be checked right now, so it can't be "
+            "deleted yet. Try again in a moment."
+        )
+        assert said_first(page.text, said)
+        assert f'<a href="{note_delete_href(name)}">Try again</a>' in page.text
         assert UNCHANGED not in page.text
         assert "Zebra quartz violin" not in page.text
         assert f'href="{HER_PAGE}"' in page.text
@@ -1991,7 +2001,7 @@ def test_a_confirmation_whose_note_sqlite_can_not_read_says_it_is_unavailable(
 
 
 @pytest.mark.parametrize(
-    ("passphrase", "expected"), [(HERS, 200), (THEIRS, 403)], ids=["student", "parent"]
+    ("passphrase", "expected"), [(HERS, 503), (THEIRS, 403)], ids=["student", "parent"]
 )
 def test_a_signed_in_reader_is_told_a_note_sqlite_can_not_read_is_unavailable(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, passphrase: str, expected: int
@@ -2020,6 +2030,8 @@ def test_a_signed_in_reader_is_told_a_note_sqlite_can_not_read_is_unavailable(
             # A parent's press is refused before the note is read, so it says whose the
             # change is and nothing about the note.
             assert said_first(answer.text, NOT_HERS_TO_UPDATE, at="problem-summary")
+        elif passphrase == HERS:
+            assert said_first(answer.text, NOT_SHOWN)
         else:
             assert said_first(answer.text, NOTE_CANNOT_BE_READ)
         assert "Zebra quartz violin" not in answer.text
@@ -2126,6 +2138,9 @@ def test_a_note_whose_use_sqlite_can_not_read_is_shown_without_the_delete(
 # ------------------------------------------------------------ a note SQLite can't read
 
 UNCHANGED = "Nothing was changed."
+NOT_SHOWN = "This homework note can't be shown right now. Try again in a moment."
+"""What a note's page that is only read says when SQLite refuses the read: the page answers
+503, and a note whose row can't be decoded keeps its 200 and its own sentence."""
 PAGES_OF_A_NOTE: dict[str, Callable[[str], str]] = {
     "note": note_href,
     "help": note_help_href,
@@ -2158,8 +2173,9 @@ def test_every_note_page_answers_a_note_sqlite_can_not_read_with_the_unavailable
         after = tables(store)
         again = client.get(href(name))
 
-    assert answer.status_code == 200
-    assert said_first(answer.text, NOTE_CANNOT_BE_READ)
+    assert answer.status_code == 503
+    assert said_first(answer.text, NOT_SHOWN)
+    assert f'<a href="{html.escape(href(name))}">Try again</a>' in answer.text
     assert UNCHANGED not in answer.text
     assert "Zebra quartz violin" not in answer.text
     assert f'href="{HER_PAGE}"' in answer.text
@@ -2426,8 +2442,8 @@ def test_a_change_saved_before_its_note_could_not_be_read_is_not_said_to_be_unch
         note = store.capture(name)
 
     assert archived.status_code == 303
-    assert landed.status_code == 200
-    assert said_first(landed.text, NOTE_CANNOT_BE_READ)
+    assert landed.status_code == 503
+    assert said_first(landed.text, NOT_SHOWN)
     assert UNCHANGED not in landed.text
     assert note is not None
     assert note.archived

@@ -1479,7 +1479,13 @@ def test_a_refused_form_for_a_note_that_cannot_be_read_keeps_every_detail(
 
     assert answer.status_code == (500 if whole else 422)
     assert answer.text.count(" autofocus") == 1
-    assert escape(NOTE_UNREADABLE) in answer.text
+    # A save the file refused keeps its own words; a refusal says the note can't be read.
+    said = (
+        "That could not be saved, and nothing was changed. What was typed is still here."
+        if whole
+        else NOTE_UNREADABLE
+    )
+    assert escape(said) in answer.text
     for kept in (*KEPT, "Kind, as chosen: Task"):
         assert kept in answer.text, kept
     assert after == before
@@ -2055,8 +2061,7 @@ def test_a_refused_form_that_reads_no_store_names_the_assignment_the_choice_join
 # ------------------------------------------------------------------ the rows of work due later
 
 DATE_CLAIM_UNREADABLE = (
-    "A claim about this date cannot be read right now. The date is shown without it. "
-    "Nothing was changed."
+    "A claim about this date cannot be read right now. The date is shown without it.</p>"
 )
 
 

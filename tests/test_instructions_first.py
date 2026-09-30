@@ -1703,7 +1703,9 @@ def test_a_look_that_cannot_read_a_part_says_so_and_never_that_nothing_was_chang
 def test_a_hand_in_record_that_cannot_be_read_is_said_as_it_is(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The hand-in line that also answers a refused save keeps its words."""
+    """The hand-in line says which record can't be read, that it is left out, and that
+    nothing can be saved here until it can be; the page is only read, so it says nothing of
+    a change."""
     with browser() as client:
         store = store_of(client)
         monkeypatch.setattr(
@@ -1714,9 +1716,9 @@ def test_a_hand_in_record_that_cannot_be_read_is_said_as_it_is(
     assert answer.status_code == 200
     assert (
         '<p class="problem">Your hand-in record for this assignment cannot be read right now, '
-        "so it is not shown. Nothing was changed, and nothing can be saved here until it can be "
-        "read.</p>"
+        "so it is not shown. Nothing can be saved here until it can be read.</p>"
     ) in main_of(answer.text)
+    assert "Nothing was changed" not in main_of(answer.text)
 
 
 def rules_for(css: str, selector: str) -> list[str]:

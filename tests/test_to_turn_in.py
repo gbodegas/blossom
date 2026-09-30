@@ -481,7 +481,7 @@ def test_a_record_that_cannot_be_read_is_said_under_the_list_and_never_dropped()
         assert named is not None
         assert "Vocabulary quiz" in named.group()
         assert f"/student/assignments/{QUIZ_ID}" in named.group()
-        assert "It may belong on this list." in named.group()
+        assert named.group().endswith(". It may belong on this list.</p>")
     assert "To turn in (1)" in week.text
 
 
@@ -1212,7 +1212,7 @@ def test_nothing_is_said_to_be_on_the_list_only_when_nothing_may_belong_on_it(or
 
     assert EMPTY in emptied
     assert "cannot be read" in section(unreadable)
-    assert "It may belong on this list." in section(unreadable)
+    assert "It may belong on this list.</p>" in section(unreadable)
     assert EMPTY not in unreadable
 
 

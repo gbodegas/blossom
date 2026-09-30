@@ -1,18 +1,28 @@
 {% extends "base.html" %}
 {% set page = "parent" %}
-{% block title %}Blossom - Check not saved{% endblock %}
+{% block title %}Blossom - {{ title }}{% endblock %}
 {#
-  The page for a check or a reopening the file refused when the family page
-  cannot be read back either: what happened, in a sentence, and the note a
-  parent typed, so nothing typed is lost with the failure. Nothing here reads
-  the record, and nothing here says a check was made.
+  The family page's stand-in when it cannot be read back: what happened, in a
+  sentence that takes the focus as the page arrives, with no script, and what
+  a parent typed, so nothing typed is lost with the failure. A refusal says
+  which page can't be shown after its own words (``line``); a check, a
+  reopening, or a reply the file refused says nothing was changed. Nothing
+  here reads the record, and nothing here says anything was saved.
 #}
 {% block content %}
   <h1>Family review</h1>
-  <p class="problem" role="alert">{{ check.problem }}</p>
-  {% if check.note %}
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{% if line %}{{ said|ended }} {{ line }}{% else %}{{ said }}{% endif %}</p>
+  {% if note %}
     <label for="kept-note">Your note, as typed</label>
-    <textarea id="kept-note" rows="4" readonly>{{ check.note }}</textarea>
+    <textarea id="kept-note" rows="4" readonly>{{ note }}</textarea>
+  {% endif %}
+  {% if reply %}
+    <label for="kept-reply">Reply, as typed</label>
+    <textarea id="kept-reply" rows="3" readonly>{{ reply }}</textarea>
+  {% endif %}
+  {% if reason %}
+    <label for="kept-reason">Reason, as typed</label>
+    <textarea id="kept-reason" rows="3" readonly>{{ reason }}</textarea>
   {% endif %}
   <p class="return"><a href="/parent">Return to Family review</a></p>
 {% endblock %}
