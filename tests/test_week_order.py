@@ -8,8 +8,10 @@ Help. On another week the homework stands alone.
 A save or an Undo from a card lands on the card's result. A refusal about one card is said
 on that card, as the one alert, and the card's line takes the focus unless a field does;
 the top of the page repeats it, with a link to the card, as a plain line. A refusal with no
-card line on the page is said at the top, as the alert, and takes the focus there. An
-ordinary visit asks for no focus, and no response asks for more than one.
+card line on the page is said at the top, as the alert, and takes the focus there. A press
+her To turn in list refuses is said on the list's own line, on her week and on the list's
+own page, which is the alert and takes the focus. An ordinary visit asks for no focus, and
+no response asks for more than one.
 
 The fixture week through the app, a pinned day, synthetic words, and forms read from the
 pages' own HTML. A plan is made by scripted graphs; no model is asked.
@@ -32,6 +34,7 @@ from fastapi.testclient import TestClient
 from blossom.app import create_app
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
 from blossom.plans import DailyPlan
+from blossom.routes.hand_in import GONE_FROM_THE_LIST
 from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import REPOSITORY_ROOT
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
@@ -351,18 +354,33 @@ def in_sentence_rule() -> set[str]:
     }
 
 
+def in_an_update(page: str, place: int) -> bool:
+    """Whether the element at ``place`` is inside an update component: the last one opened
+    before it is still open there, every element opened inside it since then closed."""
+    start = page.rfind('<div class="update">', 0, place)
+    depth = 0
+    for found in re.finditer(r"<div\b|</div>", page[max(start, 0) : place]):
+        depth += -1 if found.group(0) == "</div>" else 1
+        if depth == 0:
+            return False
+    return start >= 0 and depth > 0
+
+
 def outline_reaches(page: str, tag: str) -> bool:
     """Whether a rule that draws an outline on focus names this element: the top line, a
-    card's problem line in an update, a result line, the homework heading, or a field."""
+    card's problem line in an update, the To turn in list's problem line, a result line, the
+    homework heading, or a field."""
     selectors = outlined()
     place = page.index(tag)
-    in_an_update = page.rfind('<div class="update">', 0, place) > page.rfind("</article>", 0, place)
     checks = [
         ('class="problem week-problem"' in tag, ".week-problem:focus"),
         (
-            tag.startswith('<p class="problem"') and 'tabindex="-1"' in tag and in_an_update,
+            tag.startswith('<p class="problem"')
+            and 'tabindex="-1"' in tag
+            and in_an_update(page, place),
             '.update .problem[tabindex="-1"]:focus',
         ),
+        ('id="to-turn-in-problem"' in tag, "#to-turn-in-problem:focus"),
         ("update-result" in tag, ".update-result:focus"),
         ('class="list-heading"' in tag, ".list-heading:focus"),
         (tag.startswith("<input"), "input:focus-visible"),
@@ -810,9 +828,9 @@ def test_every_place_the_week_links_to_is_there_to_land_on(
 
 
 def test_the_homework_heading_is_an_outlined_place_to_land() -> None:
-    """The heading, a card or a row due later, the top line, a card's problem line and a
-    result line each show an outline when they take the focus, and the top line's link is
-    as tall as a control."""
+    """The heading, a card or a row due later, the top line, a card's problem line, the To
+    turn in list's problem line and a result line each show an outline when they take the
+    focus, and the top line's link is as tall as a control."""
     selectors = outlined()
     for selector in (
         ".list-heading:focus",
@@ -820,6 +838,7 @@ def test_the_homework_heading_is_an_outlined_place_to_land() -> None:
         '.assigned li[tabindex="-1"]:focus',
         ".week-problem:focus",
         '.update .problem[tabindex="-1"]:focus',
+        "#to-turn-in-problem:focus",
         ".update-result:focus",
     ):
         assert selector in selectors, selector
@@ -1439,6 +1458,12 @@ def test_a_save_from_her_week_on_work_gone_meanwhile_keeps_the_small_page_and_it
     assert "week-problem" not in answer.text
 
 
+LIST_LINE: Final = (
+    '<p class="problem" role="alert" id="to-turn-in-problem" tabindex="-1" autofocus>'
+)
+LISTS: Final = {"her week": HER_PAGE, "the To turn in page": TO_TURN_IN_PAGE}
+
+
 def test_a_refused_press_on_her_weeks_list_keeps_the_lists_own_place_and_focus() -> None:
     """A press on her week's To turn in list that the list refuses, the row having moved on
     in another tab, is said in the list, after the homework, and takes the focus there
@@ -1452,8 +1477,44 @@ def test_a_refused_press_on_her_weeks_list_keeps_the_lists_own_place_and_focus()
 
     assert answer.status_code == 409
     page = main_of(answer.text)
-    asked = focused_on_arrival(answer.text)
-    assert len(asked) == 1
-    assert asked[0].startswith('<p class="problem" role="alert" id="to-turn-in-problem"')
+    assert one_focus(answer) == LIST_LINE
     assert "week-problem" not in page
-    assert page.index(HEADING) < page.index(asked[0])
+    assert page.index(HEADING) < page.index(LIST_LINE)
+
+
+@pytest.mark.parametrize("reader", ["her", "sign-in off"])
+@pytest.mark.parametrize("press", ["I turned it in", "Undo"])
+@pytest.mark.parametrize("where", list(LISTS))
+def test_a_press_on_the_list_for_homework_gone_is_said_on_the_lists_own_line_with_the_focus(
+    where: str, press: str, reader: str, tmp_path: pathlib.Path
+) -> None:
+    """The list's press or its Undo, sent after the homework left the record in another tab,
+    on her week and on the list's own page: the list's own line says so, as the one alert and
+    the one focus, outlined. No line at the top says it again, and nothing links to the row
+    or the card that is gone."""
+    with reading(reader, tmp_path) as client:
+        store = store_of(client)
+        to_turn_in(store)
+        page = client.get(LISTS[where], headers=PAGE_HEADERS).text
+        row = page[page.index(f'id="to-turn-in-{ESSAY_ID}"') :]
+        action, fields = HAND_IN, form_fields(row, HAND_IN)
+        if press == "Undo":
+            pressed = client.post(action, data=fields, headers=PAGE_HEADERS)
+            result = client.get(pressed.headers["location"], headers=PAGE_HEADERS).text
+            action, fields = UNDO_HAND_IN, form_fields(result, UNDO_HAND_IN)
+        off_the_record(store, ESSAY_ID)
+        answer = client.post(action, data=fields, headers=PAGE_HEADERS)
+
+    assert answer.status_code == 404
+    page = main_of(answer.text)
+    assert one_focus(answer) == LIST_LINE
+    assert words(page[page.index(LIST_LINE) : page.index("</p>", page.index(LIST_LINE))]) == (
+        GONE_FROM_THE_LIST
+    )
+    assert page.count('role="alert"') == 1
+    assert "week-problem" not in page
+    assert "Go to the assignment." not in page
+    assert re.search(rf'href="[^"]*{ESSAY_ID}', page) is None
+    assert f'id="to-turn-in-{ESSAY_ID}"' not in page
+    if where == "her week":
+        assert page.index(HEADING) < page.index(LIST_LINE)

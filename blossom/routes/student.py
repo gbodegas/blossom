@@ -1322,6 +1322,15 @@ def list_card_shown(card: ListCard | None, everything: Everything, viewer: str) 
     return shown if shown.result is not None or shown.problem is not None else None
 
 
+def as_read_by[Shown: (CardState, HandInCard)](shown: Shown | None, viewer: str) -> Shown | None:
+    """What a visit shows beyond the record, for who is reading. A result is hers, as on her
+    To turn in list: a parent who opens an address her save or undo left reads what stands,
+    in the parent's words, and no result."""
+    if shown is None or viewer != "parent":
+        return shown
+    return replace(shown, said=None)
+
+
 def student_page(
     request: Request,
     state: ApplicationState,
@@ -1363,6 +1372,7 @@ def student_page(
     Ask for help form gets a fresh id, which needs no read.
     """
     viewer = viewer_of(request)
+    card = as_read_by(card, viewer)
     today = state.clock.today()
     # The record is read once for the page, with today's plan's assignments
     # named to it: the week, the planning window, the plan's notice and
@@ -1868,6 +1878,7 @@ def detail_page(
     the reader's link carried, checked, and never chooses the assignment.
     """
     viewer = viewer_of(request)
+    card, hand_in = as_read_by(card, viewer), as_read_by(hand_in, viewer)
     today = state.clock.today()
     on_record = state.project_state
     history_unavailable = False

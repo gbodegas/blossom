@@ -19,8 +19,9 @@ minimum height, so a link to the details is as tall as a control only where
 the cascade gives it a box of its own and a minimum height of 44 pixels. The
 one that ends the hand-in line's sentence takes a box that stays in the line,
 and so do the titles that lead the rows of her To turn in list and of the
-family page's updates, the family page's link to adding assignments, and the
-line of links under the homework notes.
+family page's updates, the family page's link to adding assignments, the line
+of links under the homework notes, and the link that ends each homework note's
+row.
 """
 
 import re
@@ -32,7 +33,7 @@ import pytest
 
 from blossom.hand_in import NEEDS_HAND_IN, HandInSaved
 from blossom.reconciliation import SourceChannel
-from blossom.routes.navigation import NEW_NOTE_PAGE, NOTE_ACTIONS, TO_TURN_IN_PAGE
+from blossom.routes.navigation import NEW_NOTE_PAGE, NOTE_ACTIONS, NOTES_PAGE, TO_TURN_IN_PAGE
 from blossom.settings import REPOSITORY_ROOT
 from tests.support import (
     ESSAY_ID,
@@ -933,29 +934,32 @@ UPDATES = frozenset(
 """Each group of the family page's updates, and the rows of what she says about turning work in."""
 LEAD = frozenset({"the way to adding assignments"})
 UNDER_THE_NOTES = frozenset({"the line under the homework notes"})
-LISTED = HER_ROWS | UPDATES | LEAD | UNDER_THE_NOTES
+NOTE_ROWS = frozenset({"a homework note's row"})
+LISTED = HER_ROWS | UPDATES | LEAD | UNDER_THE_NOTES | NOTE_ROWS
 LIST_PLACES = frozenset(
     {
         ("her week", "a row of her To turn in list"),
         ("her week", "the line under the homework notes"),
+        ("her week", "a homework note's row"),
         ("her To turn in list", "a row of her To turn in list"),
+        ("her homework notes", "a homework note's row"),
         *(("the family page", place) for place in UPDATES | LEAD | UNDER_THE_NOTES),
     }
 )
 """Every page and place that holds a link the lists rule is for."""
 LISTS_RULE = (
     ".to-turn-in-row a.assignment-link,\n.assignment-updates a.assignment-link,\n"
-    ".lead-action a,\n.homework-notes > .note a {\n  display: inline-flex;\n"
-    "  align-items: center;\n  min-height: 2.75rem;\n}"
+    ".lead-action a,\n.homework-notes > .note a,\n.homework-note-row a.assignment-link {\n"
+    "  display: inline-flex;\n  align-items: center;\n  min-height: 2.75rem;\n}"
 )
 LISTS: dict[str, str] = {}
 
 
 @pytest.fixture
 def lists() -> dict[str, str]:
-    """Her week, her To turn in list, and the family page, with two assignments still to turn in,
-    four homework notes, and a row in every group of the updates. Kept once rendered, as
-    ``rendered`` is."""
+    """Her week, her To turn in list, her homework notes, and the family page, with two
+    assignments still to turn in, four homework notes, and a row in every group of the
+    updates. Kept once rendered, as ``rendered`` is."""
     if LISTS:
         return LISTS
     with browser() as client:
@@ -1006,6 +1010,7 @@ def lists() -> dict[str, str]:
             {
                 "her week": client.get(HER_PAGE, headers=PAGE_HEADERS).text,
                 "her To turn in list": client.get(TO_TURN_IN_PAGE, headers=PAGE_HEADERS).text,
+                "her homework notes": client.get(NOTES_PAGE, headers=PAGE_HEADERS).text,
                 "the family page": client.get("/parent", headers=PAGE_HEADERS).text,
             }
         )
@@ -1029,6 +1034,8 @@ def list_place(link: Element) -> str | None:
         return "the way to adding assignments"
     if "assignment-link" not in link.classes:
         return None
+    if "homework-note-row" in marks:
+        return "a homework note's row"
     if "to-turn-in-row" in marks:
         return "a row of her To turn in list"
     if "assignment-updates" not in marks:
@@ -1089,10 +1096,16 @@ def test_every_title_and_line_of_links_in_the_lists_is_as_tall_as_a_control(
             id="the-lead-selector-broken",
         ),
         pytest.param(
-            LISTS_RULE.replace(".note a {", ".note b {"),
+            LISTS_RULE.replace(".note a,", ".note b,"),
             UNDER_THE_NOTES,
             0,
             id="the-notes-selector-broken",
+        ),
+        pytest.param(
+            LISTS_RULE.replace(".homework-note-row a.", ".homework-note-row b."),
+            NOTE_ROWS,
+            0,
+            id="the-note-rows-selector-broken",
         ),
         pytest.param(LISTS_RULE.replace("inline-flex", "inline"), LISTED, 0, id="laid-out-inline"),
         pytest.param(LISTS_RULE.replace("inline-flex", "flex"), LISTED, 0, id="out-of-its-line"),

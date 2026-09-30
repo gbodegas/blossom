@@ -716,7 +716,8 @@ a.assignment-link:focus-visible {
 
 /* Places a press or a link lands on. On her week: the homework's heading, a card
    or a row due later, the problem at the top when no card holds it, and a card's
-   problem line. Plain :focus, since a fragment arrival after a click need not
+   problem line. On her week and on the list's own page, the problem line of her To
+   turn in list. Plain :focus, since a fragment arrival after a click need not
    match :focus-visible. */
 .ask:focus,
 .update-result:focus,
@@ -730,7 +731,8 @@ a.assignment-link:focus-visible {
 .assignment[tabindex="-1"]:focus,
 .assigned li[tabindex="-1"]:focus,
 .week-problem:focus,
-.update .problem[tabindex="-1"]:focus {
+.update .problem[tabindex="-1"]:focus,
+#to-turn-in-problem:focus {
   outline: 2px solid var(--blue-action);
   outline-offset: 4px;
 }
@@ -1669,12 +1671,14 @@ main.wide {
 }
 
 /* The title that leads a row of her To turn in list or of the family page's updates, the
-   family page's link to adding assignments, and the line of links under the homework notes
-   keep their place in the line, their type, and their color, and are as tall as the buttons. */
+   family page's link to adding assignments, the line of links under the homework notes, and
+   the Open note link that ends each note's row keep their place in the line, their type, and
+   their color, and are as tall as the buttons. */
 .to-turn-in-row a.assignment-link,
 .assignment-updates a.assignment-link,
 .lead-action a,
-.homework-notes > .note a {
+.homework-notes > .note a,
+.homework-note-row a.assignment-link {
   display: inline-flex;
   align-items: center;
   min-height: 2.75rem;

@@ -932,8 +932,10 @@ def homework_notes(
     request: Request, state: State, deleted: str | None = None, already: str | None = None
 ) -> HTMLResponse:
     """Every note still to do something about, the first saved first, and what a delete
-    did when the address names a note the record holds as deleted."""
-    result = deleted_result(state, deleted, already)
+    did when the address names a note the record holds as deleted. Only she deletes, so the
+    result is hers: a parent who opens such an address reads the list and no result."""
+    mine = viewer_of(request) != "parent"
+    result = deleted_result(state, deleted, already) if mine else None
     return notes_list(request, state, which="waiting", result=result)
 
 

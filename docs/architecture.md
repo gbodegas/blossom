@@ -338,8 +338,13 @@ the summary at the top, which takes the focus unless a field does; on her
 week the card's problem line is the one alert and takes the focus unless a
 field does, the top of the week repeating it as a plain line with a link to
 the card, and a refusal with no card line on the week, a parent's press among
-them, is said at the top, which takes the focus after a press. A save or an
-undo from a card lands on the card's result. The small page for work
+them, is said at the top, which takes the focus after a press. A press her
+To turn in list refuses is said on the list's own line, which takes the
+focus, on her week and on the list's own page. A save or an
+undo from a card lands on the card's result. A result is hers: a parent who
+opens an address her save, undo, press or delete left reads what stands, in
+the parent's words, and no result, on her week, the details, her To turn in
+list and her homework notes. The small page for work
 not on record focuses its explanation after a form's press and never on a
 look by link. The details' evidence lists every claim a source has made
 about the date, the ones that agree included, where a card lists claims only
