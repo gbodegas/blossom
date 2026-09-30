@@ -357,9 +357,15 @@ them, is said at the top, which takes the focus after a press. A press her
 To turn in list refuses is said on the list's own line, which takes the
 focus, on her week and on the list's own page. A save or an
 undo from a card lands on the card's result. A result is hers: a parent who
-opens an address her save, undo, press or delete left reads what stands, in
-the parent's words, and no result, on her week, the details, her To turn in
-list and her homework notes. The small page for work
+opens an address her save, undo, press, delete or request for help left reads
+what stands, in the parent's words, and no result, on her week, the details,
+her To turn in list, her homework notes, Help and a note's own page. Help then
+says nothing of the request the address names, whether it is on the page, is
+not, or can't be checked, and shows her requests as it would on any visit. A
+note's page still says to a parent what a change either may make through the
+family's tree did: saving the details, adding to homework, linking and
+unlinking; once a newer change follows, it tells a parent the note was saved
+earlier without naming who saved it. The small page for work
 not on record focuses its explanation after a form's press and never on a
 look by link. The details' evidence lists every claim a source has made
 about the date, the ones that agree included, where a card lists claims only
@@ -1427,8 +1433,10 @@ instant its cutoff used, and `help_groups` sorts them by that instant alone;
 reading writes nothing. A form that asks lands on its own row with `?asked=`,
 one sent again with `?asked_again=`; either is checked against that one read
 and said beside the row it names, or at the top of Help when none is that
-one, and it is a note and never a permission. A refused take-back is said in
-Help, worded by where the request stands, and takes the focus. `take_back`
+one, and it is a note and never a permission. The line is said to her alone:
+a parent signed in who opens such an address reads Help as it stands. A
+refused take-back is said in Help, worded by where the request stands, and
+takes the focus. `take_back`
 reads with the retention cutoff, so a request resolved past retention before
 the sweep is missing. When the requests can't be read, the rest of the week
 still shows, Help says so and keeps her form, and nothing more about them is

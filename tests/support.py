@@ -1677,3 +1677,15 @@ def rules_named(selector: str) -> list[str]:
         for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain)
         if selector in (part.strip() for part in head.split(","))
     ]
+
+
+def went_to(answer: Answer) -> str:
+    """Where a press sent the browser on to: the answer is a 303, and this is its address."""
+    assert answer.status_code == 303, (answer.status_code, answer.text[:400])
+    return answer.headers["location"]
+
+
+def help_row(page: str, request_id: str) -> str:
+    """One request's row in Help, whole."""
+    start = page.index(f'<li class="help-request" id="help-{request_id}" tabindex="-1">')
+    return page[start : page.index("</li>", start)]

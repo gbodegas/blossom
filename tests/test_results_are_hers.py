@@ -45,7 +45,6 @@ from tests.support import (
     REPORT,
     THEIRS,
     UNDO,
-    Answer,
     browser,
     card_for,
     client_for,
@@ -57,6 +56,7 @@ from tests.support import (
     signed_in_household,
     store_of,
     waiting_note,
+    went_to,
     whole_form,
     words,
 )
@@ -103,11 +103,6 @@ class Left:
     said: str
     theirs: str
     about: str | None = None
-
-
-def went_to(answer: Answer) -> str:
-    assert answer.status_code == 303, (answer.status_code, answer.text[:400])
-    return answer.headers["location"]
 
 
 def details(client: TestClient, **query: str) -> str:

@@ -1324,8 +1324,8 @@ def test_a_save_that_wrote_nothing_is_said_from_the_change_it_found_and_no_other
         events = tables(store)[1]
 
     assert no_change.status_code == 303
-    for where, said in ((replay, "same"), (unchanged, "unchanged")):
-        assert f"said={said}" in where
+    for where in (replay, unchanged):
+        assert "said=same" in where
         assert f"event={first}" in where
         assert "rev=" not in where
     for page in said_now:
