@@ -51,15 +51,23 @@ from blossom.homework_search import QUERY_MAX_LENGTH, found, page_number, page_o
 from blossom.routes.captures import (
     NOTE_CHANGED,
     NOTE_GONE,
+    NOTE_NOT_SHOWN,
     NOTE_UNREADABLE,
     gone,
+    note_unavailable,
     revision_of,
     unreadable,
     ways_back,
 )
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of, kept_fields_of
 from blossom.routes.hand_in import accepted_at
-from blossom.routes.navigation import NOTE_RESULT, address, note_href, note_search_href
+from blossom.routes.navigation import (
+    NOTE_RESULT,
+    address,
+    asked_address,
+    note_href,
+    note_search_href,
+)
 from blossom.routes.note_details import (
     BASIS_AS_WRITTEN,
     HERS,
@@ -75,8 +83,11 @@ from blossom.routes.note_details import (
 from blossom.routes.student import (
     BAD_FORM,
     NOT_HERS_TO_UPDATE,
+    WITHOUT_THE_PAGE,
+    ReturnLink,
     parent_reads,
     templates,
+    unavailable_page,
     viewer_of,
 )
 
@@ -109,6 +120,18 @@ NOT_JOINED: Final = (
 OWN_ASSIGNMENT: Final = (
     "This note made an assignment of its own, and stays with it. Its link is the record of that."
 )
+SEARCH_UNAVAILABLE: Final = "This search can't be shown right now. Try again in a moment."
+"""What the search page says when the file can't be read as it is made."""
+SEARCH_NOT_SHOWN: Final = "The search can't be shown right now. Your search words are still here."
+"""The line a refusal adds after its own words when the search page can't be read."""
+SEARCH_WITHOUT_THE_PAGE: Final[dict[str, str]] = {
+    **WITHOUT_THE_PAGE,
+    NO_CHOICE: "Nothing was changed, because no homework was chosen.",
+    HOMEWORK_CHANGED: "That homework changed since this page was made, so nothing was changed.",
+    NOTE_CHANGED: "This note changed while you were away, so nothing was saved.",
+}
+"""Each refusal of the search page, and of an unlink, as it reads where the page is not
+shown. Any other refusal reads the same in both places."""
 
 LINK_MAY_BE_ABSENT: Final = frozenset({"from"})
 """Every press the page makes carries its search words and its page, empty or not; only the
@@ -190,55 +213,73 @@ def search_page(
     # One reading for everything the page shows: the note and its line, the note's own
     # link, the page of results, and the homework chosen, read with the same rows whether
     # or not the words still find it, so nothing on the page comes from another reading.
-    with store.reading():
-        try:
-            found_note = store.sound_capture_history(capture_id)
-        except sqlite3.Error:
-            if form is not None:
+    # A read that fails ends the reading, rolled back, before any page says so.
+    unread: sqlite3.Error | None = None
+    try:
+        with store.reading():
+            try:
+                found_note = store.sound_capture_history(capture_id)
+            except sqlite3.Error as error:
+                if form is None:
+                    unread = error
                 raise
-            logger.exception("the note %s could not be read to search for its homework", capture_id)
-            return unreadable(request, state, status_code)
-        except UnreadableCapture:
-            if form is not None:
-                # A refusal of who pressed stands whatever became of the note.
-                said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
-                return plain_search(request, state, form, said or NOTE_UNREADABLE, status_code)
-            return unreadable(request, state, status_code)
-        if found_note is None:
-            if form is not None:
-                said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
-                return plain_search(request, state, form, said or NOTE_GONE, status_code)
-            return gone(request, state)
-        note = found_note[0]
-        joined = note.assignment_id is not None and note.assignment_id != derived_assignment_id(
-            note.capture_id
-        )
-        leaving = note.assignment_id if joined else None
-        if leaving is not None:
-            current = store.one_assignment(leaving)
-        if refused is not None:
-            problem = problem or refused
-        elif number is None or (not terms and number != 1):
-            problem = problem or NO_SUCH_PAGE
-            status_code = (
-                status.HTTP_404_NOT_FOUND if status_code == status.HTTP_200_OK else status_code
+            except UnreadableCapture:
+                if form is not None:
+                    # A refusal of who pressed stands whatever became of the note, and so do the
+                    # words of a save the file refused.
+                    kept = problem and (
+                        status_code == status.HTTP_403_FORBIDDEN or problem == NOT_SAVED
+                    )
+                    said = problem if kept else None
+                    return plain_search(request, state, form, said or NOTE_UNREADABLE, status_code)
+                return unreadable(request, state, status_code)
+            if found_note is None:
+                if form is not None:
+                    said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
+                    return plain_search(request, state, form, said or NOTE_GONE, status_code)
+                return gone(request, state)
+            note = found_note[0]
+            joined = note.assignment_id is not None and note.assignment_id != derived_assignment_id(
+                note.capture_id
             )
-        elif terms:
-            results = page_of(found(store.all_assignments(), terms), number)
-            if results is None:
+            leaving = note.assignment_id if joined else None
+            if leaving is not None:
+                current = store.one_assignment(leaving)
+            if refused is not None:
+                problem = problem or refused
+            elif number is None or (not terms and number != 1):
                 problem = problem or NO_SUCH_PAGE
                 status_code = (
                     status.HTTP_404_NOT_FOUND if status_code == status.HTTP_200_OK else status_code
                 )
-        shown = list(results.items) if results is not None else []
-        beside = None
-        if selected and selected not in {item.assignment_id for item in shown}:
-            beside = store.one_assignment(selected)
-            chosen_gone = beside is None
-        readings = readings_for(store, [*shown, *([beside] if beside is not None else [])])
-        rows = [row_of(item, parent=parent) for item in readings[: len(shown)]]
-        if beside is not None:
-            chosen_row = row_of(readings[-1], parent=parent)
+            elif terms:
+                results = page_of(found(store.all_assignments(), terms), number)
+                if results is None:
+                    problem = problem or NO_SUCH_PAGE
+                    status_code = (
+                        status.HTTP_404_NOT_FOUND
+                        if status_code == status.HTTP_200_OK
+                        else status_code
+                    )
+            shown = list(results.items) if results is not None else []
+            beside = None
+            if selected and selected not in {item.assignment_id for item in shown}:
+                beside = store.one_assignment(selected)
+                chosen_gone = beside is None
+            readings = readings_for(store, [*shown, *([beside] if beside is not None else [])])
+            rows = [row_of(item, parent=parent) for item in readings[: len(shown)]]
+            if beside is not None:
+                chosen_row = row_of(readings[-1], parent=parent)
+    except sqlite3.Error:
+        if unread is None:
+            raise
+        return note_unavailable(
+            request,
+            state,
+            note_search_href(capture_id, family=way.family),
+            unread,
+            family=way.family,
+        )
     if selected and problem in (HOMEWORK_CHANGED, HOMEWORK_GONE):
         # The store refused on what it read; the page says the homework chosen as its own
         # reading finds it, gone or standing, so the sentence and the rows agree.
@@ -318,12 +359,15 @@ def plain_search(
     status_code: int,
     *,
     refused: bool = False,
+    line: str | None = None,
 ) -> HTMLResponse:
     """The page for a refused press whenever the search page cannot be made: the note cannot
     be read, or it is not on record. It reads no store, tries nothing again, and keeps the
     search words and the choice, to copy. ``refused`` says the page answers a press by the
     one the tree is not open to, whose words are a copy of that request, said under a
-    heading of their own as not saved, and only when the copy holds something to show."""
+    heading of their own as not saved, and only when the copy holds something to show.
+    ``line`` says which page can't be shown, the search or the note's, after the refusal's
+    own words."""
     try:
         name: str | None = capture_id_from(form.capture_id)
     except NotACaptureId:
@@ -336,6 +380,7 @@ def plain_search(
             "hand_in_card": None,
             "heading": "Nothing was saved",
             "note_problem": problem,
+            "page_line": line,
             "search_form": form,
             "unsaved_copy": refused,
             "help_note": name,
@@ -356,7 +401,9 @@ def search_or_plain(
 ) -> HTMLResponse:
     """The search page with a refused press said first, the search words and the choice kept,
     tried once; when that page cannot be made, or the name is no note's, the plain page that
-    reads no store."""
+    reads no store. A refusal that points at the search page is said there as it reads
+    without it, with the line that says the page can't be shown; any other message stays
+    as it is."""
     try:
         capture_id_from(form.capture_id)
     except NotACaptureId:
@@ -376,7 +423,16 @@ def search_or_plain(
         )
     except Exception:
         logger.exception("the search page could not be read back after a refused press")
-        return plain_search(request, state, form, problem, status_code)
+        if problem not in SEARCH_WITHOUT_THE_PAGE:
+            return plain_search(request, state, form, problem, status_code)
+        return plain_search(
+            request,
+            state,
+            form,
+            SEARCH_WITHOUT_THE_PAGE[problem],
+            status_code,
+            line=SEARCH_NOT_SHOWN,
+        )
 
 
 async def refused_press(
@@ -518,7 +574,9 @@ def unlink_or_plain(
 ) -> HTMLResponse:
     """The details page, where the unlink press lives, with the refusal said first and the
     record read once for what stands now; when that page cannot be made, or the name is no
-    note's, the plain page that reads no store, with the homework the form named kept."""
+    note's, the plain page that reads no store, with the homework the form named kept. When
+    the page fails as it is read, the refusal or the failed save is said as it reads without
+    it, then that the note can't be shown."""
     try:
         name = capture_id_from(form.capture_id)
     except NotACaptureId:
@@ -541,10 +599,19 @@ def unlink_or_plain(
                 status_code=status_code,
             )
     except UnreadableCapture:
-        return plain_search(request, state, form, problem, status_code)
+        # A save the file refused keeps its own words; a refusal says the note can't be read.
+        said = problem if problem == NOT_SAVED else NOTE_UNREADABLE
+        return plain_search(request, state, form, said, status_code)
     except Exception:
         logger.exception("the details page could not be read back after a refused unlink")
-        return plain_search(request, state, form, problem, status_code)
+        return plain_search(
+            request,
+            state,
+            form,
+            SEARCH_WITHOUT_THE_PAGE.get(problem, problem),
+            status_code,
+            line=NOTE_NOT_SHOWN,
+        )
 
 
 async def unlink_from_homework(
@@ -611,20 +678,35 @@ def open_search(
     page: str | None,
 ) -> HTMLResponse:
     """Open the search page. It writes nothing. An address with search words, even empty
-    ones, or a page is a search asked for; one with neither is a first visit."""
+    ones, or a page is a search asked for; one with neither is a first visit. When the file
+    can't be read as the page is made, 503, with the same address to ask for again."""
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
         return gone(request, state)
-    return search_page(
-        request,
-        state,
-        name,
-        way,
-        query=q or "",
-        page=page,
-        searched=q is not None or page is not None,
-    )
+    try:
+        return search_page(
+            request,
+            state,
+            name,
+            way,
+            query=q or "",
+            page=page,
+            searched=q is not None or page is not None,
+        )
+    except sqlite3.Error as error:
+        return unavailable_page(
+            request,
+            state,
+            error,
+            heading="Find homework for this note",
+            alert=SEARCH_UNAVAILABLE,
+            again=asked_address(
+                note_search_href(name, family=way.family), request.scope["query_string"]
+            ),
+            ways_back=[ReturnLink(note_href(name), "Back to the note"), *ways_back(request)],
+            family=way.family,
+        )
 
 
 @student_router.get(

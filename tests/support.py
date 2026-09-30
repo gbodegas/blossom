@@ -24,6 +24,7 @@ from typing import Annotated, Any, Protocol
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from langchain_core.callbacks.manager import CallbackManager
@@ -1245,3 +1246,234 @@ def unlink_note(store: ProjectStateStore, name: str, revision: int = 1) -> None:
         today=NOTE_DAY,
     )
     assert isinstance(done, CaptureUnlinked), done
+
+
+# ------------------------------------------------------------- a record that fails to read
+
+
+def quiet_client(settings: Settings) -> TestClient:
+    """The application on these settings as its pages reach it, with a failure no page
+    catches answered as a server answers it, a bare 500, rather than raised into the test."""
+    return TestClient(
+        create_app(settings),
+        follow_redirects=False,
+        headers=SAME_ORIGIN,
+        raise_server_exceptions=False,
+    )
+
+
+def refusing(
+    kind: type[Exception] = sqlite3.OperationalError, marks: list[str] | None = None
+) -> Callable[..., None]:
+    """A store call that fails the way a file the store can't read fails, ``kind`` raised with
+    the message a busy file gives; the moment it fails is marked in ``marks`` when given."""
+
+    def refused(*_: object, **__: object) -> None:
+        if marks is not None:
+            marks.append("FAILED HERE")
+        msg = "database is locked"
+        raise kind(msg)
+
+    return refused
+
+
+def connections_of(state: ApplicationState) -> list[sqlite3.Connection]:
+    """The four connections a page reads the household's file through: the record, the
+    drafts, her signals, and her requests for help."""
+    return [
+        state.project_state._connection,
+        state.drafts._connection,
+        state.workload_signals._connection,
+        state.help_requests._connection,
+    ]
+
+
+class Statements:
+    """Every statement the four connections run, in the order they run, with the moment a
+    store call was made to fail marked among them."""
+
+    def __init__(self, state: ApplicationState) -> None:
+        self.seen: list[str] = []
+        self.connections = connections_of(state)
+
+    def __enter__(self) -> list[str]:
+        for connection in self.connections:
+            connection.set_trace_callback(self.seen.append)
+        return self.seen
+
+    def __exit__(self, *_: object) -> None:
+        for connection in self.connections:
+            connection.set_trace_callback(None)
+
+
+def after_the_failure(seen: list[str]) -> list[str]:
+    """What ran after the marked failure, leaving out the rollback that ends the failed
+    read itself."""
+    at = seen.index("FAILED HERE")
+    return [line for line in seen[at + 1 :] if line.strip().upper() != "ROLLBACK"]
+
+
+def every_row(path: pathlib.Path) -> list[str]:
+    """Every table of the household's file and every row in it, as the statements that would
+    make them again, read through a connection of its own, so a press can be shown to have
+    written nothing."""
+    connection = sqlite3.connect(path)
+    try:
+        return list(connection.iterdump())
+    finally:
+        connection.close()
+
+
+class HeldByAnother:
+    """The household's file held by another program: a second connection that has begun an
+    exclusive transaction, so every connection of the application waits for it and then
+    fails. With ``reading`` it holds a read open instead, which lets reads through and
+    refuses a commit."""
+
+    def __init__(self, path: pathlib.Path, *, reading: bool = False) -> None:
+        self.connection = sqlite3.connect(path, isolation_level=None)
+        self.reading = reading
+
+    def __enter__(self) -> None:
+        if self.reading:
+            self.connection.execute("BEGIN")
+            self.connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        else:
+            self.connection.execute("BEGIN EXCLUSIVE")
+
+    def __exit__(self, *_: object) -> None:
+        self.connection.execute("ROLLBACK")
+        self.connection.close()
+
+
+def the_alert(page: str) -> str:
+    """The words of the one focused explanation on a page that reads no store, links and
+    all, or empty when there is none."""
+    found = re.search(
+        r'<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>(.*?)</p>',
+        page,
+        re.S,
+    )
+    return "" if found is None else words(found.group(1))
+
+
+def database_of(client: TestClient) -> pathlib.Path:
+    """The household's file the application on this client keeps its record in."""
+    return pathlib.Path(state_of(client).settings.database_path)
+
+
+def household_client(reader: str, tmp_path: pathlib.Path) -> TestClient:
+    """The fixture week for ``reader``, its files under ``tmp_path``: the sign-in on for her
+    and a parent, who sign in with ``sign_in_as``, and off for ``open``. Entered by the
+    caller. For a run the state guard stands behind."""
+    require_protection("household_client")
+    if reader != "open":
+        return client_for(signed_in_household(tmp_path))
+    return client_for(
+        fixture_settings(
+            BLOSSOM_TODAY=PLAN_DATE.isoformat(),
+            BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
+            BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
+            BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+        )
+    )
+
+
+def sign_in_as(client: TestClient, reader: str) -> None:
+    """Sign her or a parent in on this client; the household with the sign-in off needs
+    nothing."""
+    if reader == "her":
+        signed_in(client, HERS)
+    elif reader == "parent":
+        signed_in(client, THEIRS)
+
+
+def ways_back_of(main: str) -> list[tuple[str, str]]:
+    """The ways back a page offers, in order, as href and words."""
+    found = re.findall(r'<p class="return"><a href="([^"]*)">([^<]*)</a></p>', main)
+    return [(href, label) for href, label in found]
+
+
+STORE_FREE_NEVER = (
+    "Internal Server Error",
+    "is saved",
+    "Already saved",
+    "is undone",
+    "shows what stands",
+    "as it stands now",
+    "Here it is",
+    "Review it",
+    "Choose and save again",
+    "choose and save from here",
+    "Archive it instead",
+    "Go to the",
+    "Press again from the list",
+    "Check the details and add it again",
+    "choose again",
+)
+"""What no page that reads no store says: a save, or a pointer to a page it does not show."""
+
+
+def store_free_page(
+    answer: Answer, *, status: int, heading: str, alert: str, alert_id: str = "problem-summary"
+) -> str:
+    """What every page that reads no store holds and never holds: its status, its heading,
+    one focused explanation with these words, no control, and no pointer to a page it does
+    not show. Its main part."""
+    assert answer.status_code == status, (answer.status_code, answer.text[:600])
+    main = main_of(answer.text)
+    assert f"<h1>{heading}</h1>" in main, main[:600]
+    found = re.search(
+        rf'<p class="problem" role="alert" id="{alert_id}" tabindex="-1" autofocus>(.*?)</p>',
+        main,
+        re.S,
+    )
+    assert found is not None, main[:600]
+    assert words(found.group(1)) == alert, words(found.group(1))
+    assert answer.text.count("autofocus") == 1
+    assert 'tabindex="' not in main.replace('tabindex="-1"', "")
+    assert "<form" not in main
+    assert "<button" not in main
+    for never in STORE_FREE_NEVER:
+        assert never not in main, never
+    return main
+
+
+STORES = ("project_state", "drafts", "workload_signals", "help_requests")
+"""The four stores a page reads the household's file through."""
+
+
+def spy_on_stores(
+    monkeypatch: pytest.MonkeyPatch, state: ApplicationState, calls: list[str]
+) -> None:
+    """Mark in ``calls`` every public method of the four stores as it is called, by store and
+    method, so a page can be shown to call none of them after a marked failure."""
+    for store_name in STORES:
+        store = getattr(state, store_name)
+        for name in dir(type(store)):
+            if name.startswith("_") or not callable(getattr(store, name)):
+                continue
+            real = getattr(store, name)
+
+            def counted(
+                *given: object,
+                real: Callable[..., object] = real,
+                called: str = f"{store_name}.{name}",
+                **named: object,
+            ) -> object:
+                calls.append(called)
+                return real(*given, **named)
+
+            monkeypatch.setattr(store, name, counted)
+
+
+def rules_named(selector: str) -> list[str]:
+    """The declarations of every rule of the stylesheet whose selector list holds
+    ``selector`` itself."""
+    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    return [
+        inside
+        for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain)
+        if selector in (part.strip() for part in head.split(","))
+    ]

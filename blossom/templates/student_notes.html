@@ -33,7 +33,7 @@
       <p class="empty quiet">{% if archived %}No homework notes are archived.{% elif which == "added" %}No homework notes have been added to homework.{% else %}No homework notes are waiting.{% endif %}</p>
     {% endif %}
     {% if unreadable %}
-      <p class="problem">{{ unreadable|length }} homework note{% if unreadable|length != 1 %}s{% endif %} cannot be read right now. Nothing was changed.</p>
+      <p class="problem">{{ unreadable|length }} homework note{% if unreadable|length != 1 %}s{% endif %} cannot be read right now.</p>
     {% endif %}
   </section>
   <p class="support-links">

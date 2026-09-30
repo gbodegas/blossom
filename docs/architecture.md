@@ -327,6 +327,17 @@ on her week and each evening's plan in force on the family page. The page
 reads nothing more, and never says that a save happened or that there's no
 plan. A form's press that shows a page again isn't handled this way.
 
+When a press is refused and the page it's shown on can't be read, the page is
+tried once and then the answer is a page that reads no store: the refusal's own
+status, a parent's 403 included, its words as they read without that page, a
+line that says which page can't be shown, and what was chosen or typed. A
+take-back, a workload signal, or a parent's reply to her request that the file
+refuses is rolled back, so those answers say nothing was changed, and a reply
+goes straight to the family page's stand-in, which keeps it to copy. Her notes,
+an assignment's details, and her To turn in list answer 503 the same way her
+week does, with a Try again link to the same address, and never say whether a
+save or a delete the address names happened.
+
 An assignment's details, `/student/assignments/{id}`, read the assignment by
 id, never through her week, and show the card's own facts and the one update
 component, handed a context object that says who may update, where its forms
@@ -991,6 +1002,17 @@ record; a request for help about it is refused and sends nothing. A change in
 a note's history that cannot be read makes the note's page say the same. The
 endpoints that answer a request for help in JSON read the notes their requests
 name, once for all of them, as the two pages do.
+
+That sentence is kept for a note whose row can't be decoded, with its 200.
+When the file itself can't be read, a note's pages, the page that asks before
+deleting, and the pages that add it to homework or search for its homework
+answer 503 with a Try again link to the same address, and never say whether a
+save or a request the address names happened. The note's page reads the note,
+the request an address names, and the homework the note is in first, and asks
+whether the note can be deleted last: when only that check fails, the page
+stands without Delete and says the check can't be made, to her and never to a
+parent, and nothing is read after it. A refusal whose page can't be read is
+said without that page, with what was typed kept.
 
 A note's changes are one line or nothing is added to them. Every write to a
 note on record, the same form again included, first reads that note's changes

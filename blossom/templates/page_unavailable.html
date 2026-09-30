@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% set page = "parent" if family is defined and family else "student" %}
+{% block title %}Blossom - {{ heading }}{% endblock %}
+{#
+  A page that is only read, when the record can't be read as it is made:
+  the ways back the address names, the page's own heading, and what can't be
+  shown, in a sentence that takes the focus as the page arrives, with the way
+  to ask for the same address again. Nothing here reads a
+  store, and nothing says what the record holds, or that anything was
+  saved, changed, or deleted.
+#}
+{% block content %}
+  {% for link in ways_back %}
+    <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
+  {% endfor %}
+  <h1>{{ heading }}</h1>
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ alert }} <a href="{{ again }}">Try again</a></p>
+{% endblock %}

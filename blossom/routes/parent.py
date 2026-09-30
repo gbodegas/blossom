@@ -47,7 +47,7 @@ Without that, the visibility policy is stated but not observable.
 
 import logging
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Final
@@ -234,6 +234,45 @@ CHECK_CONFIRMATIONS: Final[dict[str, str]] = {
 }
 """What the address says happened to a row's check, and the sentence the row shows for it:
 the server chooses which, the address only carries the choice."""
+PLAN_FAILED: Final = (
+    "The plan could not be made: something went wrong on the way. "
+    "What is waiting below is unchanged."
+)
+FAMILY_NOT_SHOWN: Final = "Family review can't be shown right now."
+"""The line the family page's stand-in adds after a refusal's own words when the family
+page can't be read."""
+HELP_STEP_NOT_SAVED: Final = (
+    "That could not be saved, and nothing was changed. Your reply is below. Try again."
+)
+STEP_NOT_SAVED: Final = "That could not be saved, and nothing was changed. Try again."
+"""What a parent's take-up or resolve the file refused says, with and without a reply: the
+store rolls back a write it could not finish, a refused commit included."""
+WITHOUT_THE_PAGE: Final[dict[str, str]] = {
+    CHECK_MOVED_ON: (
+        "This row was marked checked or reopened from another device since this page was made. "
+        "Nothing was written."
+    ),
+    CHECK_FACTS_CHANGED: (
+        "What this row rests on has changed since this page was made: her update, or the "
+        "school's report. Nothing was written."
+    ),
+    CHECK_NOTE_TOO_LONG: (
+        f"Nothing was written, because the note is longer than {CHECK_NOTE_MAX_LENGTH} characters."
+    ),
+    PLAN_FAILED: "The plan could not be made: something went wrong on the way.",
+}
+"""Each refusal written for the family page, as it reads where that page is not shown. Any
+other refusal reads the same in both places."""
+
+
+@dataclass(frozen=True)
+class FamilyKept:
+    """What a parent typed into a refused form, shown on the family page's stand-in to copy:
+    a check's note, a reply to her request, or the reason for a decision."""
+
+    note: str = ""
+    reply: str = ""
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -1161,30 +1200,25 @@ async def plan_from_the_page(
     back what it left, and the failure goes to the process log. An evening that
     has passed is refused before anything runs, since a plan for it could
     reach no page of hers, and so is one past the edge of the calendar, whose
-    week cannot be read: the same two refusals the JSON route makes.
+    week cannot be read: the same two refusals the JSON route makes. When the
+    family page can't be read either, its stand-in says so, with the same status.
     """
     try:
         evening = date.fromisoformat(plan_date) if plan_date.strip() else state.clock.today()
     except ValueError:
-        return review_page(
+        return refused_on_the_page(
             request,
             state,
-            problem=f"{plan_date!r} is not a date. Use the form YYYY-MM-DD.",
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{plan_date!r} is not a date. Use the form YYYY-MM-DD.",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     if evening < state.clock.today():
-        return review_page(
-            request,
-            state,
-            problem=passed(evening),
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return refused_on_the_page(
+            request, state, passed(evening), status.HTTP_422_UNPROCESSABLE_CONTENT
         )
     if evening > date.max - CALENDAR_MARGIN:
-        return review_page(
-            request,
-            state,
-            problem=beyond(evening),
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        return refused_on_the_page(
+            request, state, beyond(evening), status.HTTP_422_UNPROCESSABLE_CONTENT
         )
     try:
         require_work(state, evening)
@@ -1196,17 +1230,11 @@ async def plan_from_the_page(
         )
         refuse_an_empty_run(run)
     except HTTPException as error:
-        return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
+        return refused_on_the_page(request, state, str(error.detail), error.status_code)
     except Exception:
         logger.exception("the plan for %s failed on the way", evening)
-        return review_page(
-            request,
-            state,
-            problem=(
-                "The plan could not be made: something went wrong on the way. "
-                "What is waiting below is unchanged."
-            ),
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        return refused_on_the_page(
+            request, state, PLAN_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR
         )
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1219,19 +1247,38 @@ def help_from_the_page(
     step: Annotated[str, Form()] = "",
     response: Annotated[str, Form()] = "",
 ) -> Response:
-    """The two buttons under a request, through the same path the JSON routes take."""
+    """The two buttons under a request, through the same path the JSON routes take.
+
+    A take-up or a resolve the file refuses is rolled back and answered at once on the
+    family page's stand-in, 500, with the reply as typed: the family page has no place
+    for a reply it didn't keep. A refusal whose page can't be read keeps its status there,
+    with the reply.
+    """
     words = response.strip()
+    typed = FamilyKept(reply=response)
     if len(words) > NOTE_MAX_LENGTH:
-        return review_page(
+        return refused_on_the_page(
             request,
             state,
-            problem=(f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}."),
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"A reply is at most {NOTE_MAX_LENGTH} characters; this one is {len(words)}.",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            typed,
         )
     try:
         move_request(state, request_id, step, words or None)
     except HTTPException as error:
-        return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
+        return refused_on_the_page(request, state, str(error.detail), error.status_code, typed)
+    except sqlite3.Error as error:
+        logger.warning(
+            "a parent's move on her request could not be saved: %s", type(error).__name__
+        )
+        return family_not_shown(
+            request,
+            state,
+            HELP_STEP_NOT_SAVED if words else STEP_NOT_SAVED,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            kept=typed if words else None,
+        )
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -1245,12 +1292,88 @@ def check_could_not(request: Request, state: ApplicationState, check: CheckState
         )
     except Exception:
         logger.exception("the family page could not be read back after a failed check")
-        return templates.TemplateResponse(
+        return family_not_shown(
             request,
-            "family_check_recovery.html",
-            {"check": check, "sample": state.settings.sample},
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            state,
+            check.problem or "",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            kept=FamilyKept(note=check.note),
+            title="Check not saved",
         )
+
+
+def family_not_shown(
+    request: Request,
+    state: ApplicationState,
+    said: str,
+    status_code: int,
+    *,
+    line: str | None = None,
+    kept: FamilyKept | None = None,
+    title: str = "Family review",
+) -> HTMLResponse:
+    """The family page's stand-in, which reads no store: what happened, which page can't be
+    shown when a refusal's own page is what failed, and what a parent typed."""
+    typed = kept or FamilyKept()
+    return templates.TemplateResponse(
+        request,
+        "family_check_recovery.html",
+        {
+            "title": title,
+            "said": said,
+            "line": line,
+            "note": typed.note,
+            "reply": typed.reply,
+            "reason": typed.reason,
+            "sample": state.settings.sample,
+        },
+        status_code=status_code,
+    )
+
+
+def reviewed_once(
+    request: Request,
+    state: ApplicationState,
+    page: Callable[[], HTMLResponse],
+    problem: str,
+    status_code: int,
+    kept: FamilyKept | None = None,
+) -> HTMLResponse:
+    """A refusal shown on the family page, tried once. When a read for that page fails, its
+    stand-in, with the refusal's status, its words as they read without the page, and what
+    was typed: made from what the request already held, so no store is called after the
+    failure. Any other failure is not caught here."""
+    try:
+        return page()
+    except sqlite3.Error as error:
+        logger.warning("the family page could not be read for a refusal: %s", type(error).__name__)
+        return family_not_shown(
+            request,
+            state,
+            WITHOUT_THE_PAGE.get(problem, problem),
+            status_code,
+            line=FAMILY_NOT_SHOWN,
+            kept=kept,
+        )
+
+
+def refused_on_the_page(
+    request: Request,
+    state: ApplicationState,
+    problem: str,
+    status_code: int,
+    kept: FamilyKept | None = None,
+) -> HTMLResponse:
+    """A form action the family page refused, said at its top with the status the JSON route
+    would answer, tried once."""
+    return reviewed_once(
+        request,
+        state,
+        lambda: review_page(request, state, problem=problem, status_code=status_code),
+        problem,
+        status_code,
+        kept,
+    )
 
 
 def another_rows(basis: str, assignment_id: str) -> bool:
@@ -1311,19 +1434,25 @@ async def mark_checked_from_the_page(
     path, so her device is answered 403 before this runs; with the sign-in
     off, whoever is at the keyboard is the family. Her events, the school's
     reports, the plans, and the digest are untouched by any answer here.
+    A refusal whose page can't be read keeps its status and the note on the
+    family page's stand-in.
     """
     fields, whole = await fields_of(request, CHECK_FIELDS)
     basis = fields.get("basis", "").strip()
     token = fields.get("expected_check_id", "").strip()
     note = fields.get("note", "")
     words = normalize_note(note)
+    typed = FamilyKept(note=note)
 
     def refused(problem: str, code: int, *, field: str | None = None) -> Response:
-        return review_page(
+        check = CheckState(assignment_id, problem=problem, field=field, note=note)
+        return reviewed_once(
             request,
             state,
-            check=CheckState(assignment_id, problem=problem, field=field, note=note),
-            status_code=code,
+            lambda: review_page(request, state, check=check, status_code=code),
+            problem,
+            code,
+            typed,
         )
 
     if not whole:
@@ -1350,9 +1479,7 @@ async def mark_checked_from_the_page(
                 today=state.clock.today(),
             )
     except UnknownAssignment:
-        return review_page(
-            request, state, problem=NOT_ON_RECORD, status_code=status.HTTP_404_NOT_FOUND
-        )
+        return refused_on_the_page(request, state, NOT_ON_RECORD, status.HTTP_404_NOT_FOUND, typed)
     except UnknownCheck:
         return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     except NoteTooLong:
@@ -1397,15 +1524,21 @@ async def check_again_from_the_page(request: Request, assignment_id: str, state:
     with the row as it stands and nothing written. The check reopened
     stays in the record; her update and the school's report are untouched,
     and the row is worth checking together again while her Done stands
-    beside a Missing. The gate admits only a parent's device here.
+    beside a Missing. The gate admits only a parent's device here. A refusal
+    whose page can't be read keeps its status on the family page's stand-in.
     """
     fields, whole = await fields_of(request, AGAIN_FIELDS)
     token = fields.get("check_id", "").strip()
     basis = fields.get("basis", "").strip()
 
     def refused(problem: str, code: int) -> Response:
-        return review_page(
-            request, state, check=CheckState(assignment_id, problem=problem), status_code=code
+        check = CheckState(assignment_id, problem=problem)
+        return reviewed_once(
+            request,
+            state,
+            lambda: review_page(request, state, check=check, status_code=code),
+            problem,
+            code,
         )
 
     if not whole:
@@ -1429,9 +1562,7 @@ async def check_again_from_the_page(request: Request, assignment_id: str, state:
                 today=state.clock.today(),
             )
     except UnknownAssignment:
-        return review_page(
-            request, state, problem=NOT_ON_RECORD, status_code=status.HTTP_404_NOT_FOUND
-        )
+        return refused_on_the_page(request, state, NOT_ON_RECORD, status.HTTP_404_NOT_FOUND)
     except UnknownCheck:
         return refused(NOT_THIS_ROWS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     except CouldNotSave:
@@ -1465,27 +1596,30 @@ async def decide_from_the_page(
     The field is read as text and checked here rather than typed as a literal,
     because the framework's own validation would answer a bad value with a
     JSON error, and a form failure is promised as this page with the problem.
+    A refusal whose page can't be read keeps its status, with the reason as
+    typed, on the family page's stand-in.
     """
+    typed = FamilyKept(reason=reason)
     if decision not in DECISIONS:
-        return review_page(
+        return refused_on_the_page(
             request,
             state,
-            problem=f"{decision!r} is not one of the two buttons, approve or refuse.",
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{decision!r} is not one of the two buttons, approve or refuse.",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            typed,
         )
-    reason = reason.strip()
-    if len(reason) > REASON_MAX_LENGTH:
-        return review_page(
+    words = reason.strip()
+    if len(words) > REASON_MAX_LENGTH:
+        return refused_on_the_page(
             request,
             state,
-            problem=(
-                f"A reason is at most {REASON_MAX_LENGTH} characters; this one is {len(reason)}."
-            ),
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"A reason is at most {REASON_MAX_LENGTH} characters; this one is {len(words)}.",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            typed,
         )
-    decided = DecisionRequest(approved=decision == "approve", reason=reason or None)
+    decided = DecisionRequest(approved=decision == "approve", reason=words or None)
     try:
         await decide_draft(state, graphs.build, draft_id, decided)
     except HTTPException as error:
-        return review_page(request, state, problem=str(error.detail), status_code=error.status_code)
+        return refused_on_the_page(request, state, str(error.detail), error.status_code, typed)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)

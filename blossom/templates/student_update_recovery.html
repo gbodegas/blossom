@@ -10,11 +10,13 @@
   one thing on the page that matters, so it takes the focus as the page
   arrives, with no script, as a refusal does on the pages this one stands in
   for. A press refused for who made it is answered here too, before anything
-  of the record is read.
+  of the record is read. When the page a press is shown on can't be read,
+  ``page_line`` says which page that is, after the press's own words.
 #}
 {% block content %}
   <h1>{{ heading if heading is defined and heading else "Update not saved" }}</h1>
-  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ card.problem if card else (hand_in_card.problem if hand_in_card else note_problem) }}</p>
+  {% set said = card.problem if card else (hand_in_card.problem if hand_in_card else note_problem) %}
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{% if page_line is defined and page_line %}{{ said|ended }} {{ page_line }}{% else %}{{ said }}{% endif %}</p>
   {% if card and card.status %}
     <p>Your choice: {% if card.status == "done" %}Done{% else %}Not yet{% endif %}.</p>
   {% endif %}

@@ -34,7 +34,7 @@ import re
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import date
-from typing import Final
+from typing import Final, get_args
 
 from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -98,6 +98,9 @@ from blossom.routes.navigation import (
     NOTES_RESULT,
     WEEK_PAGE,
     address,
+    asked_address,
+    note_delete_href,
+    note_help_href,
     note_href,
 )
 from blossom.routes.student import (
@@ -107,10 +110,12 @@ from blossom.routes.student import (
     HELP_FORM_NOT_WHOLE,
     NOT_HERS_TO_ASK,
     NOT_HERS_TO_UPDATE,
+    WITHOUT_THE_PAGE,
     ReturnLink,
     State,
     parent_reads,
     templates,
+    unavailable_page,
     viewer_of,
 )
 from blossom.stores.help_requests import (
@@ -203,6 +208,38 @@ NOTE_CHANGED_NOT_DELETED: Final = (
 )
 NOTE_NOT_CHANGED: Final = "Note not changed"
 """The heading of the page that refuses a parent's change to her note, which reads no store."""
+NOTES_UNAVAILABLE: Final = "{whose} homework notes can't be shown right now. Try again in a moment."
+NOTES_UNAVAILABLE_AFTER_A_DELETE: Final = (
+    "{whose} homework notes can't be shown right now, so whether that note was deleted can't "
+    "be checked yet. Try again in a moment."
+)
+"""What one of her lists of notes says when it can't be read: that it can't be shown, and,
+when the address names a delete, that the delete can't be checked. An address proves no
+delete, so neither says whether one happened."""
+LISTS: Final[dict[str, tuple[str, str]]] = {
+    "waiting": (NOTES_PAGE, "Homework notes"),
+    "added": (ADDED_NOTES_PAGE, "Homework notes added to homework"),
+    "archived": (ARCHIVED_NOTES_PAGE, "Archived homework notes"),
+}
+"""Each list of her notes: its address and its heading."""
+NOTE_UNAVAILABLE: Final = "This homework note can't be shown right now. Try again in a moment."
+REQUEST_UNCHECKED: Final = (
+    "This homework note can't be shown right now, so that request can't be checked here. "
+    "Check your requests on your week before you ask again."
+)
+DELETE_UNAVAILABLE: Final = (
+    "Whether this note can be deleted can't be checked right now, so it can't be deleted yet. "
+    "Try again in a moment."
+)
+"""What a note's page that is only read says when the file can't be read: that the note, or
+whether it can be deleted, can't be shown, never that anything was or wasn't saved."""
+DELETE_UNCHECKED: Final = "Whether this note can be deleted can't be checked right now."
+"""Said where Delete would be, on a page that stands, when the one check that would offer it
+could not be made."""
+NOTE_NOT_SHOWN: Final = "This homework note can't be shown right now."
+HELP_NOTE_NOT_SHOWN: Final = "This homework note can't be shown right now. Your words are below."
+"""The lines a refusal adds after its own words when the note's page it would be shown on
+can't be read."""
 NOTE_USE_UNKNOWN: Final = (
     "This note was saved before notes could be deleted, and Blossom can't tell whether it "
     "was used, so it can't be deleted."
@@ -463,6 +500,14 @@ def shown_day(raw: str) -> str | None:
         return None
 
 
+def kept_because_without_the_page(use: CaptureUse, *, archived: bool, just: bool) -> str:
+    """Why a note can't be deleted, where no page shows it to archive: what it can do
+    instead goes, and that it stays archived stays."""
+    now, before = KEPT_BECAUSE[use]
+    stays = " It stays archived." if archived else ""
+    return f"{now if just else before}, so it can't be deleted.{stays}"
+
+
 def ways_back(request: Request, *, added: bool = False) -> list[ReturnLink]:
     """The two ways on from a note's pages, fixed addresses of this site: her notes, and
     her week, named for whoever reads. A note in homework is on the list of those, so that
@@ -532,17 +577,63 @@ def kept_because(use: CaptureUse, *, archived: bool, just: bool) -> str:
     return f"{now if just else before}, so it can't be deleted. {instead}"
 
 
+NOTE_WITHOUT_THE_PAGE: Final[dict[str, str]] = {
+    **WITHOUT_THE_PAGE,
+    NOTE_CHANGED: "This note changed while you were away, so nothing was saved.",
+    NOTE_CHANGED_NOT_DELETED: "This note changed while you were away, so it wasn't deleted.",
+    NOTE_NEEDS_WORDS: "Nothing was saved, because the note has no words.",
+    NOTE_TOO_LONG: (
+        f"Nothing was saved, because the note is longer than {CAPTURE_TEXT_MAX_LENGTH} characters."
+    ),
+    COURSE_TOO_LONG: (
+        f"Nothing was saved, because the class is longer than {CAPTURE_COURSE_MAX_LENGTH} "
+        "characters."
+    ),
+    COURSE_ONE_LINE: "Nothing was saved, because the class is on more than one line.",
+    UNKEPT_CHARACTER: "Nothing was saved, because it has a character Blossom cannot keep.",
+    NOTE_DATE_UNREADABLE: "That date could not be read, so nothing was saved yet.",
+    NOTE_NEEDS_A_DATE_CHOICE: (
+        "Nothing was saved, because a date was given that could not be read."
+    ),
+    **{
+        kept_because(use, archived=archived, just=just): kept_because_without_the_page(
+            use, archived=archived, just=just
+        )
+        for use in get_args(CaptureUse)
+        for archived in (False, True)
+        for just in (False, True)
+    },
+}
+"""Each refusal of a change to a note, as it reads where the note's page is not shown: a
+sentence that points at the page goes, and a rule about a field says what was not saved and
+why. Any other refusal reads the same in both places."""
+HELP_WITHOUT_THE_PAGE: Final[dict[str, str]] = {
+    HELP_FORM_NOT_WHOLE: (
+        "That form carried a field twice, left one out, or had one this page doesn't send, so "
+        "nothing was sent."
+    ),
+    QUESTION_TOO_LONG: (
+        f"Nothing was sent, because the question is longer than {NOTE_MAX_LENGTH} characters."
+    ),
+}
+"""The two refusals of her help form about a note, as they read where the note can't be
+shown."""
+
+
 def plain_failure(
     request: Request,
     state: ApplicationState,
     problem: str,
     form: NoteForm | None,
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
+    *,
+    line: str | None = None,
 ) -> HTMLResponse:
     """The page for a refused change whenever the note's own page cannot be made: the note
     cannot be read, it left the record, or the file cannot be read. It reads no store, tries
     nothing again, and keeps everything she typed: her words, the class, the day, and the
-    words of a day that could not be read."""
+    words of a day that could not be read. ``line`` says the note's page can't be shown,
+    after the refusal's own words."""
     return templates.TemplateResponse(
         request,
         "student_update_recovery.html",
@@ -550,11 +641,45 @@ def plain_failure(
             "card": None,
             "hand_in_card": None,
             "note_problem": problem,
+            "page_line": line,
             "note_form": form,
             "ways_back": ways_back(request),
             "sample": state.settings.sample,
         },
         status_code=status_code,
+    )
+
+
+def note_unavailable(
+    request: Request,
+    state: ApplicationState,
+    path: str,
+    error: Exception,
+    *,
+    said: str = NOTE_UNAVAILABLE,
+    added: bool = False,
+    week_fragment: str = "",
+    family: bool = False,
+) -> HTMLResponse:
+    """A note's page that is only read, when a read of the file for it fails: 503, the small
+    page with what can't be shown, and the same address to ask for again; ``family`` for a
+    page in the family's tree. Nothing is read here, and the failure is logged by its kind
+    alone."""
+    logger.warning("%s could not be read: %s", path, type(error).__name__)
+    links = ways_back(request, added=added)
+    if week_fragment:
+        links[-1] = replace(links[-1], href=address(WEEK_PAGE, week_fragment))
+    return templates.TemplateResponse(
+        request,
+        "student_note_gone.html",
+        {
+            "problem": said,
+            "again": asked_address(path, request.scope["query_string"]),
+            "ways_back": links,
+            "family": family,
+            "sample": state.settings.sample,
+        },
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
 
 
@@ -567,15 +692,18 @@ def help_not_sent(
     status_code: int,
     *,
     before: AskOutcome | None = None,
+    line: str | None = None,
+    fresh: bool = False,
 ) -> HTMLResponse:
     """The page for a request for help that was refused where no note can be shown beside
     it. It needs no note and reads no store: what happened, her question as she typed it,
     and the ways back, the note's own page among them when its name is one. A form whose
     id already asked, with other words or for a request since taken back, says that with
-    409 and links to the help form on her week, which needs no note. A parent is shown no
+    409 and links to the help form on her week, which needs no note; so does a form refused
+    beside a note that can't be shown (``fresh``), after ``line``. A parent is shown no
     question, since the request is not theirs to make."""
     mine = viewer_of(request) != "parent"
-    fresh_form = None
+    fresh_form = address(WEEK_PAGE, "ask-for-help") if fresh else None
     if isinstance(before, HelpFormChanged | HelpFormUsed):
         problem = FORM_USED if isinstance(before, HelpFormUsed) else FORM_SENT_OTHER_WORDS
         status_code = status.HTTP_409_CONFLICT
@@ -588,6 +716,7 @@ def help_not_sent(
             "hand_in_card": None,
             "heading": "Request not sent",
             "note_problem": problem if mine else NOT_HERS_TO_ASK,
+            "page_line": line if mine else None,
             "help_question": question if mine else "",
             "help_note": capture_id,
             "help_fresh_form": fresh_form,
@@ -695,7 +824,20 @@ def note_page(
     note can't be read whenever its read fails. ``reraise`` marks a failed write instead:
     its own message stands, so a note the store can't decode, or any failed read without
     a form, goes back to the caller.
+
+    The note and its line are read first, then what the page needs beside them, the
+    request an address names and the homework the note is in, and whether it can be
+    deleted last. When the file refuses any read before that last one, a page that is
+    only read answers 503, and a refusal is said on the page that reads no store. When
+    only the last one fails, the page stands without Delete and says so, and nothing is
+    read after it.
     """
+    opened = (
+        form is None
+        and problem is None
+        and status_code == status.HTTP_200_OK
+        and request.method in ("GET", "HEAD")
+    )
     try:
         found = state.project_state.sound_capture_history(capture_id)
     except UnreadableCapture:
@@ -707,6 +849,8 @@ def note_page(
     except Exception as fault:
         if form is None and (reraise or not isinstance(fault, sqlite3.Error)):
             raise
+        if opened:
+            return note_unavailable(request, state, note_href(capture_id), fault)
         logger.exception("the note %s could not be read", capture_id)
         if form is None:
             return unreadable(request, state, status_code)
@@ -724,11 +868,40 @@ def note_page(
         # A form that named no revision these pages made comes back on the note as it
         # stands, as her unsaved words: saving them again is her choice, from this page.
         form = replace(form, revision=note.revision, unsaved=True)
-    if mine and result is None and asked:
-        request_made = state.help_requests.get(asked[:TOKEN_MAX_LENGTH])
-        if request_made is not None and request_made.capture_id == note.capture_id:
-            result = NoteResult(NOTE_ASKED, stands=True)
-    deletable = use_unknown = False
+    checking = mine and result is None and bool(asked)
+    try:
+        if checking and asked:
+            request_made = state.help_requests.get(asked[:TOKEN_MAX_LENGTH])
+            if request_made is not None and request_made.capture_id == note.capture_id:
+                result = NoteResult(NOTE_ASKED, stands=True)
+        homework = in_homework(state, note)
+    except sqlite3.Error as fault:
+        if reraise:
+            raise
+        added = note.assignment_id is not None and not note.archived
+        if opened:
+            return note_unavailable(
+                request,
+                state,
+                note_href(capture_id),
+                fault,
+                said=REQUEST_UNCHECKED if checking else NOTE_UNAVAILABLE,
+                added=added,
+                week_fragment="help" if checking else "",
+            )
+        logger.warning("a note's refused change could not be shown: %s", type(fault).__name__)
+        said = problem or ""
+        return plain_failure(
+            request,
+            state,
+            NOTE_WITHOUT_THE_PAGE.get(said, said),
+            form,
+            refusal(status_code),
+            line=NOTE_NOT_SHOWN,
+        )
+    # Whether it can be deleted is asked last: when that is all that fails, the page stands
+    # without Delete and says so, and nothing is read after it.
+    deletable = use_unknown = unchecked = False
     if mine:
         try:
             use = state.project_state.capture_use(note.capture_id)
@@ -741,6 +914,7 @@ def note_page(
             return gone(request, state, capture_id)
         except (UnreadableCapture, sqlite3.Error):
             logger.exception("whether the note %s was used could not be read", capture_id)
+            unchecked = True
         else:
             deletable, use_unknown = use is None, use == "unknown"
     if form is None and edit and mine and not note.archived:
@@ -751,7 +925,6 @@ def note_page(
             due_date="" if note.due_date is None else note.due_date.isoformat(),
             revision=note.revision,
         )
-    homework = in_homework(state, note)
     return templates.TemplateResponse(
         request,
         "student_note.html",
@@ -765,6 +938,7 @@ def note_page(
             "mine": mine,
             "in_homework": homework,
             "deletable": deletable,
+            "delete_unchecked": DELETE_UNCHECKED if unchecked else None,
             "use_unknown": NOTE_USE_UNKNOWN if use_unknown else None,
             "out_of_the_window": (
                 None
@@ -927,26 +1101,69 @@ def notes_list(
     )
 
 
+def names_a_delete(deleted: str | None, already: str | None) -> bool:
+    """Whether the address names a note her list would look up as deleted: one of the two
+    words holds a note's id as these pages write it. Nothing is read."""
+    for given in (deleted, already):
+        try:
+            capture_id_from(given or "")
+        except NotACaptureId:
+            continue
+        return True
+    return False
+
+
+def notes_unavailable(
+    request: Request, state: ApplicationState, which: str, error: sqlite3.Error, *, delete: bool
+) -> HTMLResponse:
+    """One of her lists of notes when the record can't be read: 503, what can't be shown,
+    whether a delete the address names can't be checked, and the same address again."""
+    path, heading = LISTS[which]
+    parent = parent_reads(request)
+    said = NOTES_UNAVAILABLE_AFTER_A_DELETE if delete else NOTES_UNAVAILABLE
+    return unavailable_page(
+        request,
+        state,
+        error,
+        heading=heading,
+        alert=said.format(whose="Her" if parent else "Your"),
+        again=asked_address(path, request.scope["query_string"]),
+        ways_back=[ReturnLink(WEEK_PAGE, "Back to her week" if parent else "Back to my week")],
+    )
+
+
 @router.get("/homework-notes", response_class=HTMLResponse, include_in_schema=False)
 def homework_notes(
     request: Request, state: State, deleted: str | None = None, already: str | None = None
 ) -> HTMLResponse:
     """Every note still to do something about, the first saved first, and what a delete
-    did when the address names a note the record holds as deleted."""
-    result = deleted_result(state, deleted, already)
-    return notes_list(request, state, which="waiting", result=result)
+    did when the address names a note the record holds as deleted. When the record can't
+    be read, the page says so and never says whether a delete happened."""
+    try:
+        result = deleted_result(state, deleted, already)
+        return notes_list(request, state, which="waiting", result=result)
+    except sqlite3.Error as error:
+        return notes_unavailable(
+            request, state, "waiting", error, delete=names_a_delete(deleted, already)
+        )
 
 
 @router.get("/homework-notes/added", response_class=HTMLResponse, include_in_schema=False)
 def added_notes(request: Request, state: State) -> HTMLResponse:
     """Every note that is in homework and not put away, kept with its history."""
-    return notes_list(request, state, which="added")
+    try:
+        return notes_list(request, state, which="added")
+    except sqlite3.Error as error:
+        return notes_unavailable(request, state, "added", error, delete=False)
 
 
 @router.get("/homework-notes/archived", response_class=HTMLResponse, include_in_schema=False)
 def archived_notes(request: Request, state: State) -> HTMLResponse:
     """Every note she put away, kept with its history. One read."""
-    return notes_list(request, state, which="archived")
+    try:
+        return notes_list(request, state, which="archived")
+    except sqlite3.Error as error:
+        return notes_unavailable(request, state, "archived", error, delete=False)
 
 
 @router.get("/homework-notes/{capture_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -982,7 +1199,9 @@ def help_about_a_note(request: Request, capture_id: str, state: State) -> HTMLRe
         return gone(request, state)
     try:
         found = state.project_state.sound_capture_history(name)
-    except (UnreadableCapture, sqlite3.Error):
+    except sqlite3.Error as error:
+        return note_unavailable(request, state, note_help_href(name), error)
+    except UnreadableCapture:
         logger.exception("the note %s could not be read for its help page", name)
         return unreadable(request, state)
     if found is None:
@@ -1293,7 +1512,8 @@ async def restore_a_note(request: Request, capture_id: str, state: State) -> Res
 def delete_page(request: Request, capture_id: str, state: State) -> HTMLResponse:
     """The page that asks before a note is deleted: her words as they stand, what deleting
     does, and the two choices. Opening it writes nothing. A parent is answered 403 on the
-    note's own page, and a note that can't be deleted 409, with the reason."""
+    note's own page, and a note that can't be deleted 409, with the reason. When the file
+    can't be read for the note or for whether it can be deleted, 503 and nothing to press."""
     try:
         name = capture_id_from(capture_id)
     except NotACaptureId:
@@ -1304,9 +1524,19 @@ def delete_page(request: Request, capture_id: str, state: State) -> HTMLResponse
         )
     try:
         found = state.project_state.sound_capture_history(name)
-        use = None if found is None else state.project_state.capture_use(name)
-    except (UnreadableCapture, sqlite3.Error):
+    except sqlite3.Error as error:
+        return note_unavailable(request, state, note_delete_href(name), error)
+    except UnreadableCapture:
         logger.exception("the note %s could not be read to ask before deleting it", name)
+        return unreadable(request, state)
+    try:
+        use = None if found is None else state.project_state.capture_use(name)
+    except sqlite3.Error as error:
+        return note_unavailable(
+            request, state, note_delete_href(name), error, said=DELETE_UNAVAILABLE
+        )
+    except UnreadableCapture:
+        logger.exception("whether the note %s was used could not be read to delete it", name)
         return unreadable(request, state)
     except UnknownCapture:
         found = None
@@ -1424,7 +1654,9 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     since. One that already
     asked with other words, or whose request was taken back or has gone,
     sends nothing and keeps her question in a fresh form, or, where the note
-    can't be shown, says so with 409 beside a link to a fresh form.
+    can't be shown, says so with 409 beside a link to a fresh form. A form
+    that isn't whole, or a question too long, is refused first, 422, and
+    beside a note that can't be read says so on the page that needs no note.
     A parent is answered 403 before the form is read, on the page that needs
     no note, and nothing is sent in her name.
     """
@@ -1446,6 +1678,11 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
     except NotARequestId:
         form = None
     sound = whole and form is not None
+    refused = (
+        None
+        if sound and len(words) <= NOTE_MAX_LENGTH
+        else (QUESTION_TOO_LONG if sound else HELP_FORM_NOT_WHOLE)
+    )
     before: AskOutcome | None = None
     if sound and form is not None and len(words) <= NOTE_MAX_LENGTH:
         try:
@@ -1467,7 +1704,31 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
             )
     try:
         found = state.project_state.sound_capture_history(name)
-    except UnreadableCapture:
+    except (UnreadableCapture, sqlite3.Error) as fault:
+        if refused is not None:
+            # The form is refused before the note is weighed, and says so first.
+            logger.warning("a note help was asked about can't be read: %s", type(fault).__name__)
+            return help_not_sent(
+                request,
+                state,
+                HELP_WITHOUT_THE_PAGE[refused],
+                question,
+                name,
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                line=HELP_NOTE_NOT_SHOWN,
+                fresh=True,
+            )
+        if isinstance(fault, sqlite3.Error):
+            logger.exception("the note %s could not be read for her request for help", name)
+            return help_not_sent(
+                request,
+                state,
+                HELP_NOT_ASKED,
+                question,
+                name,
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                before=before,
+            )
         return help_not_sent(
             request,
             state,
@@ -1493,13 +1754,13 @@ async def ask_for_help_about_a_note(request: Request, capture_id: str, state: St
             request, state, NOTE_GONE, question, None, status.HTTP_404_NOT_FOUND, before=before
         )
     note = found[0]
-    if form is None or not sound or len(words) > NOTE_MAX_LENGTH:
+    if form is None or refused is not None:
         return help_page(
             request,
             state,
             note,
             question=question,
-            problem=QUESTION_TOO_LONG if sound else HELP_FORM_NOT_WHOLE,
+            problem=refused,
             question_error=sound,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
