@@ -46,6 +46,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from blossom.captures import capture_id_from
 from blossom.clock import Clock
 from blossom.stores.paths import refuse_unsafe_path
+from blossom.unreadable import refusal_in_names, text_or_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -148,11 +149,17 @@ class NotARequestId(ValueError):
 
 
 class UnreadableHelpRequest(ValueError):
-    """Raised when a kept row cannot be read as a request. Its message names nothing the
-    row holds, so saying it gives out none of her words."""
+    """Raised when a kept row cannot be read as a request. Its message names the request
+    when its id has the shape a form carries, and the refusal in names alone, so saying it
+    gives out none of her words."""
 
-    def __init__(self) -> None:
-        super().__init__("a kept help request cannot be read")
+    def __init__(self, why: str = "", held_id: object = None) -> None:
+        named = (
+            f"the help request {held_id}"
+            if type(held_id) is str and REQUEST_ID.fullmatch(held_id)
+            else "a kept help request"
+        )
+        super().__init__(f"{named} cannot be read: {why}" if why else f"{named} cannot be read")
 
 
 @dataclass(frozen=True)
@@ -227,6 +234,7 @@ class HelpRequestsStore:
     def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
         self._connection = connection
         self._connection.row_factory = sqlite3.Row
+        self._connection.text_factory = text_or_refusal
         self._clock = clock
         self._lock = threading.Lock()
         self._connection.execute(
@@ -485,11 +493,7 @@ class HelpRequestsStore:
         with self._lock:
             now = self._clock.now()
             rows = self._connection.execute(RETAINED_ALL, (self._cutoff(now),)).fetchall()
-        try:
-            requests = tuple(request_from(row) for row in rows)
-        except ValueError as fault:
-            raise UnreadableHelpRequest from fault
-        return HelpHeld(requests, now)
+        return HelpHeld(tuple(request_from(row) for row in rows), now)
 
     def sweep(self) -> int:
         """Delete every resolved request past retention; return how many went."""
@@ -532,26 +536,31 @@ def spaced(words: str | None) -> str:
 
 
 def request_from(row: sqlite3.Row) -> HelpRequest:
-    """Build a request from a row read by column name."""
+    """Build a request from a row read by column name, or ``UnreadableHelpRequest``, raised
+    after the except block so the refusal, which can repeat her words, goes nowhere."""
 
     def when(value: object) -> datetime | None:
         return None if value is None else datetime.fromisoformat(str(value))
 
-    note = row["note"]
-    response = row["response"]
-    capture_id, unreadable = reference_from(row["capture_id"], str(row["request_id"]))
-    return HelpRequest(
-        request_id=str(row["request_id"]),
-        evening=date.fromisoformat(str(row["evening"])),
-        asked_at=datetime.fromisoformat(str(row["asked_at"])),
-        note=None if note is None else str(note),
-        state=cast(HelpState, str(row["state"])),
-        accepted_at=when(row["accepted_at"]),
-        resolved_at=when(row["resolved_at"]),
-        response=None if response is None else str(response),
-        capture_id=capture_id,
-        capture_reference_unreadable=unreadable,
-    )
+    try:
+        note = row["note"]
+        response = row["response"]
+        capture_id, unreadable = reference_from(row["capture_id"], str(row["request_id"]))
+        return HelpRequest(
+            request_id=str(row["request_id"]),
+            evening=date.fromisoformat(str(row["evening"])),
+            asked_at=datetime.fromisoformat(str(row["asked_at"])),
+            note=None if note is None else str(note),
+            state=cast(HelpState, str(row["state"])),
+            accepted_at=when(row["accepted_at"]),
+            resolved_at=when(row["resolved_at"]),
+            response=None if response is None else str(response),
+            capture_id=capture_id,
+            capture_reference_unreadable=unreadable,
+        )
+    except (ValueError, TypeError) as fault:
+        why = refusal_in_names(fault, HelpRequest.model_fields)
+    raise UnreadableHelpRequest(why, row["request_id"])
 
 
 def reference_from(held: object, request_id: str) -> tuple[str | None, bool]:
