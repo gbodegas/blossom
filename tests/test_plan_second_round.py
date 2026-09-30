@@ -24,12 +24,14 @@ from blossom.routes.student import ASSIGNMENTS_CHANGED, NO_PLAN_NOW
 from blossom.settings import REPOSITORY_ROOT
 from blossom.stores.drafts import DraftRecord
 from tests.support import (
+    DETAILS,
     ESSAY,
     ESSAY_ID,
     FIXTURE_TIMEZONE,
     HER_PAGE,
     PAGE_HEADERS,
     PLAN_DATE,
+    READING_LOG_ID,
     SetClock,
     browser,
     card_for,
@@ -42,9 +44,7 @@ from tests.support import (
     with_clock,
 )
 
-DETAILS = f"/student/assignments/{ESSAY_ID}"
 ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
-READING_LOG_ID = "assignment-reading-log"
 ALGEBRA_ID = "assignment-algebra-set"
 UNAVAILABLE = "The saved text is shown because this plan's structured view is unavailable."
 SLOT = 'id="todays-plan"'

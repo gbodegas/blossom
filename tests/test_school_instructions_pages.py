@@ -6,7 +6,7 @@ folded, in the voice of whoever reads them.
 import json
 import pathlib
 import sqlite3
-from datetime import UTC, date, datetime
+from datetime import date
 
 import pytest
 from markupsafe import escape
@@ -19,6 +19,7 @@ from tests.support import (
     ESSAY_ID,
     HER_PAGE,
     HERS,
+    NOW,
     PAGE_HEADERS,
     THEIRS,
     card_for,
@@ -32,7 +33,6 @@ from tests.support import (
 A = "Outline three causes before drafting."
 B = "Compare two canals in the conclusion."
 C = "Bring the map handout."
-NOW = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
 TODAY = date(2026, 8, 19)
 TYPED = "Ask about the library pass."
 FOLD = "Earlier instructions from the school"

@@ -16,7 +16,8 @@ import dataclasses
 import pathlib
 import re
 import sqlite3
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import unescape
 from html.parser import HTMLParser
@@ -765,13 +766,14 @@ class _FormReader(HTMLParser):
 
 
 class _Names(HTMLParser):
-    """Each button, link and summary of a page: the words it shows, and the name a screen
-    reader or voice control uses, which is its label when it has one and else its words,
-    visually hidden ones included."""
+    """Each button, link and summary of a page, or each element of ``named``: the words it
+    shows, and the name a screen reader or voice control uses, which is its label when it
+    has one and else its words, visually hidden ones included."""
 
-    def __init__(self, page: str) -> None:
+    def __init__(self, page: str, named: tuple[str, ...] = ("button", "a", "summary")) -> None:
         super().__init__(convert_charrefs=True)
         self.controls: list[tuple[str, str]] = []
+        self._named = named
         self._open: list[tuple[str, str | None, list[str], list[str]]] = []
         self._hidden = 0
         self._spans: list[bool] = []
@@ -779,7 +781,7 @@ class _Names(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         given = dict(attrs)
-        if tag in ("button", "a", "summary"):
+        if tag in self._named:
             self._open.append((tag, given.get("aria-label"), [], []))
         elif tag == "span":
             hides = "visually-hidden" in (given.get("class") or "").split()
@@ -806,6 +808,12 @@ class _Names(HTMLParser):
 def control_names(page: str) -> list[tuple[str, str]]:
     """Each button, link and summary of a page as (the words it shows, its name)."""
     return _Names(page).controls
+
+
+def field_names(page: str) -> list[tuple[str, str]]:
+    """Each legend and label of a page as (the words it shows, the name it gives its group
+    or field)."""
+    return _Names(page, ("legend", "label")).controls
 
 
 def names_without_their_words(page: str) -> list[tuple[str, str]]:
@@ -870,6 +878,198 @@ def school_said(status: str, channel: SourceChannel, day: date) -> StatusReport:
         dated_by=PASTE_DAY,
         observed_at=datetime(2026, 8, 19, 22, 30, tzinfo=UTC),
     )
+
+
+# ------------------------------------------------------------- her week's cards, press by press
+
+NOW = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
+"""The pinned day's evening, when the updates and choices these tests keep are made."""
+READING_LOG_ID = "assignment-reading-log"
+"""The fixture's reading log, given out this week and due later: a row under the cards."""
+QUIZ_ID = "assignment-vocabulary-quiz"
+SYLLABUS_ID = "assignment-signed-syllabus"
+ESCAPED = "set/2 it's #1? é"
+"""An assignment id that holds a slash, an apostrophe, a hash, a question mark, and a letter a
+browser escapes, so every address and place on a page has to escape it too."""
+LATER_WEEK = "2026-08-24"
+"""The Monday of the week after the fixture week."""
+DETAILS = f"/student/assignments/{ESSAY_ID}"
+REPORT = f"/student/actions/assignments/{ESSAY_ID}/report"
+UNDO = f"/student/actions/assignments/{ESSAY_ID}/undo-report"
+"""The essay's details, and the routes her update on it and its Undo go through."""
+NONE_APPLIES = '<p class="source">No instruction from the school applies now.</p>'
+KEY = "not-a-key-and-never-sent"
+"""A key that lets the plan button show for scripted graphs; nothing is ever sent with it."""
+
+
+@contextmanager
+def reading(
+    reader: str, tmp_path: pathlib.Path, *, graphs: Callable[..., PlanGraphs] | None = None
+) -> Iterator[TestClient]:
+    """The pinned day as one reader has it: her device or a parent's, signed in, or the
+    household with the sign-in off. ``graphs`` gives the household a key and scripted
+    graphs, so the plan button is offered and answers without a model."""
+    if reader == "sign-in off":
+        settings = fixture_settings(
+            BLOSSOM_TODAY=PLAN_DATE.isoformat(), **({"ANTHROPIC_API_KEY": KEY} if graphs else {})
+        )
+    else:
+        settings = signed_in_household(tmp_path)
+        if graphs:
+            settings = dataclasses.replace(settings, anthropic_api_key=KEY)
+    app = create_app(settings)
+    if graphs:
+        app.dependency_overrides[plan_graphs] = graphs
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        if reader != "sign-in off":
+            signed_in(client, HERS if reader == "her" else THEIRS)
+        yield client
+
+
+def reported(store: ProjectStateStore, status: str, assignment_id: str = ESSAY_ID) -> None:
+    """Her update, saved over whatever stands, as a card showing the latest saves it."""
+    events = store.student_reports(assignment_id)
+    store.report_status(
+        assignment_id,
+        status,  # type: ignore[arg-type]
+        None,
+        expected_head=events[-1].report_id if events else None,
+        now=NOW,
+        today=PLAN_DATE,
+    )
+
+
+def due(name: str, title: str, on: date, *, assigned: date | None = None) -> Assignment:
+    """Homework in Geometry due on ``on``, given out on ``assigned`` when it says."""
+    return Assignment(
+        assignment_id=name,
+        course="Geometry",
+        title=title,
+        due_date=on,
+        dependencies=[],
+        reported_submission_status="not_started",
+        assigned_on=assigned,
+        kind=AssignmentKind.HOMEWORK,
+    )
+
+
+def page_of(client: TestClient, **params: str) -> str:
+    """Her week, as the address with these values shows it."""
+    return client.get(HER_PAGE, params=params, headers=PAGE_HEADERS).text
+
+
+def week_card(client: TestClient, assignment_id: str = ESSAY_ID, **params: str) -> str:
+    """One card of her week with its update form open, as Change opens it."""
+    return card_for(page_of(client, change=assignment_id, **params), assignment_id)
+
+
+def save(
+    client: TestClient,
+    card: str,
+    status: str | None,
+    note: str = "",
+    assignment_id: str = ESSAY_ID,
+    **over: str,
+) -> Answer:
+    """Her update sent from a card as the card shows it, with fields in ``over`` written over
+    the ones the form carries."""
+    action = f"/student/actions/assignments/{assignment_id}/report"
+    fields = form_fields(card, action)
+    chosen = {} if status is None else {"status": status}
+    return client.post(
+        action, data={**fields, **chosen, "note": note, **over}, headers=PAGE_HEADERS
+    )
+
+
+def after(client: TestClient, answer: Answer) -> Answer:
+    """The page a redirect sends her to."""
+    assert answer.status_code == 303, answer.text[:300]
+    return client.get(answer.headers["location"], headers=PAGE_HEADERS)
+
+
+def refuse_writes(client: TestClient) -> None:
+    """Make the file refuse every new update of hers, as a failed write does."""
+    store = store_of(client)
+    store._connection.execute(
+        "CREATE TRIGGER refuse_reports BEFORE INSERT ON student_reports "
+        "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+    )
+    store._connection.commit()
+
+
+# Her presses on the essay's card, each answered on her week: a refusal, a save, or an Undo.
+
+
+def conflict(client: TestClient) -> Answer:
+    card = week_card(client)
+    reported(store_of(client), "not_yet")
+    return save(client, card, "done", "Mine.")
+
+
+def stale_undo(client: TestClient) -> Answer:
+    reported(store_of(client), "done")
+    card = card_for(page_of(client), ESSAY_ID)
+    reported(store_of(client), "not_yet")
+    return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
+
+
+def already_undone(client: TestClient) -> Answer:
+    reported(store_of(client), "done")
+    card = card_for(page_of(client), ESSAY_ID)
+    assert client.post(UNDO, data=form_fields(card, UNDO)).status_code == 303
+    return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
+
+
+def malformed(client: TestClient) -> Answer:
+    fields = form_fields(week_card(client), REPORT)
+    return client.post(
+        REPORT, data={**fields, "status": "done", "note": ["one", "two"]}, headers=PAGE_HEADERS
+    )
+
+
+def bad_return(client: TestClient) -> Answer:
+    return save(client, week_card(client), "done", week="not a day")
+
+
+def not_this_cards(client: TestClient) -> Answer:
+    return save(client, week_card(client), "done", expected_report_id="x" * 201)
+
+
+def failed_write(client: TestClient) -> Answer:
+    card = week_card(client)
+    refuse_writes(client)
+    return save(client, card, "not_yet", "kept")
+
+
+def failed_undo(client: TestClient) -> Answer:
+    reported(store_of(client), "done")
+    card = card_for(page_of(client), ESSAY_ID)
+    refuse_writes(client)
+    return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
+
+
+def no_choice(client: TestClient) -> Answer:
+    return save(client, week_card(client), None, "kept")
+
+
+def note_too_long(client: TestClient) -> Answer:
+    return save(client, week_card(client), "done", "x" * 501)
+
+
+def saved(client: TestClient) -> Answer:
+    return save(client, week_card(client), "done")
+
+
+def saved_again(client: TestClient) -> Answer:
+    card = week_card(client)
+    assert save(client, card, "done").status_code == 303
+    return save(client, card, "done")
+
+
+def undone(client: TestClient) -> Answer:
+    reported(store_of(client), "done")
+    card = card_for(page_of(client), ESSAY_ID)
+    return client.post(UNDO, data=form_fields(card, UNDO), headers=PAGE_HEADERS)
 
 
 # ------------------------------------------------------------- her reports, in a store alone

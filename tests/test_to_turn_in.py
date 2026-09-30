@@ -36,6 +36,7 @@ from blossom.routes.navigation import (
     assignment_anchor,
     details_href,
     result_anchor,
+    update_choice_anchor,
 )
 from blossom.routes.runs import NOTHING_TO_SCHEDULE
 from blossom.routes.student import (
@@ -62,6 +63,8 @@ from tests.support import (
     HER_PAGE,
     HERS,
     PAGE_HEADERS,
+    QUIZ_ID,
+    READING_LOG_ID,
     SAME_ORIGIN,
     THEIRS,
     Answer,
@@ -82,7 +85,6 @@ from tests.support import (
     with_clock,
 )
 
-QUIZ_ID = "assignment-vocabulary-quiz"
 ALGEBRA_ID = "assignment-algebra-set"
 EMPTY = "Nothing is on your To turn in list."
 PRESS = "I turned it in"
@@ -1584,8 +1586,6 @@ def test_a_card_on_her_week_and_the_way_back_to_it_land_on_the_card_for_any_id(n
 
 # ------------------------- a list form is held to what stands, where the write is decided
 
-READING_LOG_ID = "assignment-reading-log"
-
 
 def list_press(origin: str, head: str) -> dict[str, str]:
     """The row's form, made by hand: every field, as the list would write it."""
@@ -1700,8 +1700,9 @@ def test_every_way_to_a_card_lands_on_that_card_when_another_id_differs_only_by_
     way back, a refusal's link, a save, the same save again, the link to something worth
     checking, Change, keeping it as it is, and an undo, the place reached is the one
     assignment's, active or under Reported done with that fold open, and the other's
-    record is as it was. The paths are decoded as a server decodes them, once, which for
-    an id that holds an escaped percent sign is not what the test client does by itself."""
+    record is as it was; Change reaches the choices of the form it opens. The paths are
+    decoded as a server decodes them, once, which for an id that holds an escaped percent
+    sign is not what the test client does by itself."""
     other = next(name for name in PAIR if name != target)
     save, undo = report_actions(target)
     with as_served(browser(BLOSSOM_FIXTURE_PATH="")) as client:
@@ -1774,6 +1775,11 @@ def test_every_way_to_a_card_lands_on_that_card_when_another_id_differs_only_by_
         if how in ("a save", "the same save", "an undo"):
             assert f'id="{escape(result_anchor(target))}"' in tag, how
             assert 'class="note update-result"' in tag, how
+            assert tag in card_for(page, target), how
+            assert tag not in card_for(page, other), how
+        elif how == "Change":
+            assert f'id="{escape(update_choice_anchor(target))}"' in tag, how
+            assert '<fieldset class="choice"' in tag, how
             assert tag in card_for(page, target), how
             assert tag not in card_for(page, other), how
         else:

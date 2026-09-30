@@ -36,10 +36,12 @@ from blossom.reconciliation import SourceChannel
 from blossom.routes.navigation import NEW_NOTE_PAGE, NOTE_ACTIONS, NOTES_PAGE, TO_TURN_IN_PAGE
 from blossom.settings import REPOSITORY_ROOT
 from tests.support import (
+    DETAILS,
     ESSAY_ID,
     HER_PAGE,
     PAGE_HEADERS,
     PLAN_DATE,
+    QUIZ_ID,
     browser,
     form_fields,
     hidden,
@@ -49,8 +51,8 @@ from tests.support import (
     state_of,
     walkthrough,
 )
+from tests.support import READING_LOG_ID as LOG_ID
 
-DETAILS = f"/student/assignments/{ESSAY_ID}"
 ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
 STATES = ("link", "visited")
 NEVER_ON = {"hover", "focus", "focus-visible", "focus-within", "active"}
@@ -745,7 +747,6 @@ def test_the_darker_action_color_clears_every_tint_and_the_usual_one_does_not() 
 
 
 ALGEBRA_ID = "assignment-algebra-set"
-LOG_ID = "assignment-reading-log"
 TOUCH_HEIGHT_PX = 44
 """The least height of a control on the pages, a button's or a link's: 2.75rem at the root size."""
 BOXED = frozenset({"block", "inline-block", "flex", "inline-flex", "grid", "inline-grid"})
@@ -920,7 +921,6 @@ def test_the_height_check_fails_when_the_hand_in_rule_stops_doing_its_work(
 
 SCIENCE_ID = "assignment-science-fair-proposal"
 COVER_ID = "assignment-textbook-cover"
-QUIZ_ID = "assignment-vocabulary-quiz"
 HER_ROWS = frozenset({"a row of her To turn in list"})
 UPDATES = frozenset(
     {

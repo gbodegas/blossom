@@ -29,14 +29,13 @@ from tests.support import (
     signed_in_household,
     state_of,
 )
+from tests.support import QUIZ_ID as QUIZ
+from tests.support import SYLLABUS_ID as SYLLABUS
 
 WINDOW = "Today's planning window is August 19 to August 25, 2026."
 OTHER_WEEK = "Updates show the latest saved information, even when you view a different week."
 IN_THE_WINDOW = "Still unfinished. It can be included in today's plan."
 OUTSIDE = "Saved as Not yet. It is outside today's planning window (August 19 to August 25, 2026)."
-SYLLABUS = "assignment-signed-syllabus"
-QUIZ = "assignment-vocabulary-quiz"
-"""Recorded for August 26, the day after the window, with the school portal saying August 21."""
 
 
 def on_day(day: date) -> TestClient:
