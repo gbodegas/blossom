@@ -24,6 +24,7 @@ from markupsafe import escape
 from blossom.captures import STUDENT, CaptureCreated, UnknownCapture, UnreadableCapture
 from blossom.reconciliation import SourceChannel
 from blossom.routes import note_details as details_routes
+from blossom.routes import note_links as link_routes
 from blossom.routes.navigation import (
     note_action,
     note_add_action,
@@ -519,6 +520,133 @@ def test_the_details_and_search_pages_of_a_note_that_cannot_be_read_are_the_smal
     main = small_page(answer, status=status, alert=alert)
     if status == 503:
         assert try_again(main) == where
+
+
+def asked_page(page: str, name: str, *, family: bool) -> str:
+    """The add or search page's address as the reader asked for it."""
+    if page == "add":
+        return note_add_href(name, family=family)
+    return note_search_href(name, family=family) + "?q=essay"
+
+
+def masthead(answer: Answer) -> tuple[str, str]:
+    """The page the masthead marks as current, and the words of its link to her week."""
+    head = answer.text.split('<main id="main">', 1)[0]
+    current = re.findall(r'<a href="([^"]*)" aria-current="page">', head)
+    week = re.search(r'<a href="/student/due-this-week"[^>]*>([^<]*)</a>', head)
+    assert len(current) == 1
+    assert week is not None
+    return current[0], week.group(1)
+
+
+@pytest.mark.parametrize("page", ["add", "search"])
+@pytest.mark.parametrize("kind", [sqlite3.OperationalError, sqlite3.DatabaseError])
+@pytest.mark.parametrize(
+    ("family", "reader"),
+    [(False, "her"), (False, "parent"), (False, "open"), (True, "parent"), (True, "open")],
+)
+def test_the_small_page_for_a_note_that_cannot_be_read_stays_in_the_tree_asked_for(
+    page: str,
+    kind: type[Exception],
+    family: bool,
+    reader: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, "her" if reader == "parent" else reader)
+        name = a_note(client)
+        sign_in_as(client, reader)
+        where = asked_page(page, name, family=family)
+        monkeypatch.setattr(state_of(client).project_state, "sound_capture_history", refusing(kind))
+        answers = [client.get(where, headers=PAGE_HEADERS) for _ in range(2)]
+        monkeypatch.undo()
+        healthy = client.get(where, headers=PAGE_HEADERS)
+
+    parent = reader == "parent" or (reader == "open" and family)
+    for answer in answers:
+        main = small_page(answer, status=503, alert=NOTE_UNAVAILABLE)
+        assert try_again(main) == where
+        assert ways_back_of(main)[-1] == week_link("parent" if parent else "her")
+        current = "/parent" if family else "/student/due-this-week"
+        assert masthead(answer) == (current, "Student week" if parent else "My week")
+    assert healthy.status_code == 200
+
+
+@pytest.mark.parametrize("href", [note_href, note_help_href, note_delete_href])
+@pytest.mark.parametrize("reader", ["her", "open"])
+def test_the_small_page_of_her_own_note_pages_stays_in_her_tree(
+    href: Callable[[str], str], reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        name = a_note(client)
+        refused = refusing(sqlite3.OperationalError)
+        monkeypatch.setattr(state_of(client).project_state, "sound_capture_history", refused)
+        answer = client.get(href(name), headers=PAGE_HEADERS)
+        monkeypatch.undo()
+
+    main = small_page(answer, status=503, alert=NOTE_UNAVAILABLE)
+    assert try_again(main) == href(name)
+    assert masthead(answer) == ("/student/due-this-week", "My week")
+
+
+@pytest.mark.parametrize("page", ["add", "search"])
+@pytest.mark.parametrize("kind", [sqlite3.OperationalError, sqlite3.DatabaseError])
+@pytest.mark.parametrize(("family", "reader"), [(False, "her"), (True, "parent")])
+def test_a_note_read_that_fails_is_rolled_back_before_the_small_page_is_made(
+    page: str,
+    kind: type[Exception],
+    family: bool,
+    reader: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, "her" if reader == "parent" else reader)
+        name = a_note(client)
+        sign_in_as(client, reader)
+        store = state_of(client).project_state
+        routes = details_routes if page == "add" else link_routes
+        made = routes.note_unavailable
+        reading: list[bool] = []
+
+        def made_after(*args: object, **kwargs: object) -> object:
+            reading.append(store._connection.in_transaction)
+            return made(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "note_unavailable", made_after)
+        with Statements(state_of(client)) as seen:
+            monkeypatch.setattr(store, "sound_capture_history", refusing(kind, seen))
+            answer = client.get(asked_page(page, name, family=family), headers=PAGE_HEADERS)
+        monkeypatch.undo()
+
+    small_page(answer, status=503, alert=NOTE_UNAVAILABLE)
+    assert seen[seen.index("FAILED HERE") + 1 :] == ([] if page == "add" else ["ROLLBACK"])
+    assert reading == [False]
+
+
+@pytest.mark.parametrize("page", ["add", "search"])
+@pytest.mark.parametrize(("family", "reader"), [(False, "her"), (True, "parent")])
+def test_the_add_and_search_pages_while_the_file_is_held_commit_nothing(
+    page: str, family: bool, reader: str, tmp_path: pathlib.Path
+) -> None:
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, "her" if reader == "parent" else reader)
+        name = a_note(client)
+        sign_in_as(client, reader)
+        where = asked_page(page, name, family=family)
+        with Statements(state_of(client)) as seen, HeldByAnother(database_of(client)):
+            answer = client.get(where, headers=PAGE_HEADERS)
+        healthy = client.get(where, headers=PAGE_HEADERS)
+
+    small_page(answer, status=503, alert=NOTE_UNAVAILABLE)
+    assert masthead(answer)[0] == ("/parent" if family else "/student/due-this-week")
+    ran = [line.strip().upper() for line in seen]
+    assert "COMMIT" not in ran
+    assert ran[-1] == "ROLLBACK"
+    assert len([line for line in ran if line not in ("ROLLBACK", "BEGIN DEFERRED")]) == 1
+    assert healthy.status_code == 200
 
 
 # ------------------------------------------------------------- a refusal on the note page

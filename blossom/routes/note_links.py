@@ -212,60 +212,73 @@ def search_page(
     # One reading for everything the page shows: the note and its line, the note's own
     # link, the page of results, and the homework chosen, read with the same rows whether
     # or not the words still find it, so nothing on the page comes from another reading.
-    with store.reading():
-        try:
-            found_note = store.sound_capture_history(capture_id)
-        except sqlite3.Error as error:
-            if form is not None:
+    # A read that fails ends the reading, rolled back, before any page says so.
+    unread: sqlite3.Error | None = None
+    try:
+        with store.reading():
+            try:
+                found_note = store.sound_capture_history(capture_id)
+            except sqlite3.Error as error:
+                if form is None:
+                    unread = error
                 raise
-            return note_unavailable(
-                request, state, note_search_href(capture_id, family=way.family), error
+            except UnreadableCapture:
+                if form is not None:
+                    # A refusal of who pressed stands whatever became of the note, and so do the
+                    # words of a save the file refused.
+                    kept = problem and (
+                        status_code == status.HTTP_403_FORBIDDEN or problem == NOT_SAVED
+                    )
+                    said = problem if kept else None
+                    return plain_search(request, state, form, said or NOTE_UNREADABLE, status_code)
+                return unreadable(request, state, status_code)
+            if found_note is None:
+                if form is not None:
+                    said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
+                    return plain_search(request, state, form, said or NOTE_GONE, status_code)
+                return gone(request, state)
+            note = found_note[0]
+            joined = note.assignment_id is not None and note.assignment_id != derived_assignment_id(
+                note.capture_id
             )
-        except UnreadableCapture:
-            if form is not None:
-                # A refusal of who pressed stands whatever became of the note, and so do the
-                # words of a save the file refused.
-                kept = problem and (
-                    status_code == status.HTTP_403_FORBIDDEN or problem == NOT_SAVED
-                )
-                said = problem if kept else None
-                return plain_search(request, state, form, said or NOTE_UNREADABLE, status_code)
-            return unreadable(request, state, status_code)
-        if found_note is None:
-            if form is not None:
-                said = problem if status_code == status.HTTP_403_FORBIDDEN and problem else None
-                return plain_search(request, state, form, said or NOTE_GONE, status_code)
-            return gone(request, state)
-        note = found_note[0]
-        joined = note.assignment_id is not None and note.assignment_id != derived_assignment_id(
-            note.capture_id
-        )
-        leaving = note.assignment_id if joined else None
-        if leaving is not None:
-            current = store.one_assignment(leaving)
-        if refused is not None:
-            problem = problem or refused
-        elif number is None or (not terms and number != 1):
-            problem = problem or NO_SUCH_PAGE
-            status_code = (
-                status.HTTP_404_NOT_FOUND if status_code == status.HTTP_200_OK else status_code
-            )
-        elif terms:
-            results = page_of(found(store.all_assignments(), terms), number)
-            if results is None:
+            leaving = note.assignment_id if joined else None
+            if leaving is not None:
+                current = store.one_assignment(leaving)
+            if refused is not None:
+                problem = problem or refused
+            elif number is None or (not terms and number != 1):
                 problem = problem or NO_SUCH_PAGE
                 status_code = (
                     status.HTTP_404_NOT_FOUND if status_code == status.HTTP_200_OK else status_code
                 )
-        shown = list(results.items) if results is not None else []
-        beside = None
-        if selected and selected not in {item.assignment_id for item in shown}:
-            beside = store.one_assignment(selected)
-            chosen_gone = beside is None
-        readings = readings_for(store, [*shown, *([beside] if beside is not None else [])])
-        rows = [row_of(item, parent=parent) for item in readings[: len(shown)]]
-        if beside is not None:
-            chosen_row = row_of(readings[-1], parent=parent)
+            elif terms:
+                results = page_of(found(store.all_assignments(), terms), number)
+                if results is None:
+                    problem = problem or NO_SUCH_PAGE
+                    status_code = (
+                        status.HTTP_404_NOT_FOUND
+                        if status_code == status.HTTP_200_OK
+                        else status_code
+                    )
+            shown = list(results.items) if results is not None else []
+            beside = None
+            if selected and selected not in {item.assignment_id for item in shown}:
+                beside = store.one_assignment(selected)
+                chosen_gone = beside is None
+            readings = readings_for(store, [*shown, *([beside] if beside is not None else [])])
+            rows = [row_of(item, parent=parent) for item in readings[: len(shown)]]
+            if beside is not None:
+                chosen_row = row_of(readings[-1], parent=parent)
+    except sqlite3.Error:
+        if unread is None:
+            raise
+        return note_unavailable(
+            request,
+            state,
+            note_search_href(capture_id, family=way.family),
+            unread,
+            family=way.family,
+        )
     if selected and problem in (HOMEWORK_CHANGED, HOMEWORK_GONE):
         # The store refused on what it read; the page says the homework chosen as its own
         # reading finds it, gone or standing, so the sentence and the rows agree.

@@ -738,7 +738,13 @@ def details_page(
     except sqlite3.Error as error:
         if form is not None:
             raise
-        return note_unavailable(request, state, note_add_href(capture_id, family=way.family), error)
+        return note_unavailable(
+            request,
+            state,
+            note_add_href(capture_id, family=way.family),
+            error,
+            family=way.family,
+        )
     except UnreadableCapture:
         if form is None:
             return unreadable(request, state, status_code)

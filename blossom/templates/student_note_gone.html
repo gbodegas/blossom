@@ -1,11 +1,12 @@
 {% extends "base.html" %}
-{% set page = "student" %}
+{% set page = "parent" if family is defined and family else "student" %}
 {% block title %}Blossom - Homework note{% endblock %}
 {#
   The small page for a homework note that is not on record, or whose row
   cannot be read right now: said plainly, with safe ways back. There is no
   form, nothing of any other note is shown, and nothing is written. When the
-  file can't be read, ``again`` is the same address, to ask for once more.
+  file can't be read, ``again`` is the same address, to ask for once more,
+  and ``family`` keeps a page asked for in the family's tree there.
 #}
 {% block content %}
   {% for link in ways_back %}

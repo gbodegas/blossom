@@ -659,10 +659,12 @@ def note_unavailable(
     said: str = NOTE_UNAVAILABLE,
     added: bool = False,
     week_fragment: str = "",
+    family: bool = False,
 ) -> HTMLResponse:
     """A note's page that is only read, when a read of the file for it fails: 503, the small
-    page with what can't be shown, and the same address to ask for again. Nothing is read
-    here, and the failure is logged by its kind alone."""
+    page with what can't be shown, and the same address to ask for again; ``family`` for a
+    page in the family's tree. Nothing is read here, and the failure is logged by its kind
+    alone."""
     logger.warning("%s could not be read: %s", path, type(error).__name__)
     links = ways_back(request, added=added)
     if week_fragment:
@@ -674,6 +676,7 @@ def note_unavailable(
             "problem": said,
             "again": asked_address(path, request.scope["query_string"]),
             "ways_back": links,
+            "family": family,
             "sample": state.settings.sample,
         },
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
