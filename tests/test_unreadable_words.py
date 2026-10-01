@@ -13,14 +13,17 @@ import pathlib
 import sqlite3
 import traceback
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from datetime import UTC, date, datetime
-from typing import NamedTuple
+from typing import NamedTuple, NoReturn
 
 import pytest
 from fastapi.testclient import TestClient
 
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved
+from blossom.routes import hand_in as hand_in_routes
+from blossom.routes import parent as parent_routes
+from blossom.routes import student as student_routes
 from blossom.routes.navigation import TO_TURN_IN_PAGE, note_action
 from blossom.stores.help_requests import HelpRequestsStore, UnreadableHelpRequest
 from blossom.stores.project_state import (
@@ -31,6 +34,7 @@ from blossom.stores.project_state import (
     Saved,
     StudentReport,
     UnreadableEvent,
+    student_report_from,
 )
 from tests.support import (
     ESSAY_ID,
@@ -555,10 +559,6 @@ def handed_in(client: TestClient) -> dict[str, str]:
     return form_fields(client.get(saved.headers["location"]).text, f"{ACTIONS}/undo-hand-in")
 
 
-def a_hand_in_past_the_limit(client: TestClient) -> None:
-    damage(client, DAMAGES["past the limit"]["hand_in_events"])
-
-
 @pytest.mark.parametrize("damaged", list(DAMAGES))
 @pytest.mark.parametrize("press", ["saved", "undone"])
 def test_her_hand_in_pressed_over_one_that_cannot_be_read_logs_none_of_her_words(
@@ -627,25 +627,66 @@ def test_a_check_pressed_over_one_that_cannot_be_read_logs_none_of_its_words(
     assert words_in(logged(records)) == []
 
 
-def refused_help(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Callable[[], object]:
-    monkeypatch.setattr(
-        state_of(client).help_requests, "ask_once", refusing(sqlite3.OperationalError)
-    )
+Read = Callable[..., NoReturn]
+
+
+def update_read(client: TestClient) -> Read:
+    """A read that meets her damaged update: whatever the store raises for its row, raised
+    where a page is made or a plan is run, whether or not those read it themselves."""
+    store = state_of(client).project_state
+
+    def read(*_: object, **__: object) -> NoReturn:
+        row = store._connection.execute(
+            "SELECT report_id, assignment_id, operation, status, note, reported_at, "
+            "reported_on, previous_report_id, undoes_report_id FROM student_reports "
+            "WHERE assignment_id = ?",
+            (ESSAY_ID,),
+        ).fetchone()
+        student_report_from(row)
+        msg = "her damaged update was read"
+        raise AssertionError(msg)
+
+    return read
+
+
+def updated(client: TestClient) -> None:
+    report(client, ESSAY_ID, "done", UPDATE)
+
+
+def refused_update(
+    client: TestClient, patch: pytest.MonkeyPatch, read: Read
+) -> Callable[[], object]:
+    updated(client)
+    week = {"week": FIXTURE_WEEK}
+    page = client.get(HER_PAGE, params={**week, "change": ESSAY_ID}).text
+    head = hidden(card_for(page, ESSAY_ID), "expected_report_id")
+    sent = {"status": "not_yet", "note": "", "expected_report_id": head, **week}
+    patch.setattr(student_routes, "result_page", read)
+    return lambda: client.post(f"{ACTIONS}/report", data=sent)
+
+
+def refused_help(client: TestClient, patch: pytest.MonkeyPatch, read: Read) -> Callable[[], object]:
+    updated(client)
+    patch.setattr(state_of(client).help_requests, "ask_once", refusing(sqlite3.OperationalError))
+    patch.setattr(student_routes, "student_page", read)
     sent = {"note": "", "request_id": uuid.uuid4().hex}
     return lambda: client.post("/student/actions/ask-for-help", data=sent, headers=PAGE_HEADERS)
 
 
 def refused_on_the_details(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, patch: pytest.MonkeyPatch, read: Read
 ) -> Callable[[], object]:
+    updated(client)
     handed_in(client)
     sent = {**hand_in_form(client), "state": NEEDS_HAND_IN, "next_action": "", "note": ""}
+    patch.setattr(hand_in_routes, "detail_page", read)
     return lambda: client.post(f"{ACTIONS}/hand-in", data=sent, headers=PAGE_HEADERS)
 
 
 def refused_on_the_list(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, patch: pytest.MonkeyPatch, read: Read
 ) -> Callable[[], object]:
+    updated(client)
     at = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
     kept = state_of(client).project_state.record_hand_in(
         ESSAY_ID, NEEDS_HAND_IN, None, HAND_IN, expected_head=None, now=at, today=date(2026, 8, 19)
@@ -654,46 +695,122 @@ def refused_on_the_list(
     page = client.get(TO_TURN_IN_PAGE).text
     row = page[page.index(f'id="to-turn-in-{ESSAY_ID}"') :]
     sent = form_fields(row, f"{ACTIONS}/hand-in")
+    patch.setattr(hand_in_routes, "on_the_list", read)
     return lambda: client.post(f"{ACTIONS}/hand-in", data=sent, headers=PAGE_HEADERS)
 
 
-def her_plan(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Callable[[], object]:
+def refused_check(
+    client: TestClient, patch: pytest.MonkeyPatch, read: Read
+) -> Callable[[], object]:
+    assert client.post("/parent/inbox/keep", data={"text": MISSING_EMAIL}).status_code == 303
+    updated(client)
+    first = check_row(client)
+    mark = {
+        "basis": hidden(first, "basis"),
+        "expected_check_id": hidden(first, "expected_check_id"),
+    }
+    marked = client.post(
+        f"/parent/actions/checks/{ESSAY_ID}/mark",
+        data={**mark, "note": CHECK},
+        headers=PAGE_HEADERS,
+    )
+    assert marked.status_code == 303
+    checked = check_row(client)
+    again = {"check_id": hidden(checked, "check_id"), "basis": hidden(checked, "basis")}
+    patch.setattr(parent_routes, "review_page", read)
+    return lambda: client.post(
+        f"/parent/actions/checks/{ESSAY_ID}/again", data=again, headers=PAGE_HEADERS
+    )
+
+
+def planned(read: Read) -> Callable[..., Coroutine[object, object, NoReturn]]:
+    async def run(*_: object, **__: object) -> NoReturn:
+        read()
+
+    return run
+
+
+def her_plan(client: TestClient, patch: pytest.MonkeyPatch, read: Read) -> Callable[[], object]:
+    updated(client)
+    patch.setattr(student_routes, "run_plan", planned(read))
     return lambda: client.post("/student/actions/plan", headers=PAGE_HEADERS)
 
 
-def the_familys_plan(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Callable[[], object]:
+def the_familys_plan(
+    client: TestClient, patch: pytest.MonkeyPatch, read: Read
+) -> Callable[[], object]:
+    updated(client)
     sent = whole_form(client.get("/parent", headers=PAGE_HEADERS).text, "/parent/actions/plan")
+    patch.setattr(parent_routes, "run_plan", planned(read))
     return lambda: client.post("/parent/actions/plan", data=sent, headers=PAGE_HEADERS)
 
 
-READ_BACKS: dict[str, Callable[[TestClient, pytest.MonkeyPatch], Callable[[], object]]] = {
-    "her request for help refused": refused_help,
-    "her hand-in refused on the details": refused_on_the_details,
-    "her hand-in refused on the list": refused_on_the_list,
-    "her plan": her_plan,
-    "the family's plan": the_familys_plan,
+class ReadBack(NamedTuple):
+    """A press whose page is made again, or whose plan is run, after something fails: how it
+    is set up with the read that meets her damaged update, and the failure its page logs."""
+
+    set_up: Callable[[TestClient, pytest.MonkeyPatch, Read], Callable[[], object]]
+    logger: str
+    message: str
+
+
+READ_BACKS = {
+    "her update refused": ReadBack(
+        refused_update,
+        "blossom.routes.student",
+        "her page could not be read back after a failed save",
+    ),
+    "her request for help refused": ReadBack(
+        refused_help,
+        "blossom.routes.student",
+        "her page could not be read back after a request for help",
+    ),
+    "her hand-in refused on the details": ReadBack(
+        refused_on_the_details,
+        "blossom.routes.hand_in",
+        "the details could not be read back after a failed hand-in save",
+    ),
+    "her hand-in refused on the list": ReadBack(
+        refused_on_the_list,
+        "blossom.routes.hand_in",
+        "the list could not be read back after a failed hand-in write",
+    ),
+    "a check refused": ReadBack(
+        refused_check,
+        "blossom.routes.parent",
+        "the family page could not be read back after a failed check",
+    ),
+    "her plan": ReadBack(her_plan, "blossom.routes.student", "today's plan failed on the way"),
+    "the family's plan": ReadBack(
+        the_familys_plan,
+        "blossom.routes.parent",
+        f"the plan for {PLAN_DATE.isoformat()} failed on the way",
+    ),
 }
-"""A press whose page is read again, or made, after it fails, with her update on the record.
-Each sets up its press before the damage and makes it after."""
+"""Each page read back after a refused save or request, and each plan, met by a read of her
+update past its limit or not UTF-8. Each sets up its press before the damage, makes it after,
+and logs the read's error where it catches it."""
 
 
 @pytest.mark.parametrize("damaged", list(DAMAGES))
 @pytest.mark.parametrize("press", list(READ_BACKS))
-def test_a_page_made_over_an_update_that_cannot_be_read_logs_none_of_her_words(
+def test_a_page_read_over_an_update_that_cannot_be_read_logs_none_of_her_words(
     press: str, damaged: str, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     caplog.set_level(logging.DEBUG)
+    case = READ_BACKS[press]
     with browser(key=True) as client:
-        report(client, ESSAY_ID, "done", UPDATE)
-        pressed = READ_BACKS[press](client, monkeypatch)
-        damage(client, DAMAGES[damaged]["student_reports"])
-        a_hand_in_past_the_limit(client)
+        pressed = case.set_up(client, monkeypatch, update_read(client))
+        for table in ("student_reports", "hand_in_events", "family_checks"):
+            damage(client, DAMAGES[damaged][table])
         caplog.clear()
-        # Whether the page stands over such a row is not asked here; what it logs is.
+        # A page made again after the failure may meet the same rows; what is logged matters.
         with contextlib.suppress(UnreadableEvent, sqlite3.OperationalError):
             pressed()
         records = list(caplog.records)
 
+    read_as = "UnreadableEvent" if damaged == "past the limit" else "OperationalError"
+    assert (case.logger, case.message, read_as) in failures(records)
     assert words_in(logged(records)) == []
 
 
