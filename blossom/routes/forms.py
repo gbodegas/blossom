@@ -21,18 +21,21 @@ the refusal.
 
 A body the form parser can't read at all, multipart it rejects, a part it can't decode in
 the charset the body names, too many fields, or a field too long, is not a form, and no page
-can say what it held. Reading one raises
+can say what it held. Nor is one whose charset decodes a part into half of a character, text
+no page can show and no record keeps. Reading one raises
 ``FormUnreadable``, wherever the form is read: in a handler, through ``form_of``, or by the
 framework for a route whose fields are parameters, through ``FormRoute``. The application
-answers it with one page, which reads no store.
+answers it with one page, which reads no store. The parser's own log lines can quote the
+body it refuses, so they are kept out of the log.
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import aclosing
 from typing import Any, Final
 
-from fastapi import Request, Response
+from fastapi import Depends, Request, Response
 from fastapi.routing import APIRoute
 from python_multipart.exceptions import FormParserError
 from starlette.datastructures import FormData, Headers
@@ -50,6 +53,15 @@ once, from the moment its body starts being read, and a chunk that arrives does 
 it again: past it the copy is given up and the refusal stands without one."""
 URL_ENCODED: Final = "application/x-www-form-urlencoded"
 """The one kind of body a refused press's copy is read from: the kind a page's form sends."""
+PARSER_LOGGER: Final = "python_multipart"
+"""The logger the form parser writes through, with each of its modules' loggers beneath it."""
+
+
+def quiet_the_parser() -> None:
+    """Keep the form parser's own lines out of the log. Its warnings name a byte of the body
+    it refuses, as a number or a character, and the application logs each refusal by its
+    kind alone. Only the parser's logger changes."""
+    logging.getLogger(PARSER_LOGGER).setLevel(logging.CRITICAL + 1)
 
 
 class FormUnreadable(Exception):
@@ -67,10 +79,25 @@ def parser_refused(error: HTTPException) -> bool:
     )
 
 
+def written(form: FormData) -> FormData:
+    """The form, once every text the parser decoded in it, a field's name, its value, or a
+    file's name, is text UTF-8 can write; ``UnicodeEncodeError`` when one holds half of a
+    character. A file's bytes are never decoded, so they are not text here. Nothing is
+    changed."""
+    for name, value in form.multi_items():
+        name.encode("utf-8")
+        if isinstance(value, str):
+            value.encode("utf-8")
+        elif value.filename is not None:
+            value.filename.encode("utf-8")
+    return form
+
+
 async def form_of(request: Request) -> FormData:
-    """The request's form as the parser reads it, or ``FormUnreadable`` when the parser can't."""
+    """The request's form as the parser reads it, or ``FormUnreadable`` when the parser can't,
+    or when the text it read can't be written."""
     try:
-        return await request.form()
+        return written(await request.form())
     except (FormParserError, UnicodeError) as error:
         raise FormUnreadable(type(error).__name__) from error
     except HTTPException as error:
@@ -79,9 +106,27 @@ async def form_of(request: Request) -> FormData:
         raise
 
 
+async def form_read(request: Request) -> None:
+    """A route's first dependency: the form the framework has read, through ``form_of``, so
+    text that can't be written is ``FormUnreadable`` before the handler runs."""
+    await form_of(request)
+
+
 class FormRoute(APIRoute):
     """A route whose form fields are parameters, so the framework reads the form before the
-    handler runs: a body the parser can't read is ``FormUnreadable`` here too."""
+    handler runs: a body the parser can't read is ``FormUnreadable`` here too, and so is text
+    in it that can't be written, before any other dependency of the route."""
+
+    def __init__(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        **options: Any,  # noqa: ANN401  (the framework's own options, passed on as given)
+    ) -> None:
+        given = list(options.pop("dependencies", None) or ())
+        if not any(depends.dependency is form_read for depends in given):
+            given.insert(0, Depends(form_read))
+        super().__init__(path, endpoint, dependencies=given, **options)
 
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         """The framework's handler, with the parser's refusal of the body said as one."""
