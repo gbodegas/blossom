@@ -184,7 +184,10 @@
     row is in: as the check that stands, or, when her update or the
     school's report moved since, as the check that was made, with what
     differs now and Check again, on a row that is open again as on any
-    other. Every row has an id, so a word about it can point at it,
+    other. While her updates can't be read, that check is shown with its
+    day and note only, since nothing can be compared with them, and a
+    form whose check can't be read keeps the note typed in its message.
+    Every row has an id, so a word about it can point at it,
     and takes focus when pointed at. Both forms carry the basis the page
     showed, so neither lands on facts that moved since, and every note
     field names its assignment for a reader who hears the page. Each
@@ -197,7 +200,7 @@
   {% macro check_words(item) %}
     {% if check and check.assignment_id == item.assignment_id %}
       {% if check.said %}<p class="note" role="status">{{ check.said }}</p>{% endif %}
-      {% if check.problem %}<p class="problem" role="alert" id="check-problem-{{ item.assignment_id }}">{{ check.problem }}{% if check.note and (item.checked or not item.basis) %} The note typed with it was not saved: <q>{{ check.note }}</q>{% endif %}</p>{% endif %}
+      {% if check.problem %}<p class="problem" role="alert" id="check-problem-{{ item.assignment_id }}">{{ check.problem }}{% if (check.note or "")|trim and (item.checked or not item.basis or item.checks_unavailable) %} The note typed with it was not saved: <q>{{ check.note }}</q>{% endif %}</p>{% endif %}
     {% endif %}
   {% endmacro %}
   {% macro again_form(item) %}
@@ -214,8 +217,11 @@
   {% macro checked_before(item) %}
     <p class="checked-line note">A parent marked this checked on {{ item.checked_before_on.strftime("%B") }} {{ item.checked_before_on.day }}, and what it rests on differs now: {{ item.differs|join(", and ") }}.{% if item.new_missing %} A report dated by the day it was pasted carries that day, which is not proof of a new warning from the school.{% endif %}{% if item.checked_before_note %} The note with it: <q>{{ item.checked_before_note }}</q>{% endif %}</p>
   {% endmacro %}
+  {% macro check_unweighed(item) %}
+    <p class="checked-line note">A parent marked this checked on {{ item.checked_before_on.strftime("%B") }} {{ item.checked_before_on.day }}.{% if item.checked_before_note %} The note with it: <q>{{ item.checked_before_note }}</q>{% endif %} It can't be compared with her updates or reopened until they can be read.</p>
+  {% endmacro %}
   {% macro check_on_record(item) %}
-    {% if item.checks_unavailable %}<p class="problem">The family check on this assignment can't be read right now. No check can be saved until that record can be read.</p>{% elif item.checked %}{{ checked_line(item) }}{% elif item.checked_before_on %}{{ checked_before(item) }}{{ again_form(item) }}{% endif %}
+    {% if item.checks_unavailable %}<p class="problem">The family check on this assignment can't be read right now. No check can be saved until that record can be read.</p>{% elif item.updates_unavailable and item.checked_before_on %}{{ check_unweighed(item) }}{% elif item.checked %}{{ checked_line(item) }}{% elif item.checked_before_on %}{{ checked_before(item) }}{{ again_form(item) }}{% endif %}
   {% endmacro %}
   {#
     A link back from an assignment's details names its row. When the row is

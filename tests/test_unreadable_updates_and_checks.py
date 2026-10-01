@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from blossom.app import create_app
 from blossom.assignment_status import statuses_for
 from blossom.plans import DailyPlan
+from blossom.routes.parent import update_view
 from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED, NOT_SAVED, NOT_UNDONE
 from tests.support import (
@@ -54,7 +55,9 @@ from tests.support import (
     main_of,
     mark,
     page_of,
+    reading,
     report,
+    reported,
     row_for,
     save,
     scripted_graphs,
@@ -933,3 +936,389 @@ def test_a_first_check_that_cannot_be_read_refuses_a_mark_after_the_latest() -> 
     assert marked.status_code == 500
     assert after == before
     assert CHECK_ON_THE_FAMILY_PAGE in words(row_for(marked.text, ESSAY_ID))
+
+
+# ------------------------------------------------------------- a check beside unknown updates
+CHECKED_ON = f"A parent marked this checked on {PLAN_DATE:%B} {PLAN_DATE.day}."
+NOT_COMPARED = "It can't be compared with her updates or reopened until they can be read."
+NOTE_DAMAGES = {
+    name: UPDATE_DAMAGES[name] for name in ("a note past the limit", "text that is not UTF-8")
+}
+
+
+def checked_then_spoiled(
+    client: TestClient, spoiled: tuple[str, str, str]
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """The essay checked, then her updates damaged: what Check again would send from the page
+    after the damage, the Check again of the page before it, and a Mark checked made before
+    the check."""
+    a_discrepancy(client)
+    row = row_for(family_page(client), ESSAY_ID)
+    marking = {"basis": hidden(row, "basis"), "expected_check_id": "", "note": "Again."}
+    assert mark(client, ESSAY_ID, THEIR_NOTE).status_code == 303
+    checked = row_for(family_page(client), ESSAY_ID)
+    before = {"check_id": hidden(checked, "check_id"), "basis": hidden(checked, "basis")}
+    spoil(store_of(client), *spoiled)
+    return {"check_id": before["check_id"], "basis": ""}, before, marking
+
+
+@pytest.mark.parametrize("spoiled", UPDATE_DAMAGES.values(), ids=UPDATE_DAMAGES.keys())
+def test_a_check_beside_updates_that_cannot_be_read_is_shown_with_no_conclusion_or_check_again(
+    spoiled: tuple[str, str, str],
+) -> None:
+    with browser() as client:
+        checked_then_spoiled(client, spoiled)
+        row = row_for(family_page(client), ESSAY_ID)
+
+    said = words(row)
+    assert HERS_ON_THE_FAMILY_PAGE in said
+    assert f"{CHECKED_ON} The note with it: {THEIR_NOTE} {NOT_COMPARED}" in said
+    assert "her update is not Done" not in said
+    assert "differs now" not in said
+    assert "Check again" not in row
+    assert "/again" not in row
+    assert "Mark checked" not in row
+
+
+@pytest.mark.parametrize("spoiled", UPDATE_DAMAGES.values(), ids=UPDATE_DAMAGES.keys())
+@pytest.mark.parametrize("sent", ["as the page showed it", "from a page made before"])
+def test_check_again_over_updates_that_cannot_be_read_writes_nothing_however_often(
+    spoiled: tuple[str, str, str], sent: str
+) -> None:
+    with browser() as client:
+        after, before, _ = checked_then_spoiled(client, spoiled)
+        store = store_of(client)
+        kept = as_stored(store, "family_checks")
+        form = after if sent == "as the page showed it" else before
+        answers = [
+            client.post(f"/parent/actions/checks/{ESSAY_ID}/again", data=form, headers=PAGE_HEADERS)
+            for _ in range(2)
+        ]
+        stored = as_stored(store, "family_checks")
+
+    assert [answer.status_code for answer in answers] == [500, 500]
+    assert stored == kept
+    for answer in answers:
+        row = row_for(answer.text, ESSAY_ID)
+        assert "The check could not be reopened. Nothing was written." in words(row)
+        assert "Check again" not in row
+
+
+@pytest.mark.parametrize("spoiled", UPDATE_DAMAGES.values(), ids=UPDATE_DAMAGES.keys())
+def test_mark_checked_from_a_page_made_before_her_updates_became_unreadable_writes_nothing(
+    spoiled: tuple[str, str, str],
+) -> None:
+    with browser() as client:
+        a_discrepancy(client)
+        row = row_for(family_page(client), ESSAY_ID)
+        marking = {"basis": hidden(row, "basis"), "expected_check_id": "", "note": THEIR_NOTE}
+        store = store_of(client)
+        spoil(store, *spoiled)
+        kept = as_stored(store, "family_checks")
+        answers = [
+            client.post(action_of(row, "mark"), data=marking, headers=PAGE_HEADERS)
+            for _ in range(2)
+        ]
+        stored = as_stored(store, "family_checks")
+
+    assert [answer.status_code for answer in answers] == [500, 500]
+    assert stored == kept
+    for answer in answers:
+        said = words(row_for(answer.text, ESSAY_ID))
+        assert "The check could not be saved. Nothing was written." in said
+        assert f"The note typed with it was not saved: {THEIR_NOTE}" in said
+
+
+@pytest.mark.parametrize("spoiled", NOTE_DAMAGES.values(), ids=NOTE_DAMAGES.keys())
+def test_a_check_beside_repaired_updates_stands_again_and_reopens_once(
+    spoiled: tuple[str, str, str],
+) -> None:
+    with browser() as client:
+        after, before, _ = checked_then_spoiled(client, spoiled)
+        again_at = f"/parent/actions/checks/{ESSAY_ID}/again"
+        refused = client.post(again_at, data=after, headers=PAGE_HEADERS)
+        store = store_of(client)
+        spoil(store, "student_reports", "note", HER_NOTE)
+        row = row_for(family_page(client), ESSAY_ID)
+        first = client.post(again_at, data=before, headers=PAGE_HEADERS)
+        retry = client.post(again_at, data=before, headers=PAGE_HEADERS)
+        operations = [check.operation for check in store.family_checks(ESSAY_ID)]
+
+    assert refused.status_code == 500
+    assert "A parent marked this checked with her on" in words(row)
+    assert NOT_COMPARED not in words(row)
+    assert "Check again" in row
+    assert (first.status_code, retry.status_code) == (303, 409)
+    assert operations == ["checked", "reopened"]
+
+
+# ------------------------------------------------------- a note typed beside unreadable checks
+FRIDAY = "Teacher will look on Friday."
+MARKUP = '<b>"Friday" & Monday</b>'
+
+
+def a_reopened_row(client: TestClient) -> str:
+    """The essay checked, then reopened: the row worth checking together again."""
+    a_discrepancy(client)
+    assert mark(client, ESSAY_ID, THEIR_NOTE).status_code == 303
+    checked = row_for(family_page(client), ESSAY_ID)
+    reopened = client.post(
+        action_of(checked, "again"),
+        data={"check_id": hidden(checked, "check_id"), "basis": hidden(checked, "basis")},
+        headers=PAGE_HEADERS,
+    )
+    assert reopened.status_code == 303
+    return row_for(family_page(client), ESSAY_ID)
+
+
+def the_older_check_spoiled(client: TestClient, value: str) -> None:
+    """The essay's first check event holds ``value`` as its note, as a damaged file keeps it."""
+    store = store_of(client)
+    first = store._connection.execute(
+        "SELECT check_id FROM family_checks WHERE assignment_id = ? ORDER BY rowid LIMIT 1",
+        (ESSAY_ID,),
+    ).fetchone()[0]
+    if value == NOT_UTF8:
+        store._connection.execute(
+            "UPDATE family_checks SET note = CAST(X'5A45425241FF80' AS TEXT) WHERE check_id = ?",
+            (first,),
+        )
+    else:
+        store._connection.execute(
+            "UPDATE family_checks SET note = ? WHERE check_id = ?", (value, first)
+        )
+    store._connection.commit()
+
+
+OLDER_ROW = {"the older row, 501 characters": "x" * 501, "the older row, not UTF-8": NOT_UTF8}
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [*OLDER_ROW.values(), *CHECK_DAMAGES.values()],
+    ids=[*OLDER_ROW, *(f"every row, {name}" for name in CHECK_DAMAGES)],
+)
+@pytest.mark.parametrize("typed", [FRIDAY, MARKUP], ids=["plain", "markup"])
+def test_a_refused_mark_keeps_the_note_typed_while_the_checks_cannot_be_read(
+    damage: str | tuple[str, str, str], typed: str
+) -> None:
+    with browser() as client:
+        row = a_reopened_row(client)
+        marking = {
+            "basis": hidden(row, "basis"),
+            "expected_check_id": hidden(row, "expected_check_id"),
+            "note": typed,
+        }
+        store = store_of(client)
+        if isinstance(damage, str):
+            the_older_check_spoiled(client, damage)
+        else:
+            spoil(store, *damage)
+        kept = as_stored(store, "family_checks")
+        answers = [
+            client.post(action_of(row, "mark"), data=marking, headers=PAGE_HEADERS)
+            for _ in range(2)
+        ]
+        stored = as_stored(store, "family_checks")
+
+    assert [answer.status_code for answer in answers] == [500, 500]
+    assert stored == kept
+    for answer in answers:
+        refused = row_for(answer.text, ESSAY_ID)
+        assert "<textarea" not in refused
+        assert f"The note typed with it was not saved: {typed}" in words(refused)
+        assert "<b>" not in refused
+
+
+def test_a_blank_note_on_a_row_whose_checks_cannot_be_read_is_not_said_to_be_kept() -> None:
+    with browser() as client:
+        row = a_reopened_row(client)
+        marking = {
+            "basis": hidden(row, "basis"),
+            "expected_check_id": hidden(row, "expected_check_id"),
+            "note": "  \r\n  ",
+        }
+        the_older_check_spoiled(client, "x" * 501)
+        answer = client.post(action_of(row, "mark"), data=marking, headers=PAGE_HEADERS)
+
+    assert answer.status_code == 500
+    refused = row_for(answer.text, ESSAY_ID)
+    assert "The check could not be saved. Nothing was written." in words(refused)
+    assert "The note typed with it was not saved" not in words(refused)
+
+
+def test_a_note_too_long_for_a_row_whose_checks_cannot_be_read_is_kept_on_the_refusal() -> None:
+    typed = "Seen. " * 100
+    with browser() as client:
+        row = a_reopened_row(client)
+        marking = {
+            "basis": hidden(row, "basis"),
+            "expected_check_id": hidden(row, "expected_check_id"),
+            "note": typed,
+        }
+        the_older_check_spoiled(client, "x" * 501)
+        store = store_of(client)
+        kept = as_stored(store, "family_checks")
+        answer = client.post(action_of(row, "mark"), data=marking, headers=PAGE_HEADERS)
+        stored = as_stored(store, "family_checks")
+
+    assert answer.status_code == 422
+    assert stored == kept
+    refused = row_for(answer.text, ESSAY_ID)
+    assert "<textarea" not in refused
+    assert f"The note typed with it was not saved: {typed.strip()}" in words(refused)
+
+
+def test_a_refused_mark_on_a_readable_row_keeps_the_note_in_its_box_only() -> None:
+    with browser() as client:
+        row = a_reopened_row(client)
+        marking = {"basis": hidden(row, "basis"), "expected_check_id": "", "note": FRIDAY}
+        answer = client.post(action_of(row, "mark"), data=marking, headers=PAGE_HEADERS)
+
+    assert answer.status_code == 409
+    refused = row_for(answer.text, ESSAY_ID)
+    assert refused.count(FRIDAY) == 1
+    assert f">{FRIDAY}</textarea>" in refused
+    assert "The note typed with it was not saved" not in words(refused)
+
+
+@pytest.mark.parametrize("value", OLDER_ROW.values(), ids=OLDER_ROW.keys())
+def test_a_mark_refused_over_an_unreadable_check_saves_once_after_the_repair(value: str) -> None:
+    with browser() as client:
+        row = a_reopened_row(client)
+        marking = {
+            "basis": hidden(row, "basis"),
+            "expected_check_id": hidden(row, "expected_check_id"),
+            "note": FRIDAY,
+        }
+        the_older_check_spoiled(client, value)
+        refused = client.post(action_of(row, "mark"), data=marking, headers=PAGE_HEADERS)
+        the_older_check_spoiled(client, THEIR_NOTE)
+        saved = client.post(action_of(row, "mark"), data=marking, headers=PAGE_HEADERS)
+        retry = client.post(action_of(row, "mark"), data=marking, headers=PAGE_HEADERS)
+        checks = store_of(client).family_checks(ESSAY_ID)
+
+    assert (refused.status_code, saved.status_code, retry.status_code) == (500, 303, 303)
+    assert [check.operation for check in checks] == ["checked", "reopened", "checked"]
+    assert checks[-1].note == FRIDAY
+
+
+# ------------------------------------------------------ the plan's rows beside unknown updates
+ESSAY_RATIONALE = "the essay first, while she is fresh"
+LOG_REASON = "a page a night is on track"
+
+
+def plan_row(page: str, assignment_id: str) -> str:
+    """The one row of the current plan that names this assignment, whole."""
+    rows: list[str] = [
+        row
+        for row in re.findall(r'<li class="plan-(?:block|deferral)[^"]*" id=.*?</li>', page, re.S)
+        if f"/student/assignments/{assignment_id}" in row
+    ]
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+def plan_pages(client: TestClient, reader: str) -> dict[str, str]:
+    """Every page that shows today's plan to this reader."""
+    pages = {"her week": page_of(client, show_plan="1")}
+    if reader != "her":
+        pages["the family page"] = family_page(client)
+    return pages
+
+
+@pytest.mark.parametrize("spoiled", UPDATE_DAMAGES.values(), ids=UPDATE_DAMAGES.keys())
+@pytest.mark.parametrize("reader", ["sign-in off", "her", "a parent"])
+def test_a_plan_row_says_when_its_updates_cannot_be_read_until_they_are_repaired(
+    reader: str, spoiled: tuple[str, str, str], tmp_path: pathlib.Path
+) -> None:
+    with reading(reader, tmp_path, graphs=graphs()) as client:
+        store = store_of(client)
+        for assignment_id in (ESSAY_ID, READING_LOG_ID, QUIZ_ID):
+            reported(store, "not_yet", assignment_id)
+        table, column, _ = spoiled
+        held = {
+            assignment_id: store._connection.execute(
+                f"SELECT rowid, {column} FROM {table} WHERE assignment_id = ?",  # noqa: S608
+                (assignment_id,),
+            ).fetchall()
+            for assignment_id in (ESSAY_ID, READING_LOG_ID)
+        }
+        for assignment_id in held:
+            spoil(store, *spoiled, assignment_id=assignment_id)
+        planned = "/parent/actions/plan" if reader == "a parent" else "/student/actions/plan"
+        assert client.post(planned, headers=PAGE_HEADERS).status_code == 303
+        unreadable = plan_pages(client, reader)
+        for rows in held.values():
+            store._connection.executemany(
+                f"UPDATE {table} SET {column} = ? WHERE rowid = ?",  # noqa: S608
+                [(value, rowid) for rowid, value in rows],
+            )
+        store._connection.commit()
+        repaired = plan_pages(client, reader)
+
+    for name, page in unreadable.items():
+        mine = reader != "a parent" and name == "her week"
+        said = YOURS_AS_A_CANDIDATE if mine else HERS_AS_A_CANDIDATE
+        essay, log = plan_row(page, ESSAY_ID), plan_row(page, READING_LOG_ID)
+        assert said in words(essay), name
+        assert said in words(log), name
+        assert ESSAY_RATIONALE in words(essay)
+        assert LOG_REASON in words(log)
+        for row in (essay, log):
+            assert "Done" not in words(row)
+            assert "Not yet" not in words(row)
+        for healthy in ("assignment-science-fair-proposal", QUIZ_ID):
+            assert "can't be read" not in words(plan_row(page, healthy)), name
+        assert "ZEBRA" not in page
+    for name, page in repaired.items():
+        for assignment_id in (ESSAY_ID, READING_LOG_ID):
+            assert "can't be read" not in words(plan_row(page, assignment_id)), name
+
+
+@pytest.mark.parametrize("spoiled", UPDATE_DAMAGES.values(), ids=UPDATE_DAMAGES.keys())
+def test_a_check_beside_updates_that_cannot_be_read_is_said_to_differ_in_nothing(
+    spoiled: tuple[str, str, str],
+) -> None:
+    with browser() as client:
+        checked_then_spoiled(client, spoiled)
+        store = store_of(client)
+        essay = next(item for item in store.all_assignments() if item.assignment_id == ESSAY_ID)
+        view = update_view(essay, statuses_for(store, [ESSAY_ID])[ESSAY_ID])
+
+    assert view.updates_unavailable
+    assert view.checked_before_on is not None
+    assert view.differs == []
+
+
+@pytest.mark.parametrize("press", ["again", "mark"])
+def test_her_updates_damaged_as_a_check_write_begins_refuse_the_write(
+    press: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with browser() as client:
+        a_discrepancy(client)
+        row = row_for(family_page(client), ESSAY_ID)
+        if press == "again":
+            assert mark(client, ESSAY_ID, THEIR_NOTE).status_code == 303
+            checked = row_for(family_page(client), ESSAY_ID)
+            to = action_of(checked, "again")
+            form = {"check_id": hidden(checked, "check_id"), "basis": ""}
+        else:
+            to = action_of(row, "mark")
+            form = {"basis": hidden(row, "basis"), "expected_check_id": "", "note": THEIR_NOTE}
+        store = store_of(client)
+        writing = store._writing
+
+        @contextmanager
+        def damaged_first() -> Iterator[None]:
+            spoil(store, "student_reports", "note", WORDS)
+            with writing():
+                yield
+
+        monkeypatch.setattr(store, "_writing", damaged_first)
+        kept = as_stored(store, "family_checks")
+        answer = client.post(to, data=form, headers=PAGE_HEADERS)
+        stored = as_stored(store, "family_checks")
+
+    assert answer.status_code == 500
+    assert stored == kept

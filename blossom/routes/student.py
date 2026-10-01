@@ -888,6 +888,7 @@ def read_a_plan(
         evidence_for=lambda name: details_href(name, fragment=EVIDENCE, return_to="today"),
         on_record=updates.on_record,
         done=done_marks(updates),
+        unread=updates.unread,
         now=dates,
     )
     return PlanRead(view=view, reading=reading)

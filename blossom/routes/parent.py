@@ -408,6 +408,7 @@ def read_a_plan(
             if not found.needs_homework and found.reported_on is not None
         }
     )
+    unread = frozenset() if updates is None else updates.unread
     view = ApprovalView.from_record(
         record,
         stale=stale,
@@ -424,6 +425,7 @@ def read_a_plan(
         ),
         on_record=None if everything is None else everything.ids,
         done=marks,
+        unread=unread,
         now=dates,
     )
     return PlanRead(view=view, reading=reading)
@@ -1025,7 +1027,8 @@ def update_view(
     a Done that is a new one or a school report that is not the one
     checked, on a row that is open again, or an update that is not Done
     and a school that does not say missing, on a row with nothing to
-    check. The current basis decides only whether the row is open.
+    check. The current basis decides only whether the row is open. While
+    her updates can't be read, nothing is said to differ.
     """
     standing = status.check
     head = status.check_head
@@ -1041,7 +1044,7 @@ def update_view(
             for words, applies in ((NEW_DONE, then[1] != now[1]), (NEW_MISSING, new_missing))
             if applies
         ]
-    elif before is not None:
+    elif before is not None and not status.updates_unavailable:
         differs = [
             words
             for words, applies in (

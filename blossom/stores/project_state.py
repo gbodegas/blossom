@@ -1846,8 +1846,9 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         """Record that a parent checked the discrepancy on an assignment with her, once, as of now.
 
         Under the store's lock and one transaction that reserves the writer
-        before it reads, in this order. Checks with one that cannot be
-        decoded are refused whole, as ``CouldNotSave``. A check the form
+        before it reads, in this order. Checks or her updates with one that
+        cannot be decoded are refused whole, as ``CouldNotSave``, since the
+        basis rests on her updates. A check the form
         names must be one of this assignment's events, or the form proves
         nothing and is refused, ``UnknownCheck``. Then the basis the page was made against
         is compared with ``basis_now``, worked out inside the transaction
@@ -1872,6 +1873,7 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
             with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
                 self._require_readable_checks_locked(assignment_id)
+                self._require_readable_reports_locked(assignment_id)
                 if expected_check is not None:
                     self._require_check_locked(assignment_id, expected_check)
                 head = self._check_head_locked(assignment_id)
@@ -1913,8 +1915,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
     ) -> Reopened | CheckConflict:
         """Reopen the family's check on an assignment, and nothing else.
 
-        Checks with one that cannot be decoded are refused whole, as
-        ``CouldNotSave``. The check the button names must be one of this
+        Checks or her updates with one that cannot be decoded are refused
+        whole, as ``CouldNotSave``. The check the button names must be one of this
         assignment's events, or it is refused, ``UnknownCheck``. Only the
         head can be reopened,
         and only when it marks the row checked: a button that names any
@@ -1934,6 +1936,7 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
             with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
                 self._require_readable_checks_locked(assignment_id)
+                self._require_readable_reports_locked(assignment_id)
                 self._require_check_locked(assignment_id, check_id)
                 head = self._check_head_locked(assignment_id)
                 current = basis_now()

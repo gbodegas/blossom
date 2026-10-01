@@ -98,6 +98,13 @@ class PlanUpdates:
     """Every assignment id on record at that reading, so a row whose assignment is gone
     gets no link, and no other assignment is ever put in its place."""
 
+    @property
+    def unread(self) -> frozenset[str]:
+        """The plan's assignments whose updates can't be read now, which their rows say."""
+        return frozenset(
+            name for name, status in self.statuses.items() if status.updates_unavailable
+        )
+
 
 def plan_updates(
     project_state: ProjectStateStore,
