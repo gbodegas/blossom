@@ -464,24 +464,24 @@ MARKS = (16.0, 48.0, 160.0)
 GAPS = (0.0, 10.4, 20.8)
 WORDS = range(10, 1501, 20)
 """Widths of the mark, the gap and the wordmark, which the stylesheet and the font decide;
-the brand holds for each."""
+the brand holds for each mark and wordmark that fits the line."""
 
 
 @functools.cache
 def keeps_within_the_line(sizing: Sizing) -> bool:
-    """For every line, mark, gap and wordmark, the wordmarks that fill the line exactly and a
-    pixel either side included, the wordmark goes under the mark exactly when the two are
-    wider together than the line. A brand held wider than its line, or narrower, gets some
-    of these wrong."""
+    """For every line, gap, and mark and wordmark no wider than the line, the wordmarks that
+    fill the line exactly and a pixel either side included, the brand is no wider than the
+    line and the wordmark goes under the mark exactly when the two don't fit it together. A
+    wordmark wider than its line could stay within it only by breaking the name."""
     for line in LINES:
         for mark in MARKS:
             for gap in GAPS:
                 fill = line - mark - gap
-                for word in (*WORDS, fill - 1, fill, fill + 1):
-                    if word <= 0:
+                for word in (*WORDS, fill - 1, fill, fill + 1, line):
+                    if word <= 0 or max(mark, word) > line:
                         continue
-                    _, lines = laid_out(sizing, line, mark, gap, word)
-                    if (lines == 2) != (mark + gap + word > line):
+                    width, lines = laid_out(sizing, line, mark, gap, word)
+                    if width > line or (lines == 2) != (mark + gap + word > line):
                         return False
     return True
 
@@ -527,10 +527,10 @@ def entry_columns_fit(sheet: Sheet, page: str, view: View) -> bool:
     )
 
 
-DATE_EM = 6.81
-"""How wide a date field's text and its calendar button are together, in ems of the field's
-text: Edge draws 08/20/2026 in the app's body font 181.5 pixels wide at 32-pixel text, and
-the button 36 pixels."""
+DATE_EM, DATE_PX = 6.656, 10.07
+"""How wide a date field's text and its calendar button are together: ``DATE_EM`` ems of the
+field's text plus ``DATE_PX`` pixels. That holds the empty field's mm/dd/yyyy and the widest
+date from 2026 through 2029, 04/04/2026, as Edge draws them in the app's body font."""
 INSETS = (
     "margin-left",
     "margin-right",
@@ -599,9 +599,9 @@ def laid_out_otherwise(sheet: Sheet, element: Element, view: View) -> str | None
 
 
 def date_room(sheet: Sheet, page: str, view: View) -> list[float]:
-    """For each date field of Add assignments, how much wider than its date and its calendar
-    button the field's text box is on ``view``, in pixels; below zero, the field clips the
-    date being edited. Each element on the way down from the page takes its margins,
+    """For each date field of Add assignments, how much wider than its widest text and its
+    calendar button the field's text box is on ``view``, in pixels; below zero, the field
+    clips a date being edited. Each element on the way down from the page takes its margins,
     borders and padding from the width, and the entry form's column is never narrower than
     its floor."""
     fields = [one for one in adding_of(page) if one.attributes.get("type") == "date"]
@@ -628,7 +628,7 @@ def date_room(sheet: Sheet, page: str, view: View) -> list[float]:
             if above.tag == "form":
                 columns = value_of(sheet, above, "grid-template-columns", view)
                 width = floor_px(columns or "", width, view)
-        room.append(width - DATE_EM * view.root_text)
+        room.append(round(width - DATE_EM * view.root_text - DATE_PX, 6))
     return room
 
 
@@ -1046,12 +1046,22 @@ DATES_RULE = """  #add-assignments > .panel {
 
 
 @pytest.mark.parametrize("view", DATE_VIEWS, ids=str)
-def test_a_date_field_shows_the_whole_date_while_it_is_edited(
+def test_a_date_field_has_room_for_its_text_and_button(
     rendered: dict[str, str], view: View
 ) -> None:
     sheet = read_sheet(stylesheet())
     for name, page in family(rendered).items():
         assert min(date_room(sheet, page, view)) >= 0, name
+
+
+@pytest.mark.parametrize(
+    ("text", "date", "empty"), [(16, 115.47, 116.55), (24, 168.17, 169.8), (32, 220.86, 223.03)]
+)
+def test_the_date_room_leaves_what_edge_draws_at_each_text_size(
+    text: int, date: float, empty: float
+) -> None:
+    """Edge's widths for 04/04/2026 and for mm/dd/yyyy, each with the calendar button."""
+    assert max(date, empty) <= DATE_EM * text + DATE_PX <= max(date, empty) + 0.5
 
 
 CARD_EDGES = {
@@ -1131,22 +1141,22 @@ def test_the_card_check_fails_when_the_card_keeps_part_of_its_edge(
 @pytest.mark.parametrize(
     ("added", "room"),
     [
-        pytest.param("#add-assignments > .panel { border: 10vw solid red; }", -56.72, id="vw"),
+        pytest.param("#add-assignments > .panel { border: 10vw solid red; }", -61.862, id="vw"),
         pytest.param(
             "#add-assignments > .panel { border-left: 10vw solid; border-right: 10vw solid; }",
-            -56.72,
+            -61.862,
             id="vw-sides",
         ),
         pytest.param(
-            "#add-assignments > .panel { border: min(10vw, 1rem) solid; }", -56.72, id="min"
+            "#add-assignments > .panel { border: min(10vw, 1rem) solid; }", -61.862, id="min"
         ),
         pytest.param(
             "#add-assignments { border: 3px solid; }"
             " #add-assignments > .panel { border: inherit; }",
-            -4.72,
+            -9.862,
             id="inherit",
         ),
-        pytest.param("#add-assignments input { border: 10vw solid red; }", -54.72, id="field-vw"),
+        pytest.param("#add-assignments input { border: 10vw solid red; }", -59.862, id="field-vw"),
     ],
 )
 def test_the_date_room_counts_every_border_a_browser_draws(
@@ -1249,8 +1259,8 @@ def test_the_resolver_reads_attribute_names_in_any_case_and_a_comment_as_a_space
         ),
         pytest.param(DATES_RULE.replace("    border: 0;\n", ""), True, id="card-border"),
         pytest.param(DATES_RULE.replace("min(0.85rem, 2vw)", "0.85rem"), False, id="field-padding"),
-        pytest.param(DATES_RULE.replace("2vw", "3.2vw"), False, id="padding-just-over"),
-        pytest.param(DATES_RULE.replace("2vw", "3.1vw"), True, id="padding-just-under"),
+        pytest.param(DATES_RULE.replace("2vw", "2.4vw"), False, id="padding-just-over"),
+        pytest.param(DATES_RULE.replace("2vw", "2.3vw"), True, id="padding-just-under"),
         pytest.param(
             DATES_RULE.replace("#add-assignments input,\n", ""), False, id="inputs-left-out"
         ),
@@ -1284,7 +1294,7 @@ def test_the_date_room_comes_from_every_inset_on_the_way_down() -> None:
         " input { border: 1px solid; padding: 0 0.5rem; }"
     )
     wide, narrow = View(1000), View(200)
-    need = 6.81 * 16
+    need = 6.656 * 16 + 10.07
     assert date_room(read_sheet(base), page, wide) == pytest.approx([208 - 18 - need] * 2)
     assert date_room(read_sheet(base), page, narrow) == pytest.approx([180 - 18 - need] * 2)
     insets = base + " section { margin: 0 3px; border-left: 2px solid; padding-right: 1em; }"
@@ -1293,6 +1303,10 @@ def test_the_date_room_comes_from_every_inset_on_the_way_down() -> None:
     )
     held = read_sheet(base + " main { max-width: 10rem; }")
     assert date_room(held, page, wide) == pytest.approx([160 - 20 - 18 - need] * 2)
+    exact = read_sheet(base + " main { max-width: 154.566px; }")
+    assert date_room(exact, page, wide) == [0, 0]
+    short = read_sheet(base + " main { max-width: 154.556px; }")
+    assert max(date_room(short, page, wide)) < 0
     for unread in (" input { font-size: 0.9rem; }", " form { box-sizing: content-box; }"):
         with pytest.raises(UnreadCss):
             date_room(read_sheet(base + unread), page, wide)
@@ -1401,6 +1415,41 @@ def test_the_brand_takes_two_lines_one_pixel_past_a_fit() -> None:
     assert laid_out(replace(content, most="10rem", root_text=32), 240, 48, 20, 172) == (240, 1)
     with pytest.raises(UnreadCss):
         laid_out(replace(content, width="calc(100% - 1rem)"), 240, 48, 20, 100)
+
+
+def test_the_brand_sweep_takes_each_mark_and_wordmark_that_fits_the_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Up to the line's width exactly; a wider one could stay within it only by breaking."""
+    taken: list[tuple[float, float, float]] = []
+    real = laid_out
+
+    def recorded(
+        sizing: Sizing, line: float, mark: float, gap: float, word: float
+    ) -> tuple[float, int]:
+        taken.append((line, mark, word))
+        return real(sizing, line, mark, gap, word)
+
+    monkeypatch.setitem(globals(), "laid_out", recorded)
+    assert keeps_within_the_line.__wrapped__(Sizing(True, "auto", "auto", "none", False, 16))
+    assert all(max(mark, word) <= line for line, mark, word in taken)
+    assert any(word == line for line, _, word in taken)
+    assert (160, 160.0) in {(line, mark) for line, mark, _ in taken}
+    assert {line for line, _, _ in taken} == set(LINES)
+
+
+@pytest.mark.parametrize(("past", "holds"), [(0.0, True), (0.01, False), (1.0, False)])
+def test_the_brand_check_fails_where_the_brand_is_wider_than_its_line(
+    monkeypatch: pytest.MonkeyPatch, past: float, holds: bool
+) -> None:
+    def wider(
+        sizing: Sizing, line: float, mark: float, gap: float, word: float
+    ) -> tuple[float, int]:
+        return line + past, 2 if mark + gap + word > line else 1
+
+    monkeypatch.setitem(globals(), "laid_out", wider)
+    sizing = Sizing(True, "auto", "auto", "none", True, 16)
+    assert keeps_within_the_line.__wrapped__(sizing) is holds
 
 
 @pytest.mark.parametrize(
