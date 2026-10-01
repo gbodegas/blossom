@@ -143,8 +143,12 @@ summary {
   color: var(--blue-deeper);
 }
 
+/* The page links and the sign-out control wrap as whole controls when they are wider
+   together than the line: on a phone with large text, or beside the brand on a tablet with
+   large text. Where they fit one line, they stay on it. */
 .places {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.35rem;
 }
 
@@ -1174,6 +1178,13 @@ form.inline button {
     align-items: flex-start;
   }
 
+  /* With the masthead a column, the brand has the line to itself, and the wordmark goes
+     under the mark when the two are wider together than the line. In a row the brand
+     keeps one line and the page links give way. */
+  .brand {
+    flex-wrap: wrap;
+  }
+
   article,
   .panel {
     padding: 1.1rem 1.2rem;
@@ -1209,11 +1220,21 @@ select {
   min-height: 2.75rem;
 }
 
+/* A column is 13rem or wider where 13rem fits, and never wider than the form, so a phone
+   with large text gets one column the width of the card. */
 .entry {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr));
   gap: 0.75rem 1rem;
   align-items: end;
+}
+
+/* On a phone with large text, a word such as "assignments" in a button is wider than the
+   card. The labels and buttons of Add assignments break such a word where they must, so
+   no control runs past the card; a line that fits is as it was. */
+#add-assignments label,
+#add-assignments button {
+  overflow-wrap: anywhere;
 }
 
 .entry .actions {
