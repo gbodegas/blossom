@@ -23,6 +23,7 @@ never assumed either way.
 """
 
 import functools
+import math
 import pathlib
 import re
 from dataclasses import dataclass, field, replace
@@ -65,6 +66,9 @@ INHERITED = frozenset(
 
 
 VIEWS = [View(width, browser, root) for width in WIDTHS for browser, root in TEXT_SIZES.values()]
+ROW_VIEWS = [*VIEWS, View(481, 16, 32), View(540, 16, 32), View(600, 16, 32), View(961, 32, 32)]
+"""Every view, and the widths just above the narrow layout, where the masthead is a row
+again and its line is shortest."""
 
 
 # ------------------------------------------------------------- the pages, as elements
@@ -344,10 +348,36 @@ def links_wrap(sheet: Sheet, page: str, view: View) -> bool:
         return False
     if not column(sheet, head[0], view):
         least = value_of(sheet, nav[0], "min-width", view)
-        return not zero(value_of(sheet, nav[0], "flex-shrink", view)) and (
+        shrinks = not zero(value_of(sheet, nav[0], "flex-shrink", view)) and (
             least in (None, "auto", "min-content") or zero(least)
         )
+        wraps = value_of(sheet, head[0], "flex-wrap", view) == "wrap"
+        return shrinks and (wraps or row_fits(sheet, head[0], view))
     return keeps_within_the_line(sizing_of(sheet, head[0], nav[0], view))
+
+
+ROW_PX, ROW_EM = 48, 14.71
+"""How wide a masthead row is at its narrowest: the brand on one line, the masthead's gap,
+and the page links with each control on a line of its own, as ``ROW_PX`` pixels (the mark)
+plus ``ROW_EM`` ems of the root's text. Edge lays out the widest, a parent's links, at
+283.34, 401 and 518.69 px with 16, 24 and 32 px text. They are measured from the stylesheet's
+gaps, link padding and type, so a change to those needs a new measurement."""
+
+
+def row_fits(sheet: Sheet, head: Element, view: View) -> bool:
+    """Whether the brand and the page links at their narrowest fit one masthead row on
+    ``view``, which a masthead that doesn't wrap needs. The masthead's line is the screen less
+    its margins, held to its widest, less its borders and padding."""
+    width = view.width - sum(
+        inset_px(value_of(sheet, head, side, view), view) for side in INSETS[:2]
+    )
+    line = capped(sheet, head, width, view) - sum(
+        (border_px if side.startswith("border") else padding_px)(
+            value_of(sheet, head, side, view), view
+        )
+        for side in INSETS[2:]
+    )
+    return round(ROW_PX + ROW_EM * view.root_text, 6) <= round(line, 6)
 
 
 def column(sheet: Sheet, head: Element, view: View) -> bool:
@@ -527,10 +557,14 @@ def entry_columns_fit(sheet: Sheet, page: str, view: View) -> bool:
     )
 
 
-DATE_EM, DATE_PX = 6.656, 10.07
+DATE_EM, DATE_PX = 7.027, 10.08
 """How wide a date field's text and its calendar button are together: ``DATE_EM`` ems of the
-field's text plus ``DATE_PX`` pixels. That holds the empty field's mm/dd/yyyy and the widest
-date from 2026 through 2029, 04/04/2026, as Edge draws them in the app's body font."""
+field's text plus ``DATE_PX`` pixels. That holds the widest text Edge shows while a date is
+typed, 04/04/0000 once the year's first key is in, with each date part as wide as two zeros,
+the widest digit in the app's body font. A year of five or six digits, which Edge also takes,
+is wider than a narrow phone can show with large text."""
+READER_SPACING_EM = 1.2
+"""What a reader's letter spacing of 0.12em adds across the date's ten characters, in ems."""
 INSETS = (
     "margin-left",
     "margin-right",
@@ -544,7 +578,7 @@ INSETS = (
 def inset_px(value: str | None, view: View) -> float:
     """A margin, border width or padding in pixels: unset, ``auto`` or ``0``; a length in px,
     rem or em (the elements here keep the root's text size) or vw; the ``min`` of such
-    lengths; or a border's ``thin``, ``medium`` or ``thick``."""
+    lengths or of their sums and differences; or a border's ``thin``, ``medium`` or ``thick``."""
     if value is None:
         return 0.0
     named = {"auto": 0.0, "0": 0.0, "thin": 1.0, "medium": 3.0, "thick": 5.0}
@@ -552,12 +586,38 @@ def inset_px(value: str | None, view: View) -> float:
         return named[value]
     least = re.fullmatch(r"min\((.+)\)", value)
     if least:
-        return min(inset_px(one.strip(), view) for one in least.group(1).split(","))
+        return min(summed_px(one.strip(), view) for one in least.group(1).split(","))
+    return length_px(value, view)
+
+
+def summed_px(value: str, view: View) -> float:
+    """An argument of ``min``: a length, or lengths added and taken away with a spaced sign,
+    as a browser reads one. A bare number or keyword there makes the whole value unread."""
+    terms = re.split(r"\s+([-+])\s+", value)
+    total = length_px(terms[0], view)
+    for sign, term in zip(terms[1::2], terms[2::2], strict=True):
+        total += length_px(term, view) if sign == "+" else -length_px(term, view)
+    return total
+
+
+def length_px(value: str, view: View) -> float:
     read = re.fullmatch(r"(\d*\.?\d+)(px|rem|em|vw)", value)
     if read is None:
         raise UnreadCss(value)
     unit = {"px": 1, "rem": view.root_text, "em": view.root_text, "vw": view.width / 100}
     return float(read.group(1)) * unit[read.group(2)]
+
+
+def padding_px(value: str | None, view: View) -> float:
+    """A padding in pixels, which a browser never lets fall below zero."""
+    return max(0.0, inset_px(value, view))
+
+
+def border_px(value: str | None, view: View) -> float:
+    """A border's width as a browser draws it on a screen of one pixel per CSS pixel: one
+    under a pixel takes a whole pixel, and a wider one drops to whole pixels."""
+    width = inset_px(value, view)
+    return 0.0 if width <= 0 else max(1.0, math.floor(width + 1e-9))
 
 
 def capped(sheet: Sheet, element: Element, width: float, view: View) -> float:
@@ -600,10 +660,10 @@ def laid_out_otherwise(sheet: Sheet, element: Element, view: View) -> str | None
 
 def date_room(sheet: Sheet, page: str, view: View) -> list[float]:
     """For each date field of Add assignments, how much wider than its widest text and its
-    calendar button the field's text box is on ``view``, in pixels; below zero, the field
-    clips a date being edited. Each element on the way down from the page takes its margins,
-    borders and padding from the width, and the entry form's column is never narrower than
-    its floor."""
+    calendar button, with a reader's letter spacing, the field's text box is on ``view``, in
+    pixels; below zero, the field clips a date being edited. Each element on the way down
+    from the page takes its margins, borders and padding from the width, and the entry
+    form's column is never narrower than its floor."""
     fields = [one for one in adding_of(page) if one.attributes.get("type") == "date"]
     assert [one.attributes["id"] for one in fields] == ["entry-assigned_on", "entry-due_date"]
     room = []
@@ -624,11 +684,17 @@ def date_room(sheet: Sheet, page: str, view: View) -> list[float]:
         for above in reversed(chain):
             width -= sum(inset_px(value_of(sheet, above, name, view), view) for name in INSETS[:2])
             width = capped(sheet, above, width, view)
-            width -= sum(inset_px(value_of(sheet, above, name, view), view) for name in INSETS[2:])
+            width -= sum(
+                (border_px if name.startswith("border") else padding_px)(
+                    value_of(sheet, above, name, view), view
+                )
+                for name in INSETS[2:]
+            )
             if above.tag == "form":
                 columns = value_of(sheet, above, "grid-template-columns", view)
                 width = floor_px(columns or "", width, view)
-        room.append(round(width - DATE_EM * view.root_text - DATE_PX, 6))
+        need = (DATE_EM + READER_SPACING_EM) * view.root_text + DATE_PX
+        room.append(round(width - need, 6))
     return room
 
 
@@ -884,14 +950,14 @@ def test_the_resolver_reads_each_side_of_a_box_and_the_shrinking_of_a_flex_item(
             read_sheet(unread)
 
 
-@pytest.mark.parametrize("view", VIEWS, ids=str)
+@pytest.mark.parametrize("view", ROW_VIEWS, ids=str)
 def test_the_page_links_and_sign_out_wrap_onto_lines_of_their_own(
     rendered: dict[str, str], view: View
 ) -> None:
     """For her, a signed-in parent, and with the sign-in off, on every screen: the links and
-    the sign-out control wrap rather than run past the edge. On a tablet with the page's
-    text at 200%, the brand and three controls fit a row only by wrapping, so this holds on
-    wide screens too, where everything fits one line and nothing moves."""
+    the sign-out control wrap rather than run past the edge. Just above the narrow layout
+    with the page's text at 200%, the brand and the links don't fit one row, so the masthead
+    wraps them onto a line of their own; where everything fits one line, nothing moves."""
     sheet = read_sheet(stylesheet())
     for name, page in with_nav(rendered).items():
         assert links_wrap(sheet, page, view), name
@@ -1026,10 +1092,29 @@ def test_the_links_check_fails_where_the_links_are_held_wider_than_the_line(
 
 DATE_VIEWS = [
     View(width, browser, root)
-    for width in (320, 330, 340, 360, 390, 420, 480, 600, 768, 820, 960, 1180, 1440, 3840)
+    for width in (
+        320,
+        330,
+        340,
+        360,
+        390,
+        420,
+        480,
+        481,
+        500,
+        540,
+        600,
+        768,
+        820,
+        960,
+        1180,
+        1440,
+        3840,
+    )
     for browser, root in TEXT_SIZES.values()
 ]
 DATES_RULE = """  #add-assignments > .panel {
+    margin-inline: min(0px, 4vw - 1.25rem);
     padding-inline: 0;
     border: 0;
     border-radius: 0;
@@ -1055,13 +1140,18 @@ def test_a_date_field_has_room_for_its_text_and_button(
 
 
 @pytest.mark.parametrize(
-    ("text", "date", "empty"), [(16, 115.47, 116.55), (24, 168.17, 169.8), (32, 220.86, 223.03)]
+    ("text", "typed", "spaced"),
+    [(16, 120.64, 139.83), (24, 175.95, 204.72), (32, 231.22, 269.61)],
 )
 def test_the_date_room_leaves_what_edge_draws_at_each_text_size(
-    text: int, date: float, empty: float
+    text: int, typed: float, spaced: float
 ) -> None:
-    """Edge's widths for 04/04/2026 and for mm/dd/yyyy, each with the calendar button."""
-    assert max(date, empty) <= DATE_EM * text + DATE_PX <= max(date, empty) + 0.5
+    """Edge's widths for 04/04/0000 with the calendar button, with and without a reader's
+    letter spacing, each four widened to a zero (20.99 and 19.14 px at 32 px text)."""
+    zeros = 2 * (20.99 - 19.14) * text / 32
+    assert typed + zeros <= DATE_EM * text + DATE_PX <= typed + zeros + 0.5
+    need = (DATE_EM + READER_SPACING_EM) * text + DATE_PX
+    assert spaced + zeros <= need <= spaced + zeros + 0.5
 
 
 CARD_EDGES = {
@@ -1141,22 +1231,28 @@ def test_the_card_check_fails_when_the_card_keeps_part_of_its_edge(
 @pytest.mark.parametrize(
     ("added", "room"),
     [
-        pytest.param("#add-assignments > .panel { border: 10vw solid red; }", -61.862, id="vw"),
+        pytest.param("#add-assignments > .panel { border: 10vw solid red; }", -57.744, id="vw"),
         pytest.param(
             "#add-assignments > .panel { border-left: 10vw solid; border-right: 10vw solid; }",
-            -61.862,
+            -57.744,
             id="vw-sides",
         ),
         pytest.param(
-            "#add-assignments > .panel { border: min(10vw, 1rem) solid; }", -61.862, id="min"
+            "#add-assignments > .panel { border: min(10vw, 1rem) solid; }", -57.744, id="min"
         ),
         pytest.param(
             "#add-assignments { border: 3px solid; }"
             " #add-assignments > .panel { border: inherit; }",
-            -9.862,
+            -5.744,
             id="inherit",
         ),
-        pytest.param("#add-assignments input { border: 10vw solid red; }", -59.862, id="field-vw"),
+        pytest.param("#add-assignments input { border: 10vw solid red; }", -55.744, id="field-vw"),
+        pytest.param("#add-assignments > .panel { border: 0.5px solid; }", 4.256, id="half-px"),
+        pytest.param("#add-assignments > .panel { border: 0.2vw solid; }", 4.256, id="under-px-vw"),
+        pytest.param("#add-assignments > .panel { border: 1.9px solid; }", 4.256, id="floored"),
+        pytest.param("#add-assignments > .panel { border: 2.5px solid; }", 2.256, id="floored-2"),
+        pytest.param("#add-assignments input { border: 0.5px solid; }", 6.256, id="field-half-px"),
+        pytest.param("#add-assignments input { border: 2.99px solid; }", 4.256, id="field-floored"),
     ],
 )
 def test_the_date_room_counts_every_border_a_browser_draws(
@@ -1221,6 +1317,66 @@ def test_the_links_check_reads_each_spelling_in_a_row(
         assert links_wrap(sheet, page, view) == row_holds, view
 
 
+MASTHEAD_WRAP = """.masthead {
+  display: flex;
+  flex-wrap: wrap;"""
+
+
+@pytest.mark.parametrize(
+    "becomes",
+    [
+        pytest.param(MASTHEAD_WRAP.replace("\n  flex-wrap: wrap;", ""), id="no-wrap"),
+        pytest.param(MASTHEAD_WRAP.replace("wrap;", "nowrap;"), id="nowrap"),
+        pytest.param(MASTHEAD_WRAP.replace("wrap;", "wrap-reverse;"), id="wrap-reverse"),
+        pytest.param(MASTHEAD_WRAP.replace(".masthead {", ".mastheads {"), id="selector-broken"),
+    ],
+)
+def test_the_links_check_fails_where_a_row_that_cannot_wrap_is_too_short(
+    rendered: dict[str, str], becomes: str
+) -> None:
+    assert becomes != MASTHEAD_WRAP
+    sheet = broken(MASTHEAD_WRAP, becomes)
+    for page in with_nav(rendered).values():
+        head = masthead_of(page)[0]
+        assert not links_wrap(sheet, page, View(481, 16, 32))
+        for view in ROW_VIEWS:
+            fits = column(sheet, head, view) or row_fits(sheet, head, view)
+            assert links_wrap(sheet, page, view) == fits, view
+
+
+@pytest.mark.parametrize(
+    ("view", "line"),
+    [(View(1440), 283.36), (View(1440, 16, 32), 518.72), (View(1440, 24, 24), 401.04)],
+    ids=str,
+)
+def test_a_row_that_cannot_wrap_holds_from_exactly_its_narrowest_width(
+    rendered: dict[str, str], view: View, line: float
+) -> None:
+    page = rendered["parent, family"]
+    sides = 2 * 1.25 * view.root_text
+    beside = (view.width - sides - line) / 2
+    for margin, holds in ((beside, True), (beside + 0.01, False)):
+        css = f"{stylesheet()}\n.masthead {{ flex-wrap: nowrap; margin: 0 {margin}px; }}\n"
+        assert links_wrap(read_sheet(css), page, view) == holds, margin
+    room = min(view.width, 46 * view.root_text) - sides - line
+    for border, holds in ((math.floor(room) + 0.99, True), (math.floor(room) + 1, False)):
+        css = f"{stylesheet()}\n.masthead {{ flex-wrap: nowrap; border-left: {border}px solid; }}\n"
+        assert links_wrap(read_sheet(css), page, view) == holds, border
+    for most, holds in ((line + sides, True), (line + sides - 0.01, False)):
+        sheet = read_sheet(
+            f"{stylesheet()}\n.masthead {{ flex-wrap: nowrap; max-width: {most}px; }}\n"
+        )
+        assert links_wrap(sheet, page, view) == holds, most
+        wrapping = read_sheet(f"{stylesheet()}\n.masthead {{ max-width: {most}px; }}\n")
+        assert links_wrap(wrapping, page, view)
+
+
+@pytest.mark.parametrize(("text", "least"), [(16, 283.34), (24, 401.0), (32, 518.69)])
+def test_the_row_model_leaves_what_edge_lays_out_at_each_text_size(text: int, least: float) -> None:
+    """Edge's narrowest masthead row on a parent's page: brand, gap and links."""
+    assert least <= ROW_PX + ROW_EM * text <= least + 0.5
+
+
 def test_the_links_check_reads_a_masthead_stacked_from_the_bottom(
     rendered: dict[str, str],
 ) -> None:
@@ -1259,8 +1415,18 @@ def test_the_resolver_reads_attribute_names_in_any_case_and_a_comment_as_a_space
         ),
         pytest.param(DATES_RULE.replace("    border: 0;\n", ""), True, id="card-border"),
         pytest.param(DATES_RULE.replace("min(0.85rem, 2vw)", "0.85rem"), False, id="field-padding"),
-        pytest.param(DATES_RULE.replace("2vw", "2.4vw"), False, id="padding-just-over"),
-        pytest.param(DATES_RULE.replace("2vw", "2.3vw"), True, id="padding-just-under"),
+        pytest.param(DATES_RULE.replace("2vw", "3vw"), False, id="padding-just-over"),
+        pytest.param(DATES_RULE.replace("2vw", "2.9vw"), True, id="padding-just-under"),
+        pytest.param(
+            DATES_RULE.replace("    margin-inline: min(0px, 4vw - 1.25rem);\n", ""),
+            False,
+            id="page-margin-kept",
+        ),
+        pytest.param(DATES_RULE.replace("4vw", "5vw"), False, id="margin-just-over"),
+        pytest.param(DATES_RULE.replace("4vw", "4.9vw"), True, id="margin-just-under"),
+        pytest.param(
+            DATES_RULE.replace("4vw - 1.25rem", "4vw - 1rem"), False, id="margin-short-of-the-page"
+        ),
         pytest.param(
             DATES_RULE.replace("#add-assignments input,\n", ""), False, id="inputs-left-out"
         ),
@@ -1276,6 +1442,35 @@ def test_the_date_check_fails_where_a_date_field_is_left_too_narrow(
         for browser, root in ((32, 32), (16, 32)):
             assert (min(date_room(sheet, page, View(320, browser, root))) >= 0) == fits
         assert min(date_room(sheet, page, View(320))) >= 0
+
+
+CARD_INSETS_RULE = """#add-assignments > .panel {
+  padding-inline: min(1.6rem, 6vw);
+}"""
+
+
+@pytest.mark.parametrize(
+    ("becomes", "fits"),
+    [
+        pytest.param("", False, id="no-rule"),
+        pytest.param(CARD_INSETS_RULE.replace("6vw", "7.2vw"), False, id="share-just-over"),
+        pytest.param(CARD_INSETS_RULE.replace("6vw", "7.1vw"), True, id="share-just-under"),
+        pytest.param(
+            CARD_INSETS_RULE.replace(" > .panel", " .panels"), False, id="selector-broken"
+        ),
+        pytest.param(CARD_INSETS_RULE, True, id="as-it-is"),
+    ],
+)
+def test_the_date_check_fails_where_the_card_keeps_its_insets_just_above_the_narrow_layout(
+    rendered: dict[str, str], becomes: str, fits: bool
+) -> None:
+    sheet = broken(CARD_INSETS_RULE, becomes)
+    for page in family(rendered).values():
+        assert (min(date_room(sheet, page, View(481, 16, 32))) >= 0) == fits
+        assert min(date_room(sheet, page, View(481))) >= 0
+        for width in (481, 640, 768, 1440):
+            without = date_room(broken(CARD_INSETS_RULE, ""), page, View(width))
+            assert date_room(sheet, page, View(width)) == without, width
 
 
 def test_the_date_room_comes_from_every_inset_on_the_way_down() -> None:
@@ -1294,7 +1489,7 @@ def test_the_date_room_comes_from_every_inset_on_the_way_down() -> None:
         " input { border: 1px solid; padding: 0 0.5rem; }"
     )
     wide, narrow = View(1000), View(200)
-    need = 6.656 * 16 + 10.07
+    need = (7.027 + 1.2) * 16 + 10.08
     assert date_room(read_sheet(base), page, wide) == pytest.approx([208 - 18 - need] * 2)
     assert date_room(read_sheet(base), page, narrow) == pytest.approx([180 - 18 - need] * 2)
     insets = base + " section { margin: 0 3px; border-left: 2px solid; padding-right: 1em; }"
@@ -1303,9 +1498,34 @@ def test_the_date_room_comes_from_every_inset_on_the_way_down() -> None:
     )
     held = read_sheet(base + " main { max-width: 10rem; }")
     assert date_room(held, page, wide) == pytest.approx([160 - 20 - 18 - need] * 2)
-    exact = read_sheet(base + " main { max-width: 154.566px; }")
+    reaching = base + " section { margin-inline: min(0px, 4vw - 1.25rem); }"
+    assert date_room(read_sheet(reaching), page, narrow) == pytest.approx(
+        [180 + 2 * (20 - 8) - 18 - need] * 2
+    )
+    for unread in (
+        "calc(1px)",
+        "1rem + 2px",
+        "min(0, 4vw - 1.25rem)",
+        "min(auto, 1rem)",
+        "min(0px, 4vw - 1.25rem + 0)",
+        "min(0px, 4vw-1.25rem)",
+    ):
+        with pytest.raises(UnreadCss):
+            date_room(read_sheet(base + f" section {{ margin-left: {unread}; }}"), page, narrow)
+    for spelled, px in (
+        ("min(1rem + 2px)", 18),
+        ("min(1rem - 2px)", 14),
+        ("min(10vw - 1rem + 2px)", 6),
+        ("min(0px, 4vw - 1.25rem)", -12),
+        ("min(0px, 20vw - 1.25rem)", 0),
+    ):
+        assert inset_px(spelled, narrow) == pytest.approx(px), spelled
+    below = base + " input { padding: 0 min(0.5rem, 4vw - 2rem); }"
+    flush = base + " input { padding: 0; }"
+    assert date_room(read_sheet(below), page, narrow) == date_room(read_sheet(flush), page, narrow)
+    exact = read_sheet(base + " main { max-width: 179.712px; }")
     assert date_room(exact, page, wide) == [0, 0]
-    short = read_sheet(base + " main { max-width: 154.556px; }")
+    short = read_sheet(base + " main { max-width: 179.702px; }")
     assert max(date_room(short, page, wide)) < 0
     for unread in (" input { font-size: 0.9rem; }", " form { box-sizing: content-box; }"):
         with pytest.raises(UnreadCss):

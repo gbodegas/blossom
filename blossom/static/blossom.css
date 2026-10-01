@@ -114,6 +114,7 @@ summary {
 
 .masthead {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -145,7 +146,9 @@ summary {
 
 /* The page links and the sign-out control wrap as whole controls when they are wider
    together than the line: on a phone with large text, or beside the brand on a tablet with
-   large text. Where they fit one line, they stay on it. */
+   large text. Where they fit one line, they stay on it. When the brand and the links don't
+   fit one row, as just above the narrow layout with the page's text doubled, the masthead
+   wraps and the links take a line of their own. */
 .places {
   display: flex;
   flex-wrap: wrap;
@@ -1172,6 +1175,13 @@ form.inline button {
   text-align: center;
 }
 
+/* Add assignments keeps its card's side insets to a share of the screen's width, so a date
+   field has room for its text when the page's text is doubled on a screen just wider than
+   the narrow layout. */
+#add-assignments > .panel {
+  padding-inline: min(1.6rem, 6vw);
+}
+
 @media (max-width: 30rem) {
   .masthead {
     flex-direction: column;
@@ -1191,10 +1201,12 @@ form.inline button {
   }
 
   /* A date field shows the whole date being edited only when its box is wide enough for
-     it, which on a phone with large text takes nearly the whole screen. On a narrow screen
-     Add assignments sits without its card's side insets, and its fields keep their side
-     padding to a share of the screen's width. */
+     it, which on a phone with large text and a reader's wider letter spacing takes nearly
+     the whole screen. On a narrow screen Add assignments sits without its card's side
+     insets and reaches into the page's side margin, leaving 4% of the screen's width at
+     each edge, and its fields keep their side padding to a share of the screen's width. */
   #add-assignments > .panel {
+    margin-inline: min(0px, 4vw - 1.25rem);
     padding-inline: 0;
     border: 0;
     border-radius: 0;
