@@ -265,10 +265,10 @@ ALREADY_SENT: Final = "That request was already sent."
 SENT: Final = "Sent. Your parents can see the request."
 NOT_ON_THIS_PAGE: Final = "That request is not on this page now."
 CANNOT_CHECK: Final = "That request can't be checked right now."
-"""The lines for the request an address names, checked against the page's one reading:
-sent, for one she has just sent that still waits for a parent; already sent, beside any
-other request on the page; not on this page, when no request there is that one; and can't
-be checked, when that reading failed."""
+"""The lines for the request an address names, checked against the page's one reading and
+said to her alone: sent, for one she has just sent that still waits for a parent; already
+sent, beside any other request on the page; not on this page, when no request there is that
+one; and can't be checked, when that reading failed."""
 ALREADY_RESPONDING: Final = (
     "A parent is already responding to this request, so it cannot be taken back. "
     "Nothing was changed."
@@ -696,11 +696,13 @@ class HelpProblem:
 def help_result_for(
     marker: HelpMarker | None, groups: HelpGroups | None, *, hers: bool
 ) -> HelpResult | None:
-    """The line for what an address says a form did, from the page's one reading. Sent only
-    for a request just sent, read by her, that still waits for a parent; already sent beside
-    any other request on the page, whose row says where it stands; and a line at the top of
-    Help when the reading failed or no request on the page is the one named."""
-    if marker is None:
+    """The line for what an address says a form did, from the page's one reading. The form
+    is hers, so the line is said to her alone: a parent who opens such an address reads her
+    requests as they stand and no line. Sent only for a request just sent that still waits
+    for a parent; already sent beside any other request on the page, whose row says where it
+    stands; and a line at the top of Help when the reading failed or no request on the page
+    is the one named."""
+    if marker is None or not hers:
         return None
     if groups is None:
         return HelpResult(CANNOT_CHECK)
@@ -711,7 +713,7 @@ def help_result_for(
     named = next((item for item in groups.every() if item.request_id == wanted), None)
     if named is None:
         return HelpResult(NOT_ON_THIS_PAGE)
-    fresh = marker.fresh and hers and named.state == "requested"
+    fresh = marker.fresh and named.state == "requested"
     return HelpResult(SENT if fresh else ALREADY_SENT, named.request_id)
 
 
@@ -1597,9 +1599,9 @@ def due_this_week(
     carries, or that its form is to be open, or that it is to be in view, with
     the fold around it open. ``asked`` names the request a help form just made, and
     ``asked_again`` the one a help form sent twice had made; the first is read when both
-    are there. Either is said in Help, beside that request when it is on the page, and at
-    the top of Help when it is not. When the record cannot be read, the page says so and
-    offers the same address again.
+    are there. Either is said to her in Help, beside that request when it is on the page,
+    and at the top of Help when it is not. When the record cannot be read, the page says so
+    and offers the same address again.
     """
     try:
         was_refreshed = refreshed == "1"

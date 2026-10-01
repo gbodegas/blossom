@@ -57,6 +57,7 @@ from tests.support import (
     dissent,
     fixture_week_plan,
     form_fields,
+    help_row,
     report,
     scripted_graphs,
     signed_in_household,
@@ -1033,11 +1034,6 @@ def help_held(client: TestClient) -> tuple[list[object], int]:
     held = state_of(client).help_requests
     ids = held._connection.execute("SELECT count(*) FROM help_request_ids").fetchone()[0]
     return [*held.open_requests(), *held.recently_resolved()], ids
-
-
-def help_row(page: str, request_id: str) -> str:
-    start = page.index(f'<li class="help-request" id="help-{request_id}" tabindex="-1">')
-    return page[start : page.index("</li>", start)]
 
 
 @pytest.mark.parametrize("next_day", [False, True], ids=["same day", "after midnight"])

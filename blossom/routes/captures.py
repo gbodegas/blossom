@@ -167,6 +167,10 @@ WINDOW_UNKNOWN: Final = (
 NOTE_SAVED_EARLIER: Final = (
     "You saved this earlier, and the note has changed since. This page shows it as it stands now."
 )
+SAVED_EARLIER_TO_A_PARENT: Final = (
+    "This note was saved earlier and has changed since. This page shows it as it stands now."
+)
+"""The same, said to a parent, who may be reading a change of hers: it names nobody."""
 NOTE_ID_TAKEN: Final = (
     "This form already saved another note, so these words were not saved. Both are below; "
     "save these as a new note if you want to keep them."
@@ -288,10 +292,11 @@ SAID: Final[dict[str, tuple[str, str | None]]] = {
 }
 """What an address says a save did, the sentence for it, and the kind of change the event
 it names must be in the note's history. A save that wrote nothing names the change it found
-standing, which may be of any kind. The server writes the address; the page believes none
-of it until the history bears it out, and an event id is not a number a person can count
-to: a revision in its place, or an id of another note's, says nothing. A link is joined or
-moved as its own event keeps it, whatever the address says."""
+standing, which may be of any kind: ``same`` for a save only she makes, and ``unchanged``
+for the details, which the family's tree saves too. The server writes the address; the page
+believes none of it until the history bears it out, and an event id is not a number a person
+can count to: a revision in its place, or an id of another note's, says nothing. A link is
+joined or moved as its own event keeps it, whatever the address says."""
 SAID_OF_A_NOTE_IN_HOMEWORK: Final = {
     "edited": NOTE_EDITED_IN_HOMEWORK,
     "restored": NOTE_RESTORED_IN_HOMEWORK,
@@ -753,11 +758,12 @@ def note_refused(request: Request, state: ApplicationState, capture_id: str) -> 
 
 
 def result_of(
-    history: list[CaptureEvent], said: str | None, event: str | None
+    history: list[CaptureEvent], said: str | None, event: str | None, *, mine: bool
 ) -> NoteResult | None:
     """The result an address names, when the note's own history bears it out: the event is
     one of this note's, of the kind the sentence is about, and the sentence is said as what
-    stands only while that event is the latest."""
+    stands only while that event is the latest. After that it is something saved earlier,
+    said to a parent (``mine`` false) without naming who saved it."""
     if said not in SAID or not event or len(event) > TOKEN_MAX_LENGTH:
         return None
     sentence, kind = SAID[said]
@@ -774,9 +780,8 @@ def result_of(
     stands = history[-1].event_id == made.event_id
     if made.after.assignment_id is not None:
         sentence = SAID_OF_A_NOTE_IN_HOMEWORK.get(said, sentence)
-    return NoteResult(
-        sentence if stands else NOTE_SAVED_EARLIER, stands, about_adding=kind in (PROMOTE, LINK)
-    )
+    earlier = NOTE_SAVED_EARLIER if mine else SAVED_EARLIER_TO_A_PARENT
+    return NoteResult(sentence if stands else earlier, stands, about_adding=kind in (PROMOTE, LINK))
 
 
 def unreadable(
@@ -863,7 +868,7 @@ def note_page(
     note, history = found[0], list(found[1])
     viewer = viewer_of(request)
     mine = viewer != "parent"
-    result = result_of(history, said, event) if mine or said in SAID_TO_EITHER else None
+    result = result_of(history, said, event, mine=mine) if mine or said in SAID_TO_EITHER else None
     if form is not None and not form.revision:
         # A form that named no revision these pages made comes back on the note as it
         # stands, as her unsaved words: saving them again is her choice, from this page.
@@ -1415,7 +1420,7 @@ async def edit_a_note(request: Request, capture_id: str, state: State) -> Respon
         case CaptureChanged(event=made):
             where = note_href(name, fragment=NOTE_RESULT, said="edited", event=made.event_id)
         case CaptureUnchanged(head=found):
-            where = note_href(name, fragment=NOTE_RESULT, said="unchanged", event=found.event_id)
+            where = note_href(name, fragment=NOTE_RESULT, said="same", event=found.event_id)
         case CaptureConflict(capture=note):
             return note_page(
                 request,
@@ -1474,7 +1479,7 @@ async def move_a_note(
             said = "archived" if archive else "restored"
             where = note_href(name, fragment=NOTE_RESULT, said=said, event=made.event_id)
         case CaptureUnchanged(head=found):
-            where = note_href(name, fragment=NOTE_RESULT, said="unchanged", event=found.event_id)
+            where = note_href(name, fragment=NOTE_RESULT, said="same", event=found.event_id)
         case CaptureConflict():
             return note_page(
                 request,

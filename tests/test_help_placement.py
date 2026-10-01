@@ -730,7 +730,7 @@ def test_asked_is_read_before_asked_again() -> None:
 
 
 @pytest.mark.parametrize("kind", ["asked", "asked_again"])
-def test_a_parent_reading_a_marker_reads_already_sent_and_meets_no_control(
+def test_a_parent_reading_a_marker_reads_no_line_and_meets_no_control(
     kind: str, tmp_path: pathlib.Path
 ) -> None:
     with household(tmp_path, "parent") as client:
@@ -740,8 +740,9 @@ def test_a_parent_reading_a_marker_reads_already_sent_and_meets_no_control(
         page = client.get(PAGE, params={kind: request_id}).text
         after = help_tables(client)
 
-    assert page.count('id="help-result"') == 1
-    assert f"{RESULT}{ALREADY_SENT}</p>" in row(page, request_id)
+    assert 'id="help-result"' not in page
+    assert "Waiting for a parent to respond." in row(page, request_id)
+    assert ALREADY_SENT not in page
     assert "Sent. Your parents" not in page
     assert 'action="/student/actions/' not in section(page)
     assert "Ask again" not in page
