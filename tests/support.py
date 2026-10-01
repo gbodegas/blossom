@@ -768,7 +768,9 @@ class _FormReader(HTMLParser):
 class _Names(HTMLParser):
     """Each button, link and summary of a page, or each element of ``named``: the words it
     shows, and the name a screen reader or voice control uses, which is its label when it
-    has one and else its words, visually hidden ones included."""
+    has one and else its words, visually hidden ones included. Visually hidden words are
+    laid out apart from the words beside them, so a browser's name sets them off with a
+    space: hidden words that start with punctuation read with a space before it."""
 
     def __init__(self, page: str, named: tuple[str, ...] = ("button", "a", "summary")) -> None:
         super().__init__(convert_charrefs=True)
@@ -787,6 +789,8 @@ class _Names(HTMLParser):
             hides = "visually-hidden" in (given.get("class") or "").split()
             self._spans.append(hides)
             self._hidden += hides
+            if hides:
+                self._set_off()
 
     def handle_data(self, data: str) -> None:
         for _, _, shown, heard in self._open:
@@ -794,9 +798,16 @@ class _Names(HTMLParser):
             if not self._hidden:
                 shown.append(data)
 
+    def _set_off(self) -> None:
+        for _, _, _, heard in self._open:
+            heard.append(" ")
+
     def handle_endtag(self, tag: str) -> None:
         if tag == "span" and self._spans:
-            self._hidden -= self._spans.pop()
+            hid = self._spans.pop()
+            self._hidden -= hid
+            if hid:
+                self._set_off()
         elif self._open and self._open[-1][0] == tag:
             _, label, shown, heard = self._open.pop()
             words = " ".join("".join(shown).split())

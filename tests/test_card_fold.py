@@ -225,7 +225,7 @@ def to_check(client: TestClient) -> Answer:
     return followed(
         client,
         page_of(client),
-        r'<p class="confidence disagree" role="status">.*?<a href="([^"]+)"',
+        r'<p class="confidence disagree to-check" role="status">.*?<a href="([^"]+)"',
     )
 
 

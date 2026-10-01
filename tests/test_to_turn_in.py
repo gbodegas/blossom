@@ -1558,7 +1558,9 @@ def test_a_card_on_her_week_and_the_way_back_to_it_land_on_the_card_for_any_id(n
 
         saved = client.post(save, data=fields, headers=PAGE_HEADERS)
         after_save = client.get(saved.headers["location"]).text
-        to_check = re.search(r'to check:</strong>\s*<a href="([^"]+)"', after_save)
+        to_check = re.search(
+            r'to check:</strong>\s*<span class="to-check-item"><a href="([^"]+)"', after_save
+        )
         assert to_check is not None
         checked = client.get(html.unescape(to_check.group(1))).text
         undone = client.post(
@@ -1743,7 +1745,9 @@ def test_every_way_to_a_card_lands_on_that_card_when_another_id_differs_only_by_
             again.headers["location"],
         )
 
-        found = re.search(r'to check:</strong>\s*<a href="([^"]+)"', after_save)
+        found = re.search(
+            r'to check:</strong>\s*<span class="to-check-item"><a href="([^"]+)"', after_save
+        )
         assert found is not None
         to_check = html.unescape(found.group(1))
         reached["worth checking"] = (client.get(to_check).text, to_check)

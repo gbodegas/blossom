@@ -21,12 +21,18 @@ one that ends the hand-in line's sentence takes a box that stays in the line,
 and so do the titles that lead the rows of her To turn in list and of the
 family page's updates, the family page's link to adding assignments, the line
 of links under the homework notes, and the link that ends each homework note's
-row.
+row. Each link in her week's line of school reports to check stays in the words
+of its sentence as an inline box, padded out to 44 pixels, inside an item of the
+line padded as far, so the line grows around each item and a sentence that
+wraps never lays one link's area over another's, with a reader's own spacing
+too.
 """
 
+import pathlib
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from html import unescape
 from html.parser import HTMLParser
 
 import pytest
@@ -35,6 +41,7 @@ from blossom.hand_in import NEEDS_HAND_IN, HandInSaved
 from blossom.reconciliation import SourceChannel
 from blossom.routes.navigation import NEW_NOTE_PAGE, NOTE_ACTIONS, NOTES_PAGE, TO_TURN_IN_PAGE
 from blossom.settings import REPOSITORY_ROOT
+from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
     DETAILS,
     ESSAY_ID,
@@ -43,11 +50,16 @@ from tests.support import (
     PLAN_DATE,
     QUIZ_ID,
     browser,
+    due,
     form_fields,
     hidden,
+    household_client,
     planned,
     report,
+    reported,
+    rules_named,
     school_said,
+    sign_in_as,
     state_of,
     walkthrough,
 )
@@ -306,6 +318,8 @@ class Sheet:
     """The same for each rule that sets how an element is laid out."""
     heights: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
     """The same for each rule that sets a minimum height."""
+    paddings: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    """The same for each rule that sets a padding, by its shorthand, as the sheet writes it."""
 
 
 def blocks(css: str) -> list[tuple[str, str]]:
@@ -326,12 +340,12 @@ def blocks(css: str) -> list[tuple[str, str]]:
 
 
 def read_sheet(css: str) -> Sheet:
-    """Every rule that sets ``color``, a background, ``display``, or ``min-height``, in source
-    order, each with the media condition it sits under, and the sheet's custom
-    properties. A rule inside a media query applies only where the query holds, so a
-    link whose only color comes from one is still the browser's color on every other
-    screen; ``color_of`` is asked about one screen at a time. Font faces and keyframes
-    hold no rules for elements and are passed over."""
+    """Every rule that sets ``color``, a background, ``display``, ``min-height``, or
+    ``padding``, in source order, each with the media condition it sits under, and the
+    sheet's custom properties. A rule inside a media query applies only where the query
+    holds, so a link whose only color comes from one is still the browser's color on every
+    other screen; ``color_of`` is asked about one screen at a time. Font faces and
+    keyframes hold no rules for elements and are passed over."""
     sheet = Sheet()
     plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
     order = 0
@@ -371,6 +385,8 @@ def read_sheet(css: str) -> Sheet:
                     sheet.displays.append((selector(head), declared["display"], order, media))
                 if "min-height" in declared:
                     sheet.heights.append((selector(head), declared["min-height"], order, media))
+                if "padding" in declared:
+                    sheet.paddings.append((selector(head), declared["padding"], order, media))
 
     read(plain, None)
     return sheet
@@ -1130,3 +1146,260 @@ def test_the_height_check_fails_when_the_lists_rule_stops_doing_its_work(
             expected = place in short and width > fine_up_to
             is_short = short_of_a_control(sheet, link, View(width), IN_THE_LINE)
             assert is_short == expected, (name, place, width)
+
+
+TEXT_PX = (20.0, 22.0)
+"""The least and the most height an inline link's words take in the body font at the root
+size, the box its padding is added to: Edge draws it 20 or 21 pixels tall, and a pixel is
+kept to spare."""
+TO_CHECK_TITLES = (
+    "Comparing the Canal Era and the railroads that followed it",
+    "Lab report on plant growth under colored light",
+    "Chapter review questions for the unit on fractions and decimals",
+    "Reading log for the independent novel, chapters one through six",
+    "Map of the watershed with labeled tributaries and towns",
+    "Vocabulary sentences for words eleven through twenty",
+)
+ITEM_RULE = (
+    ".to-check-item {\n  display: inline-block;\n  padding: 0.8rem 0.3em 0.8rem 0;\n"
+    "  pointer-events: none;\n}"
+)
+MARK_RULE = ".to-check-mark {\n  display: inline-block;\n  width: 0;\n}"
+LINK_RULE = ".to-check a {\n  padding: 0.8rem 0;\n  pointer-events: auto;\n}"
+TO_CHECK_RULES = f"{ITEM_RULE}\n\n{MARK_RULE}\n\n{LINK_RULE}"
+TO_CHECK: dict[int, str] = {}
+
+
+def finished_and_missing(store: ProjectStateStore, count: int) -> list[str]:
+    """``count`` assignments with long titles, due this week, each reported done and reported
+    missing by the school, so that many school reports to check; their ids, in due order."""
+    names = [f"assignment-to-check-{number}" for number in range(count)]
+    store.put_on_record(
+        [
+            due(name, title, PLAN_DATE + timedelta(days=1 + number % 3))
+            for number, (name, title) in enumerate(zip(names, TO_CHECK_TITLES, strict=False))
+        ],
+        {},
+    )
+    for name in names:
+        reported(store, "done", name)
+        store.record_status_reports(name, [school_said("missing", SourceChannel.EMAIL, PLAN_DATE)])
+    return names
+
+
+@pytest.fixture
+def to_check() -> dict[int, str]:
+    """Her week with one, two, three and six school reports to check. Kept once rendered, as
+    ``rendered`` is."""
+    if TO_CHECK:
+        return TO_CHECK
+    for count in (1, 2, 3, 6):
+        with browser() as client:
+            finished_and_missing(state_of(client).project_state, count)
+            TO_CHECK[count] = client.get(HER_PAGE, headers=PAGE_HEADERS).text
+    return TO_CHECK
+
+
+def links_to_check(page: str) -> list[Element]:
+    """The links in her week's line of school reports to check: a notice of its own in the
+    page's main part, whatever holds each link inside it."""
+    return [
+        link
+        for link in links_in(page)
+        if any(
+            "confidence" in above.classes
+            and above.parent is not None
+            and above.parent.tag == "main"
+            for above in link.ancestors()
+        )
+    ]
+
+
+def top_and_bottom(value: str | None) -> tuple[float, float]:
+    """The top and bottom of a padding shorthand in CSS pixels; none set is none."""
+    if value is None:
+        return (0.0, 0.0)
+    sides = value.split()
+    if not 1 <= len(sides) <= 4:
+        raise UnreadMedia(value)
+    top, bottom = sides[0], sides[2] if len(sides) > 2 else sides[0]
+    return (
+        0.0 if top == "0" else height_px(top),
+        0.0 if bottom == "0" else height_px(bottom),
+    )
+
+
+def held_in_its_item(sheet: Sheet, link: Element, view: View) -> bool:
+    """Whether ``link`` on ``view`` stays an inline box in its words, padded above and below to
+    at least a control's height, inside an item of the line that is a box of its own in the
+    sentence, padded at least as far as the link. The line then grows around the item, and
+    the link's area stays inside it whatever line height, letter spacing or word spacing a
+    reader sets, so it reaches into no other link's."""
+    item = link.parent
+    assert item is not None
+    display = winning(sheet.displays, sheet, link, "link", view)
+    padding = top_and_bottom(winning(sheet.paddings, sheet, link, "link", view))
+    holds = winning(sheet.displays, sheet, item, "link", view)
+    room = top_and_bottom(winning(sheet.paddings, sheet, item, "link", view))
+    return (
+        display in (None, "inline")
+        and TEXT_PX[0] + sum(padding) >= TOUCH_HEIGHT_PX
+        and holds in IN_THE_LINE
+        and room[0] >= padding[0]
+        and room[1] >= padding[1]
+    )
+
+
+def test_the_school_reports_to_check_are_in_text_of_the_root_size() -> None:
+    """The size the heights here are worked out for: no rule on the notice, its line, its items
+    or its links sets a text size of its own."""
+    for rule in ("body", ".confidence", ".confidence.disagree", ".to-check", ".to-check a"):
+        for inside in rules_named(rule):
+            assert "font-size" not in inside, rule
+    for inside in rules_named(".to-check-item"):
+        assert "font-size" not in inside
+
+
+def test_the_line_leaves_a_reader_s_own_spacing_alone() -> None:
+    """Nothing on the line, its items or its links sets line height, letter or word spacing,
+    or marks a declaration important, so a reader's own stylesheet always has its way."""
+    for rule in (
+        ".confidence",
+        ".confidence.disagree",
+        ".to-check",
+        ".to-check a",
+        ".to-check-item",
+    ):
+        for inside in rules_named(rule):
+            for held in ("line-height", "letter-spacing", "word-spacing", "!important"):
+                assert held not in inside, (rule, held)
+
+
+def test_the_punctuation_takes_no_press_and_each_link_takes_every_press_to_its_edge() -> None:
+    """The glyph of a comma can reach over the last pixel of the link before it, and a press
+    there would go to the comma's text. The item takes no press and the link takes them all,
+    so every press inside the link's area is the link's."""
+    assert any("pointer-events: none;" in inside for inside in rules_named(".to-check-item"))
+    assert any("pointer-events: auto;" in inside for inside in rules_named(".to-check a"))
+
+
+def test_the_punctuation_takes_no_width_of_the_line_and_shows_in_room_the_item_keeps() -> None:
+    """A word that fills a line could otherwise push the comma after it onto a line of its own.
+    In a box of no width the comma always fits on the line of the link's last word, and its
+    glyph shows in the room the item keeps at its end."""
+    marks = rules_named(".to-check-mark")
+    room = [
+        inside.split("padding:", 1)[1].split(";", 1)[0].split()
+        for inside in rules_named(".to-check-item")
+        if "padding:" in inside
+    ]
+
+    assert any("display: inline-block;" in inside and "width: 0;" in inside for inside in marks)
+    assert room
+    assert all(len(sides) == 4 and sides[1] != "0" for sides in room), room
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_each_school_report_to_check_is_as_tall_as_a_control_inside_its_own_item(
+    to_check: dict[int, str], width: int
+) -> None:
+    """With one link or six, at each width, with or without less motion: 44 pixels, in the
+    words of the sentence, and inside an item that keeps it from every other link."""
+    sheet = read_sheet(stylesheet())
+
+    for count, page in to_check.items():
+        found = links_to_check(page)
+        assert len(found) == count
+        for link in found:
+            assert link.attributes["aria-label"].endswith(": school report to check"), link.text
+            for view in (View(width), View(width, reduced_motion=True)):
+                assert held_in_its_item(sheet, link, view), (count, link.text, view)
+
+
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_each_school_report_to_check_sits_with_its_punctuation_in_an_item(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """The line reads as the sentence it is, the words and punctuation in order, and each link
+    sits in an item of its own with the comma or period after it, for her, a parent and the
+    sign-in off."""
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        finished_and_missing(state_of(client).project_state, 3)
+        page = client.get(HER_PAGE, headers=PAGE_HEADERS).text
+    line = re.search(r'<p class="confidence disagree to-check" role="status">(.*?)</p>', page, re.S)
+    assert line is not None
+    items = re.findall(
+        r'<span class="to-check-item"><a\b[^>]*>([^<]*)</a>'
+        r'<span class="to-check-mark">([,.])</span></span>',
+        line[1],
+    )
+    titles = [unescape(title) for title, _ in items]
+    as_read = " ".join(unescape(re.sub(r"<[^>]+>", "", line[1])).split())
+
+    assert sorted(titles) == sorted(TO_CHECK_TITLES[:3])
+    assert [mark for _, mark in items] == [",", ",", "."]
+    assert as_read == f"3 finished assignments have school reports to check: {', '.join(titles)}."
+    assert len(re.findall(r"<a\b", line[1])) == 3
+
+
+@pytest.mark.parametrize(
+    ("becomes", "fine_up_to"),
+    [
+        pytest.param(
+            TO_CHECK_RULES.replace(".to-check-item {", ".to-check-items {"), 0, id="items-left"
+        ),
+        pytest.param(
+            TO_CHECK_RULES.replace(ITEM_RULE, ITEM_RULE.replace("inline-block", "inline")),
+            0,
+            id="items-in-the-line-box",
+        ),
+        pytest.param(
+            TO_CHECK_RULES.replace(ITEM_RULE, ITEM_RULE.replace("inline-block", "block")),
+            0,
+            id="items-out-of-the-sentence",
+        ),
+        pytest.param(
+            TO_CHECK_RULES.replace(
+                ITEM_RULE, ITEM_RULE.replace("0.8rem 0.3em 0.8rem", "0.5rem 0.3em 0.5rem")
+            ),
+            0,
+            id="items-padded-short",
+        ),
+        pytest.param(
+            TO_CHECK_RULES.replace(
+                ITEM_RULE, ITEM_RULE.replace("  padding: 0.8rem 0.3em 0.8rem 0;\n", "")
+            ),
+            0,
+            id="items-not-padded",
+        ),
+        pytest.param(TO_CHECK_RULES.replace(".to-check a {", ".to-check b {"), 0, id="links-left"),
+        pytest.param(
+            TO_CHECK_RULES.replace(LINK_RULE, LINK_RULE.replace("0.8rem 0", "0.5rem 0")),
+            0,
+            id="links-too-short",
+        ),
+        pytest.param(
+            TO_CHECK_RULES.replace(
+                LINK_RULE, LINK_RULE.replace("  padding:", "  display: inline-block;\n  padding:")
+            ),
+            0,
+            id="links-out-of-their-words",
+        ),
+        pytest.param(
+            f"@media (max-width: 30rem) {{\n{TO_CHECK_RULES}\n}}", 480, id="only-on-a-phone"
+        ),
+    ],
+)
+def test_the_check_fails_when_the_school_reports_rules_stop_doing_their_work(
+    to_check: dict[int, str], becomes: str, fine_up_to: int
+) -> None:
+    """Every link to check falls short on each screen the broken rules leave it."""
+    css = stylesheet()
+    assert css.count(TO_CHECK_RULES) == 1
+    sheet = read_sheet(css.replace(TO_CHECK_RULES, becomes))
+
+    for page in to_check.values():
+        for link in links_to_check(page):
+            kept = [held_in_its_item(sheet, link, View(width)) for width in WIDTHS]
+            assert kept == [width <= fine_up_to for width in WIDTHS], link.text
