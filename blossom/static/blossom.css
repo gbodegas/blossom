@@ -1189,6 +1189,25 @@ form.inline button {
   .panel {
     padding: 1.1rem 1.2rem;
   }
+
+  /* A date field shows the whole date being edited only when its box is wide enough for
+     it, which on a phone with large text takes nearly the whole screen. On a narrow screen
+     Add assignments sits without its card's side insets, and its fields keep their side
+     padding to a share of the screen's width. */
+  #add-assignments > .panel {
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  #add-assignments input,
+  #add-assignments select,
+  #add-assignments textarea {
+    padding-inline: min(0.85rem, 2vw);
+  }
 }
 
 /* ------------------------------------------------------------- the way in */

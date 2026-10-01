@@ -1,11 +1,12 @@
 """The color a link ends up with, and the height of the links held to a control's, worked
 out from the stylesheet and the pages as rendered.
 
-No browser runs in these tests, so the cascade is resolved here, for the part
-of CSS the stylesheet uses on links: compound selectors of a type, classes,
+No browser runs in these tests, so the cascade is resolved here, on the page
+and stylesheet reading in `tests/support.py`, for the part of CSS the
+stylesheet uses on links: compound selectors of a type, an id, classes,
 attributes, and pseudo-classes, with descendant and child combinators, in
-comma lists; specificity, then source order; `:visited` and `:link` by the
-state asked for, and hover, focus, and active never on. A rule inside a media
+comma lists; specificity, then source order; `:visited` and `:link` on a link
+by the state asked for, and hover, focus, and active never on. A rule inside a media
 query counts only on a screen where the query holds, so every check is made
 at each of the widths the pages are held to, and a media feature the resolver
 does not know is refused, never assumed either way. A link's color is not
@@ -33,7 +34,6 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from html import unescape
-from html.parser import HTMLParser
 
 import pytest
 
@@ -49,8 +49,13 @@ from tests.support import (
     PAGE_HEADERS,
     PLAN_DATE,
     QUIZ_ID,
+    Element,
+    Rule,
+    UnreadCss,
+    View,
     browser,
     due,
+    elements_of,
     form_fields,
     hidden,
     household_client,
@@ -59,190 +64,32 @@ from tests.support import (
     reported,
     rules_named,
     school_said,
+    selector,
     sign_in_as,
     state_of,
+    style_rules,
     walkthrough,
+    winner,
 )
 from tests.support import READING_LOG_ID as LOG_ID
 
 ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
 STATES = ("link", "visited")
-NEVER_ON = {"hover", "focus", "focus-visible", "focus-within", "active"}
 
 
 # ------------------------------------------------------------- the pages, as elements
 
 
-@dataclass
-class Element:
-    tag: str
-    classes: frozenset[str]
-    attributes: dict[str, str]
-    parent: "Element | None"
-    text: str = ""
-
-    def ancestors(self) -> list["Element"]:
-        found, above = [], self.parent
-        while above is not None:
-            found.append(above)
-            above = above.parent
-        return found
-
-
-class Links(HTMLParser):
-    """Every link inside the page's main part, each with the chain of elements above it."""
-
-    VOID = frozenset({"input", "br", "img", "meta", "link", "hr", "source"})
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.open: list[Element] = []
-        self.links: list[Element] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attributes = {name: value or "" for name, value in attrs}
-        element = Element(
-            tag=tag,
-            classes=frozenset(attributes.get("class", "").split()),
-            attributes=attributes,
-            parent=self.open[-1] if self.open else None,
-        )
-        if tag == "a" and any(above.tag == "main" for above in element.ancestors()):
-            self.links.append(element)
-        if tag not in self.VOID:
-            self.open.append(element)
-
-    def handle_endtag(self, tag: str) -> None:
-        for index in range(len(self.open) - 1, -1, -1):
-            if self.open[index].tag == tag:
-                del self.open[index:]
-                return
-
-    def handle_data(self, data: str) -> None:
-        if self.open and self.open[-1].tag == "a":
-            self.open[-1].text += data
-
-
 def links_in(page: str) -> list[Element]:
-    parser = Links()
-    parser.feed(page)
-    return parser.links
+    """Every link inside the page's main part, each with the chain of elements above it."""
+    return [
+        one
+        for one in elements_of(page)
+        if one.tag == "a" and any(above.tag == "main" for above in one.ancestors())
+    ]
 
 
 # ------------------------------------------------------------- the stylesheet, as rules
-
-
-@dataclass(frozen=True)
-class Compound:
-    tag: str | None = None
-    classes: frozenset[str] = frozenset()
-    attributes: tuple[tuple[str, str | None], ...] = ()
-    pseudo: frozenset[str] = frozenset()
-    negated: tuple["Compound", ...] = ()
-    known: bool = True
-
-    @property
-    def specificity(self) -> tuple[int, int, int]:
-        inner = [item.specificity for item in self.negated]
-        return (
-            0,
-            len(self.classes) + len(self.attributes) + len(self.pseudo) + sum(i[1] for i in inner),
-            (1 if self.tag else 0) + sum(i[2] for i in inner),
-        )
-
-    def matches(self, element: Element, state: str) -> bool:
-        if not self.known:
-            return False
-        if self.tag is not None and self.tag != element.tag:
-            return False
-        if not self.classes <= element.classes:
-            return False
-        for name, wanted in self.attributes:
-            if name not in element.attributes:
-                return False
-            if wanted is not None and element.attributes[name] != wanted:
-                return False
-        for name in self.pseudo:
-            if name in NEVER_ON or (name in STATES and name != state):
-                return False
-        return not any(item.matches(element, state) for item in self.negated)
-
-
-PIECE = re.compile(
-    r"""(?P<not>:not\((?P<inner>[^()]*)\))
-      | (?P<class>\.[\w-]+)
-      | (?P<attribute>\[(?P<name>[\w-]+)(?:=["']?(?P<value>[^"'\]]*)["']?)?\])
-      | (?P<pseudo>::?[\w-]+)
-      | (?P<tag>[a-zA-Z][\w-]*|\*)""",
-    re.VERBOSE,
-)
-
-
-def compound(text: str) -> Compound:
-    tag: str | None = None
-    classes: set[str] = set()
-    attributes: list[tuple[str, str | None]] = []
-    pseudo: set[str] = set()
-    negated: list[Compound] = []
-    known = True
-    position = 0
-    while position < len(text):
-        piece = PIECE.match(text, position)
-        if piece is None:
-            return Compound(known=False)
-        position = piece.end()
-        if piece["not"]:
-            negated.append(compound(piece["inner"].strip()))
-        elif piece["class"]:
-            classes.add(piece["class"][1:])
-        elif piece["attribute"]:
-            attributes.append((piece["name"], piece["value"]))
-        elif piece["pseudo"]:
-            name = piece["pseudo"].lstrip(":")
-            if piece["pseudo"].startswith("::") or name not in NEVER_ON | set(STATES):
-                known = False
-            pseudo.add(name)
-        elif piece["tag"] and piece["tag"] != "*":
-            tag = piece["tag"].lower()
-    return Compound(
-        tag, frozenset(classes), tuple(attributes), frozenset(pseudo), tuple(negated), known
-    )
-
-
-@dataclass(frozen=True)
-class Selector:
-    parts: tuple[tuple[str, Compound], ...]
-    """Each compound with the combinator that joins it to the one before: a space or ``>``."""
-
-    @property
-    def specificity(self) -> tuple[int, int, int]:
-        each = [item.specificity for _, item in self.parts]
-        return (0, sum(i[1] for i in each), sum(i[2] for i in each))
-
-    def matches(self, element: Element, state: str) -> bool:
-        def climb(index: int, at: Element) -> bool:
-            joiner, item = self.parts[index]
-            if not item.matches(at, state if index == len(self.parts) - 1 else "link"):
-                return False
-            if index == 0:
-                return True
-            above = at.ancestors()
-            reach = above[:1] if joiner == ">" else above
-            return any(climb(index - 1, candidate) for candidate in reach)
-
-        return climb(len(self.parts) - 1, element)
-
-
-def selector(text: str) -> Selector:
-    parts: list[tuple[str, Compound]] = []
-    joiner = " "
-    for piece in re.findall(r">|[^\s>]+", text.strip()):
-        if piece == ">":
-            joiner = ">"
-            continue
-        parts.append((joiner, compound(piece)))
-        joiner = " "
-    return Selector(tuple(parts))
 
 
 WIDTHS = (320, 820, 1180, 1440, 3840)
@@ -251,92 +98,20 @@ on its side, a laptop, and a large desktop screen."""
 ROOT_FONT_PX = 16
 
 
-class UnreadMedia(AssertionError):
-    """A part of the stylesheet this resolver cannot evaluate: a media feature it does not
-    know, a nested media query, another at-rule with rules in it, a custom property set
-    inside a media query, or a length in a unit it does not read. Raised, and never
-    guessed at, since a guess either way could let a link through that some screen
-    leaves to the browser's color or draws shorter than a control."""
-
-
-@dataclass(frozen=True)
-class View:
-    """One reader's screen: how wide it is, and whether it asks for less motion."""
-
-    width: int
-    reduced_motion: bool = False
-
-
-def length_px(value: str) -> float:
-    found = re.fullmatch(r"(\d*\.?\d+)(px|rem|em)", value.strip())
-    if found is None:
-        raise UnreadMedia(value)
-    return float(found.group(1)) * (1 if found.group(2) == "px" else ROOT_FONT_PX)
-
-
-def holds(condition: str | None, view: View) -> bool:
-    """Whether a media condition holds on ``view``. A rule outside any media query holds
-    everywhere; a list holds when any of its queries does."""
-    if condition is None:
-        return True
-    return any(one_query_holds(query.strip(), view) for query in condition.split(","))
-
-
-def one_query_holds(query: str, view: View) -> bool:
-    result = True
-    for word in re.sub(r"\([^)]*\)", " ", query).split():
-        if word == "print":
-            result = False
-        elif word not in ("and", "only", "screen", "all"):
-            raise UnreadMedia(query)
-    features = re.findall(r"\(\s*([\w-]+)\s*:\s*([^)]+?)\s*\)", query)
-    if len(features) != query.count("("):
-        raise UnreadMedia(query)
-    for name, value in features:
-        if name == "min-width":
-            result = result and view.width >= length_px(value)
-        elif name == "max-width":
-            result = result and view.width <= length_px(value)
-        elif name == "prefers-reduced-motion":
-            if value not in ("reduce", "no-preference"):
-                raise UnreadMedia(query)
-            result = result and (value == "reduce") == view.reduced_motion
-        else:
-            raise UnreadMedia(query)
-    return result
-
-
 @dataclass
 class Sheet:
     tokens: dict[str, str] = field(default_factory=dict)
-    colors: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    colors: list[Rule] = field(default_factory=list)
     """Each rule that sets a color: its selector, the value, its place in the source, and
     the media condition it sits under, ``None`` for a rule that holds everywhere."""
-    backgrounds: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    backgrounds: list[Rule] = field(default_factory=list)
     """The same for each rule that sets a background, by either property's name."""
-    displays: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    displays: list[Rule] = field(default_factory=list)
     """The same for each rule that sets how an element is laid out."""
-    heights: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    heights: list[Rule] = field(default_factory=list)
     """The same for each rule that sets a minimum height."""
-    paddings: list[tuple[Selector, str, int, str | None]] = field(default_factory=list)
+    paddings: list[Rule] = field(default_factory=list)
     """The same for each rule that sets a padding, by its shorthand, as the sheet writes it."""
-
-
-def blocks(css: str) -> list[tuple[str, str]]:
-    """Each outermost block of ``css`` as what comes before its brace and what is inside."""
-    found: list[tuple[str, str]] = []
-    depth, after, opened = 0, 0, 0
-    for index, character in enumerate(css):
-        if character == "{":
-            if depth == 0:
-                opened = index
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                found.append((css[after:opened].strip(), css[opened + 1 : index]))
-                after = index + 1
-    return found
 
 
 def read_sheet(css: str) -> Sheet:
@@ -344,73 +119,50 @@ def read_sheet(css: str) -> Sheet:
     ``padding``, in source order, each with the media condition it sits under, and the
     sheet's custom properties. A rule inside a media query applies only where the query
     holds, so a link whose only color comes from one is still the browser's color on every
-    other screen; ``color_of`` is asked about one screen at a time. Font faces and
-    keyframes hold no rules for elements and are passed over."""
+    other screen; ``color_of`` is asked about one screen at a time."""
     sheet = Sheet()
-    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
-    order = 0
-
-    def read(part: str, media: str | None) -> None:
-        nonlocal order
-        for before, inside in blocks(part):
-            if before.startswith(("@font-face", "@keyframes")):
-                continue
-            if before.startswith("@media"):
-                if media is not None:
-                    msg = f"a media query inside {media}"
-                    raise UnreadMedia(msg)
-                read(inside, before.removeprefix("@media").strip())
-                continue
-            if before.startswith("@"):
-                raise UnreadMedia(before)
-            order += 1
-            declared = {
-                name.strip(): value.strip()
-                for name, _, value in (line.partition(":") for line in inside.split(";"))
-                if value
-            }
-            for name, value in declared.items():
-                if name.startswith("--"):
-                    if media is not None:
-                        msg = f"--{name[2:]} is set inside {media}"
-                        raise UnreadMedia(msg)
-                    sheet.tokens[name[2:]] = value
-            for head in before.split(","):
-                if "color" in declared:
-                    sheet.colors.append((selector(head), declared["color"], order, media))
-                for name in ("background", "background-color"):
-                    if name in declared:
-                        sheet.backgrounds.append((selector(head), declared[name], order, media))
-                if "display" in declared:
-                    sheet.displays.append((selector(head), declared["display"], order, media))
-                if "min-height" in declared:
-                    sheet.heights.append((selector(head), declared["min-height"], order, media))
-                if "padding" in declared:
-                    sheet.paddings.append((selector(head), declared["padding"], order, media))
-
-    read(plain, None)
+    for style in style_rules(css):
+        declared: dict[str, tuple[str, bool]] = {}
+        for name, value, important in style.declarations:
+            if important or not declared.get(name, ("", False))[1]:
+                declared[name] = (value.lower() if name == "display" else value, important)
+        for name, (value, _) in declared.items():
+            if name.startswith("--"):
+                if style.media is not None:
+                    msg = f"--{name[2:]} is set inside {style.media}"
+                    raise UnreadCss(msg)
+                sheet.tokens[name[2:]] = value
+        lists = {
+            "color": sheet.colors,
+            "background": sheet.backgrounds,
+            "background-color": sheet.backgrounds,
+            "display": sheet.displays,
+            "min-height": sheet.heights,
+            "padding": sheet.paddings,
+        }
+        for head in style.selectors.split(","):
+            for name, (value, important) in declared.items():
+                if name in lists:
+                    rule = Rule(selector(head), value, style.order, style.media, important)
+                    lists[name].append(rule)
     return sheet
 
 
-Rules = list[tuple[Selector, str, int, str | None]]
 Paint = tuple[float, float, float, float]
 PLAIN_SURFACES = ("canvas", "surface", "surface-strong")
 """The paper and the two card surfaces: what a link sits on when it is on no tint."""
 
 
-def winning(rules: Rules, sheet: Sheet, element: Element, state: str, view: View) -> str | None:
+def winning(
+    rules: list[Rule], sheet: Sheet, element: Element, state: str, view: View
+) -> str | None:
     """The value the cascade settles on for ``element`` among ``rules``, its custom property
     resolved, or ``None`` when no rule that holds on ``view`` reaches it."""
-    winner: tuple[tuple[int, int, int], int, str] | None = None
-    for chosen, value, order, media in rules:
-        if holds(media, view) and chosen.matches(element, state):
-            rank = (chosen.specificity, order, value)
-            if winner is None or rank[:2] > winner[:2]:
-                winner = rank
-    if winner is None:
+    found = winner([rule for rule in rules if rule.chosen.matches(element, state)], view)
+    if found is None:
         return None
-    named = re.fullmatch(r"var\(--([\w-]+)\)", winner[2])
-    return sheet.tokens[named.group(1)] if named else winner[2]
+    named = re.fullmatch(r"var\(--([\w-]+)\)", found.value)
+    return sheet.tokens[named.group(1)] if named else found.value
 
 
 def color_of(sheet: Sheet, element: Element, state: str, view: View) -> str | None:
@@ -549,7 +301,7 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
         <div class="row"><a href="/">c</a><p><a href="/">g</a></p></div></main>
         <footer><a href="/">f</a></footer>"""
     )
-    outside = Element("a", frozenset(), {}, Element("footer", frozenset(), {}, None))
+    outside = Element("a", {}, Element("footer", {}, None))
     phone, tablet, desktop = View(320), View(820), View(1440)
 
     assert [color_of(sheet, plain, state, tablet) for state in STATES] == ["#222222", "#222222"]
@@ -581,8 +333,20 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
         "@media (prefers-reduced-motion: reduced) { a { color: red; } }",
         "@media (prefers-reduced-motion) { a { color: red; } }",
     ):
-        with pytest.raises(UnreadMedia):
+        with pytest.raises(UnreadCss):
             color_of(read_sheet(unread), plain, "link", tablet)
+
+
+def test_the_resolver_weighs_importance_and_reads_a_layout_in_any_case() -> None:
+    first, second = links_in('<main><a class="x" href="/">x</a><a class="y" href="/">y</a></main>')
+    weighed = read_sheet("a { display: block !important; } a.x { display: INLINE-FLEX; }")
+    assert winning(weighed.displays, weighed, first, "link", View(320)) == "block"
+    plain = read_sheet("a { display: block; } a.y { display: Inline-Block; }")
+    assert winning(plain.displays, plain, second, "link", View(320)) == "inline-block"
+    one_block = read_sheet("a { display: block !important; display: inline; }")
+    assert winning(one_block.displays, one_block, second, "link", View(320)) == "block"
+    named = read_sheet(":root { --Ink: #111111; --ink: #222222; } main a { color: var(--Ink); }")
+    assert color_of(named, first, "link", View(320)) == "#111111"
 
 
 @pytest.mark.parametrize("width", WIDTHS)
@@ -836,7 +600,7 @@ def height_px(value: str) -> float:
     worked out here, so only pixels and root ems are read."""
     found = re.fullmatch(r"(\d*\.?\d+)(px|rem)", value.strip())
     if found is None:
-        raise UnreadMedia(value)
+        raise UnreadCss(value)
     return float(found.group(1)) * (1 if found.group(2) == "px" else ROOT_FONT_PX)
 
 
@@ -1221,7 +985,7 @@ def top_and_bottom(value: str | None) -> tuple[float, float]:
         return (0.0, 0.0)
     sides = value.split()
     if not 1 <= len(sides) <= 4:
-        raise UnreadMedia(value)
+        raise UnreadCss(value)
     top, bottom = sides[0], sides[2] if len(sides) > 2 else sides[0]
     return (
         0.0 if top == "0" else height_px(top),

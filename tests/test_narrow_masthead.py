@@ -10,27 +10,42 @@ columns are never wider than the form; and a label or button in Add assignments 
 word only when that word cannot fit its line. On a screen where everything fits, each of
 these leaves the layout as it is.
 
-No browser runs in these tests, so the cascade is resolved here, for the part of CSS
-these elements depend on: compound selectors of a type, an id, classes, attributes and
-pseudo-classes, with descendant and child combinators, in comma lists; importance, then
-specificity, then source order; and inheritance for the properties a browser inherits. A
-rule inside a media query counts only where the query holds. A media query reads its `rem`
-from the browser's own text size, so large text is checked two ways: the browser's text size
-doubled, which moves the narrow layout's breakpoint with it, and the page's own text
-doubled, which leaves the breakpoint where it is. A media feature the resolver does not
-know is refused, never assumed either way.
+No browser runs in these tests, so the cascade is resolved here, on the page and
+stylesheet reading in `tests/support.py`, for the part of CSS these elements depend on:
+compound selectors of a type, an id, classes, attributes and pseudo-classes, with
+descendant and child combinators, in comma lists; importance, then specificity, then
+source order; and inheritance for the properties a browser inherits. A rule inside a media
+query counts only where the query holds. A media query reads its `rem` from the browser's
+own text size, so large text is checked two ways: the browser's text size doubled, which
+moves the narrow layout's breakpoint with it, and the page's own text doubled, which
+leaves the breakpoint where it is. A media feature the resolver does not know is refused,
+never assumed either way.
 """
 
 import functools
 import pathlib
 import re
 from dataclasses import dataclass, field, replace
-from html.parser import HTMLParser
 
 import pytest
 
 from blossom.settings import REPOSITORY_ROOT
-from tests.support import HER_PAGE, PAGE_HEADERS, household_client, sign_in_as
+from tests.support import (
+    HER_PAGE,
+    KEYWORDS,
+    PAGE_HEADERS,
+    Element,
+    Rule,
+    UnreadCss,
+    View,
+    compound,
+    elements_of,
+    household_client,
+    selector,
+    sign_in_as,
+    style_rules,
+    winner,
+)
 
 WIDTHS = (320, 820, 1180, 1440, 3840)
 """The viewport widths, in CSS pixels, the pages are held to: a phone, a tablet upright and
@@ -44,86 +59,15 @@ TEXT_SIZES = {
 """Each way of reading, as the browser's own text size (what a media query's `rem` is
 measured in) and the root element's text size (what a property's `rem` is measured in)."""
 
-INHERITED = frozenset({"overflow-wrap", "white-space", "font-size"})
-NEVER_ON = frozenset({"hover", "focus", "focus-visible", "focus-within", "active", "visited"})
-
-
-@dataclass(frozen=True)
-class View:
-    """One reader's screen: its width, the browser's text size, and the page's root size."""
-
-    width: int
-    browser_text: int = 16
-    root_text: int = 16
+INHERITED = frozenset(
+    {"overflow-wrap", "white-space", "font-size", "letter-spacing", "word-spacing"}
+)
 
 
 VIEWS = [View(width, browser, root) for width in WIDTHS for browser, root in TEXT_SIZES.values()]
 
 
-class UnreadCss(AssertionError):
-    """A part of the stylesheet this resolver cannot evaluate. Raised, never guessed at."""
-
-
 # ------------------------------------------------------------- the pages, as elements
-
-
-@dataclass(eq=False)
-class Element:
-    """An element of a page, the same only as itself."""
-
-    tag: str
-    attributes: dict[str, str]
-    parent: "Element | None"
-    text: str = ""
-
-    @property
-    def classes(self) -> frozenset[str]:
-        return frozenset(self.attributes.get("class", "").split())
-
-    def ancestors(self) -> list["Element"]:
-        found, above = [], self.parent
-        while above is not None:
-            found.append(above)
-            above = above.parent
-        return found
-
-    def within(self, test: "Element") -> bool:
-        return self is test or any(above is test for above in self.ancestors())
-
-
-class Elements(HTMLParser):
-    """Every element of a page, each with the chain of elements above it."""
-
-    VOID = frozenset({"input", "br", "img", "meta", "link", "hr", "source"})
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.open: list[Element] = []
-        self.found: list[Element] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        element = Element(
-            tag, {name: value or "" for name, value in attrs}, self.open[-1] if self.open else None
-        )
-        self.found.append(element)
-        if tag not in self.VOID:
-            self.open.append(element)
-
-    def handle_endtag(self, tag: str) -> None:
-        for index in range(len(self.open) - 1, -1, -1):
-            if self.open[index].tag == tag:
-                del self.open[index:]
-                return
-
-    def handle_data(self, data: str) -> None:
-        if self.open:
-            self.open[-1].text += data
-
-
-def elements_of(page: str) -> list[Element]:
-    parser = Elements()
-    parser.feed(page)
-    return parser.found
 
 
 def masthead_of(page: str) -> list[Element]:
@@ -154,145 +98,14 @@ def fold_holds(fold: Element, one: Element) -> bool:
 # ------------------------------------------------------------- the stylesheet, as rules
 
 
-@dataclass(frozen=True)
-class Compound:
-    tag: str | None = None
-    ids: frozenset[str] = frozenset()
-    classes: frozenset[str] = frozenset()
-    attributes: tuple[tuple[str, str | None], ...] = ()
-    negated: tuple["Compound", ...] = ()
-    never: bool = False
-    states: int = 0
-    root: bool = False
-
-    @property
-    def specificity(self) -> tuple[int, int, int]:
-        inner = [item.specificity for item in self.negated]
-        return (
-            len(self.ids) + sum(i[0] for i in inner),
-            len(self.classes) + len(self.attributes) + self.states + sum(i[1] for i in inner),
-            (1 if self.tag else 0) + sum(i[2] for i in inner),
-        )
-
-    def matches(self, element: Element) -> bool:
-        if self.never or (self.root and element.tag != "html"):
-            return False
-        if self.tag is not None and self.tag != element.tag:
-            return False
-        if self.ids and {element.attributes.get("id")} != set(self.ids):
-            return False
-        if not self.classes <= element.classes:
-            return False
-        for name, wanted in self.attributes:
-            if name not in element.attributes:
-                return False
-            if wanted is not None and element.attributes[name] != wanted:
-                return False
-        return not any(item.matches(element) for item in self.negated)
-
-
-PIECE = re.compile(
-    r"""(?P<not>:not\((?P<inner>[^()]*)\))
-      | (?P<id>\#[\w-]+)
-      | (?P<class>\.[\w-]+)
-      | (?P<attribute>\[(?P<name>[\w-]+)(?:=["']?(?P<value>[^"'\]]*)["']?)?\])
-      | (?P<pseudo>::?[\w-]+(?:\([^()]*\))?)
-      | (?P<tag>[a-zA-Z][\w-]*|\*)""",
-    re.VERBOSE,
-)
-
-
-def compound(text: str) -> Compound:
-    """One compound selector. A pseudo-element, or a state a page at rest is never in, never
-    matches; any other pseudo-class is refused."""
-    tag: str | None = None
-    ids: set[str] = set()
-    classes: set[str] = set()
-    attributes: list[tuple[str, str | None]] = []
-    negated: list[Compound] = []
-    never = False
-    states = 0
-    root = False
-    position = 0
-    while position < len(text):
-        piece = PIECE.match(text, position)
-        if piece is None:
-            raise UnreadCss(text)
-        position = piece.end()
-        if piece["not"]:
-            negated.append(compound(piece["inner"].strip()))
-        elif piece["id"]:
-            ids.add(piece["id"][1:])
-        elif piece["class"]:
-            classes.add(piece["class"][1:])
-        elif piece["attribute"]:
-            attributes.append((piece["name"], piece["value"]))
-        elif piece["pseudo"]:
-            name = piece["pseudo"].lstrip(":")
-            if piece["pseudo"].startswith("::") or name in NEVER_ON:
-                never = True
-            elif name not in ("root", "link"):
-                raise UnreadCss(text)
-            else:
-                states += 1
-                root = root or name == "root"
-        elif piece["tag"] and piece["tag"] != "*":
-            tag = piece["tag"].lower()
-    return Compound(
-        tag,
-        frozenset(ids),
-        frozenset(classes),
-        tuple(attributes),
-        tuple(negated),
-        never,
-        states,
-        root,
-    )
-
-
-@dataclass(frozen=True)
-class Selector:
-    parts: tuple[tuple[str, Compound], ...]
-
-    @property
-    def specificity(self) -> tuple[int, int, int]:
-        each = [item.specificity for _, item in self.parts]
-        return (sum(i[0] for i in each), sum(i[1] for i in each), sum(i[2] for i in each))
-
-    def matches(self, element: Element) -> bool:
-        def climb(index: int, at: Element) -> bool:
-            joiner, item = self.parts[index]
-            if not item.matches(at):
-                return False
-            if index == 0:
-                return True
-            above = at.ancestors()
-            reach = above[:1] if joiner == ">" else above
-            return any(climb(index - 1, candidate) for candidate in reach)
-
-        return climb(len(self.parts) - 1, element)
-
-
-def selector(text: str) -> Selector:
-    parts: list[tuple[str, Compound]] = []
-    joiner = " "
-    for piece in re.findall(r"[>+~]|[^\s>+~]+", text.strip()):
-        if piece in ("+", "~"):
-            raise UnreadCss(text)
-        if piece == ">":
-            joiner = ">"
-            continue
-        parts.append((joiner, compound(piece)))
-        joiner = " "
-    return Selector(tuple(parts))
-
-
 WATCHED = frozenset(
     {
         "align-items",
         "align-self",
+        "box-sizing",
         "display",
         "flex-direction",
+        "flex-shrink",
         "flex-wrap",
         "grid-template-columns",
         "overflow",
@@ -304,18 +117,30 @@ WATCHED = frozenset(
         "width",
         "min-width",
         "max-width",
+        "padding-left",
+        "padding-right",
+        "border-left-width",
+        "border-right-width",
+        "border-top-width",
+        "border-bottom-width",
+        "margin-left",
+        "margin-right",
+        "background",
+        "background-color",
+        "background-image",
+        "box-shadow",
+        "border-top-left-radius",
+        "border-top-right-radius",
+        "border-bottom-right-radius",
+        "border-bottom-left-radius",
+        "backdrop-filter",
+        "column-count",
+        "letter-spacing",
+        "word-spacing",
+        "zoom",
     }
 )
 """The properties these checks read. A rule that sets none of them is passed over unread."""
-
-
-@dataclass(frozen=True)
-class Rule:
-    chosen: Selector
-    value: str
-    order: int
-    media: str | None
-    important: bool = False
 
 
 @dataclass
@@ -327,31 +152,59 @@ class Sheet:
     element itself, which keeps it alive while the sheet is in use."""
 
 
-def blocks(css: str) -> list[tuple[str, str]]:
-    """Each outermost block of ``css`` as what comes before its brace and what is inside."""
-    found: list[tuple[str, str]] = []
-    depth, after, opened = 0, 0, 0
-    for index, character in enumerate(css):
-        if character == "{":
-            if depth == 0:
-                opened = index
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                found.append((css[after:opened].strip(), css[opened + 1 : index]))
-                after = index + 1
-    return found
-
-
 LOGICAL = {"inline-size": "width", "min-inline-size": "min-width", "max-inline-size": "max-width"}
+CORNERS = (
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-right-radius",
+    "border-bottom-left-radius",
+)
 """Each logical width and the width it sets in a page written left to right."""
+STYLES = frozenset(
+    {"none", "hidden", "solid", "dashed", "dotted", "double", "groove", "ridge", "inset", "outset"}
+)
+
+
+def words_of(value: str) -> list[str]:
+    """The words of a value, a function such as ``min(1rem, 2vw)`` kept whole."""
+    return re.findall(r"(?:[^\s(]|\([^()]*\))+", value)
+
+
+def sides(value: str) -> tuple[str, str, str, str]:
+    """The top, right, bottom and left of a box shorthand of one to four values."""
+    words = words_of(value)
+    if not 1 <= len(words) <= 4:
+        raise UnreadCss(value)
+    right = words[1] if len(words) > 1 else words[0]
+    bottom = words[2] if len(words) > 2 else words[0]
+    return words[0], right, bottom, (words[3] if len(words) == 4 else right)
+
+
+def zero(value: str | None) -> bool:
+    """Whether a length or number is zero, in any of the ways a browser reads one."""
+    return value is not None and bool(
+        re.fullmatch(r"[+-]?(0+\.?0*|\.0+)(px|rem|em|%|vw|vh)?", value)
+    )
+
+
+def border_width(value: str) -> str:
+    """The width a ``border`` shorthand gives a side: none at all when its style is none."""
+    width, style = "medium", "none"
+    for word in words_of(value):
+        if word in STYLES:
+            style = word
+        elif word in ("thin", "medium", "thick") or re.match(
+            r"[\d.+-]|(min|max|calc|clamp)\(", word
+        ):
+            width = word
+    return "0" if style in ("none", "hidden") else width
 
 
 def longhands(name: str, value: str) -> dict[str, str]:
     """What one declaration sets among the watched properties: ``font`` sets the text size,
-    ``flex-flow`` the direction and the wrapping, a logical width its width, and
-    ``place-items`` or ``place-self`` the alignment across a column with its first word."""
+    ``flex-flow`` the direction and the wrapping, ``flex`` the shrinking, a logical width
+    its width, ``place-items`` or ``place-self`` the alignment across a column with its
+    first word, and a padding, border or margin shorthand each side it reaches."""
     if name == "font":
         return {"font-size": value}
     if name in LOGICAL:
@@ -359,7 +212,7 @@ def longhands(name: str, value: str) -> dict[str, str]:
     if name in ("place-items", "place-self"):
         return {name.replace("place", "align"): value.split()[0]}
     if name == "flex-flow":
-        found = {}
+        found = {"flex-direction": "row", "flex-wrap": "nowrap"}
         for word in value.split():
             if word in ("wrap", "nowrap", "wrap-reverse"):
                 found["flex-wrap"] = word
@@ -368,88 +221,74 @@ def longhands(name: str, value: str) -> dict[str, str]:
             else:
                 raise UnreadCss(value)
         return found
-    return {name: value} if name in WATCHED else {}
-
-
-IMPORTANT = re.compile(r"\s*!\s*important$")
+    if name == "flex":
+        numbers = re.findall(r"(?:^|\s)([+-]?(?:\d+\.?\d*|\.\d+))(?=\s|$)", value)
+        if value in KEYWORDS:
+            return {"flex-shrink": value}
+        if value == "none":
+            return {"flex-shrink": "0"}
+        return {"flex-shrink": numbers[1] if len(numbers) > 1 else "1"}
+    if name == "background":
+        if value in KEYWORDS or value == "none":
+            fill = "transparent" if value == "none" else value
+            return {"background": value, "background-color": fill, "background-image": value}
+        return {"background": value}
+    if name == "border-radius":
+        return dict.fromkeys(CORNERS, "0" if all(zero(one) for one in value.split()) else value)
+    if name == "columns":
+        return {"column-count": value}
+    name = name.replace("inline-start", "left").replace("inline-end", "right")
+    if name in ("padding", "margin", "border-width"):
+        top, right, bottom, left = sides(value)
+        found = {"top": top, "right": right, "bottom": bottom, "left": left}
+    elif name in ("padding-inline", "margin-inline", "border-inline-width"):
+        pair = words_of(value)
+        if not 1 <= len(pair) <= 2:
+            raise UnreadCss(value)
+        found = {"left": pair[0], "right": pair[-1]}
+    elif name in ("border", "border-inline"):
+        width = value if value in KEYWORDS else border_width(value)
+        found = dict.fromkeys(("left", "right"), width)
+        if name == "border":
+            found |= dict.fromkeys(("top", "bottom"), width)
+    elif name in ("border-left", "border-right", "border-top", "border-bottom"):
+        found = {name.removeprefix("border-"): value if value in KEYWORDS else border_width(value)}
+    elif name == "border-style":
+        raise UnreadCss(value)
+    else:
+        return {name: value} if name in WATCHED else {}
+    box = name.removesuffix("-width").removesuffix("-inline")
+    box = "border" if box.startswith("border") else box
+    width = "-width" if box == "border" else ""
+    if box == "border" and any(one in ("initial", "unset") for one in found.values()):
+        raise UnreadCss(value)
+    return {
+        f"{box}-{side}{width}": one
+        for side, one in found.items()
+        if box == "border" or side in ("left", "right")
+    }
 
 
 def read_sheet(css: str) -> Sheet:
     """Every rule of ``css`` that sets a watched property, in source order, each with the
-    media condition it sits under. Names and keywords are read in any case, as a browser
-    reads them. Font faces and keyframes hold no rules for elements and are passed over; a
-    rule nested inside another is refused."""
+    media condition it sits under, as `tests/support.py` reads the sheet. Names and keywords
+    are read in any case, as a browser reads them."""
     sheet = Sheet()
-    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
-    order = 0
-
-    def read(part: str, media: str | None) -> None:
-        nonlocal order
-        for before, inside in blocks(part):
-            if before.startswith(("@font-face", "@keyframes")):
-                continue
-            if before.startswith("@media"):
-                if media is not None:
-                    raise UnreadCss(before)
-                read(inside, before.removeprefix("@media").strip())
-                continue
-            if before.startswith("@") or "{" in inside:
-                raise UnreadCss(before)
-            order += 1
-            declared: dict[str, tuple[str, bool]] = {}
-            for line in inside.split(";"):
-                name, _, value = line.partition(":")
-                value, important = IMPORTANT.subn("", value.strip().lower())
-                if not value:
-                    continue
-                for longhand, setting in longhands(name.strip().lower(), value).items():
-                    if important or not declared.get(longhand, ("", False))[1]:
-                        declared[longhand] = (setting, important > 0)
-            if not declared:
-                continue
-            chosen = [selector(head) for head in before.split(",")]
-            for name, (value, weight) in declared.items():
-                for one in chosen:
-                    sheet.rules.setdefault(name, []).append(Rule(one, value, order, media, weight))
-
-    read(plain, None)
+    for style in style_rules(css):
+        declared: dict[str, tuple[str, bool]] = {}
+        for name, value, important in style.declarations:
+            for longhand, setting in longhands(name, value.lower()).items():
+                if important or not declared.get(longhand, ("", False))[1]:
+                    declared[longhand] = (setting, important)
+        if not declared:
+            continue
+        chosen = [selector(head) for head in style.selectors.split(",")]
+        for name, (value, weight) in declared.items():
+            for one in chosen:
+                sheet.rules.setdefault(name, []).append(
+                    Rule(one, value, style.order, style.media, weight)
+                )
     return sheet
-
-
-def media_length(value: str, view: View) -> float:
-    found = re.fullmatch(r"(\d*\.?\d+)(px|rem|em)", value.strip())
-    if found is None:
-        raise UnreadCss(value)
-    return float(found.group(1)) * (1 if found.group(2) == "px" else view.browser_text)
-
-
-def holds(condition: str | None, view: View) -> bool:
-    """Whether a media condition holds on ``view``; a list holds when any query does."""
-    if condition is None:
-        return True
-    return any(one_query_holds(query.strip(), view) for query in condition.split(","))
-
-
-def one_query_holds(query: str, view: View) -> bool:
-    result = True
-    for word in re.sub(r"\([^)]*\)", " ", query).split():
-        if word == "print":
-            result = False
-        elif word not in ("and", "only", "screen", "all"):
-            raise UnreadCss(query)
-    features = re.findall(r"\(\s*([\w-]+)\s*:\s*([^)]+?)\s*\)", query)
-    if len(features) != query.count("("):
-        raise UnreadCss(query)
-    for name, value in features:
-        if name == "min-width":
-            result = result and view.width >= media_length(value, view)
-        elif name == "max-width":
-            result = result and view.width <= media_length(value, view)
-        elif name == "prefers-reduced-motion" and value in ("reduce", "no-preference"):
-            result = result and value == "no-preference"
-        else:
-            raise UnreadCss(query)
-    return result
 
 
 def declared_for(sheet: Sheet, element: Element, name: str, view: View) -> Rule | None:
@@ -460,22 +299,25 @@ def declared_for(sheet: Sheet, element: Element, name: str, view: View) -> Rule 
         sheet.matched[key] = [
             rule for rule in sheet.rules.get(name, []) if rule.chosen.matches(element)
         ]
-    winner: Rule | None = None
-    for rule in sheet.matched[key]:
-        if holds(rule.media, view) and (
-            winner is None
-            or (rule.important, rule.chosen.specificity, rule.order)
-            > (winner.important, winner.chosen.specificity, winner.order)
-        ):
-            winner = rule
-    if winner is None and name in INHERITED and element.parent is not None:
+    found = winner(sheet.matched[key], view)
+    if found is None and name in INHERITED and element.parent is not None:
         return declared_for(sheet, element.parent, name, view)
-    return winner
+    return found
 
 
 def value_of(sheet: Sheet, element: Element, name: str, view: View) -> str | None:
+    """The value the cascade settles on, ``None`` where it is the property's initial value.
+    ``inherit``, and ``unset`` on an inherited property, take the parent's value."""
     rule = declared_for(sheet, element, name, view)
-    return None if rule is None else rule.value
+    if rule is None:
+        return None
+    if rule.value == "inherit" or (rule.value == "unset" and name in INHERITED):
+        return None if element.parent is None else value_of(sheet, element.parent, name, view)
+    if rule.value in ("initial", "unset"):
+        return None
+    if rule.value in ("revert", "revert-layer"):
+        raise UnreadCss(rule.value)
+    return rule.value
 
 
 def stylesheet() -> str:
@@ -487,13 +329,29 @@ def stylesheet() -> str:
 
 def links_wrap(sheet: Sheet, page: str, view: View) -> bool:
     """The page links and the sign-out control are each a whole item of a flex line that
-    wraps, so a control that does not fit goes to a line of its own."""
-    nav = [one for one in masthead_of(page) if one.tag == "nav" and "places" in one.classes]
+    wraps and stays within the masthead's line, so a control that does not fit goes to a
+    line of its own. In a row masthead the links shrink beside the brand as far as their
+    widest control; in a column they are sized the way the brand is."""
+    head = masthead_of(page)
+    nav = [one for one in head if one.tag == "nav" and "places" in one.classes]
     assert len(nav) == 1
-    return (
-        value_of(sheet, nav[0], "display", view) == "flex"
-        and value_of(sheet, nav[0], "flex-wrap", view) == "wrap"
-    )
+    margins = [value_of(sheet, nav[0], side, view) for side in ("margin-left", "margin-right")]
+    if (
+        value_of(sheet, nav[0], "display", view) not in ("flex", "inline-flex")
+        or value_of(sheet, nav[0], "flex-wrap", view) != "wrap"
+        or any(inset_px(one, view) != 0 for one in margins)
+    ):
+        return False
+    if not column(sheet, head[0], view):
+        least = value_of(sheet, nav[0], "min-width", view)
+        return not zero(value_of(sheet, nav[0], "flex-shrink", view)) and (
+            least in (None, "auto", "min-content") or zero(least)
+        )
+    return keeps_within_the_line(sizing_of(sheet, head[0], nav[0], view))
+
+
+def column(sheet: Sheet, head: Element, view: View) -> bool:
+    return value_of(sheet, head, "flex-direction", view) in ("column", "column-reverse")
 
 
 def brand_wraps_where_it_should(sheet: Sheet, page: str, view: View) -> bool:
@@ -506,11 +364,12 @@ def brand_wraps_where_it_should(sheet: Sheet, page: str, view: View) -> bool:
     assert [one.tag for one in head if one.parent is brand[0]] == ["img", "span"]
     wrapping = value_of(sheet, brand[0], "flex-wrap", view)
     along = value_of(sheet, brand[0], "flex-direction", view) in (None, "row")
-    if value_of(sheet, head[0], "flex-direction", view) != "column":
-        return along and wrapping in (None, "nowrap")
+    flexed = value_of(sheet, brand[0], "display", view) in ("flex", "inline-flex")
+    if not column(sheet, head[0], view):
+        return along and flexed and wrapping in (None, "nowrap")
     return (
         along
-        and value_of(sheet, brand[0], "display", view) in ("flex", "inline-flex")
+        and flexed
         and wrapping == "wrap"
         and keeps_within_the_line(sizing_of(sheet, head[0], brand[0], view))
     )
@@ -526,9 +385,9 @@ ALIGNED = frozenset(
 
 @dataclass(frozen=True)
 class Sizing:
-    """What decides the brand's width across a column masthead, as the cascade settles it:
-    whether it wraps, its width and the least and most it may be, and whether the masthead
-    stretches it across the line."""
+    """What decides the width of a masthead item, the brand or the page links, across a column
+    masthead, as the cascade settles it: whether it wraps, its width and the least and most
+    it may be, and whether the masthead stretches it across the line."""
 
     wraps: bool
     width: str
@@ -668,6 +527,111 @@ def entry_columns_fit(sheet: Sheet, page: str, view: View) -> bool:
     )
 
 
+DATE_EM = 6.81
+"""How wide a date field's text and its calendar button are together, in ems of the field's
+text: Edge draws 08/20/2026 in the app's body font 181.5 pixels wide at 32-pixel text, and
+the button 36 pixels."""
+INSETS = (
+    "margin-left",
+    "margin-right",
+    "border-left-width",
+    "border-right-width",
+    "padding-left",
+    "padding-right",
+)
+
+
+def inset_px(value: str | None, view: View) -> float:
+    """A margin, border width or padding in pixels: unset, ``auto`` or ``0``; a length in px,
+    rem or em (the elements here keep the root's text size) or vw; the ``min`` of such
+    lengths; or a border's ``thin``, ``medium`` or ``thick``."""
+    if value is None:
+        return 0.0
+    named = {"auto": 0.0, "0": 0.0, "thin": 1.0, "medium": 3.0, "thick": 5.0}
+    if value in named:
+        return named[value]
+    least = re.fullmatch(r"min\((.+)\)", value)
+    if least:
+        return min(inset_px(one.strip(), view) for one in least.group(1).split(","))
+    read = re.fullmatch(r"(\d*\.?\d+)(px|rem|em|vw)", value)
+    if read is None:
+        raise UnreadCss(value)
+    unit = {"px": 1, "rem": view.root_text, "em": view.root_text, "vw": view.width / 100}
+    return float(read.group(1)) * unit[read.group(2)]
+
+
+def capped(sheet: Sheet, element: Element, width: float, view: View) -> float:
+    """``width`` held to the element's ``max-width``, a percentage being of ``width``."""
+    most = value_of(sheet, element, "max-width", view)
+    if most is None or most == "none":
+        return width
+    share = re.fullmatch(r"(\d*\.?\d+)%", most)
+    return min(width, float(share.group(1)) * width / 100 if share else inset_px(most, view))
+
+
+LAYOUTS = {"form": ("grid",), "div": ("flex",), "input": (None, "block", "inline-block")}
+"""How the entry form, each field's box and the date field itself are laid out, as the walk
+down to a date field reads them; anything else on the way is a block."""
+
+
+def laid_out_otherwise(sheet: Sheet, element: Element, view: View) -> str | None:
+    """What the walk down to a date field does not read about ``element``, or None: a width or
+    least width of its own, a layout other than the one it expects, columns, spacing
+    between letters or words, or a zoom."""
+    found = {name: value_of(sheet, element, name, view) for name in ("width", "min-width")}
+    if found["width"] not in (None, "auto", "100%") or not (
+        found["min-width"] in (None, "auto") or zero(found["min-width"])
+    ):
+        return f"width {found}"
+    layout = value_of(sheet, element, "display", view)
+    if layout not in LAYOUTS.get(element.tag, (None, "block")):
+        return f"display {layout}"
+    if element.tag == "div" and value_of(sheet, element, "flex-direction", view) != "column":
+        return "a field's box that is not a column"
+    spacing = [value_of(sheet, element, name, view) for name in ("letter-spacing", "word-spacing")]
+    if any(not (one in (None, "normal") or zero(one)) for one in spacing):
+        return f"spacing {spacing}"
+    if value_of(sheet, element, "column-count", view) not in (None, "auto"):
+        return "columns"
+    if value_of(sheet, element, "zoom", view) not in (None, "1", "normal", "100%"):
+        return "zoom"
+    return None
+
+
+def date_room(sheet: Sheet, page: str, view: View) -> list[float]:
+    """For each date field of Add assignments, how much wider than its date and its calendar
+    button the field's text box is on ``view``, in pixels; below zero, the field clips the
+    date being edited. Each element on the way down from the page takes its margins,
+    borders and padding from the width, and the entry form's column is never narrower than
+    its floor."""
+    fields = [one for one in adding_of(page) if one.attributes.get("type") == "date"]
+    assert [one.attributes["id"] for one in fields] == ["entry-assigned_on", "entry-due_date"]
+    room = []
+    for one in fields:
+        chain = [one, *one.ancestors()]
+        if any(value_of(sheet, above, "font-size", view) is not None for above in chain):
+            msg = "a text size of its own on the way to a date field"
+            raise UnreadCss(msg)
+        if any(value_of(sheet, above, "box-sizing", view) != "border-box" for above in chain):
+            msg = "a width that is not the border box on the way to a date field"
+            raise UnreadCss(msg)
+        for above in chain:
+            unread = laid_out_otherwise(sheet, above, view)
+            if unread:
+                msg = f"{above.tag} on the way to a date field: {unread}"
+                raise UnreadCss(msg)
+        width = float(view.width)
+        for above in reversed(chain):
+            width -= sum(inset_px(value_of(sheet, above, name, view), view) for name in INSETS[:2])
+            width = capped(sheet, above, width, view)
+            width -= sum(inset_px(value_of(sheet, above, name, view), view) for name in INSETS[2:])
+            if above.tag == "form":
+                columns = value_of(sheet, above, "grid-template-columns", view)
+                width = floor_px(columns or "", width, view)
+        room.append(width - DATE_EM * view.root_text)
+    return room
+
+
 ADDING_CONTROLS = [
     ("label", "School text"),
     ("button", "Preview assignments"),
@@ -793,7 +757,7 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
         "@media (hover: hover) { p { flex-wrap: wrap; } }",
         "@media (min-width: 40vw) { p { flex-wrap: wrap; } }",
         "@supports (display: grid) { p { flex-wrap: wrap; } }",
-        "p:focus-within, p:first-child { flex-wrap: wrap; }",
+        "p:focus-within, p:last-child { flex-wrap: wrap; }",
         "p + p { flex-wrap: wrap; }",
         "p { flex-flow: wrap dense; }",
         "p { & { flex-wrap: wrap; } }",
@@ -825,7 +789,7 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
     assert value_of(spelled, other, "width", phone) == "10px"
     assert value_of(spelled, other, "min-width", phone) == "1px"
     assert value_of(spelled, other, "align-self", phone) == "stretch"
-    assert value_of(spelled, other, "max-width", phone) == "3px"
+    assert value_of(spelled, other, "max-width", phone) == "4px"
     assert compound(":root").specificity == (0, 1, 0)
     assert compound("html:root").specificity == (0, 1, 1)
     assert not compound(":root").matches(other)
@@ -833,6 +797,91 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
         floor_px("repeat(auto-fit, minmax(min(13rem, 100%), 1fr))", 161, View(320, 16, 32)) == 161
     )
     assert floor_px("repeat(auto-fit, minmax(13rem, 1fr))", 161, View(320, 16, 32)) == 416
+
+
+def test_the_resolver_reads_links_strings_and_keywords_the_way_a_browser_would() -> None:
+    page = elements_of('<section><p class="x">a</p><a class="x" href="/">b</a><a class="x">c</a>')
+    _, para, link, anchor = page
+    phone = View(320)
+    links = read_sheet(
+        """
+        .x:link { max-width: 1px; }
+        section .x { max-width: 2px; }
+        a.x:visited { max-width: 3px; }
+        """
+    )
+    assert value_of(links, para, "max-width", phone) == "2px"
+    assert value_of(links, link, "max-width", phone) == "1px"
+    assert value_of(links, anchor, "max-width", phone) == "2px"
+    assert compound("a:LINK").specificity == (0, 1, 1)
+    twice = read_sheet("p.x { max-width: 6px; } .x.x { max-width: 5px; } .x { max-width: 4px; }")
+    assert value_of(twice, para, "max-width", phone) == "5px"
+    assert compound(".x.x").specificity == (0, 2, 0)
+    rows = elements_of("<ol><li>1</li><li>2</li><li>3</li></ol>")
+    places = read_sheet("li:first-child { max-width: 1px; } li:nth-child(2) { max-width: 2px; }")
+    assert [value_of(places, one, "max-width", phone) for one in rows[1:]] == ["1px", "2px", None]
+    assert compound("li:nth-child(2)").specificity == (0, 1, 1)
+    strings = read_sheet(
+        """
+        p::before { content: "} /* ;"; }
+        p { background: url(a;b/*c.png); flex-wrap: wrap; }
+        p::after { content: '*/ {'; }
+        p { width: 7px; }
+        """
+    )
+    assert value_of(strings, para, "flex-wrap", phone) == "wrap"
+    assert value_of(strings, para, "width", phone) == "7px"
+    flow = read_sheet(
+        "p { flex-wrap: wrap; flex-direction: column; } .x { flex-flow: row-reverse; }"
+    )
+    assert value_of(flow, para, "flex-wrap", phone) == "nowrap"
+    assert value_of(flow, para, "flex-direction", phone) == "row-reverse"
+    keywords = read_sheet(
+        """
+        section { flex-wrap: wrap; overflow-wrap: anywhere; white-space: nowrap; }
+        p { flex-wrap: inherit; overflow-wrap: unset; white-space: initial; }
+        a { flex-wrap: unset; }
+        """
+    )
+    assert value_of(keywords, para, "flex-wrap", phone) == "wrap"
+    assert value_of(keywords, para, "overflow-wrap", phone) == "anywhere"
+    assert value_of(keywords, para, "white-space", phone) is None
+    assert value_of(keywords, link, "flex-wrap", phone) is None
+    with pytest.raises(UnreadCss):
+        value_of(read_sheet("p { flex-wrap: revert; }"), para, "flex-wrap", phone)
+
+
+def test_the_resolver_reads_each_side_of_a_box_and_the_shrinking_of_a_flex_item() -> None:
+    _, bold, italic = elements_of("<div><b>1</b><i>2</i></div>")
+    phone = View(320, 16, 32)
+    boxes = read_sheet(
+        """
+        b { padding: 1px 2px 3px 4px; margin: 0 auto; border: 3px solid red; }
+        b { padding-inline-end: 9px; flex: none; }
+        i { padding-inline: 5px 1rem; border-left: thin dashed; border-right: none; }
+        i { margin-inline-start: min(2vw, 1rem); border-inline-width: 0 2px; flex: 2; }
+        """
+    )
+    assert [value_of(boxes, bold, name, phone) for name in INSETS] == (
+        ["auto", "auto", "3px", "3px", "4px", "9px"]
+    )
+    assert [value_of(boxes, italic, name, phone) for name in INSETS] == (
+        ["min(2vw, 1rem)", None, "0", "2px", "5px", "1rem"]
+    )
+    assert value_of(boxes, bold, "flex-shrink", phone) == "0"
+    assert value_of(boxes, italic, "flex-shrink", phone) == "1"
+    assert inset_px("min(2vw, 1rem)", phone) == 6.4
+    assert inset_px("min(2vw, 1rem)", View(1440)) == 16
+    assert inset_px("1.5em", phone) == 48
+    assert [inset_px(one, phone) for one in (None, "auto", "0", "thin", "medium", "thick")] == (
+        [0, 0, 0, 1, 3, 5]
+    )
+    for unread in ("10%", "calc(1px + 1px)", "1ch"):
+        with pytest.raises(UnreadCss):
+            inset_px(unread, phone)
+    for unread in ("p { border-style: none; }", "p { padding: 1px 2px 3px 4px 5px; }"):
+        with pytest.raises(UnreadCss):
+            read_sheet(unread)
 
 
 @pytest.mark.parametrize("view", VIEWS, ids=str)
@@ -946,6 +995,307 @@ def test_the_links_check_fails_when_the_rule_stops_wrapping(
         for view in VIEWS:
             expected = view.width * 16 <= wraps_up_to * view.browser_text
             assert links_wrap(sheet, page, view) == expected, view
+
+
+@pytest.mark.parametrize(
+    ("added", "fails_in"),
+    [
+        pytest.param("width: max-content;", {"column"}, id="max-content-wide"),
+        pytest.param("inline-size: 60rem;", {"column"}, id="inline-size-past-the-line"),
+        pytest.param("min-width: max-content;", {"column", "row"}, id="min-width-max-content"),
+        pytest.param("min-width: 40rem;", {"column", "row"}, id="fixed-min-width"),
+        pytest.param("flex-shrink: 0;", {"row"}, id="no-shrink"),
+        pytest.param("flex: none;", {"row"}, id="flex-none"),
+        pytest.param("flex: 1 0 auto;", {"row"}, id="flex-without-shrink"),
+        pytest.param("width: 100%;", set(), id="the-line-wide"),
+        pytest.param("width: fit-content; min-width: 0;", set(), id="fit-content"),
+        pytest.param("flex: 1 1 auto; min-width: min-content;", set(), id="shrinks"),
+    ],
+)
+def test_the_links_check_fails_where_the_links_are_held_wider_than_the_line(
+    rendered: dict[str, str], added: str, fails_in: set[str]
+) -> None:
+    sheet = read_sheet(f"{stylesheet()}\n.places {{ {added} }}\n")
+    for page in with_nav(rendered).values():
+        head = masthead_of(page)[0]
+        for view in VIEWS:
+            column = value_of(sheet, head, "flex-direction", view) == "column"
+            layout = "column" if column else "row"
+            assert links_wrap(sheet, page, view) == (layout not in fails_in), view
+
+
+DATE_VIEWS = [
+    View(width, browser, root)
+    for width in (320, 330, 340, 360, 390, 420, 480, 600, 768, 820, 960, 1180, 1440, 3840)
+    for browser, root in TEXT_SIZES.values()
+]
+DATES_RULE = """  #add-assignments > .panel {
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  #add-assignments input,
+  #add-assignments select,
+  #add-assignments textarea {
+    padding-inline: min(0.85rem, 2vw);
+  }"""
+
+
+@pytest.mark.parametrize("view", DATE_VIEWS, ids=str)
+def test_a_date_field_shows_the_whole_date_while_it_is_edited(
+    rendered: dict[str, str], view: View
+) -> None:
+    sheet = read_sheet(stylesheet())
+    for name, page in family(rendered).items():
+        assert min(date_room(sheet, page, view)) >= 0, name
+
+
+CARD_EDGES = {
+    **dict.fromkeys(
+        ("border-top-width", "border-right-width", "border-bottom-width", "border-left-width"), "0"
+    ),
+    **dict.fromkeys(CORNERS, "0"),
+    "background": "none",
+    "background-color": "transparent",
+    "background-image": "none",
+    "box-shadow": "none",
+    "backdrop-filter": "none",
+}
+
+
+def card_is_bare(sheet: Sheet, page: str, view: View) -> tuple[bool, bool]:
+    """Whether the Add assignments card gives up its side insets on ``view``, and whether it
+    gives up its edge, surface and shadow with them."""
+    card = [
+        one
+        for one in elements_of(page)
+        if "panel" in one.classes
+        and one.parent is not None
+        and one.parent.attributes.get("id") == "add-assignments"
+    ]
+    assert len(card) == 1
+    insets = [value_of(sheet, card[0], side, view) for side in ("padding-left", "padding-right")]
+    edges = [value_of(sheet, card[0], name, view) for name in CARD_EDGES]
+    return insets == ["0", "0"], edges == list(CARD_EDGES.values())
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_the_add_assignments_card_drops_its_edge_with_its_insets(
+    rendered: dict[str, str], view: View
+) -> None:
+    sheet = read_sheet(stylesheet())
+    for page in family(rendered).values():
+        bare, edgeless = card_is_bare(sheet, page, view)
+        assert bare == edgeless
+        assert bare == (view.width <= 30 * view.browser_text)
+
+
+def with_line(after: str, line: str) -> str:
+    return DATES_RULE.replace(f"    {after}\n", f"    {after}\n    {line}\n")
+
+
+@pytest.mark.parametrize(
+    "becomes",
+    [
+        pytest.param(DATES_RULE.replace("    border: 0;\n", ""), id="border"),
+        pytest.param(DATES_RULE.replace("border: 0;", "border-inline: 0;"), id="sides-only"),
+        pytest.param(
+            DATES_RULE.replace("border: 0;", "border-left: 0;\n    border-right: 0;"),
+            id="left-and-right",
+        ),
+        pytest.param(with_line("border: 0;", "border-top: 1px solid red;"), id="top"),
+        pytest.param(DATES_RULE.replace("    border-radius: 0;\n", ""), id="radius"),
+        pytest.param(with_line("border-radius: 0;", "border-top-left-radius: 12px;"), id="corner"),
+        pytest.param(DATES_RULE.replace("    background: none;\n", ""), id="background"),
+        pytest.param(with_line("background: none;", "background-color: #fff;"), id="fill"),
+        pytest.param(
+            with_line("background: none;", "background-image: linear-gradient(red, blue);"),
+            id="image",
+        ),
+        pytest.param(DATES_RULE.replace("    box-shadow: none;\n", ""), id="shadow"),
+        pytest.param(DATES_RULE.replace("    backdrop-filter: none;\n", ""), id="backdrop"),
+    ],
+)
+def test_the_card_check_fails_when_the_card_keeps_part_of_its_edge(
+    rendered: dict[str, str], becomes: str
+) -> None:
+    sheet = broken(DATES_RULE, becomes)
+    for page in family(rendered).values():
+        assert card_is_bare(sheet, page, View(320)) == (True, False)
+
+
+@pytest.mark.parametrize(
+    ("added", "room"),
+    [
+        pytest.param("#add-assignments > .panel { border: 10vw solid red; }", -56.72, id="vw"),
+        pytest.param(
+            "#add-assignments > .panel { border-left: 10vw solid; border-right: 10vw solid; }",
+            -56.72,
+            id="vw-sides",
+        ),
+        pytest.param(
+            "#add-assignments > .panel { border: min(10vw, 1rem) solid; }", -56.72, id="min"
+        ),
+        pytest.param(
+            "#add-assignments { border: 3px solid; }"
+            " #add-assignments > .panel { border: inherit; }",
+            -4.72,
+            id="inherit",
+        ),
+        pytest.param("#add-assignments input { border: 10vw solid red; }", -54.72, id="field-vw"),
+    ],
+)
+def test_the_date_room_counts_every_border_a_browser_draws(
+    rendered: dict[str, str], added: str, room: float
+) -> None:
+    page = rendered["parent, family"]
+    sheet = read_sheet(f"{stylesheet()}\n@media (max-width: 30rem) {{ {added} }}\n")
+    for browser, root in ((32, 32), (16, 32)):
+        assert min(date_room(sheet, page, View(320, browser, root))) == pytest.approx(room)
+
+
+@pytest.mark.parametrize(
+    "added",
+    [
+        "#add-assignments > .panel { border: calc(5vw + 5vw) solid; }",
+        "#add-assignments > .panel { border: 2ch solid; }",
+        "#add-assignments > .panel { border: 1px solid; border-width: initial; }",
+        "#add-assignments input { border: revert; }",
+        "#add-assignments input { width: 4rem; }",
+        "#add-assignments .field { inline-size: 4rem; }",
+        "#add-assignments .entry { min-width: 30rem; }",
+        "#add-assignments .field { display: grid; }",
+        "#add-assignments > .panel { display: flex; }",
+        "#add-assignments > .panel { column-count: 2; }",
+        "#add-assignments .field { flex-direction: row; }",
+        "#add-assignments input { letter-spacing: 0.3em; }",
+        "#add-assignments .field { word-spacing: 1em; }",
+        "#add-assignments { zoom: 1.5; }",
+    ],
+)
+def test_the_date_room_refuses_what_its_walk_does_not_read(
+    rendered: dict[str, str], added: str
+) -> None:
+    page = rendered["parent, family"]
+    with pytest.raises(UnreadCss):
+        date_room(read_sheet(f"{stylesheet()}\n{added}\n"), page, View(320, 32, 32))
+
+
+@pytest.mark.parametrize(
+    ("added", "row_holds"),
+    [
+        pytest.param(".places { flex-shrink: 0.0; }", False, id="shrink-0.0"),
+        pytest.param(".places { flex-shrink: +0; }", False, id="shrink-plus-0"),
+        pytest.param(".places { flex: 0 0.0 auto; }", False, id="flex-0.0"),
+        pytest.param(".places { flex: 0 .0 0px; }", False, id="flex-.0"),
+        pytest.param(
+            ".masthead { flex-shrink: 0; } .places { flex: inherit; }", False, id="inherit"
+        ),
+        pytest.param(".places { min-width: 0rem; }", True, id="least-0rem"),
+        pytest.param(".places { min-width: 0%; }", True, id="least-0%"),
+        pytest.param(".places { min-width: -0; }", True, id="least-minus-0"),
+        pytest.param(".places { display: inline-flex; }", True, id="inline-flex"),
+        pytest.param(".places { margin-left: 4rem; }", False, id="margin"),
+    ],
+)
+def test_the_links_check_reads_each_spelling_in_a_row(
+    rendered: dict[str, str], added: str, row_holds: bool
+) -> None:
+    sheet = read_sheet(f"{stylesheet()}\n{added}\n")
+    page = rendered["parent, family"]
+    for view in (View(820), View(1180, 32, 32), View(1440)):
+        assert links_wrap(sheet, page, view) == row_holds, view
+
+
+def test_the_links_check_reads_a_masthead_stacked_from_the_bottom(
+    rendered: dict[str, str],
+) -> None:
+    page = rendered["parent, family"]
+    reversed_column = "@media (max-width: 30rem) { .masthead { flex-direction: column-reverse; } }"
+    stacked = read_sheet(f"{stylesheet()}\n{reversed_column}\n")
+    held = read_sheet(f"{stylesheet()}\n{reversed_column}\n.places {{ width: max-content; }}\n")
+    for view in (View(320), View(320, 32, 32), View(320, 16, 32)):
+        assert links_wrap(stacked, page, view)
+        assert not links_wrap(held, page, view)
+        assert brand_wraps_where_it_should(stacked, page, view)
+
+
+def test_the_brand_check_fails_on_a_wide_screen_where_the_brand_is_not_a_flex_line(
+    rendered: dict[str, str],
+) -> None:
+    sheet = broken(BRAND_BASE, BRAND_BASE.replace("inline-flex", "block"))
+    for page in with_nav(rendered).values():
+        assert not brand_wraps_where_it_should(sheet, page, View(1440))
+
+
+def test_the_resolver_reads_attribute_names_in_any_case_and_a_comment_as_a_space() -> None:
+    para, date_field, link = elements_of('<p><input type="date"><a href="/x">x</a></p>')
+    for written in ("input[TYPE=date]", "input[Type='date']", "[TYPE]"):
+        assert selector(written).matches(date_field), written
+    assert selector("A[HREF]:link").matches(link)
+    assert value_of(read_sheet("p { wid/**/th: 5px; }"), para, "width", View(320)) is None
+
+
+@pytest.mark.parametrize(
+    ("becomes", "fits"),
+    [
+        pytest.param("", False, id="no-rule"),
+        pytest.param(
+            DATES_RULE.replace("    padding-inline: 0;\n", "", 1), False, id="card-insets"
+        ),
+        pytest.param(DATES_RULE.replace("    border: 0;\n", ""), True, id="card-border"),
+        pytest.param(DATES_RULE.replace("min(0.85rem, 2vw)", "0.85rem"), False, id="field-padding"),
+        pytest.param(DATES_RULE.replace("2vw", "3.2vw"), False, id="padding-just-over"),
+        pytest.param(DATES_RULE.replace("2vw", "3.1vw"), True, id="padding-just-under"),
+        pytest.param(
+            DATES_RULE.replace("#add-assignments input,\n", ""), False, id="inputs-left-out"
+        ),
+        pytest.param(DATES_RULE.replace("> .panel", "> .card"), False, id="selector-broken"),
+        pytest.param(DATES_RULE, True, id="as-it-is"),
+    ],
+)
+def test_the_date_check_fails_where_a_date_field_is_left_too_narrow(
+    rendered: dict[str, str], becomes: str, fits: bool
+) -> None:
+    sheet = broken(DATES_RULE, becomes)
+    for page in family(rendered).values():
+        for browser, root in ((32, 32), (16, 32)):
+            assert (min(date_room(sheet, page, View(320, browser, root))) >= 0) == fits
+        assert min(date_room(sheet, page, View(320))) >= 0
+
+
+def test_the_date_room_comes_from_every_inset_on_the_way_down() -> None:
+    page = (
+        '<main><details id="add-assignments"><section class="panel">'
+        '<form action="/parent/inbox/read"></form><form class="entry" action="/parent/inbox/enter">'
+        '<div class="field"><input type="date" id="entry-assigned_on"></div>'
+        '<div class="field"><input type="date" id="entry-due_date"></div></form>'
+        "</section></details></main>"
+    )
+    base = (
+        "* { box-sizing: border-box; } main { max-width: 20rem; padding: 0 10px; }"
+        " .entry { display: grid;"
+        " grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr)); }"
+        " .field { display: flex; flex-direction: column; }"
+        " input { border: 1px solid; padding: 0 0.5rem; }"
+    )
+    wide, narrow = View(1000), View(200)
+    need = 6.81 * 16
+    assert date_room(read_sheet(base), page, wide) == pytest.approx([208 - 18 - need] * 2)
+    assert date_room(read_sheet(base), page, narrow) == pytest.approx([180 - 18 - need] * 2)
+    insets = base + " section { margin: 0 3px; border-left: 2px solid; padding-right: 1em; }"
+    assert date_room(read_sheet(insets), page, narrow) == pytest.approx(
+        [180 - 6 - 2 - 16 - 18 - need] * 2
+    )
+    held = read_sheet(base + " main { max-width: 10rem; }")
+    assert date_room(held, page, wide) == pytest.approx([160 - 20 - 18 - need] * 2)
+    for unread in (" input { font-size: 0.9rem; }", " form { box-sizing: content-box; }"):
+        with pytest.raises(UnreadCss):
+            date_room(read_sheet(base + unread), page, wide)
 
 
 @pytest.mark.parametrize(
