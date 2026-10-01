@@ -31,6 +31,7 @@ from tests.support import (
     every_row,
     household_client,
     main_of,
+    rules_named,
     sign_in_as,
     spy_on_stores,
     state_of,
@@ -396,3 +397,48 @@ def test_another_failure_while_the_form_is_read_is_not_taken_for_an_unreadable_o
 
     assert fields.status_code == 400
     assert fields.json() == {"detail": "There was an error parsing the body"}
+
+
+# ------------------------------------------------------------------ 5. the ways back
+
+
+def ways_back_block(main: str) -> str:
+    """The one block of the page that holds its ways back, whole."""
+    found = re.findall(r'<div class="ways-back">(.*?)</div>', main, flags=re.S)
+    assert len(found) == 1, found
+    return cast(str, found[0])
+
+
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_every_way_back_stands_on_a_line_of_its_own_in_the_ways_back(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Every page the reader can meet holds its ways back, the note and the week included, in
+    one block of lines that holds nothing else."""
+    body, kind = unreadable()["multipart the parser rejects"]
+    shown = {}
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        for path in EVERY_FORM:
+            if forbidden(path, reader):
+                continue
+            block = ways_back_block(main_of(press(client, path, body, kind).text))
+            line = r'\s*<p class="return"><a href="[^"]*">[^<]*</a></p>\s*'
+            assert re.fullmatch(f"(?:{line})+", block), (path, block)
+            shown[path] = ways_back_of(block)
+
+    assert shown == {path: expected(path, reader)[2] for path in shown}
+    assert any(len(back) == 2 for back in shown.values()) == (reader != "parent")
+
+
+def test_each_way_back_keeps_its_press_area_inside_its_own_line() -> None:
+    """The note and the week stand one under another, and neither one's 44 pixels to press
+    reaches into the other's."""
+    declared = {
+        line.strip()
+        for rule in rules_named(".ways-back .return a")
+        for line in rule.split("\n")
+        if line.strip()
+    }
+
+    assert {"display: inline-block;", "padding: 0.8rem 0;", "margin: 0;"} <= declared

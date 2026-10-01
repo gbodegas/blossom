@@ -799,6 +799,15 @@ a.assignment-link:focus-visible {
   margin: 0;
 }
 
+/* A form that couldn't be read is answered with its ways back one under another, such as
+   the note and then the week. Each link keeps its 44 pixels to press inside its own line,
+   which grows to hold them, so a press near the edge of one never opens the other. */
+.ways-back .return a {
+  display: inline-block;
+  padding: 0.8rem 0;
+  margin: 0;
+}
+
 .evidence {
   margin-top: 1.25rem;
   min-width: 0;
