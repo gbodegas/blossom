@@ -310,7 +310,7 @@
     <p class="confidence disagree to-check" role="status">
       <strong>{{ to_check|length }} finished assignment{% if to_check|length != 1 %}s{% endif %}
       {% if to_check|length == 1 %}has a school report{% else %}have school reports{% endif %} to check:</strong>
-      {% for item in to_check %}<a href="{{ week_href(view.week.start, item.assignment_id, show=item.assignment_id) }}" aria-label="{{ item.title }}, {{ item.course }}: school report to check">{{ item.title }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.
+      {% for item in to_check %}<span class="to-check-item"><a href="{{ week_href(view.week.start, item.assignment_id, show=item.assignment_id) }}" aria-label="{{ item.title }}, {{ item.course }}: school report to check">{{ item.title }}</a><span class="to-check-mark">{% if loop.last %}.{% else %},{% endif %}</span></span>{% if not loop.last %} {% endif %}{% endfor %}
     </p>
   {% endif %}
   {% for assignment in active_cards %}

@@ -435,16 +435,29 @@ article h2 {
 
 /* On her week, the line of school reports to check names one link for each
    assignment, in a sentence that wraps onto several lines when it names
-   several. Each link stays in the words around it and wraps with them, padded
-   out to the same 44 pixels to press. Padding an inline link moves no text,
-   and the sentence's lines are spaced wider than a padded link is tall, so no
-   link's area reaches into another's on the line above or below. */
-.to-check {
-  line-height: 3rem;
+   several. Each link keeps its words in the sentence and is padded out to the
+   same 44 pixels to press. It sits with the comma or period after it in an
+   item of the line, a box of its own padded as far as the link, so the line
+   grows around each item and no link's area reaches into another's, with a
+   reader's own line height, letter spacing and word spacing too. The
+   punctuation sits in a box of no width, so it always fits on the line of its
+   link's last word, even when a long word fills that line, and shows in the
+   room the item keeps at its end. It takes no press, so a press at the edge of
+   a link, where the glyph of the comma after it can reach, goes to the link. */
+.to-check-item {
+  display: inline-block;
+  padding: 0.8rem 0.3em 0.8rem 0;
+  pointer-events: none;
+}
+
+.to-check-mark {
+  display: inline-block;
+  width: 0;
 }
 
 .to-check a {
   padding: 0.8rem 0;
+  pointer-events: auto;
 }
 
 /* The jump at the top of an assignment's details, past the instructions to her
