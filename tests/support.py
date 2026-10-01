@@ -2182,7 +2182,7 @@ def winner(rules: Iterable[Rule], view: View) -> Rule | None:
 
 def media_length(value: str, view: View) -> float:
     """A length in a media query, in pixels: its `rem` and `em` are the browser's text size."""
-    found = re.fullmatch(r"(\d*\.?\d+)(px|rem|em)", value.strip())
+    found = re.fullmatch(r"(\d*\.?\d+)(px|rem|em)", value.strip().lower())
     if found is None:
         raise UnreadCss(value)
     return float(found.group(1)) * (1 if found.group(2) == "px" else view.browser_text)
@@ -2197,14 +2197,17 @@ def holds(condition: str | None, view: View) -> bool:
 
 
 def one_query_holds(query: str, view: View) -> bool:
+    """Whether one media query holds on ``view``. Its words, features, values and units are
+    read in any case, as a browser reads them."""
+    read = query.lower()
     result = True
-    for word in re.sub(r"\([^)]*\)", " ", query).split():
+    for word in re.sub(r"\([^)]*\)", " ", read).split():
         if word == "print":
             result = False
         elif word not in ("and", "only", "screen", "all"):
             raise UnreadCss(query)
-    features = re.findall(r"\(\s*([\w-]+)\s*:\s*([^)]+?)\s*\)", query)
-    if len(features) != query.count("("):
+    features = re.findall(r"\(\s*([\w-]+)\s*:\s*([^)]+?)\s*\)", read)
+    if len(features) != read.count("("):
         raise UnreadCss(query)
     for name, value in features:
         if name == "min-width":

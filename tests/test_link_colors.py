@@ -277,8 +277,8 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
     link nothing reaches has no color of the page's. A rule inside a media query colors a
     link only where the query holds: a link whose one color is for narrow screens is the
     browser's color on a wide one, a rule for wide screens wins there and nowhere else,
-    and a query for less motion follows the reader's setting. What it cannot evaluate, it
-    refuses."""
+    and a query for less motion follows the reader's setting. A query is read in any case.
+    What it cannot evaluate, it refuses."""
     sheet = read_sheet(
         """
         :root { --ink: #111111; --soft: #222222; }
@@ -323,6 +323,9 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
     )
     assert color_of(still, plain, "link", tablet) == "#bbbbbb"
     assert color_of(still, plain, "link", View(820, reduced_motion=True)) is None
+    shouted = read_sheet("@MEDIA SCREEN AND (MAX-WIDTH: 30REM) { footer a { color: #888888; } }")
+    assert color_of(shouted, outside, "visited", View(480)) == "#888888"
+    assert color_of(shouted, outside, "visited", View(481)) is None
     assert color_of(sheet, plain, "link", desktop) == "#222222"
     for unread in (
         "@media (hover: hover) { a { color: red; } }",
@@ -332,6 +335,7 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
         "@media (max-width: 30rem) { :root { --ink: red; } }",
         "@media (prefers-reduced-motion: reduced) { a { color: red; } }",
         "@media (prefers-reduced-motion) { a { color: red; } }",
+        "@MEDIA (PREFERS-REDUCED-MOTION: REDUCED) { a { color: red; } }",
     ):
         with pytest.raises(UnreadCss):
             color_of(read_sheet(unread), plain, "link", tablet)

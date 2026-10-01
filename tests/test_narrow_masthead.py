@@ -26,6 +26,7 @@ import functools
 import math
 import pathlib
 import re
+import sys
 from dataclasses import dataclass, field, replace
 
 import pytest
@@ -42,6 +43,8 @@ from tests.support import (
     compound,
     elements_of,
     household_client,
+    media_length,
+    one_query_holds,
     selector,
     sign_in_as,
     style_rules,
@@ -913,8 +916,9 @@ def opened(tmp_path: pathlib.Path) -> dict[str, str]:
     if OPENED:
         return OPENED
     for reader in ("parent", "open"):
-        (tmp_path / reader).mkdir()
-        with household_client(reader, tmp_path / reader) as client:
+        folder = tmp_path / "opened" / reader
+        folder.mkdir(parents=True)
+        with household_client(reader, folder) as client:
             sign_in_as(client, reader)
             for form, data in (
                 ("read", {"text": ""}),
@@ -1015,6 +1019,79 @@ def test_the_resolver_reads_the_cascade_the_way_a_browser_would() -> None:
     assert floor_px("repeat(auto-fit, minmax(13rem, 1fr))", 161, View(320, 16, 32)) == 416
 
 
+@pytest.mark.parametrize(
+    ("query", "holding", "failing"),
+    [
+        pytest.param("@MEDIA SCREEN AND (MAX-WIDTH: 30REM)", View(480), View(481), id="capitals"),
+        pytest.param(
+            "@media screen and (max-width: 30REM)",
+            View(960, 32, 32),
+            View(961, 32, 32),
+            id="unit-in-capitals",
+        ),
+        pytest.param(
+            "@Media Only Screen And (Min-Width: 72Rem)", View(1152), View(1151), id="mixed-case"
+        ),
+        pytest.param("@media ALL and (max-width: 480PX)", View(480), View(481), id="pixels"),
+        pytest.param(
+            "@media (Max-Width: 30Em)", View(480, 16, 32), View(481, 16, 32), id="em-units"
+        ),
+        pytest.param(
+            "@media (PREFERS-REDUCED-MOTION: REDUCE)",
+            View(820, reduced_motion=True),
+            View(820),
+            id="less-motion",
+        ),
+        pytest.param(
+            "@media (prefers-reduced-motion: No-Preference)",
+            View(820),
+            View(820, reduced_motion=True),
+            id="motion",
+        ),
+        pytest.param("@MEDIA PRINT", None, View(820), id="print"),
+    ],
+)
+def test_the_resolver_reads_a_media_query_in_any_case(
+    query: str, holding: View | None, failing: View
+) -> None:
+    """A media query's types, features, values and units are read in any case."""
+    sheet = read_sheet(f"{query} {{ p {{ flex-wrap: wrap; }} }}")
+    (paragraph,) = elements_of("<p>a</p>")
+    if holding is not None:
+        assert value_of(sheet, paragraph, "flex-wrap", holding) == "wrap"
+        assert one_query_holds(query.partition(" ")[2], holding)
+    assert value_of(sheet, paragraph, "flex-wrap", failing) is None
+    assert not one_query_holds(query.partition(" ")[2], failing)
+
+
+def test_a_media_length_is_read_in_any_case() -> None:
+    assert media_length("30REM", View(320, 32)) == 960
+    assert media_length("30Em", View(320, 24)) == 720
+    assert media_length("480PX", View(320, 32)) == 480
+    with pytest.raises(UnreadCss):
+        media_length("40VW", View(320))
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "@MEDIA NOT SCREEN",
+        "@media (HOVER: HOVER)",
+        "@media (MIN-WIDTH: 40VW)",
+        "@media (PREFERS-REDUCED-MOTION: REDUCED)",
+        "@media (PREFERS-REDUCED-MOTION)",
+        "@media (MAX-W\N{LATIN CAPITAL LETTER I WITH DOT ABOVE}DTH: 30rem)",
+        "@media \N{LATIN SMALL LETTER LONG S}creen and (max-width: 30rem)",
+        "@media (max-width: 30\uff32\uff25\uff2d)",
+    ],
+)
+def test_the_resolver_refuses_a_media_query_it_cannot_read_in_any_case(query: str) -> None:
+    (paragraph,) = elements_of("<p>a</p>")
+    sheet = read_sheet(f"{query} {{ p {{ flex-wrap: wrap; }} }}")
+    with pytest.raises(UnreadCss):
+        value_of(sheet, paragraph, "flex-wrap", View(320))
+
+
 def test_the_resolver_reads_links_strings_and_keywords_the_way_a_browser_would() -> None:
     page = elements_of('<section><p class="x">a</p><a class="x" href="/">b</a><a class="x">c</a>')
     _, para, link, anchor = page
@@ -1098,6 +1175,18 @@ def test_the_resolver_reads_each_side_of_a_box_and_the_shrinking_of_a_flex_item(
     for unread in ("p { border-style: none; }", "p { padding: 1px 2px 3px 4px 5px; }"):
         with pytest.raises(UnreadCss):
             read_sheet(unread)
+
+
+@pytest.mark.parametrize("order", [("rendered", "opened"), ("opened", "rendered")], ids="-".join)
+def test_both_sets_of_pages_render_for_one_test_in_either_order(
+    order: tuple[str, str], request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A test that asks for both sets of pages before either is kept still runs on its own."""
+    monkeypatch.setattr(sys.modules[__name__], "RENDERED", {})
+    monkeypatch.setattr(sys.modules[__name__], "OPENED", {})
+    pages = {name: request.getfixturevalue(name) for name in order}
+    assert len(pages["rendered"]) == 6
+    assert len(pages["opened"]) == 4
 
 
 @pytest.mark.parametrize("view", ROW_VIEWS, ids=str)
