@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% set page = "parent" if family else "student" %}
+{% block title %}Blossom - {{ heading }}{% endblock %}
+{#
+  The answer to a form that could not be read at all: what happened, in a sentence that takes
+  the focus as the page arrives, with no script, and the ways back its route gives. Nothing of
+  the form is shown or promised back, since none of it could be read, and nothing here reads
+  a store. The sign-in's own form is said to be unread and nothing more: nothing here says
+  who is signed in, or that anyone was signed in or out.
+#}
+{% block content %}
+  <h1>{{ heading }}</h1>
+  <p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>{{ said }}</p>
+  {% for link in ways_back %}
+    <p class="return"><a href="{{ link.href }}">{{ link.label }}</a></p>
+  {% endfor %}
+{% endblock %}

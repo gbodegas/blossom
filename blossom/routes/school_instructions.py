@@ -43,6 +43,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from blossom.dependencies import ApplicationState
+from blossom.routes.forms import form_of
 from blossom.routes.inbox import State
 from blossom.routes.instruction_answers import (
     CarriedAccount,
@@ -465,7 +466,7 @@ async def choose(request: Request, assignment_id: str, state: State) -> Response
     it was accepted at. Who chose is a parent signed in, or the household
     with the sign-in off.
     """
-    read = review_answers((await request.form()).multi_items())
+    read = review_answers((await form_of(request)).multi_items())
     submitted = read.answer
     carried = read.carried
     if submitted is None:

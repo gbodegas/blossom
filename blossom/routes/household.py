@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.household import COOKIE, SESSION_SECONDS, device_of, home_of, issue, role_for
 from blossom.principals import Principal
+from blossom.routes.forms import FormRoute
 from blossom.templating import page_templates
 
 router = APIRouter(tags=["household"])
@@ -69,7 +70,6 @@ def sign_in(request: Request, state: State, next: str | None = None) -> Response
     return sign_in_page(request, next_path=safe_next(next))
 
 
-@router.post("/sign-in", response_class=HTMLResponse, include_in_schema=False)
 def take_passphrase(
     request: Request,
     state: State,
@@ -108,6 +108,16 @@ def take_passphrase(
         COOKIE, token, max_age=SESSION_SECONDS, httponly=True, samesite="lax", path="/"
     )
     return response
+
+
+router.add_api_route(
+    "/sign-in",
+    take_passphrase,
+    methods=["POST"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+    route_class_override=FormRoute,
+)
 
 
 @router.post("/sign-out", include_in_schema=False)

@@ -71,7 +71,7 @@ from blossom.noticing import Everything, read_everything
 from blossom.pairing import pair
 from blossom.plan_dates import DatesNow, dates_now
 from blossom.plan_reading import DoneMark, PlanReading, read_plan
-from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
+from blossom.routes.forms import TOKEN_MAX_LENGTH, FormRoute, fields_of
 from blossom.routes.navigation import (
     ADDED_NOTES_PAGE,
     ARCHIVED_NOTES_PAGE,
@@ -1204,7 +1204,6 @@ def a_count(given: str | None) -> int | None:
     return None if count is not None and count < 0 else count
 
 
-@router.post("/actions/plan", response_class=HTMLResponse, include_in_schema=False)
 async def plan_from_the_page(
     request: Request,
     state: State,
@@ -1257,7 +1256,16 @@ async def plan_from_the_page(
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/actions/help/{request_id}", response_class=HTMLResponse, include_in_schema=False)
+router.add_api_route(
+    "/actions/plan",
+    plan_from_the_page,
+    methods=["POST"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+    route_class_override=FormRoute,
+)
+
+
 def help_from_the_page(
     request: Request,
     request_id: str,
@@ -1298,6 +1306,16 @@ def help_from_the_page(
             kept=typed if words else None,
         )
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
+
+
+router.add_api_route(
+    "/actions/help/{request_id}",
+    help_from_the_page,
+    methods=["POST"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+    route_class_override=FormRoute,
+)
 
 
 def check_could_not(request: Request, state: ApplicationState, check: CheckState) -> HTMLResponse:
@@ -1600,7 +1618,6 @@ async def check_again_from_the_page(request: Request, assignment_id: str, state:
             )
 
 
-@router.post("/actions/decide/{draft_id}", response_class=HTMLResponse, include_in_schema=False)
 async def decide_from_the_page(
     request: Request,
     draft_id: str,
@@ -1641,3 +1658,13 @@ async def decide_from_the_page(
     except HTTPException as error:
         return refused_on_the_page(request, state, str(error.detail), error.status_code, typed)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
+
+
+router.add_api_route(
+    "/actions/decide/{draft_id}",
+    decide_from_the_page,
+    methods=["POST"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+    route_class_override=FormRoute,
+)
