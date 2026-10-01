@@ -32,6 +32,7 @@ from blossom.agent.retention import sweep_saved_state
 from blossom.agent.trace import LocalRunTracer
 from blossom.clock import Clock, SystemClock, clock_from
 from blossom.household import SignInAttempts, keys_for, secret_beside
+from blossom.routes.forms import quiet_the_parser
 from blossom.sample_notes import plant_notes
 from blossom.settings import Settings, enforce_local_only_tracing
 from blossom.sources import FixtureSource, read_whole
@@ -246,6 +247,9 @@ def create_lifespan(settings: Settings) -> Lifespan:
         # changed: hosted tracing is forced off here, before any store or
         # model client exists that could read the old value.
         enforce_local_only_tracing()
+        # The form parser's own log lines can quote a body it refuses; the application
+        # logs each refusal by its kind, so the parser's lines stay out of the log.
+        quiet_the_parser()
         # One process serves a household. The claim covers both files that
         # make up its state, is taken before either is opened, so a second
         # process is refused with a sentence rather than left to share state

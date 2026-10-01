@@ -33,7 +33,7 @@ from blossom.routes import (
     verifier,
 )
 from blossom.routes.forms import FormUnreadable
-from blossom.routes.navigation import FAMILY_PAGE, WEEK_PAGE, note_href
+from blossom.routes.navigation import FAMILY_PAGE, WEEK_PAGE, address, note_href
 from blossom.routes.student import ReturnLink, parent_reads
 from blossom.settings import Settings, get_settings
 from blossom.templating import page_templates
@@ -46,6 +46,8 @@ HELP_ASKS: Final = frozenset(
     {"/student/actions/ask-for-help", "/student/actions/homework-notes/{capture_id}/ask-for-help"}
 )
 """The routes that send her a request for help rather than save something."""
+BACK_TO_HELP: Final = ReturnLink(address(WEEK_PAGE, fragment="help"), "Back to Help")
+"""Where a request for help that could not be read goes back to: Help, on her week."""
 NOTHING_SAVED: Final = "That form could not be read, so nothing was saved."
 NOTHING_SENT: Final = "That form could not be read, so nothing was sent."
 SIGN_IN_NOT_READ: Final = "That form could not be read. Open sign-in and try again."
@@ -56,9 +58,10 @@ def unreadable_form(sample: bool) -> Callable[[Request, Exception], HTMLResponse
 
     What it says and the ways back come from the route alone: sign-in's own words and the way
     back to it, which say nothing about who is signed in and set no cookie; on the family's
-    tree, the way back to Family review; on hers, her week named for whoever reads, and the
-    note when the route names one by an id of a note's shape. Nothing of the body is shown,
-    and the failure is logged by its kind alone, since the parser's words can quote the body.
+    tree, the way back to Family review; on hers, her week named for whoever reads, or Help
+    on it for a request for help, and the note when the route names one by an id of a note's
+    shape. Nothing of the body is shown, and the failure is logged by its kind alone, since
+    the parser's words can quote the body.
     """
 
     def answer(request: Request, error: Exception) -> HTMLResponse:
@@ -77,7 +80,7 @@ def unreadable_form(sample: bool) -> Callable[[Request, Exception], HTMLResponse
             heading = "Request not sent" if asks else "Nothing was saved"
             said = NOTHING_SENT if asks else NOTHING_SAVED
             week = "Back to her week" if parent_reads(request) else "Back to my week"
-            ways_back = [ReturnLink(WEEK_PAGE, week)]
+            ways_back = [BACK_TO_HELP if asks else ReturnLink(WEEK_PAGE, week)]
             try:
                 note = capture_id_from(request.path_params.get("capture_id", ""))
             except NotACaptureId:

@@ -44,6 +44,7 @@ from tests.support import (
     state_of,
     store_free_page,
     ways_back_of,
+    whole_form,
     words,
 )
 
@@ -83,10 +84,17 @@ def multipart(
     return sent + split + b"--" + CR, f"{kind}; boundary={named}"
 
 
+HALF: Final = "+2AA-"
+"""Half of a surrogate pair as UTF-7 writes it: text no page can show and no record keeps."""
+HALF_ESCAPED: Final = "\\ud800"
+"""The same half, as the unicode_escape codec reads it."""
+
+
 def unreadable(typed: str = TYPED) -> dict[str, tuple[bytes, str]]:
     """The bodies the form parser can't read: multipart its parser rejects, a part with no
     name, a multipart type with no boundary, a boundary over 256 bytes, a charset no part can
-    be decoded in, 1001 fields, and one field over 1 MiB."""
+    be decoded in, a charset that decodes a part to half of a character, beside the typed
+    words or within them, 1001 fields, and one field over 1 MiB."""
     sent = typed.encode()
     name, _, value = typed.partition("=")
     return {
@@ -101,6 +109,16 @@ def unreadable(typed: str = TYPED) -> dict[str, tuple[bytes, str]]:
         ),
         "a charset no part can be decoded in": multipart(
             [(name, value) if value else ("note", typed)], "synthetic", charset="undefined"
+        ),
+        "half a character beside the words": multipart(
+            [(name, value) if value else ("note", typed), ("next", HALF)],
+            "synthetic",
+            charset="utf-7",
+        ),
+        "half a character within the words": multipart(
+            [(name, value + HALF_ESCAPED) if value else ("note", typed + HALF_ESCAPED)],
+            "synthetic",
+            charset="unicode_escape",
         ),
         "1001 fields": (
             urlencode([("note", typed), *[(f"f{n}", "1") for n in range(1000)]]).encode(),
@@ -166,6 +184,7 @@ NOTHING_SENT: Final = "That form could not be read, so nothing was sent."
 SIGN_IN_HEADING: Final = "Sign-in form could not be read"
 SIGN_IN_SAID: Final = "That form could not be read. Open sign-in and try again."
 WEEK: Final = "/student/due-this-week"
+BACK_TO_HELP: Final = (f"{WEEK}#help", "Back to Help")
 
 
 def expected(path: str, reader: str) -> tuple[str, str, list[tuple[str, str]]]:
@@ -177,7 +196,7 @@ def expected(path: str, reader: str) -> tuple[str, str, list[tuple[str, str]]]:
     week = (WEEK, "Back to her week" if reader == "parent" else "Back to my week")
     note = [(f"/student/homework-notes/{NOTE}", "Back to the note")] if NOTE in path else []
     if path.endswith("/ask-for-help"):
-        return "Request not sent", NOTHING_SENT, [*note, week]
+        return "Request not sent", NOTHING_SENT, [*note, BACK_TO_HELP]
     return "Nothing was saved", NOTHING_SAVED, [*note, week]
 
 
@@ -476,6 +495,8 @@ def test_a_sign_in_form_that_cannot_be_read_says_so_and_touches_no_session(
             "MultiPartException",
             "FormParserError",
             "UnicodeError",
+            "UnicodeEncodeError",
+            "UnicodeEncodeError",
             "MultiPartException",
             "MultiPartException",
         )
@@ -624,3 +645,175 @@ def test_each_way_back_keeps_its_press_area_inside_its_own_line() -> None:
     }
 
     assert {"display: inline-block;", "padding: 0.8rem 0;", "margin: 0;"} <= declared
+
+
+# ------------------------------------------------------------------ 6. the parser's own log
+
+
+QUOTED_BY_THE_PARSER: Final = {
+    "a boundary's byte": b"not the boundary" + CR + CR + TYPED.encode(),
+    "a header's byte": b"--synthetic" + CR + b"Content Disposition: form-data" + CR + CR,
+    "a header's line end": (
+        b"--synthetic" + CR + b'Content-Disposition: form-data; name="note"\rX' + TYPED.encode()
+    ),
+    "the headers' end": (
+        b"--synthetic" + CR + b'Content-Disposition: form-data; name="note"' + CR + b"\rX"
+    ),
+}
+"""Multipart the parser rejects with a warning of its own that names a byte of the body."""
+
+
+class Kept(logging.Handler):
+    """A plain handler on the root logger, as a server's log setup adds one: every record it
+    is handed, kept."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def test_the_parser_logs_nothing_of_a_body_it_rejects_and_the_kind_is_still_logged(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The parser's own lines, which quote a byte of the body even as a number, reach no
+    handler, pytest's or a plain one on the root logger; the application's line naming the
+    kind alone still does, once for each body refused."""
+    caplog.set_level(logging.DEBUG)
+    kept = Kept()
+    logging.getLogger().addHandler(kept)
+    try:
+        with household_client("open", tmp_path) as client:
+            answers = [
+                press(client, path, body, MULTIPART)
+                for body in QUOTED_BY_THE_PARSER.values()
+                for path in (ASK, DECIDE)
+            ]
+    finally:
+        logging.getLogger().removeHandler(kept)
+
+    assert [answer.status_code for answer in answers] == [400] * len(answers)
+    for records in (caplog.records, kept.records):
+        said = [(r.name, r.getMessage()) for r in records]
+        assert [line for line in said if line[0].startswith("python_multipart")] == []
+        assert [line for line in said if re.search(r"\b(?:45|110|32|88)\b", line[1])] == []
+        assert [message for name, message in said if name == "blossom.app"] == [
+            "a form could not be read: MultipartParseError"
+        ] * len(answers)
+
+
+# ------------------------------------------------------------------ 7. back to Help
+
+
+@pytest.mark.parametrize("reader", ["her", "open"])
+def test_her_ask_for_help_goes_back_to_help_on_her_week(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """An Ask for help that could not be read goes back to Help on her week, a note's after
+    the note, and Help is there to land on."""
+    body, kind = unreadable()["multipart the parser rejects"]
+    note_ask = f"/student/actions/homework-notes/{NOTE}/ask-for-help"
+    with household_client(reader, tmp_path) as client:
+        sign_in_as(client, reader)
+        shown = {
+            path: ways_back_of(main_of(press(client, path, body, kind).text))
+            for path in (
+                ASK,
+                note_ask,
+                f"/student/actions/homework-notes/{NOT_A_NOTE}/ask-for-help",
+            )
+        }
+        week = client.get(WEEK, headers=PAGE_HEADERS)
+
+    assert shown == {
+        ASK: [BACK_TO_HELP],
+        note_ask: [(f"/student/homework-notes/{NOTE}", "Back to the note"), BACK_TO_HELP],
+        f"/student/actions/homework-notes/{NOT_A_NOTE}/ask-for-help": [BACK_TO_HELP],
+    }
+    assert week.status_code == 200
+    assert len(re.findall(r'<section [^>]*id="help" tabindex="-1"', week.text)) == 1
+
+
+# ------------------------------------------------------------------ 8. half of a character
+
+
+def part(disposition: str, content: bytes) -> bytes:
+    """One multipart part split by the boundary ``synthetic``."""
+    head = f"Content-Disposition: {disposition}".encode()
+    return b"--synthetic" + CR + head + CR + CR + content + CR
+
+
+UTF_7: Final = "multipart/form-data; charset=utf-7; boundary=synthetic"
+
+
+@pytest.mark.parametrize(
+    ("where", "unreadable_there"),
+    [("a field's name", True), ("a file's name", True), ("a file's bytes", False)],
+)
+def test_half_a_character_in_any_text_the_parser_decodes_is_a_form_that_cannot_be_read(
+    where: str, unreadable_there: bool, tmp_path: pathlib.Path
+) -> None:
+    """A name and a file's name are text the parser decodes, so half a character there is
+    the 400 page, through a handler and through a form of parameters alike; a file's bytes
+    are never decoded, and answer as the same file with plain bytes does."""
+    plain = part('form-data; name="f"; filename="a.txt"', b"words")
+    sent = {
+        "a field's name": part(f'form-data; name="{HALF}"', b"1"),
+        "a file's name": part(f'form-data; name="f"; filename="{HALF}"', b"words"),
+        "a file's bytes": part('form-data; name="f"; filename="a.txt"', HALF.encode()),
+    }[where]
+    answers = {}
+    with household_client("open", tmp_path) as client:
+        for path in (ASK, DECIDE):
+            note = part('form-data; name="note"', TYPED.encode())
+            answers[path] = (
+                press(client, path, note + plain + b"--synthetic--" + CR, UTF_7),
+                press(client, path, note + sent + b"--synthetic--" + CR, UTF_7),
+            )
+
+    for path, (control, answer) in answers.items():
+        if unreadable_there:
+            heading, said, back = expected(path, "open")
+            main = store_free_page(answer, status=400, heading=heading, alert=said)
+            assert ways_back_of(main) == back, path
+        else:
+            assert answer.status_code == control.status_code != 400, path
+            assert answer.headers["content-type"] == control.headers["content-type"], path
+
+
+UNKEPT: Final = "That has a character Blossom cannot keep."
+
+
+def test_a_control_character_keeps_its_own_answer_and_half_a_character_is_the_page(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A new note's words with a control character in them are refused on the note's own
+    page, 422, with its words; the same words with half a character in them are a form that
+    could not be read. Neither is saved."""
+    with household_client("her", tmp_path) as client:
+        sign_in_as(client, "her")
+        new = whole_form(
+            client.get("/student/homework-notes/new", headers=PAGE_HEADERS).text,
+            "/student/actions/homework-notes",
+        )
+        before = every_row(database_of(client))
+        control = client.post(
+            "/student/actions/homework-notes",
+            data={**new, "text": "a bell \x07 here"},
+            headers=PAGE_HEADERS,
+        )
+        half = press(
+            client,
+            "/student/actions/homework-notes",
+            *multipart(
+                list({**new, "text": f"a bell {HALF} here"}.items()), "synthetic", charset="utf-7"
+            ),
+        )
+        after = every_row(database_of(client))
+
+    assert control.status_code == 422
+    assert UNKEPT in words(control.text)
+    store_free_page(half, status=400, heading="Nothing was saved", alert=NOTHING_SAVED)
+    assert after == before
