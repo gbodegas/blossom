@@ -139,6 +139,7 @@ WATCHED = frozenset(
         "border-bottom-left-radius",
         "backdrop-filter",
         "column-count",
+        "column-gap",
         "letter-spacing",
         "word-spacing",
         "zoom",
@@ -208,7 +209,8 @@ def longhands(name: str, value: str) -> dict[str, str]:
     """What one declaration sets among the watched properties: ``font`` sets the text size,
     ``flex-flow`` the direction and the wrapping, ``flex`` the shrinking, a logical width
     its width, ``place-items`` or ``place-self`` the alignment across a column with its
-    first word, and a padding, border or margin shorthand each side it reaches."""
+    first word, ``gap`` the space between items on a line with its last, and a padding,
+    border or margin shorthand each side it reaches."""
     if name == "font":
         return {"font-size": value}
     if name in LOGICAL:
@@ -241,6 +243,9 @@ def longhands(name: str, value: str) -> dict[str, str]:
         return dict.fromkeys(CORNERS, "0" if all(zero(one) for one in value.split()) else value)
     if name == "columns":
         return {"column-count": value}
+    if name == "gap":
+        pair = words_of(value)
+        return {"column-gap": pair[-1] if 1 <= len(pair) <= 2 else value}
     name = name.replace("inline-start", "left").replace("inline-end", "right")
     if name in ("padding", "margin", "border-width"):
         top, right, bottom, left = sides(value)
@@ -364,20 +369,100 @@ plus ``ROW_EM`` ems of the root's text. Edge lays out the widest, a parent's lin
 gaps, link padding and type, so a change to those needs a new measurement."""
 
 
-def row_fits(sheet: Sheet, head: Element, view: View) -> bool:
-    """Whether the brand and the page links at their narrowest fit one masthead row on
-    ``view``, which a masthead that doesn't wrap needs. The masthead's line is the screen less
-    its margins, held to its widest, less its borders and padding."""
+def masthead_line(sheet: Sheet, head: Element, view: View) -> float:
+    """The masthead's line on ``view``: the screen less its margins, held to its widest, less
+    its borders and padding."""
     width = view.width - sum(
         inset_px(value_of(sheet, head, side, view), view) for side in INSETS[:2]
     )
-    line = capped(sheet, head, width, view) - sum(
+    return capped(sheet, head, width, view) - sum(
         (border_px if side.startswith("border") else padding_px)(
             value_of(sheet, head, side, view), view
         )
         for side in INSETS[2:]
     )
+
+
+def row_fits(sheet: Sheet, head: Element, view: View) -> bool:
+    """Whether the brand and the page links at their narrowest fit one masthead row on
+    ``view``, which a masthead that doesn't wrap needs."""
+    line = masthead_line(sheet, head, view)
     return round(ROW_PX + ROW_EM * view.root_text, 6) <= round(line, 6)
+
+
+WORDMARK = "blossom"
+WORDMARK_EM = 3.978
+"""How wide the wordmark's letters are, in ems of its text, before its letter spacing, which
+a browser adds after every letter. Edge draws it at 117.25, 175.86 and 234.48 px in 28, 42
+and 56 px text, and at 134.89, 202.33 and 269.77 px with a reader's letter spacing. It holds
+for the name in lowercase in the heading typeface at weight 600; another typeface, weight or
+case needs a new measurement."""
+READER_LETTER_SPACING_EM = 0.12
+"""The letter spacing a reader may set on all text, in ems of each element's text."""
+
+
+def spacing_px(value: str | None, text: float, view: View) -> float:
+    """A letter spacing in pixels for text ``text`` pixels tall: ``normal``, or a length in
+    ems of that text, rem or px."""
+    if value is None or value in ("normal", "0"):
+        return 0.0
+    read = re.fullmatch(r"(-?\d*\.?\d+)(em|rem|px)", value)
+    if read is None:
+        raise UnreadCss(value)
+    return float(read.group(1)) * {"em": text, "rem": view.root_text, "px": 1}[read.group(2)]
+
+
+def insets_of(sheet: Sheet, element: Element, view: View) -> float:
+    """The margins, borders and padding an element takes from its line, in pixels."""
+    total = 0.0
+    for name in INSETS:
+        value = value_of(sheet, element, name, view)
+        if name.startswith("border"):
+            total += border_px(value, view)
+        elif name.startswith("padding"):
+            total += padding_px(value, view)
+        else:
+            total += inset_px(value, view)
+    return total
+
+
+def brand_fits(sheet: Sheet, head: list[Element], view: View, *, wraps: bool) -> bool:
+    """Whether the mark and the wordmark fit the masthead's line on ``view`` with the
+    stylesheet's letter spacing and with a reader's: side by side, or each on a line of its
+    own where the brand wraps. Every element above the wordmark keeps the root's text size,
+    so a letter spacing it passes down in ems is of that size."""
+    brand = next(one for one in head if one.tag == "a" and "brand" in one.classes)
+    mark, word = (one for one in head if one.parent is brand)
+    assert word.text.strip() == WORDMARK
+    if any(value_of(sheet, above, "font-size", view) is not None for above in word.ancestors()):
+        msg = "a text size of its own above the wordmark"
+        raise UnreadCss(msg)
+    for one in (word, mark, *word.ancestors()):
+        if value_of(sheet, one, "zoom", view) not in (None, "1", "normal", "100%"):
+            msg = f"a zoom on {one.tag} in the masthead"
+            raise UnreadCss(msg)
+    size = value_of(sheet, word, "font-size", view)
+    text = view.root_text if size is None else length_px(size, view)
+    rule = declared_for(sheet, word, "letter-spacing", view)
+    passed_down = (
+        rule is None
+        or rule is declared_for(sheet, brand, "letter-spacing", view)
+        or rule.value in ("inherit", "unset")
+    )
+    spacing = value_of(sheet, word, "letter-spacing", view)
+    own = spacing_px(spacing, view.root_text if passed_down else text, view)
+    wordmark = text * WORDMARK_EM + len(WORDMARK) * max(own, READER_LETTER_SPACING_EM * text)
+    wordmark += insets_of(sheet, word, view)
+    mark_px = length_px(value_of(sheet, mark, "width", view) or "", view)
+    least = value_of(sheet, mark, "min-width", view)
+    if least is not None and least not in ("auto", "0"):
+        mark_px = max(mark_px, length_px(least, view))
+    mark_px += insets_of(sheet, mark, view)
+    gap = value_of(sheet, brand, "column-gap", view)
+    gap_px = 0.0 if gap is None or gap in ("normal", "0") else length_px(gap, view)
+    need = max(mark_px, wordmark) if wraps else mark_px + gap_px + wordmark
+    need += insets_of(sheet, brand, view)
+    return round(need, 6) <= round(masthead_line(sheet, head[0], view), 6)
 
 
 def column(sheet: Sheet, head: Element, view: View) -> bool:
@@ -387,7 +472,8 @@ def column(sheet: Sheet, head: Element, view: View) -> bool:
 def brand_wraps_where_it_should(sheet: Sheet, page: str, view: View) -> bool:
     """The brand is a row of the mark and the wordmark. Where the masthead is a column, it is
     a flex line that wraps and stays within the masthead's line; where the masthead is a
-    row, it keeps one line, so a wide screen keeps its masthead."""
+    row, it keeps one line, so a wide screen keeps its masthead. Either way the app's own
+    wordmark fits the line, with a reader's letter spacing too."""
     head = masthead_of(page)
     brand = [one for one in head if one.tag == "a" and "brand" in one.classes]
     assert len(brand) == 1
@@ -395,6 +481,8 @@ def brand_wraps_where_it_should(sheet: Sheet, page: str, view: View) -> bool:
     wrapping = value_of(sheet, brand[0], "flex-wrap", view)
     along = value_of(sheet, brand[0], "flex-direction", view) in (None, "row")
     flexed = value_of(sheet, brand[0], "display", view) in ("flex", "inline-flex")
+    if not brand_fits(sheet, head, view, wraps=column(sheet, head[0], view)):
+        return False
     if not column(sheet, head[0], view):
         return along and flexed and wrapping in (None, "nowrap")
     return (
@@ -1152,6 +1240,182 @@ def test_the_date_room_leaves_what_edge_draws_at_each_text_size(
     assert typed + zeros <= DATE_EM * text + DATE_PX <= typed + zeros + 0.5
     need = (DATE_EM + READER_SPACING_EM) * text + DATE_PX
     assert spaced + zeros <= need <= spaced + zeros + 0.5
+
+
+@pytest.mark.parametrize("view", DATE_VIEWS, ids=str)
+def test_the_brand_fits_its_line_with_a_readers_letter_spacing_on_every_screen(
+    rendered: dict[str, str], view: View
+) -> None:
+    sheet = read_sheet(stylesheet())
+    for name, page in rendered.items():
+        assert brand_wraps_where_it_should(sheet, page, view), name
+
+
+@pytest.mark.parametrize(
+    ("text", "own", "spaced"), [(28, 117.25, 134.89), (42, 175.86, 202.33), (56, 234.48, 269.77)]
+)
+def test_the_wordmark_model_leaves_what_edge_draws_at_each_text_size(
+    text: int, own: float, spaced: float
+) -> None:
+    """Edge's widths for the wordmark with its own 0.03em letter spacing and a reader's."""
+    assert own <= text * (WORDMARK_EM + len(WORDMARK) * 0.03) <= own + 0.5
+    need = text * (WORDMARK_EM + len(WORDMARK) * READER_LETTER_SPACING_EM)
+    assert spaced <= need <= spaced + 0.5
+
+
+MASTHEAD_PADDING = "    padding-inline: min(1.25rem, 6.25vw);\n"
+
+
+@pytest.mark.parametrize(
+    ("was", "becomes", "view", "holds"),
+    [
+        pytest.param(MASTHEAD_PADDING, "", View(320, 16, 32), False, id="kept-page-text"),
+        pytest.param(MASTHEAD_PADDING, "", View(320, 32, 32), False, id="kept-browser-text"),
+        pytest.param(MASTHEAD_PADDING, "", View(349, 16, 32), False, id="kept-349"),
+        pytest.param(MASTHEAD_PADDING, "", View(350, 16, 32), True, id="kept-350"),
+        pytest.param(MASTHEAD_PADDING, "", View(320, 16, 16), True, id="kept-ordinary-text"),
+        pytest.param("6.25vw", "7.84vw", View(320, 16, 32), True, id="share-at-the-fit"),
+        pytest.param("6.25vw", "7.85vw", View(320, 16, 32), False, id="share-past-the-fit"),
+        pytest.param("6.25vw", "7.85vw", View(320, 32, 32), False, id="share-past-browser-text"),
+    ],
+)
+def test_the_brand_check_fails_where_the_masthead_leaves_the_wordmark_too_short_a_line(
+    rendered: dict[str, str], was: str, becomes: str, view: View, holds: bool
+) -> None:
+    """With large text and a reader's letter spacing, the wordmark is about 270 px wide."""
+    sheet = broken(was, becomes)
+    for page in rendered.values():
+        assert brand_wraps_where_it_should(sheet, page, view) is holds
+
+
+@pytest.mark.parametrize(
+    ("added", "view", "holds"),
+    [
+        pytest.param(".wordmark { letter-spacing: 0.146em; }", View(320, 16, 32), True, id="own"),
+        pytest.param(".wordmark { letter-spacing: 0.147em; }", View(320, 16, 32), False, id="wide"),
+        pytest.param(".wordmark { letter-spacing: 9.4px; }", View(320, 16, 32), False, id="px"),
+        pytest.param(".wordmark { letter-spacing: 0.3rem; }", View(320, 16, 32), False, id="rem"),
+        pytest.param(".wordmark { letter-spacing: -1em; }", View(320, 16, 32), True, id="tight"),
+        pytest.param(".wordmark { font-size: 1.8rem; }", View(320, 16, 32), True, id="text"),
+        pytest.param(".wordmark { font-size: 1.82rem; }", View(320, 16, 32), False, id="big"),
+        pytest.param(".masthead { border-inline: 5px solid; }", View(320, 16, 32), True, id="b5"),
+        pytest.param(".masthead { border-inline: 6px solid; }", View(320, 16, 32), False, id="b6"),
+        pytest.param(".masthead { margin-inline: 5px; }", View(320, 16, 32), True, id="m5"),
+        pytest.param(".masthead { margin-inline: 6px; }", View(320, 16, 32), False, id="m6"),
+        pytest.param(".masthead { max-width: 309.81px; }", View(320, 16, 32), True, id="most"),
+        pytest.param(".masthead { max-width: 309.8px; }", View(320, 16, 32), False, id="less"),
+        pytest.param(".mark { width: 280px; }", View(320, 16, 32), True, id="mark"),
+        pytest.param(".mark { width: 280.01px; }", View(320, 16, 32), False, id="mark-wide"),
+        pytest.param(".brand { gap: 2.59rem; }", View(481, 16, 32), True, id="row-gap"),
+        pytest.param(".brand { gap: 2.6rem; }", View(481, 16, 32), False, id="row-wide-gap"),
+        pytest.param(".brand { column-gap: 2.6rem; }", View(481, 16, 32), False, id="column-gap"),
+        pytest.param(".brand { gap: 0 2.6rem; }", View(481, 16, 32), False, id="gap-pair"),
+        pytest.param(".brand { gap: 2.6rem 0; }", View(481, 16, 32), True, id="row-gap-only"),
+        pytest.param(".brand { gap: normal; }", View(481, 16, 32), True, id="normal"),
+        pytest.param(".brand { gap: 0; }", View(481, 16, 32), True, id="no-gap"),
+        pytest.param(".wordmark { letter-spacing: 0; }", View(320, 16, 32), True, id="unspaced"),
+        pytest.param(".wordmark { letter-spacing: 6.72px; }", View(320, 16, 32), True, id="px-ok"),
+        pytest.param(
+            ".wordmark { letter-spacing: 0.21rem; }", View(320, 16, 32), True, id="rem-ok"
+        ),
+        pytest.param(
+            ".wordmark { padding-inline: 4.59px; } .brand { border-inline: 0.5px solid; }",
+            View(320, 16, 32),
+            False,
+            id="hairline-border-drawn-whole",
+        ),
+        pytest.param(".brand { gap: 2.6rem; }", View(320, 16, 32), True, id="gap-in-a-column"),
+        pytest.param(".brand { letter-spacing: 0.3em; }", View(320, 16, 32), True, id="own-wins"),
+        pytest.param(
+            ".wordmark { letter-spacing: inherit; } .brand { letter-spacing: 0.255em; }",
+            View(320, 16, 32),
+            True,
+            id="inherited-ems-of-the-root",
+        ),
+        pytest.param(
+            ".wordmark { letter-spacing: inherit; } .brand { letter-spacing: 0.256em; }",
+            View(320, 16, 32),
+            False,
+            id="inherited-past-the-fit",
+        ),
+        pytest.param(
+            ".wordmark { letter-spacing: unset; } .masthead { letter-spacing: 0.15em; }",
+            View(320, 16, 32),
+            True,
+            id="unset-from-the-masthead",
+        ),
+        pytest.param(".wordmark { padding-inline: 5px; }", View(320, 16, 32), True, id="wp5"),
+        pytest.param(".wordmark { padding-inline: 6px; }", View(320, 16, 32), False, id="wp6"),
+        pytest.param(".wordmark { margin-left: 10.19px; }", View(320, 16, 32), True, id="wm"),
+        pytest.param(".wordmark { margin-left: 10.2px; }", View(320, 16, 32), False, id="wm-past"),
+        pytest.param(".brand { border-inline: 5px solid; }", View(320, 16, 32), True, id="bb5"),
+        pytest.param(".brand { margin-inline: 6px; }", View(320, 16, 32), False, id="bm6"),
+        pytest.param(".brand { padding-inline: 0.95rem; }", View(481, 16, 32), True, id="row-bp"),
+        pytest.param(".brand { padding-inline: 1rem; }", View(481, 16, 32), False, id="row-bp-1"),
+        pytest.param(".mark { margin-inline: 116px; }", View(320, 16, 32), True, id="mm"),
+        pytest.param(".mark { margin-inline: 116.01px; }", View(320, 16, 32), False, id="mm-past"),
+        pytest.param(".mark { min-width: 280px; }", View(320, 16, 32), True, id="mark-least"),
+        pytest.param(".mark { min-width: 280.01px; }", View(320, 16, 32), False, id="least-past"),
+        pytest.param(".masthead { zoom: 1; }", View(320, 16, 32), True, id="no-zoom"),
+        pytest.param(
+            ".elsewhere { gap: max(1rem, calc(1vw + 2px)); }",
+            View(481, 16, 32),
+            True,
+            id="nested-gap-elsewhere",
+        ),
+    ],
+)
+def test_the_brand_check_reads_the_wordmark_the_mark_and_the_line_from_the_cascade(
+    rendered: dict[str, str], added: str, view: View, holds: bool
+) -> None:
+    """At 320 px the line is 280 px; just above the narrow layout it is 401 px for the mark,
+    the gap and the wordmark side by side."""
+    rule = NARROW % added if view.width == 320 else added
+    sheet = read_sheet(stylesheet() + "\n" + rule + "\n")
+    for page in rendered.values():
+        assert brand_wraps_where_it_should(sheet, page, view) is holds
+
+
+@pytest.mark.parametrize(
+    "added",
+    [
+        ".wordmark { letter-spacing: calc(0.1em + 1px); }",
+        ".wordmark { font-size: 120%; }",
+        ".mark { width: auto; }",
+        ".brand { gap: 1rem 2rem 3rem; }",
+        ".brand { gap: max(1rem, calc(1vw + 2px)); }",
+        ".brand { font-size: 1.5rem; }",
+        ".masthead { font: 600 1rem serif; }",
+        ".wordmark { zoom: 1.2; }",
+        ".brand { zoom: 1.2; }",
+        ".mark { zoom: 0.5; }",
+    ],
+)
+def test_the_brand_check_refuses_what_it_does_not_read(
+    rendered: dict[str, str], added: str
+) -> None:
+    with pytest.raises(UnreadCss):
+        brand_wraps_where_it_should(
+            read_sheet(stylesheet() + "\n" + added + "\n"),
+            rendered["sign-in page"],
+            View(320, 16, 32),
+        )
+
+
+@pytest.mark.parametrize("view", DATE_VIEWS, ids=str)
+def test_the_masthead_keeps_its_padding_wherever_a_share_of_the_screen_allows_it(
+    rendered: dict[str, str], view: View
+) -> None:
+    """The masthead's side padding is its ordinary 1.25rem, held in the narrow layout to
+    6.25% of the screen's width, so ordinary text from 320 px up keeps it."""
+    sheet = read_sheet(stylesheet())
+    head = masthead_of(rendered["sign-in page"])[0]
+    sides = [padding_px(value_of(sheet, head, side, view), view) for side in INSETS[4:]]
+    ordinary = 1.25 * view.root_text
+    expected = min(ordinary, 0.0625 * view.width) if column(sheet, head, view) else ordinary
+    assert sides == [pytest.approx(expected)] * 2
+    if view.root_text == 16 and view.width >= 320:
+        assert sides == [ordinary] * 2
 
 
 CARD_EDGES = {

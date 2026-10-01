@@ -1183,9 +1183,13 @@ form.inline button {
 }
 
 @media (max-width: 30rem) {
+  /* The masthead keeps its side padding to a share of the screen's width, its ordinary
+     1.25rem on a 320 px screen, so with large text and a reader's wider letter spacing the
+     wordmark still has a line wide enough for it. */
   .masthead {
     flex-direction: column;
     align-items: flex-start;
+    padding-inline: min(1.25rem, 6.25vw);
   }
 
   /* With the masthead a column, the brand has the line to itself, and the wordmark goes
