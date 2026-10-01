@@ -7,6 +7,7 @@ No model is asked anything here, and no note becomes an assignment.
 """
 
 import html
+import logging
 import pathlib
 import re
 import sqlite3
@@ -88,6 +89,7 @@ from tests.support import (
     signed_in_household,
     state_of,
     unlink_note,
+    waiting_note,
     whole_form,
 )
 
@@ -1370,6 +1372,115 @@ def test_a_note_that_cannot_be_read_is_said_so_wherever_it_is_opened_and_never_a
         assert escape(NOTE_GONE) not in answer.text
         assert WORDS not in answer.text
     assert sent == []
+
+
+UNLOGGED = ("Zebra", "quartz", "violin", "Pangolin", "Almanac", "Obsidian", "Choir")
+"""Each word of the note in the test below, its title and class included. No log may hold one."""
+NOT_ONE_LINE = "the changes of note '{name}' are not one line: "
+HELP_READ_FAILURES: dict[str, tuple[str | None, str]] = {
+    "day": (
+        "UPDATE homework_captures SET due_date = 'next week' WHERE capture_id = ?",
+        "{name}: ValueError",
+    ),
+    "words": (
+        "UPDATE homework_captures SET text = text || printf('%.*c', 600, 'x') WHERE capture_id = ?",
+        "{name}: Capture: text value_error",
+    ),
+    "class": (
+        "UPDATE homework_captures SET course = course || char(10) || course WHERE capture_id = ?",
+        "{name}: Capture: course value_error",
+    ),
+    "title": (
+        "UPDATE homework_captures SET title = title || printf('%.*c', 600, 'x') "
+        "WHERE capture_id = ?",
+        "{name}: Capture: title value_error",
+    ),
+    "key": (
+        "UPDATE homework_captures SET initial = json_set(initial, '$.\"Zebra quartz\"', 1) "
+        "WHERE capture_id = ?",
+        "{name}: CaptureWords: extra_forbidden",
+    ),
+    "change": (
+        "UPDATE capture_events SET after = '{' WHERE capture_id = ? AND revision = 2",
+        "{name}: JSONDecodeError",
+    ),
+    "words of a change": (
+        "UPDATE capture_events SET after = json_set(after, '$.text', "
+        "json_array(json_extract(after, '$.text'))) WHERE capture_id = ? AND revision = 2",
+        "{name}: CaptureSnapshot: text string_type",
+    ),
+    "class of a change": (
+        "UPDATE capture_events SET after = json_set(after, '$.course', "
+        "json_extract(after, '$.course') || printf('%.*c', 600, 'x')) "
+        "WHERE capture_id = ? AND revision = 2",
+        NOT_ONE_LINE + "a change holds words a note cannot (CaptureDetails: course value_error)",
+    ),
+    "line": (
+        "UPDATE capture_events SET revision = 12 WHERE capture_id = ? AND revision = 2",
+        NOT_ONE_LINE + "revision 2 is missing or comes twice",
+    ),
+    "sqlite": (None, "OperationalError"),
+}
+"""A note the help page can't read, and what its log says went wrong: its row, one of its
+changes, or its line of changes can't be read, or SQLite refuses the read. A row too long, on
+two lines, or keyed by her words is named by its field and kind, never by what it held."""
+
+
+@pytest.mark.parametrize("failure", list(HELP_READ_FAILURES))
+def test_a_help_page_that_can_not_read_its_note_logs_why_without_the_note(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, failure: str
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    with browser() as client:
+        store = state_of(client).project_state
+        name = waiting_note(
+            store,
+            course="Obsidian Choir",
+            title="Pangolin Almanac",
+            text="Zebra quartz violin questions",
+        )
+        damage, reason = HELP_READ_FAILURES[failure]
+        if damage is None:
+            # A message that holds her words is still logged by its kind alone.
+            def refused(*_: object, **__: object) -> None:
+                msg = "disk I/O error on Zebra quartz violin questions"
+                raise sqlite3.OperationalError(msg)
+
+            monkeypatch.setattr(store, "capture", refused)
+        else:
+            store._connection.execute(damage, (name,))
+            store._connection.commit()
+        caplog.clear()
+        answer = client.get(note_help_href(name))
+        records = list(caplog.records)
+
+    raised = [record for record in records if record.levelno >= logging.WARNING]
+    said = [(record.name, record.levelno, record.getMessage()) for record in raised]
+    if damage is None:
+        assert answer.status_code == 503
+        assert said == [
+            (
+                "blossom.routes.captures",
+                logging.WARNING,
+                f"{note_help_href(name)} could not be read: {reason}",
+            )
+        ]
+        assert raised[0].exc_info is None
+    else:
+        assert answer.status_code == 200
+        assert said == [
+            (
+                "blossom.routes.captures",
+                logging.ERROR,
+                f"the note {name} could not be read for its help page",
+            )
+        ]
+        assert raised[0].exc_info is not None
+        assert isinstance(raised[0].exc_info[1], UnreadableCapture)
+        assert str(raised[0].exc_info[1]) == reason.format(name=name)
+    formatter = logging.Formatter()
+    logged = [formatter.format(record) + repr(record.args) for record in records]
+    assert [word for word in UNLOGGED if any(word in line for line in logged)] == []
 
 
 # ------------------------------------------------------------------- who may

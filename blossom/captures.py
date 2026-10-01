@@ -36,6 +36,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -468,6 +469,40 @@ class UnsoundCaptureHistory(UnreadableCapture):
         self.reason = reason
 
 
+FIELD_NAMES: Final = frozenset(
+    name
+    for model in (
+        CaptureWords,
+        CaptureDetails,
+        FieldSource,
+        Capture,
+        CaptureSnapshot,
+        SearchPress,
+        CandidateDecision,
+        CaptureEvent,
+    )
+    for name in model.model_fields
+)
+"""The fields a note and its changes hold. A refusal names a place only by these, since any
+other key in a damaged row came from the row."""
+
+
+def unread_because(fault: Exception) -> str:
+    """Why a note or one of its changes could not be read, in names alone: the kind of
+    failure, or the model that refused it with each field and the kind of refusal. A
+    damaged row can hold her words in any column, so nothing the row held is repeated, and
+    a caller raises after its except block so the fault is neither cause nor context."""
+    if not isinstance(fault, ValidationError):
+        return type(fault).__name__
+    refusals = []
+    for error in fault.errors(include_url=False, include_context=False, include_input=False):
+        place = ".".join(
+            str(part) for part in error["loc"] if isinstance(part, int) or part in FIELD_NAMES
+        )
+        refusals.append(f"{place} {error['type']}" if place else error["type"])
+    return f"{fault.title}: {', '.join(refusals)}"
+
+
 @dataclass(frozen=True)
 class CaptureHistoryReading:
     """A note's changes, the first save first, read and found to be one sound line."""
@@ -603,7 +638,8 @@ def _kept_as_written(capture_id: str, snapshot: CaptureSnapshot) -> CaptureWords
             snapshot.text, snapshot.course, snapshot.due_date, of="the words of a change"
         )
     except ValueError as fault:
-        raise UnsoundCaptureHistory(capture_id, "a change holds words a note cannot") from fault
+        why = unread_because(fault)
+    raise UnsoundCaptureHistory(capture_id, f"a change holds words a note cannot ({why})")
 
 
 def _is_what_its_kind_does(capture_id: str, change: CaptureEvent) -> None:
