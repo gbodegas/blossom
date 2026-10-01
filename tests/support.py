@@ -2022,17 +2022,22 @@ class Selector:
 
 
 def selector(text: str) -> Selector:
-    """One complex selector, joined by spaces and ``>``; a sibling combinator is refused."""
+    """One complex selector, joined by spaces and ``>``; a sibling combinator is refused, and
+    so is what a browser drops: an empty selector, or a ``>`` with no compound on a side."""
     parts: list[tuple[str, Compound]] = []
     joiner = " "
     for piece in re.findall(r"[>+~]|[^\s>+~]+", unshielded(text).strip()):
         if piece in ("+", "~"):
             raise UnreadCss(text)
         if piece == ">":
+            if joiner == ">" or not parts:
+                raise UnreadCss(text)
             joiner = ">"
             continue
         parts.append((joiner, compound(piece)))
         joiner = " "
+    if joiner == ">" or not parts:
+        raise UnreadCss(text)
     return Selector(tuple(parts))
 
 

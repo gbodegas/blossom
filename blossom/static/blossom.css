@@ -1264,9 +1264,11 @@ select {
   align-items: end;
 }
 
-/* On a phone with large text, a word such as "assignments" in a button is wider than the
-   card. The labels and buttons of Add assignments break such a word where they must, so
-   no control runs past the card; a line that fits is as it was. */
+/* On a phone with large text, a word such as "assignments" in a button or in the fold's
+   summary is wider than its line. The summary, labels and buttons of Add assignments break
+   such a word where they must, so no control runs past the screen's edge; a line that fits
+   is as it was. */
+#add-assignments > summary,
 #add-assignments label,
 #add-assignments button {
   overflow-wrap: anywhere;

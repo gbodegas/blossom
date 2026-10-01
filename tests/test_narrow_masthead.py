@@ -6,9 +6,9 @@ are wider together than the line, and an entry column of 13rem is wider than the
 that holds it. The page links wrap onto as many lines as they need at every width; where
 the masthead is a column, the brand stays within its line and the wordmark goes under
 the mark when the two do not fit it; the entry
-columns are never wider than the form; and a label or button in Add assignments breaks a
-word only when that word cannot fit its line. On a screen where everything fits, each of
-these leaves the layout as it is.
+columns are never wider than the form; and the fold's summary and a label or button in
+Add assignments break a word only when that word cannot fit its line. On a screen where
+everything fits, each of these leaves the layout as it is.
 
 No browser runs in these tests, so the cascade is resolved here, on the page and
 stylesheet reading in `tests/support.py`, for the part of CSS these elements depend on:
@@ -61,7 +61,15 @@ TEXT_SIZES = {
 measured in) and the root element's text size (what a property's `rem` is measured in)."""
 
 INHERITED = frozenset(
-    {"overflow-wrap", "white-space", "font-size", "letter-spacing", "word-spacing"}
+    {
+        "overflow-wrap",
+        "white-space",
+        "text-wrap",
+        "text-wrap-mode",
+        "font-size",
+        "letter-spacing",
+        "word-spacing",
+    }
 )
 
 
@@ -93,6 +101,17 @@ def adding_of(page: str) -> list[Element]:
         "/parent/inbox/enter",
     ]
     return [one for one in found if any(one.within(form) for form in forms)]
+
+
+def entry_surface_of(page: str) -> list[Element]:
+    """The summary that opens the Add assignments fold, then its two forms and everything
+    in them."""
+    found = elements_of(page)
+    folds = [one for one in found if one.attributes.get("id") == "add-assignments"]
+    assert [fold.tag for fold in folds] == ["details"]
+    summaries = [one for one in found if one.tag == "summary" and one.parent is folds[0]]
+    assert len(summaries) == 1
+    return summaries + adding_of(page)
 
 
 def fold_holds(fold: Element, one: Element) -> bool:
@@ -143,6 +162,8 @@ WATCHED = frozenset(
         "letter-spacing",
         "word-spacing",
         "zoom",
+        "text-wrap",
+        "text-wrap-mode",
     }
 )
 """The properties these checks read. A rule that sets none of them is passed over unread."""
@@ -207,12 +228,17 @@ def border_width(value: str) -> str:
 
 def longhands(name: str, value: str) -> dict[str, str]:
     """What one declaration sets among the watched properties: ``font`` sets the text size,
+    ``word-wrap`` is another name for ``overflow-wrap``, ``all`` is refused,
     ``flex-flow`` the direction and the wrapping, ``flex`` the shrinking, a logical width
     its width, ``place-items`` or ``place-self`` the alignment across a column with its
     first word, ``gap`` the space between items on a line with its last, and a padding,
     border or margin shorthand each side it reaches."""
     if name == "font":
         return {"font-size": value}
+    if name == "word-wrap":
+        return {"overflow-wrap": value}
+    if name == "all":
+        raise UnreadCss(value)
     if name in LOGICAL:
         return {LOGICAL[name]: value}
     if name in ("place-items", "place-self"):
@@ -787,6 +813,7 @@ def date_room(sheet: Sheet, page: str, view: View) -> list[float]:
 
 
 ADDING_CONTROLS = [
+    ("summary", "Add assignments"),
     ("label", "School text"),
     ("button", "Preview assignments"),
     ("label", "Course"),
@@ -800,10 +827,11 @@ ADDING_CONTROLS = [
 
 
 def words_break_where_they_must(sheet: Sheet, page: str, view: View) -> list[str]:
-    """The labels and buttons of Add assignments whose words do not break when one is wider
-    than its line. `anywhere` also lets the control be narrower than its longest word,
-    which `break-word` does not, so a button inside the card never pushes past it."""
-    found = [one for one in adding_of(page) if one.tag in ("label", "button")]
+    """The fold's summary and the labels and buttons of Add assignments whose words do not
+    break when one is wider than its line. `anywhere` also lets the control be narrower
+    than its longest word, which `break-word` does not, so a button inside the card never
+    pushes past it."""
+    found = [one for one in entry_surface_of(page) if one.tag in ("summary", "label", "button")]
     assert [(one.tag, " ".join(one.text.split())) for one in found] == ADDING_CONTROLS
     return [
         " ".join(one.text.split())
@@ -814,6 +842,8 @@ def words_break_where_they_must(sheet: Sheet, page: str, view: View) -> list[str
 
 CUT = {
     "white-space": ("nowrap", "pre"),
+    "text-wrap": ("nowrap",),
+    "text-wrap-mode": ("nowrap",),
     "overflow": ("hidden", "clip", "auto", "scroll"),
     "overflow-x": ("hidden", "clip", "auto", "scroll"),
     "text-overflow": ("ellipsis", "clip"),
@@ -821,21 +851,29 @@ CUT = {
 
 
 def cut_or_shrunk(sheet: Sheet, held: list[Element]) -> list[str]:
-    """Each element that some screen keeps on one line, cuts off, or gives a text size of
-    its own that another screen does not. A visually hidden word is clipped by design and
-    is passed over."""
+    """Each element that some screen keeps on one line, cuts off, or gives a text size or
+    zoom of its own that another screen does not, and each element above them that hides or
+    scrolls what runs past it. A visually hidden word is clipped by design and is passed
+    over."""
     found = []
     for one in held:
         if "visually-hidden" in one.classes:
             continue
-        sizes = {
-            getattr(declared_for(sheet, one, "font-size", view), "order", None) for view in VIEWS
-        }
-        if len(sizes) > 1:
-            found.append(f"{one.tag}.{'.'.join(sorted(one.classes))} font-size")
+        for size in ("font-size", "zoom"):
+            sizes = {getattr(declared_for(sheet, one, size, view), "order", None) for view in VIEWS}
+            if len(sizes) > 1:
+                found.append(f"{one.tag}.{'.'.join(sorted(one.classes))} {size}")
         for name, refused in CUT.items():
             for view in VIEWS:
                 if value_of(sheet, one, name, view) in refused:
+                    found.append(f"{one.tag}.{'.'.join(sorted(one.classes))} {name} {view}")
+    above = {id(one): one for held_one in held for one in held_one.ancestors()}
+    for one in above.values():
+        if "visually-hidden" in one.classes:
+            continue
+        for name in ("overflow", "overflow-x"):
+            for view in VIEWS:
+                if value_of(sheet, one, name, view) in CUT[name]:
                     found.append(f"{one.tag}.{'.'.join(sorted(one.classes))} {name} {view}")
     return found
 
@@ -863,6 +901,30 @@ def rendered(tmp_path: pathlib.Path) -> dict[str, str]:
             if reader != "her":
                 RENDERED[f"{reader}, family"] = client.get("/parent", headers=PAGE_HEADERS).text
     return RENDERED
+
+
+OPENED: dict[str, str] = {}
+
+
+@pytest.fixture
+def opened(tmp_path: pathlib.Path) -> dict[str, str]:
+    """The family page as it comes back when the pasted text or the one assignment is
+    refused, with Add assignments open, for a signed-in parent and with the sign-in off."""
+    if OPENED:
+        return OPENED
+    for reader in ("parent", "open"):
+        (tmp_path / reader).mkdir()
+        with household_client(reader, tmp_path / reader) as client:
+            sign_in_as(client, reader)
+            for form, data in (
+                ("read", {"text": ""}),
+                ("enter", {"course": "Geometry", "title": ""}),
+            ):
+                answer = client.post(f"/parent/inbox/{form}", data=data, headers=PAGE_HEADERS)
+                assert answer.status_code == 422
+                assert '<details class="steps panel-fold" id="add-assignments" open>' in answer.text
+                OPENED[f"{reader}, {form} refused, family"] = answer.text
+    return OPENED
 
 
 def with_nav(rendered: dict[str, str]) -> dict[str, str]:
@@ -1078,22 +1140,24 @@ def test_the_entry_columns_are_never_wider_than_the_form(
 
 @pytest.mark.parametrize("view", VIEWS, ids=str)
 def test_add_assignments_labels_and_buttons_break_a_word_only_when_it_cannot_fit(
-    rendered: dict[str, str], view: View
+    rendered: dict[str, str], opened: dict[str, str], view: View
 ) -> None:
-    """Both forms, the pasted text's and the one assignment's."""
+    """The summary that opens the fold, and both forms, the pasted text's and the one
+    assignment's, with the fold closed and as a refused form returns it open."""
     sheet = read_sheet(stylesheet())
-    for name, page in family(rendered).items():
+    for name, page in (family(rendered) | opened).items():
         assert words_break_where_they_must(sheet, page, view) == [], name
 
 
 def test_nothing_in_the_masthead_or_the_forms_is_cut_or_shrunk_on_any_screen(
-    rendered: dict[str, str],
+    rendered: dict[str, str], opened: dict[str, str]
 ) -> None:
-    """No element of the masthead or of the Add assignments forms is held to one line, cut
-    off, or given a smaller text size on a narrow screen."""
+    """No element of the masthead, or of Add assignments' summary and forms, is held to one
+    line, cut off, or given a smaller text size on a narrow screen, and nothing above them
+    hides what runs past it, with the fold closed or open."""
     sheet = read_sheet(stylesheet())
-    for name, page in rendered.items():
-        held = masthead_of(page) + (adding_of(page) if name.endswith("family") else [])
+    for name, page in (rendered | opened).items():
+        held = masthead_of(page) + (entry_surface_of(page) if name.endswith("family") else [])
         assert cut_or_shrunk(sheet, held) == [], name
 
 
@@ -1116,7 +1180,8 @@ BRAND_BASE = """.brand {
   text-decoration: none;
 }"""
 ENTRY_COLUMNS = "grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr));"
-ADDING_RULE = """#add-assignments label,
+ADDING_RULE = """#add-assignments > summary,
+#add-assignments label,
 #add-assignments button {
   overflow-wrap: anywhere;
 }"""
@@ -2030,8 +2095,26 @@ def test_the_columns_check_fails_when_a_column_can_outgrow_the_form_or_changes_w
         ),
         pytest.param(
             ADDING_RULE.replace("#add-assignments", ".entry"),
-            ["School text", "Preview assignments"],
+            ["Add assignments", "School text", "Preview assignments"],
             id="entry-form-only",
+        ),
+        pytest.param(
+            ADDING_RULE.replace("#add-assignments > summary,\n", ""),
+            ["Add assignments"],
+            id="summary-left-out",
+        ),
+        pytest.param(
+            ADDING_RULE.replace("#add-assignments > summary", "#add-assignments .steps summary"),
+            ["Add assignments"],
+            id="the-example-summary-only",
+        ),
+        pytest.param(
+            ADDING_RULE + "\n#add-assignments > summary { word-wrap: normal; }",
+            ["Add assignments"],
+            id="undone-by-word-wrap",
+        ),
+        pytest.param(
+            ADDING_RULE.replace("overflow-wrap", "word-wrap"), [], id="written-as-word-wrap"
         ),
         pytest.param(
             ADDING_RULE.replace("#add-assignments label,\n", ""),
@@ -2054,6 +2137,73 @@ def test_the_words_check_fails_for_each_control_the_rule_stops_reaching(
             assert words_break_where_they_must(sheet, page, view) == missed, view
 
 
+def test_the_words_check_fails_where_a_rule_holds_only_while_the_fold_is_open(
+    rendered: dict[str, str], opened: dict[str, str]
+) -> None:
+    sheet = read_sheet(
+        stylesheet() + "\n#add-assignments[open] > summary { overflow-wrap: normal; }\n"
+    )
+    assert len(opened) == 4
+    for view in VIEWS:
+        for page in family(rendered).values():
+            assert words_break_where_they_must(sheet, page, view) == [], view
+        for page in opened.values():
+            assert words_break_where_they_must(sheet, page, view) == ["Add assignments"], view
+
+
+FORMS = '<form action="/parent/inbox/read"></form><form action="/parent/inbox/enter"></form>'
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        pytest.param(
+            f'<main><div id="add-assignments"><summary>Add</summary>{FORMS}</div></main>',
+            id="not-a-disclosure",
+        ),
+        pytest.param(
+            '<main><details id="add-assignments"><summary>Add</summary><summary>More</summary>'
+            f"{FORMS}</details></main>",
+            id="two-summaries",
+        ),
+        pytest.param(
+            '<main><details id="add-assignments"><section><summary>Add</summary></section>'
+            f"{FORMS}</details></main>",
+            id="summary-further-down",
+        ),
+        pytest.param(f"<main><summary>Add</summary>{FORMS}</main>", id="no-fold"),
+    ],
+)
+def test_the_entry_surface_is_read_only_from_the_fold_and_its_own_summary(page: str) -> None:
+    with pytest.raises(AssertionError):
+        entry_surface_of(page)
+    whole = f'<main><details id="add-assignments"><summary>Add</summary>{FORMS}</details></main>'
+    assert entry_surface_of(whole)[0].text == "Add"
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "#add-assignments > > summary",
+        "#add-assignments >>> summary",
+        "#add-assignments > summary >",
+        "> summary",
+        "",
+        "  ",
+    ],
+)
+def test_the_resolver_refuses_a_selector_a_browser_drops(written: str) -> None:
+    with pytest.raises(UnreadCss):
+        selector(written)
+    with pytest.raises(UnreadCss):
+        read_sheet(f"{written}, button {{ overflow-wrap: anywhere; }}")
+
+
+def test_the_resolver_refuses_a_reset_of_every_property() -> None:
+    with pytest.raises(UnreadCss):
+        read_sheet(stylesheet() + "\n#add-assignments > summary { all: unset; }\n")
+
+
 @pytest.mark.parametrize(
     "added",
     [
@@ -2062,17 +2212,27 @@ def test_the_words_check_fails_for_each_control_the_rule_stops_reaching(
         ".masthead { overflow-x: hidden; }",
         ".entry label { text-overflow: ellipsis; }",
         "@media (max-width: 30rem) { #add-assignments button { font-size: 0.8rem; } }",
+        "#add-assignments > summary { white-space: nowrap; }",
+        "@media (max-width: 30rem) { .panel-fold > summary { font-size: 1rem; } }",
+        "#add-assignments > summary { text-wrap: nowrap; }",
+        "#add-assignments { text-wrap: nowrap; }",
+        "@media (max-width: 30rem) { #add-assignments > summary { zoom: 0.8; } }",
+        "#add-assignments > summary { text-wrap-mode: nowrap; }",
+        "#add-assignments[open] > summary { white-space: nowrap; }",
+        "body { overflow-x: hidden; }",
+        "main { overflow: clip; }",
+        "#add-assignments > .panel { overflow: hidden; }",
     ],
 )
 def test_the_cut_check_fails_when_a_rule_holds_cuts_or_shrinks_a_line(
-    rendered: dict[str, str], added: str
+    rendered: dict[str, str], opened: dict[str, str], added: str
 ) -> None:
     sheet = read_sheet(stylesheet() + "\n" + added + "\n")
     found = [
         problem
-        for name, page in rendered.items()
+        for name, page in (rendered | opened).items()
         for problem in cut_or_shrunk(
-            sheet, masthead_of(page) + (adding_of(page) if name.endswith("family") else [])
+            sheet, masthead_of(page) + (entry_surface_of(page) if name.endswith("family") else [])
         )
     ]
     assert found
