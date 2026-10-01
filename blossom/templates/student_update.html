@@ -3,7 +3,11 @@
   assigned-later list. A standing update shows as a summary with its day,
   what it means for the next plan, and a way to change or take it back; a
   card without one offers the form, Done or Not yet with an optional note,
-  and the form alone: it works without a script. The form carries the last
+  and the form alone: it works without a script. Updates that cannot be read
+  are said to be that, never as no update or as Not yet, and no form is
+  offered, since none can be saved; a save refused over them shows what she
+  chose and wrote, read-only. Checks that cannot be read are said to be that
+  in place of a check. The form carries the last
   event the card showed, so a save lands on the chain the page showed or is
   shown what changed. Every repeated control and field names its assignment
   for a reader who hears the page. A problem with a field marks the field,
@@ -38,7 +42,8 @@
 {% macro day(value) %}{{ value.strftime("%B") }} {{ value.day }}{% if ctx.with_year %}, {{ value.year }}{% endif %}{% endmacro %}
 {% set here = card and card.assignment_id == assignment.assignment_id %}
 {% set standing = assignment.update_status is not none %}
-{% set form_open = ctx.can_update and (not standing or (here and card.change)) %}
+{% set unreadable = assignment.updates_unavailable %}
+{% set form_open = ctx.can_update and not unreadable and (not standing or (here and card.change)) %}
 {% set chosen = card.status if (here and card.status) else (assignment.update_status if (standing and here and card.change and not card.problem) else none) %}
 {% set typed = card.note if (here and card.note is not none) else ((assignment.update_note or "") if (standing and here and card.change) else "") %}
 {% set at_status = here and card.field == "status" %}
@@ -69,7 +74,22 @@
   {% if here and card.problem %}
     {% if ctx.place == "details" %}<p class="problem" id="update-problem-{{ key }}" tabindex="-1">{{ card.problem }}</p>{% else %}<p class="problem" role="alert" id="update-problem-{{ key }}" tabindex="-1"{% if not (form_open and (at_status or at_note)) %} autofocus{% endif %}>{{ card.problem }}</p>{% endif %}
   {% endif %}
-  {% if standing %}
+  {% if unreadable %}
+    <p class="problem">{% if ctx.viewer == "parent" %}Her{% else %}Your{% endif %} updates on this assignment can't be read right now. No update can be saved until that record can be read.</p>
+    {% if assignment.checks_unavailable %}
+      <p class="problem">A parent's check on this assignment can't be read right now.</p>
+    {% endif %}
+    {% if here and (card.status or card.note) %}
+      <h3 class="update-heading">Your unsaved update</h3>
+      {% if card.status %}
+        <p>Your choice: {% if card.status == "done" %}Done{% else %}Not yet{% endif %}.</p>
+      {% endif %}
+      {% if card.note %}
+        <label for="kept-note-{{ key }}">Your note, as typed<span class="visually-hidden"> on {{ assignment.title }}, {{ assignment.course }}</span></label>
+        <textarea id="kept-note-{{ key }}" rows="3" readonly>{{ card.note }}</textarea>
+      {% endif %}
+    {% endif %}
+  {% elif standing %}
     <p class="update-summary">
       <span class="pill">{% if ctx.viewer == "parent" %}Student update{% else %}Your update{% endif %}: {% if assignment.update_status == "done" %}Done{% else %}Not yet{% endif %}</span>
       {% if assignment.update_reported_on %}Reported {{ day(assignment.update_reported_on) }}{% if assignment.update_restored_on %}, restored {{ day(assignment.update_restored_on) }}{% endif %}{% endif %}
@@ -84,6 +104,8 @@
     </p>
     {% if assignment.checked_on %}
       <p class="checked-line">A parent marked this checked with {% if ctx.viewer == "parent" %}her{% else %}you{% endif %} on {{ day(assignment.checked_on) }}.{% if assignment.check_note %} The note with it: <q>{{ assignment.check_note }}</q>{% endif %}</p>
+    {% elif assignment.checks_unavailable %}
+      <p class="problem">A parent's check on this assignment can't be read right now.</p>
     {% endif %}
     {% if ctx.can_update and not form_open %}
       <div class="actions">
@@ -106,8 +128,13 @@
     {% elif ctx.viewer == "parent" %}
       <p class="note">Sign in as the student to update.</p>
     {% endif %}
-  {% elif ctx.viewer == "parent" %}
-    <p class="note">No student update yet. Sign in as the student to update.</p>
+  {% else %}
+    {% if assignment.checks_unavailable %}
+      <p class="problem">A parent's check on this assignment can't be read right now.</p>
+    {% endif %}
+    {% if ctx.viewer == "parent" %}
+      <p class="note">No student update yet. Sign in as the student to update.</p>
+    {% endif %}
   {% endif %}
   {% if form_open %}
     {#

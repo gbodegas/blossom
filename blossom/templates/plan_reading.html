@@ -17,9 +17,11 @@
   say gets no line. A row of today's working plan whose assignment she now
   reports as Done says so after those, with the day of the report, and labels
   the reason as the reason when planned; nothing is struck out, faded, moved,
-  or folded, and the link stays a link. The text as composed is kept whole in
-  a fold of its own and is never annotated. A plan without a usable snapshot
-  is shown as its saved text, with a sentence that says why.
+  or folded, and the link stays a link. A row of that plan whose assignment's
+  updates can't be read says so, and nothing about Done or Not yet. The text
+  as composed is kept whole in a fold of its own and is never annotated. A
+  plan without a usable snapshot is shown as its saved text, with a sentence
+  that says why.
 #}
 {% set level = plan_level|default(3) %}
 {% set hers = reading.reader == "student" %}
@@ -34,6 +36,7 @@
     <p class="plan-now"><strong>As things stand:</strong> {{ row.now.words|join(" ") }}{% if row.now.check %}{% if row.now.words %} {% endif %}<strong>Check this date.</strong>{% endif %}{% if work.evidence and not work.cued %} {{ evidence(work) }}{% endif %}</p>
   {% endif %}
 {% endmacro %}
+{% macro unread(row) %}{% if row.updates_unread %}<p class="plan-mark-words">{% if hers %}Your{% else %}Her{% endif %} updates on this assignment can't be read right now.</p>{% endif %}{% endmacro %}
 {% macro mark(done) %}
   <p class="plan-mark"><span class="pill">Reported done</span> Reported {{ done.reported_on|long_date }}{% if done.restored_on %}, restored {{ done.restored_on|long_date }}{% endif %}</p>
 {% endmacro %}
@@ -64,6 +67,7 @@
                 {{ mark(row.done) }}
                 <p class="plan-mark-words">{% if hers %}You report this as Done. You can skip this block.{% else %}She reports this as Done. She can skip this block.{% endif %}</p>
               {% endif %}
+              {{ unread(row) }}
               <p class="plan-why">{% if row.done %}<span class="plan-why-label">Reason when planned:</span> {% endif %}{{ row.rationale }}</p>
             </li>
           {% endfor %}
@@ -82,6 +86,7 @@
                 {{ mark(row.done) }}
                 <p class="plan-mark-words">{% if hers %}You now report this as Done. It is out of work to plan.{% else %}She now reports this as Done. It is out of work to plan.{% endif %}</p>
               {% endif %}
+              {{ unread(row) }}
               <p class="plan-why">{% if row.done %}<span class="plan-why-label">Reason when planned:</span> {% endif %}{{ row.reason }}</p>
             </li>
           {% endfor %}

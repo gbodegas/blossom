@@ -30,6 +30,7 @@ from blossom.routes.navigation import (
     result_anchor,
     todays_plan_href,
     update_choice_anchor,
+    update_row_href,
     week_href,
 )
 from blossom.school_instructions import to_wire, travels_in_words
@@ -106,6 +107,7 @@ def page_templates() -> Jinja2Templates:
     templates.env.globals["result_anchor"] = result_anchor
     templates.env.globals["hand_in_result_anchor"] = hand_in_result_anchor
     templates.env.globals["update_choice_anchor"] = update_choice_anchor
+    templates.env.globals["update_row_href"] = update_row_href
     templates.env.globals["week_href"] = week_href
     templates.env.globals["todays_plan_id"] = TODAYS_PLAN
     templates.env.globals["todays_plan_href"] = todays_plan_href

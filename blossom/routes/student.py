@@ -888,6 +888,7 @@ def read_a_plan(
         evidence_for=lambda name: details_href(name, fragment=EVIDENCE, return_to="today"),
         on_record=updates.on_record,
         done=done_marks(updates),
+        unread=updates.unread,
         now=dates,
     )
     return PlanRead(view=view, reading=reading)
@@ -1079,6 +1080,8 @@ def assignment_view(
         check_school=status is not None and status.check_the_school_record,
         checked_on=None if status is None or status.check is None else status.check.checked_on,
         check_note=None if status is None or status.check is None else status.check.note,
+        updates_unavailable=status is not None and status.updates_unavailable,
+        checks_unavailable=status is not None and status.checks_unavailable,
     )
 
 

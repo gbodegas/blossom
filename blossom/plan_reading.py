@@ -90,6 +90,8 @@ class BlockRow:
     work: NamedWork
     rationale: str
     done: DoneMark | None = None
+    updates_unread: bool = False
+    """Whether her updates on the assignment can't be read now, which the row says."""
     now: RowNow | None = None
     """What stands about the date now, on a plan still in force; shared by every row of one
     assignment."""
@@ -103,6 +105,7 @@ class DeferralRow:
     work: NamedWork
     reason: str
     done: DoneMark | None = None
+    updates_unread: bool = False
     now: RowNow | None = None
 
 
@@ -199,6 +202,7 @@ def read_plan(
     evidence_for: Callable[[str], str] | None = None,
     on_record: Collection[str] | None = None,
     done: Mapping[str, DoneMark] | None = None,
+    unread: Collection[str] = (),
     now: DatesNow | None = None,
     dates_unread: bool = False,
 ) -> PlanReading:
@@ -206,7 +210,8 @@ def read_plan(
 
     ``current`` is the view's word that this is today's working plan; only
     then are ``done`` marks put beside rows, each occurrence of an assignment
-    getting the same mark. ``link_for`` makes the address of an assignment's
+    getting the same mark, and the rows of each assignment in ``unread`` say
+    that her updates on it can't be read. ``link_for`` makes the address of an assignment's
     details and ``evidence_for`` the address of what its sources say, and
     ``on_record`` is every assignment id on record now: an id not among them
     gets no link. ``now`` is the page's word that the plan is in force for
@@ -237,6 +242,7 @@ def read_plan(
         )
     snapshot = found.snapshot
     marks = dict(done or {}) if current else {}
+    unknown = frozenset(unread) if current else frozenset()
     cued = {item.assignment_id for item in snapshot.clarifications}
     names = named_work(snapshot, link_for, on_record, evidence_for=evidence_for, cued=cued)
     lines: dict[str, RowNow | None] = {}
@@ -267,6 +273,7 @@ def read_plan(
                 work=names[block.assignment_id],
                 rationale=one_line(block.rationale),
                 done=marks.get(block.assignment_id),
+                updates_unread=block.assignment_id in unknown,
                 now=lines.get(block.assignment_id),
             )
             for index, block in ordered
@@ -277,6 +284,7 @@ def read_plan(
                 work=names[item.assignment_id],
                 reason=one_line(item.reason),
                 done=marks.get(item.assignment_id),
+                updates_unread=item.assignment_id in unknown,
                 now=lines.get(item.assignment_id),
             )
             for index, item in enumerate(snapshot.plan.deferred)

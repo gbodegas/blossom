@@ -535,6 +535,17 @@ class HandInReadings:
     unreadable: frozenset[str]
 
 
+@dataclass(frozen=True)
+class ChainReadings[T]:
+    """What a page reads of one kind of event: the events under each assignment whose chain
+    can be read, in stored order, and the assignments whose chain cannot, named apart. An
+    assignment in the second has no events here, never some of them, and one with no
+    events has no entry."""
+
+    chains: dict[str, list[T]]
+    unreadable: frozenset[str]
+
+
 class UnknownHandIn(LookupError):
     """A form named a hand-in event that is not one of the assignment's: no such event, or
     one under another assignment. Such a name proves nothing about the page it came
@@ -1260,6 +1271,92 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         """Every check event under one assignment, in the order accepted."""
         return self.family_check_chains([assignment_id]).get(assignment_id, [])
 
+    def update_readings(self, assignment_ids: Iterable[str]) -> ChainReadings[StudentReport]:
+        """Her events under each assignment named, for a page: every chain that can be read,
+        and the assignments whose chain cannot, named apart.
+
+        Read as ``_chains_apart`` reads, in the one statement her chains are
+        read with. An event that cannot be decoded makes that assignment's
+        whole chain unreadable, and nothing is read from the rest of it,
+        since a standing made from part of a chain could say what she never
+        said. The writers do not come through here: they read the chain
+        strictly, inside their own transaction.
+        """
+        return self._chains_apart(
+            STUDENT_REPORTS_NAMED, assignment_ids, student_report_from, "update record"
+        )
+
+    def check_readings(self, assignment_ids: Iterable[str]) -> ChainReadings[FamilyCheck]:
+        """The family's check events under each assignment named, for a page, read as her
+        events are by ``update_readings``: a chain that cannot be read whole is named apart."""
+        return self._chains_apart(
+            FAMILY_CHECKS_NAMED, assignment_ids, family_check_from, "family check record"
+        )
+
+    def _chains_apart[T](
+        self,
+        statement: str,
+        assignment_ids: Iterable[str],
+        decode: Callable[[tuple[object, ...]], T],
+        record: str,
+    ) -> ChainReadings[T]:
+        """One read for every assignment named, then each assignment's rows decoded apart.
+
+        A row that cannot be decoded, bytes that are not UTF-8 among them,
+        makes its assignment unreadable and leaves the rest to be read as
+        usual. Nothing is repaired, and a failed read of the file is raised,
+        never turned into an empty answer. What is logged names the
+        assignment and the kind of fault, never the words in the row. Naming
+        no assignment reads nothing.
+        """
+        wanted = list(dict.fromkeys(assignment_ids))
+        if not wanted:
+            return ChainReadings({}, frozenset())
+        grouped = self._rows_by_assignment(statement, wanted)
+        chains: dict[str, list[T]] = {}
+        unreadable: set[str] = set()
+        for assignment_id in wanted:
+            try:
+                chain = [decode(decoded_row(row)) for row in grouped[assignment_id]]
+            except (ValueError, TypeError) as fault:
+                logger.warning(
+                    "the %s of %s cannot be read (%s)",
+                    record,
+                    assignment_id,
+                    type(fault).__name__,
+                )
+                unreadable.add(assignment_id)
+                continue
+            if chain:
+                chains[assignment_id] = chain
+        return ChainReadings(chains, frozenset(unreadable))
+
+    def _rows_by_assignment(
+        self, statement: str, wanted: list[str]
+    ) -> dict[str, list[tuple[object, ...]]]:
+        """The rows a read by name returns for every assignment named, grouped by assignment,
+        with every name given an entry.
+
+        Each text column arrives as its stored bytes, ``HeldText``, for the
+        length of this one read and under the store's lock, which every use
+        of the connection holds; the connection's own way of reading text is
+        put back however the read ends. So text that is not UTF-8 is
+        found as each row is decoded, one assignment's to answer for, and
+        not as the rows are fetched, which would fail the read for all of
+        them.
+        """
+        with self._lock:
+            kept = self._connection.text_factory
+            self._connection.text_factory = HeldText
+            try:
+                rows = self._connection.execute(statement, (json.dumps(sorted(wanted)),)).fetchall()
+            finally:
+                self._connection.text_factory = kept
+        grouped: dict[str, list[tuple[object, ...]]] = {name: [] for name in wanted}
+        for row in rows:
+            grouped.setdefault(held_name(row[1]), []).append(row)
+        return grouped
+
     def report_status(
         self,
         assignment_id: str,
@@ -1272,9 +1369,11 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
     ) -> Saved | AlreadySaved | Conflict:
         """Keep what she says about an assignment, once, as of now.
 
-        Under the store's lock and one transaction, in this order. An update
-        the form names must be one of this assignment's events, or the form
-        proves nothing and is refused, ``UnknownReport``, whatever it says.
+        Under the store's lock and one transaction, in this order. A chain
+        with an event that cannot be decoded is refused whole, as
+        ``CouldNotSave``, whichever event it is. An update the form names
+        must be one of this assignment's events, or the form proves nothing
+        and is refused, ``UnknownReport``, whatever it says.
         Then what she sent is compared with what stands, and the same status
         and note is already saved, whatever page of hers it came from.
         Otherwise the head her page showed must be the head now, or the
@@ -1294,6 +1393,7 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         try:
             with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
+                self._require_readable_reports_locked(assignment_id)
                 if expected_head is not None:
                     self._require_report_locked(assignment_id, expected_head)
                 head = self._head_locked(assignment_id)
@@ -1324,8 +1424,10 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
     ) -> Undone | Conflict:
         """Take back her current report, restoring what stood before it.
 
-        The update the button names must be one of this assignment's events,
-        or it is refused, ``UnknownReport``. Only the head can be undone, and
+        A chain with an event that cannot be decoded is refused whole, as
+        ``CouldNotSave``. The update the button names must be one of this
+        assignment's events, or it is refused, ``UnknownReport``. Only the
+        head can be undone, and
         only when it is a report: a button that names any other event of
         hers finds the chain moved on, and there is no exception for a
         repeat. What is restored is read from the chain, never from the
@@ -1335,6 +1437,7 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         try:
             with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
+                self._require_readable_reports_locked(assignment_id)
                 self._require_report_locked(assignment_id, report_id)
                 head = self._head_locked(assignment_id)
                 if head is None or head.report_id != report_id or head.operation != REPORT:
@@ -1361,6 +1464,13 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             refused = error
         raise CouldNotSave(assignment_id, refused) from kept_cause(refused)
+
+    def _require_readable_reports_locked(self, assignment_id: str) -> None:
+        """Refuse a write onto her chain while any of its events cannot be decoded, whichever
+        one it is. The head and the event a form names are read on their own as well; this
+        holds every other event to the same, so a chain a page says cannot be read is never
+        added to."""
+        self.student_reports(assignment_id)
 
     def _require_report_locked(self, assignment_id: str, report_id: str) -> None:
         """Refuse a name that is not one of this assignment's events."""
@@ -1524,33 +1634,28 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         """What stands about turning each assignment named in, for a page: the readings that
         can be made, and the assignments whose record cannot be read.
 
-        One read for every assignment named, as ``hand_in_chains`` makes. The
-        rows are then taken one assignment at a time: a row that cannot be
-        decoded, a state that is none of the four, a day that is no day, words
-        past the limit, makes that whole assignment unreadable, and so does a
-        chain that does not hold together. Such an assignment is named apart
-        and never read from what is left of it, the rest read as usual, and
-        one with no rows has a reading that says nothing. Nothing is
-        repaired, and a failed read of the file is raised, never turned into
-        an empty answer. What is logged names the assignment and the kind of
-        fault, never her words. The writers do not come through here: they
-        read one chain strictly, inside their own transaction.
+        One read for every assignment named, as ``_rows_by_assignment`` makes.
+        The rows are then taken one assignment at a time: a row that cannot
+        be decoded, a state that is none of the four, a day that is no day,
+        words past the limit, text that is not UTF-8, makes that whole
+        assignment unreadable, and so does a chain that does not hold
+        together. Such an assignment is named apart and never read from what
+        is left of it, the rest read as usual, and one with no rows has a
+        reading that says nothing. Nothing is repaired, and a failed read of
+        the file is raised, never turned into an empty answer. What is logged
+        names the assignment and the kind of fault, never her words. The
+        writers do not come through here: they read one chain strictly,
+        inside their own transaction.
         """
         wanted = list(dict.fromkeys(assignment_ids))
         if not wanted:
             return HandInReadings({}, frozenset())
-        with self._lock:
-            rows = self._connection.execute(
-                HAND_IN_EVENTS_NAMED, (json.dumps(sorted(wanted)),)
-            ).fetchall()
-        grouped: dict[str, list[tuple[object, ...]]] = {name: [] for name in wanted}
-        for row in rows:
-            grouped.setdefault(str(row[1]), []).append(row)
+        grouped = self._rows_by_assignment(HAND_IN_EVENTS_NAMED, wanted)
         readable: dict[str, HandInProjection] = {}
         unreadable: set[str] = set()
         for assignment_id in wanted:
             try:
-                chain = [hand_in_event_from(row) for row in grouped[assignment_id]]
+                chain = [hand_in_event_from(decoded_row(row)) for row in grouped[assignment_id]]
                 readable[assignment_id] = project(assignment_id, chain)
             except (ValueError, TypeError) as fault:
                 logger.warning(
@@ -1788,9 +1893,11 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         """Record that a parent checked the discrepancy on an assignment with her, once, as of now.
 
         Under the store's lock and one transaction that reserves the writer
-        before it reads, in this order. A check the form names must be one
-        of this assignment's events, or the form proves nothing and is
-        refused, ``UnknownCheck``. Then the basis the page was made against
+        before it reads, in this order. Checks or her updates with one that
+        cannot be decoded are refused whole, as ``CouldNotSave``, since the
+        basis rests on her updates. A check the form
+        names must be one of this assignment's events, or the form proves
+        nothing and is refused, ``UnknownCheck``. Then the basis the page was made against
         is compared with ``basis_now``, worked out inside the transaction
         from her events and the school's reports as they stand, and with
         the last check event. The same check standing already, that basis,
@@ -1812,6 +1919,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         try:
             with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
+                self._require_readable_checks_locked(assignment_id)
+                self._require_readable_reports_locked(assignment_id)
                 if expected_check is not None:
                     self._require_check_locked(assignment_id, expected_check)
                 head = self._check_head_locked(assignment_id)
@@ -1854,8 +1963,10 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
     ) -> Reopened | CheckConflict:
         """Reopen the family's check on an assignment, and nothing else.
 
-        The check the button names must be one of this assignment's events,
-        or it is refused, ``UnknownCheck``. Only the head can be reopened,
+        Checks or her updates with one that cannot be decoded are refused
+        whole, as ``CouldNotSave``. The check the button names must be one of this
+        assignment's events, or it is refused, ``UnknownCheck``. Only the
+        head can be reopened,
         and only when it marks the row checked: a button that names any
         other event finds the record moved on. The facts are held to the
         page as well: ``expected_basis`` is the basis the page showed, none
@@ -1872,6 +1983,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         try:
             with self._lock, self._writing():
                 self._require_assignment_locked(assignment_id)
+                self._require_readable_checks_locked(assignment_id)
+                self._require_readable_reports_locked(assignment_id)
                 self._require_check_locked(assignment_id, check_id)
                 head = self._check_head_locked(assignment_id)
                 current = basis_now()
@@ -1896,6 +2009,11 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             refused = error
         raise CouldNotSave(assignment_id, refused, what="the check") from kept_cause(refused)
+
+    def _require_readable_checks_locked(self, assignment_id: str) -> None:
+        """Refuse a write onto the family's checks while any of them cannot be decoded, held
+        to the same as her chain by ``_require_readable_reports_locked``."""
+        self.family_checks(assignment_id)
 
     def _require_check_locked(self, assignment_id: str, check_id: str) -> None:
         """Refuse a name that is not one of this assignment's check events."""
@@ -2741,6 +2859,25 @@ def assignment_from(row: tuple[object, ...]) -> Assignment:
 def new_hand_in_id() -> str:
     """A stable id for one hand-in event, drawn once and never reused."""
     return f"hand-in-{uuid.uuid4().hex[:12]}"
+
+
+class HeldText(bytes):
+    """A text column's stored bytes, as a read that decodes each row by itself fetches them.
+    Only a value the file holds as text arrives as one; a blob stays plain bytes, read as
+    it always is."""
+
+
+def decoded_row(row: tuple[object, ...]) -> tuple[object, ...]:
+    """A row fetched with its text held as bytes, with that text decoded as UTF-8, strictly:
+    bytes that are not UTF-8 raise ``UnicodeDecodeError``, a ``ValueError``, for this row."""
+    return tuple(value.decode("utf-8") if isinstance(value, HeldText) else value for value in row)
+
+
+def held_name(value: object) -> str:
+    """An assignment id as a read by name returns it. The read matched it to a name it was
+    given, so its bytes are that name's, and what cannot be decoded is only replaced here,
+    where it groups rows and is never shown or kept."""
+    return value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
 
 
 def hand_in_event_from(row: tuple[object, ...]) -> HandInEvent:

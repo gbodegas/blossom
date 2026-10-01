@@ -8,9 +8,7 @@ not, and that none of it touches her account, the school's, a plan, or the
 digest.
 """
 
-import html
 import pathlib
-import re
 import sqlite3
 import threading
 from datetime import date
@@ -78,16 +76,21 @@ from tests.support import (
     SAME_ORIGIN,
     THEIRS,
     Answer,
+    a_discrepancy,
     a_row,
     accepting,
+    action_of,
     browser,
     card_for,
+    family_page,
     fixture_clock,
     fixture_week_plan,
     hidden,
     lands_on,
+    mark,
     practice_store,
     report,
+    row_for,
     school_missing,
     school_said,
     scripted_graphs,
@@ -556,54 +559,10 @@ def test_a_check_event_has_one_of_two_shapes() -> None:
 # ------------------------------------------------------------- the pages
 
 
-def row_for(page: str, assignment_id: str) -> str:
-    """One row of the assignment updates, whole: from its id to the next row's, or the
-    section's end."""
-    start = page.index(f'id="update-{assignment_id}"')
-    ends = [
-        found
-        for found in (page.find('id="update-', start + 1), page.find("</section>", start))
-        if found >= 0
-    ]
-    return page[start : min(ends)] if ends else page[start:]
-
-
 def where(page: str, assignment_id: str) -> str:
     """The group heading a row is under."""
     start = page.index(f'id="update-{assignment_id}"')
     return max(HEADINGS, key=lambda heading: page.rfind(heading, 0, start))
-
-
-def family_page(client: TestClient) -> str:
-    return client.get("/parent", headers=PAGE_HEADERS).text
-
-
-def a_discrepancy(client: TestClient) -> None:
-    """The school's email says the essay is missing; she reports it done."""
-    told = client.post("/parent/inbox/keep", data={"text": MISSING_EMAIL})
-    assert told.status_code == 303
-    report(client, ESSAY_ID, "done", "Handed in Tuesday.")
-
-
-def action_of(row: str, ending: str) -> str:
-    """The address one of a row's two check forms is sent to, as the page wrote it."""
-    found = re.search(rf'<form method="post" action="([^"]*/{ending})"', row)
-    assert found is not None, ending
-    return html.unescape(found.group(1))
-
-
-def mark(client: TestClient, assignment_id: str, note: str = "") -> Answer:
-    """Mark the row checked from the family page as it stands, with the fields it carries."""
-    row = row_for(family_page(client), assignment_id)
-    return client.post(
-        action_of(row, "mark"),
-        data={
-            "basis": hidden(row, "basis"),
-            "expected_check_id": hidden(row, "expected_check_id"),
-            "note": note,
-        },
-        headers=PAGE_HEADERS,
-    )
 
 
 def check_again(client: TestClient, assignment_id: str) -> Answer:

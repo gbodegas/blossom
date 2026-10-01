@@ -59,9 +59,14 @@ class CandidateReading:
     work_reported_on: date | None
     school: tuple[SchoolWord, ...]
     """Each school channel's current word, by channel."""
+    work_unavailable: bool = False
+    """Whether her updates on it cannot be read, which the row says in place of her word."""
 
     def facts(self) -> list[object]:
-        """The values a row shows, in a fixed order and spelling, for the fingerprint."""
+        """The values a row shows, in a fixed order and spelling, for the fingerprint. Updates
+        that cannot be read add a value of their own, so a row whose updates became readable
+        or unreadable since it was shown is a changed row, and every other row's fingerprint
+        is what it always was."""
         return [
             self.assignment_id,
             self.course,
@@ -76,6 +81,7 @@ class CandidateReading:
                 [word.channel.value, word.status, word.reported_on.isoformat()]
                 for word in self.school
             ],
+            *(["updates cannot be read"] if self.work_unavailable else []),
         ]
 
 
@@ -99,6 +105,7 @@ def reading_of(item: Assignment, standing: AssignmentStatus | None) -> Candidate
                 key=lambda word: word.channel.value,
             )
         ),
+        work_unavailable=standing is not None and standing.updates_unavailable,
     )
 
 

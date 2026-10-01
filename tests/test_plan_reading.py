@@ -221,3 +221,15 @@ def test_an_address_is_made_from_values_each_escaped_where_it_goes() -> None:
         "?return_to=family&plan_id=draft%3Aplan%3A2026-08-19%3Ax%26y%3Dz"
     )
     assert details_href("assignment-x") == "/student/assignments/assignment-x"
+
+
+def test_rows_whose_updates_cannot_be_read_say_so_on_todays_plan_and_on_no_other() -> None:
+    record = saved(composed_plan())
+    unread = {ESSAY.assignment_id, SYLLABUS.assignment_id, "assignment-not-in-the-plan"}
+    current = read_plan(record, reader="student", current=True, link_for=to_details, unread=unread)
+    history = read_plan(record, reader="student", current=False, link_for=to_details, unread=unread)
+
+    assert [row.updates_unread for row in current.blocks] == [True, False, True]
+    assert [row.updates_unread for row in current.deferrals] == [False, True]
+    assert [row.done for row in current.blocks + current.deferrals] == [None] * 5
+    assert not any(row.updates_unread for row in history.blocks + history.deferrals)
