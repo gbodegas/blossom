@@ -84,6 +84,10 @@ ALLOWED_IMPORTS: dict[str, str] = {
     ),
     "pathlib": "standard library",
     "pydantic": "validation and view models; no I/O",
+    "python_multipart": (
+        "the form parser under Starlette; only its parse failure is named, so a body it "
+        "can't read is answered with a page; it opens no file and no connection"
+    ),
     "sqlite3": "standard library; local file and in-memory databases only",
     "sys": "standard library; which platform's lock to use",
     "threading": "standard library; serializes the shared connection and the sign-in count",

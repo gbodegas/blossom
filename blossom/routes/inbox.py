@@ -70,6 +70,7 @@ from blossom.intake import (
 )
 from blossom.pairing import pair
 from blossom.reconciliation import CHANNEL_NAMES, SourceChannel
+from blossom.routes.forms import form_of
 from blossom.routes.instruction_answers import (
     CarriedAccount,
     SaidBack,
@@ -1436,7 +1437,7 @@ def preview_or_recovery(
 
 async def submitted(request: Request) -> dict[str, str]:
     """The form as submitted, every value as text."""
-    form = await request.form()
+    form = await form_of(request)
     return {name: str(value) for name, value in form.items() if isinstance(value, str)}
 
 
@@ -1513,7 +1514,7 @@ async def search_review(request: Request, state: State) -> Response:
     read = read_draft(state, draft)
     if isinstance(read, Problem):
         return problem_page(request, state, draft, read)
-    fields = (await request.form()).multi_items()
+    fields = (await form_of(request)).multi_items()
     read_answers = paste_answers(fields)
     instruction_answers = read_answers.answers
     made = {key: UnsavedChoice.of(answer) for key, answer in instruction_answers.items()}
@@ -1710,7 +1711,7 @@ async def keep_readings(request: Request, state: State) -> Response:
     # Every answer about the school's instructions is read from the fields as sent, before
     # any is collapsed, and kept, contradictions included, in words a page that reads no
     # store can show: all of it before anything touches the store.
-    fields = (await request.form()).multi_items()
+    fields = (await form_of(request)).multi_items()
     read_answers = paste_answers(fields)
     instruction_answers = read_answers.answers
     # A choice the page showed as not saved is shown again until a new one is ticked.

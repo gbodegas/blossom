@@ -18,15 +18,25 @@ copy is read by a second function here, only after the refusal is fixed and
 only as far as a small bound in bytes and in time: it never reads a body the
 first way, whole and unbounded, and nothing it finds or fails to find changes
 the refusal.
+
+A body the form parser can't read at all, multipart it rejects, a part it can't decode in
+the charset the body names, too many fields, or a field too long, is not a form, and no page
+can say what it held. Reading one raises
+``FormUnreadable``, wherever the form is read: in a handler, through ``form_of``, or by the
+framework for a route whose fields are parameters, through ``FormRoute``. The application
+answers it with one page, which reads no store.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import aclosing
-from typing import Final
+from typing import Any, Final
 
-from fastapi import Request
-from starlette.datastructures import Headers
+from fastapi import Request, Response
+from fastapi.routing import APIRoute
+from python_multipart.exceptions import FormParserError
+from starlette.datastructures import FormData, Headers
+from starlette.exceptions import HTTPException
 from starlette.formparsers import FormParser, MultiPartException
 from starlette.requests import ClientDisconnect
 
@@ -40,6 +50,52 @@ once, from the moment its body starts being read, and a chunk that arrives does 
 it again: past it the copy is given up and the refusal stands without one."""
 URL_ENCODED: Final = "application/x-www-form-urlencoded"
 """The one kind of body a refused press's copy is read from: the kind a page's form sends."""
+
+
+class FormUnreadable(Exception):
+    """A body the form parser could not read, named by the kind of the parser's failure.
+    Nothing of the body is kept, and the parser's own words are never said, since they can
+    quote it."""
+
+
+def parser_refused(error: HTTPException) -> bool:
+    """Whether a 400 came from the form parser refusing the body: the parser's own failure,
+    a part it can't decode, or the one its reader turns into a 400. Anything else, a client
+    gone among them, is not a form that could not be read."""
+    return error.status_code == 400 and isinstance(
+        error.__context__, FormParserError | UnicodeError | MultiPartException
+    )
+
+
+async def form_of(request: Request) -> FormData:
+    """The request's form as the parser reads it, or ``FormUnreadable`` when the parser can't."""
+    try:
+        return await request.form()
+    except (FormParserError, UnicodeError) as error:
+        raise FormUnreadable(type(error).__name__) from error
+    except HTTPException as error:
+        if parser_refused(error):
+            raise FormUnreadable(type(error.__context__).__name__) from error
+        raise
+
+
+class FormRoute(APIRoute):
+    """A route whose form fields are parameters, so the framework reads the form before the
+    handler runs: a body the parser can't read is ``FormUnreadable`` here too."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        """The framework's handler, with the parser's refusal of the body said as one."""
+        handle = super().get_route_handler()
+
+        async def read(request: Request) -> Response:
+            try:
+                return await handle(request)
+            except HTTPException as error:
+                if parser_refused(error):
+                    raise FormUnreadable(type(error.__context__).__name__) from error
+                raise
+
+        return read
 
 
 async def fields_of(
@@ -57,9 +113,10 @@ async def fields_of(
     ``may_be_absent`` names the fields a browser leaves out of the page's
     own form, a group of radio buttons with none chosen; the caller asks
     for the choice. The first text value of each allowed field is still
-    handed back, so the page that refuses can keep what was typed.
+    handed back, so the page that refuses can keep what was typed. A body the parser can't
+    read is ``FormUnreadable``.
     """
-    form = await request.form()
+    form = await form_of(request)
     fields: dict[str, str] = {}
     whole = True
     for name, value in form.multi_items():

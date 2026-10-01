@@ -9,9 +9,15 @@ Stores are opened by the lifespan handler, not at import, so importing this
 module has no side effects.
 """
 
-from fastapi import FastAPI
+import logging
+from collections.abc import Callable
+from typing import Final
+
+from fastapi import FastAPI, Request, status
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from blossom.captures import NotACaptureId, capture_id_from
 from blossom.dependencies import create_lifespan
 from blossom.household import HouseholdGate
 from blossom.routes import (
@@ -26,7 +32,73 @@ from blossom.routes import (
     student,
     verifier,
 )
+from blossom.routes.forms import FormUnreadable
+from blossom.routes.navigation import FAMILY_PAGE, WEEK_PAGE, note_href
+from blossom.routes.student import ReturnLink, parent_reads
 from blossom.settings import Settings, get_settings
+from blossom.templating import page_templates
+
+logger = logging.getLogger(__name__)
+templates = page_templates()
+
+SIGN_IN: Final = "/sign-in"
+HELP_ASKS: Final = frozenset(
+    {"/student/actions/ask-for-help", "/student/actions/homework-notes/{capture_id}/ask-for-help"}
+)
+"""The routes that send her a request for help rather than save something."""
+NOTHING_SAVED: Final = "That form could not be read, so nothing was saved."
+NOTHING_SENT: Final = "That form could not be read, so nothing was sent."
+SIGN_IN_NOT_READ: Final = "That form could not be read. Open sign-in and try again."
+
+
+def unreadable_form(sample: bool) -> Callable[[Request, Exception], HTMLResponse]:
+    """The answer to a form the parser could not read, 400, on a page that reads no store.
+
+    What it says and the ways back come from the route alone: sign-in's own words and the way
+    back to it, which say nothing about who is signed in and set no cookie; on the family's
+    tree, the way back to Family review; on hers, her week named for whoever reads, and the
+    note when the route names one by an id of a note's shape. Nothing of the body is shown,
+    and the failure is logged by its kind alone, since the parser's words can quote the body.
+    """
+
+    def answer(request: Request, error: Exception) -> HTMLResponse:
+        logger.info("a form could not be read: %s", error)
+        route = getattr(request.scope.get("route"), "path", request.url.path)
+        sign_in = route == SIGN_IN
+        family = route.startswith(FAMILY_PAGE + "/")
+        if sign_in:
+            heading, said = "Sign-in form could not be read", SIGN_IN_NOT_READ
+            ways_back = [ReturnLink(SIGN_IN, "Back to sign in")]
+        elif family:
+            heading, said = "Nothing was saved", NOTHING_SAVED
+            ways_back = [ReturnLink(FAMILY_PAGE, "Back to Family review")]
+        else:
+            asks = route in HELP_ASKS
+            heading = "Request not sent" if asks else "Nothing was saved"
+            said = NOTHING_SENT if asks else NOTHING_SAVED
+            week = "Back to her week" if parent_reads(request) else "Back to my week"
+            ways_back = [ReturnLink(WEEK_PAGE, week)]
+            try:
+                note = capture_id_from(request.path_params.get("capture_id", ""))
+            except NotACaptureId:
+                pass
+            else:
+                ways_back.insert(0, ReturnLink(note_href(note), "Back to the note"))
+        return templates.TemplateResponse(
+            request,
+            "form_unreadable.html",
+            {
+                "heading": heading,
+                "said": said,
+                "ways_back": ways_back,
+                "family": family,
+                "sign_in": sign_in,
+                "sample": sample,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return answer
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -54,6 +126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(parent.router)
     app.include_router(inbox.router)
     app.include_router(verifier.router)
+    app.add_exception_handler(FormUnreadable, unreadable_form(resolved.sample))
     # The gate wraps everything above: with two passphrases set, a page or a
     # route answers only someone who has signed in and may open it.
     app.add_middleware(HouseholdGate, settings=resolved)
