@@ -19,6 +19,13 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from python_multipart.exceptions import (
+    DecodeError,
+    FormParserError,
+    MultipartParseError,
+    ParseError,
+    QuerystringParseError,
+)
 
 from tests.support import (
     ESSAY_ID,
@@ -47,10 +54,41 @@ MULTIPART: Final = "multipart/form-data; boundary=synthetic"
 URL_ENCODED: Final = "application/x-www-form-urlencoded"
 
 
+LONGEST_BOUNDARY: Final = 256
+"""The longest multipart boundary the form parser reads, in bytes."""
+
+
+def multipart(
+    fields: list[tuple[str, str]],
+    boundary: str,
+    *,
+    quoted: bool = False,
+    charset: str | None = None,
+) -> tuple[bytes, str]:
+    """A whole multipart body of these fields, split by this boundary, its type naming the
+    charset when one is given."""
+    split = b"--" + boundary.encode()
+    sent = b"".join(
+        split
+        + CR
+        + f'Content-Disposition: form-data; name="{name}"'.encode()
+        + CR
+        + CR
+        + value.encode()
+        + CR
+        for name, value in fields
+    )
+    named = f'"{boundary}"' if quoted else boundary
+    kind = "multipart/form-data" + (f"; charset={charset}" if charset else "")
+    return sent + split + b"--" + CR, f"{kind}; boundary={named}"
+
+
 def unreadable(typed: str = TYPED) -> dict[str, tuple[bytes, str]]:
     """The bodies the form parser can't read: multipart its parser rejects, a part with no
-    name, a multipart type with no boundary, 1001 fields, and one field over 1 MiB."""
+    name, a multipart type with no boundary, a boundary over 256 bytes, a charset no part can
+    be decoded in, 1001 fields, and one field over 1 MiB."""
     sent = typed.encode()
+    name, _, value = typed.partition("=")
     return {
         "multipart the parser rejects": (b"not the boundary" + CR + CR + sent, MULTIPART),
         "a part with no name": (
@@ -58,6 +96,12 @@ def unreadable(typed: str = TYPED) -> dict[str, tuple[bytes, str]]:
             MULTIPART,
         ),
         "no boundary": (urlencode({"note": typed}).encode(), "multipart/form-data"),
+        "a boundary over 256 bytes": multipart(
+            [(name, value) if value else ("note", typed)], "b" * (LONGEST_BOUNDARY + 1)
+        ),
+        "a charset no part can be decoded in": multipart(
+            [(name, value) if value else ("note", typed)], "synthetic", charset="undefined"
+        ),
         "1001 fields": (
             urlencode([("note", typed), *[(f"f{n}", "1") for n in range(1000)]]).encode(),
             URL_ENCODED,
@@ -191,6 +235,98 @@ def test_every_form_route_answers_a_body_it_cannot_read_with_a_page_that_reads_n
     assert [r for r in caplog.records if TYPED in r.getMessage()] == []
 
 
+@pytest.mark.parametrize("quoted", [False, True])
+@pytest.mark.parametrize(
+    "length", [LONGEST_BOUNDARY - 1, LONGEST_BOUNDARY, LONGEST_BOUNDARY + 1, 1000]
+)
+def test_a_boundary_reads_up_to_256_bytes_and_a_longer_one_is_a_form_that_cannot_be_read(
+    length: int, quoted: bool, tmp_path: pathlib.Path
+) -> None:
+    """Up to 256 bytes, quoted or not, the form reads as it does with a short boundary, and the
+    right passphrase opens the door; past them, sign-in, a handler's form and a form of
+    parameters alike answer with the 400 page, as often as the same body is sent."""
+    boundary = "b" * length
+    with household_client("her", tmp_path / "her") as client:
+        sent = multipart([("passphrase", HERS)], boundary, quoted=quoted)
+        doors = [press(client, SIGN_IN, *sent) for _ in range(2)]
+        week = client.get(WEEK, headers=PAGE_HEADERS).status_code
+    answers = {}
+    with household_client("open", tmp_path / "open") as client:
+        for path in (REPORT, ASK, PASTE, DECIDE):
+            fields = [("note", TYPED)]
+            short = press(client, path, *multipart(fields, "synthetic", quoted=quoted))
+            sent = multipart(fields, boundary, quoted=quoted)
+            answers[path] = (short, [press(client, path, *sent) for _ in range(2)])
+
+    if length <= LONGEST_BOUNDARY:
+        assert doors[0].status_code == 303
+        assert "set-cookie" in doors[0].headers
+        assert week == 200
+        for path, (short, longs) in answers.items():
+            for long in longs:
+                assert long.status_code == short.status_code != 400, path
+                assert long.headers["content-type"] == short.headers["content-type"], path
+    else:
+        for door in doors:
+            store_free_page(door, status=400, heading=SIGN_IN_HEADING, alert=SIGN_IN_SAID)
+            assert "set-cookie" not in door.headers
+        assert week == 303
+        for path, (_, longs) in answers.items():
+            heading, said, back = expected(path, "open")
+            for long in longs:
+                main = store_free_page(long, status=400, heading=heading, alert=said)
+                assert ways_back_of(main) == back, path
+                assert TYPED not in long.text, path
+
+
+UNDECODABLE: Final = "xn--zz"
+"""A value the idna, punycode and undefined codecs all fail to decode."""
+
+
+@pytest.mark.parametrize(
+    ("charset", "value", "read"),
+    [
+        ("idna", UNDECODABLE, False),
+        ("punycode", UNDECODABLE, False),
+        ("undefined", TYPED, False),
+        ("utf-8", "caf\u00e9", True),
+        ("latin-1", "caf\u00e9", True),
+        ("ascii", "caf\u00e9", True),
+        ("no-such-charset", "caf\u00e9", True),
+    ],
+)
+def test_a_charset_a_part_cannot_be_decoded_in_is_a_form_that_cannot_be_read(
+    charset: str, value: str, read: bool, tmp_path: pathlib.Path
+) -> None:
+    """A charset whose codec fails on a part gets the 400 page, through a handler and through a
+    form of parameters alike; one that decodes it, or that Starlette reads as Latin-1 when the
+    charset is unknown or the bytes don't fit it, reads as it does with no charset."""
+    sign_in = [("passphrase", HERS), ("x", value)]
+    with household_client("her", tmp_path / "her") as client:
+        door = press(client, SIGN_IN, *multipart(sign_in, "synthetic", charset=charset))
+    answers = {}
+    with household_client("open", tmp_path / "open") as client:
+        for path in (ASK, PASTE, DECIDE):
+            fields = [("note", value)]
+            answers[path] = (
+                press(client, path, *multipart(fields, "synthetic")),
+                press(client, path, *multipart(fields, "synthetic", charset=charset)),
+            )
+
+    if read:
+        assert door.status_code == 303
+        for path, (plain, named) in answers.items():
+            assert named.status_code == plain.status_code != 400, path
+            assert named.headers["content-type"] == plain.headers["content-type"], path
+    else:
+        store_free_page(door, status=400, heading=SIGN_IN_HEADING, alert=SIGN_IN_SAID)
+        assert "set-cookie" not in door.headers
+        for path, (_, named) in answers.items():
+            heading, said, back = expected(path, "open")
+            main = store_free_page(named, status=400, heading=heading, alert=said)
+            assert ways_back_of(main) == back, path
+
+
 @pytest.mark.parametrize(
     ("path", "family"), [(REPORT, False), (ASK, False), (PASTE, True), (DECIDE, True)]
 )
@@ -266,11 +402,12 @@ BODYLESS: Final = (
 )
 
 
+@pytest.mark.parametrize("unread", ["multipart the parser rejects", "a boundary over 256 bytes"])
 @pytest.mark.parametrize("reader", ["her", "parent", "open"])
 def test_a_route_that_reads_no_body_answers_as_it_does_with_none(
-    reader: str, tmp_path: pathlib.Path
+    reader: str, unread: str, tmp_path: pathlib.Path
 ) -> None:
-    body, kind = unreadable()["multipart the parser rejects"]
+    body, kind = unreadable()[unread]
     with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         statuses = {
@@ -284,10 +421,13 @@ def test_a_route_that_reads_no_body_answers_as_it_does_with_none(
     assert 400 not in {broken for _, broken in statuses.values()}
 
 
+@pytest.mark.parametrize("unread", ["multipart the parser rejects", "a boundary over 256 bytes"])
 @pytest.mark.parametrize("reader", ["her", "parent"])
-def test_the_json_routes_answer_as_they_did(reader: str, tmp_path: pathlib.Path) -> None:
+def test_the_json_routes_answer_as_they_did(
+    reader: str, unread: str, tmp_path: pathlib.Path
+) -> None:
     """A JSON route is not a form route: FastAPI's 422 for her, the 403 for a parent."""
-    body, kind = unreadable()["multipart the parser rejects"]
+    body, kind = unreadable()[unread]
     with household_client(reader, tmp_path) as client:
         sign_in_as(client, reader)
         answer = client.post("/student/help-requests", content=body, headers={"Content-Type": kind})
@@ -334,6 +474,8 @@ def test_a_sign_in_form_that_cannot_be_read_says_so_and_touches_no_session(
             "MultipartParseError",
             "MultiPartException",
             "MultiPartException",
+            "FormParserError",
+            "UnicodeError",
             "MultiPartException",
             "MultiPartException",
         )
@@ -379,20 +521,60 @@ def test_a_form_from_another_origin_is_refused_before_its_body_is_read(
 # ------------------------------------------------------------------ 4. only the parser
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FormParserError,
+        ParseError,
+        MultipartParseError,
+        QuerystringParseError,
+        DecodeError,
+        UnicodeError,
+    ],
+    ids=lambda failure: failure.__name__,
+)
+def test_every_failure_of_the_form_parser_is_a_form_that_cannot_be_read(
+    failure: type[Exception],
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The parser's base failure, each kind of it, and a part it can't decode get the 400
+    page, through a handler and through a form of parameters alike, and only the kind is
+    logged."""
+    caplog.set_level(logging.DEBUG)
+
+    async def refused(*_: object, **__: object) -> None:
+        raise failure(TYPED)
+
+    monkeypatch.setattr(Request, "form", refused)
+    with household_client("open", tmp_path) as client:
+        asked = press(client, ASK, b"", URL_ENCODED)
+        signing = press(client, SIGN_IN, b"", URL_ENCODED)
+
+    store_free_page(asked, status=400, heading="Request not sent", alert=NOTHING_SENT)
+    store_free_page(signing, status=400, heading=SIGN_IN_HEADING, alert=SIGN_IN_SAID)
+    assert [r.getMessage() for r in caplog.records if r.name == "blossom.app"] == [
+        f"a form could not be read: {failure.__name__}"
+    ] * 2
+    assert [r for r in caplog.records if TYPED in r.getMessage()] == []
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, ValueError], ids=lambda f: f.__name__)
 def test_another_failure_while_the_form_is_read_is_not_taken_for_an_unreadable_one(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    failure: type[Exception], tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Only the parser's own failures are a form that could not be read; anything else raised
-    while the form is read still raises."""
+    while the form is read still raises, a ValueError the parser didn't raise included."""
 
     async def broken(*_: object, **__: object) -> None:
         msg = "not the parser"
-        raise RuntimeError(msg)
+        raise failure(msg)
 
     monkeypatch.setattr(Request, "form", broken)
     with household_client("open", tmp_path) as client:
         fields = client.post(SIGN_IN, data={"passphrase": "x"}, headers=PAGE_HEADERS)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(failure):
             client.post(ASK, data={"note": "x"}, headers=PAGE_HEADERS)
 
     assert fields.status_code == 400

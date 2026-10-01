@@ -19,8 +19,9 @@ only as far as a small bound in bytes and in time: it never reads a body the
 first way, whole and unbounded, and nothing it finds or fails to find changes
 the refusal.
 
-A body the form parser can't read at all, multipart it rejects, too many fields, or a field
-too long, is not a form, and no page can say what it held. Reading one raises
+A body the form parser can't read at all, multipart it rejects, a part it can't decode in
+the charset the body names, too many fields, or a field too long, is not a form, and no page
+can say what it held. Reading one raises
 ``FormUnreadable``, wherever the form is read: in a handler, through ``form_of``, or by the
 framework for a route whose fields are parameters, through ``FormRoute``. The application
 answers it with one page, which reads no store.
@@ -33,7 +34,7 @@ from typing import Any, Final
 
 from fastapi import Request, Response
 from fastapi.routing import APIRoute
-from python_multipart.exceptions import MultipartParseError
+from python_multipart.exceptions import FormParserError
 from starlette.datastructures import FormData, Headers
 from starlette.exceptions import HTTPException
 from starlette.formparsers import FormParser, MultiPartException
@@ -59,10 +60,10 @@ class FormUnreadable(Exception):
 
 def parser_refused(error: HTTPException) -> bool:
     """Whether a 400 came from the form parser refusing the body: the parser's own failure,
-    or the one its reader turns into a 400. Anything else, a client gone among them, is not
-    a form that could not be read."""
+    a part it can't decode, or the one its reader turns into a 400. Anything else, a client
+    gone among them, is not a form that could not be read."""
     return error.status_code == 400 and isinstance(
-        error.__context__, MultipartParseError | MultiPartException
+        error.__context__, FormParserError | UnicodeError | MultiPartException
     )
 
 
@@ -70,7 +71,7 @@ async def form_of(request: Request) -> FormData:
     """The request's form as the parser reads it, or ``FormUnreadable`` when the parser can't."""
     try:
         return await request.form()
-    except MultipartParseError as error:
+    except (FormParserError, UnicodeError) as error:
         raise FormUnreadable(type(error).__name__) from error
     except HTTPException as error:
         if parser_refused(error):
