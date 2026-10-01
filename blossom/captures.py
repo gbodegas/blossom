@@ -36,7 +36,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationError,
     field_validator,
     model_validator,
 )
@@ -44,6 +43,7 @@ from pydantic import (
 from blossom.authored_text import multiline, single_line
 from blossom.pairing import pair
 from blossom.reconciliation import SourceChannel
+from blossom.unreadable import refusal_in_names
 
 CAPTURE_TEXT_MAX_LENGTH: Final = 500
 CAPTURE_COURSE_MAX_LENGTH: Final = 60
@@ -492,15 +492,7 @@ def unread_because(fault: Exception) -> str:
     failure, or the model that refused it with each field and the kind of refusal. A
     damaged row can hold her words in any column, so nothing the row held is repeated, and
     a caller raises after its except block so the fault is neither cause nor context."""
-    if not isinstance(fault, ValidationError):
-        return type(fault).__name__
-    refusals = []
-    for error in fault.errors(include_url=False, include_context=False, include_input=False):
-        place = ".".join(
-            str(part) for part in error["loc"] if isinstance(part, int) or part in FIELD_NAMES
-        )
-        refusals.append(f"{place} {error['type']}" if place else error["type"])
-    return f"{fault.title}: {', '.join(refusals)}"
+    return refusal_in_names(fault, FIELD_NAMES)
 
 
 @dataclass(frozen=True)

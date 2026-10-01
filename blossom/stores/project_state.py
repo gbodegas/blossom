@@ -25,6 +25,7 @@ not treat it as completion.
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import uuid
@@ -36,7 +37,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final, Literal, NamedTuple, Self, cast
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from blossom.authored_text import multiline, single_line
 from blossom.captures import (
@@ -104,6 +112,7 @@ from blossom.stores.school_instructions import (
     SchoolInstructionRecords,
     school_note,
 )
+from blossom.unreadable import refusal_in_names, text_or_refusal
 
 DUE_THIS_WEEK_KEY = "due_this_week"
 logger = logging.getLogger(__name__)
@@ -546,18 +555,51 @@ class NoteTooLong(ValueError):
         super().__init__(f"a note is at most {NOTE_MAX_LENGTH} characters; this one is {length}")
 
 
+EVENT_FIELDS: Final = frozenset(
+    name for model in (StudentReport, HandInEvent, FamilyCheck) for name in model.model_fields
+)
+"""The fields her updates, her hand-in events and the family's checks hold. A refusal names a
+place only by these."""
+EVENT_ID_AS_WRITTEN: Final = re.compile(r"(?:report|hand-in|check)-[0-9a-f]{12}")
+"""The one shape of the ids ``new_report_id``, ``new_hand_in_id`` and ``new_check_id`` draw."""
+
+
+class UnreadableEvent(ValueError):
+    """Raised for one of her updates, a hand-in event, or a check whose row can't be read.
+    The message names the event when its id has the shape the store writes, and the refusal
+    in names alone, so it holds none of the words the row keeps."""
+
+    def __init__(self, held_id: object, why: str) -> None:
+        named = (
+            held_id
+            if type(held_id) is str and EVENT_ID_AS_WRITTEN.fullmatch(held_id)
+            else "an event"
+        )
+        super().__init__(f"{named} cannot be read: {why}")
+
+
 class CouldNotSave(RuntimeError):
     """The file refused a write, hers or the family's, or the chain failed its checks while
     writing.
 
     Whatever was begun was rolled back with it, so nothing of the event is
-    kept; the page that catches this says so and keeps the words typed.
+    kept; the page that catches this says so and keeps the words typed. A
+    model's refusal is named in names alone, since it repeats what it refused.
     """
 
     def __init__(
         self, assignment_id: str, cause: BaseException, *, what: str = "the update"
     ) -> None:
-        super().__init__(f"{what} on {assignment_id!r} could not be saved: {cause}")
+        said = (
+            refusal_in_names(cause, EVENT_FIELDS) if isinstance(cause, ValidationError) else cause
+        )
+        super().__init__(f"{what} on {assignment_id!r} could not be saved: {said}")
+
+
+def kept_cause(error: BaseException) -> BaseException | None:
+    """The cause a refused save keeps: any error but a model's refusal, which repeats what it
+    refused. The save raises after its except block, so a refusal left out is no context."""
+    return None if isinstance(error, ValidationError) else error
 
 
 class UnknownAssignment(LookupError):
@@ -646,6 +688,7 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         self, connection: sqlite3.Connection, clock: Clock, *, tables: bool = True
     ) -> None:
         self._connection = connection
+        self._connection.text_factory = text_or_refusal
         # Required, not defaulted: a clock needs the household's zone, and this
         # store has no business choosing one.
         self._clock = clock
@@ -1273,7 +1316,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 self._append_student_report_locked(report)
                 return Saved(report)
         except (sqlite3.Error, RuntimeError, ValueError) as error:
-            raise CouldNotSave(assignment_id, error) from error
+            refused = error
+        raise CouldNotSave(assignment_id, refused) from kept_cause(refused)
 
     def undo_report(
         self, assignment_id: str, report_id: str, *, now: datetime, today: date
@@ -1315,7 +1359,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 self._append_student_report_locked(undo)
                 return Undone(undo)
         except (sqlite3.Error, RuntimeError, ValueError) as error:
-            raise CouldNotSave(assignment_id, error) from error
+            refused = error
+        raise CouldNotSave(assignment_id, refused) from kept_cause(refused)
 
     def _require_report_locked(self, assignment_id: str, report_id: str) -> None:
         """Refuse a name that is not one of this assignment's events."""
@@ -1596,7 +1641,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 )
                 return HandInSaved(self._append_hand_in_locked(report, reading))
         except (sqlite3.Error, RuntimeError, ValueError) as error:
-            raise CouldNotSave(assignment_id, error) from error
+            refused = error
+        raise CouldNotSave(assignment_id, refused) from kept_cause(refused)
 
     def undo_hand_in(
         self,
@@ -1653,7 +1699,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 )
                 return HandInUndone(self._append_hand_in_locked(undo, reading))
         except (sqlite3.Error, RuntimeError, ValueError) as error:
-            raise CouldNotSave(assignment_id, error) from error
+            refused = error
+        raise CouldNotSave(assignment_id, refused) from kept_cause(refused)
 
     def _require_hand_in_locked(self, assignment_id: str, event_id: str) -> None:
         """Refuse a name that is not one of this assignment's hand-in events."""
@@ -1792,7 +1839,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 self._append_family_check_locked(check)
                 return Checked(check)
         except (sqlite3.Error, RuntimeError, ValueError) as error:
-            raise CouldNotSave(assignment_id, error, what="the check") from error
+            refused = error
+        raise CouldNotSave(assignment_id, refused, what="the check") from kept_cause(refused)
 
     def check_again(
         self,
@@ -1846,7 +1894,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 self._append_family_check_locked(reopened)
                 return Reopened(reopened)
         except (sqlite3.Error, RuntimeError, ValueError) as error:
-            raise CouldNotSave(assignment_id, error, what="the check") from error
+            refused = error
+        raise CouldNotSave(assignment_id, refused, what="the check") from kept_cause(refused)
 
     def _require_check_locked(self, assignment_id: str, check_id: str) -> None:
         """Refuse a name that is not one of this assignment's check events."""
@@ -2695,21 +2744,26 @@ def new_hand_in_id() -> str:
 
 
 def hand_in_event_from(row: tuple[object, ...]) -> HandInEvent:
-    """Build one hand-in event from a row in the order the hand-in statements select."""
-    return HandInEvent(
-        event_id=str(row[0]),
-        assignment_id=str(row[1]),
-        operation=cast(Literal["report", "undo"], str(row[2])),
-        state=cast(HandInState | None, None if row[3] is None else str(row[3])),
-        next_action=None if row[4] is None else str(row[4]),
-        note=None if row[5] is None else str(row[5]),
-        cue_at_utc=None if row[6] is None else datetime.fromisoformat(str(row[6])),
-        reported_at=datetime.fromisoformat(str(row[7])),
-        reported_on=date.fromisoformat(str(row[8])),
-        previous_event_id=None if row[9] is None else str(row[9]),
-        undone_event_id=None if row[10] is None else str(row[10]),
-        sequence=int(cast(int, row[11])),
-    )
+    """Build one hand-in event from a row in the order the hand-in statements select, or
+    ``UnreadableEvent``."""
+    try:
+        return HandInEvent(
+            event_id=str(row[0]),
+            assignment_id=str(row[1]),
+            operation=cast(Literal["report", "undo"], str(row[2])),
+            state=cast(HandInState | None, None if row[3] is None else str(row[3])),
+            next_action=None if row[4] is None else str(row[4]),
+            note=None if row[5] is None else str(row[5]),
+            cue_at_utc=None if row[6] is None else datetime.fromisoformat(str(row[6])),
+            reported_at=datetime.fromisoformat(str(row[7])),
+            reported_on=date.fromisoformat(str(row[8])),
+            previous_event_id=None if row[9] is None else str(row[9]),
+            undone_event_id=None if row[10] is None else str(row[10]),
+            sequence=int(cast(int, row[11])),
+        )
+    except (ValueError, TypeError) as fault:
+        why = refusal_in_names(fault, EVENT_FIELDS)
+    raise UnreadableEvent(row[0], why)
 
 
 def new_report_id() -> str:
@@ -2723,17 +2777,21 @@ def new_check_id() -> str:
 
 
 def family_check_from(row: tuple[object, ...]) -> FamilyCheck:
-    """Build one check event from a row in the columns' order."""
-    return FamilyCheck(
-        check_id=str(row[0]),
-        assignment_id=str(row[1]),
-        operation=cast(Literal["checked", "reopened"], str(row[2])),
-        basis=str(row[3]),
-        note=None if row[4] is None else str(row[4]),
-        checked_at=datetime.fromisoformat(str(row[5])),
-        checked_on=date.fromisoformat(str(row[6])),
-        previous_check_id=None if row[7] is None else str(row[7]),
-    )
+    """Build one check event from a row in the columns' order, or ``UnreadableEvent``."""
+    try:
+        return FamilyCheck(
+            check_id=str(row[0]),
+            assignment_id=str(row[1]),
+            operation=cast(Literal["checked", "reopened"], str(row[2])),
+            basis=str(row[3]),
+            note=None if row[4] is None else str(row[4]),
+            checked_at=datetime.fromisoformat(str(row[5])),
+            checked_on=date.fromisoformat(str(row[6])),
+            previous_check_id=None if row[7] is None else str(row[7]),
+        )
+    except (ValueError, TypeError) as fault:
+        why = refusal_in_names(fault, EVENT_FIELDS)
+    raise UnreadableEvent(row[0], why)
 
 
 def assignment_from_note(note: Capture, record_channel: SourceChannel) -> Assignment:
@@ -2832,18 +2890,22 @@ def source_record_from(row: tuple[object, ...]) -> SourceRecord:
 
 
 def student_report_from(row: tuple[object, ...]) -> StudentReport:
-    """Build one of her reports from a row in the columns' order."""
-    return StudentReport(
-        report_id=str(row[0]),
-        assignment_id=str(row[1]),
-        operation=cast(Literal["report", "undo"], str(row[2])),
-        status=cast(StudentStatus | None, None if row[3] is None else str(row[3])),
-        note=None if row[4] is None else str(row[4]),
-        reported_at=datetime.fromisoformat(str(row[5])),
-        reported_on=date.fromisoformat(str(row[6])),
-        previous_report_id=None if row[7] is None else str(row[7]),
-        undoes_report_id=None if row[8] is None else str(row[8]),
-    )
+    """Build one of her reports from a row in the columns' order, or ``UnreadableEvent``."""
+    try:
+        return StudentReport(
+            report_id=str(row[0]),
+            assignment_id=str(row[1]),
+            operation=cast(Literal["report", "undo"], str(row[2])),
+            status=cast(StudentStatus | None, None if row[3] is None else str(row[3])),
+            note=None if row[4] is None else str(row[4]),
+            reported_at=datetime.fromisoformat(str(row[5])),
+            reported_on=date.fromisoformat(str(row[6])),
+            previous_report_id=None if row[7] is None else str(row[7]),
+            undoes_report_id=None if row[8] is None else str(row[8]),
+        )
+    except (ValueError, TypeError) as fault:
+        why = refusal_in_names(fault, EVENT_FIELDS)
+    raise UnreadableEvent(row[0], why)
 
 
 def report_from(row: tuple[object, ...]) -> StatusReport:
