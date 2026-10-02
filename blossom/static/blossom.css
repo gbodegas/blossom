@@ -542,6 +542,12 @@ details.plan .body {
   margin: 0.5rem 0 1.5rem;
 }
 
+/* Ways back one under another sit far enough apart that the 44 pixels each link is given to
+   press, 0.8rem above and below its line, never meet. */
+main > .return + .return {
+  margin-top: 1.75rem;
+}
+
 /* A form that is making a plan says so, and its button waits with it. The
    dots pulse in turn; with reduced motion asked for, they hold still. */
 .pending {
@@ -1249,6 +1255,59 @@ form.inline button {
   #add-assignments textarea {
     padding-inline: min(0.85rem, 2vw);
   }
+
+  /* A note's details hold a class, a kind and a due date in fields that show their value only
+     when wide enough for it, so on a narrow screen the card sits bare and reaches into the
+     page's side margin as Add assignments does, and its fields keep their side padding to a
+     share of the screen's width. */
+  .panel.adding-note {
+    margin-inline: min(0px, 4vw - 1.25rem);
+    max-width: none;
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .adding-note input,
+  .adding-note textarea {
+    padding-inline: min(0.85rem, 2vw);
+  }
+
+  /* Its longest choice, "Choose a class", with large text and a reader's letter spacing
+     fills the whole width, so a select's side padding gives way first: Add assignments'
+     share with ordinary text, none once the text is doubled. */
+  .adding-note select {
+    padding-inline: clamp(0px, 4vw - 0.4rem, 0.85rem);
+  }
+
+  /* On Review assignments, the Type field reaches across its card's side padding, so the
+     chosen type shows whole. */
+  .review-week .type-choice {
+    margin-inline: calc(-1.2rem - 1px);
+    max-width: none;
+  }
+
+  .type-choice select {
+    padding-inline: min(0.85rem, 2vw);
+  }
+
+  /* A plan's card inside another card gives the plan's rows the outer card's width. */
+  .panel > .draft {
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+}
+
+/* On Review assignments, the save button's words break where they must. */
+.review-actions button {
+  overflow-wrap: anywhere;
 }
 
 /* ------------------------------------------------------------- the way in */

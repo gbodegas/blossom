@@ -29,6 +29,7 @@ never assumed either way.
 """
 
 import functools
+import itertools
 import math
 import pathlib
 import re
@@ -45,6 +46,7 @@ from tests.support import (
     PAGE_HEADERS,
     Element,
     Rule,
+    Selector,
     UnreadCss,
     View,
     compound,
@@ -2735,3 +2737,434 @@ def test_the_skip_check_fails_when_the_outline_can_run_past_an_edge(
         for page in rendered.values():
             left, right = skip_outline_room(css, page, view)
             assert (left if short_on == "left" else right) < 0, view
+
+
+# ------------------------------------------------------------- fields, rows and ways back
+
+
+NEW_NOTE = "/student/homework-notes/new"
+SAVE_NOTE = "/student/actions/homework-notes"
+SCHOOL_TEXT = (
+    "Homework for Wren\n\n- 09/08/2026 - Tuesday\n"
+    "08 Geometry - Assigned: PR2 U2 pg. 41 #10, 12, 15: (Due:09/09/2026)\n"
+    "08 Geometry - Due: Book Covers:\nCover both books with paper."
+)
+
+NOTES: dict[str, str] = {}
+
+
+@pytest.fixture
+def note_pages(tmp_path: pathlib.Path) -> dict[str, str]:
+    """Once she has written a homework note, for her, a signed-in parent, and with the sign-in
+    off: the note's page; its page for adding details, in her tree and, for a parent and with
+    the sign-in off, in the family's; and, for a parent and with the sign-in off, Review
+    assignments for a pasted week. Rendered by the first test that asks and kept."""
+    if NOTES:
+        return NOTES
+    for reader in ("her", "parent", "open"):
+        folder = tmp_path / "notes" / reader
+        folder.mkdir(parents=True)
+        with household_client(reader, folder) as client:
+            sign_in_as(client, "open" if reader == "open" else "her")
+            fields = form_fields(client.get(NEW_NOTE, headers=PAGE_HEADERS).text, SAVE_NOTE)
+            written = fields | {"text": "Geometry questions 4-8", "course": "", "due_date": ""}
+            assert client.post(SAVE_NOTE, data=written, headers=PAGE_HEADERS).status_code == 303
+            name = fields["capture_id"]
+            sign_in_as(client, reader)
+            NOTES[f"{reader}, note"] = client.get(
+                f"/student/homework-notes/{name}", headers=PAGE_HEADERS
+            ).text
+            for tree in {"her": ("student",), "parent": ("parent",)}.get(
+                reader, ("student", "parent")
+            ):
+                page = client.get(f"/{tree}/homework-notes/{name}/add", headers=PAGE_HEADERS).text
+                assert 'id="details-course"' in page, (reader, tree)
+                NOTES[f"{reader}, {tree} tree, adding"] = page
+            if reader != "her":
+                answer = client.post(
+                    "/parent/inbox/read", data={"text": SCHOOL_TEXT}, headers=PAGE_HEADERS
+                )
+                assert answer.status_code == 200
+                assert 'class="type-choice"' in answer.text
+                NOTES[f"{reader}, review"] = answer.text
+    return NOTES
+
+
+def narrow(view: View) -> bool:
+    return one_query_holds("(max-width: 30rem)", view)
+
+
+CARD_SIDES = [*INSETS, *CARD_EDGES, "max-width"]
+SELECT_PADDING = "clamp(0px, 4vw - 0.4rem, 0.85rem)"
+"""A select's side padding on a note's details card: Add assignments' share of the screen
+with ordinary text, and none once large text and a reader's letter spacing make "Choose a
+class" fill the whole width."""
+
+
+def sits_apart(sheet: Sheet, card: Element, model: Element, view: View) -> list[str]:
+    """Each side inset, edge and surface where a note's details card differs from Add
+    assignments' card on ``view``, with the side padding of their fields."""
+    found = [
+        name
+        for name in CARD_SIDES
+        if (value_of(sheet, card, name, view) or "none")
+        != (value_of(sheet, model, name, view) or "none")
+    ]
+    theirs = [one for one in elements_of_card(model) if one.tag == "input"]
+    for one in elements_of_card(card):
+        if one.tag in ("input", "select") and one.attributes.get("type") != "hidden":
+            for side in ("padding-left", "padding-right"):
+                wanted = value_of(sheet, theirs[-1], side, view)
+                if one.tag == "select":
+                    wanted = SELECT_PADDING
+                if value_of(sheet, one, side, view) != wanted:
+                    found.append(f"{one.tag} {side}")
+    return found
+
+
+def elements_of_card(card: Element) -> list[Element]:
+    return [one for one in CARD_ELEMENTS[id(card)] if one.within(card)]
+
+
+CARD_ELEMENTS: dict[int, list[Element]] = {}
+
+
+def card_with_elements(page: str, pick: str) -> Element:
+    found = elements_of(page)
+    card = adding_card_of(found) if pick == "adding" else add_assignments_card_of(found)
+    CARD_ELEMENTS[id(card)] = found
+    return card
+
+
+def adding_card_of(found: list[Element]) -> Element:
+    (card,) = [one for one in found if "adding-note" in one.classes]
+    return card
+
+
+def add_assignments_card_of(found: list[Element]) -> Element:
+    (card,) = [
+        one
+        for one in found
+        if "panel" in one.classes
+        and one.parent is not None
+        and one.parent.attributes.get("id") == "add-assignments"
+    ]
+    return card
+
+
+def signed_px(value: str, view: View) -> float:
+    """A length that can be negative, or a ``calc()`` of lengths added and taken away."""
+    inner = re.fullmatch(r"calc\((.+)\)", value)
+    read = (inner.group(1) if inner else value).strip()
+    if inner:
+        return calc_px(read, view)
+    if zero(read):
+        return 0.0
+    return (-1.0 if read.startswith("-") else 1.0) * summed_px(read.lstrip("-"), view)
+
+
+def calc_px(read: str, view: View) -> float:
+    terms = re.split(r"\s+([-+])\s+", read)
+    total = signed_px(terms[0], view)
+    for sign, term in zip(terms[1::2], terms[2::2], strict=True):
+        total += signed_px(term, view) if sign == "+" else -signed_px(term, view)
+    return total
+
+
+def type_field_short(sheet: Sheet, page: str, view: View) -> list[str]:
+    """Each Type field on Review assignments that does not reach across its card's side
+    padding and edge on a narrow ``view``, or whose select keeps a wider side padding than Add
+    assignments' fields."""
+    found = elements_of(page)
+    labels = [one for one in found if one.tag == "label" and "type-choice" in one.classes]
+    assert labels
+    short = []
+    for label in labels:
+        (card,) = [one for one in label.ancestors() if one.tag == "article"]
+        for side in ("left", "right"):
+            reach = -signed_px(value_of(sheet, label, f"margin-{side}", view) or "0", view)
+            card_side = padding_px(value_of(sheet, card, f"padding-{side}", view), view)
+            card_side += border_px(value_of(sheet, card, f"border-{side}-width", view), view)
+            if round(reach, 6) != round(card_side, 6):
+                short.append(f"{side} reach {reach} of {card_side}")
+        if value_of(sheet, label, "max-width", view) not in (None, "none"):
+            short.append("held to a width")
+        (select,) = [one for one in found if one.tag == "select" and one.parent is label]
+        if value_of(sheet, select, "padding-left", view) != "min(0.85rem, 2vw)":
+            short.append("select padding")
+    return short
+
+
+UNREADABLE_PLANS = (
+    '<main><section class="panel" id="family-plans"><h2>Plans</h2><article class="draft">'
+    '<h3>Wednesday</h3><div class="plan-reading"><ol class="plan-rows"><li class="plan-block">'
+    '<a class="assignment-link" href="/x">Canal Era comparison essay</a></li></ol></div>'
+    "</article></section></main>"
+)
+"""Family review's page for plans that can't be read, as `plans_unavailable.html` sets out a
+plan's card inside the card of plans."""
+
+
+def inner_card_insets(sheet: Sheet, view: View) -> list[str]:
+    """What the plan's card inside the card of plans keeps of its side insets and edge."""
+    (draft,) = [one for one in elements_of(UNREADABLE_PLANS) if one.tag == "article"]
+    return [
+        name
+        for name in CARD_SIDES
+        if value_of(sheet, draft, name, view) != CARD_EDGES.get(name)
+        and not (
+            name.startswith(("margin", "padding")) and zero(value_of(sheet, draft, name, view))
+        )
+        and not (name.startswith("margin") and value_of(sheet, draft, name, view) is None)
+    ]
+
+
+def sibling_matches(head: str, element: Element, found: list[Element]) -> tuple[Selector, bool]:
+    """A selector of the sheet, and whether it matches ``element``: one that names the element
+    by the one right before it (``A + B``, with B a single compound) is read here, since the
+    shared reader refuses a sibling; a longer one after the ``+`` is refused where it could
+    reach the element."""
+    if "+" not in head:
+        chosen = selector(head)
+        return chosen, chosen.matches(element)
+    left, right = (part.strip() for part in head.rsplit("+", 1))
+    near, last = selector(left), selector(right)
+    whole = Selector(near.parts + last.parts)
+    if len(last.parts) > 1:
+        if last.matches(element):
+            raise UnreadCss(head)
+        return whole, False
+    before = [
+        one
+        for one in found
+        if one.parent is element.parent and one.position == element.position - 1
+    ]
+    return whole, last.matches(element) and bool(before) and near.matches(before[0])
+
+
+def declared_side(
+    css: str, element: Element, found: list[Element], box: str, side: str, view: View
+) -> str | None:
+    """The value the cascade gives one side of a margin or padding on ``element``, from the
+    shorthand or the side's own property."""
+    order = ("top", "right", "bottom", "left")
+    rules = []
+    for style in style_rules(css):
+        for name, value, important in style.declarations:
+            if name == f"{box}-{side}":
+                given = value.lower()
+            elif name == box:
+                given = sides(value.lower())[order.index(side)]
+            else:
+                continue
+            for head in style.selectors.split(","):
+                chosen, holds = sibling_matches(head, element, found)
+                if holds:
+                    rules.append(Rule(chosen, given, style.order, style.media, important))
+    winning = winner(rules, view)
+    return None if winning is None else winning.value
+
+
+def ways_back_apart(css: str, page: str, view: View) -> list[float]:
+    """For each way back that follows another directly in the page's main part, how far
+    apart, in pixels, the two links' press areas are on ``view``: the space between their
+    lines less what each link's area reaches past its line. Below zero, they overlap."""
+    found = elements_of(page)
+    (main,) = [one for one in found if one.tag == "main"]
+    children = [one for one in found if one.parent is main]
+    apart = []
+    for before, after in itertools.pairwise(children):
+        if not all(one.tag == "p" and "return" in one.classes for one in (before, after)):
+            continue
+        links = [
+            next(one for one in found if one.tag == "a" and one.parent is way)
+            for way in (before, after)
+        ]
+        gap = max(
+            signed_px(declared_side(css, before, found, "margin", "bottom", view) or "0", view),
+            signed_px(declared_side(css, after, found, "margin", "top", view) or "0", view),
+        )
+        reach = sum(
+            max(0.0, -signed_px(declared_side(css, link, found, "margin", side, view) or "0", view))
+            for link, side in ((links[0], "bottom"), (links[1], "top"))
+        )
+        apart.append(round(gap - reach, 6))
+    return apart
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_a_notes_details_card_sits_as_add_assignments_card_does_on_a_narrow_screen(
+    rendered: dict[str, str], note_pages: dict[str, str], view: View
+) -> None:
+    """On a narrow screen, the card holding a note's class, kind and due date gives up its side
+    insets, edge and surface and reaches into the page's side margin as Add assignments' card
+    does, and its fields keep the same side padding, so each field is as wide as Add
+    assignments' fields and shows its value whole; elsewhere the card keeps its own look."""
+    sheet = read_sheet(stylesheet())
+    model = card_with_elements(rendered["open, family"], "add assignments")
+    adding = {name: page for name, page in note_pages.items() if name.endswith("adding")}
+    assert len(adding) == 4
+    for name, page in adding.items():
+        card = card_with_elements(page, "adding")
+        apart = sits_apart(sheet, card, model, view)
+        if narrow(view):
+            assert apart == [], name
+        else:
+            assert value_of(sheet, card, "padding-left", view) != "0", name
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_each_type_field_reaches_across_its_cards_side_padding_on_a_narrow_screen(
+    note_pages: dict[str, str], view: View
+) -> None:
+    sheet = read_sheet(stylesheet())
+    for name, page in note_pages.items():
+        if name.endswith("review"):
+            short = type_field_short(sheet, page, view)
+            assert (short == []) == narrow(view), (name, short)
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_a_plans_card_inside_another_gives_its_rows_the_outer_cards_width(view: View) -> None:
+    sheet = read_sheet(stylesheet())
+    assert (inner_card_insets(sheet, view) == []) == narrow(view)
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_review_assignments_save_button_breaks_a_long_word(
+    note_pages: dict[str, str], view: View
+) -> None:
+    sheet = read_sheet(stylesheet())
+    for name, page in note_pages.items():
+        if name.endswith("review"):
+            found = elements_of(page)
+            (row,) = [one for one in found if "review-actions" in one.classes]
+            buttons = [one for one in found if one.tag == "button" and one.within(row)]
+            assert len(buttons) == 2
+            assert whole_words(sheet, buttons, view) == [], name
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_ways_back_one_under_another_never_share_a_press_area(
+    note_pages: dict[str, str], text_pages: dict[str, str], view: View
+) -> None:
+    """A note's page, its page for adding details (three ways back), and a form that couldn't
+    be read, whose ways back sit in a box of their own and keep their press areas inside
+    their lines."""
+    css = stylesheet()
+    pairs = 0
+    for name, page in (note_pages | text_pages).items():
+        apart = ways_back_apart(css, page, view)
+        pairs += len(apart)
+        assert all(one > 0 for one in apart), (name, apart)
+    assert pairs >= 9
+
+
+# ------------------------------------------------------------- and each of these fails when broken
+
+
+ADDING_NOTE_RULE = """  .panel.adding-note {
+    margin-inline: min(0px, 4vw - 1.25rem);
+    max-width: none;
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+  }"""
+ADDING_FIELDS_RULE = """  .adding-note input,
+  .adding-note textarea {
+    padding-inline: min(0.85rem, 2vw);
+  }"""
+ADDING_SELECT_RULE = """  .adding-note select {
+    padding-inline: clamp(0px, 4vw - 0.4rem, 0.85rem);
+  }"""
+TYPE_CHOICE_RULE = """  .review-week .type-choice {
+    margin-inline: calc(-1.2rem - 1px);
+    max-width: none;
+  }"""
+INNER_CARD_RULE = """  .panel > .draft {
+    padding-inline: 0;"""
+REVIEW_BUTTONS_RULE = """.review-actions button {
+  overflow-wrap: anywhere;
+}"""
+WAYS_BACK_RULE = """main > .return + .return {
+  margin-top: 1.75rem;
+}"""
+
+
+@pytest.mark.parametrize(
+    ("was", "becomes"),
+    [
+        pytest.param(ADDING_NOTE_RULE, "", id="card-keeps-its-look"),
+        pytest.param(
+            ADDING_NOTE_RULE, ADDING_NOTE_RULE.replace("4vw", "2vw"), id="card-reaches-further"
+        ),
+        pytest.param(
+            ADDING_NOTE_RULE,
+            ADDING_NOTE_RULE.replace("    padding-inline: 0;\n", ""),
+            id="card-keeps-its-padding",
+        ),
+        pytest.param(
+            ADDING_NOTE_RULE, ADDING_NOTE_RULE.replace("    border: 0;\n", ""), id="card-edge"
+        ),
+        pytest.param(ADDING_FIELDS_RULE, "", id="fields-padded"),
+        pytest.param(ADDING_SELECT_RULE, "", id="selects-padded"),
+        pytest.param(
+            ADDING_NOTE_RULE, ADDING_NOTE_RULE.replace("    max-width: none;\n", ""), id="held"
+        ),
+    ],
+)
+def test_the_details_card_check_fails_when_the_card_or_its_fields_keep_their_insets(
+    rendered: dict[str, str], note_pages: dict[str, str], was: str, becomes: str
+) -> None:
+    sheet = broken(was, becomes)
+    model = card_with_elements(rendered["open, family"], "add assignments")
+    page = note_pages["open, student tree, adding"]
+    assert sits_apart(sheet, card_with_elements(page, "adding"), model, View(320, 16, 32))
+
+
+@pytest.mark.parametrize(
+    "becomes",
+    [
+        pytest.param("", id="no-reach"),
+        pytest.param(TYPE_CHOICE_RULE.replace("1.2rem", "1rem"), id="short-reach"),
+        pytest.param(TYPE_CHOICE_RULE.replace(" - 1px", ""), id="edge-left-out"),
+        pytest.param(TYPE_CHOICE_RULE.replace("    max-width: none;\n", ""), id="held"),
+    ],
+)
+def test_the_type_field_check_fails_when_the_field_stops_short(
+    note_pages: dict[str, str], becomes: str
+) -> None:
+    sheet = broken(TYPE_CHOICE_RULE, becomes)
+    assert type_field_short(sheet, note_pages["open, review"], View(320, 16, 32))
+
+
+@pytest.mark.parametrize(
+    "becomes",
+    [
+        pytest.param("  .panel > .note {\n    padding-inline: 0;", id="other-element"),
+        pytest.param("  .panel > .draft {\n    padding-inline: 1px;", id="padded"),
+    ],
+)
+def test_the_inner_card_check_fails_when_the_plans_card_keeps_its_insets(becomes: str) -> None:
+    sheet = broken(INNER_CARD_RULE, becomes)
+    assert inner_card_insets(sheet, View(320, 16, 32))
+
+
+@pytest.mark.parametrize(
+    "becomes",
+    [
+        pytest.param("", id="no-rule"),
+        pytest.param(WAYS_BACK_RULE.replace("1.75rem", "1.6rem"), id="touching"),
+        pytest.param(WAYS_BACK_RULE.replace("main > ", ".x > "), id="elsewhere"),
+    ],
+)
+def test_the_ways_back_check_fails_when_press_areas_meet(
+    note_pages: dict[str, str], becomes: str
+) -> None:
+    css = stylesheet()
+    assert css.count(WAYS_BACK_RULE) == 1
+    css = css.replace(WAYS_BACK_RULE, becomes)
+    assert min(ways_back_apart(css, note_pages["her, note"], View(320, 16, 32))) <= 0
