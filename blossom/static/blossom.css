@@ -1283,6 +1283,14 @@ form.inline button {
     padding-inline: clamp(0px, 4vw - 0.4rem, 0.85rem);
   }
 
+  /* A class's name can be longer than a whole line. Where the browser offers the
+     customizable select, its chosen value wraps onto as many lines as it needs and breaks a
+     long word where it must; elsewhere the select stays one line. */
+  .adding-note select {
+    appearance: base-select;
+    overflow-wrap: anywhere;
+  }
+
   /* On Review assignments, the Type field reaches across its card's side padding, so the
      chosen type shows whole. */
   .review-week .type-choice {
@@ -1598,6 +1606,12 @@ pre.example {
 
 .review-actions {
   align-items: center;
+}
+
+/* Cancel import's press area reaches 0.8rem above its line, so it sits far enough under the
+   buttons that the two never meet. */
+.review-actions + .return {
+  margin-top: 1rem;
 }
 
 .cancel {
