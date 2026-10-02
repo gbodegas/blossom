@@ -34,6 +34,7 @@ import math
 import pathlib
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 import pytest
@@ -141,6 +142,7 @@ WATCHED = frozenset(
     {
         "align-items",
         "align-self",
+        "appearance",
         "box-sizing",
         "display",
         "flex-direction",
@@ -3556,3 +3558,177 @@ def test_the_ways_back_check_fails_when_press_areas_meet(
     assert css.count(WAYS_BACK_RULE) == 1
     css = css.replace(WAYS_BACK_RULE, becomes)
     assert min(ways_back_apart(css, note_pages["her, note"], View(320, 16, 32))) <= 0
+
+
+# ------------------------------------------------------------- a long class name and the way out
+
+
+CLASS_SELECTS_RULE = """  .adding-note select {
+    appearance: base-select;
+    overflow-wrap: anywhere;
+  }"""
+WAY_OUT_RULE = """.review-actions + .return {
+  margin-top: 1rem;
+}"""
+
+
+def selects_on_one_line(sheet: Sheet, page: str, view: View) -> list[str]:
+    """Each select on a note's details card that keeps a browser's one-line select on a narrow
+    ``view``, where a class's name can be wider than the whole line, or that draws itself
+    otherwise on a wider ``view``, where the ordinary select stays. On a narrow screen each
+    is the customizable select, whose chosen value wraps and breaks a long word."""
+    found = elements_of(page)
+    card = adding_card_of(found)
+    selects = [one for one in found if one.tag == "select" and one.within(card)]
+    assert [one.attributes.get("name") for one in selects] == ["course_choice", "kind"]
+    kept = []
+    for one in selects:
+        name = one.attributes["name"]
+        drawn = value_of(sheet, one, "appearance", view)
+        if not narrow(view):
+            if drawn is not None:
+                kept.append(f"{name} drawn as {drawn}")
+            continue
+        if drawn != "base-select":
+            kept.append(f"{name} drawn as {drawn}")
+        if value_of(sheet, one, "overflow-wrap", view) != "anywhere":
+            kept.append(f"{name} keeps a long word whole")
+        if value_of(sheet, one, "white-space", view) not in (None, "normal"):
+            kept.append(f"{name} white-space")
+        if value_of(sheet, one, "text-wrap-mode", view) not in (None, "wrap"):
+            kept.append(f"{name} text-wrap-mode")
+    return kept
+
+
+def way_out_apart(css: str, page: str, view: View) -> float:
+    """How far apart, in pixels, Review assignments' buttons and the Cancel import link's press
+    area are on ``view``: the space between the buttons' row and the link's line less what
+    the link's area reaches above its line. At or below zero, they meet."""
+    found = elements_of(page)
+    (row,) = [one for one in found if "review-actions" in one.classes]
+    (way,) = [one for one in found if one.parent is row.parent and one.position == row.position + 1]
+    assert way.tag == "p"
+    assert "return" in way.classes
+    (link,) = [one for one in found if one.tag == "a" and one.parent is way]
+    gap = max(
+        signed_px(declared_side(css, row, found, "margin", "bottom", view) or "0", view),
+        signed_px(declared_side(css, way, found, "margin", "top", view) or "0", view),
+    )
+    reach = max(
+        0.0, -signed_px(declared_side(css, link, found, "margin", "top", view) or "0", view)
+    )
+    return round(gap - reach, 6)
+
+
+def test_the_only_select_of_classes_is_on_a_notes_details_card(
+    rendered: dict[str, str], note_pages: dict[str, str], text_pages: dict[str, str]
+) -> None:
+    """Every select on these pages chooses a kind, apart from the one on a note's details
+    card that chooses a class, so that card's rule reaches every list of classes."""
+    names = set()
+    classes = 0
+    for name, page in (rendered | note_pages | text_pages).items():
+        found = elements_of(page)
+        for one in found:
+            if one.tag != "select":
+                continue
+            given = one.attributes.get("name", "")
+            names.add(given.split("-")[0])
+            if given == "course_choice":
+                classes += 1
+                assert any("adding-note" in above.classes for above in one.ancestors()), name
+    assert names == {"course_choice", "kind"}
+    assert classes == 4
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_a_long_class_name_wraps_in_its_select_on_a_narrow_screen(
+    note_pages: dict[str, str], view: View
+) -> None:
+    """A class's name may be up to 60 characters, far wider than a phone's line with large
+    text, and a browser's own select shows one line cut at its edge. On a narrow screen the
+    selects on a note's details card are drawn as the customizable select, whose chosen
+    value wraps onto as many lines as it needs; elsewhere they stay as they are."""
+    sheet = read_sheet(stylesheet())
+    adding = {name: page for name, page in note_pages.items() if name.endswith("adding")}
+    assert len(adding) == 4
+    for name, page in adding.items():
+        assert selects_on_one_line(sheet, page, view) == [], name
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_review_assignments_buttons_and_way_out_never_share_a_press_area(
+    note_pages: dict[str, str], view: View
+) -> None:
+    """Cancel import's press area reaches 0.8rem above its line, so it sits far enough under
+    the Save and Edit buttons that the two never meet."""
+    css = stylesheet()
+    reviews = {name: page for name, page in note_pages.items() if name.endswith("review")}
+    assert len(reviews) == 2
+    for name, page in reviews.items():
+        assert way_out_apart(css, page, view) > 0, name
+
+
+@pytest.mark.parametrize(
+    ("css", "view"),
+    [
+        pytest.param(
+            lambda css: css.replace(CLASS_SELECTS_RULE, ""), View(320, 16, 32), id="no-rule"
+        ),
+        pytest.param(
+            lambda css: css.replace(
+                CLASS_SELECTS_RULE, CLASS_SELECTS_RULE.replace("base-select", "auto")
+            ),
+            View(320, 16, 32),
+            id="native",
+        ),
+        pytest.param(
+            lambda css: css.replace(
+                CLASS_SELECTS_RULE, CLASS_SELECTS_RULE.replace("anywhere", "normal")
+            ),
+            View(320, 32, 32),
+            id="long-word-kept",
+        ),
+        pytest.param(
+            lambda css: css.replace(
+                CLASS_SELECTS_RULE, CLASS_SELECTS_RULE.replace("select {", "input {")
+            ),
+            View(320, 16, 16),
+            id="elsewhere",
+        ),
+        pytest.param(
+            lambda css: css + "\n.adding-note select { white-space: nowrap; }",
+            View(320, 16, 32),
+            id="nowrap",
+        ),
+        pytest.param(
+            lambda css: css.replace(CLASS_SELECTS_RULE, "") + "\n" + CLASS_SELECTS_RULE,
+            View(1440, 16, 16),
+            id="every-width",
+        ),
+    ],
+)
+def test_the_class_select_check_fails_when_a_select_stays_on_one_line(
+    note_pages: dict[str, str], css: Callable[[str], str], view: View
+) -> None:
+    written = stylesheet()
+    assert written.count(CLASS_SELECTS_RULE) == 1
+    sheet = read_sheet(css(written))
+    assert selects_on_one_line(sheet, note_pages["parent, parent tree, adding"], view)
+
+
+@pytest.mark.parametrize(
+    "becomes",
+    [
+        pytest.param("", id="no-rule"),
+        pytest.param(WAY_OUT_RULE.replace("1rem", "0.8rem"), id="touching"),
+        pytest.param(WAY_OUT_RULE.replace(".review-actions", ".actions.x"), id="elsewhere"),
+    ],
+)
+def test_the_way_out_check_fails_when_press_areas_meet(
+    note_pages: dict[str, str], becomes: str
+) -> None:
+    css = stylesheet()
+    assert css.count(WAY_OUT_RULE) == 1
+    css = css.replace(WAY_OUT_RULE, becomes)
+    assert way_out_apart(css, note_pages["parent, review"], View(320, 16, 32)) <= 0
