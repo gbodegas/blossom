@@ -2666,21 +2666,45 @@ def decisions_widened(sheet: Sheet, page: str, view: View) -> list[str]:
     return widened
 
 
-FOCUSED = re.compile(r":focus(?:-visible)?(?![\w-])")
+FOCUSED = re.compile(r"(?<!:):(focus(?:-visible|-within)?)(?![\w-])", re.IGNORECASE)
+"""A focus pseudo-class, in any case, as a browser reads it. After `::` it names a
+pseudo-element, which never matches."""
+HELD = {state: f"{state}-held" for state in ("focus", "focus-visible", "focus-within")}
+"""The attribute that stands in for each focus pseudo-class while an element has focus."""
+
+
+def holding_focus(element: Element, *, within: bool = False) -> Element:
+    """A copy of ``element`` and the elements above it as they are while it has the
+    keyboard's focus: each copy above it carries the `:focus-within` stand-in, and the copy
+    of ``element`` all three. A page that already carries a stand-in is refused."""
+    if not element.attributes.keys().isdisjoint(HELD.values()):
+        raise UnreadCss(element.tag)
+    above = None if element.parent is None else holding_focus(element.parent, within=True)
+    held = [HELD["focus-within"]] if within else list(HELD.values())
+    return replace(element, attributes=element.attributes | dict.fromkeys(held, ""), parent=above)
+
+
+def focused_selector(head: str) -> Selector:
+    """``head``, as `style_rules` gives it, with each focus pseudo-class read as its stand-in
+    attribute, which weighs as much. A selector that names a stand-in is refused."""
+    if not {one.lower() for one in re.findall(r"\[([\w-]+)", head)}.isdisjoint(HELD.values()):
+        raise UnreadCss(head)
+    return selector(unshielded(FOCUSED.sub(lambda state: f"[{HELD[state[1].lower()]}]", head)))
 
 
 def focused_value(css: str, element: Element, name: str, view: View) -> str | None:
     """The value the cascade gives ``name`` on ``element`` while it has the keyboard's
-    focus: the sheet's rules read with `:focus` and `:focus-visible` holding, through the
-    same selectors and weights as a page at rest."""
+    focus: `:focus` and `:focus-visible` hold on ``element`` alone, `:focus-within` on it and
+    every element above it, and each keeps the weight of a pseudo-class."""
+    focused = holding_focus(element)
     rules = [
-        Rule(selector(FOCUSED.sub("", head)), value.lower(), style.order, style.media, important)
+        Rule(focused_selector(head), value.lower(), style.order, style.media, important)
         for style in style_rules(css)
         for head in style.selectors.split(",")
         for named, value, important in style.declarations
         if named == name
     ]
-    found = winner([rule for rule in rules if rule.chosen.matches(element)], view)
+    found = winner([rule for rule in rules if rule.chosen.matches(focused)], view)
     return None if found is None else found.value
 
 
@@ -2773,6 +2797,80 @@ def test_the_skip_links_focus_outline_stays_on_the_screen(
     css = stylesheet()
     for name, page in (rendered | text_pages).items():
         assert min(skip_outline_room(css, page, view)) >= 0, name
+
+
+@pytest.mark.parametrize(
+    ("first", "rule", "name", "value"),
+    [
+        pytest.param(False, "a.skip { left: -999px; }", "left", "1rem", id="type-and-class"),
+        pytest.param(True, ".skip.skip { left: 2rem; }", "left", "1rem", id="two-classes-first"),
+        pytest.param(False, "a.skip.skip { left: 2rem; }", "left", "2rem", id="one-over"),
+        pytest.param(False, "body:focus .skip { left: -999px; }", "left", "1rem", id="parent"),
+        pytest.param(
+            False, "body:focus-visible > .skip { left: -999px; }", "left", "1rem", id="visible"
+        ),
+        pytest.param(False, ".skip:not(:focus) { left: -999px; }", "left", "1rem", id="not"),
+        pytest.param(False, "body:not(:focus) .skip { left: 2rem; }", "left", "2rem", id="not-up"),
+        pytest.param(False, ".skip:FOCUS { left: 2rem; }", "left", "2rem", id="any-case"),
+        pytest.param(
+            False, ".skip:Focus-Visible { left: 2rem; }", "left", "2rem", id="visible-case"
+        ),
+        pytest.param(False, ".skip:focus-within { left: 2rem; }", "left", "2rem", id="within"),
+        pytest.param(
+            False, "body:focus-within .skip { left: 2rem; }", "left", "2rem", id="within-up"
+        ),
+        pytest.param(
+            False, "html:focus-within > body > a { left: 2rem; }", "left", "1rem", id="within-root"
+        ),
+        pytest.param(
+            False,
+            "body > .skip:first-child:focus { left: 2rem; }",
+            "left",
+            "2rem",
+            id="first-child",
+        ),
+        pytest.param(False, ".skip::focus { left: 2rem; }", "left", "1rem", id="pseudo-element"),
+        pytest.param(
+            False, '.skip:not([title=":focus"]) { left: 2rem; }', "left", "2rem", id="quoted"
+        ),
+        pytest.param(
+            True,
+            "a.skip { outline: none; }",
+            "outline",
+            "3px solid var(--blue-action)",
+            id="outline-first",
+        ),
+    ],
+)
+def test_the_focused_skip_link_takes_the_value_a_browser_gives_it(
+    rendered: dict[str, str], first: bool, rule: str, name: str, value: str
+) -> None:
+    """A rule added to the stylesheet, and the value Edge gives the link reached by Tab."""
+    css = f"{rule}\n{stylesheet()}" if first else f"{stylesheet()}\n{rule}\n"
+    for page_name, page in rendered.items():
+        (skip,) = [one for one in elements_of(page) if one.tag == "a" and "skip" in one.classes]
+        assert focused_value(css, skip, name, View(320)) == value, page_name
+
+
+@pytest.mark.parametrize(
+    ("rule", "carried"),
+    [
+        pytest.param(".skip:focusx { left: 2rem; }", ("", ""), id="unknown-state"),
+        pytest.param(".skip[focus-held] { left: 2rem; }", ("", ""), id="named"),
+        pytest.param("a[Focus-Within-Held] { left: 2rem; }", ("", ""), id="named-any-case"),
+        pytest.param("", ('<a class="skip"', '<a class="skip" focus-visible-held'), id="link"),
+        pytest.param("", ("<body", "<body focus-within-held"), id="above-the-link"),
+    ],
+)
+def test_the_focused_skip_link_is_refused_where_its_stand_ins_could_be_misread(
+    rendered: dict[str, str], rule: str, carried: tuple[str, str]
+) -> None:
+    css = f"{stylesheet()}\n{rule}\n"
+    for page in rendered.values():
+        shown = page.replace(*carried, 1)
+        (skip,) = [one for one in elements_of(shown) if one.tag == "a" and "skip" in one.classes]
+        with pytest.raises(UnreadCss):
+            focused_value(css, skip, "left", View(320))
 
 
 # ------------------------------------------------------------- and each of these fails when broken
