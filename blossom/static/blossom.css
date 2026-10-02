@@ -221,6 +221,15 @@ h3 {
   margin: 0.25rem 0 0.35rem;
 }
 
+/* A heading breaks a word only where the word is wider than its line, as on a phone with
+   large text or a reader's wider letter spacing, so the page never scrolls sideways; a
+   heading that fits its line is as it was. */
+h1,
+h2,
+h3 {
+  overflow-wrap: anywhere;
+}
+
 section {
   margin-block: 2rem;
 }
@@ -531,6 +540,12 @@ details.plan .body {
 
 .return {
   margin: 0.5rem 0 1.5rem;
+}
+
+/* Ways back one under another sit far enough apart that the 44 pixels each link is given to
+   press, 0.8rem above and below its line, never meet. */
+main > .return + .return {
+  margin-top: 1.75rem;
 }
 
 /* A form that is making a plan says so, and its button waits with it. The
@@ -911,6 +926,11 @@ button[disabled] {
   margin-block: 0.75rem 0;
 }
 
+/* A note in a fold can name a setting as one long word, which breaks where it must. */
+.panel-fold .note {
+  overflow-wrap: anywhere;
+}
+
 /* A run's explanation names homework by course and title, and a title can be one
    long word. The cards in a fold break it where they must, so the page never
    scrolls sideways. */
@@ -955,8 +975,11 @@ button[disabled] {
   overflow-wrap: anywhere;
 }
 
+/* School text shown as the portal gives it keeps its lines, and breaks a run of characters
+   wider than its box, such as a date set against a word, so it reads without scrolling. */
 pre.body {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   font-family: var(--font-body);
   font-size: 0.98rem;
   line-height: 1.55;
@@ -977,9 +1000,17 @@ pre.body {
   align-items: end;
 }
 
+/* A form asking for a decision is one column of controls as wide as the form. Kept to one
+   line, the column never takes the width of its widest control, so a field's own width
+   can't widen it past a phone's screen, and a word in a button wider than its line breaks. */
 .decision {
   flex-direction: column;
+  flex-wrap: nowrap;
   align-items: stretch;
+}
+
+.decision button {
+  overflow-wrap: anywhere;
 }
 
 label {
@@ -1224,6 +1255,59 @@ form.inline button {
   #add-assignments textarea {
     padding-inline: min(0.85rem, 2vw);
   }
+
+  /* A note's details hold a class, a kind and a due date in fields that show their value only
+     when wide enough for it, so on a narrow screen the card sits bare and reaches into the
+     page's side margin as Add assignments does, and its fields keep their side padding to a
+     share of the screen's width. */
+  .panel.adding-note {
+    margin-inline: min(0px, 4vw - 1.25rem);
+    max-width: none;
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .adding-note input,
+  .adding-note textarea {
+    padding-inline: min(0.85rem, 2vw);
+  }
+
+  /* Its longest choice, "Choose a class", with large text and a reader's letter spacing
+     fills the whole width, so a select's side padding gives way first: Add assignments'
+     share with ordinary text, none once the text is doubled. */
+  .adding-note select {
+    padding-inline: clamp(0px, 4vw - 0.4rem, 0.85rem);
+  }
+
+  /* On Review assignments, the Type field reaches across its card's side padding, so the
+     chosen type shows whole. */
+  .review-week .type-choice {
+    margin-inline: calc(-1.2rem - 1px);
+    max-width: none;
+  }
+
+  .type-choice select {
+    padding-inline: min(0.85rem, 2vw);
+  }
+
+  /* A plan's card inside another card gives the plan's rows the outer card's width. */
+  .panel > .draft {
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+}
+
+/* On Review assignments, the save button's words break where they must. */
+.review-actions button {
+  overflow-wrap: anywhere;
 }
 
 /* ------------------------------------------------------------- the way in */
@@ -1336,11 +1420,14 @@ select[aria-invalid="true"] {
   border-width: 2px;
 }
 
-/* A link for the keyboard, before everything else, shown only when it has focus. */
+/* A link for the keyboard, before everything else, shown only when it has focus. It is never
+   wider than the screen less its inset on each side, so on a phone with large text its words
+   wrap and its focus outline stays on the screen. */
 .skip {
   position: absolute;
   left: -999px;
   top: 0.5rem;
+  max-width: calc(100% - 2rem);
   z-index: 10;
   padding: 0.6rem 1rem;
   border-radius: var(--pill);

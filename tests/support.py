@@ -1802,6 +1802,19 @@ class UnreadCss(AssertionError):
     since a guess either way could pass a page that some screen draws differently."""
 
 
+CSS_SPACES = " \t\n\r\f"
+"""The characters a browser reads as a space in a stylesheet."""
+
+
+def plain_ascii(text: str) -> str:
+    """``text``, when it holds only printable ASCII and ``CSS_SPACES``. Anything else is
+    refused: Python reads some of it as a space, a digit or a letter of another case where a
+    browser reads none of these."""
+    if any(not (" " <= character <= "~" or character in CSS_SPACES) for character in text):
+        raise UnreadCss(text)
+    return text
+
+
 @dataclasses.dataclass(frozen=True)
 class View:
     """One reader's screen: its width, the browser's text size (what a media query's `rem`
@@ -1948,6 +1961,7 @@ def compound(text: str) -> Compound:
     """One compound selector. A pseudo-element, or a state a page at rest is never in, never
     matches; a pseudo-class other than `:root`, `:link`, `:visited`, `:first-child`,
     `:nth-child()` of a number, and `:not()` is refused."""
+    plain_ascii(text)
     tag: str | None = None
     ids: list[str] = []
     classes: list[str] = []
@@ -2023,10 +2037,11 @@ class Selector:
 
 def selector(text: str) -> Selector:
     """One complex selector, joined by spaces and ``>``; a sibling combinator is refused, and
-    so is what a browser drops: an empty selector, or a ``>`` with no compound on a side."""
+    so is what a browser drops: an empty selector, or a ``>`` with no compound on a side. A
+    selector taken from `style_rules` is passed through `unshielded` first."""
     parts: list[tuple[str, Compound]] = []
     joiner = " "
-    for piece in re.findall(r"[>+~]|[^\s>+~]+", unshielded(text).strip()):
+    for piece in re.findall(r"[>+~]|[^\s>+~]+", plain_ascii(text).strip()):
         if piece in ("+", "~"):
             raise UnreadCss(text)
         if piece == ">":
@@ -2045,11 +2060,14 @@ SHIELD = {";": "", "{": "", "}": "", ",": "", ":": ""}
 """Characters that end or split a part of a stylesheet, as they stand inside a string or an
 unquoted ``url()``, where they are only text."""
 
+STAND_INS = frozenset(SHIELD.values())
+
 
 def shielded(css: str) -> str:
     """``css`` with each comment a space, as a browser splits words at one, and each
     character of ``SHIELD`` inside a quoted string or an unquoted ``url()`` stood in for, so
-    a ``/*`` or ``;`` there is read as text."""
+    a ``/*`` or ``;`` there is read as text. A stand-in written outside a comment is refused,
+    since it would be read as the character it stands in for."""
     kept: list[str] = []
     index = 0
     while index < len(css):
@@ -2065,6 +2083,8 @@ def shielded(css: str) -> str:
             and css[index + 4 :].lstrip()[:1] not in ("'", '"')
         )
         if quote is None and not url:
+            if css[index] in STAND_INS:
+                raise UnreadCss(css)
             kept.append(css[index])
             index += 1
             continue
@@ -2072,6 +2092,8 @@ def shielded(css: str) -> str:
         while end < len(css) and css[end] != closing:
             end += 2 if css[end] == "\\" else 1
         end = min(end + 1, len(css))
+        if STAND_INS.intersection(css[index:end]):
+            raise UnreadCss(css)
         kept.append("".join(SHIELD.get(character, character) for character in css[index:end]))
         index = end
     return "".join(kept)
@@ -2118,16 +2140,18 @@ class StyleRule:
 
 def style_rules(css: str) -> list[StyleRule]:
     """Every style rule of ``css``, in source order. Font faces and keyframes hold no rules
-    for elements and are passed over; a media query inside another, any other at-rule, and
-    a rule nested inside another are refused."""
+    for elements and are passed over; a media query inside another, any other at-rule, a
+    rule nested inside another, and a character outside a comment that `plain_ascii` refuses
+    are refused."""
     found: list[StyleRule] = []
 
     def read(part: str, media: str | None) -> None:
         for before, inside in blocks(part):
-            at = before.lower()
-            if at.startswith(("@font-face", "@keyframes")):
+            keyword = re.match(r"@[\w-]*", before)
+            at = keyword.group().lower() if keyword else ""
+            if at in ("@font-face", "@keyframes"):
                 continue
-            if at.startswith("@media"):
+            if at == "@media":
                 if media is not None:
                     msg = f"a media query inside {media}"
                     raise UnreadCss(msg)
@@ -2145,7 +2169,9 @@ def style_rules(css: str) -> list[StyleRule]:
                     declared.append((named, unshielded(value), important > 0))
             found.append(StyleRule(before, tuple(declared), len(found) + 1, media))
 
-    read(shielded(css), None)
+    shown = shielded(css)
+    plain_ascii(unshielded(shown))
+    read(shown, None)
     return found
 
 
@@ -2182,34 +2208,52 @@ def winner(rules: Iterable[Rule], view: View) -> Rule | None:
 
 def media_length(value: str, view: View) -> float:
     """A length in a media query, in pixels: its `rem` and `em` are the browser's text size."""
-    found = re.fullmatch(r"(\d*\.?\d+)(px|rem|em)", value.strip().lower())
+    found = re.fullmatch(r"(\d*\.?\d+)(px|rem|em)", plain_ascii(value).strip().lower())
     if found is None:
         raise UnreadCss(value)
     return float(found.group(1)) * (1 if found.group(2) == "px" else view.browser_text)
 
 
 def holds(condition: str | None, view: View) -> bool:
-    """Whether a media condition holds on ``view``. A rule outside any media query holds
-    everywhere; a list holds when any of its queries does."""
-    if condition is None:
+    """Whether a media condition holds on ``view``. A rule outside any media query, or under
+    an empty list, holds everywhere; a list holds when any of its queries does."""
+    if condition is None or not plain_ascii(condition).strip():
         return True
-    return any(one_query_holds(query.strip(), view) for query in condition.split(","))
+    queries = condition.split(",")
+    return any(one_query_holds(query.strip(), view) for query in queries)
+
+
+QUERY_PARTS = re.compile(r"[^\s()]+\(?|\([^()]*\)|[()]")
+"""The parts of a media query: a word, with the bracket right after it that makes it the
+name of a function, a feature in brackets, or a bracket on its own."""
+
+QUERY_WORDS = {"only": "o", "and": "a", "screen": "t", "all": "t", "print": "t"}
+
+QUERY_FORMS = re.compile(r"o?t(af)*|f(af)*")
+"""A media query by the kind of each part, as a browser reads one: an optional `only` and a
+media type, then features each after an `and`; or features alone, joined by `and`."""
 
 
 def one_query_holds(query: str, view: View) -> bool:
     """Whether one media query holds on ``view``. Its words, features, values and units are
-    read in any case, as a browser reads them."""
-    read = query.lower()
-    result = True
-    for word in re.sub(r"\([^)]*\)", " ", read).split():
-        if word == "print":
-            result = False
-        elif word not in ("and", "only", "screen", "all"):
-            raise UnreadCss(query)
-    features = re.findall(r"\(\s*([\w-]+)\s*:\s*([^)]+?)\s*\)", read)
-    if len(features) != read.count("("):
+    read in any case, as a browser reads them, and a query in a form a browser drops, an
+    empty one included, is refused."""
+    read = plain_ascii(query).lower()
+    parts = QUERY_PARTS.findall(read)
+    kinds = "".join(
+        "f" if len(part) > 1 and part.startswith("(") else QUERY_WORDS.get(part, "?")
+        for part in parts
+    )
+    if not QUERY_FORMS.fullmatch(kinds):
         raise UnreadCss(query)
-    for name, value in features:
+    result = "print" not in parts
+    for part in parts:
+        if part in QUERY_WORDS:
+            continue
+        feature = re.fullmatch(r"\(\s*([\w-]+)\s*:\s*([^)]+?)\s*\)", part)
+        if feature is None:
+            raise UnreadCss(query)
+        name, value = feature.groups()
         if name == "min-width":
             result = result and view.width >= media_length(value, view)
         elif name == "max-width":
