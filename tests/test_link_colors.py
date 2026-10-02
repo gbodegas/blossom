@@ -400,6 +400,24 @@ def test_the_resolver_reads_no_other_letter_or_digit_as_ascii() -> None:
         ("a\\\nurl(a b)", "#111111"),
         ("#url(a b)", None),
         ("@url(a b)", None),
+        ("u\\72l (a b)", None),
+        ("f([) !x])", "#111111"),
+        ("[(] !x)]", "#111111"),
+        ("f([)])", "#111111"),
+        ("[f(]])]", "#111111"),
+        ("a) b", "#111111"),
+        ("a] b", "#111111"),
+        ("(a] b)", "#111111"),
+        (") f(!)", "#111111"),
+        ("url(a)) b", "#111111"),
+        ("f(g([h(])]))", "#111111"),
+        ("f([a])", None),
+        ("f(\\))", None),
+        ("[\\)]", None),
+        ('f(")")', None),
+        ("url(a\\))", None),
+        ('a\\"b', None),
+        ("a\\'b", None),
     ],
 )
 def test_the_resolver_drops_a_custom_property_a_browser_drops(tail: str, token: str | None) -> None:
@@ -426,6 +444,30 @@ def test_the_resolver_refuses_an_escape_that_may_join_a_url(tail: str) -> None:
     """Edge reads `\\61 url(a b)` as a function named `aurl`, the escape joining the name."""
     with pytest.raises(UnreadCss):
         read_sheet(f":root {{ --x: {tail}; }}")
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        ":root { --x: #111111; } :root { --x: u\\72l(a b); }",
+        ":root { --x: #111111; } :root { --x: \\75rl(a b); }",
+        ":root { --x: #111111; } :root { --x: ur\\6c (a b); }",
+        ":root { --x: #111111; } :root { --x: \\55RL(a b); }",
+        ":root { --x: #111111; } :root { --x: uR\\4c (a b); }",
+        ":root { --x: #111111; } :root { --x: \\75 \\72 \\6c (a b); }",
+        ":root { --x: #111111; } :root { --x: \\u\\r\\l(a b); }",
+        ":root { --x: #111111; } :root { --x: u\\72l(a); }",
+        ':root { --x: #111111; } :root { --x: u\\72l("a b"); }',
+        ":root { --x: #111111; } :root { --x: xu\\72l(a b); }",
+        ":root { --x: #111111; } :root { --x: f(u\\72l(a b)); }",
+        ":root { --x: #111111; --x: u\\72l(a b",
+    ],
+)
+def test_the_resolver_refuses_a_url_name_written_with_an_escape(css: str) -> None:
+    """Edge reads `u\\72l(a b)` as a `url()` it cannot read and drops it, as it drops
+    `url(a b)`."""
+    with pytest.raises(UnreadCss):
+        read_sheet(css)
 
 
 @pytest.mark.parametrize(

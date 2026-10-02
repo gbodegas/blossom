@@ -1314,6 +1314,7 @@ def test_the_resolver_refuses_a_stand_in_written_outside_a_comment() -> None:
             f"p{stand_in}first-child {{ flex-wrap: wrap; }}",
             f"p {{ flex-wrap: wrap{stand_in} }}",
             f'p {{ content: "{stand_in}"; flex-wrap: wrap; }}',
+            f"p {{ --x: a\\{stand_in}b; flex-wrap: wrap; }}",
         ):
             with pytest.raises(UnreadCss):
                 read_sheet(css)
@@ -1525,6 +1526,231 @@ def test_the_resolver_drops_a_bang_after_a_closing_bracket_of_the_other_kind(
     """Edge drops a custom property holding a closing bracket of the other kind, `!` and all."""
     (rule,) = style_rules(f"p {{ {declaration}; flex-wrap: wrap; }}")
     assert rule.declarations == (*((read,) if read else ()), ("flex-wrap", "wrap", False))
+
+
+@pytest.mark.parametrize(
+    ("declaration", "read"),
+    [
+        pytest.param("--x: f([) !x])", None, id="nested-with-bang"),
+        pytest.param("--x: [(] !x)]", None, id="square-nested-with-bang"),
+        pytest.param("--x: f([)])", None, id="nested"),
+        pytest.param("--x: [f(]])]", None, id="nested-square"),
+        pytest.param("--x: f(g([h(])]))", None, id="deep"),
+        pytest.param("--x: a) b", None, id="stray-paren"),
+        pytest.param("--x: a] b", None, id="stray-square"),
+        pytest.param("--x: (a] b)", None, id="paren-then-square"),
+        pytest.param("--x: ) f(!)", None, id="stray-then-bang"),
+        pytest.param("--x: url(a)) b", None, id="after-a-url"),
+        pytest.param("flex-wrap: wrap)", None, id="flex-wrap"),
+        pytest.param("flex-wrap: f([)]) wrap", None, id="flex-wrap-nested"),
+        pytest.param("width: calc(2px))", None, id="width"),
+        pytest.param("--x: f([a])", ("--x", "f([a])", False), id="matched"),
+        pytest.param("--x: f(\\))", ("--x", "f(\\))", False), id="escaped"),
+        pytest.param("--x: [\\)]", ("--x", "[\\)]", False), id="escaped-in-square"),
+        pytest.param("--x: f(\\29 )", ("--x", "f(\\29 )", False), id="hex"),
+        pytest.param('--x: f(")")', ("--x", 'f(")")', False), id="string"),
+        pytest.param("--x: url(a\\))", ("--x", "url(a\\))", False), id="url"),
+        pytest.param("--x: f(/* ] */)", ("--x", "f( )", False), id="comment"),
+    ],
+)
+def test_the_resolver_drops_a_closing_bracket_that_closes_nothing(
+    declaration: str, read: tuple[str, str, bool] | None
+) -> None:
+    """Edge drops a declaration with a closing bracket that closes no open bracket, nested or
+    not, `!` or none."""
+    (rule,) = style_rules(f"p {{ {declaration}; color: #111111; }}")
+    assert rule.declarations == (*((read,) if read else ()), ("color", "#111111", False))
+
+
+@pytest.mark.parametrize(
+    ("declaration", "read"),
+    [
+        pytest.param("--x: f([)", None, id="nested"),
+        pytest.param("--x: f(] !x", None, id="paren-then-square"),
+        pytest.param("--x: f([", ("--x", "f([", False), id="open"),
+    ],
+)
+def test_the_resolver_drops_a_closing_bracket_that_closes_nothing_at_the_end(
+    declaration: str, read: tuple[str, str, bool] | None
+) -> None:
+    """Edge drops `--x: f([)` at the end of the sheet and keeps `--x: f([` as written."""
+    (rule,) = style_rules(f"p {{ color: #111111; {declaration}")
+    assert rule.declarations == (("color", "#111111", False), *((read,) if read else ()))
+
+
+@pytest.mark.parametrize(
+    ("css", "page", "value"),
+    [
+        pytest.param(
+            'p { flex-wrap: wrap; --x: a\\"; flex-wrap: nowrap; }',
+            "<p>a</p>",
+            "nowrap",
+            id="double-quote",
+        ),
+        pytest.param(
+            "p { flex-wrap: wrap; --x: a\\'; flex-wrap: nowrap; }",
+            "<p>a</p>",
+            "nowrap",
+            id="single-quote",
+        ),
+        pytest.param(
+            'p[title=a\\"b] { flex-wrap: wrap; }',
+            "<p title='a\"b'>a</p>",
+            "wrap",
+            id="double-quote-in-a-selector",
+        ),
+        pytest.param(
+            "p[title=a\\'b] { flex-wrap: wrap; }",
+            '<p title="a\'b">a</p>',
+            "wrap",
+            id="single-quote-in-a-selector",
+        ),
+        pytest.param(
+            'p[title=a\\"b] { flex-wrap: wrap; }', "<p>a</p>", None, id="selector-other-title"
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: a\\/*; flex-wrap: wrap; }",
+            "<p>a</p>",
+            "wrap",
+            id="slash-before-star",
+        ),
+        pytest.param(
+            'p { flex-wrap: nowrap; --x: a\\\\"b;c"; flex-wrap: wrap; }',
+            "<p>a</p>",
+            "wrap",
+            id="backslash-then-string",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: a\\\\/* b */; flex-wrap: wrap; }",
+            "<p>a</p>",
+            "wrap",
+            id="backslash-then-comment",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: a\\3b flex-wrap: wrap; }",
+            "<p>a</p>",
+            "nowrap",
+            id="hex-semicolon",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: a\\\\;flex-wrap:wrap; }",
+            "<p>a</p>",
+            "wrap",
+            id="backslash-then-semicolon",
+        ),
+    ],
+)
+def test_the_resolver_reads_an_escape_outside_a_string_as_one_character(
+    css: str, page: str, value: str | None
+) -> None:
+    """Edge reads an escaped quote or slash outside a string as text, so no string or comment
+    opens there."""
+    (paragraph,) = elements_of(page)
+    assert value_of(read_sheet(css), paragraph, "flex-wrap", View(320)) == value
+
+
+@pytest.mark.parametrize(
+    ("css", "read"),
+    [
+        pytest.param(
+            ':root { --x: a\\"b; --y: c; }',
+            (("--x", 'a\\"b', False), ("--y", "c", False)),
+            id="double-quote",
+        ),
+        pytest.param(
+            ":root { --x: a\\'b; --y: c; }",
+            (("--x", "a\\'b", False), ("--y", "c", False)),
+            id="single-quote",
+        ),
+        pytest.param(
+            ':root { --x: \\"; --y: c; }', (("--x", '\\"', False), ("--y", "c", False)), id="alone"
+        ),
+        pytest.param(
+            ':root { --x: \\"\\"; --y: c; }',
+            (("--x", '\\"\\"', False), ("--y", "c", False)),
+            id="twice",
+        ),
+        pytest.param(
+            ":root { --x: \\'\\\"; --y: c; }",
+            (("--x", "\\'\\\"", False), ("--y", "c", False)),
+            id="both-kinds",
+        ),
+        pytest.param(
+            ':root { --x: \\61"b;c"; }', (("--x", '\\61"b;c"', False),), id="hex-then-string"
+        ),
+        pytest.param(
+            ':root { --x: b !important; --x: a\\" !important; }',
+            (("--x", "b", True), ("--x", 'a\\"', True)),
+            id="important",
+        ),
+        pytest.param(
+            ':root { --y: c; --x: a\\"',
+            (("--y", "c", False), ("--x", 'a\\"', False)),
+            id="at-the-end",
+        ),
+        pytest.param(
+            ":root { --x: a\\/* b; --y: c; }",
+            (("--x", "a\\/* b", False), ("--y", "c", False)),
+            id="slash-before-star",
+        ),
+        pytest.param(
+            ":root { --x: a/\\* b; --y: c; }",
+            (("--x", "a/\\* b", False), ("--y", "c", False)),
+            id="slash-then-escaped-star",
+        ),
+        pytest.param(':root { --x: "a\\"b"; }', (("--x", '"a\\"b"', False),), id="in-a-string"),
+        pytest.param(':root { --x: url(a\\"b); }', (("--x", 'url(a\\"b)', False),), id="in-a-url"),
+    ],
+)
+def test_the_resolver_keeps_an_escaped_quote_outside_a_string_as_written(
+    css: str, read: tuple[tuple[str, str, bool], ...]
+) -> None:
+    """Edge keeps `--x: a\\"b` as written and reads the declaration after it."""
+    (rule,) = style_rules(css)
+    assert rule.declarations == read
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        pytest.param(
+            "p { flex-wrap: nowrap; } p { --x: a\\;flex-wrap:wrap;", id="semicolon-at-the-end"
+        ),
+        pytest.param("p { flex-wrap: nowrap; } p { --x: a\\;flex-wrap:wrap; }", id="semicolon"),
+        pytest.param(":root { --x: a\\;b; }", id="semicolon-in-a-value"),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: f(a)\\; flex-wrap: wrap; }", id="after-a-bracket"
+        ),
+        pytest.param("p { flex-wrap: nowrap; --x: a\\} flex-wrap: wrap; }", id="closing-brace"),
+        pytest.param("p { flex-wrap: nowrap; --x: a\\{ flex-wrap: wrap; }", id="opening-brace"),
+        pytest.param(":root { --x: a\\}b; }", id="brace-in-a-value"),
+        pytest.param("p\\{ { flex-wrap: wrap; }", id="brace-in-a-selector"),
+        pytest.param(
+            "p { flex-wrap: nowrap; } p { flex-wrap: wrap; --x: u\\72l(a b); }", id="url-name"
+        ),
+    ],
+)
+def test_the_resolver_refuses_an_escaped_semicolon_or_brace(css: str) -> None:
+    """Edge reads an escaped `;` or brace as text, so `flex-wrap:wrap` after `a\\;` is part of
+    `--x`, and an escaped `url` name as a `url()`; the reader refuses both rather than misread
+    them."""
+    with pytest.raises(UnreadCss):
+        read_sheet(css)
+
+
+@pytest.mark.parametrize(
+    ("css", "value"),
+    [
+        pytest.param(':root { --x: \\61  url("a b"); }', '\\61  url("a b")', id="space"),
+        pytest.param(':root { --x: \\61/**/url("a b"); }', '\\61 url("a b")', id="comment"),
+        pytest.param(':root { --x: "\\61"url("a b"); }', '"\\61"url("a b")', id="string"),
+    ],
+)
+def test_the_resolver_reads_a_url_name_apart_from_an_escape_before_it(css: str, value: str) -> None:
+    """Edge reads `url("a b")` after `\\61 ` and a space, a comment or a string as its own
+    name, so no escape joins it."""
+    (rule,) = style_rules(css)
+    assert rule.declarations == (("--x", value, False),)
 
 
 @pytest.mark.parametrize(
@@ -1951,6 +2177,30 @@ def test_the_wrapping_check_refuses_a_wrap_left_inside_a_bracket(
     """Edge keeps the page links on one line once this text ends the stylesheet."""
     page = rendered["parent, family"]
     assert links_wrap(read_sheet(stylesheet()), page, View(320))
+    with pytest.raises(UnreadCss):
+        links_wrap(read_sheet(f"{stylesheet()}\n{tail}"), page, View(320))
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        '.places { flex-wrap: wrap; --x: a\\"; flex-wrap: nowrap; }',
+        ".places { flex-wrap: wrap; --x: a\\'; flex-wrap: nowrap; }",
+    ],
+)
+def test_the_wrapping_check_reads_an_escaped_quote_as_text(
+    rendered: dict[str, str], tail: str
+) -> None:
+    """Edge keeps the page links on one line once this text ends the stylesheet."""
+    page = rendered["parent, family"]
+    assert not links_wrap(read_sheet(f"{stylesheet()}\n{tail}"), page, View(320))
+
+
+def test_the_wrapping_check_refuses_an_escaped_semicolon(rendered: dict[str, str]) -> None:
+    """Edge reads `flex-wrap:wrap` after `a\\;` as part of `--x`, so the links stay on one
+    line."""
+    page = rendered["parent, family"]
+    tail = ".places { flex-wrap: nowrap; } .places { --x: a\\;flex-wrap:wrap;"
     with pytest.raises(UnreadCss):
         links_wrap(read_sheet(f"{stylesheet()}\n{tail}"), page, View(320))
 

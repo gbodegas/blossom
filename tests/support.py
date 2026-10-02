@@ -2116,14 +2116,16 @@ def shielded(css: str) -> str:
     character of ``SHIELD`` inside a quoted string or an unquoted ``url()`` stood in for, so
     a ``/*`` or ``;`` there is read as text. A string ends at its closing quote, a newline no
     `STRING_ESCAPE` takes, or the end of ``css``, where it is closed; one a newline ends is
-    `BROKEN`, and so is an unquoted ``url()`` that `unreadable_url` finds. A stand-in written
-    outside a comment is refused, since it would be read as the character it stands in for."""
+    `BROKEN`, and so is an unquoted ``url()`` that `unreadable_url` finds. An `ESCAPE` outside
+    them is one character of text, so an escaped quote or slash opens no string or comment. A
+    stand-in written outside a comment is refused, since it would be read as the character it
+    stands in for, and so is a `url_named` bracket."""
     kept: list[str] = []
-    index = 0
+    index = named = 0
     while index < len(css):
         if css.startswith("/*", index):
             end = css.find("*/", index + 2)
-            index = len(css) if end < 0 else end + 2
+            index = named = len(css) if end < 0 else end + 2
             kept.append(" ")
             continue
         quote = css[index] if css[index] in "\"'" else None
@@ -2134,10 +2136,14 @@ def shielded(css: str) -> str:
             and not joined_name(css, index)
         )
         if quote is None and not url:
-            if css[index] in STAND_INS:
+            escape = re.compile(ESCAPE).match(css, index) if css[index] == "\\" else None
+            piece = escape.group() if escape else css[index]
+            if piece[-1] in STAND_INS or (piece == "(" and url_named(css[named:index])):
                 raise UnreadCss(css)
-            kept.append(css[index])
-            index += 1
+            if not escape and not (piece.isalnum() or piece in "_-"):
+                named = index + 1
+            kept.append(piece)
+            index += len(piece)
             continue
         end, closing = (index + 4, ")") if url else (index + 1, quote)
         while end < len(css) and css[end] != closing and (url or css[end] not in "\n\r\f"):
@@ -2151,8 +2157,14 @@ def shielded(css: str) -> str:
             kept.append(BROKEN)
         else:
             kept.append("".join(SHIELD.get(one, one) for one in css[index:end]))
-        index = end
+        index = named = end
     return "".join(kept)
+
+
+def url_named(name: str) -> bool:
+    """Whether ``name``, right before a ``(``, is written with an `ESCAPE` and reads as ending
+    in ``url``, which a browser may read as an unquoted ``url()`` the reader doesn't see."""
+    return "\\" in name and unescaped(name).lower().endswith("url")
 
 
 def joined_name(css: str, index: int) -> bool:
@@ -2206,14 +2218,15 @@ GROUPING = re.compile(rf"{ESCAPE}|[()\[\]{{}};]")
 
 
 def grouped(css: str) -> str:
-    """``css``, when no ``;`` or brace falls inside an open ``(`` or ``[``. A browser reads
-    each as part of the bracket, up to its own closing bracket or the end of the sheet, so
-    the declarations and rules there are refused, not read. An `ESCAPE` is text, and a
-    closing bracket of the other kind closes nothing."""
+    """``css``, when no ``;`` or brace falls inside an open ``(`` or ``[`` and none is escaped.
+    A browser reads one inside a bracket as part of it, up to its own closing bracket or the
+    end of the sheet, and an escaped one as text, so the declarations and rules there are
+    refused, not read. An `ESCAPE` is text, and a closing bracket of the other kind closes
+    nothing."""
     awaited: list[str] = []
     for found in GROUPING.finditer(css):
         part = found.group()
-        if awaited and not {";", "{", "}"}.isdisjoint(part):
+        if (awaited or part.startswith("\\")) and not {";", "{", "}"}.isdisjoint(part):
             raise UnreadCss(css)
         if part in ("(", "["):
             awaited.append(")" if part == "(" else "]")
@@ -2236,6 +2249,19 @@ def bracket_left_open(text: str) -> bool:
         elif awaited and part == awaited[-1]:
             awaited.pop()
     return bool(awaited)
+
+
+def mismatched(value: str) -> bool:
+    """Whether a closing bracket of ``value`` closes no bracket, none being open or one of the
+    other kind, which a browser reads as a value it can't use. An `ESCAPE` is text."""
+    awaited: list[str] = []
+    for found in GROUPING.finditer(value):
+        part = found.group()
+        if part in ("(", "["):
+            awaited.append(")" if part == "(" else "]")
+        elif part in (")", "]") and (not awaited or awaited.pop() != part):
+            return True
+    return False
 
 
 def importance_of(value: str) -> tuple[str, bool]:
@@ -2290,9 +2316,9 @@ def style_rules(css: str) -> list[StyleRule]:
     for elements and are passed over; a media query inside another, any other at-rule, a
     rule nested inside another, a character outside a comment that `plain_ascii` refuses,
     and text that is not `grouped` are refused. A declaration a browser drops for a `BROKEN`
-    string or a `loose_bang` is dropped, and one whose ``!important`` follows a backslash is
-    refused; a selector or media query that holds a `BROKEN` string keeps it, which
-    `plain_ascii` refuses where either is read."""
+    string, a `loose_bang` or a `mismatched` bracket is dropped, and one whose ``!important``
+    follows a backslash is refused; a selector or media query that holds a `BROKEN` string
+    keeps it, which `plain_ascii` refuses where either is read."""
     found: list[StyleRule] = []
 
     def read(part: str, media: str | None) -> None:
@@ -2316,7 +2342,12 @@ def style_rules(css: str) -> list[StyleRule]:
                 if important and value.endswith("\\"):
                     raise UnreadCss(line)
                 name = name.strip()
-                if value and BROKEN not in line and not loose_bang(name, value):
+                if (
+                    value
+                    and BROKEN not in line
+                    and not loose_bang(name, value)
+                    and not mismatched(value)
+                ):
                     named = name if name.startswith("--") else name.lower()
                     declared.append((named, unshielded(value), important))
             found.append(StyleRule(before, tuple(declared), len(found) + 1, media))
