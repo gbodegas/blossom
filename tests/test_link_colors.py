@@ -467,6 +467,41 @@ def test_the_resolver_reads_a_bracket_open_at_the_end_as_a_browser_reads_it(tail
     assert read_sheet(f":root {{ --x: #111111; }} :root {{ --x: {tail}").tokens["x"] == tail
 
 
+@pytest.mark.parametrize(
+    ("css", "value"),
+    [
+        (":root { --x: f(!important", "f(!important"),
+        (":root { --x: [!important", "[!important"),
+        (":root { --x: #111111 !important; --x: f(!important", "#111111"),
+        (":root { --x: #111111 !important; --x: [!important", "#111111"),
+        (":root { --x: #111111 !important; --x: f(] !important", "#111111"),
+        (":root { --x: #111111 !important; --x: f(a) !important", "f(a)"),
+        (":root { --x: f(a) !important; --x: #111111", "f(a)"),
+        (":root { --x: #111111 !important; --x: a\\( !important", "a\\("),
+    ],
+)
+def test_the_resolver_reads_importance_inside_a_bracket_open_at_the_end_as_text(
+    css: str, value: str
+) -> None:
+    """Edge reads `!important` inside a bracket open at the end of the sheet as its text."""
+    assert read_sheet(css).tokens["x"] == value
+
+
+@pytest.mark.parametrize(
+    "css",
+    [":root { --x: f(] !x); }", ":root { --x: [) !x]; }", ":root { --x: f(] !important"],
+)
+def test_the_resolver_drops_a_bang_after_a_closing_bracket_of_the_other_kind(css: str) -> None:
+    """Edge drops `--x` here, the closing bracket of the other kind closing nothing."""
+    assert "x" not in read_sheet(css).tokens
+
+
+def test_the_resolver_refuses_a_bang_inside_a_substitution_open_at_the_end() -> None:
+    """Edge drops `--x: var(--y, 2px !important` at the end of the sheet and keeps `#111111`."""
+    with pytest.raises(UnreadCss):
+        read_sheet(":root { --x: #111111; --x: var(--y, 2px !important")
+
+
 @pytest.mark.parametrize("width", WIDTHS)
 @pytest.mark.parametrize("state", STATES)
 def test_every_link_in_a_page_gets_its_color_from_the_stylesheet(

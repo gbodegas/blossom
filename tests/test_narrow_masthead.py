@@ -1509,6 +1509,121 @@ def test_the_resolver_reads_a_bang_apart_from_an_escape_as_a_browser_reads_it(
     assert rule.declarations == (*((read,) if read else ()), ("flex-wrap", "wrap", False))
 
 
+@pytest.mark.parametrize(
+    ("declaration", "read"),
+    [
+        pytest.param("--x: f(] !x)", None, id="paren-then-square"),
+        pytest.param("--x: [) !x]", None, id="square-then-paren"),
+        pytest.param("--x: f(] !x) !important", None, id="paren-then-square-important"),
+        pytest.param("--x: f(a] b) !x", None, id="bang-after-the-bracket"),
+        pytest.param("--x: f([a] !x)", ("--x", "f([a] !x)", False), id="matched"),
+    ],
+)
+def test_the_resolver_drops_a_bang_after_a_closing_bracket_of_the_other_kind(
+    declaration: str, read: tuple[str, str, bool] | None
+) -> None:
+    """Edge drops a custom property holding a closing bracket of the other kind, `!` and all."""
+    (rule,) = style_rules(f"p {{ {declaration}; flex-wrap: wrap; }}")
+    assert rule.declarations == (*((read,) if read else ()), ("flex-wrap", "wrap", False))
+
+
+@pytest.mark.parametrize(
+    ("declaration", "read"),
+    [
+        pytest.param("--x: f(!important", ("--x", "f(!important", False), id="paren"),
+        pytest.param("--x: [!important", ("--x", "[!important", False), id="square"),
+        pytest.param("--x: f(a ! important", ("--x", "f(a ! important", False), id="spaced"),
+        pytest.param("--x: f(!IMPORTANT", ("--x", "f(!IMPORTANT", False), id="capitals"),
+        pytest.param("--x: f(g(a) !important", ("--x", "f(g(a) !important", False), id="nested"),
+        pytest.param("--x: a( !important", ("--x", "a( !important", False), id="function"),
+        pytest.param(
+            "--x: \\61 ( !important", ("--x", "\\61 ( !important", False), id="escaped-name"
+        ),
+        pytest.param("--x: f(] !important", None, id="paren-then-square"),
+        pytest.param("--x: [) !important", None, id="square-then-paren"),
+        pytest.param("width: calc(2px !important", None, id="width-paren"),
+        pytest.param("width: [2px !important", None, id="width-square"),
+        pytest.param("width: calc(2px] !important", None, id="width-paren-then-square"),
+        pytest.param("--x: f(a) !important", ("--x", "f(a)", True), id="closed-paren"),
+        pytest.param("--x: [a] !important", ("--x", "[a]", True), id="closed-square"),
+        pytest.param("--x: f(!important)", ("--x", "f(!important)", False), id="closed-around"),
+        pytest.param("--x: a\\( !important", ("--x", "a\\(", True), id="escaped-paren"),
+        pytest.param("--x: a\\[ !important", ("--x", "a\\[", True), id="escaped-square"),
+        pytest.param("--x: \\( !important", ("--x", "\\(", True), id="escaped-paren-alone"),
+        pytest.param("--x: a\\28  !important", ("--x", "a\\28", True), id="hex-paren"),
+        pytest.param('--x: "(" !important', ("--x", '"("', True), id="string-paren"),
+        pytest.param("--x: '[' !important", ("--x", "'['", True), id="string-square"),
+        pytest.param("--x: /* ( */ a !important", ("--x", "a", True), id="comment-paren"),
+        pytest.param("width: 1px !important", ("width", "1px", True), id="width-plain"),
+    ],
+)
+def test_the_resolver_reads_importance_inside_a_bracket_open_at_the_end_as_text(
+    declaration: str, read: tuple[str, str, bool] | None
+) -> None:
+    """Edge reads `!important` inside a bracket open at the end of the sheet as its text."""
+    (rule,) = style_rules(f"p {{ flex-wrap: wrap; {declaration}")
+    assert rule.declarations == (("flex-wrap", "wrap", False), *((read,) if read else ()))
+
+
+@pytest.mark.parametrize("value", ["f(!important", "[!important"])
+def test_the_resolver_keeps_a_whole_sheet_ending_inside_a_bracket_as_written(value: str) -> None:
+    """Edge keeps `--x` as written, with no priority, when the sheet ends inside its bracket."""
+    (rule,) = style_rules(f":root {{ --x: {value}")
+    assert rule.declarations == (("--x", value, False),)
+
+
+@pytest.mark.parametrize(
+    ("css", "name", "value"),
+    [
+        ("p { width: 1px; } p { width: calc(2px !important", "width", "1px"),
+        ("p { width: 1px !important; width: calc(2px !important", "width", "1px"),
+        ("p { width: 1px !important; } p { width: calc(2px !important", "width", "1px"),
+        ("p { width: 1px; } p { width: [2px !important", "width", "1px"),
+        ("p { width: 1px; } p { width: calc(2px] !important", "width", "1px"),
+        (
+            "@media (min-width: 1px) { p { width: 1px !important; width: calc(2px !important",
+            "width",
+            "1px",
+        ),
+        ("p { width: 2px; width: 1px !important", "width", "1px"),
+        ("p { flex-wrap: nowrap; } p { flex-wrap: f(!important", "flex-wrap", "nowrap"),
+        ("p { flex-wrap: nowrap; } p { flex-wrap: wrap !important", "flex-wrap", "wrap"),
+    ],
+)
+def test_the_resolver_weighs_importance_inside_a_bracket_open_at_the_end_as_a_browser_does(
+    css: str, name: str, value: str
+) -> None:
+    """Edge drops `!important` inside a bracket open at the end, so an earlier value stays."""
+    (paragraph,) = elements_of("<p>a</p>")
+    assert value_of(read_sheet(css), paragraph, name, View(320)) == value
+
+
+def test_the_resolver_refuses_importance_inside_a_substitution_open_at_the_end() -> None:
+    """Edge drops `var(--w, 2px !important` at the end of the sheet, its `!` inside `var(`."""
+    with pytest.raises(UnreadCss):
+        read_sheet("p { width: 1px; } p { width: var(--w, 2px !important")
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "p { --x: var(--y, 2px !x); }",
+        "p { --x: env(x, 2px !x); }",
+        "p { --x: var(--y, a !important) !important; }",
+        "p { --x: var(--y, 2px !important",
+        "p { --x: VAR(--y, 2px !important",
+        "p { --x: v\\61 r(--y, 2px !important",
+        "p { --x: attr(x, 2px !important",
+        "p { --x: --f(2px !important",
+        "p { --x: if(x: 2px !important",
+    ],
+)
+def test_the_resolver_refuses_a_bang_inside_a_substitution_of_a_custom_property(css: str) -> None:
+    """Edge drops a custom property with a `!` straight inside a substitution."""
+    with pytest.raises(UnreadCss):
+        style_rules(css)
+
+
 def test_the_resolver_keeps_a_bang_inside_a_string_or_a_url() -> None:
     """Edge keeps each of these declarations, and a string open at the end of the sheet is
     closed there, so the `!important` inside it is text."""

@@ -2225,13 +2225,36 @@ def grouped(css: str) -> str:
 IMPORTANT = re.compile(r"\s*!\s*important$", re.IGNORECASE)
 
 
+def bracket_left_open(text: str) -> bool:
+    """Whether a ``(`` or ``[`` of ``text`` is still open at its end, read as `grouped` reads
+    them: an `ESCAPE` is text, and a closing bracket of the other kind closes nothing."""
+    awaited: list[str] = []
+    for found in GROUPING.finditer(text):
+        part = found.group()
+        if part in ("(", "["):
+            awaited.append(")" if part == "(" else "]")
+        elif awaited and part == awaited[-1]:
+            awaited.pop()
+    return bool(awaited)
+
+
+def importance_of(value: str) -> tuple[str, bool]:
+    """``value`` without its ``!important``, and whether it had one. One inside a bracket left
+    open at the end of the sheet is that bracket's text, as a browser reads it, and stays."""
+    marker = IMPORTANT.search(value)
+    if marker is None or bracket_left_open(value[: marker.start()]):
+        return value, False
+    return value[: marker.start()], True
+
+
 def loose_bang(name: str, value: str) -> bool:
     """Whether a browser drops a declaration for a ``!`` left in its value once its
     ``!important`` is taken off: one anywhere in a property's value, and one outside any
     bracket in a custom property's. An `ESCAPE` is text, an escaped bracket too. A ``!``
     that is escaped, or with an escape in the word after it, is refused, since an escaped
     letter of ``important`` is read as the letter, and so is one inside a bracket of a
-    value with a `SUBSTITUTION`, whose fallback may go unused."""
+    value with a `SUBSTITUTION`, which a browser drops straight inside the substitution
+    and may leave unused in a fallback."""
     if "!" not in value:
         return False
     depth = 0
@@ -2241,9 +2264,9 @@ def loose_bang(name: str, value: str) -> bool:
             raise UnreadCss(value)
         if part.startswith("!") and depth == 0:
             return True
+        if part.startswith("!") and SUBSTITUTION.search(unescaped(value)):
+            raise UnreadCss(value)
         if part.startswith("!") and not name.startswith("--"):
-            if SUBSTITUTION.search(unescaped(value)):
-                raise UnreadCss(value)
             return True
         depth = max(depth + (part in "([") - (part in ")]"), 0)
     return False
@@ -2289,13 +2312,13 @@ def style_rules(css: str) -> list[StyleRule]:
             declared = []
             for line in inside.split(";"):
                 name, _, value = line.partition(":")
-                value, important = IMPORTANT.subn("", value.strip())
+                value, important = importance_of(value.strip())
                 if important and value.endswith("\\"):
                     raise UnreadCss(line)
                 name = name.strip()
                 if value and BROKEN not in line and not loose_bang(name, value):
                     named = name if name.startswith("--") else name.lower()
-                    declared.append((named, unshielded(value), important > 0))
+                    declared.append((named, unshielded(value), important))
             found.append(StyleRule(before, tuple(declared), len(found) + 1, media))
 
     shown = shielded(css)
