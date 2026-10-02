@@ -44,6 +44,7 @@ from tests.support import (
     HER_PAGE,
     KEYWORDS,
     PAGE_HEADERS,
+    STAND_INS,
     Element,
     Rule,
     Selector,
@@ -58,8 +59,10 @@ from tests.support import (
     selector,
     sign_in_as,
     style_rules,
+    unshielded,
     winner,
 )
+from tests.support import holds as condition_holds
 
 WIDTHS = (320, 820, 1180, 1440, 3840)
 """The viewport widths, in CSS pixels, the pages are held to: a phone, a tablet upright and
@@ -330,7 +333,7 @@ def read_sheet(css: str) -> Sheet:
                     declared[longhand] = (setting, important)
         if not declared:
             continue
-        chosen = [selector(head) for head in style.selectors.split(",")]
+        chosen = [selector(unshielded(head)) for head in style.selectors.split(",")]
         for name, (value, weight) in declared.items():
             for one in chosen:
                 sheet.rules.setdefault(name, []).append(
@@ -1097,9 +1100,214 @@ def test_a_media_length_is_read_in_any_case() -> None:
 )
 def test_the_resolver_refuses_a_media_query_it_cannot_read_in_any_case(query: str) -> None:
     (paragraph,) = elements_of("<p>a</p>")
-    sheet = read_sheet(f"{query} {{ p {{ flex-wrap: wrap; }} }}")
     with pytest.raises(UnreadCss):
-        value_of(sheet, paragraph, "flex-wrap", View(320))
+        value_of(
+            read_sheet(f"{query} {{ p {{ flex-wrap: wrap; }} }}"),
+            paragraph,
+            "flex-wrap",
+            View(320),
+        )
+    with pytest.raises(UnreadCss):
+        one_query_holds(query.partition(" ")[2], View(320))
+
+
+@pytest.mark.parametrize(
+    ("query", "holding", "failing"),
+    [
+        pytest.param("only screen and (max-width: 30rem)", View(480), View(481), id="only"),
+        pytest.param(
+            "screen and (min-width: 1px) and (max-width: 30rem)",
+            View(480),
+            View(481),
+            id="two-features",
+        ),
+        pytest.param(
+            "(min-width: 1px) and (max-width: 30rem)", View(480), View(481), id="features-alone"
+        ),
+        pytest.param("(max-width:30rem)", View(480), View(481), id="no-spaces"),
+        pytest.param("print, screen and (max-width: 30rem)", View(480), View(481), id="list"),
+        pytest.param(
+            "screen\tand\n(max-width:\r30rem)\f", View(480), View(481), id="every-css-space"
+        ),
+        pytest.param("ONLY ALL", View(3840), None, id="only-all"),
+        pytest.param("", View(320), None, id="empty-list"),
+        pytest.param(" \t", View(320), None, id="spaces-only-list"),
+        pytest.param(
+            "(max-width:30rem)and (min-width:1px)", View(480), View(481), id="and-after-a-bracket"
+        ),
+    ],
+)
+def test_the_resolver_reads_each_form_of_media_query_a_browser_reads(
+    query: str, holding: View, failing: View | None
+) -> None:
+    (paragraph,) = elements_of("<p>a</p>")
+    sheet = read_sheet(f"@media {query} {{ p {{ flex-wrap: wrap; }} }}")
+    assert value_of(sheet, paragraph, "flex-wrap", holding) == "wrap"
+    assert condition_holds(query, holding)
+    if failing is not None:
+        assert value_of(sheet, paragraph, "flex-wrap", failing) is None
+        assert not condition_holds(query, failing)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "print,",
+        ",print",
+        "print,,print",
+        "and",
+        "only",
+        "screen and",
+        "and screen",
+        "only and",
+        "AND (MAX-WIDTH: 30REM)",
+        "only (max-width: 30rem)",
+        "screen screen print",
+        "screen (max-width: 30rem)",
+        "(max-width: 30rem) (min-width: 1px)",
+        "(max-width: 30rem) and",
+        "SCREEN AND AND (MAX-WIDTH: 30REM)",
+        "screen and(max-width: 30rem)",
+        "(max-width: 30rem",
+        "max-width: 30rem)",
+    ],
+)
+def test_the_resolver_refuses_a_media_query_a_browser_drops(query: str) -> None:
+    (paragraph,) = elements_of("<p>a</p>")
+    sheet = read_sheet(f"@media {query} {{ p {{ flex-wrap: wrap; }} }}")
+    for view in (View(320), View(480)):
+        with pytest.raises(UnreadCss):
+            value_of(sheet, paragraph, "flex-wrap", view)
+        with pytest.raises(UnreadCss):
+            condition_holds(query, view)
+
+
+@pytest.mark.parametrize(
+    "written", ["@mediascreen", "@MEDIAALL", "@media-x screen", "@media_ screen", "@media\\ all"]
+)
+def test_the_resolver_refuses_an_at_rule_that_only_starts_like_a_media_query(
+    written: str,
+) -> None:
+    (paragraph,) = elements_of("<p>a</p>")
+    with pytest.raises(UnreadCss):
+        value_of(
+            read_sheet(f"{written} {{ p {{ flex-wrap: wrap; }} }}"),
+            paragraph,
+            "flex-wrap",
+            View(320),
+        )
+
+
+def test_the_resolver_reads_a_media_query_right_after_its_keyword() -> None:
+    (paragraph,) = elements_of("<p>a</p>")
+    sheet = read_sheet("@MEDIA(MAX-WIDTH:30REM){ p { flex-wrap: wrap; } }")
+    assert value_of(sheet, paragraph, "flex-wrap", View(480)) == "wrap"
+    assert value_of(sheet, paragraph, "flex-wrap", View(481)) is None
+
+
+KELVIN = "\N{KELVIN SIGN}"
+STRANGERS = {
+    "no-break space": "\u00a0",
+    "em space": "\u2003",
+    "ideographic space": "\u3000",
+    "next line": "\u0085",
+    "vertical tab": "\v",
+    "unit separator": "\x1f",
+    "delete": "\x7f",
+    "first past ascii": "\x80",
+    "kelvin sign": KELVIN,
+}
+"""Characters Python reads as a space, or as a letter of another case, where a browser reads
+neither: each is outside printable ASCII and is no CSS space."""
+
+
+@pytest.mark.parametrize("stranger", list(STRANGERS.values()), ids=list(STRANGERS))
+def test_the_resolver_refuses_a_character_a_browser_reads_otherwise(stranger: str) -> None:
+    view = View(320)
+    for css in (
+        f"@media screen{stranger}and (max-width: 30rem) {{ p {{ flex-wrap: wrap; }} }}",
+        f"@media (max-width: 30rem{stranger}) {{ p {{ flex-wrap: wrap; }} }}",
+        f"p{stranger}a {{ flex-wrap: wrap; }}",
+        f"p {{ flex-wrap:{stranger}wrap; }}",
+        f"p {{ flex-wrap{stranger}: wrap; }}",
+    ):
+        with pytest.raises(UnreadCss):
+            read_sheet(css)
+    for query in (
+        f"screen{stranger}and (max-width: 30rem)",
+        f"{stranger}screen",
+        f"(max-width: 30rem{stranger})",
+    ):
+        with pytest.raises(UnreadCss):
+            condition_holds(query, view)
+        with pytest.raises(UnreadCss):
+            one_query_holds(query, view)
+    with pytest.raises(UnreadCss):
+        media_length(f"30rem{stranger}", view)
+    with pytest.raises(UnreadCss):
+        selector(f"p{stranger}a")
+
+
+@pytest.mark.parametrize(
+    "number",
+    ["\u0663\u0660", "\uff13\uff10", "3\u0660", "\u06630"],
+    ids=["arabic-indic", "fullwidth", "ascii-first", "ascii-last"],
+)
+def test_the_resolver_reads_only_ascii_digits(number: str) -> None:
+    with pytest.raises(UnreadCss):
+        media_length(f"{number}rem", View(320))
+    with pytest.raises(UnreadCss):
+        condition_holds(f"(max-width: {number}rem)", View(320))
+    with pytest.raises(UnreadCss):
+        read_sheet(f"p {{ width: {number}px; }}")
+    with pytest.raises(UnreadCss):
+        compound(f"p:nth-child({number})")
+
+
+def test_the_resolver_reads_no_other_letter_as_a_keywords_own() -> None:
+    dotted = "\N{LATIN CAPITAL LETTER I WITH DOT ABOVE}"
+    for css in (
+        f"p {{ overflow-wrap: brea{KELVIN}-word; }}",
+        f"p {{ overflow-wrap: BREA{KELVIN}-WORD; }}",
+        f"p {{ word-brea{KELVIN}: break-all; }}",
+        f"p {{ overflow-wrap: anywhere !{dotted}mportant; }}",
+        f"p:lin{KELVIN} {{ overflow-wrap: anywhere; }}",
+        f"@media screen {{ p {{ display: bloc{KELVIN}; }} }}",
+    ):
+        with pytest.raises(UnreadCss):
+            read_sheet(css)
+    with pytest.raises(UnreadCss):
+        compound(f"a:lin{KELVIN}")
+
+
+def test_the_resolver_refuses_a_stand_in_written_outside_a_comment() -> None:
+    (paragraph,) = elements_of("<p>a</p>")
+    for stand_in in sorted(STAND_INS):
+        for css in (
+            f"p{stand_in}first-child {{ flex-wrap: wrap; }}",
+            f"p {{ flex-wrap: wrap{stand_in} }}",
+            f'p {{ content: "{stand_in}"; flex-wrap: wrap; }}',
+        ):
+            with pytest.raises(UnreadCss):
+                read_sheet(css)
+        with pytest.raises(UnreadCss):
+            selector(f"p{stand_in}first-child")
+        sheet = read_sheet(f"/* {stand_in} */ p {{ flex-wrap: wrap; }}")
+        assert value_of(sheet, paragraph, "flex-wrap", View(320)) == "wrap"
+
+
+def test_the_resolver_reads_a_shielded_character_in_a_string_as_itself() -> None:
+    (paragraph,) = elements_of('<p title="a,b:c;d{e}">a</p>')
+    sheet = read_sheet('p[title="a,b:c;d{e}"] { content: "x;y"; flex-wrap: wrap; }')
+    assert value_of(sheet, paragraph, "flex-wrap", View(320)) == "wrap"
+
+
+def test_the_resolver_reads_printable_ascii_and_passes_over_comments() -> None:
+    (paragraph,) = elements_of("<p>a</p>")
+    sheet = read_sheet(
+        f'/* {KELVIN}\u00a0\u0663 */ p {{ content: "~ !"; flex-wrap: /* \u3000 */ wrap; }}'
+    )
+    assert value_of(sheet, paragraph, "flex-wrap", View(320)) == "wrap"
 
 
 def test_the_resolver_reads_links_strings_and_keywords_the_way_a_browser_would() -> None:

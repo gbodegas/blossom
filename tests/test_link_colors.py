@@ -68,6 +68,7 @@ from tests.support import (
     sign_in_as,
     state_of,
     style_rules,
+    unshielded,
     walkthrough,
     winner,
 )
@@ -143,7 +144,8 @@ def read_sheet(css: str) -> Sheet:
         for head in style.selectors.split(","):
             for name, (value, important) in declared.items():
                 if name in lists:
-                    rule = Rule(selector(head), value, style.order, style.media, important)
+                    chosen = selector(unshielded(head))
+                    rule = Rule(chosen, value, style.order, style.media, important)
                     lists[name].append(rule)
     return sheet
 
@@ -351,6 +353,19 @@ def test_the_resolver_weighs_importance_and_reads_a_layout_in_any_case() -> None
     assert winning(one_block.displays, one_block, second, "link", View(320)) == "block"
     named = read_sheet(":root { --Ink: #111111; --ink: #222222; } main a { color: var(--Ink); }")
     assert color_of(named, first, "link", View(320)) == "#111111"
+
+
+def test_the_resolver_reads_a_comma_in_an_attribute_string_as_itself() -> None:
+    (link,) = links_in('<main><a href="/" title="a,b">x</a></main>')
+    sheet = read_sheet('main a[title="a,b"] { color: #888888; }')
+    assert color_of(sheet, link, "link", View(320)) == "#888888"
+
+
+def test_the_resolver_reads_no_other_letter_or_digit_as_ascii() -> None:
+    with pytest.raises(UnreadCss):
+        read_sheet("footer a { display: bloc\N{KELVIN SIGN}; color: #888888; }")
+    with pytest.raises(UnreadCss):
+        read_sheet("footer a { color: rgb(\u0661\u0662\u0660, 0, 0); }")
 
 
 @pytest.mark.parametrize("width", WIDTHS)
