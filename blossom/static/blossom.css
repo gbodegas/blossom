@@ -221,6 +221,15 @@ h3 {
   margin: 0.25rem 0 0.35rem;
 }
 
+/* A heading breaks a word only where the word is wider than its line, as on a phone with
+   large text or a reader's wider letter spacing, so the page never scrolls sideways; a
+   heading that fits its line is as it was. */
+h1,
+h2,
+h3 {
+  overflow-wrap: anywhere;
+}
+
 section {
   margin-block: 2rem;
 }
@@ -911,6 +920,11 @@ button[disabled] {
   margin-block: 0.75rem 0;
 }
 
+/* A note in a fold can name a setting as one long word, which breaks where it must. */
+.panel-fold .note {
+  overflow-wrap: anywhere;
+}
+
 /* A run's explanation names homework by course and title, and a title can be one
    long word. The cards in a fold break it where they must, so the page never
    scrolls sideways. */
@@ -955,8 +969,11 @@ button[disabled] {
   overflow-wrap: anywhere;
 }
 
+/* School text shown as the portal gives it keeps its lines, and breaks a run of characters
+   wider than its box, such as a date set against a word, so it reads without scrolling. */
 pre.body {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   font-family: var(--font-body);
   font-size: 0.98rem;
   line-height: 1.55;
@@ -977,9 +994,17 @@ pre.body {
   align-items: end;
 }
 
+/* A form asking for a decision is one column of controls as wide as the form. Kept to one
+   line, the column never takes the width of its widest control, so a field's own width
+   can't widen it past a phone's screen, and a word in a button wider than its line breaks. */
 .decision {
   flex-direction: column;
+  flex-wrap: nowrap;
   align-items: stretch;
+}
+
+.decision button {
+  overflow-wrap: anywhere;
 }
 
 label {
@@ -1336,11 +1361,14 @@ select[aria-invalid="true"] {
   border-width: 2px;
 }
 
-/* A link for the keyboard, before everything else, shown only when it has focus. */
+/* A link for the keyboard, before everything else, shown only when it has focus. It is never
+   wider than the screen less its inset on each side, so on a phone with large text its words
+   wrap and its focus outline stays on the screen. */
 .skip {
   position: absolute;
   left: -999px;
   top: 0.5rem;
+  max-width: calc(100% - 2rem);
   z-index: 10;
   padding: 0.6rem 1rem;
   border-radius: var(--pill);

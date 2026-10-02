@@ -10,6 +10,12 @@ columns are never wider than the form; and the fold's summary and a label or but
 Add assignments break a word only when that word cannot fit its line. On a screen where
 everything fits, each of these leaves the layout as it is.
 
+Elsewhere on the pages, at the same sizes: every heading, each note inside one of the family
+page's folds, and the example of school text break a word only when it is wider than its
+line; a form that asks the family for a decision is one column as wide as the form, so a
+field's own width never widens it and a long word in its button breaks; and the skip link's
+focus outline stays on the screen.
+
 No browser runs in these tests, so the cascade is resolved here, on the page and
 stylesheet reading in `tests/support.py`, for the part of CSS these elements depend on:
 compound selectors of a type, an id, classes, attributes and pseudo-classes, with
@@ -33,6 +39,7 @@ import pytest
 
 from blossom.settings import REPOSITORY_ROOT
 from tests.support import (
+    ESSAY_ID,
     HER_PAGE,
     KEYWORDS,
     PAGE_HEADERS,
@@ -42,6 +49,7 @@ from tests.support import (
     View,
     compound,
     elements_of,
+    form_fields,
     household_client,
     media_length,
     one_query_holds,
@@ -2173,10 +2181,16 @@ def test_the_columns_check_fails_when_a_column_can_outgrow_the_form_or_changes_w
         assert not any(entry_columns_fit(sheet, page, view) for view in VIEWS)
 
 
+# The paste form is laid out as a form that asks for a decision, so the rule for those forms
+# breaks a word in its button too: with the Add assignments rule gone or narrowed, that button
+# still breaks its word.
+DECIDED = "Preview assignments"
+
+
 @pytest.mark.parametrize(
     ("becomes", "missed"),
     [
-        pytest.param("", [name for _, name in ADDING_CONTROLS], id="no-rule"),
+        pytest.param("", [name for _, name in ADDING_CONTROLS if name != DECIDED], id="no-rule"),
         pytest.param(
             ADDING_RULE.replace("anywhere", "break-word"),
             [name for _, name in ADDING_CONTROLS],
@@ -2184,7 +2198,7 @@ def test_the_columns_check_fails_when_a_column_can_outgrow_the_form_or_changes_w
         ),
         pytest.param(
             ADDING_RULE.replace("#add-assignments", ".entry"),
-            ["Add assignments", "School text", "Preview assignments"],
+            ["Add assignments", "School text"],
             id="entry-form-only",
         ),
         pytest.param(
@@ -2212,7 +2226,7 @@ def test_the_columns_check_fails_when_a_column_can_outgrow_the_form_or_changes_w
         ),
         pytest.param(
             ADDING_RULE.replace(",\n#add-assignments button", ""),
-            [name for tag, name in ADDING_CONTROLS if tag == "button"],
+            [name for tag, name in ADDING_CONTROLS if tag == "button" and name != DECIDED],
             id="labels-only",
         ),
     ],
@@ -2325,3 +2339,399 @@ def test_the_cut_check_fails_when_a_rule_holds_cuts_or_shrinks_a_line(
         )
     ]
     assert found
+
+
+# ------------------------------------------------------------- the text of every page
+
+
+ASK = "/student/actions/ask-for-help"
+UNREAD = {
+    "her": f"/student/actions/assignments/{ESSAY_ID}/report",
+    "parent": f"/parent/actions/checks/{ESSAY_ID}/mark",
+    "open": f"/student/actions/assignments/{ESSAY_ID}/report",
+}
+"""A form each reader can send, to be sent as multipart its parser can't read."""
+UNREADABLE = b"not the boundary\r\n\r\nx"
+GONE = "/student/assignments/assignment-not-on-record"
+HEADINGS = frozenset({"h1", "h2", "h3"})
+
+TEXT: dict[str, str] = {}
+
+
+@pytest.fixture
+def text_pages(tmp_path: pathlib.Path) -> dict[str, str]:
+    """Once she has asked for help, for her, a signed-in parent, and with the sign-in off:
+    the homework notes, an assignment that is not on record, and a form that couldn't be
+    read; and, for a parent and with the sign-in off, the family page with the reply form for
+    her request. Rendered by the first test that asks and kept for the rest."""
+    if TEXT:
+        return TEXT
+    for reader in ("her", "parent", "open"):
+        folder = tmp_path / "text" / reader
+        folder.mkdir(parents=True)
+        with household_client(reader, folder) as client:
+            sign_in_as(client, "open" if reader == "open" else "her")
+            week = client.get(HER_PAGE, headers=PAGE_HEADERS).text
+            asked = form_fields(week, ASK) | {"note": "Which part is due first?"}
+            assert client.post(ASK, data=asked, headers=PAGE_HEADERS).status_code == 303
+            sign_in_as(client, reader)
+            answer = client.post(
+                UNREAD[reader],
+                content=UNREADABLE,
+                headers={**PAGE_HEADERS, "Content-Type": "multipart/form-data; boundary=x"},
+            )
+            assert answer.status_code == 400
+            TEXT[f"{reader}, unread form"] = answer.text
+            notes = client.get("/student/homework-notes", headers=PAGE_HEADERS)
+            TEXT[f"{reader}, notes"] = notes.text
+            TEXT[f"{reader}, gone"] = client.get(GONE, headers=PAGE_HEADERS).text
+            if reader != "her":
+                page = client.get("/parent", headers=PAGE_HEADERS).text
+                assert 'action="/parent/actions/help/' in page
+                TEXT[f"{reader}, asked for help, family"] = page
+    return TEXT
+
+
+def headings_of(page: str) -> list[Element]:
+    return [one for one in elements_of(page) if one.tag in HEADINGS]
+
+
+def fold_notes_of(page: str) -> list[Element]:
+    """Each note inside one of the family page's folds, Help with a plan's among them."""
+    found = elements_of(page)
+    folds = [one for one in found if one.tag == "details" and "panel-fold" in one.classes]
+    notes = [
+        one
+        for one in found
+        if one.tag == "p" and "note" in one.classes and any(fold_holds(f, one) for f in folds)
+    ]
+    assert any("ANTHROPIC_API_KEY" in one.text for one in notes)
+    return notes
+
+
+def example_of(page: str) -> Element:
+    """The example of school text in Add assignments."""
+    (example,) = [one for one in elements_of(page) if one.tag == "pre"]
+    assert "body" in example.classes
+    return example
+
+
+def whole_words(sheet: Sheet, held: list[Element], view: View) -> list[str]:
+    """Each of ``held`` that keeps a word wider than its line whole on ``view``, so the word
+    runs past the line. `anywhere` breaks it, and lets the element be narrower than the word
+    wherever its width comes from what it holds."""
+    return [
+        f"{one.tag}.{'.'.join(sorted(one.classes))} {' '.join(one.text.split())[:40]}"
+        for one in held
+        if value_of(sheet, one, "overflow-wrap", view) != "anywhere"
+    ]
+
+
+def decisions_widened(sheet: Sheet, page: str, view: View) -> list[str]:
+    """Each form on the page that asks the family for a decision, a column of controls as
+    wide as the form, where something can make it wider on ``view``: a column that wraps,
+    each of whose lines is as wide as its widest control, so a field's own width widens it;
+    controls that do not stretch to the form's width; or a button that keeps a word wider
+    than its line whole."""
+    found = elements_of(page)
+    forms = [one for one in found if one.tag == "form" and "decision" in one.classes]
+    assert forms
+    widened = []
+    for form in forms:
+        laid = {
+            name: value_of(sheet, form, name, view)
+            for name in ("display", "flex-direction", "flex-wrap", "align-items")
+        }
+        if (
+            laid["display"] != "flex"
+            or laid["flex-direction"] != "column"
+            or laid["flex-wrap"] not in (None, "nowrap")
+            or laid["align-items"] not in (None, "normal", "stretch")
+        ):
+            widened.append(f"{form.attributes['action']} {laid}")
+        buttons = [one for one in found if one.tag == "button" and one.within(form)]
+        widened += [
+            f"{form.attributes['action']} {one}" for one in whole_words(sheet, buttons, view)
+        ]
+    return widened
+
+
+FOCUSED = re.compile(r":focus(?:-visible)?(?![\w-])")
+
+
+def focused_value(css: str, element: Element, name: str, view: View) -> str | None:
+    """The value the cascade gives ``name`` on ``element`` while it has the keyboard's
+    focus: the sheet's rules read with `:focus` and `:focus-visible` holding, through the
+    same selectors and weights as a page at rest."""
+    rules = [
+        Rule(selector(FOCUSED.sub("", head)), value.lower(), style.order, style.media, important)
+        for style in style_rules(css)
+        for head in style.selectors.split(",")
+        for named, value, important in style.declarations
+        if named == name
+    ]
+    found = winner([rule for rule in rules if rule.chosen.matches(element)], view)
+    return None if found is None else found.value
+
+
+def extent_px(value: str, view: View) -> float:
+    """A width measured against the screen: a length, a percentage of the screen's width, or
+    a ``calc()`` of them added and taken away."""
+    inner = re.fullmatch(r"calc\((.+)\)", value)
+    read = re.sub(
+        r"(\d*\.?\d+)%",
+        lambda share: f"{float(share.group(1)) * view.width / 100}px",
+        inner.group(1) if inner else value,
+    )
+    return summed_px(read, view)
+
+
+def skip_outline_room(css: str, page: str, view: View) -> tuple[float, float]:
+    """How far inside the screen's left and right edges the focused skip link's outline
+    stays on ``view``, in pixels, with the link at its widest; below zero, the outline runs
+    past. The link is placed against the screen, so a percentage is of the screen's width,
+    and a link with no widest width of its own reaches the screen's right edge."""
+    (skip,) = [one for one in elements_of(page) if one.tag == "a" and "skip" in one.classes]
+    left = length_px(focused_value(css, skip, "left", view) or "", view)
+    most = focused_value(css, skip, "max-width", view)
+    widest = view.width - left
+    if most is not None and most != "none":
+        widest = min(widest, extent_px(most, view))
+    drawn = (focused_value(css, skip, "outline", view) or "none").split()
+    lengths = [one for one in drawn if re.fullmatch(r"\d*\.?\d+(px|rem|em)", one)]
+    reach = 0.0
+    if "none" not in drawn and lengths:
+        offset = focused_value(css, skip, "outline-offset", view)
+        reach = length_px(lengths[0], view) + (length_px(offset, view) if offset else 0.0)
+    return round(left - reach, 6), round(view.width - left - widest - reach, 6)
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_every_heading_breaks_a_word_only_when_it_cannot_fit(
+    rendered: dict[str, str],
+    opened: dict[str, str],
+    text_pages: dict[str, str],
+    view: View,
+) -> None:
+    """Her week's Today heading, the homework notes' heading, the headings of the family
+    page, of a page saying an assignment is not on record and of one saying a form couldn't
+    be read, for every reader: none keeps a word wider than its line whole."""
+    sheet = read_sheet(stylesheet())
+    for name, page in (rendered | opened | text_pages).items():
+        assert whole_words(sheet, headings_of(page), view) == [], name
+
+
+def test_no_heading_or_fold_note_is_cut_or_shrunk_on_any_screen(
+    rendered: dict[str, str], opened: dict[str, str], text_pages: dict[str, str]
+) -> None:
+    sheet = read_sheet(stylesheet())
+    for name, page in (rendered | opened | text_pages).items():
+        held = headings_of(page) + (fold_notes_of(page) if name.endswith("family") else [])
+        assert cut_or_shrunk(sheet, held) == [], name
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_the_family_pages_fold_notes_and_example_break_a_long_word(
+    rendered: dict[str, str], opened: dict[str, str], text_pages: dict[str, str], view: View
+) -> None:
+    """Help with a plan's note names a setting as one long word, and the example of school
+    text has a date run into a word; both break such a word and the example keeps its lines,
+    with the folds closed and open."""
+    sheet = read_sheet(stylesheet())
+    for name, page in (family(rendered) | opened | family(text_pages)).items():
+        assert whole_words(sheet, fold_notes_of(page), view) == [], name
+        example = example_of(page)
+        assert whole_words(sheet, [example], view) == [], name
+        assert value_of(sheet, example, "white-space", view) == "pre-wrap", name
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_a_decision_form_is_one_column_as_wide_as_the_form(
+    rendered: dict[str, str], opened: dict[str, str], text_pages: dict[str, str], view: View
+) -> None:
+    """The reply to her request for help, and the paste form beside it, for a parent and
+    with the sign-in off."""
+    sheet = read_sheet(stylesheet())
+    for name, page in (family(rendered) | opened | family(text_pages)).items():
+        assert decisions_widened(sheet, page, view) == [], name
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_the_skip_links_focus_outline_stays_on_the_screen(
+    rendered: dict[str, str], text_pages: dict[str, str], view: View
+) -> None:
+    css = stylesheet()
+    for name, page in (rendered | text_pages).items():
+        assert min(skip_outline_room(css, page, view)) >= 0, name
+
+
+# ------------------------------------------------------------- and each of these fails when broken
+
+
+HEADINGS_RULE = """h1,
+h2,
+h3 {
+  overflow-wrap: anywhere;
+}"""
+FOLD_NOTES_RULE = """.panel-fold .note {
+  overflow-wrap: anywhere;
+}"""
+EXAMPLE_RULE = """pre.body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;"""
+DECISION_RULE = """.decision {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}"""
+DECISION_BUTTONS_RULE = """.decision button {
+  overflow-wrap: anywhere;
+}"""
+SKIP_WIDTH = "  max-width: calc(100% - 2rem);\n"
+
+
+@pytest.mark.parametrize(
+    ("becomes", "missed"),
+    [
+        pytest.param("", {"h1", "h2", "h3"}, id="no-rule"),
+        pytest.param(
+            HEADINGS_RULE.replace("anywhere", "break-word"), {"h1", "h2", "h3"}, id="break-word"
+        ),
+        pytest.param(HEADINGS_RULE.replace("h2,\nh3", "h2"), {"h3"}, id="h3-left-out"),
+        pytest.param(HEADINGS_RULE.replace("h1,\n", ""), {"h1"}, id="h1-left-out"),
+        pytest.param(
+            HEADINGS_RULE + "\n.today h2 { overflow-wrap: normal; }", {"h2"}, id="undone-for-today"
+        ),
+        pytest.param(HEADINGS_RULE.replace("overflow-wrap", "word-wrap"), set(), id="word-wrap"),
+    ],
+)
+def test_the_headings_check_fails_for_each_heading_the_rule_stops_reaching(
+    rendered: dict[str, str], text_pages: dict[str, str], becomes: str, missed: set[str]
+) -> None:
+    sheet = broken(HEADINGS_RULE, becomes)
+    for view in VIEWS:
+        found = {
+            one.split(".")[0]
+            for page in (rendered | text_pages).values()
+            for one in whole_words(sheet, headings_of(page), view)
+        }
+        assert found == missed, view
+
+
+def test_the_headings_check_fails_where_the_rule_holds_only_on_a_narrow_screen(
+    rendered: dict[str, str],
+) -> None:
+    sheet = broken(HEADINGS_RULE, f"@media (max-width: 30rem) {{ {HEADINGS_RULE} }}")
+    for view in VIEWS:
+        missed = [
+            one for page in rendered.values() for one in whole_words(sheet, headings_of(page), view)
+        ]
+        assert bool(missed) == (view.width * 16 > 480 * view.browser_text), view
+
+
+@pytest.mark.parametrize(
+    "added",
+    [
+        "h1 { white-space: nowrap; }",
+        "@media (max-width: 30rem) { h2 { font-size: 1rem; } }",
+        ".today h2 { text-overflow: ellipsis; }",
+        ".panel-fold .note { white-space: nowrap; }",
+        "section { overflow-x: hidden; }",
+    ],
+)
+def test_the_cut_check_fails_when_a_heading_or_a_fold_note_is_cut_or_shrunk(
+    rendered: dict[str, str], added: str
+) -> None:
+    sheet = read_sheet(stylesheet() + "\n" + added + "\n")
+    found = [
+        problem
+        for name, page in rendered.items()
+        for problem in cut_or_shrunk(
+            sheet, headings_of(page) + (fold_notes_of(page) if name.endswith("family") else [])
+        )
+    ]
+    assert found
+
+
+@pytest.mark.parametrize(
+    ("was", "becomes"),
+    [
+        pytest.param(FOLD_NOTES_RULE, "", id="fold-notes-no-rule"),
+        pytest.param(
+            FOLD_NOTES_RULE,
+            FOLD_NOTES_RULE.replace("anywhere", "break-word"),
+            id="fold-notes-break",
+        ),
+        pytest.param(
+            FOLD_NOTES_RULE, FOLD_NOTES_RULE.replace(" .note", " > .note"), id="fold-notes-children"
+        ),
+        pytest.param(
+            FOLD_NOTES_RULE,
+            FOLD_NOTES_RULE.replace(".panel-fold", "#add-assignments"),
+            id="fold-notes-one-fold",
+        ),
+        pytest.param(EXAMPLE_RULE, "pre.body {\n  white-space: pre-wrap;", id="example-no-break"),
+        pytest.param(EXAMPLE_RULE, EXAMPLE_RULE.replace("anywhere", "normal"), id="example-normal"),
+        pytest.param(EXAMPLE_RULE, EXAMPLE_RULE.replace("pre-wrap", "pre"), id="example-one-line"),
+    ],
+)
+def test_the_fold_notes_check_fails_when_a_note_or_the_example_keeps_a_long_word(
+    rendered: dict[str, str], was: str, becomes: str
+) -> None:
+    sheet = broken(was, becomes)
+    for view in VIEWS:
+        for page in family(rendered).values():
+            example = example_of(page)
+            assert (
+                whole_words(sheet, [*fold_notes_of(page), example], view)
+                or value_of(sheet, example, "white-space", view) != "pre-wrap"
+            ), view
+
+
+@pytest.mark.parametrize(
+    ("was", "becomes"),
+    [
+        pytest.param(
+            DECISION_RULE, DECISION_RULE.replace("  flex-wrap: nowrap;\n", ""), id="wraps"
+        ),
+        pytest.param(DECISION_RULE, DECISION_RULE.replace("nowrap", "wrap-reverse"), id="reverse"),
+        pytest.param(DECISION_RULE, DECISION_RULE.replace("stretch", "flex-start"), id="start"),
+        pytest.param(DECISION_BUTTONS_RULE, "", id="buttons-whole"),
+        pytest.param(
+            DECISION_BUTTONS_RULE,
+            DECISION_BUTTONS_RULE.replace(" button", " > button"),
+            id="buttons-children-only",
+        ),
+    ],
+)
+def test_the_decision_check_fails_when_a_form_can_widen(
+    text_pages: dict[str, str], was: str, becomes: str
+) -> None:
+    sheet = broken(was, becomes)
+    for view in VIEWS:
+        for name, page in family(text_pages).items():
+            assert any(
+                "/parent/actions/help/" in one for one in decisions_widened(sheet, page, view)
+            ), (name, view)
+
+
+@pytest.mark.parametrize(
+    ("becomes", "short_on"),
+    [
+        pytest.param("", "right", id="no-widest"),
+        pytest.param("  max-width: 100%;\n", "right", id="screen-wide"),
+        pytest.param("  max-width: calc(100% - 1rem);\n", "right", id="one-inset"),
+        pytest.param("  max-width: calc(100% - 4px);\n", "right", id="pixels"),
+        pytest.param(SKIP_WIDTH + "  left: 2px !important;\n", "left", id="hard-left"),
+    ],
+)
+def test_the_skip_check_fails_when_the_outline_can_run_past_an_edge(
+    rendered: dict[str, str], becomes: str, short_on: str
+) -> None:
+    css = stylesheet()
+    assert css.count(SKIP_WIDTH) == 1
+    css = css.replace(SKIP_WIDTH, becomes)
+    for view in VIEWS:
+        for page in rendered.values():
+            left, right = skip_outline_room(css, page, view)
+            assert (left if short_on == "left" else right) < 0, view
