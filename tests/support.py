@@ -1819,12 +1819,15 @@ def plain_ascii(text: str) -> str:
 class View:
     """One reader's screen: its width, the browser's text size (what a media query's `rem`
     is measured in), the root element's text size (what a property's `rem` is measured in),
-    and whether it asks for less motion."""
+    whether it asks for less motion, and the `SUPPORTS` tests its browser fails although
+    Edge passes them, for a browser without a feature. That last is left out of a view's
+    name, so the views of every other test keep theirs."""
 
     width: int
     browser_text: int = 16
     root_text: int = 16
     reduced_motion: bool = False
+    unsupported: frozenset[str] = dataclasses.field(default=frozenset(), repr=False)
 
 
 @dataclasses.dataclass(eq=False)
@@ -2298,30 +2301,87 @@ def loose_bang(name: str, value: str) -> bool:
     return False
 
 
+SUPPORTS = {
+    "appearance: base-select": True,
+    "appearance: auto": True,
+    "appearance: none": True,
+    "appearance: banana": False,
+    "overflow-wrap: anywhere": True,
+    "overflow-wrap: banana": False,
+}
+"""Each ``(property: value)`` test a `@supports` condition may hold for the resolver, in
+lowercase, and whether Edge 154 passes it. Any other test is refused."""
+
+SUPPORTS_TEST = re.compile(
+    r"(?P<negated>not[ \t\n\r\f]+)?\([ \t\n\r\f]*(?P<name>[a-z-]+)[ \t\n\r\f]*:"
+    r"[ \t\n\r\f]*(?P<value>[a-z-]+)[ \t\n\r\f]*\)",
+    re.IGNORECASE | re.ASCII,
+)
+"""A `@supports` condition the resolver reads: one ``(property: value)`` test of a name and a
+keyword, after ``not`` and a space where it is turned around. To a browser ``not(`` is a
+function, and the condition is then false."""
+
+
+@dataclasses.dataclass(frozen=True)
+class Supports:
+    """A `@supports` condition: its test as `SUPPORTS` names it, whether ``not`` turns it
+    around, and the media condition around the block, ``None`` for none."""
+
+    test: str
+    negated: bool
+    media: str | None
+
+
+def supports_condition(prelude: str, media: str | None) -> Supports:
+    """The `@supports` condition ``prelude`` writes, inside ``media``. Anything but one
+    `SUPPORTS_TEST` whose test is in `SUPPORTS` is refused: ``and``, ``or``, ``selector()``,
+    a test in doubled brackets, an escape or a string among them."""
+    read = SUPPORTS_TEST.fullmatch(plain_ascii(prelude).strip(CSS_SPACES))
+    if read is None:
+        raise UnreadCss(prelude)
+    test = f"{read['name'].lower()}: {read['value'].lower()}"
+    if test not in SUPPORTS:
+        raise UnreadCss(prelude)
+    return Supports(test, read["negated"] is not None, media)
+
+
+def supported(condition: Supports, view: View) -> bool:
+    """Whether a `@supports` condition holds in ``view``'s browser: Edge's answer for its
+    test, unless the view's browser fails that test, turned around by ``not``. A view that
+    names a test outside `SUPPORTS` is refused."""
+    if not view.unsupported <= SUPPORTS.keys():
+        raise UnreadCss(str(sorted(view.unsupported)))
+    passes = SUPPORTS[condition.test] and condition.test not in view.unsupported
+    return passes != condition.negated
+
+
 @dataclasses.dataclass(frozen=True)
 class StyleRule:
     """One style rule: its selector list as written, its declarations in source order (each
     a name, lowercase unless it is a custom property's, the value as written, and whether it
-    is important), its place in the sheet, and the media condition it sits under, ``None``
-    for one that holds everywhere."""
+    is important), its place in the sheet, and the condition it sits under: a media
+    condition, a `Supports` condition holding the media condition around it, or ``None`` for
+    one that holds everywhere."""
 
     selectors: str
     declarations: tuple[tuple[str, str, bool], ...]
     order: int
-    media: str | None
+    media: str | Supports | None
 
 
 def style_rules(css: str) -> list[StyleRule]:
     """Every style rule of ``css``, in source order. Font faces and keyframes hold no rules
-    for elements and are passed over; a media query inside another, any other at-rule, a
-    rule nested inside another, a character outside a comment that `plain_ascii` refuses,
-    and text that is not `grouped` are refused. A declaration a browser drops for a `BROKEN`
-    string, a `loose_bang` or a `mismatched` bracket is dropped, and one whose ``!important``
-    follows a backslash is refused; a selector or media query that holds a `BROKEN` string
-    keeps it, which `plain_ascii` refuses where either is read."""
+    for elements and are passed over; a `@supports` block that `supports_condition` reads,
+    at the top of the sheet or inside a media query, holds rules. A media query or
+    `@supports` block inside a `@supports` block, a media query inside another, any other
+    at-rule, a rule nested inside another, a character outside a comment that `plain_ascii`
+    refuses, and text that is not `grouped` are refused. A declaration a browser drops for a
+    `BROKEN` string, a `loose_bang` or a `mismatched` bracket is dropped, and one whose
+    ``!important`` follows a backslash is refused; a selector or media query that holds a
+    `BROKEN` string keeps it, which `plain_ascii` refuses where either is read."""
     found: list[StyleRule] = []
 
-    def read(part: str, media: str | None) -> None:
+    def read(part: str, media: str | Supports | None) -> None:
         for before, inside in blocks(part):
             keyword = re.match(r"@[\w-]*", before)
             at = keyword.group().lower() if keyword else ""
@@ -2332,6 +2392,12 @@ def style_rules(css: str) -> list[StyleRule]:
                     msg = f"a media query inside {media}"
                     raise UnreadCss(msg)
                 read(inside, before[len("@media") :].strip())
+                continue
+            if at == "@supports":
+                if isinstance(media, Supports):
+                    msg = f"a @supports block inside {media}"
+                    raise UnreadCss(msg)
+                read(inside, supports_condition(before[len("@supports") :], media))
                 continue
             if before.startswith("@") or "{" in inside:
                 raise UnreadCss(before)
@@ -2365,13 +2431,13 @@ KEYWORDS = frozenset({"inherit", "initial", "unset", "revert", "revert-layer"})
 @dataclasses.dataclass(frozen=True)
 class Rule:
     """One declaration as the cascade weighs it: the selector that carries it, its value,
-    its place in the sheet, the media condition it sits under, and whether it is
-    important."""
+    its place in the sheet, the condition it sits under, as a `StyleRule` holds it, and
+    whether it is important."""
 
     chosen: Selector
     value: str
     order: int
-    media: str | None
+    media: str | Supports | None
     important: bool = False
 
 
@@ -2397,9 +2463,14 @@ def media_length(value: str, view: View) -> float:
     return float(found.group(1)) * (1 if found.group(2) == "px" else view.browser_text)
 
 
-def holds(condition: str | None, view: View) -> bool:
+def holds(condition: str | Supports | None, view: View) -> bool:
     """Whether a media condition holds on ``view``. A rule outside any media query, or under
-    an empty list, holds everywhere; a list holds when any of its queries does."""
+    an empty list, holds everywhere; a list holds when any of its queries does. A `Supports`
+    condition holds when it is `supported` and its media condition holds; both are read, so
+    either one the resolver refuses is refused whatever the other says."""
+    if isinstance(condition, Supports):
+        inside = holds(condition.media, view)
+        return supported(condition, view) and inside
     if condition is None or not plain_ascii(condition).strip():
         return True
     queries = condition.split(",")

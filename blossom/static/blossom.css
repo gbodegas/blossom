@@ -1291,6 +1291,15 @@ form.inline button {
     overflow-wrap: anywhere;
   }
 
+  /* A value that wraps needs no room to spare on its line, so where the customizable select
+     is offered its side padding never drops below 0.4rem, keeping the value clear of the
+     select's border. */
+  @supports (appearance: base-select) {
+    .adding-note select {
+      padding-inline: clamp(0.4rem, 4vw - 0.4rem, 0.85rem);
+    }
+  }
+
   /* On Review assignments, the Type field reaches across its card's side padding, so the
      chosen type shows whole. */
   .review-week .type-choice {
