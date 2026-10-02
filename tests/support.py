@@ -2201,6 +2201,27 @@ def blocks(css: str) -> list[tuple[str, str]]:
     return found
 
 
+GROUPING = re.compile(rf"{ESCAPE}|[()\[\]{{}};]")
+"""An `ESCAPE`, or a character that opens or closes a bracket, a block or a declaration."""
+
+
+def grouped(css: str) -> str:
+    """``css``, when no ``;`` or brace falls inside an open ``(`` or ``[``. A browser reads
+    each as part of the bracket, up to its own closing bracket or the end of the sheet, so
+    the declarations and rules there are refused, not read. An `ESCAPE` is text, and a
+    closing bracket of the other kind closes nothing."""
+    awaited: list[str] = []
+    for found in GROUPING.finditer(css):
+        part = found.group()
+        if awaited and not {";", "{", "}"}.isdisjoint(part):
+            raise UnreadCss(css)
+        if part in ("(", "["):
+            awaited.append(")" if part == "(" else "]")
+        elif awaited and part == awaited[-1]:
+            awaited.pop()
+    return css
+
+
 IMPORTANT = re.compile(r"\s*!\s*important$", re.IGNORECASE)
 
 
@@ -2244,11 +2265,11 @@ class StyleRule:
 def style_rules(css: str) -> list[StyleRule]:
     """Every style rule of ``css``, in source order. Font faces and keyframes hold no rules
     for elements and are passed over; a media query inside another, any other at-rule, a
-    rule nested inside another, and a character outside a comment that `plain_ascii` refuses
-    are refused. A declaration a browser drops for a `BROKEN` string or a `loose_bang` is
-    dropped, and one whose ``!important`` follows a backslash is refused; a selector or
-    media query that holds a `BROKEN` string keeps it, which `plain_ascii` refuses where
-    either is read."""
+    rule nested inside another, a character outside a comment that `plain_ascii` refuses,
+    and text that is not `grouped` are refused. A declaration a browser drops for a `BROKEN`
+    string or a `loose_bang` is dropped, and one whose ``!important`` follows a backslash is
+    refused; a selector or media query that holds a `BROKEN` string keeps it, which
+    `plain_ascii` refuses where either is read."""
     found: list[StyleRule] = []
 
     def read(part: str, media: str | None) -> None:
@@ -2279,7 +2300,7 @@ def style_rules(css: str) -> list[StyleRule]:
 
     shown = shielded(css)
     plain_ascii(unshielded(shown.replace(BROKEN, "")))
-    read(shown, None)
+    read(grouped(shown), None)
     return found
 
 

@@ -1185,7 +1185,6 @@ def test_the_resolver_reads_each_form_of_media_query_a_browser_reads(
         "(max-width: 30rem) and",
         "SCREEN AND AND (MAX-WIDTH: 30REM)",
         "screen and(max-width: 30rem)",
-        "(max-width: 30rem",
         "max-width: 30rem)",
     ],
 )
@@ -1195,6 +1194,17 @@ def test_the_resolver_refuses_a_media_query_a_browser_drops(query: str) -> None:
     for view in (View(320), View(480)):
         with pytest.raises(UnreadCss):
             value_of(sheet, paragraph, "flex-wrap", view)
+        with pytest.raises(UnreadCss):
+            condition_holds(query, view)
+
+
+@pytest.mark.parametrize("query", ["(max-width: 30rem", "screen and (max-width: 30rem"])
+def test_the_resolver_refuses_a_media_query_left_open_before_its_block(query: str) -> None:
+    """Edge reads the block after `(max-width: 30rem` as part of the open bracket, so no rule
+    is drawn; the sheet is refused, and so is the query alone."""
+    with pytest.raises(UnreadCss):
+        read_sheet(f"@media {query} {{ p {{ flex-wrap: wrap; }} }}")
+    for view in (View(320), View(480)):
         with pytest.raises(UnreadCss):
             condition_holds(query, view)
 
@@ -1685,6 +1695,149 @@ def test_the_resolver_reads_text_left_open_as_a_browser_reads_it(
     declaration that holds it, as Edge reads each."""
     (paragraph,) = elements_of("<p>a</p>")
     assert value_of(read_sheet(css), paragraph, name, View(320)) == value
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        pytest.param("p { flex-wrap: nowrap; width: calc(1px; flex-wrap: wrap;", id="calc"),
+        pytest.param('p { flex-wrap: nowrap; background: url("a"; flex-wrap: wrap;', id="url"),
+        pytest.param(
+            "p { flex-wrap: nowrap; background: url('a'; flex-wrap: wrap;", id="url-single"
+        ),
+        pytest.param(
+            'p { flex-wrap: nowrap; background: url( "a"; flex-wrap: wrap;', id="url-space"
+        ),
+        pytest.param(
+            "p {\r\n flex-wrap: nowrap;\r\n width: calc(1px;\r\n flex-wrap: wrap;", id="crlf"
+        ),
+        pytest.param("p { flex-wrap: nowrap; width: CALC(1px; flex-wrap: wrap;", id="capital"),
+        pytest.param(
+            'p { flex-wrap: nowrap; background: URL("a"; flex-wrap: wrap;', id="url-capital"
+        ),
+        pytest.param('p { flex-wrap: nowrap; width: url("x"; flex-wrap: wrap;', id="url-width"),
+        pytest.param("p { flex-wrap: nowrap; color: var(--a; flex-wrap: wrap;", id="var"),
+        pytest.param("p { flex-wrap: nowrap; --x: [a; flex-wrap: wrap;", id="square"),
+        pytest.param(
+            "p { flex-wrap: nowrap; width: calc(min(1px, 2px); flex-wrap: wrap;", id="outer"
+        ),
+        pytest.param("p { flex-wrap: nowrap; width: calc(min(1px; flex-wrap: wrap;", id="inner"),
+        pytest.param(
+            "@media (min-width: 1px) { p { flex-wrap: nowrap; width: calc(1px; flex-wrap: wrap;",
+            id="media",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; width: calc(1px; } p { flex-wrap: wrap; }", id="brace"
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; width: calc(1px } 2px); } p { flex-wrap: wrap; }",
+            id="brace-then-closed",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @font-face { src: local(a; } p { flex-wrap: wrap; }",
+            id="font-face",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @keyframes k { to { transform: scale(1; } }"
+            " p { flex-wrap: wrap; }",
+            id="keyframes",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; width: calc(1px]; flex-wrap: wrap; }", id="other-closer"
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: [a); flex-wrap: wrap; }", id="square-other-closer"
+        ),
+        pytest.param("p { color: #111111; width: calc(1px; color: #222222); }", id="closed-later"),
+        pytest.param(
+            "p { color: #111111; width: calc(1px\\; color: #222222); }", id="escaped-semicolon"
+        ),
+        pytest.param(
+            "p { color: #111111; width: calc(1px\\} ); color: #222222; }", id="escaped-brace"
+        ),
+        pytest.param("p { flex-wrap: nowrap; } p:is(a { flex-wrap: wrap; }", id="selector"),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @media (min-width: 1px { p { flex-wrap: wrap; } }",
+            id="media-query",
+        ),
+    ],
+)
+def test_the_resolver_refuses_text_left_inside_a_bracket(css: str) -> None:
+    """Edge reads a `;` or a brace inside an open bracket as part of it, up to its closing
+    bracket or the end of the sheet, so `flex-wrap: wrap` after `calc(1px;` is never a
+    declaration."""
+    with pytest.raises(UnreadCss):
+        read_sheet(css)
+
+
+@pytest.mark.parametrize(
+    ("css", "value"),
+    [
+        pytest.param("p { flex-wrap: nowrap; flex-wrap: wrap;", "wrap", id="block"),
+        pytest.param('p { flex-wrap: nowrap; --x: "a; flex-wrap: wrap;', "nowrap", id="string"),
+        pytest.param("p { flex-wrap: nowrap; --x: url(a; flex-wrap: wrap;", "nowrap", id="url"),
+        pytest.param(
+            'p { flex-wrap: nowrap; background: url("a; flex-wrap: wrap;', "nowrap", id="url-string"
+        ),
+        pytest.param("p { flex-wrap: wrap; --x: f(a", "wrap", id="open-at-the-end"),
+        pytest.param("p { flex-wrap: wrap; --x: [a", "wrap", id="square-open-at-the-end"),
+        pytest.param(
+            "p { flex-wrap: nowrap; width: calc(1px); flex-wrap: wrap;", "wrap", id="calc"
+        ),
+        pytest.param(
+            'p { flex-wrap: nowrap; background: url("a"); flex-wrap: wrap;', "wrap", id="quoted-url"
+        ),
+        pytest.param("p { flex-wrap: nowrap; --x: a\\(; flex-wrap: wrap; }", "wrap", id="escaped"),
+        pytest.param("p { flex-wrap: nowrap; --x: a\\28 ; flex-wrap: wrap; }", "wrap", id="hex"),
+        pytest.param('p { flex-wrap: nowrap; --x: "("; flex-wrap: wrap; }', "wrap", id="quoted"),
+        pytest.param("p { flex-wrap: nowrap; --x: '['; flex-wrap: wrap; }", "wrap", id="single"),
+        pytest.param("p { flex-wrap: nowrap; /* ( */ flex-wrap: wrap; }", "wrap", id="comment"),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: url(a(b); flex-wrap: wrap; }", "wrap", id="bad-url"
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: url(a[b); flex-wrap: wrap; }", "wrap", id="in-url"
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: a); flex-wrap: wrap; }", "wrap", id="stray-closer"
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; --x: f([a] (b)); flex-wrap: wrap; }", "wrap", id="nested"
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } p:not(.a) { flex-wrap: wrap; }", "wrap", id="selector"
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @media (min-width: 1px) { p { flex-wrap: wrap; } }",
+            "wrap",
+            id="media-query",
+        ),
+    ],
+)
+def test_the_resolver_reads_a_closed_bracket_or_one_in_text_as_a_browser_reads_it(
+    css: str, value: str
+) -> None:
+    """A bracket closed before the `;`, or one escaped, quoted, in a comment or in a `url()`,
+    ends nothing, as Edge reads each."""
+    (paragraph,) = elements_of("<p>a</p>")
+    assert value_of(read_sheet(css), paragraph, "flex-wrap", View(320)) == value
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        ".places {flex-wrap:nowrap;--x:calc(1px;flex-wrap:wrap;",
+        '.places {flex-wrap:nowrap;width:url("x";flex-wrap:wrap;',
+    ],
+)
+def test_the_wrapping_check_refuses_a_wrap_left_inside_a_bracket(
+    rendered: dict[str, str], tail: str
+) -> None:
+    """Edge keeps the page links on one line once this text ends the stylesheet."""
+    page = rendered["parent, family"]
+    assert links_wrap(read_sheet(stylesheet()), page, View(320))
+    with pytest.raises(UnreadCss):
+        links_wrap(read_sheet(f"{stylesheet()}\n{tail}"), page, View(320))
 
 
 @pytest.mark.parametrize(

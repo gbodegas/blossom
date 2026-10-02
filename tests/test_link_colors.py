@@ -436,11 +436,35 @@ def test_the_resolver_refuses_an_escape_that_may_join_a_url(tail: str) -> None:
         'main a { content: "abc\n; color: #888888; }',
         'main a { content: "abc\\\r\n; color: #111111; }"; color: #888888; }',
         'main a { content: "abc\\41\n; color: #111111; }"; color: #888888; }',
+        "main a { color: #111111; width: calc(1px); color: #888888;",
+        "main a { color: #111111; --x: a\\(; color: #888888; }",
+        'main a { color: #111111; --x: "("; color: #888888; }',
     ],
 )
 def test_the_resolver_reads_text_left_open_as_a_browser_reads_it(css: str) -> None:
     (link,) = links_in('<main><a href="/w">w</a></main>')
     assert color_of(read_sheet(css), link, "link", View(320)) == "#888888"
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "main a { color: #888888; width: calc(1px; color: #111111;",
+        'main a { color: #888888; background: url("a"; color: #111111;',
+        ":root { --x: #111111; } :root { --x: f(a; b); }",
+        ":root { --x: #111111; } :root { --x: f(a; --y: b",
+    ],
+)
+def test_the_resolver_refuses_text_left_inside_a_bracket(css: str) -> None:
+    """Edge keeps `#888888` for the link, and reads `--x` as `f(a; b)`, the `;` inside it."""
+    with pytest.raises(UnreadCss):
+        read_sheet(css)
+
+
+@pytest.mark.parametrize("tail", ["f(a", "[a", "f([a]"])
+def test_the_resolver_reads_a_bracket_open_at_the_end_as_a_browser_reads_it(tail: str) -> None:
+    """Edge closes a bracket still open at the end of the sheet, and serializes `--x` as written."""
+    assert read_sheet(f":root {{ --x: #111111; }} :root {{ --x: {tail}").tokens["x"] == tail
 
 
 @pytest.mark.parametrize("width", WIDTHS)
