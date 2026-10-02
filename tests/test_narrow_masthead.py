@@ -46,6 +46,7 @@ from tests.support import (
     KEYWORDS,
     PAGE_HEADERS,
     STAND_INS,
+    SUBSTITUTION,
     Element,
     Rule,
     Selector,
@@ -258,9 +259,12 @@ def longhands(name: str, value: str) -> dict[str, str]:
     its width, ``place-items`` or ``place-self`` the alignment across a column with its
     first word, ``gap`` the space between items on a line with its last, and a padding,
     border or margin shorthand each side it reaches. A property of one keyword given any
-    other value sets nothing, as a browser drops it."""
+    other value sets nothing, as a browser drops it; a `SUBSTITUTION` or an escape there is
+    refused, since it may stand for a keyword."""
     taken = ONE_KEYWORD.get("overflow-wrap" if name == "word-wrap" else name)
     if taken is not None and value not in taken | KEYWORDS:
+        if SUBSTITUTION.search(value) or "\\" in value:
+            raise UnreadCss(value)
         return {}
     if name == "font":
         return {"font-size": value}
@@ -1349,6 +1353,11 @@ def test_the_resolver_reads_printable_ascii_and_passes_over_comments() -> None:
         ("box-sizing", "border-box", "padding-box"),
         ("overflow-wrap", "anywhere", "break-all"),
         ("width", "1px", "min(2px, !)"),
+        ("width", "1px", "var(--a) !x"),
+        ("width", "1px", "f(var(--a)) !x"),
+        ("flex-wrap", "wrap", "calc(1)"),
+        ("flex-wrap", "wrap", "myvar(--mode)"),
+        ("flex-wrap", "wrap", "-var(--mode)"),
     ],
 )
 def test_the_resolver_drops_a_declaration_a_browser_drops(
@@ -1360,6 +1369,47 @@ def test_the_resolver_drops_a_declaration_a_browser_drops(
     (paragraph,) = elements_of("<p>a</p>")
     sheet = read_sheet(f"p {{ {name}: {kept}; }} p {{ {name}: {dropped}; }}")
     assert value_of(sheet, paragraph, name, View(320)) == kept
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("flex-wrap", "var(--mode)"),
+        ("flex-wrap", "nowr\\61p"),
+        ("overflow-wrap", "VAR(--x)"),
+        ("word-wrap", "var(--x)"),
+        ("flex-direction", "env(x)"),
+        ("box-sizing", "attr(x)"),
+        ("flex-wrap", "--f(1)"),
+        ("box-sizing", "--f(1)"),
+        ("flex-wrap", "if(else: nowrap)"),
+    ],
+)
+def test_a_property_of_one_keyword_refuses_a_value_that_may_stand_for_one(
+    name: str, value: str
+) -> None:
+    """Edge reads `flex-wrap: var(--mode)` as the property's value, `nowrap` here, and
+    `nowr\\61p` as `nowrap`."""
+    with pytest.raises(UnreadCss):
+        read_sheet(f":root {{ --mode: nowrap; }} p {{ {name}: wrap; }} p {{ {name}: {value}; }}")
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "color: var(--ink, f(!))",
+        "color: VAR(--ink, f(!))",
+        "width: calc(var(--a) + f(!))",
+        "flex-wrap: env(x, f(!))",
+        "color: \\76 ar(--ink, f(!))",
+        "color: v\\61r(--ink, f(!))",
+        "color: \\45 nv(x, f(!))",
+    ],
+)
+def test_the_resolver_refuses_a_bang_inside_a_substitution(declaration: str) -> None:
+    """Edge keeps `color: var(--ink, f(!))`: the `!` sits in a fallback it may never use."""
+    with pytest.raises(UnreadCss):
+        style_rules(f"p {{ {declaration}; }}")
 
 
 def test_a_property_of_one_keyword_takes_its_other_name_and_every_propertys_keywords() -> None:
@@ -1400,6 +1450,55 @@ def test_the_resolver_refuses_a_bang_beside_an_escape() -> None:
         read_sheet("p { flex-wrap: nowrap !imp\\ortant; } p { flex-wrap: wrap; }")
 
 
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        pytest.param("flex-wrap: nowrap !\\69mportant", id="hex-letter-after-the-bang"),
+        pytest.param("flex-wrap: nowrap ! imp\\ortant", id="space-then-escaped-letter"),
+        pytest.param("flex-wrap: nowrap !/**/imp\\ortant", id="comment-then-escaped-letter"),
+        pytest.param("flex-wrap: nowrap \\!important", id="escaped-bang-important"),
+        pytest.param("--x: a \\!x", id="escaped-bang"),
+        pytest.param("--x: a\\!important", id="escaped-bang-touching"),
+        pytest.param("--x: a\\\\!important", id="escaped-backslash-then-important"),
+        pytest.param("--x: a\\ !important", id="escaped-space-then-important"),
+        pytest.param("--x: f(!) b !\\69mportant", id="custom-hex-letter-after-the-bang"),
+    ],
+)
+def test_the_resolver_refuses_a_bang_an_escape_touches(declaration: str) -> None:
+    """Edge reads each `!` here as part of an escape, or its `!important` with an escape
+    beside it, as the reader cannot."""
+    with pytest.raises(UnreadCss):
+        style_rules(f"p {{ {declaration}; flex-wrap: wrap; }}")
+
+
+@pytest.mark.parametrize(
+    ("declaration", "read"),
+    [
+        pytest.param("--x: f(!) a\\41", ("--x", "f(!) a\\41", False), id="bang-then-escape"),
+        pytest.param("--x: a\\41 f(!)", ("--x", "a\\41 f(!)", False), id="escape-then-bang"),
+        pytest.param("--x: foo\\ bar !important", ("--x", "foo\\ bar", True), id="important"),
+        pytest.param("--x: a\\41!important", ("--x", "a\\41", True), id="hex-then-important"),
+        pytest.param("--x: f(a\\) !x)", ("--x", "f(a\\) !x)", False), id="escaped-close"),
+        pytest.param("--x: [a\\] !x]", ("--x", "[a\\] !x]", False), id="escaped-square"),
+        pytest.param("--x: f(a\\29 !x)", ("--x", "f(a\\29 !x)", False), id="hex-close"),
+        pytest.param("--x: a\\( !x", None, id="escaped-open"),
+        pytest.param("--x: a\\28 !x", None, id="hex-open"),
+        pytest.param("--x: a\\0000028 !x", None, id="seven-digits-then-bang"),
+        pytest.param("--x: a\\41!x", None, id="hex-then-bang"),
+        pytest.param("--x: a\\\\!x", None, id="escaped-backslash-then-bang"),
+        pytest.param('content: "\\41" !x', None, id="string-escape-then-bang"),
+        pytest.param("flex-wrap: nowrap\\ !x", None, id="escaped-space-then-bang"),
+    ],
+)
+def test_the_resolver_reads_a_bang_apart_from_an_escape_as_a_browser_reads_it(
+    declaration: str, read: tuple[str, str, bool] | None
+) -> None:
+    """Edge reads an escape as text, an escaped bracket too, and keeps or drops each
+    declaration here by its `!` alone."""
+    (rule,) = style_rules(f"p {{ {declaration}; flex-wrap: wrap; }}")
+    assert rule.declarations == (*((read,) if read else ()), ("flex-wrap", "wrap", False))
+
+
 def test_the_resolver_keeps_a_bang_inside_a_string_or_a_url() -> None:
     """Edge keeps each of these declarations, and a string open at the end of the sheet is
     closed there, so the `!important` inside it is text."""
@@ -1438,6 +1537,11 @@ def titled(title: str | None) -> str:
         pytest.param("<p title>a</p>", '[title=""]', True, id="empty-on-a-bare-attribute"),
         pytest.param(titled(None), '[title=""]', False, id="empty-on-none"),
         pytest.param(titled("x"), "[title=\"x']", False, id="string-open-to-the-end"),
+        pytest.param(titled("--x"), "[title=--x]", True, id="two-hyphens"),
+        pytest.param(titled("--"), "[title=--]", True, id="two-hyphens-alone"),
+        pytest.param(titled("--1"), "[title=--1]", True, id="two-hyphens-then-a-digit"),
+        pytest.param(titled("---"), "[title=---]", True, id="three-hyphens"),
+        pytest.param(titled("-x"), "[title=-x]", True, id="one-hyphen"),
     ],
 )
 def test_the_resolver_reads_an_attribute_selector_as_a_browser_reads_it(
@@ -1448,7 +1552,9 @@ def test_the_resolver_reads_an_attribute_selector_as_a_browser_reads_it(
     assert (value_of(sheet, paragraph, "flex-wrap", View(320)) == "wrap") is matched
 
 
-@pytest.mark.parametrize("head", ["[title=]", "[title=1x]", "[title=x y]", "[title=], p"])
+@pytest.mark.parametrize(
+    "head", ["[title=]", "[title=1x]", "[title=x y]", "[title=], p", "[title=-1]", "[title=-]"]
+)
 def test_the_resolver_refuses_an_attribute_selector_a_browser_drops(head: str) -> None:
     with pytest.raises(UnreadCss):
         read_sheet(f"p{head} {{ flex-wrap: wrap; }}")
@@ -1579,6 +1685,71 @@ def test_the_resolver_reads_text_left_open_as_a_browser_reads_it(
     declaration that holds it, as Edge reads each."""
     (paragraph,) = elements_of("<p>a</p>")
     assert value_of(read_sheet(css), paragraph, name, View(320)) == value
+
+
+@pytest.mark.parametrize(
+    ("inside", "kept"),
+    [
+        pytest.param("a\\41 b", True, id="hex-space"),
+        pytest.param("a\\41\tb", True, id="hex-tab"),
+        pytest.param("a\\41\nb", True, id="hex-newline"),
+        pytest.param("a\\41\rb", True, id="hex-return"),
+        pytest.param("a\\41\fb", True, id="hex-feed"),
+        pytest.param("a\\41\r\nb", True, id="hex-crlf"),
+        pytest.param("a\\4A b", True, id="hex-capital"),
+        pytest.param("a\\000041 b", True, id="hex-six-digits"),
+        pytest.param("a\\41 ", True, id="hex-space-at-the-end"),
+        pytest.param('"a\\\r\nb"', True, id="quoted-escaped-crlf"),
+        pytest.param("a\\41  b", False, id="hex-two-spaces"),
+        pytest.param("a\\0000041 b", False, id="hex-seven-digits"),
+        pytest.param('a\\41 "b', False, id="hex-space-then-quote"),
+        pytest.param("a\\41 (b", False, id="hex-space-then-bracket"),
+        pytest.param("a\\41\r\n b", False, id="hex-crlf-then-space"),
+        pytest.param("a\\\r\nb", False, id="escaped-crlf"),
+        pytest.param("a\\\n", False, id="escaped-newline-at-the-end"),
+        pytest.param("a\\\r\n", False, id="escaped-crlf-at-the-end"),
+        pytest.param("a\\\f", False, id="escaped-feed-at-the-end"),
+        pytest.param("a\\\n ", False, id="escaped-newline-then-space"),
+    ],
+)
+def test_the_resolver_reads_a_hex_escape_in_a_url_as_a_browser_reads_it(
+    inside: str, kept: bool
+) -> None:
+    """Edge reads a hex escape in a `url()` with the one space after it, a CRLF being one,
+    and drops a `url()` with a backslash before a newline."""
+    (paragraph,) = elements_of("<p>a</p>")
+    written = f"url({inside}) #ffffff"
+    sheet = read_sheet(f"p {{ background: #ffeeee; }} p {{ background: {written}; }}")
+    expected = written.lower() if kept else "#ffeeee"
+    assert value_of(sheet, paragraph, "background", View(320)) == expected
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize(
+    ("cut", "value"),
+    [
+        pytest.param("\\\r\n", "wrap", id="escaped-crlf"),
+        pytest.param("\\\r", "wrap", id="escaped-return"),
+        pytest.param("\\\f", "wrap", id="escaped-feed"),
+        pytest.param("\\41\n", "wrap", id="hex-newline"),
+        pytest.param("\\41\r\n", "wrap", id="hex-crlf"),
+        pytest.param("\\41\r", "wrap", id="hex-return"),
+        pytest.param("\\41\f", "wrap", id="hex-feed"),
+        pytest.param("\\000041\n", "wrap", id="hex-six-digits-newline"),
+        pytest.param("\\0000041\n", "nowrap", id="hex-seven-digits-newline"),
+        pytest.param("\\41\t\n", "nowrap", id="hex-tab-then-newline"),
+        pytest.param("\\41\r\n\n", "nowrap", id="hex-crlf-then-newline"),
+        pytest.param("\r\n", "nowrap", id="crlf"),
+    ],
+)
+def test_the_resolver_reads_an_escaped_newline_in_a_string_as_a_browser_reads_it(
+    quote: str, cut: str, value: str
+) -> None:
+    """Edge reads an escaped CRLF, and the newline a hex escape takes, as part of the
+    string, so the string goes on to its closing quote."""
+    (paragraph,) = elements_of("<p>a</p>")
+    css = f"p {{ content: {quote}abc{cut}; flex-wrap: nowrap; }}{quote}; flex-wrap: wrap; }}"
+    assert value_of(read_sheet(css), paragraph, "flex-wrap", View(320)) == value
 
 
 def test_the_resolver_refuses_a_selector_a_newline_cuts_a_string_of() -> None:

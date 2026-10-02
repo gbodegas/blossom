@@ -1956,7 +1956,7 @@ PIECE = re.compile(
       | (?P<class>\.[\w-]+)
       | (?P<attribute>\[(?P<name>[\w-]+)(?:=(?P<value>
             "(?:[^"\\]|\\[\s\S])*" | '(?:[^'\\]|\\[\s\S])*'
-            | -?(?:[_a-zA-Z]|{ESCAPE})(?:[\w-]|{ESCAPE})*))?\])
+            | (?:--|-?(?:[_a-zA-Z]|{ESCAPE}))(?:[\w-]|{ESCAPE})*))?\])
       | (?P<pseudo>::?[\w-]+(?:\([^()]*\))?)
       | (?P<tag>[a-zA-Z][\w-]*|\*)""",
     re.VERBOSE,
@@ -2081,9 +2081,20 @@ def selector(text: str) -> Selector:
     return Selector(tuple(parts))
 
 
-SHIELD = {";": "", "{": "", "}": "", ",": "", ":": "", "!": ""}
-"""Characters that end, split or weigh a part of a stylesheet, as they stand inside a string
-or an unquoted ``url()``, where they are only text."""
+SHIELD = {
+    ";": "",
+    "{": "",
+    "}": "",
+    ",": "",
+    ":": "",
+    "!": "",
+    "(": "",
+    ")": "",
+    "[": "",
+    "]": "",
+}
+"""Characters that end, split, group or weigh a part of a stylesheet, as they stand inside a
+string or an unquoted ``url()``, where they are only text."""
 
 BROKEN = ""
 """What `shielded` puts for a string a newline ends, or an unquoted ``url()`` a browser cannot
@@ -2091,14 +2102,22 @@ read: the declaration that holds one is dropped, as a browser drops it."""
 
 STAND_INS = frozenset({*SHIELD.values(), BROKEN})
 
+STRING_ESCAPE = re.compile(rf"{ESCAPE}|\\(?:\r\n|[\n\r\f])")
+"""One CSS escape in a string, as `unescaped` reads it: an `ESCAPE`, or an escaped newline,
+a CRLF being one."""
+
+SUBSTITUTION = re.compile(r"(?<![\w-])(?:var|env|attr|if|--[\w-]*)\(", re.IGNORECASE)
+"""A function a browser puts another value in place of once the page is styled, one of its
+own names or a dashed one."""
+
 
 def shielded(css: str) -> str:
     """``css`` with each comment a space, as a browser splits words at one, and each
     character of ``SHIELD`` inside a quoted string or an unquoted ``url()`` stood in for, so
-    a ``/*`` or ``;`` there is read as text. A string ends at its closing quote, a newline,
-    or the end of ``css``, where it is closed; one a newline ends is `BROKEN`, and so is an
-    unquoted ``url()`` that `unreadable_url` finds. A stand-in written outside a comment is
-    refused, since it would be read as the character it stands in for."""
+    a ``/*`` or ``;`` there is read as text. A string ends at its closing quote, a newline no
+    `STRING_ESCAPE` takes, or the end of ``css``, where it is closed; one a newline ends is
+    `BROKEN`, and so is an unquoted ``url()`` that `unreadable_url` finds. A stand-in written
+    outside a comment is refused, since it would be read as the character it stands in for."""
     kept: list[str] = []
     index = 0
     while index < len(css):
@@ -2112,6 +2131,7 @@ def shielded(css: str) -> str:
             quote is None
             and css[index : index + 4].lower() == "url("
             and css[index + 4 :].lstrip()[:1] not in ("'", '"')
+            and not joined_name(css, index)
         )
         if quote is None and not url:
             if css[index] in STAND_INS:
@@ -2121,7 +2141,8 @@ def shielded(css: str) -> str:
             continue
         end, closing = (index + 4, ")") if url else (index + 1, quote)
         while end < len(css) and css[end] != closing and (url or css[end] not in "\n\r\f"):
-            end += 2 if css[end] == "\\" else 1
+            escape = STRING_ESCAPE.match(css, end)
+            end = escape.end() if escape else end + 1
         cut = not url and end < len(css) and css[end] != closing
         end = min(end + (0 if cut else 1), len(css))
         if STAND_INS.intersection(css[index:end]):
@@ -2134,12 +2155,24 @@ def shielded(css: str) -> str:
     return "".join(kept)
 
 
+def joined_name(css: str, index: int) -> bool:
+    """Whether a name, or the ``#`` or ``@`` that opens one, ends at ``index`` of ``css``, so a
+    ``url(`` there is part of a longer name. An escape that ends there is refused, since the
+    character it stands for may join the name."""
+    before = css[max(index - 9, 0) : index]
+    if re.search(r"\\(?:[^0-9a-fA-F\n\r\f]|[0-9a-fA-F]{1,6}(?:\r\n|[ \t\n\r\f]))?\Z", before):
+        raise UnreadCss(before)
+    return re.search(r"[\w#@-]\Z", before) is not None
+
+
 def unreadable_url(inside: str) -> bool:
     """Whether an unquoted ``url()``, from after its bracket to its end, is one a browser
     cannot read: a space between two of its parts, or a quote or an opening bracket inside
-    it, each unescaped. A backslash cannot escape a newline, which stays a space."""
-    plain = re.sub(r"\\[^\n\r\f]", "x", inside).removesuffix(")").strip(CSS_SPACES)
-    return re.search(r"[ \t\n\r\f\"'(]", plain) is not None
+    it, each unescaped, or a backslash before a newline, which no `ESCAPE` takes. A hex
+    escape takes the one space after it."""
+    escaped = re.sub(ESCAPE, "x", inside)
+    plain = escaped.removesuffix(")").strip(CSS_SPACES)
+    return bool(re.search(r"\\[\n\r\f]", escaped) or re.search(r"[ \t\n\r\f\"'(]", plain))
 
 
 def unshielded(text: str) -> str:
@@ -2174,17 +2207,24 @@ IMPORTANT = re.compile(r"\s*!\s*important$", re.IGNORECASE)
 def loose_bang(name: str, value: str) -> bool:
     """Whether a browser drops a declaration for a ``!`` left in its value once its
     ``!important`` is taken off: one anywhere in a property's value, and one outside any
-    bracket in a custom property's. A ``!`` beside an escape is refused, since an escaped
-    letter of ``important`` is read as the letter."""
+    bracket in a custom property's. An `ESCAPE` is text, an escaped bracket too. A ``!``
+    that is escaped, or with an escape in the word after it, is refused, since an escaped
+    letter of ``important`` is read as the letter, and so is one inside a bracket of a
+    value with a `SUBSTITUTION`, whose fallback may go unused."""
     if "!" not in value:
         return False
-    if "\\" in value:
-        raise UnreadCss(value)
     depth = 0
-    for character in value:
-        depth = max(depth + (character in "([") - (character in ")]"), 0)
-        if character == "!" and (depth == 0 or not name.startswith("--")):
+    for found in re.finditer(rf"{ESCAPE}|![ \t\n\r\f]*[\w-]*\\?|[\s\S]", value):
+        part = found.group()
+        if part == "\\!" or (part.startswith("!") and part.endswith("\\")):
+            raise UnreadCss(value)
+        if part.startswith("!") and depth == 0:
             return True
+        if part.startswith("!") and not name.startswith("--"):
+            if SUBSTITUTION.search(unescaped(value)):
+                raise UnreadCss(value)
+            return True
+        depth = max(depth + (part in "([") - (part in ")]"), 0)
     return False
 
 
@@ -2206,8 +2246,9 @@ def style_rules(css: str) -> list[StyleRule]:
     for elements and are passed over; a media query inside another, any other at-rule, a
     rule nested inside another, and a character outside a comment that `plain_ascii` refuses
     are refused. A declaration a browser drops for a `BROKEN` string or a `loose_bang` is
-    dropped; a selector or media query that holds a `BROKEN` string keeps it, which
-    `plain_ascii` refuses where either is read."""
+    dropped, and one whose ``!important`` follows a backslash is refused; a selector or
+    media query that holds a `BROKEN` string keeps it, which `plain_ascii` refuses where
+    either is read."""
     found: list[StyleRule] = []
 
     def read(part: str, media: str | None) -> None:
@@ -2228,6 +2269,8 @@ def style_rules(css: str) -> list[StyleRule]:
             for line in inside.split(";"):
                 name, _, value = line.partition(":")
                 value, important = IMPORTANT.subn("", value.strip())
+                if important and value.endswith("\\"):
+                    raise UnreadCss(line)
                 name = name.strip()
                 if value and BROKEN not in line and not loose_bang(name, value):
                     named = name if name.startswith("--") else name.lower()

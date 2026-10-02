@@ -376,13 +376,56 @@ def test_the_resolver_reads_no_other_letter_or_digit_as_ascii() -> None:
         ("f(a) !x", "#111111"),
         ("#222222) !x", "#111111"),
         ("f(!) #222222", None),
+        ("f(!) a\\41", None),
+        ("a\\( !x", "#111111"),
+        ("url(a\\41 b)", None),
+        ("url(a b)", "#111111"),
+        ('"(" !x', "#111111"),
+        ('f(")" !x)', None),
+        ("'[' !x", "#111111"),
+        ('f("]" !x)', None),
+        ("url(a[) !x", "#111111"),
+        ("f(url(a]) !x)", None),
+        ("f(url(a) !x)", None),
+        ("myurl(a b)", None),
+        ("myURL(a b)", None),
+        ("-url(a b)", None),
+        ("_url(a b)", None),
+        ("2url(a b)", None),
+        ("(url(a b))", "#111111"),
+        ("a url(a b)", "#111111"),
+        ("a\nurl(a b)", "#111111"),
+        ("a\r\nurl(a b)", "#111111"),
+        ("a\nurl(a)", None),
+        ("a\\\nurl(a b)", "#111111"),
+        ("#url(a b)", None),
+        ("@url(a b)", None),
     ],
 )
 def test_the_resolver_drops_a_custom_property_a_browser_drops(tail: str, token: str | None) -> None:
     """Edge drops a custom property with a `!` left outside any brackets once its
-    `!important` is taken off, and keeps one whose `!` is inside a function."""
+    `!important` is taken off, or with a `url()` it cannot read, and keeps one whose `!` is
+    inside a function. An escape is text, an escaped bracket too, and so is a bracket in a
+    string or a `url()`; `url(` ending a longer name is a function."""
     sheet = read_sheet(f":root {{ --x: #111111; }} :root {{ --x: {tail}; }}")
     assert sheet.tokens["x"] == (token or tail)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "\\61 url(a b)",
+        "\\61\nurl(a b)",
+        "\\000061\r\nurl(a b)",
+        "a\\ url(a b)",
+        "\\(url(a b)",
+        "a\\url(a b)",
+    ],
+)
+def test_the_resolver_refuses_an_escape_that_may_join_a_url(tail: str) -> None:
+    """Edge reads `\\61 url(a b)` as a function named `aurl`, the escape joining the name."""
+    with pytest.raises(UnreadCss):
+        read_sheet(f":root {{ --x: {tail}; }}")
 
 
 @pytest.mark.parametrize(
@@ -391,6 +434,8 @@ def test_the_resolver_drops_a_custom_property_a_browser_drops(tail: str, token: 
         'main a { color: #888888; content: "abc',
         "main a { color: #888888; ",
         'main a { content: "abc\n; color: #888888; }',
+        'main a { content: "abc\\\r\n; color: #111111; }"; color: #888888; }',
+        'main a { content: "abc\\41\n; color: #111111; }"; color: #888888; }',
     ],
 )
 def test_the_resolver_reads_text_left_open_as_a_browser_reads_it(css: str) -> None:
