@@ -5,8 +5,10 @@ modules do not import each other; cross-imports between test files make the
 suite's collection order matter, which it should not. That covers the source
 records, the scripted models, the two-assignment graph the plan graph tests
 drive, the fixture-week plans and route override the application tests
-drive, the browser on her page with its cards and forms, and the small store
-her reports and the family's checks are tested in.
+drive, the browser on her page with its cards and forms, the small store
+her reports and the family's checks are tested in, and the reading of a page
+and its stylesheet that the layout and link color tests work out the cascade
+with.
 
 This is a plain module rather than `conftest.py`: importing from a conftest
 makes the same file reachable under two module names, which mypy rejects.
@@ -1790,3 +1792,432 @@ def as_stored(store: ProjectStateStore, table: str) -> list[tuple[object, ...]]:
         return connection.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()  # noqa: S608
     finally:
         connection.text_factory = kept
+
+
+# ------------------------------------------------------------- a page and its stylesheet
+
+
+class UnreadCss(AssertionError):
+    """A part of a stylesheet the resolver below cannot evaluate. Raised, never guessed at,
+    since a guess either way could pass a page that some screen draws differently."""
+
+
+@dataclasses.dataclass(frozen=True)
+class View:
+    """One reader's screen: its width, the browser's text size (what a media query's `rem`
+    is measured in), the root element's text size (what a property's `rem` is measured in),
+    and whether it asks for less motion."""
+
+    width: int
+    browser_text: int = 16
+    root_text: int = 16
+    reduced_motion: bool = False
+
+
+@dataclasses.dataclass(eq=False)
+class Element:
+    """An element of a page, the same only as itself."""
+
+    tag: str
+    attributes: dict[str, str]
+    parent: "Element | None"
+    text: str = ""
+    position: int = 0
+    """Its place among its parent's elements, from 1; 0 where it is not known."""
+
+    @property
+    def classes(self) -> frozenset[str]:
+        return frozenset(self.attributes.get("class", "").split())
+
+    def ancestors(self) -> list["Element"]:
+        found, above = [], self.parent
+        while above is not None:
+            found.append(above)
+            above = above.parent
+        return found
+
+    def within(self, test: "Element") -> bool:
+        return self is test or any(above is test for above in self.ancestors())
+
+
+class Elements(HTMLParser):
+    """Every element of a page, each with the chain of elements above it."""
+
+    VOID = frozenset({"input", "br", "img", "meta", "link", "hr", "source"})
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.open: list[Element] = []
+        self.found: list[Element] = []
+        self.children: dict[int, int] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        parent = self.open[-1] if self.open else None
+        place = self.children[id(parent)] = self.children.get(id(parent), 0) + 1
+        element = Element(tag, {name: value or "" for name, value in attrs}, parent, "", place)
+        self.found.append(element)
+        if tag not in self.VOID:
+            self.open.append(element)
+
+    def handle_endtag(self, tag: str) -> None:
+        for index in range(len(self.open) - 1, -1, -1):
+            if self.open[index].tag == tag:
+                del self.open[index:]
+                return
+
+    def handle_data(self, data: str) -> None:
+        if self.open:
+            self.open[-1].text += data
+
+
+def elements_of(page: str) -> list[Element]:
+    parser = Elements()
+    parser.feed(page)
+    return parser.found
+
+
+NEVER_ON = frozenset({"hover", "focus", "focus-visible", "focus-within", "active"})
+"""States a page at rest is never in."""
+LINK_STATES = frozenset({"link", "visited"})
+
+
+@dataclasses.dataclass(frozen=True)
+class Compound:
+    tag: str | None = None
+    ids: tuple[str, ...] = ()
+    classes: tuple[str, ...] = ()
+    attributes: tuple[tuple[str, str | None], ...] = ()
+    negated: tuple["Compound", ...] = ()
+    never: bool = False
+    states: tuple[str, ...] = ()
+    """Each `:root`, `:link`, `:visited` and `:first-child` it asks for, as written."""
+    places: tuple[int, ...] = ()
+    """Each place among its parent's elements that a `:first-child` or `:nth-child(n)` asks
+    for."""
+
+    @property
+    def specificity(self) -> tuple[int, int, int]:
+        inner = [item.specificity for item in self.negated]
+        return (
+            len(self.ids) + sum(i[0] for i in inner),
+            len(self.classes)
+            + len(self.attributes)
+            + len(self.states)
+            + len(self.places)
+            + sum(i[1] for i in inner),
+            (1 if self.tag else 0) + sum(i[2] for i in inner),
+        )
+
+    def matches(self, element: Element, state: str = "link") -> bool:
+        """Whether ``element`` is matched, a link being in ``state``. `:link` and `:visited`
+        match only a link, an `a` or `area` with an `href`."""
+        if self.never or ("root" in self.states and element.tag != "html"):
+            return False
+        if self.tag is not None and self.tag != element.tag:
+            return False
+        if any(element.attributes.get("id") != one for one in self.ids):
+            return False
+        if any(element.position != one for one in self.places):
+            return False
+        if not set(self.classes) <= element.classes:
+            return False
+        for name, wanted in self.attributes:
+            if name not in element.attributes:
+                return False
+            if wanted is not None and element.attributes[name] != wanted:
+                return False
+        asked = {one for one in self.states if one in LINK_STATES}
+        a_link = element.tag in ("a", "area") and "href" in element.attributes
+        if asked and (not a_link or asked != {state}):
+            return False
+        return not any(item.matches(element, state) for item in self.negated)
+
+
+PIECE = re.compile(
+    r"""(?P<not>:not\((?P<inner>[^()]*)\))
+      | (?P<id>\#[\w-]+)
+      | (?P<class>\.[\w-]+)
+      | (?P<attribute>\[(?P<name>[\w-]+)(?:=["']?(?P<value>[^"'\]]*)["']?)?\])
+      | (?P<pseudo>::?[\w-]+(?:\([^()]*\))?)
+      | (?P<tag>[a-zA-Z][\w-]*|\*)""",
+    re.VERBOSE,
+)
+
+
+def compound(text: str) -> Compound:
+    """One compound selector. A pseudo-element, or a state a page at rest is never in, never
+    matches; a pseudo-class other than `:root`, `:link`, `:visited`, `:first-child`,
+    `:nth-child()` of a number, and `:not()` is refused."""
+    tag: str | None = None
+    ids: list[str] = []
+    classes: list[str] = []
+    attributes: list[tuple[str, str | None]] = []
+    negated: list[Compound] = []
+    never = False
+    states: list[str] = []
+    places: list[int] = []
+    position = 0
+    while position < len(text):
+        piece = PIECE.match(text, position)
+        if piece is None:
+            raise UnreadCss(text)
+        position = piece.end()
+        if piece["not"]:
+            negated.append(compound(piece["inner"].strip()))
+        elif piece["id"]:
+            ids.append(piece["id"][1:])
+        elif piece["class"]:
+            classes.append(piece["class"][1:])
+        elif piece["attribute"]:
+            attributes.append((piece["name"].lower(), piece["value"]))
+        elif piece["pseudo"]:
+            name = piece["pseudo"].lstrip(":").lower()
+            if piece["pseudo"].startswith("::") or name in NEVER_ON:
+                never = True
+            elif name in LINK_STATES | {"root"}:
+                states.append(name)
+            elif name == "first-child" or re.fullmatch(r"nth-child\(\s*\d+\s*\)", name):
+                places.append(int(re.sub(r"\D", "", name) or 1))
+            else:
+                raise UnreadCss(text)
+        elif piece["tag"] and piece["tag"] != "*":
+            tag = piece["tag"].lower()
+    return Compound(
+        tag,
+        tuple(ids),
+        tuple(classes),
+        tuple(attributes),
+        tuple(negated),
+        never,
+        tuple(states),
+        tuple(places),
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class Selector:
+    parts: tuple[tuple[str, Compound], ...]
+    """Each compound with the combinator that joins it to the one before: a space or ``>``."""
+
+    @property
+    def specificity(self) -> tuple[int, int, int]:
+        each = [item.specificity for _, item in self.parts]
+        return (sum(i[0] for i in each), sum(i[1] for i in each), sum(i[2] for i in each))
+
+    def matches(self, element: Element, state: str = "link") -> bool:
+        """Whether ``element`` is matched, itself a link in ``state`` and any link above it
+        unvisited."""
+
+        def climb(index: int, at: Element) -> bool:
+            joiner, item = self.parts[index]
+            if not item.matches(at, state if index == len(self.parts) - 1 else "link"):
+                return False
+            if index == 0:
+                return True
+            above = at.ancestors()
+            reach = above[:1] if joiner == ">" else above
+            return any(climb(index - 1, candidate) for candidate in reach)
+
+        return climb(len(self.parts) - 1, element)
+
+
+def selector(text: str) -> Selector:
+    """One complex selector, joined by spaces and ``>``; a sibling combinator is refused, and
+    so is what a browser drops: an empty selector, or a ``>`` with no compound on a side."""
+    parts: list[tuple[str, Compound]] = []
+    joiner = " "
+    for piece in re.findall(r"[>+~]|[^\s>+~]+", unshielded(text).strip()):
+        if piece in ("+", "~"):
+            raise UnreadCss(text)
+        if piece == ">":
+            if joiner == ">" or not parts:
+                raise UnreadCss(text)
+            joiner = ">"
+            continue
+        parts.append((joiner, compound(piece)))
+        joiner = " "
+    if joiner == ">" or not parts:
+        raise UnreadCss(text)
+    return Selector(tuple(parts))
+
+
+SHIELD = {";": "", "{": "", "}": "", ",": "", ":": ""}
+"""Characters that end or split a part of a stylesheet, as they stand inside a string or an
+unquoted ``url()``, where they are only text."""
+
+
+def shielded(css: str) -> str:
+    """``css`` with each comment a space, as a browser splits words at one, and each
+    character of ``SHIELD`` inside a quoted string or an unquoted ``url()`` stood in for, so
+    a ``/*`` or ``;`` there is read as text."""
+    kept: list[str] = []
+    index = 0
+    while index < len(css):
+        if css.startswith("/*", index):
+            end = css.find("*/", index + 2)
+            index = len(css) if end < 0 else end + 2
+            kept.append(" ")
+            continue
+        quote = css[index] if css[index] in "\"'" else None
+        url = (
+            quote is None
+            and css[index : index + 4].lower() == "url("
+            and css[index + 4 :].lstrip()[:1] not in ("'", '"')
+        )
+        if quote is None and not url:
+            kept.append(css[index])
+            index += 1
+            continue
+        end, closing = (index + 4, ")") if url else (index + 1, quote)
+        while end < len(css) and css[end] != closing:
+            end += 2 if css[end] == "\\" else 1
+        end = min(end + 1, len(css))
+        kept.append("".join(SHIELD.get(character, character) for character in css[index:end]))
+        index = end
+    return "".join(kept)
+
+
+def unshielded(text: str) -> str:
+    for character, stand_in in SHIELD.items():
+        text = text.replace(stand_in, character)
+    return text
+
+
+def blocks(css: str) -> list[tuple[str, str]]:
+    """Each outermost block of ``css`` as what comes before its brace and what is inside."""
+    found: list[tuple[str, str]] = []
+    depth, after, opened = 0, 0, 0
+    for index, character in enumerate(css):
+        if character == "{":
+            if depth == 0:
+                opened = index
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                found.append((css[after:opened].strip(), css[opened + 1 : index]))
+                after = index + 1
+    return found
+
+
+IMPORTANT = re.compile(r"\s*!\s*important$", re.IGNORECASE)
+
+
+@dataclasses.dataclass(frozen=True)
+class StyleRule:
+    """One style rule: its selector list as written, its declarations in source order (each
+    a name, lowercase unless it is a custom property's, the value as written, and whether it
+    is important), its place in the sheet, and the media condition it sits under, ``None``
+    for one that holds everywhere."""
+
+    selectors: str
+    declarations: tuple[tuple[str, str, bool], ...]
+    order: int
+    media: str | None
+
+
+def style_rules(css: str) -> list[StyleRule]:
+    """Every style rule of ``css``, in source order. Font faces and keyframes hold no rules
+    for elements and are passed over; a media query inside another, any other at-rule, and
+    a rule nested inside another are refused."""
+    found: list[StyleRule] = []
+
+    def read(part: str, media: str | None) -> None:
+        for before, inside in blocks(part):
+            at = before.lower()
+            if at.startswith(("@font-face", "@keyframes")):
+                continue
+            if at.startswith("@media"):
+                if media is not None:
+                    msg = f"a media query inside {media}"
+                    raise UnreadCss(msg)
+                read(inside, before[len("@media") :].strip())
+                continue
+            if before.startswith("@") or "{" in inside:
+                raise UnreadCss(before)
+            declared = []
+            for line in inside.split(";"):
+                name, _, value = line.partition(":")
+                value, important = IMPORTANT.subn("", value.strip())
+                name = name.strip()
+                if value:
+                    named = name if name.startswith("--") else name.lower()
+                    declared.append((named, unshielded(value), important > 0))
+            found.append(StyleRule(before, tuple(declared), len(found) + 1, media))
+
+    read(shielded(css), None)
+    return found
+
+
+KEYWORDS = frozenset({"inherit", "initial", "unset", "revert", "revert-layer"})
+"""The values any property takes, which name another value rather than give one."""
+
+
+@dataclasses.dataclass(frozen=True)
+class Rule:
+    """One declaration as the cascade weighs it: the selector that carries it, its value,
+    its place in the sheet, the media condition it sits under, and whether it is
+    important."""
+
+    chosen: Selector
+    value: str
+    order: int
+    media: str | None
+    important: bool = False
+
+
+def winner(rules: Iterable[Rule], view: View) -> Rule | None:
+    """Among rules that reach one element, the one the cascade settles on for ``view``: an
+    important one over a normal one, then the more specific, then the later."""
+    found: Rule | None = None
+    for rule in rules:
+        if holds(rule.media, view) and (
+            found is None
+            or (rule.important, rule.chosen.specificity, rule.order)
+            > (found.important, found.chosen.specificity, found.order)
+        ):
+            found = rule
+    return found
+
+
+def media_length(value: str, view: View) -> float:
+    """A length in a media query, in pixels: its `rem` and `em` are the browser's text size."""
+    found = re.fullmatch(r"(\d*\.?\d+)(px|rem|em)", value.strip().lower())
+    if found is None:
+        raise UnreadCss(value)
+    return float(found.group(1)) * (1 if found.group(2) == "px" else view.browser_text)
+
+
+def holds(condition: str | None, view: View) -> bool:
+    """Whether a media condition holds on ``view``. A rule outside any media query holds
+    everywhere; a list holds when any of its queries does."""
+    if condition is None:
+        return True
+    return any(one_query_holds(query.strip(), view) for query in condition.split(","))
+
+
+def one_query_holds(query: str, view: View) -> bool:
+    """Whether one media query holds on ``view``. Its words, features, values and units are
+    read in any case, as a browser reads them."""
+    read = query.lower()
+    result = True
+    for word in re.sub(r"\([^)]*\)", " ", read).split():
+        if word == "print":
+            result = False
+        elif word not in ("and", "only", "screen", "all"):
+            raise UnreadCss(query)
+    features = re.findall(r"\(\s*([\w-]+)\s*:\s*([^)]+?)\s*\)", read)
+    if len(features) != read.count("("):
+        raise UnreadCss(query)
+    for name, value in features:
+        if name == "min-width":
+            result = result and view.width >= media_length(value, view)
+        elif name == "max-width":
+            result = result and view.width <= media_length(value, view)
+        elif name == "prefers-reduced-motion":
+            if value not in ("reduce", "no-preference"):
+                raise UnreadCss(query)
+            result = result and (value == "reduce") == view.reduced_motion
+        else:
+            raise UnreadCss(query)
+    return result

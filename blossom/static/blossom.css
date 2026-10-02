@@ -114,6 +114,7 @@ summary {
 
 .masthead {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -143,8 +144,14 @@ summary {
   color: var(--blue-deeper);
 }
 
+/* The page links and the sign-out control wrap as whole controls when they are wider
+   together than the line: on a phone with large text, or beside the brand on a tablet with
+   large text. Where they fit one line, they stay on it. When the brand and the links don't
+   fit one row, as just above the narrow layout with the page's text doubled, the masthead
+   wraps and the links take a line of their own. */
 .places {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.35rem;
 }
 
@@ -1168,15 +1175,54 @@ form.inline button {
   text-align: center;
 }
 
+/* Add assignments keeps its card's side insets to a share of the screen's width, so a date
+   field has room for its text when the page's text is doubled on a screen just wider than
+   the narrow layout. */
+#add-assignments > .panel {
+  padding-inline: min(1.6rem, 6vw);
+}
+
 @media (max-width: 30rem) {
+  /* The masthead keeps its side padding to a share of the screen's width, its ordinary
+     1.25rem on a 320 px screen, so with large text and a reader's wider letter spacing the
+     wordmark still has a line wide enough for it. */
   .masthead {
     flex-direction: column;
     align-items: flex-start;
+    padding-inline: min(1.25rem, 6.25vw);
+  }
+
+  /* With the masthead a column, the brand has the line to itself, and the wordmark goes
+     under the mark when the two are wider together than the line. In a row the brand
+     keeps one line and the page links give way. */
+  .brand {
+    flex-wrap: wrap;
   }
 
   article,
   .panel {
     padding: 1.1rem 1.2rem;
+  }
+
+  /* A date field shows the whole date being edited only when its box is wide enough for
+     it, which on a phone with large text and a reader's wider letter spacing takes nearly
+     the whole screen. On a narrow screen Add assignments sits without its card's side
+     insets and reaches into the page's side margin, leaving 4% of the screen's width at
+     each edge, and its fields keep their side padding to a share of the screen's width. */
+  #add-assignments > .panel {
+    margin-inline: min(0px, 4vw - 1.25rem);
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  #add-assignments input,
+  #add-assignments select,
+  #add-assignments textarea {
+    padding-inline: min(0.85rem, 2vw);
   }
 }
 
@@ -1209,11 +1255,23 @@ select {
   min-height: 2.75rem;
 }
 
+/* A column is 13rem or wider where 13rem fits, and never wider than the form, so a phone
+   with large text gets one column the width of the card. */
 .entry {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr));
   gap: 0.75rem 1rem;
   align-items: end;
+}
+
+/* On a phone with large text, a word such as "assignments" in a button or in the fold's
+   summary is wider than its line. The summary, labels and buttons of Add assignments break
+   such a word where they must, so no control runs past the screen's edge; a line that fits
+   is as it was. */
+#add-assignments > summary,
+#add-assignments label,
+#add-assignments button {
+  overflow-wrap: anywhere;
 }
 
 .entry .actions {
