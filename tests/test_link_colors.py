@@ -368,6 +368,182 @@ def test_the_resolver_reads_no_other_letter_or_digit_as_ascii() -> None:
         read_sheet("footer a { color: rgb(\u0661\u0662\u0660, 0, 0); }")
 
 
+@pytest.mark.parametrize(
+    ("tail", "token"),
+    [
+        ("#222222 !x", "#111111"),
+        ("#222222 !importantx", "#111111"),
+        ("f(a) !x", "#111111"),
+        ("#222222) !x", "#111111"),
+        ("f(!) #222222", None),
+        ("f(!) a\\41", None),
+        ("a\\( !x", "#111111"),
+        ("url(a\\41 b)", None),
+        ("url(a b)", "#111111"),
+        ('"(" !x', "#111111"),
+        ('f(")" !x)', None),
+        ("'[' !x", "#111111"),
+        ('f("]" !x)', None),
+        ("url(a[) !x", "#111111"),
+        ("f(url(a]) !x)", None),
+        ("f(url(a) !x)", None),
+        ("myurl(a b)", None),
+        ("myURL(a b)", None),
+        ("-url(a b)", None),
+        ("_url(a b)", None),
+        ("2url(a b)", None),
+        ("(url(a b))", "#111111"),
+        ("a url(a b)", "#111111"),
+        ("a\nurl(a b)", "#111111"),
+        ("a\r\nurl(a b)", "#111111"),
+        ("a\nurl(a)", None),
+        ("a\\\nurl(a b)", "#111111"),
+        ("#url(a b)", None),
+        ("@url(a b)", None),
+        ("u\\72l (a b)", None),
+        ("f([) !x])", "#111111"),
+        ("[(] !x)]", "#111111"),
+        ("f([)])", "#111111"),
+        ("[f(]])]", "#111111"),
+        ("a) b", "#111111"),
+        ("a] b", "#111111"),
+        ("(a] b)", "#111111"),
+        (") f(!)", "#111111"),
+        ("url(a)) b", "#111111"),
+        ("f(g([h(])]))", "#111111"),
+        ("f([a])", None),
+        ("f(\\))", None),
+        ("[\\)]", None),
+        ('f(")")', None),
+        ("url(a\\))", None),
+        ('a\\"b', None),
+        ("a\\'b", None),
+    ],
+)
+def test_the_resolver_drops_a_custom_property_a_browser_drops(tail: str, token: str | None) -> None:
+    """Edge drops a custom property with a `!` left outside any brackets once its
+    `!important` is taken off, or with a `url()` it cannot read, and keeps one whose `!` is
+    inside a function. An escape is text, an escaped bracket too, and so is a bracket in a
+    string or a `url()`; `url(` ending a longer name is a function."""
+    sheet = read_sheet(f":root {{ --x: #111111; }} :root {{ --x: {tail}; }}")
+    assert sheet.tokens["x"] == (token or tail)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "\\61 url(a b)",
+        "\\61\nurl(a b)",
+        "\\000061\r\nurl(a b)",
+        "a\\ url(a b)",
+        "\\(url(a b)",
+        "a\\url(a b)",
+    ],
+)
+def test_the_resolver_refuses_an_escape_that_may_join_a_url(tail: str) -> None:
+    """Edge reads `\\61 url(a b)` as a function named `aurl`, the escape joining the name."""
+    with pytest.raises(UnreadCss):
+        read_sheet(f":root {{ --x: {tail}; }}")
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        ":root { --x: #111111; } :root { --x: u\\72l(a b); }",
+        ":root { --x: #111111; } :root { --x: \\75rl(a b); }",
+        ":root { --x: #111111; } :root { --x: ur\\6c (a b); }",
+        ":root { --x: #111111; } :root { --x: \\55RL(a b); }",
+        ":root { --x: #111111; } :root { --x: uR\\4c (a b); }",
+        ":root { --x: #111111; } :root { --x: \\75 \\72 \\6c (a b); }",
+        ":root { --x: #111111; } :root { --x: \\u\\r\\l(a b); }",
+        ":root { --x: #111111; } :root { --x: u\\72l(a); }",
+        ':root { --x: #111111; } :root { --x: u\\72l("a b"); }',
+        ":root { --x: #111111; } :root { --x: xu\\72l(a b); }",
+        ":root { --x: #111111; } :root { --x: f(u\\72l(a b)); }",
+        ":root { --x: #111111; --x: u\\72l(a b",
+    ],
+)
+def test_the_resolver_refuses_a_url_name_written_with_an_escape(css: str) -> None:
+    """Edge reads `u\\72l(a b)` as a `url()` it cannot read and drops it, as it drops
+    `url(a b)`."""
+    with pytest.raises(UnreadCss):
+        read_sheet(css)
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        'main a { color: #888888; content: "abc',
+        "main a { color: #888888; ",
+        'main a { content: "abc\n; color: #888888; }',
+        'main a { content: "abc\\\r\n; color: #111111; }"; color: #888888; }',
+        'main a { content: "abc\\41\n; color: #111111; }"; color: #888888; }',
+        "main a { color: #111111; width: calc(1px); color: #888888;",
+        "main a { color: #111111; --x: a\\(; color: #888888; }",
+        'main a { color: #111111; --x: "("; color: #888888; }',
+    ],
+)
+def test_the_resolver_reads_text_left_open_as_a_browser_reads_it(css: str) -> None:
+    (link,) = links_in('<main><a href="/w">w</a></main>')
+    assert color_of(read_sheet(css), link, "link", View(320)) == "#888888"
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "main a { color: #888888; width: calc(1px; color: #111111;",
+        'main a { color: #888888; background: url("a"; color: #111111;',
+        ":root { --x: #111111; } :root { --x: f(a; b); }",
+        ":root { --x: #111111; } :root { --x: f(a; --y: b",
+    ],
+)
+def test_the_resolver_refuses_text_left_inside_a_bracket(css: str) -> None:
+    """Edge keeps `#888888` for the link, and reads `--x` as `f(a; b)`, the `;` inside it."""
+    with pytest.raises(UnreadCss):
+        read_sheet(css)
+
+
+@pytest.mark.parametrize("tail", ["f(a", "[a", "f([a]"])
+def test_the_resolver_reads_a_bracket_open_at_the_end_as_a_browser_reads_it(tail: str) -> None:
+    """Edge closes a bracket still open at the end of the sheet, and serializes `--x` as written."""
+    assert read_sheet(f":root {{ --x: #111111; }} :root {{ --x: {tail}").tokens["x"] == tail
+
+
+@pytest.mark.parametrize(
+    ("css", "value"),
+    [
+        (":root { --x: f(!important", "f(!important"),
+        (":root { --x: [!important", "[!important"),
+        (":root { --x: #111111 !important; --x: f(!important", "#111111"),
+        (":root { --x: #111111 !important; --x: [!important", "#111111"),
+        (":root { --x: #111111 !important; --x: f(] !important", "#111111"),
+        (":root { --x: #111111 !important; --x: f(a) !important", "f(a)"),
+        (":root { --x: f(a) !important; --x: #111111", "f(a)"),
+        (":root { --x: #111111 !important; --x: a\\( !important", "a\\("),
+    ],
+)
+def test_the_resolver_reads_importance_inside_a_bracket_open_at_the_end_as_text(
+    css: str, value: str
+) -> None:
+    """Edge reads `!important` inside a bracket open at the end of the sheet as its text."""
+    assert read_sheet(css).tokens["x"] == value
+
+
+@pytest.mark.parametrize(
+    "css",
+    [":root { --x: f(] !x); }", ":root { --x: [) !x]; }", ":root { --x: f(] !important"],
+)
+def test_the_resolver_drops_a_bang_after_a_closing_bracket_of_the_other_kind(css: str) -> None:
+    """Edge drops `--x` here, the closing bracket of the other kind closing nothing."""
+    assert "x" not in read_sheet(css).tokens
+
+
+def test_the_resolver_refuses_a_bang_inside_a_substitution_open_at_the_end() -> None:
+    """Edge drops `--x: var(--y, 2px !important` at the end of the sheet and keeps `#111111`."""
+    with pytest.raises(UnreadCss):
+        read_sheet(":root { --x: #111111; --x: var(--y, 2px !important")
+
+
 @pytest.mark.parametrize("width", WIDTHS)
 @pytest.mark.parametrize("state", STATES)
 def test_every_link_in_a_page_gets_its_color_from_the_stylesheet(
