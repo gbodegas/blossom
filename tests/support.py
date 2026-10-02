@@ -1946,15 +1946,37 @@ class Compound:
         return not any(item.matches(element, state) for item in self.negated)
 
 
+ESCAPE = r"\\(?:[0-9a-fA-F]{1,6}(?:\r\n|\s)?|[^\n\r\f0-9a-fA-F])"
+"""A CSS escape outside a string: up to six hex digits and the one space after them, or any
+other character but a newline."""
+
 PIECE = re.compile(
-    r"""(?P<not>:not\((?P<inner>[^()]*)\))
+    rf"""(?P<not>:not\((?P<inner>[^()]*)\))
       | (?P<id>\#[\w-]+)
       | (?P<class>\.[\w-]+)
-      | (?P<attribute>\[(?P<name>[\w-]+)(?:=["']?(?P<value>[^"'\]]*)["']?)?\])
+      | (?P<attribute>\[(?P<name>[\w-]+)(?:=(?P<value>
+            "(?:[^"\\]|\\[\s\S])*" | '(?:[^'\\]|\\[\s\S])*'
+            | -?(?:[_a-zA-Z]|{ESCAPE})(?:[\w-]|{ESCAPE})*))?\])
       | (?P<pseudo>::?[\w-]+(?:\([^()]*\))?)
       | (?P<tag>[a-zA-Z][\w-]*|\*)""",
     re.VERBOSE,
 )
+
+
+def unescaped(text: str) -> str:
+    """``text`` with each CSS escape read as the character it stands for: up to six hex
+    digits, and the one space after them, as that code point (U+FFFD for zero, a surrogate,
+    or one past U+10FFFF); a newline in a string as nothing; any other character as
+    itself."""
+
+    def one(found: re.Match[str]) -> str:
+        if found[1]:
+            point = int(found[1], 16)
+            fits = 0 < point <= 0x10FFFF and not 0xD800 <= point <= 0xDFFF
+            return chr(point) if fits else "\ufffd"
+        return "" if found[2] else found[3]
+
+    return re.sub(r"\\(?:([0-9a-fA-F]{1,6})(?:\r\n|\s)?|(\r\n|[\n\r\f])|([\s\S]))", one, text)
 
 
 def compound(text: str) -> Compound:
@@ -1983,7 +2005,10 @@ def compound(text: str) -> Compound:
         elif piece["class"]:
             classes.append(piece["class"][1:])
         elif piece["attribute"]:
-            attributes.append((piece["name"].lower(), piece["value"]))
+            value = piece["value"]
+            if value is not None:
+                value = unescaped(value[1:-1] if value.startswith(("'", '"')) else value)
+            attributes.append((piece["name"].lower(), value))
         elif piece["pseudo"]:
             name = piece["pseudo"].lstrip(":").lower()
             if piece["pseudo"].startswith("::") or name in NEVER_ON:
@@ -2056,18 +2081,24 @@ def selector(text: str) -> Selector:
     return Selector(tuple(parts))
 
 
-SHIELD = {";": "", "{": "", "}": "", ",": "", ":": ""}
-"""Characters that end or split a part of a stylesheet, as they stand inside a string or an
-unquoted ``url()``, where they are only text."""
+SHIELD = {";": "", "{": "", "}": "", ",": "", ":": "", "!": ""}
+"""Characters that end, split or weigh a part of a stylesheet, as they stand inside a string
+or an unquoted ``url()``, where they are only text."""
 
-STAND_INS = frozenset(SHIELD.values())
+BROKEN = ""
+"""What `shielded` puts for a string a newline ends, or an unquoted ``url()`` a browser cannot
+read: the declaration that holds one is dropped, as a browser drops it."""
+
+STAND_INS = frozenset({*SHIELD.values(), BROKEN})
 
 
 def shielded(css: str) -> str:
     """``css`` with each comment a space, as a browser splits words at one, and each
     character of ``SHIELD`` inside a quoted string or an unquoted ``url()`` stood in for, so
-    a ``/*`` or ``;`` there is read as text. A stand-in written outside a comment is refused,
-    since it would be read as the character it stands in for."""
+    a ``/*`` or ``;`` there is read as text. A string ends at its closing quote, a newline,
+    or the end of ``css``, where it is closed; one a newline ends is `BROKEN`, and so is an
+    unquoted ``url()`` that `unreadable_url` finds. A stand-in written outside a comment is
+    refused, since it would be read as the character it stands in for."""
     kept: list[str] = []
     index = 0
     while index < len(css):
@@ -2089,14 +2120,26 @@ def shielded(css: str) -> str:
             index += 1
             continue
         end, closing = (index + 4, ")") if url else (index + 1, quote)
-        while end < len(css) and css[end] != closing:
+        while end < len(css) and css[end] != closing and (url or css[end] not in "\n\r\f"):
             end += 2 if css[end] == "\\" else 1
-        end = min(end + 1, len(css))
+        cut = not url and end < len(css) and css[end] != closing
+        end = min(end + (0 if cut else 1), len(css))
         if STAND_INS.intersection(css[index:end]):
             raise UnreadCss(css)
-        kept.append("".join(SHIELD.get(character, character) for character in css[index:end]))
+        if cut or (url and unreadable_url(css[index + 4 : end])):
+            kept.append(BROKEN)
+        else:
+            kept.append("".join(SHIELD.get(one, one) for one in css[index:end]))
         index = end
     return "".join(kept)
+
+
+def unreadable_url(inside: str) -> bool:
+    """Whether an unquoted ``url()``, from after its bracket to its end, is one a browser
+    cannot read: a space between two of its parts, or a quote or an opening bracket inside
+    it, each unescaped. A backslash cannot escape a newline, which stays a space."""
+    plain = re.sub(r"\\[^\n\r\f]", "x", inside).removesuffix(")").strip(CSS_SPACES)
+    return re.search(r"[ \t\n\r\f\"'(]", plain) is not None
 
 
 def unshielded(text: str) -> str:
@@ -2106,7 +2149,8 @@ def unshielded(text: str) -> str:
 
 
 def blocks(css: str) -> list[tuple[str, str]]:
-    """Each outermost block of ``css`` as what comes before its brace and what is inside."""
+    """Each outermost block of ``css`` as what comes before its brace and what is inside. A
+    block still open at the end of ``css`` is closed there, as a browser closes it."""
     found: list[tuple[str, str]] = []
     depth, after, opened = 0, 0, 0
     for index, character in enumerate(css):
@@ -2119,10 +2163,29 @@ def blocks(css: str) -> list[tuple[str, str]]:
             if depth == 0:
                 found.append((css[after:opened].strip(), css[opened + 1 : index]))
                 after = index + 1
+    if depth > 0:
+        found.append((css[after:opened].strip(), css[opened + 1 :]))
     return found
 
 
 IMPORTANT = re.compile(r"\s*!\s*important$", re.IGNORECASE)
+
+
+def loose_bang(name: str, value: str) -> bool:
+    """Whether a browser drops a declaration for a ``!`` left in its value once its
+    ``!important`` is taken off: one anywhere in a property's value, and one outside any
+    bracket in a custom property's. A ``!`` beside an escape is refused, since an escaped
+    letter of ``important`` is read as the letter."""
+    if "!" not in value:
+        return False
+    if "\\" in value:
+        raise UnreadCss(value)
+    depth = 0
+    for character in value:
+        depth = max(depth + (character in "([") - (character in ")]"), 0)
+        if character == "!" and (depth == 0 or not name.startswith("--")):
+            return True
+    return False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2142,7 +2205,9 @@ def style_rules(css: str) -> list[StyleRule]:
     """Every style rule of ``css``, in source order. Font faces and keyframes hold no rules
     for elements and are passed over; a media query inside another, any other at-rule, a
     rule nested inside another, and a character outside a comment that `plain_ascii` refuses
-    are refused."""
+    are refused. A declaration a browser drops for a `BROKEN` string or a `loose_bang` is
+    dropped; a selector or media query that holds a `BROKEN` string keeps it, which
+    `plain_ascii` refuses where either is read."""
     found: list[StyleRule] = []
 
     def read(part: str, media: str | None) -> None:
@@ -2164,13 +2229,13 @@ def style_rules(css: str) -> list[StyleRule]:
                 name, _, value = line.partition(":")
                 value, important = IMPORTANT.subn("", value.strip())
                 name = name.strip()
-                if value:
+                if value and BROKEN not in line and not loose_bang(name, value):
                     named = name if name.startswith("--") else name.lower()
                     declared.append((named, unshielded(value), important > 0))
             found.append(StyleRule(before, tuple(declared), len(found) + 1, media))
 
     shown = shielded(css)
-    plain_ascii(unshielded(shown))
+    plain_ascii(unshielded(shown.replace(BROKEN, "")))
     read(shown, None)
     return found
 

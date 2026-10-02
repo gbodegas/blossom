@@ -368,6 +368,36 @@ def test_the_resolver_reads_no_other_letter_or_digit_as_ascii() -> None:
         read_sheet("footer a { color: rgb(\u0661\u0662\u0660, 0, 0); }")
 
 
+@pytest.mark.parametrize(
+    ("tail", "token"),
+    [
+        ("#222222 !x", "#111111"),
+        ("#222222 !importantx", "#111111"),
+        ("f(a) !x", "#111111"),
+        ("#222222) !x", "#111111"),
+        ("f(!) #222222", None),
+    ],
+)
+def test_the_resolver_drops_a_custom_property_a_browser_drops(tail: str, token: str | None) -> None:
+    """Edge drops a custom property with a `!` left outside any brackets once its
+    `!important` is taken off, and keeps one whose `!` is inside a function."""
+    sheet = read_sheet(f":root {{ --x: #111111; }} :root {{ --x: {tail}; }}")
+    assert sheet.tokens["x"] == (token or tail)
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        'main a { color: #888888; content: "abc',
+        "main a { color: #888888; ",
+        'main a { content: "abc\n; color: #888888; }',
+    ],
+)
+def test_the_resolver_reads_text_left_open_as_a_browser_reads_it(css: str) -> None:
+    (link,) = links_in('<main><a href="/w">w</a></main>')
+    assert color_of(read_sheet(css), link, "link", View(320)) == "#888888"
+
+
 @pytest.mark.parametrize("width", WIDTHS)
 @pytest.mark.parametrize("state", STATES)
 def test_every_link_in_a_page_gets_its_color_from_the_stylesheet(

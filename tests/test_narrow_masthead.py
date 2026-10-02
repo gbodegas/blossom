@@ -35,6 +35,7 @@ import pathlib
 import re
 import sys
 from dataclasses import dataclass, field, replace
+from html import escape
 
 import pytest
 
@@ -205,6 +206,14 @@ CORNERS = (
 STYLES = frozenset(
     {"none", "hidden", "solid", "dashed", "dotted", "double", "groove", "ridge", "inset", "outset"}
 )
+ONE_KEYWORD = {
+    "flex-wrap": frozenset({"nowrap", "wrap", "wrap-reverse"}),
+    "flex-direction": frozenset({"row", "row-reverse", "column", "column-reverse"}),
+    "box-sizing": frozenset({"content-box", "border-box"}),
+    "overflow-wrap": frozenset({"normal", "break-word", "anywhere"}),
+}
+"""The watched properties whose every value is one keyword, each with the keywords it takes
+beside `KEYWORDS`."""
 
 
 def words_of(value: str) -> list[str]:
@@ -248,7 +257,11 @@ def longhands(name: str, value: str) -> dict[str, str]:
     ``flex-flow`` the direction and the wrapping, ``flex`` the shrinking, a logical width
     its width, ``place-items`` or ``place-self`` the alignment across a column with its
     first word, ``gap`` the space between items on a line with its last, and a padding,
-    border or margin shorthand each side it reaches."""
+    border or margin shorthand each side it reaches. A property of one keyword given any
+    other value sets nothing, as a browser drops it."""
+    taken = ONE_KEYWORD.get("overflow-wrap" if name == "word-wrap" else name)
+    if taken is not None and value not in taken | KEYWORDS:
+        return {}
     if name == "font":
         return {"font-size": value}
     if name == "word-wrap":
@@ -1308,6 +1321,270 @@ def test_the_resolver_reads_printable_ascii_and_passes_over_comments() -> None:
         f'/* {KELVIN}\u00a0\u0663 */ p {{ content: "~ !"; flex-wrap: /* \u3000 */ wrap; }}'
     )
     assert value_of(sheet, paragraph, "flex-wrap", View(320)) == "wrap"
+
+
+@pytest.mark.parametrize(
+    ("name", "kept", "dropped"),
+    [
+        *(
+            ("flex-wrap", "wrap", tail)
+            for tail in (
+                "nowrap !importantx",
+                "nowrap !important!",
+                "nowrap !important x",
+                "nowrap !!important",
+                "nowrap !imp",
+                "nowrap important",
+                "nowrap !important !important",
+                "nowrap ! important x",
+                "nowrap !",
+                "!important",
+                "!important nowrap",
+                "now!rap",
+                "nowrap nowrap",
+                "banana",
+            )
+        ),
+        ("flex-direction", "column", "row column"),
+        ("box-sizing", "border-box", "padding-box"),
+        ("overflow-wrap", "anywhere", "break-all"),
+        ("width", "1px", "min(2px, !)"),
+    ],
+)
+def test_the_resolver_drops_a_declaration_a_browser_drops(
+    name: str, kept: str, dropped: str
+) -> None:
+    """Edge drops each declaration below and keeps the one before it: a value with a `!`
+    left once its `!important` is taken off, and a value a property of one keyword does not
+    take."""
+    (paragraph,) = elements_of("<p>a</p>")
+    sheet = read_sheet(f"p {{ {name}: {kept}; }} p {{ {name}: {dropped}; }}")
+    assert value_of(sheet, paragraph, name, View(320)) == kept
+
+
+def test_a_property_of_one_keyword_takes_its_other_name_and_every_propertys_keywords() -> None:
+    """Edge drops `word-wrap: break-all` and reads `flex-wrap: initial`."""
+    (paragraph,) = elements_of("<p>a</p>")
+    sheet = read_sheet("p { overflow-wrap: anywhere; } p { word-wrap: break-all; }")
+    assert value_of(sheet, paragraph, "overflow-wrap", View(320)) == "anywhere"
+    sheet = read_sheet("p { flex-wrap: wrap; } p { flex-wrap: initial; }")
+    assert value_of(sheet, paragraph, "flex-wrap", View(320)) is None
+
+
+def test_the_resolver_refuses_the_mark_of_a_broken_string_written_in_a_sheet() -> None:
+    with pytest.raises(UnreadCss):
+        read_sheet("p { flex-wrap: wrap\ue006; }")
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "nowrap !important",
+        "nowrap ! important",
+        "nowrap !IMPORTANT",
+        "nowrap !/**/important",
+        "nowrap !\nimportant",
+        "nowrap!important",
+        "nowrap !important /* x */",
+    ],
+)
+def test_the_resolver_reads_each_form_of_importance_a_browser_reads(tail: str) -> None:
+    (paragraph,) = elements_of("<p>a</p>")
+    sheet = read_sheet(f"p {{ flex-wrap: {tail}; }} p {{ flex-wrap: wrap; }}")
+    assert value_of(sheet, paragraph, "flex-wrap", View(320)) == "nowrap"
+
+
+def test_the_resolver_refuses_a_bang_beside_an_escape() -> None:
+    """Edge reads `!imp\\ortant` as `!important`, an escaped letter being the letter."""
+    with pytest.raises(UnreadCss):
+        read_sheet("p { flex-wrap: nowrap !imp\\ortant; } p { flex-wrap: wrap; }")
+
+
+def test_the_resolver_keeps_a_bang_inside_a_string_or_a_url() -> None:
+    """Edge keeps each of these declarations, and a string open at the end of the sheet is
+    closed there, so the `!important` inside it is text."""
+    rules = style_rules(
+        'p { content: "!x"; flex-wrap: wrap; } p { content: "a!" !important; }'
+        ' p { background: url(a!b); } p { flex-wrap: wrap; content: "a !important'
+    )
+    assert [rule.declarations for rule in rules] == [
+        (("content", '"!x"', False), ("flex-wrap", "wrap", False)),
+        (("content", '"a!"', True),),
+        (("background", "url(a!b)", False),),
+        (("flex-wrap", "wrap", False), ("content", '"a !important', False)),
+    ]
+
+
+def titled(title: str | None) -> str:
+    return "<p>a</p>" if title is None else f'<p title="{escape(title)}">a</p>'
+
+
+@pytest.mark.parametrize(
+    ("page", "head", "matched"),
+    [
+        pytest.param(titled("\\"), '[title="\\\\"]', True, id="one-backslash"),
+        pytest.param(titled("\\\\"), '[title="\\\\"]', False, id="two-backslashes"),
+        pytest.param(titled("A"), '[title="\\41"]', True, id="hex"),
+        pytest.param(titled("Ab"), '[title="\\000041b"]', True, id="hex-six-digits"),
+        pytest.param(titled("ab"), '[title="\\a\\b"]', False, id="hex-letters"),
+        pytest.param(titled('a"b'), '[title="a\\"b"]', True, id="escaped-double-quote"),
+        pytest.param(titled("a'b"), "[title='a\\'b']", True, id="escaped-single-quote"),
+        pytest.param(titled('"'), '[title="\\""]', True, id="only-an-escaped-quote"),
+        pytest.param(titled("x"), "[title=x]", True, id="bare"),
+        pytest.param(titled("A"), "[title=\\41]", True, id="bare-hex"),
+        pytest.param(titled("\\"), "[title=\\\\]", True, id="bare-backslash"),
+        pytest.param(titled(""), '[title=""]', True, id="empty"),
+        pytest.param(titled(""), "[title='']", True, id="empty-single"),
+        pytest.param("<p title>a</p>", '[title=""]', True, id="empty-on-a-bare-attribute"),
+        pytest.param(titled(None), '[title=""]', False, id="empty-on-none"),
+        pytest.param(titled("x"), "[title=\"x']", False, id="string-open-to-the-end"),
+    ],
+)
+def test_the_resolver_reads_an_attribute_selector_as_a_browser_reads_it(
+    page: str, head: str, matched: bool
+) -> None:
+    (paragraph,) = elements_of(page)
+    sheet = read_sheet(f"p{head} {{ flex-wrap: wrap; }}")
+    assert (value_of(sheet, paragraph, "flex-wrap", View(320)) == "wrap") is matched
+
+
+@pytest.mark.parametrize("head", ["[title=]", "[title=1x]", "[title=x y]", "[title=], p"])
+def test_the_resolver_refuses_an_attribute_selector_a_browser_drops(head: str) -> None:
+    with pytest.raises(UnreadCss):
+        read_sheet(f"p{head} {{ flex-wrap: wrap; }}")
+
+
+@pytest.mark.parametrize(
+    "head", ['[title="\\41 b"]', '[title="a\\\nb"]', '[title="a b"]', '[ title = "x" ]']
+)
+def test_the_resolver_refuses_a_space_inside_an_attribute_selector(head: str) -> None:
+    """Edge reads each of these; a selector is split at its spaces, so each is refused."""
+    with pytest.raises(UnreadCss):
+        read_sheet(f"p{head} {{ flex-wrap: wrap; }}")
+
+
+def test_a_compound_reads_the_space_or_newline_an_escape_takes() -> None:
+    """Edge reads `\\41 b` as `Ab` and an escaped newline in a string as nothing."""
+    assert compound('[title="\\41 b"]').attributes == (("title", "Ab"),)
+    assert compound('[title="a\\\nb"]').attributes == (("title", "ab"),)
+    assert compound("[title=\\41 ]").attributes == (("title", "A"),)
+
+
+@pytest.mark.parametrize("written", ["\\0", "\\d800", "\\110000"])
+def test_a_compound_reads_an_escape_past_any_character_as_the_replacement(written: str) -> None:
+    """Edge reads zero, a surrogate, and a number past U+10FFFF as U+FFFD."""
+    assert compound(f'[title="{written}"]').attributes == (("title", "\ufffd"),)
+
+
+@pytest.mark.parametrize(
+    ("css", "name", "value"),
+    [
+        pytest.param('p { flex-wrap: wrap; content: "abc', "flex-wrap", "wrap", id="string"),
+        pytest.param('p { content: "abc\n; flex-wrap: wrap; }', "flex-wrap", "wrap", id="newline"),
+        pytest.param("p { content: 'abc\n; flex-wrap: wrap; }", "flex-wrap", "wrap", id="single"),
+        pytest.param('p { content: "abc\r; flex-wrap: wrap; }', "flex-wrap", "wrap", id="return"),
+        pytest.param('p { content: "abc\f; flex-wrap: wrap; }', "flex-wrap", "wrap", id="feed"),
+        pytest.param(
+            'p::after { content: "abc\n} p { flex-wrap: wrap; }',
+            "flex-wrap",
+            "wrap",
+            id="newline-then-the-block-ends",
+        ),
+        pytest.param(
+            'p { flex-wrap: wrap; } p { content: "a\n"; flex-wrap: nowrap; }',
+            "flex-wrap",
+            "wrap",
+            id="newline-then-a-string-to-the-end",
+        ),
+        pytest.param(
+            'p { flex-wrap: wrap; content: "abc\n }', "flex-wrap", "wrap", id="newline-keeps-before"
+        ),
+        pytest.param(
+            'p { content: "abc\\\n; flex-wrap: nowrap; }"; flex-wrap: wrap; }',
+            "flex-wrap",
+            "wrap",
+            id="escaped-newline",
+        ),
+        pytest.param("p { flex-wrap: wrap; ", "flex-wrap", "wrap", id="block"),
+        pytest.param(
+            "@media (min-width: 1px) { p { flex-wrap: wrap; ", "flex-wrap", "wrap", id="media"
+        ),
+        pytest.param(
+            "@media (min-width: 1px) { p { flex-wrap: wrap; }",
+            "flex-wrap",
+            "wrap",
+            id="media-alone",
+        ),
+        pytest.param("p { flex-wrap: wrap; background: url(abc", "flex-wrap", "wrap", id="url"),
+        pytest.param("p { flex-wrap: wrap; } /* x", "flex-wrap", "wrap", id="comment"),
+        pytest.param(
+            "p { background: url(a b); flex-wrap: wrap; }"
+            " p { flex-wrap: nowrap; background: url(c d; }",
+            "flex-wrap",
+            "nowrap",
+            id="bad-url-to-the-end",
+        ),
+        pytest.param(
+            'p { background: url(a"b;); flex-wrap: wrap; }', "flex-wrap", "wrap", id="bad-url-quote"
+        ),
+        pytest.param(
+            "p { background: #ffeeee; } p { background: url(a b) #ffffff; }",
+            "background",
+            "#ffeeee",
+            id="bad-url-dropped",
+        ),
+        pytest.param(
+            'p { background: #ffeeee; } p { background: url(a"b) #ffffff; }',
+            "background",
+            "#ffeeee",
+            id="bad-url-quote-dropped",
+        ),
+        pytest.param(
+            'p { background: #ffeeee; } p { background: #ffffff "a\n; }',
+            "background",
+            "#ffeeee",
+            id="bad-string-dropped",
+        ),
+        pytest.param(
+            "p { background: #ffeeee; } p { background: url(a(b) #ffffff; }",
+            "background",
+            "#ffeeee",
+            id="bad-url-bracket-dropped",
+        ),
+        pytest.param(
+            "p { background: #ffeeee; } p { background: url(a\\\nb) #ffffff; }",
+            "background",
+            "#ffeeee",
+            id="bad-url-escaped-newline-dropped",
+        ),
+        pytest.param(
+            "p { background: #ffeeee; } p { background: url(a\\ b) #ffffff; }",
+            "background",
+            "url(a\\ b) #ffffff",
+            id="url-escaped-space-kept",
+        ),
+        pytest.param(
+            "p { background: #ffeeee; } p { background: url( a ) #ffffff; }",
+            "background",
+            "url( a ) #ffffff",
+            id="url-spaces-at-the-ends-kept",
+        ),
+    ],
+)
+def test_the_resolver_reads_text_left_open_as_a_browser_reads_it(
+    css: str, name: str, value: str
+) -> None:
+    """A string or `url(` open at the end of the sheet closes there, and so does a block; a
+    string a newline ends, or a `url(` with a space, quote or bracket inside, drops the
+    declaration that holds it, as Edge reads each."""
+    (paragraph,) = elements_of("<p>a</p>")
+    assert value_of(read_sheet(css), paragraph, name, View(320)) == value
+
+
+def test_the_resolver_refuses_a_selector_a_newline_cuts_a_string_of() -> None:
+    """Edge drops the rule, its selector holding a string a newline ends."""
+    with pytest.raises(UnreadCss):
+        read_sheet('p { flex-wrap: nowrap; } p[title="a\n], p { flex-wrap: wrap; }')
 
 
 def test_the_resolver_reads_links_strings_and_keywords_the_way_a_browser_would() -> None:
