@@ -2195,7 +2195,9 @@ def unshielded(text: str) -> str:
 
 def blocks(css: str) -> list[tuple[str, str]]:
     """Each outermost block of ``css`` as what comes before its brace and what is inside. A
-    block still open at the end of ``css`` is closed there, as a browser closes it."""
+    block still open at the end of ``css`` is closed there, as a browser closes it. A ``}``
+    with no block open is part of what comes before the next block, which is passed over, as
+    a browser drops a rule whose selector holds one."""
     found: list[tuple[str, str]] = []
     depth, after, opened = 0, 0, 0
     for index, character in enumerate(css):
@@ -2203,12 +2205,13 @@ def blocks(css: str) -> list[tuple[str, str]]:
             if depth == 0:
                 opened = index
             depth += 1
-        elif character == "}":
+        elif character == "}" and depth > 0:
             depth -= 1
             if depth == 0:
-                found.append((css[after:opened].strip(), css[opened + 1 : index]))
+                if "}" not in css[after:opened]:
+                    found.append((css[after:opened].strip(), css[opened + 1 : index]))
                 after = index + 1
-    if depth > 0:
+    if depth > 0 and "}" not in css[after:opened]:
         found.append((css[after:opened].strip(), css[opened + 1 :]))
     return found
 

@@ -120,19 +120,25 @@ def read_sheet(css: str) -> Sheet:
     ``padding``, in source order, each with the media condition it sits under, and the
     sheet's custom properties. A rule inside a media query applies only where the query
     holds, so a link whose only color comes from one is still the browser's color on every
-    other screen; ``color_of`` is asked about one screen at a time."""
+    other screen; ``color_of`` is asked about one screen at a time. A custom property takes
+    its last important value over every normal one, whichever rule holds each, as the
+    cascade weighs them."""
     sheet = Sheet()
+    weighty: set[str] = set()
     for style in style_rules(css):
         declared: dict[str, tuple[str, bool]] = {}
         for name, value, important in style.declarations:
             if important or not declared.get(name, ("", False))[1]:
                 declared[name] = (value.lower() if name == "display" else value, important)
-        for name, (value, _) in declared.items():
+        for name, (value, important) in declared.items():
             if name.startswith("--"):
                 if style.media is not None:
                     msg = f"--{name[2:]} is set inside {style.media}"
                     raise UnreadCss(msg)
-                sheet.tokens[name[2:]] = value
+                if important or name not in weighty:
+                    sheet.tokens[name[2:]] = value
+                if important:
+                    weighty.add(name)
         lists = {
             "color": sheet.colors,
             "background": sheet.backgrounds,
@@ -542,6 +548,72 @@ def test_the_resolver_refuses_a_bang_inside_a_substitution_open_at_the_end() -> 
     """Edge drops `--x: var(--y, 2px !important` at the end of the sheet and keeps `#111111`."""
     with pytest.raises(UnreadCss):
         read_sheet(":root { --x: #111111; --x: var(--y, 2px !important")
+
+
+@pytest.mark.parametrize(
+    ("css", "token"),
+    [
+        (":root { --x: #111111 !important; } :root { --x: #222222; }", "#111111"),
+        (":root { --x: #111111; } :root { --x: #222222 !important; }", "#222222"),
+        (":root { --x: #111111 !important; } :root { --x: #222222 !important; }", "#222222"),
+        (
+            ":root { --x: #111111 !important; } :root { --x: #222222; } :root { --x: #333333; }",
+            "#111111",
+        ),
+        (":root { --x: #111111 !important; } :root { --x: #222222; --x: #333333; }", "#111111"),
+        (
+            ":root { --x: #333333; } :root { --x: #111111 !important; } :root { --x: #222222; }",
+            "#111111",
+        ),
+        (":root, .y { --x: #111111 !important; } :root { --x: #222222; }", "#111111"),
+        (":root { --x: #111111 !important; } :root { --x: #222222 !x; }", "#111111"),
+        (":root { --x: #111111 ! IMPORTANT; } :root { --x: #222222; }", "#111111"),
+        (":root { --x: #111111; } :root { --x: #222222 !important", "#222222"),
+        (":root { --x: #111111 !important; } :root { --x: #222222", "#111111"),
+    ],
+)
+def test_the_resolver_weighs_importance_of_a_custom_property_across_rules(
+    css: str, token: str
+) -> None:
+    """Edge gives `--x` its last important value over every normal one, whichever rule
+    holds each."""
+    assert read_sheet(css).tokens["x"] == token
+
+
+def test_the_resolver_weighs_importance_of_each_custom_property_apart() -> None:
+    sheet = read_sheet(
+        ":root { --x: #111111 !important; --y: #333333; } :root { --x: #222222; --y: #444444; }"
+    )
+    assert (sheet.tokens["x"], sheet.tokens["y"]) == ("#111111", "#444444")
+
+
+def test_a_link_takes_an_important_custom_property_set_in_an_earlier_rule() -> None:
+    (link,) = links_in('<main><a href="/w">w</a></main>')
+    css = ":root { --x: #111111 !important; } :root { --x: #888888; } main a { color: var(--x); }"
+    assert color_of(read_sheet(css), link, "link", View(320)) == "#111111"
+
+
+def test_the_contrast_check_reads_an_important_action_color_set_before_the_stylesheet() -> None:
+    """Edge paints the darker action color `#999999` here, the important value winning over
+    the stylesheet's later normal one, and that color is under 4.5 to 1 on a tint."""
+    sheet = read_sheet(f":root {{ --blue-action-hover: #999999 !important; }}\n{stylesheet()}")
+    assert sheet.tokens["blue-action-hover"] == "#999999"
+    darker = drawn(sheet, "blue-action-hover")
+    assert contrast(darker, drawn(sheet, "canvas", "rose-bg")) < 4.5
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "main a { color: #111111; } } p { color: #222222; } main a { color: #888888; }",
+        "} main a { color: #111111; } main a { color: #888888; }",
+    ],
+)
+def test_the_resolver_drops_only_the_rule_a_stray_closing_brace_starts(css: str) -> None:
+    """Edge reads a `}` with no block open as part of the next rule's selector, drops that
+    rule, and reads the rest."""
+    (link,) = links_in('<main><a href="/w">w</a></main>')
+    assert color_of(read_sheet(css), link, "link", View(320)) == "#888888"
 
 
 @pytest.mark.parametrize("width", WIDTHS)
