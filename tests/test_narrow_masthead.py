@@ -3225,15 +3225,21 @@ def inner_card_insets(sheet: Sheet, view: View) -> list[str]:
     ]
 
 
+QUOTED = re.compile(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'")
+"""A string in a selector, with its escaped characters, as `style_rules` keeps it whole."""
+
+
 def sibling_matches(head: str, element: Element, found: list[Element]) -> tuple[Selector, bool]:
     """A selector of the sheet, and whether it matches ``element``: one that names the element
     by the one right before it (``A + B``, with B a single compound) is read here, since the
     shared reader refuses a sibling; a longer one after the ``+`` is refused where it could
-    reach the element."""
-    if "+" not in head:
+    reach the element. A ``+`` inside a string is text, left to the shared reader."""
+    bare = QUOTED.sub(lambda text: "_" * len(text[0]), head)
+    if "+" not in bare:
         chosen = selector(head)
         return chosen, chosen.matches(element)
-    left, right = (part.strip() for part in head.rsplit("+", 1))
+    joint = bare.rindex("+")
+    left, right = head[:joint].strip(), head[joint + 1 :].strip()
     near, last = selector(left), selector(right)
     whole = Selector(near.parts + last.parts)
     if len(last.parts) > 1:
@@ -3264,7 +3270,7 @@ def declared_side(
             else:
                 continue
             for head in style.selectors.split(","):
-                chosen, holds = sibling_matches(head, element, found)
+                chosen, holds = sibling_matches(unshielded(head), element, found)
                 if holds:
                     rules.append(Rule(chosen, given, style.order, style.media, important))
     winning = winner(rules, view)
@@ -3364,6 +3370,82 @@ def test_ways_back_one_under_another_never_share_a_press_area(
         pairs += len(apart)
         assert all(one > 0 for one in apart), (name, apart)
     assert pairs >= 9
+
+
+@pytest.mark.parametrize("quote", ['"', "'"], ids=["double", "single"])
+def test_the_ways_back_check_reads_a_rule_elsewhere_with_a_quoted_mark(
+    note_pages: dict[str, str], text_pages: dict[str, str], quote: str
+) -> None:
+    """A rule for a title holding a mark the reader shields changes the check no more than its
+    plain neighbor `[title="ab"]` does."""
+    css = stylesheet()
+    view = View(320, 16, 32)
+    pairs = 0
+    for name, page in (note_pages | text_pages).items():
+        plain = ways_back_apart(css, page, view)
+        pairs += len(plain)
+        for mark in ("", ",", ":", ";", "{", "}"):
+            rule = f"[title={quote}a{mark}b{quote}] {{ margin: 1rem; }}"
+            assert ways_back_apart(f"{css}\n{rule}\n", page, view) == plain, (name, rule)
+    assert pairs >= 9
+
+
+TITLED_WAYS_BACK = (
+    '<main><p class="return" title="a,b"><a href="/a" title="e;f">Back to the note</a></p>'
+    '<p class="return" title="c:d"><a href="/b" title="g{h}">Back to my week</a></p></main>'
+)
+"""Two ways back, one under the other, whose paragraphs and links carry titles holding
+characters the stylesheet reader shields inside a string."""
+
+
+@pytest.mark.parametrize(
+    ("rule", "apart"),
+    [
+        pytest.param('.return[title="a,b"] { margin-bottom: 2rem; }', 32.0, id="first"),
+        pytest.param(".return[title='a,b'] { margin-bottom: 2rem; }", 32.0, id="single-quotes"),
+        pytest.param('.return[title="a;b"] { margin-bottom: 2rem; }', 0.0, id="first-twin"),
+        pytest.param('.return + .return[title="c:d"] { margin-top: 2rem; }', 32.0, id="after-plus"),
+        pytest.param('.return + .return[title="c,d"] { margin-top: 2rem; }', 0.0, id="after-twin"),
+        pytest.param(
+            '.return[title="a,b"] + .return { margin-top: 2rem; }', 32.0, id="before-plus"
+        ),
+        pytest.param('.return[title="a:b"] + .return { margin-top: 2rem; }', 0.0, id="before-twin"),
+        pytest.param('a[title="e;f"] { margin-bottom: -0.5rem; }', 24.0, id="first-link"),
+        pytest.param('a[title="g{h}"] { margin-top: -0.5rem; }', 24.0, id="second-link"),
+        pytest.param('a[title="g}h{"] { margin-top: -0.5rem; }', 32.0, id="second-link-twin"),
+    ],
+)
+def test_the_ways_back_check_reads_a_quoted_mark_as_itself(rule: str, apart: float) -> None:
+    """A link's own margin is measured against ways back set 2rem apart."""
+    css = f".return, .return a {{ margin: 0; }}\n{rule}"
+    if rule.startswith("a["):
+        css += "\n.return + .return { margin-top: 2rem; }"
+    assert ways_back_apart(css, TITLED_WAYS_BACK, View(320)) == [apart]
+
+
+def test_the_ways_back_check_refuses_a_stand_in_written_in_a_selector() -> None:
+    for stand_in in sorted(STAND_INS):
+        with pytest.raises(UnreadCss):
+            ways_back_apart(f"p{stand_in}x {{ margin: 1rem; }}", TITLED_WAYS_BACK, View(320))
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        pytest.param('[title="x]+[title=y"]', id="double"),
+        pytest.param("[title='x]+[title=y']", id="single"),
+        pytest.param('[title="x,]+[title=y"]', id="with-a-mark"),
+        pytest.param('[title="x\\"]+[title=y"]', id="escaped-quote"),
+    ],
+)
+def test_the_ways_back_check_reads_a_plus_in_a_string_as_text(head: str) -> None:
+    """A ``+`` inside a string joins no siblings: the check refuses it, as `read_sheet` does."""
+    page = TITLED_WAYS_BACK.replace("a,b", "x").replace("c:d", "y")
+    css = f".return, .return a {{ margin: 0; }}\n{head} {{ margin-top: 2rem; }}"
+    with pytest.raises(UnreadCss):
+        read_sheet(css.replace("margin-top", "margin-left"))
+    with pytest.raises(UnreadCss):
+        ways_back_apart(css, page, View(320))
 
 
 # ------------------------------------------------------------- and each of these fails when broken
