@@ -101,8 +101,10 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-Use `py -3.13` in the first line if that's the version you have. You don't
-need to activate the environment or change PowerShell's execution policy.
+Use `py -3.13` in the first line if that's the version you have. If there's
+no `py` launcher, use [the guide's fallback](docs/development.md#other-ways-to-start-the-sample)
+for that line. You don't need to activate the environment or change
+PowerShell's execution policy.
 
 **Start the sample.** From the Blossom folder, paste this whole block. Use
 it again whenever you want to start the app:
