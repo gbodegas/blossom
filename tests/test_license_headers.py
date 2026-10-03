@@ -680,7 +680,10 @@ def reach_of(head: str, link: Element) -> tuple[tuple[int, int, int], bool] | No
     whether only while the link has focus. ``None`` where it can't match the link in any
     state. A selector that would reach it in a state other than focus, or with a state
     anywhere but its end, is refused, and so is one that reaches it only while it is visited,
-    or only while it isn't."""
+    or only while it isn't. A hex escape followed by a space is refused wherever it is, since
+    a browser reads the space as part of the escape, not as a combinator."""
+    if re.search(r"\\[0-9a-f]{1,6}\s", head, re.I):
+        raise UnreadCss(unshielded(head))
     anyhow = head
     while (bare := re.sub(r":not\([^()]*\)", "", anyhow, flags=re.I)) != anyhow:
         anyhow = bare
@@ -855,26 +858,40 @@ BOX_SIZES = frozenset(("height", "max-height", "block-size", "max-block-size"))
 LEFT_AS_IS = frozenset(("none", "auto"))
 FIRST_LINE = re.compile(r"::?first-line(?![\w-])", re.I)
 TEXT_NAMES = frozenset(("all", "font", "font-size", "line-height"))
+PREFIX = "-webkit-"
+"""The prefix a browser still takes on some property names for the same property, as in
+``-webkit-opacity`` or ``-webkit-filter``."""
+
+
+def opaque(value: str) -> bool:
+    """Whether an opacity of ``value`` leaves its element fully opaque: 1 or 100%, or more,
+    which a browser brings down to 1. Any other number, a keyword or a function is not."""
+    found = re.fullmatch(rf"({SIGNED})(%?)", value.strip())
+    return found is not None and float(found.group(1)) >= (100 if found.group(2) else 1)
 
 
 def check_root_text(css: str, link: Element) -> None:
     """Refuse a rule that sets the root element's text size, which the views give and every
-    `rem` is read by, that zooms, scales or transforms the link or an element above it, that
-    sets the link's height, that sets the text size or line height of the first line of
-    either, or that reaches either with an escaped property name or an animation, which may
-    stand for any of these."""
+    `rem` is read by, that zooms, scales or transforms the link or an element above it, or
+    fades either with an opacity short of `opaque` or a filter, that sets the link's height,
+    that sets the text size or line height of the first line of either, or that reaches
+    either with an escaped property name or an animation, which may stand for any of these.
+    A name with `PREFIX` is read as the name without it."""
     styles = rules_of(css)
     for one in (link, *link.ancestors()):
         names = {"zoom", "font", "font-size"} if one.tag == "html" else {"zoom"}
         sized = SCALES | BOX_SIZES if one is link else SCALES
         for style in styles:
             heads = style.selectors.split(",")
+            declared = [(name.removeprefix(PREFIX), value) for name, value, _ in style.declarations]
             if any(
                 name in names
                 or (name in sized and value.strip().lower() not in LEFT_AS_IS)
                 or "\\" in name
                 or (name in ANIMATION and value != "none")
-                for name, value, _ in style.declarations
+                or (name == "opacity" and not opaque(value))
+                or (name == "filter" and value.strip().lower() != "none")
+                for name, value in declared
             ) and any(reach_of(head, one) is not None for head in heads):
                 raise UnreadCss(style.selectors)
             lines = [FIRST_LINE.sub("", head) for head in heads if FIRST_LINE.search(head)]
@@ -976,7 +993,7 @@ def check_footer_link(css: str) -> None:
     and at least 44 pixels tall with the line height it inherits; no rule takes the press
     area back with a margin; and its margin and the room a scroll to it keeps are at least
     as deep above and below as its outline reaches, and the outline is drawn in a color that
-    shows."""
+    shows, and neither the link nor an element above it is faded."""
     check_comments(css)
     for link in footer_links():
         check_root_text(css, link)
@@ -1511,9 +1528,36 @@ TAKES_THE_ROOM = {
     "outline-offset: inherit; }",
     "an-outline-offset-keyword-in-capitals": ".colophon a:focus-visible { "
     "outline-offset: 2px; outline-offset: INHERIT; }",
+    "a-transparent-footer": ".colophon { opacity: 0; }",
+    "a-transparent-link": ".colophon a { opacity: 0; }",
+    "a-link-transparent-with-focus": ".colophon a:focus-visible { opacity: 0; }",
+    "a-transparent-paragraph": ".colophon p { opacity: 0; }",
+    "a-transparent-page": "body { opacity: 0; }",
+    "a-page-half-transparent": "body { opacity: 0.5; }",
+    "a-transparent-root-in-percent": "html { opacity: 0%; }",
+    "an-opacity-just-under-full": ".colophon p { opacity: 0.99; }",
+    "an-opacity-just-under-full-in-percent": ".colophon a { opacity: 99%; }",
+    "a-negative-opacity": ".colophon { opacity: -1; }",
+    "a-transparent-footer-on-narrow-screens": "@media (max-width: 30rem) { "
+    ".colophon { opacity: 0; } }",
+    "an-opacity-in-capitals": ".colophon { OPACITY: 0; }",
+    "an-opacity-in-a-selector-list": "footer.colophon, .missing { opacity: 0; }",
+    "an-opacity-over-a-full-one": ".colophon { opacity: 1; opacity: 0; }",
+    "an-opacity-from-a-variable": ".colophon { opacity: var(--fade, 1); }",
+    "an-opacity-keyword": ".colophon a { opacity: inherit; }",
+    "a-filter-on-the-footer": ".colophon { filter: opacity(0); }",
+    "a-filter-on-the-link-with-focus": ".colophon a:focus-visible { filter: opacity(0); }",
+    "a-prefixed-opacity": ".colophon { -webkit-opacity: 0; }",
+    "a-prefixed-filter-on-the-link": ".colophon a { -webkit-filter: opacity(0); }",
+    "a-prefixed-animation": ".colophon { -webkit-animation: pulse 1.2s infinite; }",
+    "a-prefixed-transform": ".colophon { -webkit-transform: scale(0); }",
+    "a-footer-named-by-an-escape-and-its-space": ".colo\\70 hon { opacity: 0; }",
+    "a-footer-named-by-a-long-escape-and-its-space": ".colo\\000070 hon { opacity: 0; }",
+    "a-footer-named-by-an-escape-and-a-tab": "foot\\65\tr { opacity: 0; }",
+    "a-footer-named-by-an-escape-in-capitals": ".co\\6C ophon { opacity: 0; }",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
-view or state, or which the resolver can't read and so refuses."""
+view or state, fades the link, or which the resolver can't read and so refuses."""
 
 LEAVES_THE_ROOM = {
     "less-specific": "footer a { margin-bottom: 0; }",
@@ -1733,6 +1777,23 @@ LEAVES_THE_ROOM = {
     "a-thin-outline-width": ".colophon a:focus-visible { outline-width: thin; }",
     "a-medium-outline-width-in-the-shorthand": ".colophon a:focus-visible { "
     "outline: medium solid red; }",
+    "a-fully-opaque-footer": ".colophon { opacity: 1; }",
+    "a-fully-opaque-link": ".colophon a { opacity: 1; }",
+    "a-fully-opaque-paragraph": ".colophon p { opacity: 1; }",
+    "a-fully-opaque-page": "body { opacity: 1; }",
+    "a-fully-opaque-link-in-percent": ".colophon a { opacity: 100%; }",
+    "an-opacity-past-full": ".colophon a:focus-visible { opacity: 1.01; }",
+    "an-opacity-past-full-in-percent": "html { opacity: 101%; }",
+    "a-full-opacity-in-capitals": ".colophon { OPACITY: 1.0; }",
+    "a-transparent-mark-after-the-link": ".colophon a::after { opacity: 0; }",
+    "a-transparent-link-elsewhere": ".week-problem a { opacity: 0; }",
+    "a-transparent-page-beside-the-footer": "main { opacity: 0; }",
+    "no-filter": ".colophon { filter: none; }",
+    "no-filter-in-capitals": ".colophon a { FILTER: NONE; }",
+    "a-filter-on-what-is-behind-the-footer": ".colophon { backdrop-filter: blur(8px); }",
+    "a-prefixed-full-opacity": ".colophon { -webkit-opacity: 1; }",
+    "a-prefixed-filter-of-none": ".colophon a { -webkit-filter: none; }",
+    "an-opacity-under-a-prefix-a-browser-drops": ".colophon { -moz-opacity: 0; }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
@@ -1839,3 +1900,37 @@ def test_a_color_a_browser_takes_is_read(color: str, shown: bool) -> None:
 def test_a_color_a_browser_drops_is_refused(color: str) -> None:
     with pytest.raises(UnreadCss):
         visible(color)
+
+
+OPACITIES = {
+    "1": True,
+    "1.0": True,
+    "+1": True,
+    " 1 ": True,
+    "100%": True,
+    "1.01": True,
+    "101%": True,
+    "2": True,
+    "0.99": False,
+    "99%": False,
+    "0": False,
+    "0%": False,
+    "-1": False,
+    "-100%": False,
+    ".5": False,
+    "1.": False,
+    "1e0": False,
+    "1 1": False,
+    "1px": False,
+    "inherit": False,
+    "var(--o)": False,
+    "calc(1)": False,
+    "": False,
+}
+"""Opacities with whether the resolver reads each as fully opaque: 1 or 100% and past it,
+which a browser brings down to 1. A number it can't read, a keyword or a function is not."""
+
+
+@pytest.mark.parametrize(("value", "full"), OPACITIES.items(), ids=OPACITIES.keys())
+def test_only_an_opacity_written_as_full_reads_as_opaque(value: str, full: bool) -> None:
+    assert opaque(value) is full
