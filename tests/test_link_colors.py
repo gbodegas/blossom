@@ -43,6 +43,7 @@ from blossom.routes.navigation import NEW_NOTE_PAGE, NOTE_ACTIONS, NOTES_PAGE, T
 from blossom.settings import REPOSITORY_ROOT
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
+    CSS_SPACES,
     DETAILS,
     ESSAY_ID,
     HER_PAGE,
@@ -97,6 +98,10 @@ WIDTHS = (320, 820, 1180, 1440, 3840)
 """The viewport widths, in CSS pixels, the pages are held to: a phone, a tablet upright and
 on its side, a laptop, and a large desktop screen."""
 ROOT_FONT_PX = 16
+ROOT_SELECTOR = re.compile(rf"[{CSS_SPACES}]*\*?:root[{CSS_SPACES}]*", re.IGNORECASE)
+"""The one selector a custom property is read from, `:root` with or without a `*` before it.
+Every rule written with it weighs the same, so source order and importance alone settle
+each name."""
 
 
 @dataclass
@@ -120,9 +125,9 @@ def read_sheet(css: str) -> Sheet:
     ``padding``, in source order, each with the media condition it sits under, and the
     sheet's custom properties. A rule inside a media query applies only where the query
     holds, so a link whose only color comes from one is still the browser's color on every
-    other screen; ``color_of`` is asked about one screen at a time. A custom property takes
-    its last important value over every normal one, whichever rule holds each, as the
-    cascade weighs them."""
+    other screen; ``color_of`` is asked about one screen at a time. Custom properties are
+    read from `:root` alone, each taking its last important value over every normal one. One
+    set on any other selector reaches only what that selector matches, so it is refused."""
     sheet = Sheet()
     weighty: set[str] = set()
     for style in style_rules(css):
@@ -134,6 +139,9 @@ def read_sheet(css: str) -> Sheet:
             if name.startswith("--"):
                 if style.media is not None:
                     msg = f"--{name[2:]} is set inside {style.media}"
+                    raise UnreadCss(msg)
+                if not all(map(ROOT_SELECTOR.fullmatch, style.selectors.split(","))):
+                    msg = f"--{name[2:]} is set on {style.selectors}"
                     raise UnreadCss(msg)
                 if important or name not in weighty:
                     sheet.tokens[name[2:]] = value
@@ -485,8 +493,8 @@ def test_the_resolver_refuses_a_url_name_written_with_an_escape(css: str) -> Non
         'main a { content: "abc\\\r\n; color: #111111; }"; color: #888888; }',
         'main a { content: "abc\\41\n; color: #111111; }"; color: #888888; }',
         "main a { color: #111111; width: calc(1px); color: #888888;",
-        "main a { color: #111111; --x: a\\(; color: #888888; }",
-        'main a { color: #111111; --x: "("; color: #888888; }',
+        ":root { --x: a\\(; --y: #888888; } main a { color: #111111; color: var(--y); }",
+        ':root { --x: "("; --y: #888888; } main a { color: #111111; color: var(--y); }',
     ],
 )
 def test_the_resolver_reads_text_left_open_as_a_browser_reads_it(css: str) -> None:
@@ -565,7 +573,6 @@ def test_the_resolver_refuses_a_bang_inside_a_substitution_open_at_the_end() -> 
             ":root { --x: #333333; } :root { --x: #111111 !important; } :root { --x: #222222; }",
             "#111111",
         ),
-        (":root, .y { --x: #111111 !important; } :root { --x: #222222; }", "#111111"),
         (":root { --x: #111111 !important; } :root { --x: #222222 !x; }", "#111111"),
         (":root { --x: #111111 ! IMPORTANT; } :root { --x: #222222; }", "#111111"),
         (":root { --x: #111111; } :root { --x: #222222 !important", "#222222"),
@@ -591,6 +598,115 @@ def test_a_link_takes_an_important_custom_property_set_in_an_earlier_rule() -> N
     (link,) = links_in('<main><a href="/w">w</a></main>')
     css = ":root { --x: #111111 !important; } :root { --x: #888888; } main a { color: var(--x); }"
     assert color_of(read_sheet(css), link, "link", View(320)) == "#111111"
+
+
+@pytest.mark.parametrize(
+    "root",
+    [
+        pytest.param(":root", id="plain"),
+        pytest.param(":ROOT", id="upper"),
+        pytest.param(":Root", id="mixed"),
+        pytest.param("*:root", id="every-root"),
+        pytest.param(" :root ", id="spaced"),
+        pytest.param(":root/* the page */", id="comment"),
+        pytest.param("\n:root\n", id="lines"),
+        pytest.param(":root, :root", id="twice"),
+        pytest.param(":root,:ROOT", id="twice-upper"),
+    ],
+)
+def test_the_resolver_reads_a_custom_property_on_the_root_however_it_is_written(
+    root: str,
+) -> None:
+    """Edge gives the link `#111111` from each, the important value set on the root."""
+    (link,) = links_in('<main><a href="/w">w</a></main>')
+    css = f"{root} {{ --x: #111111 !important; }} :root {{ --x: #888888; }}"
+    sheet = read_sheet(f"{css} main a {{ color: var(--x); }}")
+    assert color_of(sheet, link, "link", View(320)) == "#111111"
+
+
+def test_an_important_custom_property_on_another_selector_is_refused() -> None:
+    """Edge paints the root's `#888888`, since `p` reaches neither the link nor anything
+    above it."""
+    (link,) = links_in('<main><a href="/">a</a></main>')
+    css = "p {--x:#111111!important;} :root {--x:#888888;} a {color:var(--x)}"
+    with pytest.raises(UnreadCss):
+        color_of(read_sheet(css), link, "link", View(320))
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        pytest.param(".y { --x: #111111 !important; } :root { --x: #888888; }", id="class"),
+        pytest.param(":root { --x: #888888; } p { --x: #111111 !important; }", id="type-after"),
+        pytest.param(":root { --x: #888888; } p { --x: #111111; }", id="normal-after"),
+        pytest.param("p { --x: #111111; } :root { --x: #888888; }", id="normal-before"),
+        pytest.param("#y { --x: #111111 !important; } :root { --x: #888888; }", id="id"),
+        pytest.param("[title] { --x: #111111 !important; } :root { --x: #888888; }", id="attr"),
+        pytest.param(":root { --x: #888888; } html { --x: #111111; }", id="html-after"),
+        pytest.param("html { --x: #111111; } :root { --x: #888888; }", id="html-before"),
+        pytest.param("* { --x: #111111 !important; } :root { --x: #888888; }", id="every"),
+        pytest.param(":root p { --x: #111111 !important; } :root { --x: #888888; }", id="under"),
+        pytest.param(":root:root { --x: #111111; } :root { --x: #888888; }", id="root-twice"),
+        pytest.param("html:root { --x: #111111; } :root { --x: #888888; }", id="html-root"),
+        pytest.param(":root, p { --x: #111111 !important; } :root { --x: #888888; }", id="list"),
+        pytest.param("p, :root { --x: #111111 !important; } :root { --x: #888888; }", id="last"),
+        pytest.param(":root, .y { --x: #111111 !important; } :root { --x: #222222; }", id="y"),
+        pytest.param("a:hover { --x: #111111 !important; } :root { --x: #888888; }", id="hover"),
+        pytest.param("p::before { --x: #111111 !important; } :root { --x: #888888; }", id="pe"),
+        pytest.param(":not(p) { --x: #111111 !important; } :root { --x: #888888; }", id="not"),
+        pytest.param(
+            ".y { --x: #111111 !important; color: var(--x); } :root { --x: #888888; }",
+            id="beside-a-color",
+        ),
+        pytest.param(":r\\6f ot { --x: #111111 !important; } :root { --x: #888888; }", id="esc"),
+        pytest.param(":root, { --x: #111111; } :root { --x: #888888; }", id="empty"),
+        pytest.param(":root { --x: #888888; } :root* { --x: #111111 !important; }", id="star"),
+        pytest.param(":root { --x: #888888; } **:root { --x: #111111 !important; }", id="2star"),
+        pytest.param(":root { --x: #888888; } *:root* { --x: #111111; }", id="stars"),
+        pytest.param(":root { --x: #888888; } :root, :root* { --x: #111111; }", id="star-list"),
+    ],
+)
+def test_the_resolver_refuses_a_custom_property_set_outside_the_root(css: str) -> None:
+    """A custom property set on any selector but `:root` reaches only the elements it
+    matches and what they hold, which one value for each name can't say."""
+    with pytest.raises(UnreadCss):
+        read_sheet(f"{css} main a {{ color: var(--x); }}")
+
+
+@pytest.mark.parametrize(
+    ("page", "css"),
+    [
+        pytest.param(
+            '<main><p><a href="/w">w</a></p></main>',
+            ":root { --x: #111111; } p { --x: #888888; }",
+            id="inside-p",
+        ),
+        pytest.param(
+            '<main class="y"><a href="/w">w</a></main>',
+            ":root, .y { --x: #888888; } :root { --x: #111111; }",
+            id="inside-y",
+        ),
+    ],
+)
+def test_a_link_inside_what_sets_a_custom_property_is_refused(page: str, css: str) -> None:
+    """Edge paints `#888888` from the element around the link, not the root's `#111111`."""
+    (link,) = links_in(page)
+    with pytest.raises(UnreadCss):
+        color_of(read_sheet(f"{css} main a {{ color: var(--x); }}"), link, "link", View(320))
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        pytest.param("} p { --x: #111111 !important; } :root { --x: #888888; }", id="brace"),
+        pytest.param("p { --x: #111111 !x; } :root { --x: #888888; }", id="loose-bang"),
+    ],
+)
+def test_a_custom_property_a_browser_drops_is_passed_over_on_any_selector(css: str) -> None:
+    """Edge drops the rule or the declaration on `p` and paints the root's `#888888`."""
+    (link,) = links_in('<main><a href="/w">w</a></main>')
+    sheet = read_sheet(f"{css} main a {{ color: var(--x); }}")
+    assert color_of(sheet, link, "link", View(320)) == "#888888"
 
 
 def test_the_contrast_check_reads_an_important_action_color_set_before_the_stylesheet() -> None:
