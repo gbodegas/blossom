@@ -320,12 +320,23 @@ MAKE_SETTINGS = re.compile(
     r"if \(-not \(Test-Path \.env\)\) \{ Copy-Item \.env\.example \.env \}", re.IGNORECASE
 )
 """The household's settings file made from the example, never over one already there."""
+SETTINGS_FILE = rf"[{SINGLE}{DOUBLE}]?(?:[^\s;|&{{}}{SINGLE}{DOUBLE}]*[\\/])?\.env(?![\w.])"
+"""The household's settings file as a command names it, quoted or not, on its own or at the
+end of a path."""
+ONE_LINE = r"(?:[ \t]|[`\\]\n)+"
+"""The space between two words of one command: spaces, or a backtick or backslash that
+carries the line on."""
+WORD = rf"(?:[{SINGLE}][^{SINGLE}\n]*[{SINGLE}]|[{DOUBLE}][^{DOUBLE}\n]*[{DOUBLE}]|[^\s;|&{{}}])+"
+"""A word of one command, a quoted part taken whole, so a ``|`` or ``;`` in it ends nothing."""
 READS_SETTINGS = re.compile(
-    r"(?:Get-Content|gc|cat|type)\s+(?:-Path\s+)?['\"]?(?:\.[\\/])?\.env(?![\w.])"
-    r"|--env-file[=\s]+['\"]?(?:\.[\\/])?\.env(?![\w.])|lines in `\.env`",
+    r"(?<![\w-])(?:Get-Content|gc|cat|type|notepad(?:\.exe|\+\+)?|code|nano|vim?"
+    r"|Select-String|sls|Invoke-Item|ii|Start-Process|saps|start|explorer(?:\.exe)?)"
+    rf"(?:{ONE_LINE}{WORD})*?(?:{ONE_LINE}|[:,]){SETTINGS_FILE}"
+    rf"|--env-file(?:=|{ONE_LINE})+{SETTINGS_FILE}|lines\s+in\s+`\.env`",
     re.IGNORECASE,
 )
-"""A step that reads `.env`: a command that prints or loads it, or the checklist of its lines."""
+"""A step that reads `.env`: a command that prints, opens, searches or loads it, with any
+words before the file on its own line, or the checklist of its lines."""
 COPIES = re.compile(r"(?<![\w-])(?:copy-item|cpi|copy|cp)(?![\w-])", re.IGNORECASE)
 """A copy command, by its name or a short name PowerShell or a shell gives it."""
 
@@ -338,7 +349,11 @@ def check_household_settings(readme: str, guide: str) -> None:
     assert anchors, "the README links to no household section of the guide"
     for anchor in anchors:
         section = section_with_commands(guide, anchor)
-        steps = " ".join(section.split())
+        steps = re.sub(
+            r"\s+",
+            lambda found: "\n" if re.search(r"[\r\n]", found.group()) else " ",
+            section.strip(),
+        )
         runs = " ".join(section_with_commands(guide, anchor, run=True).split())
         commands = " ".join(" ".join(found.group().split()) for found in FENCE.finditer(section))
         made = MAKE_SETTINGS.search(runs)
@@ -587,9 +602,117 @@ READS_BEFORE_MAKING = {
         "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT,
         HOUSEHOLD_LINK,
     ),
+    **{
+        f"{editor}-on-the-line-before-the-creation": (
+            f"## Running for the household\n\n```powershell\n{editor} .env\n"
+            "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT,
+            HOUSEHOLD_LINK,
+        )
+        for editor in ("notepad", "notepad.exe")
+    },
+    "made-after-a-checklist-across-two-lines": (
+        "## Running for the household\n\nThen check these lines\nin `.env`:\n\n" + MAKE_IT,
+        HOUSEHOLD_LINK,
+    ),
+    **{
+        f"opened-by-{name}-before-it-is-made": (
+            f"## Running for the household\n\n```powershell\n{read}\n```\n\n" + MAKE_IT + CHECK_IT,
+            HOUSEHOLD_LINK,
+        )
+        for name, read in {
+            "notepad": "notepad .env",
+            "notepad-exe": "notepad.exe .env",
+            "notepad-in-capitals-with-a-quoted-path": "NOTEPAD '.\\.env'",
+            "get-content-raw": "Get-Content -Raw .env",
+            "get-content-literal-path": "Get-Content -LiteralPath .env",
+            "get-content-path-after-a-colon": "Get-Content -Path:.env",
+            "gc-with-an-encoding": "gc -Encoding utf8 .env",
+            "select-string-path": "Select-String -Path .env -Pattern BLOSSOM",
+            "select-string-pattern-first": "Select-String BLOSSOM_TODAY .env",
+            "sls": "sls BLOSSOM ./.env",
+            "a-line-carried-on": "Get-Content -Raw `\n    .env",
+            "a-line-carried-on-with-a-crlf": "Get-Content -Raw `\r\n    .env",
+            "code": "code .env",
+            "notepad-plus-plus": "notepad++ .env",
+            "invoke-item": "Invoke-Item .env",
+            "ii": "ii .env",
+            "start": "start .env",
+            "start-process-file-path": "Start-Process -FilePath .env",
+            "nano": "nano .env",
+            "vim": "vim .env",
+            "explorer": "explorer .env",
+            "a-pattern-holding-a-pipe": "Select-String -Pattern 'BLOSSOM_TODAY|BLOSSOM' .env",
+            "a-pattern-holding-parentheses": 'Select-String -Pattern "BLOSSOM_(TODAY)" -Path .env',
+            "a-pattern-holding-a-semicolon": "Select-String 'a;b' .env",
+            "a-pattern-holding-braces": "Select-String -Pattern '{x}' .env",
+            "notepad-with-curly-single-quotes": f"notepad {SINGLE[1]}.env{SINGLE[2]}",
+            "get-content-with-curly-double-quotes": f"Get-Content {DOUBLE[1]}.env{DOUBLE[2]}",
+            "a-list-of-files": "Get-Content notes.txt,.env",
+            "a-path-from-the-current-folder": 'Get-Content "$PWD\\.env"',
+            "a-path-from-the-script-folder": "Get-Content $PSScriptRoot\\.env",
+            "a-joined-path": "Get-Content (Join-Path $PWD .env)",
+        }.items()
+    },
+    "read-in-a-bash-line-carried-on": (
+        "## Running for the household\n\n```bash\ncat \\\n  .env\n```\n\n" + MAKE_IT + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "loaded-by-uv-on-a-bash-line-carried-on": (
+        "## Running for the household\n\n```bash\nuv run --env-file \\\n  .env x:app\n```\n\n"
+        + MAKE_IT
+        + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
 }
 MAKES_BEFORE_READING = {
     "made-first": ("## Running for the household\n\n" + MAKE_IT + CHECK_IT + LAUNCH_IT),
+    "the-example-opened-first": (
+        "## Running for the household\n\n```powershell\nnotepad .env.example\n"
+        "Get-Content -Raw .env.example\n```\n\n" + MAKE_IT + CHECK_IT
+    ),
+    "a-reader-of-another-file-then-prose-naming-the-file": (
+        "## Running for the household\n\n```powershell\nGet-Content notes.txt\n```\n\n"
+        "The settings go in .env once it is made.\n\n" + MAKE_IT + CHECK_IT
+    ),
+    "a-reader-of-another-file-before-a-semicolon": (
+        "## Running for the household\n\n```powershell\n"
+        "Get-Content notes.txt; Write-Output .env\n```\n\n" + MAKE_IT + CHECK_IT
+    ),
+    "a-reader-of-another-file-on-the-line-before": (
+        "## Running for the household\n\n```powershell\nnotepad notes.txt\n"
+        "Write-Output .env\n```\n\n" + MAKE_IT + CHECK_IT
+    ),
+    "a-reader-of-a-file-whose-name-ends-in-env": (
+        "## Running for the household\n\n```powershell\nGet-Content data/sample/sample.env\n"
+        "notepad $PWD\\.env.example\n```\n\n" + MAKE_IT + CHECK_IT
+    ),
+    "a-quoted-word-then-another-statement": (
+        "## Running for the household\n\n```powershell\n"
+        "Select-String 'a|b' notes.txt; Write-Output .env\n```\n\n" + MAKE_IT + CHECK_IT
+    ),
+    "a-reader-then-a-bare-line-break": (
+        "## Running for the household\n\n```bash\ncat notes.txt\nls .env\n```\n\n"
+        + MAKE_IT
+        + CHECK_IT
+    ),
+    "a-reader-name-inside-another-word": (
+        "## Running for the household\n\nA prototype .env from another machine isn't used.\n\n"
+        + MAKE_IT
+        + CHECK_IT
+    ),
+    **{
+        f"{editor}-on-the-line-after-the-creation": (
+            "## Running for the household\n\n```powershell\n"
+            f"if (-not (Test-Path .env)) {{ Copy-Item .env.example .env }}\n{editor} .env\n```\n\n"
+            + CHECK_IT
+        )
+        for editor in ("notepad", "notepad.exe")
+    },
+    "opened-with-notepad-after-it-is-made": (
+        "## Running for the household\n\n```powershell\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\nnotepad.exe .env\n"
+        "Get-Content -Raw .env\n```\n\n" + CHECK_IT
+    ),
     "made-on-one-line": (
         "## Running for the household\n\n```powershell\n"
         "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
