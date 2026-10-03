@@ -262,8 +262,9 @@ def longhands(name: str, value: str) -> dict[str, str]:
     its width, ``place-items`` or ``place-self`` the alignment across a column with its
     first word, ``gap`` the space between items on a line with its last, and a padding,
     border or margin shorthand each side it reaches. A property of one keyword given any
-    other value sets nothing, as a browser drops it; a `SUBSTITUTION` or an escape there is
-    refused, since it may stand for a keyword."""
+    other value sets nothing, as a browser drops it, and so does a ``flex-flow`` with two
+    directions or two wrappings; a `SUBSTITUTION` or an escape there is refused, since it
+    may stand for a keyword."""
     taken = ONE_KEYWORD.get("overflow-wrap" if name == "word-wrap" else name)
     if taken is not None and value not in taken | KEYWORDS:
         if SUBSTITUTION.search(value) or "\\" in value:
@@ -281,13 +282,18 @@ def longhands(name: str, value: str) -> dict[str, str]:
         return {name.replace("place", "align"): value.split()[0]}
     if name == "flex-flow":
         found = {"flex-direction": "row", "flex-wrap": "nowrap"}
+        given: set[str] = set()
         for word in value.split():
             if word in ("wrap", "nowrap", "wrap-reverse"):
-                found["flex-wrap"] = word
+                longhand = "flex-wrap"
             elif word in ("row", "row-reverse", "column", "column-reverse"):
-                found["flex-direction"] = word
+                longhand = "flex-direction"
             else:
                 raise UnreadCss(value)
+            if longhand in given:
+                return {}
+            given.add(longhand)
+            found[longhand] = word
         return found
     if name == "flex":
         numbers = re.findall(r"(?:^|\s)([+-]?(?:\d+\.?\d*|\.\d+))(?=\s|$)", value)
@@ -1435,6 +1441,143 @@ def test_a_property_of_one_keyword_takes_its_other_name_and_every_propertys_keyw
     assert value_of(sheet, paragraph, "flex-wrap", View(320)) is None
 
 
+@pytest.mark.parametrize(
+    ("css", "name", "value"),
+    [
+        *(
+            pytest.param(
+                f"p {{ display: flex; flex-wrap: {before}; }} p {{ flex-flow: {flow}; }}",
+                "flex-wrap",
+                value,
+                id=flow,
+            )
+            for before, flow, value in (
+                ("nowrap", "wrap wrap", "nowrap"),
+                ("wrap", "nowrap nowrap", "wrap"),
+                ("nowrap", "wrap nowrap", "nowrap"),
+                ("nowrap", "wrap row wrap", "nowrap"),
+                ("nowrap", "row wrap wrap", "nowrap"),
+                ("nowrap", "row row wrap", "nowrap"),
+                ("nowrap", "row column wrap", "nowrap"),
+                ("nowrap", "row wrap column", "nowrap"),
+                ("nowrap", "wrap-reverse wrap", "nowrap"),
+                ("nowrap", "wrap", "wrap"),
+                ("nowrap", "row wrap", "wrap"),
+                ("nowrap", "wrap row", "wrap"),
+                ("nowrap", "column-reverse wrap-reverse", "wrap-reverse"),
+                ("nowrap", "wrap/**/row", "wrap"),
+                ("nowrap", "WRAP Row", "wrap"),
+                ("wrap", "column", "nowrap"),
+            )
+        ),
+        *(
+            pytest.param(
+                f"p {{ display: flex; flex-direction: {before}; }} p {{ flex-flow: {flow}; }}",
+                "flex-direction",
+                value,
+                id=f"direction-{flow}",
+            )
+            for before, flow, value in (
+                ("column", "row column", "column"),
+                ("row", "column column", "row"),
+                ("row", "wrap column", "column"),
+            )
+        ),
+        pytest.param(
+            "p { flex-flow: wrap !important; } p { flex-flow: nowrap nowrap !important; }",
+            "flex-wrap",
+            "wrap",
+            id="important",
+        ),
+    ],
+)
+def test_the_resolver_reads_flex_flow_as_a_browser_reads_it(
+    css: str, name: str, value: str
+) -> None:
+    """Edge takes at most one direction and one wrapping keyword in `flex-flow`, in either
+    order, and drops a value with two of either, keeping the declaration before it."""
+    (paragraph,) = elements_of("<p>a</p>")
+    assert value_of(read_sheet(css), paragraph, name, View(320)) == value
+
+
+@pytest.mark.parametrize("flow", ["initial", "wrap initial", "wrap, row"])
+def test_the_resolver_refuses_a_flex_flow_it_does_not_read(flow: str) -> None:
+    """Edge reads `flex-flow: initial` and drops the other two; the reader refuses each."""
+    with pytest.raises(UnreadCss):
+        read_sheet(f"p {{ flex-wrap: wrap; }} p {{ flex-flow: {flow}; }}")
+
+
+@pytest.mark.parametrize(
+    ("css", "value"),
+    [
+        pytest.param("} p { flex-wrap: wrap; }", None, id="at-the-start"),
+        pytest.param("} p { flex-wrap: nowrap; } p { flex-wrap: wrap; }", "wrap", id="then-a-rule"),
+        pytest.param(
+            "p { flex-wrap: nowrap; } } p { flex-wrap: nowrap; } p { flex-wrap: wrap; }",
+            "wrap",
+            id="between-rules",
+        ),
+        pytest.param(
+            "p { flex-wrap: wrap; } } p { flex-wrap: nowrap; }", "wrap", id="earlier-kept"
+        ),
+        pytest.param(
+            "} } p { flex-wrap: nowrap; } p { flex-wrap: wrap; }", "wrap", id="two-in-a-row"
+        ),
+        pytest.param(
+            "} p { flex-wrap: nowrap; } } p { flex-wrap: nowrap; } p { flex-wrap: wrap; }",
+            "wrap",
+            id="two-apart",
+        ),
+        pytest.param(
+            "x } p { flex-wrap: nowrap; } p { flex-wrap: wrap; }", "wrap", id="word-before"
+        ),
+        pytest.param(
+            "} ; p { flex-wrap: nowrap; } p { flex-wrap: wrap; }", "wrap", id="semicolon-after"
+        ),
+        pytest.param(
+            "} @media (min-width: 1px) { p { flex-wrap: nowrap; } } p { flex-wrap: wrap; }",
+            "wrap",
+            id="before-a-media-rule",
+        ),
+        pytest.param(
+            "} @font-face { font-family: x; } p { flex-wrap: wrap; }",
+            "wrap",
+            id="before-an-at-rule",
+        ),
+        pytest.param(
+            "@media (min-width: 1px) { p { flex-wrap: wrap; } } } p { flex-wrap: nowrap; }"
+            " p { flex-wrap: wrap-reverse; }",
+            "wrap-reverse",
+            id="after-a-media-rule",
+        ),
+        pytest.param(
+            "@media (min-width: 1px) { p { flex-wrap: nowrap; } } p { flex-wrap: wrap; } }",
+            "wrap",
+            id="at-the-end-after-a-media-rule",
+        ),
+        pytest.param("p { flex-wrap: wrap; } }", "wrap", id="at-the-end"),
+        pytest.param(
+            "} p { flex-wrap: nowrap; } p { flex-wrap: wrap;", "wrap", id="then-open-at-the-end"
+        ),
+        pytest.param(
+            "p { flex-wrap: wrap; } } p { flex-wrap: nowrap;", "wrap", id="before-open-at-the-end"
+        ),
+        pytest.param("}", None, id="alone"),
+        pytest.param(
+            'p[title="}"] { flex-wrap: nowrap; } p { flex-wrap: wrap; }', "wrap", id="in-a-string"
+        ),
+        pytest.param("/* } */ p { flex-wrap: wrap; }", "wrap", id="in-a-comment"),
+    ],
+)
+def test_the_resolver_drops_only_the_rule_a_stray_closing_brace_starts(
+    css: str, value: str | None
+) -> None:
+    """Edge reads a `}` with no block open as part of the next rule's selector, drops that
+    rule, and reads the rest."""
+    (paragraph,) = elements_of("<p>a</p>")
+    assert value_of(read_sheet(css), paragraph, "flex-wrap", View(320)) == value
+
+
 def test_the_resolver_refuses_the_mark_of_a_broken_string_written_in_a_sheet() -> None:
     with pytest.raises(UnreadCss):
         read_sheet("p { flex-wrap: wrap\ue006; }")
@@ -2206,6 +2349,24 @@ def test_the_wrapping_check_refuses_an_escaped_semicolon(rendered: dict[str, str
     tail = ".places { flex-wrap: nowrap; } .places { --x: a\\;flex-wrap:wrap;"
     with pytest.raises(UnreadCss):
         links_wrap(read_sheet(f"{stylesheet()}\n{tail}"), page, View(320))
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param("} p { }\n.places { flex-wrap: nowrap; }", id="stray-closing-brace"),
+        pytest.param(
+            ".places { flex-wrap: nowrap; } .places { flex-flow: wrap wrap; }", id="flex-flow"
+        ),
+    ],
+)
+def test_the_wrapping_check_reads_the_stylesheet_past_a_rule_a_browser_drops(
+    rendered: dict[str, str], tail: str
+) -> None:
+    """Edge keeps the page links on one line once this text ends the stylesheet."""
+    page = rendered["parent, family"]
+    assert links_wrap(read_sheet(stylesheet()), page, View(320))
+    assert not links_wrap(read_sheet(f"{stylesheet()}\n{tail}"), page, View(320))
 
 
 @pytest.mark.parametrize(
