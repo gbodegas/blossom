@@ -434,8 +434,7 @@ article h2 {
    the date warning's link, the summary's, the notes', and the line that says
    how many instructions wait; in Help, a refusal's link and the family review
    link a parent reads; at the top of her week, the link from a problem to the
-   card it is about; on a note's small page, Try again; in every page's footer,
-   the link to the source. */
+   card it is about; on a note's small page, Try again. */
 .notice a,
 .refresh a,
 .return a,
@@ -446,8 +445,7 @@ article h2 {
 .school-instructions .source a,
 .help-panel .problem a,
 .help-panel #ask-for-help a,
-.week-problem a,
-.colophon a {
+.week-problem a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: -0.8rem 0;
@@ -1211,8 +1209,16 @@ form.inline button {
 }
 
 /* The footer sits outside the page's main part, so its link to the source takes the
-   action color here, visited or not. */
+   action color here, visited or not. It is as tall as a button to press, and the padding
+   grows its own line rather than reaching into the line above, as Help's own-line links
+   do. The margin above and below holds its focus outline, 3 pixels drawn 2 pixels out, so
+   with large text or a reader's own spacing the outline never covers the line above or
+   below, and a Tab that scrolls to the link brings the whole outline onto the screen. */
 .colophon a {
+  display: inline-block;
+  padding: 0.8rem 0;
+  margin: 5px 0;
+  scroll-margin: 5px 0;
   color: var(--blue-action);
 }
 

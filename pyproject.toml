@@ -3,8 +3,8 @@ name = "blossom"
 version = "0.1.0"
 description = "Academic planning assistant for a family"
 readme = "README.md"
-license = "AGPL-3.0-or-later"
-license-files = ["LICENSE"]
+license = "AGPL-3.0-or-later AND OFL-1.1"
+license-files = ["LICENSE", "blossom/static/fonts/outfit-OFL.txt", "blossom/static/fonts/quicksand-OFL.txt"]
 # The upper bound exists because pydantic 2.11.7 depends on pydantic-core
 # 2.33.2, which ships no 3.14 wheels. Revisit when pydantic is bumped.
 requires-python = ">=3.12,<3.14"

@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """The license, held in place: every source file in the package and the tests opens with
-its SPDX header, ``LICENSE`` is the GNU Affero General Public License, the package metadata
-names the same license, and every page's footer links to the source, which section 13 of
-the license asks of a copy that serves people over a network.
+its SPDX header, ``LICENSE`` is the GNU Affero General Public License, and every page's
+footer links to the source, which section 13 of the license asks of a copy that serves
+people over a network, with room around the link to press it and to see it focused.
 
 The fonts under ``blossom/static/fonts/`` are not this project's work and keep their own
-license, so the scan passes them by. An empty file has nothing to license and stays empty,
-as a package marker does."""
+license, the SIL Open Font License, so the scan passes them by. The package metadata names
+both licenses and lists each license text the wheel and the sdist ship. An empty file has
+nothing to license and stays empty, as a package marker does."""
 
 import hashlib
 import pathlib
@@ -178,18 +179,36 @@ def test_a_license_cut_short_or_changed_fails(
         check_license(tmp_path)
 
 
-def test_the_package_metadata_names_the_license_the_headers_name() -> None:
-    """PEP 639: an SPDX expression and the license file, and no license classifier."""
+def test_the_distribution_names_the_license_of_each_part_it_ships() -> None:
+    """PEP 639: the wheel and the sdist carry Blossom's own code under the AGPL and the
+    fonts under the OFL, so the expression names both, every license text is listed and
+    present, and no license classifier repeats them."""
     pyproject = (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     project = tomllib.loads(pyproject)["project"]
-    assert project["license"] == "AGPL-3.0-or-later"
-    assert IDENTIFIER.endswith(f": {project['license']}")
-    assert project["license-files"] == ["LICENSE"]
+    assert project["license"] == "AGPL-3.0-or-later AND OFL-1.1"
+    assert project["license-files"] == [
+        "LICENSE",
+        "blossom/static/fonts/outfit-OFL.txt",
+        "blossom/static/fonts/quicksand-OFL.txt",
+    ]
+    missing = [name for name in project["license-files"] if not (REPOSITORY_ROOT / name).is_file()]
+    assert not missing, f"listed but not in the repository: {missing}"
     assert not [
         classifier
         for classifier in project.get("classifiers", [])
         if classifier.startswith("License ::")
     ]
+
+
+def test_first_party_headers_name_the_agpl_alone() -> None:
+    """The OFL in the distribution's expression covers the fonts alone. Every file of
+    Blossom's own says AGPL-3.0-or-later and nothing else, and the scan leaves the fonts
+    and their license texts out."""
+    assert IDENTIFIER == "SPDX-License-Identifier: AGPL-3.0-or-later"
+    found = source_files()
+    named = [path for path in found if opening(path)[:1] != [HEADERS[path.suffix][0]]]
+    assert not named, f"these files name another license or none: {named}"
+    assert not [path for path in found if path.is_relative_to(THIRD_PARTY)]
 
 
 def test_only_the_shared_layout_writes_a_footer() -> None:
@@ -217,3 +236,95 @@ def test_every_page_links_once_to_its_source(tmp_path: pathlib.Path) -> None:
         assert page.status_code == 200, path
         assert source_links(page.text) == [source], path
         assert page.text.count("Source code") == 1, path
+
+
+STYLESHEET = PACKAGE_ROOT / "static" / "blossom.css"
+FOOTER_LINK = ".colophon a"
+
+
+def declared(css: str, selector: str) -> dict[str, str]:
+    """The declarations every rule naming ``selector`` gives it, a later rule's over an
+    earlier one's, comments left out."""
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    found: dict[str, str] = {}
+    for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain):
+        if selector in [part.strip() for part in head.split(",")]:
+            for line in inside.split(";"):
+                name, _, value = line.partition(":")
+                if value.strip():
+                    found[name.strip()] = value.strip()
+    return found
+
+
+def pixels(value: str) -> float:
+    if value == "0":
+        return 0.0
+    found = re.fullmatch(r"(\d+(?:\.\d+)?)px", value)
+    assert found, f"{value!r} isn't a length in pixels"
+    return float(found.group(1))
+
+
+def check_footer_link(css: str) -> None:
+    """Assert that the footer's link keeps its 44 pixels to press and its focus outline in
+    room of its own: the padding grows its line, with no margin taking it back, and the
+    margin above and below, and the room a scroll to it keeps, are at least as deep as the
+    outline reaches."""
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    for head, inside in re.findall(r"([^{}]+)\{([^{}]*)\}", plain):
+        if FOOTER_LINK in [part.strip() for part in head.split(",")]:
+            assert "-0.8rem" not in inside, "the footer link margins its press area back in"
+    link = declared(css, FOOTER_LINK)
+    assert link.get("display") == "inline-block"
+    assert link.get("padding") == "0.8rem 0"
+    outline = declared(css, "a:focus-visible") | declared(css, f"{FOOTER_LINK}:focus-visible")
+    width = pixels(outline["outline"].split()[0])
+    reach = width + pixels(outline["outline-offset"])
+    for name in ("margin", "scroll-margin"):
+        sides = link.get(name, "0").split()
+        above, below = sides[0], sides[2] if len(sides) > 2 else sides[0]
+        assert min(pixels(above), pixels(below)) >= reach, f"the outline reaches past {name}"
+
+
+def test_the_footer_link_keeps_its_press_area_and_outline_in_its_own_line() -> None:
+    check_footer_link(STYLESHEET.read_text(encoding="utf-8"))
+
+
+LINK_RULE = (
+    "  display: inline-block;\n  padding: 0.8rem 0;\n  margin: 5px 0;\n  scroll-margin: 5px 0;\n"
+)
+FOCUS_RULE = "  outline: 3px solid var(--blue-action);\n  outline-offset: 2px;\n"
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (".week-problem a {", ".week-problem a,\n.colophon a {"),
+        (LINK_RULE, LINK_RULE.replace("  margin: 5px 0", "  margin: 0")),
+        (LINK_RULE, LINK_RULE.replace("  margin: 5px 0", "  margin: 4px 0")),
+        (LINK_RULE, LINK_RULE.replace("  margin: 5px 0", "  margin: 5px 0 0")),
+        (LINK_RULE, LINK_RULE.replace("  margin: 5px 0", "  margin: -0.8rem 0")),
+        (LINK_RULE, LINK_RULE.replace("scroll-margin: 5px 0", "scroll-margin: 0")),
+        (LINK_RULE, LINK_RULE.replace("0.8rem 0", "0.4rem 0")),
+        (LINK_RULE, LINK_RULE.replace("inline-block", "inline")),
+        (FOCUS_RULE, FOCUS_RULE.replace("offset: 2px", "offset: 4px")),
+        ("colophon */", "colophon */\n.colophon a:focus-visible {\n  outline: 4px solid red;\n}"),
+    ],
+    ids=[
+        "back-in-the-sentence-rule",
+        "margin-0",
+        "margin-short-of-the-outline",
+        "no-margin-below",
+        "margin-taken-back",
+        "no-room-when-scrolled-to",
+        "half-the-padding",
+        "inline",
+        "outline-drawn-further-out",
+        "a-wider-outline-here",
+    ],
+)
+def test_a_footer_link_that_reaches_past_its_line_fails(before: str, after: str) -> None:
+    original = STYLESHEET.read_text(encoding="utf-8")
+    assert original.count(before) == 1
+    changed = original.replace(before, after)
+    with pytest.raises(AssertionError):
+        check_footer_link(changed)
