@@ -357,8 +357,9 @@ UNSET_OUTLINE = {
 }
 """What an ``outline`` shorthand sets once a substitution leaves it unreadable: each part its
 initial value, as a browser sets them when it styles the page."""
-VAR = re.compile(r"var\(\s*(--[\w-]+)\s*(?:,([^()]*))?\)", re.IGNORECASE)
-"""A ``var()`` with the custom property it names, as written, and its fallback, if any."""
+VAR = re.compile(r"(?<![\w-])var\(\s*(--[\w-]+)\s*(?:,([^()]*))?\)", re.IGNORECASE)
+"""A ``var()`` with the custom property it names, as written, and its fallback, if any. A
+name that runs into the ``var`` before it, as in ``solidvar(``, makes another function."""
 COLOR_NAMES = """aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue
     blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue
     cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkkhaki
@@ -434,12 +435,30 @@ def alpha_of(color: str) -> str | None:
     return alpha
 
 
+def outline_width(word: str) -> bool | None:
+    """Whether a browser takes ``word`` as an outline's width: a width keyword, zero, or a
+    length of zero or more. ``None`` for a unit outside `LENGTH_UNITS` or a number this can't
+    read."""
+    if word in OUTLINE_WIDTHS:
+        return True
+    found = re.fullmatch(rf"({SIGNED})([a-z]+|%)?", word)
+    if found is None:
+        return None
+    amount, unit = float(found.group(1)), found.group(2)
+    if unit is None:
+        return amount == 0
+    if unit == "%":
+        return False
+    return None if unit not in LENGTH_UNITS else amount >= 0
+
+
 def read_outline(value: str) -> dict[str, str] | None:
     """The width, style and color an ``outline`` shorthand with no substitution sets, each its
-    initial value where it names none, or ``None`` where a browser can't read it: a negative
-    width, a part named twice, or a keyword among other words. An escape, a function other
-    than a color `alpha_of` reads, or a word that is none of a width, a style or a color,
-    is refused."""
+    initial value where it names none, or ``None`` where a browser can't read it: a width
+    `outline_width` doesn't take, a part named twice, or a keyword among other words. An
+    escape, a function other than a color `alpha_of` reads, a width in a unit or number
+    `outline_width` can't read, or a word that is none of a width, a style or a color, is
+    refused."""
     if "\\" in value:
         raise UnreadCss(value)
     if any(name not in COLOR_FUNCTIONS for name in re.findall(r"([\w-]*)\(", value)):
@@ -459,7 +478,10 @@ def read_outline(value: str) -> dict[str, str] | None:
                 alpha_of(word)
         else:
             raise UnreadCss(value)
-        if part in named or (part == "outline-width" and negative(word)):
+        width = outline_width(word) if part == "outline-width" else True
+        if width is None:
+            raise UnreadCss(value)
+        if part in named or not width:
             return None
         named.add(part)
         found[part] = word
@@ -469,7 +491,8 @@ def read_outline(value: str) -> dict[str, str] | None:
 def substituted(value: str, tokens: Mapping[str, str | None]) -> str | None:
     """``value`` with each ``var()`` put in its place: the custom property's value from
     ``tokens``, or the fallback where ``tokens`` has none, and ``None`` where neither is given.
-    A token ``tokens`` can't weigh is refused."""
+    Each value goes in with a space on either side, since CSS puts its tokens in place and
+    never joins them to the text beside it. A token ``tokens`` can't weigh is refused."""
     parts: list[str] = []
     end = 0
     for found in VAR.finditer(value):
@@ -479,7 +502,7 @@ def substituted(value: str, tokens: Mapping[str, str | None]) -> str | None:
         given = tokens.get(name, fallback)
         if given is None:
             return None
-        parts += [value[end : found.start()], given]
+        parts += [value[end : found.start()], f" {given} "]
         end = found.end()
     return "".join([*parts, value[end:]])
 
@@ -553,7 +576,7 @@ def link_longhands(name: str, value: str, tokens: Mapping[str, str | None]) -> d
     if name == "outline":
         return outline_parts(value, tokens)
     value = value.lower()
-    if name == "outline-width" and negative(value):
+    if name == "outline-width" and outline_width(value) is False:
         return {}
     if name == "outline-style" and value not in OUTLINE_STYLES:
         raise UnreadCss(value)
@@ -1185,6 +1208,52 @@ TAKES_THE_ROOM = {
     "margin: var(--none-set, calc(0px)) 0; }",
     "nested-functions-in-a-scroll-margin": ".colophon a { "
     "scroll-margin: min(0px, max(0px, 1px)) 0; }",
+    "an-outline-with-a-plain-number-width-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: 1 solid red; outline-width: 3px; }",
+    "an-outline-with-a-width-just-over-zero-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: 0.01 solid red; outline-width: 3px; }",
+    "an-outline-with-an-unknown-width-unit-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: 3banana solid red; outline-width: 3px; }",
+    "an-outline-with-an-unknown-width-unit-in-capitals": ".colophon a:focus-visible { "
+    "outline: none; OUTLINE: 3BANANA SOLID RED; outline-width: 3px; }",
+    "an-outline-with-a-percentage-width-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: 10% solid red; outline-width: 3px; }",
+    "an-outline-with-a-negative-width-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: -1px solid red; outline-width: 3px; }",
+    "an-outline-with-a-width-unit-the-resolver-doesnt-read": ".colophon a:focus-visible { "
+    "outline: none; outline: 1vw solid red; outline-width: 3px; }",
+    "an-outline-with-an-unreadable-width-number": ".colophon a:focus-visible { "
+    "outline: none; outline: 1e1px solid red; outline-width: 3px; }",
+    "an-outline-with-a-plain-number-width-from-a-token": ":root { --w: 1; }\n"
+    ".colophon a:focus-visible { outline: var(--w) solid red; outline-width: 3px; }",
+    "an-outline-with-a-plain-number-width-in-its-own-rule": ".colophon a:focus-visible { "
+    "outline: none; }\n.colophon a:focus-visible { outline: 1 solid red; }\n"
+    ".colophon a:focus-visible { outline-width: 3px; }",
+    "an-unknown-outline-width-unit": ".colophon a:focus-visible { outline-width: 3banana; }",
+    "an-outline-with-an-unknown-width-unit": ".colophon a:focus-visible { "
+    "outline: 3banana solid red; }",
+    "a-number-glued-to-a-unit-by-a-substitution": ":root { --w: 3; }\n"
+    ".colophon a:focus-visible { outline: var(--w)px solid red; }",
+    "a-number-glued-to-a-unit-from-two-substitutions": ":root { --n: 3; --u: px; }\n"
+    ".colophon a:focus-visible { outline: var(--n)var(--u) solid red; }",
+    "a-number-glued-to-a-unit-by-a-fallback": ".colophon a:focus-visible { "
+    "outline: var(--unset-width, 3)px solid red; }",
+    "a-color-glued-to-text-by-a-substitution": ":root { --c: re; }\n"
+    ".colophon a:focus-visible { outline: 3px solid var(--c)d; }",
+    "a-point-glued-before-a-substitution": ":root { --w: 5px; }\n"
+    ".colophon a:focus-visible { outline: .var(--w) solid red; }",
+    "a-channel-glued-to-a-substitution": ":root { --r: 7; }\n"
+    ".colophon a:focus-visible { outline: 3px solid rgb(var(--r)6 113 147); }",
+    "a-style-glued-before-a-substitution": ":root { --w: 3px; --c: red; }\n"
+    ".colophon a:focus-visible { outline: var(--w) solidvar(--c); }",
+    "a-hex-glued-before-a-substitution": ":root { --w: 3px; --s: solid; }\n"
+    ".colophon a:focus-visible { outline: var(--w) #abcvar(--s); }",
+    "a-width-glued-before-a-substitution": ":root { --c: red; --s: solid; }\n"
+    ".colophon a:focus-visible { outline: var(--c) 3pxvar(--s); }",
+    "a-channel-glued-before-a-substitution": ":root { --w: 3px solid; --a: / 1; }\n"
+    ".colophon a:focus-visible { outline: var(--w) rgb(76 113 147var(--a)); }",
+    "a-style-glued-before-a-fallback": ":root { --w: 3px; }\n"
+    ".colophon a:focus-visible { outline: var(--w) solidvar(--unset-color, red); }",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
 view or state, or which the resolver can't read and so refuses."""
@@ -1299,6 +1368,37 @@ LEAVES_THE_ROOM = {
     "padding-with-a-pixel-side": ".colophon a { padding: 0; padding: 0.8rem 1px; }",
     "a-scroll-margin-with-zero-sides": ".colophon a { scroll-margin: 0; scroll-margin: 5px 0; }",
     "a-margin-with-pixel-sides": ".colophon a { margin: 0; margin: 5px 8px; }",
+    "an-outline-with-a-zero-width-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: 0 solid red; outline-width: 3px; }",
+    "an-outline-with-a-zero-pixel-width-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: 0px solid red; outline-width: 3px; }",
+    "an-outline-with-a-pixel-width-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: 1px solid red; outline-width: 3px; }",
+    "an-outline-with-its-own-width-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: 3px solid red; outline-width: 3px; }",
+    "an-outline-with-a-width-in-ems-then-a-width": ".colophon a:focus-visible { "
+    "outline: none; outline: 1em solid red; outline-width: 3px; }",
+    "an-outline-with-a-width-in-rem": ".colophon a:focus-visible { "
+    "outline: none; outline: 0.05rem solid red; }",
+    "an-outline-with-a-width-keyword-in-capitals": ".colophon a:focus-visible { "
+    "outline: none; outline: THIN solid red; }",
+    "an-outline-with-a-plain-number-width-dropped": ".colophon a:focus-visible { "
+    "outline: 1 solid red; }",
+    "an-outline-with-an-unknown-width-unit-for-another-link": ".places a:focus-visible { "
+    "outline: 3banana solid red; }",
+    "a-plain-number-outline-width-dropped": ".colophon a:focus-visible { outline-width: 1; }",
+    "an-outline-width-just-over-zero-dropped": ".colophon a:focus-visible { outline-width: 0.01; }",
+    "a-percentage-outline-width-dropped": ".colophon a:focus-visible { outline-width: 10%; }",
+    "a-plain-number-outline-width-before-a-width": ".colophon a:focus-visible { "
+    "outline-width: 3px; outline-width: 1; }",
+    "a-substitution-beside-a-space": ":root { --w: 3px; }\n"
+    ".colophon a:focus-visible { outline: var(--w) solid red; }",
+    "a-substitution-just-inside-a-color-function": ":root { --c: 76 113 147; }\n"
+    ".colophon a:focus-visible { outline: 3px solid rgb(var(--c)); }",
+    "a-substitution-beside-commas": ":root { --r: 76; }\n"
+    ".colophon a:focus-visible { outline: 3px solid rgb(var(--r),113,147); }",
+    "a-substitution-beside-a-slash": ":root { --c: 76 113 147; }\n"
+    ".colophon a:focus-visible { outline: 3px solid rgb(var(--c)/1); }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
