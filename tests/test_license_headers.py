@@ -870,13 +870,33 @@ def opaque(value: str) -> bool:
     return found is not None and float(found.group(1)) >= (100 if found.group(2) else 1)
 
 
+HIDING = {
+    "display": ("none", "table-column", "table-column-group"),
+    "visibility": ("hidden", "collapse"),
+    "content-visibility": ("hidden",),
+    "interactivity": ("inert",),
+}
+"""The values that hide an element and all it holds, or keep them from Tab, by property. A
+browser draws nothing inside a table column, and takes none of these names with `PREFIX`."""
+
+
+def hides(name: str, value: str) -> bool:
+    """Whether a declaration hides its element and all it holds, or keeps them from Tab: a
+    value `HIDING` names, or one with a `SUBSTITUTION` or an escape, which may stand for one."""
+    if name not in HIDING:
+        return False
+    value = value.strip().lower()
+    return value in HIDING[name] or SUBSTITUTION.search(value) is not None or "\\" in value
+
+
 def check_root_text(css: str, link: Element) -> None:
     """Refuse a rule that sets the root element's text size, which the views give and every
     `rem` is read by, that zooms, scales or transforms the link or an element above it, or
-    fades either with an opacity short of `opaque` or a filter, that sets the link's height,
-    that sets the text size or line height of the first line of either, or that reaches
-    either with an escaped property name or an animation, which may stand for any of these.
-    A name with `PREFIX` is read as the name without it."""
+    fades either with an opacity short of `opaque` or a filter, or hides either by `hides`,
+    that sets the link's height, that sets the text size or line height of the first line
+    of either, or that reaches either with an escaped property name or an animation, which
+    may stand for any of these. A name with `PREFIX` is read as the name without it, except
+    by `hides`."""
     styles = rules_of(css)
     for one in (link, *link.ancestors()):
         names = {"zoom", "font", "font-size"} if one.tag == "html" else {"zoom"}
@@ -893,6 +913,10 @@ def check_root_text(css: str, link: Element) -> None:
                 or (name == "filter" and value.strip().lower() != "none")
                 for name, value in declared
             ) and any(reach_of(head, one) is not None for head in heads):
+                raise UnreadCss(style.selectors)
+            if any(hides(name, value) for name, value, _ in style.declarations) and any(
+                reach_of(head, one) is not None for head in heads
+            ):
                 raise UnreadCss(style.selectors)
             lines = [FIRST_LINE.sub("", head) for head in heads if FIRST_LINE.search(head)]
             if any(name in TEXT_NAMES or "\\" in name for name, _, _ in style.declarations) and any(
@@ -993,7 +1017,7 @@ def check_footer_link(css: str) -> None:
     and at least 44 pixels tall with the line height it inherits; no rule takes the press
     area back with a margin; and its margin and the room a scroll to it keeps are at least
     as deep above and below as its outline reaches, and the outline is drawn in a color that
-    shows, and neither the link nor an element above it is faded."""
+    shows, and neither the link nor an element above it is faded or hidden."""
     check_comments(css)
     for link in footer_links():
         check_root_text(css, link)
@@ -1555,9 +1579,37 @@ TAKES_THE_ROOM = {
     "a-footer-named-by-a-long-escape-and-its-space": ".colo\\000070 hon { opacity: 0; }",
     "a-footer-named-by-an-escape-and-a-tab": "foot\\65\tr { opacity: 0; }",
     "a-footer-named-by-an-escape-in-capitals": ".co\\6C ophon { opacity: 0; }",
+    "a-hidden-footer": ".colophon { visibility: hidden; }",
+    "a-footer-not-displayed": ".colophon { display: none; }",
+    "a-hidden-paragraph": ".colophon p { visibility: hidden; }",
+    "a-paragraph-not-displayed": ".colophon p { display: none; }",
+    "a-hidden-page": "body { visibility: hidden; }",
+    "a-page-not-displayed": "body { display: none; }",
+    "a-root-not-displayed": "html { display: none; }",
+    "a-hidden-link": ".colophon a { visibility: hidden; }",
+    "a-link-hidden-with-focus": ".colophon a:focus-visible { visibility: hidden; }",
+    "a-footer-gone-with-focus-inside": ".colophon:focus-within { display: none; }",
+    "a-collapsed-footer": ".colophon { visibility: collapse; }",
+    "a-footer-with-its-content-hidden": ".colophon { content-visibility: hidden; }",
+    "a-paragraph-with-its-content-hidden": ".colophon p { content-visibility: hidden; }",
+    "an-inert-footer": ".colophon { interactivity: inert; }",
+    "an-inert-link": ".colophon a { interactivity: inert; }",
+    "a-hidden-footer-in-capitals": ".colophon { VISIBILITY: HIDDEN; }",
+    "a-footer-not-displayed-in-capitals": ".colophon { DISPLAY: NONE; }",
+    "an-important-display-of-none": ".colophon { display: none !important; }",
+    "a-hidden-footer-on-narrow-screens": "@media (max-width: 30rem) { "
+    ".colophon { visibility: hidden; } }",
+    "a-display-of-none-in-a-selector-list": "footer.colophon, .missing { display: none; }",
+    "a-hidden-footer-over-a-shown-one": ".colophon { visibility: visible; visibility: hidden; }",
+    "a-visibility-from-a-variable": ".colophon { visibility: var(--shown, visible); }",
+    "a-display-from-a-variable": ".colophon p { display: var(--shown); }",
+    "a-display-written-with-an-escape": ".colophon { display: n\\6f ne; }",
+    "a-visibility-named-by-an-escape": ".colophon { \\76isibility: hidden; }",
+    "a-footer-shown-as-a-table-column": ".colophon { display: table-column; }",
+    "a-paragraph-shown-as-a-column-group": ".colophon p { DISPLAY: TABLE-COLUMN-GROUP; }",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
-view or state, fades the link, or which the resolver can't read and so refuses."""
+view or state, fades or hides the link, or which the resolver can't read and so refuses."""
 
 LEAVES_THE_ROOM = {
     "less-specific": "footer a { margin-bottom: 0; }",
@@ -1794,6 +1846,21 @@ LEAVES_THE_ROOM = {
     "a-prefixed-full-opacity": ".colophon { -webkit-opacity: 1; }",
     "a-prefixed-filter-of-none": ".colophon a { -webkit-filter: none; }",
     "an-opacity-under-a-prefix-a-browser-drops": ".colophon { -moz-opacity: 0; }",
+    "a-shown-footer": ".colophon { visibility: visible; }",
+    "a-footer-shown-as-its-parent": ".colophon { visibility: inherit; }",
+    "a-footer-displayed-as-a-block": ".colophon { display: block; }",
+    "a-footer-displayed-as-its-contents": ".colophon { display: contents; }",
+    "a-paragraph-displayed-as-a-flex-box": ".colophon p { DISPLAY: FLEX; }",
+    "a-footer-drawn-when-near": ".colophon { content-visibility: auto; }",
+    "an-interactive-footer": ".colophon { interactivity: auto; }",
+    "a-hidden-mark-after-the-link": ".colophon a::after { visibility: hidden; }",
+    "a-hidden-link-elsewhere": ".week-problem a { display: none; }",
+    "a-hidden-page-beside-the-footer": "main { visibility: hidden; }",
+    "a-visibility-a-browser-drops": ".colophon { visibility: invisible; }",
+    "a-visibility-under-a-prefix-a-browser-drops": ".colophon { -webkit-visibility: hidden; }",
+    "a-display-under-a-prefix-a-browser-drops": ".colophon p { -webkit-display: none; }",
+    "a-footer-shown-as-a-table-row": ".colophon { display: table-row; }",
+    "a-paragraph-shown-as-a-table-caption": ".colophon p { display: table-caption; }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
@@ -1934,3 +2001,40 @@ which a browser brings down to 1. A number it can't read, a keyword or a functio
 @pytest.mark.parametrize(("value", "full"), OPACITIES.items(), ids=OPACITIES.keys())
 def test_only_an_opacity_written_as_full_reads_as_opaque(value: str, full: bool) -> None:
     assert opaque(value) is full
+
+
+DECLARATIONS = {
+    "display: none": True,
+    "display: none ": True,
+    "display: NONE": True,
+    "visibility: hidden": True,
+    "visibility: collapse": True,
+    "content-visibility: hidden": True,
+    "interactivity: inert": True,
+    "display: var(--d, block)": True,
+    "visibility: env(--v)": True,
+    "display: n\\6f ne": True,
+    "display: table-column": True,
+    "display: Table-Column-Group": True,
+    "display: table-row": False,
+    "display: table-column-groups": False,
+    "display: block": False,
+    "display: contents": False,
+    "display: inherit": False,
+    "visibility: visible": False,
+    "visibility: unset": False,
+    "content-visibility: auto": False,
+    "content-visibility: visible": False,
+    "interactivity: auto": False,
+    "opacity: hidden": False,
+    "-webkit-visibility: hidden": False,
+    "--display: none": False,
+}
+"""Declarations, as `style_rules` gives them, with whether each hides its element or keeps
+it from Tab, or may stand for a value that does."""
+
+
+@pytest.mark.parametrize(("declared", "hidden"), DECLARATIONS.items(), ids=DECLARATIONS.keys())
+def test_only_a_value_that_hides_reads_as_hiding(declared: str, hidden: bool) -> None:
+    name, _, value = declared.partition(": ")
+    assert hides(name, value) is hidden
