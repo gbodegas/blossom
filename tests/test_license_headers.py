@@ -694,13 +694,57 @@ def reach_of(head: str, link: Element) -> tuple[tuple[int, int, int], bool] | No
     return (a, b + len(re.findall(":focus", focus["states"], re.I)), c), True
 
 
+NAME = r"(?:-?[a-zA-Z_]|--)[\w-]*"
+ELEMENTS = "before|after|first-line|first-letter|marker|placeholder|selection|backdrop"
+COMPOUND_SHAPE = re.compile(
+    rf"""(?:{NAME}|\*)?
+    (?:\#{NAME}|\.{NAME}|\[{NAME}(?:=(?:{NAME}|"[^"]*"|'[^']*'))?\]|:{NAME}(?:\([^()]*\))?)*
+    (?P<element>::(?:{ELEMENTS}))?""",
+    re.I | re.X,
+)
+"""One compound selector as a browser parses it: a type or ``*`` first, then ids, classes,
+attributes and pseudo-classes named by identifiers, and a pseudo-element a browser knows
+last."""
+
+
+def well_formed(head: str) -> bool:
+    """Whether one selector of a list, as `style_rules` gives it, has the shape a browser
+    parses: each compound by `COMPOUND_SHAPE`, a pseudo-element in the last one only, and a
+    ``:not()`` around a compound with no pseudo-element."""
+    parts = re.split(r"\s*>\s*|\s+", head.strip())
+    for index, part in enumerate(parts):
+        shape = COMPOUND_SHAPE.fullmatch(part)
+        if not part or shape is None or (shape["element"] and index < len(parts) - 1):
+            return False
+        for inner in re.findall(r":not\(([^()]*)\)", part, re.I):
+            inside = COMPOUND_SHAPE.fullmatch(inner.strip())
+            if not inner.strip() or inside is None or inside["element"]:
+                return False
+    return True
+
+
+def list_reach(heads: str, link: Element) -> list[tuple[tuple[int, int, int], bool]]:
+    """How each selector of a list, as `style_rules` gives it, reaches ``link``, by `reach_of`.
+    A browser drops the whole rule for one selector it can't parse, so where any of them
+    reaches the link, a selector `well_formed` or `selector` doesn't take is refused."""
+    reaches = [reach_of(head, link) for head in heads.split(",")]
+    found = [reach for reach in reaches if reach is not None]
+    if found:
+        for head in heads.split(","):
+            if not well_formed(head):
+                raise UnreadCss(unshielded(head))
+            selector(unshielded(head))
+    return found
+
+
 def link_rules(
     css: str, link: Element, read: Callable[[str, str], dict[str, str]] | None = None
 ) -> dict[str, list[LinkRule]]:
     """Every value a rule of ``css`` gives ``link`` among the properties ``read`` takes from
     a declaration, `LINK_PROPERTIES` by default, by property, each declaration of a rule over
     an earlier one unless that one is important. A value the resolver cannot read, a keyword
-    or a `SUBSTITUTION`, is refused where its rule reaches ``link``."""
+    or a `SUBSTITUTION`, is refused where its rule reaches ``link``, and so is a selector
+    list `list_reach` can't read."""
     tokens = root_tokens(css)
     found: dict[str, list[LinkRule]] = {}
     for style in rules_of(css):
@@ -715,12 +759,10 @@ def link_rules(
                     declared[longhand] = (setting, important)
         if not declared:
             continue
-        for head in style.selectors.split(","):
-            reach = reach_of(head, link)
-            if reach is None:
-                continue
-            if REFUSED in declared:
-                raise UnreadCss(declared[REFUSED][0])
+        reaches = list_reach(style.selectors, link)
+        if reaches and REFUSED in declared:
+            raise UnreadCss(declared[REFUSED][0])
+        for reach in reaches:
             for name, (value, important) in declared.items():
                 if value in KEYWORDS or SUBSTITUTION.search(value) or "\\" in value:
                     raise UnreadCss(value)
@@ -839,7 +881,9 @@ any sheet `style_rules` reads, so no value a rule writes is taken for it."""
 def text_longhands(name: str, value: str) -> dict[str, str]:
     """What one declaration sets of the text size and the line height: `INHERITED` for
     ``inherit`` or ``unset``, nothing for a negative value, which a browser drops, and
-    `REFUSED` for ``all`` and any other ``font`` shorthand, which may set either."""
+    `REFUSED` for ``all`` and any other ``font`` shorthand, which may set either. A value with
+    a `SUBSTITUTION` or an escape is kept as written, for `link_rules` to refuse, since a
+    browser keeps a declaration with a substitution until the page is styled."""
     value = value.strip().lower()
     if name == "all":
         return {REFUSED: name}
@@ -853,6 +897,8 @@ def text_longhands(name: str, value: str) -> dict[str, str]:
         return {}
     if value in ("inherit", "unset"):
         return {name: INHERITED}
+    if SUBSTITUTION.search(value) or "\\" in value:
+        return {name: value}
     return {} if negative(value) else {name: value.removeprefix("-")}
 
 
@@ -1006,6 +1052,15 @@ def test_a_footer_link_that_reaches_past_its_line_fails(before: str, after: str)
     changed = original.replace(before, after)
     with pytest.raises(AssertionError):
         check_footer_link(changed)
+
+
+def outline_list(member: str) -> str:
+    """The footer link's outline taken away, then drawn again by a list that also holds
+    ``member``."""
+    return (
+        ".colophon a:focus-visible { outline: none; }\n"
+        f".colophon a:focus-visible, {member} {{ outline: 3px solid red; }}"
+    )
 
 
 TAKES_THE_ROOM = {
@@ -1330,6 +1385,89 @@ TAKES_THE_ROOM = {
     "a-text-size-of-a-word-a-browser-drops": ".colophon a { font-size: inherited; }",
     "a-line-height-written-as-the-inherit-marker": ".colophon a { line-height: 0; "
     f"line-height: {INHERITED}; }}",
+    "a-list-with-a-member-a-browser-drops": ".colophon a:focus-visible { outline: none; }\n"
+    ".colophon a:focus-visible, span > > span { outline: 3px solid red; }",
+    "a-list-opening-on-a-member-a-browser-drops": ".colophon a:focus-visible { outline: none; }\n"
+    "span > > span, .colophon a:focus-visible { outline: 3px solid red; }",
+    "a-list-with-a-member-opening-on-a-child-combinator": ".colophon a:focus-visible { "
+    "outline: none; }\n.colophon a:focus-visible, > span { outline: 3px solid red; }",
+    "a-list-with-a-member-ending-on-a-child-combinator": ".colophon a:focus-visible { "
+    "outline: none; }\n.colophon a:focus-visible, span > { outline: 3px solid red; }",
+    "a-list-with-an-empty-member": ".colophon a:focus-visible { outline: none; }\n"
+    ".colophon a:focus-visible, { outline: 3px solid red; }",
+    "a-list-with-an-unknown-state-in-a-member": ".colophon a:focus-visible { outline: none; }\n"
+    ".colophon a:focus-visible, p:bogus span { outline: 3px solid red; }",
+    "a-list-with-a-child-selector-in-a-not": ".colophon a:focus-visible { outline: none; }\n"
+    ".colophon a:focus-visible, span:not(> span) { outline: 3px solid red; }",
+    "a-list-with-a-member-the-resolver-cannot-read": ".colophon a:focus-visible { "
+    "outline: none; }\n.colophon a:focus-visible, h1 + p { outline: 3px solid red; }",
+    "a-list-a-browser-drops-for-the-padding": ".colophon a { padding: 0; }\n"
+    ".colophon a, span > > span { padding: 0.8rem 0; }",
+    "a-list-a-browser-drops-for-the-margin": ".colophon a { margin: 0; }\n"
+    ".colophon a, span > > span { margin: 5px 0; }",
+    "a-list-a-browser-drops-for-the-scroll-margin": ".colophon a { scroll-margin: 0; }\n"
+    ".colophon a, span > > span { scroll-margin: 5px 0; }",
+    "a-list-a-browser-drops-for-the-display": ".colophon a { display: inline; }\n"
+    ".colophon a, span > > span { display: inline-block; }",
+    "a-list-a-browser-drops-for-the-line-height": ".colophon a { line-height: 0; }\n"
+    ".colophon a, span > > span { line-height: 3rem; }",
+    "a-list-a-browser-drops-for-the-text-size": ".colophon a { font-size: 4px; }\n"
+    ".colophon a, span > > span { font-size: 1rem; }",
+    "a-list-a-browser-drops-above-the-link": ".colophon p { line-height: 0; }\n"
+    ".colophon p, span > > span { line-height: 3rem; }",
+    "a-list-a-browser-drops-in-a-media-rule": ".colophon a:focus-visible { outline: none; }\n"
+    "@media screen { .colophon a:focus-visible, span > > span { outline: 3px solid red; } }",
+    "a-list-a-browser-drops-in-capitals": ".colophon a:focus-visible { outline: none; }\n"
+    ".colophon a:focus-visible, SPAN > > SPAN { outline: 3px solid red; }",
+    "a-list-a-browser-drops-over-several-lines": ".colophon a:focus-visible { outline: none; }"
+    "\n.colophon a:focus-visible,\n  span > > span {\n  outline: 3px solid red;\n}",
+    "a-list-a-browser-drops-made-important": ".colophon a { padding: 0; }\n"
+    ".colophon a, span > > span { padding: 0.8rem 0 !important; }",
+    "a-line-height-with-a-substitution-after-a-minus": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: 3rem; line-height: -1 var(--missing); }",
+    "a-text-size-with-a-substitution-after-a-minus": ".colophon { font-size: 4px; }\n"
+    ".colophon a { font-size: 1rem; font-size: -1 var(--missing); }",
+    "a-line-height-with-an-environment-value-after-a-minus": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: 3rem; line-height: -1 env(--missing); }",
+    "a-line-height-with-an-attribute-after-a-minus": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: 3rem; line-height: -1 attr(data-line); }",
+    "a-line-height-with-a-condition-after-a-minus": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: 3rem; line-height: -1 if(media(print): 1); }",
+    "a-line-height-with-a-dashed-function-after-a-minus": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: 3rem; line-height: -1 --scale(2); }",
+    "a-line-height-with-an-escaped-substitution-after-a-minus": ".colophon { line-height: 0; }"
+    "\n.colophon a { line-height: 3rem; line-height: -1 \\76 ar(--missing); }",
+    "a-line-height-with-an-escaped-unit-after-a-minus": ".colophon a { line-height: 3rem; "
+    "line-height: -1\\70 x; }",
+    "a-line-height-with-a-substitution-in-capitals": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: 3rem; line-height: -1 VAR(--missing); }",
+    "a-line-height-with-a-substitution-made-important": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: -1 var(--missing) !important; line-height: 3rem; }",
+    "a-line-height-with-a-substitution-above-the-link": ".colophon { line-height: 0; }\n"
+    ".colophon p { line-height: 3rem; line-height: -1 var(--missing); }",
+    "a-line-height-with-a-substitution-on-focus": ".colophon p { line-height: 0; }\n"
+    ".colophon a { line-height: 3rem; }\n"
+    ".colophon a:focus-visible { line-height: -1 var(--missing); }",
+    "a-line-height-with-a-substitution-in-a-media-rule": ".colophon { line-height: 0; }\n"
+    "@media screen { .colophon a { line-height: 3rem; line-height: -1 var(--missing); } }",
+    "a-list-with-a-class-named-by-a-number": outline_list(".1"),
+    "a-list-with-an-id-named-by-a-number": outline_list("#1"),
+    "a-list-with-an-attribute-named-by-a-number": outline_list("[1a]"),
+    "a-list-with-a-class-named-by-a-hyphen": outline_list(".-"),
+    "a-list-with-a-pseudo-element-before-a-descendant": outline_list("span::before span"),
+    "a-list-with-a-pseudo-element-before-a-class": outline_list("a::before.x"),
+    "a-list-with-two-pseudo-elements": outline_list("a::before::after"),
+    "a-list-with-a-pseudo-element-in-a-not": outline_list("p:not(::before)"),
+    "a-list-with-an-old-style-pseudo-element-before-a-child": outline_list("span:before > span"),
+    "a-list-with-an-unknown-pseudo-element": outline_list("span::bogus"),
+    "a-list-with-an-empty-not": outline_list("p:not()"),
+    "a-list-with-a-type-after-a-star": outline_list("*a"),
+    "a-list-with-a-star-after-a-type": outline_list("a*"),
+    "a-list-with-a-type-after-an-attribute": outline_list("[href]a"),
+    "a-list-with-a-pseudo-element-before-a-descendant-for-the-line-height": ".colophon p { "
+    "line-height: 0; }\n.colophon p, span::before span { line-height: 3rem; }",
+    "a-rule-with-a-type-after-an-attribute": ".colophon a:focus-visible { outline: none; }\n"
+    ".colophon [href]a:focus-visible { outline: 3px solid red; }",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
 view or state, or which the resolver can't read and so refuses."""
@@ -1488,6 +1626,35 @@ LEAVES_THE_ROOM = {
     ".colophon a:focus-visible { outline: var(--ring, 3px solid red); }",
     "a-whole-outline-token-set-over-its-fallback": ":root { --ring: 3px solid red; }\n"
     ".colophon a:focus-visible { outline: var(--ring, 3px solid red); }",
+    "a-list-with-a-member-for-another-element": ".colophon a:focus-visible { outline: none; }\n"
+    ".colophon a:focus-visible, span > span { outline: 3px solid red; }",
+    "a-list-opening-on-a-member-for-another-element": ".colophon a:focus-visible { "
+    "outline: none; }\nspan > span, .colophon a:focus-visible { outline: 3px solid red; }",
+    "a-list-with-a-state-in-another-member": ".colophon a:focus-visible { outline: none; }\n"
+    ".card:hover, .colophon a:focus-visible { outline: 3px solid red; }",
+    "a-list-with-a-not-in-another-member": ".colophon a:focus-visible { outline: none; }\n"
+    "p:not(.card) span, .colophon a:focus-visible { outline: 3px solid red; }",
+    "a-list-with-a-pseudo-element-in-another-member": ".colophon a:focus-visible { "
+    "outline: none; }\nspan::before, .colophon a:focus-visible { outline: 3px solid red; }",
+    "a-list-with-a-comma-in-a-string-in-another-member": ".colophon a:focus-visible { "
+    'outline: none; }\n[title="a,b"] span, .colophon a:focus-visible { outline: 3px solid red; }',
+    "a-list-over-several-lines": ".colophon a:focus-visible { outline: none; }\n"
+    ".colophon a:focus-visible,\n  span > span {\n  outline: 3px solid red;\n}",
+    "a-list-a-browser-drops-for-other-elements": "span > > span, .card a { padding: 0; "
+    "margin: 0; display: inline; }",
+    "a-line-height-with-a-substitution-then-a-length": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: -1 var(--missing); line-height: 3rem; }",
+    "a-negative-line-height-alone-over-a-length": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: 3rem; line-height: -1; }",
+    "a-negative-line-height-glued-to-a-substitution": ".colophon { line-height: 0; }\n"
+    ".colophon a { line-height: 3rem; line-height: -1var(--missing); }",
+    "a-substitution-after-a-minus-for-another-element": ".card { line-height: -1 var(--m); }",
+    "a-list-with-a-star-and-a-class-in-another-member": outline_list("*.card span"),
+    "a-list-with-a-state-in-a-not-in-another-member": outline_list("p:not(:hover) span"),
+    "a-list-with-a-class-opening-on-a-hyphen-in-another-member": outline_list(".-x span"),
+    "a-list-with-a-known-pseudo-element-in-another-member": outline_list("input::placeholder"),
+    "a-list-whose-second-member-weighs-more": ".colophon a:focus-visible { outline: none; }\n"
+    "a, .colophon a:focus-visible { outline: 3px solid red; }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
