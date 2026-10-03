@@ -256,16 +256,63 @@ COMMENT = re.compile(r"(?:^|(?<=\s))#.*$", re.MULTILINE)
 """A shell comment: a ``#`` that opens a line or follows a space, to the end of its line."""
 
 
-def section_with_commands(document: str, anchor: str) -> str:
+POWERSHELL = frozenset(("powershell", "pwsh", "ps1"))
+"""The names a fence gives PowerShell, the shell the household steps run in."""
+SINGLE = "'" + "".join(map(chr, range(0x2018, 0x201C)))
+DOUBLE = '"' + "".join(map(chr, range(0x201C, 0x201F)))
+STRING = re.compile(
+    r"@(['\"])[ \t]*\r?\n.*?(?:\n\1@|\Z)|<#.*?(?:#>|\Z)|#[^\n]*"
+    rf"|[{SINGLE}](?:[^{SINGLE}]|[{SINGLE}]{{2}})*(?:[{SINGLE}]|\Z)"
+    rf"|[{DOUBLE}](?:[^{DOUBLE}`]|`.?|[{DOUBLE}]{{2}})*(?:[{DOUBLE}]|\Z)",
+    re.DOTALL,
+)
+"""A PowerShell string or comment: a here-string or a block comment first, then a line
+comment or a string in straight or curly quotes, each to its end or the end of the fence."""
+OPENING_IF = re.compile(
+    r"(?P<opens>(?:(?<!`\n)(?<!`\r\n)^|;)[ \t]*if\b)|if", re.MULTILINE | re.IGNORECASE
+)
+"""An ``if``, with what comes before it where it opens a statement: a line's start, unless
+a backtick at the end of the line before carries that line on, or a ``;``."""
+
+
+def top_level(code: str) -> str:
+    """``code`` with each ``if`` inside braces blanked, since a block may never run."""
+    depth, parts = 0, []
+    for part in re.split(r"([{}])", code):
+        if part in ("{", "}"):
+            depth = depth + 1 if part == "{" else max(depth - 1, 0)
+        elif depth:
+            part = re.sub(r"(?i)if", "__", part)
+        parts.append(part)
+    return "".join(parts)
+
+
+def executed(fence: str) -> str:
+    """``fence`` with only what PowerShell runs as a statement left to read: a fence in
+    another language, each string and comment, and an ``if`` that opens no statement at the
+    top level are blanked one character for another, so a position in it is a position in
+    ``fence``."""
+    named = re.match(r"[ \t]*(?:`{3,}|~{3,})[ \t]*([\w-]*)", fence)
+    if named is None or named.group(1).lower() not in POWERSHELL:
+        return re.sub(r"\S", "_", fence)
+    code = STRING.sub(lambda found: re.sub(r"\S", "_", found.group()), fence)
+    return top_level(OPENING_IF.sub(lambda found: found["opens"] or "__", code))
+
+
+def section_with_commands(document: str, anchor: str, *, run: bool = False) -> str:
     """`section_of`, with the section's fenced commands kept where they stand, less their
-    comments, which run nothing."""
+    comments, which run nothing. With ``run``, the prose is blanked and each fence read by
+    `executed`, so only the statements that run are left, where they stand."""
     fences: list[str] = []
 
     def held(found: re.Match[str]) -> str:
-        fences.append(COMMENT.sub("", found.group()))
+        fence = COMMENT.sub("", found.group())
+        fences.append(executed(fence) if run else fence)
         return f"<fence {len(fences) - 1}>"
 
     section = section_of(FENCE.sub(held, document), anchor)
+    if run:
+        section = re.sub(r"(?P<fence><fence \d+>)|\S", lambda found: found["fence"] or "_", section)
     return re.sub(r"<fence (\d+)>", lambda found: fences[int(found.group(1))], section)
 
 
@@ -285,15 +332,16 @@ COPIES = re.compile(r"(?<![\w-])(?:copy-item|cpi|copy|cp)(?![\w-])", re.IGNORECA
 
 def check_household_settings(readme: str, guide: str) -> None:
     """Assert that the README's household link lands on a section that makes `.env` from the
-    example before any step reads it, and whose commands copy nothing over a `.env` already
-    there."""
+    example, in a PowerShell statement that runs, before any step reads it, and whose
+    commands copy nothing over a `.env` already there."""
     anchors = [anchor for anchor in GUIDE_LINK.findall(readme) if "household" in anchor]
     assert anchors, "the README links to no household section of the guide"
     for anchor in anchors:
         section = section_with_commands(guide, anchor)
         steps = " ".join(section.split())
+        runs = " ".join(section_with_commands(guide, anchor, run=True).split())
         commands = " ".join(" ".join(found.group().split()) for found in FENCE.finditer(section))
-        made = MAKE_SETTINGS.search(steps)
+        made = MAKE_SETTINGS.search(runs)
         read = READS_SETTINGS.search(steps)
         assert made, f"#{anchor} doesn't make `.env` from the example"
         assert read is None or made.start() < read.start(), (
@@ -430,6 +478,115 @@ READS_BEFORE_MAKING = {
         "    Copy-Item -Force .env.example .env\n    ```\n",
         HOUSEHOLD_LINK,
     ),
+    "made-only-in-a-quoted-string": (
+        "## Running for the household\n\n```powershell\n"
+        "Write-Output 'if (-not (Test-Path .env)) { Copy-Item .env.example .env }'\n"
+        "Get-Content .env\n```\n",
+        HOUSEHOLD_LINK,
+    ),
+    "made-only-in-a-double-quoted-string": (
+        "## Running for the household\n\n```powershell\n"
+        'Write-Output "if (-not (Test-Path .env)) { Copy-Item .env.example .env }"\n```\n\n'
+        + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-only-in-a-string-across-lines": (
+        "## Running for the household\n\n```powershell\n$steps = '\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n'\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-only-in-a-here-string": (
+        "## Running for the household\n\n```powershell\n@'\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n'@\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-only-in-a-here-string-with-an-apostrophe": (
+        "## Running for the household\n\n```powershell\n@'\nit's here\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n'@\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-only-in-curly-quotes-across-lines": (
+        "## Running for the household\n\n```powershell\nWrite-Output \u2018\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n\u2019\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-only-as-an-argument": (
+        "## Running for the household\n\n```powershell\n"
+        "Write-Output if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n"
+        + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-only-in-a-bash-fence": (
+        "## Running for the household\n\n```bash\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-only-in-the-prose": (
+        "## Running for the household\n\n"
+        "Run `if (-not (Test-Path .env)) { Copy-Item .env.example .env }` first.\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-in-a-string-then-read-then-made": (
+        "## Running for the household\n\n```powershell\n"
+        "Write-Output 'if (-not (Test-Path .env)) { Copy-Item .env.example .env }'\n```\n\n"
+        + LAUNCH_IT
+        + "\n"
+        + MAKE_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-after-a-string-left-open": (
+        "## Running for the household\n\n```powershell\nWrite-Output 'x\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-as-an-argument-after-a-semicolon": (
+        "## Running for the household\n\n```powershell\nSet-Location .; "
+        "Write-Output if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n"
+        + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-in-a-block-comment": (
+        "## Running for the household\n\n```powershell\n<#\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n#>\nGet-Content .env\n```\n",
+        HOUSEHOLD_LINK,
+    ),
+    "made-in-a-comment-after-a-semicolon": (
+        "## Running for the household\n\n```powershell\nGet-Date;# make it; "
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-in-a-function-never-called": (
+        "## Running for the household\n\n```powershell\nfunction Make-Env {\n"
+        "    if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n}\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-in-a-block-that-never-runs": (
+        "## Running for the household\n\n```powershell\nif ($false) {\n"
+        "    if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n}\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-as-an-argument-on-a-carried-line": (
+        "## Running for the household\n\n```powershell\nWrite-Output `\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-glued-to-a-command": (
+        "## Running for the household\n\n```powershell\n"
+        "Write-Outputif (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n"
+        + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-glued-to-a-string": (
+        "## Running for the household\n\n```powershell\n"
+        "Write-Output 'x'if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n"
+        + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-after-a-double-quoted-string-left-open": (
+        '## Running for the household\n\n```powershell\nWrite-Output "x\n'
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
 }
 MAKES_BEFORE_READING = {
     "made-first": ("## Running for the household\n\n" + MAKE_IT + CHECK_IT + LAUNCH_IT),
@@ -460,6 +617,44 @@ MAKES_BEFORE_READING = {
     "made-first-with-crlf": (
         "## Running for the household\n\n" + MAKE_IT + CHECK_IT + LAUNCH_IT
     ).replace("\n", "\r\n"),
+    "made-on-one-line-then-read": (
+        "## Running for the household\n\n```powershell\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\nGet-Content .env\n```\n"
+    ),
+    "a-string-beside-the-creation": (
+        "## Running for the household\n\n```powershell\nWrite-Output 'making .env'\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
+    "an-apostrophe-in-a-string-before-the-creation": (
+        '## Running for the household\n\n```powershell\nWrite-Output "it\'s time"\n'
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
+    "made-after-another-statement-on-its-line": (
+        "## Running for the household\n\n```powershell\n"
+        "Set-Location .; if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n"
+        + CHECK_IT
+    ),
+    "made-in-a-pwsh-fence": (
+        "## Running for the household\n\n```pwsh\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
+    "made-in-a-capitalized-fence": (
+        "## Running for the household\n\n```PowerShell\n"
+        "IF (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
+    "a-copy-named-in-a-comment": (
+        "## Running for the household\n\n```powershell\n"
+        "# Copy-Item .env.example .env would replace it\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
+    "made-after-a-carried-line": (
+        "## Running for the household\n\n```powershell\nSet-Location `\n    .\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
+    "made-after-another-block": (
+        "## Running for the household\n\n```powershell\nif ($true) { Get-Date }\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
 }
 
 
