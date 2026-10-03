@@ -610,15 +610,26 @@ def dropped_offset(value: str) -> bool:
     return re.fullmatch(NAME, value) is not None and value not in KEYWORDS
 
 
+WEBKIT_SIDES = {
+    "-webkit-padding-before": "padding-block-start",
+    "-webkit-padding-after": "padding-block-end",
+    "-webkit-margin-before": "margin-block-start",
+    "-webkit-margin-after": "margin-block-end",
+}
+"""The names a browser still takes with a ``-webkit-`` prefix for the block sides of a
+padding or margin, with the logical side each one sets."""
+
+
 def link_longhands(name: str, value: str, tokens: Mapping[str, str | None]) -> dict[str, str]:
     """What one declaration sets among `LINK_PROPERTIES`: a padding, margin or scroll
-    margin shorthand, or its block form, the top and bottom it reaches, a logical side
-    the top or bottom it is in a page written top to bottom, and an outline by
-    `outline_parts` with ``tokens``. A box declaration with a side a browser doesn't take,
-    by `box_word`, is dropped, as a browser drops it, and one with an escape, a function or
-    a side this can't read is refused, and so is an outline style a browser doesn't know.
-    An outline offset `dropped_offset` drops is dropped the same way. ``all`` sets
-    `REFUSED`; `check_root_text` refuses an escaped name and an animation."""
+    margin shorthand, or its block form, the top and bottom it reaches, a logical side,
+    or one `WEBKIT_SIDES` names, the top or bottom it is in a page written top to bottom,
+    and an outline by `outline_parts` with ``tokens``. A box declaration with a side a
+    browser doesn't take, by `box_word`, is dropped, as a browser drops it, and one with an
+    escape, a function or a side this can't read is refused, and so is an outline style a
+    browser doesn't know. An outline offset `dropped_offset` drops is dropped the same way.
+    ``all`` sets `REFUSED`; `check_root_text` refuses an escaped name and an animation."""
+    name = WEBKIT_SIDES.get(name, name)
     if name == "all":
         return {REFUSED: name}
     if name == "outline":
@@ -1132,7 +1143,7 @@ def check_root_text(css: str, link: Element) -> None:
     check_clipping(styles, link)
     for one in (link, *link.ancestors()):
         names = {"zoom", "font", "font-size"} if one.tag == "html" else {"zoom"}
-        sized = SCALES | BOX_SIZES if one is link else SCALES
+        sized = SCALES | HEIGHTS if one is link else SCALES
         for style in styles:
             heads = style.selectors.split(",")
             declared = [(name.removeprefix(PREFIX), value) for name, value, _ in style.declarations]
@@ -2034,6 +2045,31 @@ TAKES_THE_ROOM = {
     "a-footer-out-of-view-with-focus-inside": ".colophon:focus-within { translate: -9999px 0; }",
     "a-link-margin-with-a-percentage-below-zero-at-the-sides": ".colophon a { margin: 0; "
     "margin: 5px -5%; }",
+    "the-link-padding-taken-under-prefixed-names": ".colophon a { -webkit-padding-before: 0; "
+    "-webkit-padding-after: 0; }",
+    "the-link-padding-above-taken-under-a-prefixed-name": ".colophon a { "
+    "-webkit-padding-before: 0; }",
+    "the-link-padding-below-just-short-under-a-prefixed-name": ".colophon a { "
+    "-webkit-padding-after: 0.79rem; }",
+    "a-prefixed-padding-name-in-capitals": ".colophon a { -WEBKIT-PADDING-BEFORE: 0; }",
+    "a-prefixed-padding-after-the-plain-one": ".colophon a { padding-top: 0.8rem; "
+    "-webkit-padding-before: 0; }",
+    "an-important-prefixed-padding-under-a-later-rule": ".colophon a { "
+    "-webkit-padding-after: 0 !important; } .colophon a { padding-bottom: 1rem; }",
+    "a-prefixed-padding-inherited": ".colophon a { -webkit-padding-after: inherit; }",
+    "the-link-margins-taken-under-prefixed-names": ".colophon a { -webkit-margin-before: 0; "
+    "-webkit-margin-after: 0; }",
+    "the-link-margin-above-short-under-a-prefixed-name": ".colophon a { "
+    "-webkit-margin-before: 4px; }",
+    "the-link-margin-below-taken-with-focus-under-a-prefixed-name": ".colophon a:focus-visible { "
+    "-webkit-margin-after: 0; }",
+    "a-prefixed-margin-from-a-variable": ".colophon a { -webkit-margin-before: var(--gap); }",
+    "a-link-of-no-logical-height-under-a-prefix": ".colophon a { -webkit-logical-height: 0; }",
+    "a-link-of-no-most-logical-height-under-a-prefix": ".colophon a { "
+    "-webkit-max-logical-height: 0; }",
+    "a-link-short-in-its-most-logical-height-with-focus": ".colophon a:focus-visible { "
+    "-webkit-max-logical-height: 10px; }",
+    "a-prefixed-logical-height-in-capitals": ".colophon a { -WEBKIT-LOGICAL-HEIGHT: 0; }",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
 view or state, fades or hides the link, or which the resolver can't read and so refuses."""
@@ -2363,6 +2399,22 @@ LEAVES_THE_ROOM = {
     "a-footer-with-its-letters-spaced-out": ".colophon { letter-spacing: 0.05em; "
     "word-spacing: 0.1em; }",
     "a-footer-pushed-to-the-right": ".colophon { margin-left: 9999px; }",
+    "the-link-padding-kept-under-prefixed-names": ".colophon a { -webkit-padding-before: 0.8rem; "
+    "-webkit-padding-after: 1rem; }",
+    "the-link-margins-kept-under-prefixed-names": ".colophon a { -webkit-margin-before: 5px; "
+    "-webkit-margin-after: 6px; }",
+    "a-prefixed-padding-below-zero-a-browser-drops": ".colophon a { "
+    "-webkit-padding-before: -1px; }",
+    "a-prefixed-padding-under-a-later-plain-one": ".colophon a { -webkit-padding-before: 0; "
+    "padding-top: 0.8rem; }",
+    "the-link-side-padding-under-prefixed-names": ".colophon a { -webkit-padding-start: 0; "
+    "-webkit-padding-end: 0; }",
+    "prefixed-padding-and-margins-elsewhere": ".week-problem a { -webkit-padding-before: 0; "
+    "-webkit-margin-after: 0; }",
+    "a-link-of-its-own-logical-height-under-a-prefix": ".colophon a { "
+    "-webkit-logical-height: auto; -webkit-max-logical-height: none; }",
+    "a-link-with-a-least-logical-height-under-a-prefix": ".colophon a { "
+    "-webkit-min-logical-height: 0; }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
@@ -2764,6 +2816,30 @@ def test_only_the_side_words_of_a_padding_or_margin_are_read_across(
 ) -> None:
     name, _, value = declared.partition(": ")
     assert across(name, value) == words
+
+
+PREFIXED_SIDES = {
+    "-webkit-padding-before: 1px": {"padding-top": "1px"},
+    "-webkit-padding-after: 1px": {"padding-bottom": "1px"},
+    "-webkit-margin-before: 1px": {"margin-top": "1px"},
+    "-webkit-margin-after: 1px": {"margin-bottom": "1px"},
+    "-webkit-padding-before: -1px": {},
+    "-webkit-padding-start: 1px": {},
+    "-webkit-margin-end: 1px": {},
+    "-webkit-padding: 1px": {},
+    "-webkit-scroll-margin-before: 1px": {},
+    "-webkit-padding-top: 1px": {},
+}
+"""Declarations under names with a ``-webkit-`` prefix, with what each sets of the footer
+link's room: only the block sides a browser takes under that prefix set its top or bottom."""
+
+
+@pytest.mark.parametrize(("declared", "sets"), PREFIXED_SIDES.items(), ids=PREFIXED_SIDES.keys())
+def test_the_block_sides_under_prefixed_names_set_the_top_and_bottom(
+    declared: str, sets: dict[str, str]
+) -> None:
+    name, _, value = declared.partition(": ")
+    assert link_longhands(name, value, {}) == sets
 
 
 SQUEEZED = {
