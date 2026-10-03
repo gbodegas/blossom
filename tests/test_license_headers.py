@@ -9,9 +9,13 @@ The fonts under ``blossom/static/fonts/`` are not this project's work and keep t
 license, so the scan passes them by. An empty file has nothing to license and stays empty,
 as a package marker does."""
 
+import hashlib
 import pathlib
 import re
 import tomllib
+from collections.abc import Callable
+
+import pytest
 
 from blossom.settings import PACKAGE_ROOT, REPOSITORY_ROOT
 from blossom.templating import page_templates
@@ -36,6 +40,10 @@ THIRD_PARTY = PACKAGE_ROOT / "static" / "fonts"
 STAYS_FIRST = re.compile(r"#!|#.*coding[:=]|<\?xml\b")
 """A line that has to open its file: a shebang, an encoding declaration, or an XML
 declaration. The header follows it."""
+
+AGPL_SHA256 = "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+"""The SHA-256 of the GNU AGPL v3 text exactly as gnu.org publishes it: 34,523 bytes with
+LF line endings, which ``.gitattributes`` keeps in every checkout."""
 
 FOOTER = re.compile(r'<footer class="colophon">(.*?)</footer>', re.DOTALL)
 SOURCE_LINK = re.compile(r'<a href="([^"]*)">Source code</a>')
@@ -103,12 +111,71 @@ def test_the_header_skips_a_line_that_has_to_open_its_file(tmp_path: pathlib.Pat
     assert opening(drawing) == list(HEADERS[".svg"])
 
 
+def check_license(root: pathlib.Path) -> None:
+    """Assert that ``LICENSE`` under ``root`` holds the whole AGPL text, byte for byte."""
+    digest = hashlib.sha256((root / "LICENSE").read_bytes()).hexdigest()
+    assert digest == AGPL_SHA256, "LICENSE isn't the GNU AGPL v3 text as gnu.org publishes it"
+
+
 def test_the_license_is_the_gnu_affero_general_public_license() -> None:
-    lines = (REPOSITORY_ROOT / "LICENSE").read_text(encoding="utf-8").splitlines()
-    assert [line.strip() for line in lines[:2]] == [
-        "GNU AFFERO GENERAL PUBLIC LICENSE",
-        "Version 3, 19 November 2007",
-    ]
+    check_license(REPOSITORY_ROOT)
+
+
+def test_an_exact_copy_of_the_license_passes(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "LICENSE").write_bytes((REPOSITORY_ROOT / "LICENSE").read_bytes())
+    check_license(tmp_path)
+
+
+def section_13_removed(text: bytes) -> bytes:
+    start = text.index(b"  13. Remote Network Interaction")
+    return text[:start] + text[text.index(b"  14. Revised Versions") :]
+
+
+def one_letter_lowered(text: bytes) -> bytes:
+    at = text.index(b"Remote Network Interaction")
+    return text[:at] + b"r" + text[at + 1 :]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda text: b"".join(text.splitlines(keepends=True)[:2]),
+        lambda text: b"".join(text.splitlines(keepends=True)[:-1]),
+        lambda text: text[:-1],
+        lambda text: text[: len(text) // 2],
+        lambda text: text.replace(b"must prominently offer", b"may prominently offer", 1),
+        section_13_removed,
+        one_letter_lowered,
+        lambda text: text.replace(b"Remote Network", b"R\xe9mote Network", 1),
+        lambda text: text + b"\nAdditional permission under section 7: none.\n",
+        lambda text: text + b"\n",
+        lambda text: text.replace(b"\n", b"\r\n"),
+        lambda text: b"\xef\xbb\xbf" + text,
+    ],
+    ids=[
+        "title-and-version-only",
+        "last-line-missing",
+        "final-newline-missing",
+        "cut-in-half",
+        "one-word-changed",
+        "section-13-removed",
+        "one-letter-lowered",
+        "a-byte-that-is-not-utf-8",
+        "terms-appended",
+        "newline-appended",
+        "crlf-line-endings",
+        "byte-order-mark",
+    ],
+)
+def test_a_license_cut_short_or_changed_fails(
+    tmp_path: pathlib.Path, change: Callable[[bytes], bytes]
+) -> None:
+    original = (REPOSITORY_ROOT / "LICENSE").read_bytes()
+    changed = change(original)
+    assert changed != original
+    (tmp_path / "LICENSE").write_bytes(changed)
+    with pytest.raises(AssertionError):
+        check_license(tmp_path)
 
 
 def test_the_package_metadata_names_the_license_the_headers_name() -> None:
