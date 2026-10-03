@@ -599,6 +599,16 @@ def box_word(box: str, word: str) -> bool | None:
     return not ((box == "padding" and amount < 0) or (box == "scroll-margin" and unit == "%"))
 
 
+def dropped_offset(value: str) -> bool:
+    """Whether a browser drops ``value`` as an outline's offset, which takes one length of
+    either sign: a word other than a CSS-wide keyword, such as ``thin``, a percentage, or a
+    number other than zero with no unit. Anything else is kept for `pixels` to read or refuse."""
+    found = re.fullmatch(rf"({SIGNED})(%?)", value)
+    if found is not None:
+        return found.group(2) == "%" or float(found.group(1)) != 0
+    return re.fullmatch(NAME, value) is not None and value not in KEYWORDS
+
+
 def link_longhands(name: str, value: str, tokens: Mapping[str, str | None]) -> dict[str, str]:
     """What one declaration sets among `LINK_PROPERTIES`: a padding, margin or scroll
     margin shorthand, or its block form, the top and bottom it reaches, a logical side
@@ -606,13 +616,16 @@ def link_longhands(name: str, value: str, tokens: Mapping[str, str | None]) -> d
     `outline_parts` with ``tokens``. A box declaration with a side a browser doesn't take,
     by `box_word`, is dropped, as a browser drops it, and one with an escape, a function or
     a side this can't read is refused, and so is an outline style a browser doesn't know.
-    ``all`` sets `REFUSED`; `check_root_text` refuses an escaped name and an animation."""
+    An outline offset `dropped_offset` drops is dropped the same way. ``all`` sets
+    `REFUSED`; `check_root_text` refuses an escaped name and an animation."""
     if name == "all":
         return {REFUSED: name}
     if name == "outline":
         return outline_parts(value, tokens)
     value = value.lower()
     if name == "outline-width" and outline_width(value) is False:
+        return {}
+    if name == "outline-offset" and dropped_offset(value):
         return {}
     if name == "outline-style" and value not in OUTLINE_STYLES:
         raise UnreadCss(value)
@@ -1468,6 +1481,36 @@ TAKES_THE_ROOM = {
     "line-height: 0; }\n.colophon p, span::before span { line-height: 3rem; }",
     "a-rule-with-a-type-after-an-attribute": ".colophon a:focus-visible { outline: none; }\n"
     ".colophon [href]a:focus-visible { outline: 3px solid red; }",
+    "an-outline-offset-a-browser-drops-for-thin": ".colophon a:focus-visible { "
+    "outline-offset: 10px; outline-offset: thin; }",
+    "an-outline-offset-a-browser-drops-for-medium": ".colophon a { margin: 6px 0; "
+    "scroll-margin: 6px 0; }\n"
+    ".colophon a:focus-visible { outline-offset: 10px; outline-offset: medium; }",
+    "an-outline-offset-a-browser-drops-for-thick": ".colophon a { margin: 8px 0; "
+    "scroll-margin: 8px 0; }\n"
+    ".colophon a:focus-visible { outline-offset: 10px; outline-offset: thick; }",
+    "an-outline-offset-a-browser-drops-in-a-later-rule": ".colophon a:focus-visible { "
+    "outline-offset: 10px; }\n.colophon a:focus-visible { outline-offset: thin; }",
+    "an-outline-offset-a-browser-drops-made-important": ".colophon a:focus-visible { "
+    "outline-offset: 10px; }\n.colophon a:focus-visible { outline-offset: thin !important; }",
+    "an-outline-offset-a-browser-drops-in-capitals": ".colophon a:focus-visible { "
+    "outline-offset: 10px; OUTLINE-OFFSET: THIN; }",
+    "an-outline-offset-a-browser-drops-at-rest": ".colophon.colophon a { outline-offset: 10px; "
+    "outline-offset: thin; }",
+    "an-outline-offset-a-browser-drops-in-a-media-rule": "@media (max-width: 30rem) { "
+    ".colophon a:focus-visible { outline-offset: 10px; outline-offset: thin; } }",
+    "an-outline-offset-a-browser-drops-for-a-word": ".colophon a:focus-visible { "
+    "outline-offset: 10px; outline-offset: auto; }",
+    "an-outline-offset-a-browser-drops-for-a-percentage": ".colophon a:focus-visible { "
+    "outline-offset: 10px; outline-offset: 0%; }",
+    "an-outline-offset-a-browser-drops-for-a-number-without-a-unit": ".colophon "
+    "a:focus-visible { outline-offset: 10px; outline-offset: 0.5; }",
+    "an-outline-offset-with-an-escaped-unit": ".colophon a:focus-visible { "
+    "outline-offset: 2px; outline-offset: 9p\\78; }",
+    "an-outline-offset-keyword": ".colophon a:focus-visible { outline-offset: 2px; "
+    "outline-offset: inherit; }",
+    "an-outline-offset-keyword-in-capitals": ".colophon a:focus-visible { "
+    "outline-offset: 2px; outline-offset: INHERIT; }",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
 view or state, or which the resolver can't read and so refuses."""
@@ -1655,6 +1698,41 @@ LEAVES_THE_ROOM = {
     "a-list-with-a-known-pseudo-element-in-another-member": outline_list("input::placeholder"),
     "a-list-whose-second-member-weighs-more": ".colophon a:focus-visible { outline: none; }\n"
     "a, .colophon a:focus-visible { outline: 3px solid red; }",
+    "an-outline-offset-a-browser-drops-over-the-value-for-medium": ".colophon "
+    "a:focus-visible { outline-offset: 2px; outline-offset: medium; }",
+    "an-outline-offset-a-browser-drops-over-the-value-for-thick": ".colophon "
+    "a:focus-visible { outline-offset: 2px; outline-offset: thick; }",
+    "an-outline-offset-a-browser-drops-alone-in-a-later-rule": ".colophon a:focus-visible { "
+    "outline-offset: medium; }",
+    "an-outline-offset-a-browser-drops-made-important-over-the-value": ".colophon "
+    "a:focus-visible { outline-offset: medium !important; }",
+    "an-outline-offset-a-browser-drops-in-capitals-over-the-value": ".colophon "
+    "a:focus-visible { outline-offset: 2px; OUTLINE-OFFSET: MEDIUM; }",
+    "an-outline-offset-a-browser-drops-with-spaces-over-the-value": ".colophon "
+    "a:focus-visible { outline-offset: 2px; outline-offset :  medium  ; }",
+    "an-outline-offset-a-browser-drops-for-a-word-over-the-value": ".colophon "
+    "a:focus-visible { outline-offset: 2px; outline-offset: auto; }",
+    "an-outline-offset-a-browser-drops-for-a-percentage-over-the-value": ".colophon "
+    "a:focus-visible { outline-offset: 2px; outline-offset: 10%; }",
+    "an-outline-offset-a-browser-drops-for-a-zero-percentage-over-the-value": ".colophon "
+    "a:focus-visible { outline-offset: 2px; outline-offset: 0%; }",
+    "an-outline-offset-a-browser-drops-for-one-without-a-unit": ".colophon "
+    "a:focus-visible { outline-offset: 2px; outline-offset: 1; }",
+    "an-outline-offset-a-browser-drops-for-a-half-without-a-unit": ".colophon "
+    "a:focus-visible { outline-offset: 2px; outline-offset: .5; }",
+    "an-outline-offset-a-browser-drops-for-minus-one-without-a-unit": ".colophon "
+    "a:focus-visible { outline-offset: 2px; outline-offset: -1; }",
+    "an-outline-offset-of-zero-without-a-unit": ".colophon a:focus-visible { "
+    "outline-offset: 10px; outline-offset: 0; }",
+    "an-outline-offset-of-minus-zero-without-a-unit": ".colophon a:focus-visible { "
+    "outline-offset: 10px; outline-offset: -0; }",
+    "a-negative-outline-offset": ".colophon a:focus-visible { outline-offset: 10px; "
+    "outline-offset: -2px; }",
+    "an-outline-offset-over-a-wider-one": ".colophon a:focus-visible { outline-offset: 10px; "
+    "outline-offset: 2px; }",
+    "a-thin-outline-width": ".colophon a:focus-visible { outline-width: thin; }",
+    "a-medium-outline-width-in-the-shorthand": ".colophon a:focus-visible { "
+    "outline: medium solid red; }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
