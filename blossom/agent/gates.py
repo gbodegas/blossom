@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Human approval gates: where the graph stops and waits for a person.
 
 Anything that would leave the family takes two human steps. A person reviews

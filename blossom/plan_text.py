@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The saved plan, taken apart for the page the way the composer put it together.
 
 A draft is text, and the text is the record: the planner's blocks, their

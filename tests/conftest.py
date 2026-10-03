@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Session-wide guarantees for the test run itself.
 
 Tests that drive the model framework directly run outside the application

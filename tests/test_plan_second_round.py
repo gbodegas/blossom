@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What a saved plan's pages must still do when the record, the plan, or the day moves.
 
 A snapshot whose text cannot be shown falls back one record at a time, a page

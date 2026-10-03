@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The local tracer: the framework's run tree, redacted, in a file of its own, swept in time.
 
 The tracer is attached to a scripted graph run, so the tree it receives is

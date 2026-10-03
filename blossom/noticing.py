@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Expectation before action: the record's due date is stated before the school is read.
 
 An observation on its own is data. Set against an expectation stated before

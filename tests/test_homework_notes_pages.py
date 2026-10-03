@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her homework notes on the pages that already exist: her week, the family page, and a
 request for help that is about a note. What a note never does is here too: it reaches no
 model, makes no plan stale, and costs a page no read per note.

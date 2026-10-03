@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """One saved plan as a page reads it: rows by assignment id, marks only on today's
 working plan, and the saved text whole when the snapshot cannot be used.
 

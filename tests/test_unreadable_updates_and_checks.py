@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her updates and the family's checks when a stored row can't be decoded: that
 assignment's record is set apart, whole, every page still answers and says so in the
 reader's voice, the plan still counts the work, and nothing is written over it."""

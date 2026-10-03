@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A homework note's pages when a read of the household's file fails, and the refusals that
 meet a note that can't be read.
 

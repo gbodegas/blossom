@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Saved graph state is the loop's short-term memory: kept while the loop runs, cleared after.
 
 The routes clear a thread when its run ends or its decision lands, a draft

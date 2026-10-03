@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A homework note's details, and adding the note to homework, in her tree and the family's.
 
 One page holds her words, which nothing here changes, the details a note may

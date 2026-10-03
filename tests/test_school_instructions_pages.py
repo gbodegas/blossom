@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The school's instructions on the pages: her week's card and an assignment's details show
 the school's words apart from anyone's note, those that apply in the one order, and the rest
 folded, in the voice of whoever reads them.

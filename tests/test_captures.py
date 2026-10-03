@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A homework note in the record: what a first save keeps, how a repeat is told from another
 note, and what an edit, an archive, and a restore may and may not change.
 

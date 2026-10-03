@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Tests that nothing is hidden from the student's weekly view.
 
 An assignment whose date no channel corroborates stays on the page and is

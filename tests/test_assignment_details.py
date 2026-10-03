@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """One assignment's details: its current record by id, her update through the forms her
 cards use, and a way back that is data and never an address handed in.
 

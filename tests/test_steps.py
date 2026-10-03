@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The words a step record uses, held to what a person would read on the page."""
 
 from datetime import UTC, datetime

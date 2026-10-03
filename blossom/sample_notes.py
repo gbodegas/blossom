@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her homework notes from a fixture set, planted in a blank file the way she and the
 family would have made them.
 

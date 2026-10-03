@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A saved plan's dates on both pages: the date each row was planned with, the label the
 plan saved, and, on a plan still in force for its evening, what stands now.
 

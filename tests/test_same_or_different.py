@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Which homework a school row is about, asked where the record cannot tell.
 
 A row with the class and title of homework made from her note asks whether it is

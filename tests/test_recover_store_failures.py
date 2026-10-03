@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A press or a page whose read of the household's file fails: a page that reads no store and
 says what happened, with the status the press or the page would have had.
 

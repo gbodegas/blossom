@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/gbodegas/blossom/actions/workflows/ci.yml"><img src="https://github.com/gbodegas/blossom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13-blue" alt="Python 3.12 or 3.13">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="AGPL-3.0 license"></a>
 </p>
 
 ## Why this exists
@@ -300,4 +300,11 @@ person it is built for would consent to it existing.
 
 ## License
 
-[MIT](LICENSE).
+Blossom is free software under the GNU Affero General Public License v3.0 or
+later; see [LICENSE](LICENSE). The license asks anyone who runs a modified
+version for other people over a network to offer those people its source. The
+link in every page's footer is where Blossom does that, so a modified copy
+points `SOURCE_URL` in `blossom/templating.py` at its own source.
+
+The Outfit and Quicksand fonts in `blossom/static/fonts/` stay under the SIL
+Open Font License 1.1, with their license texts beside them.

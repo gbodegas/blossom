@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Store four: drafts, the record of what waited at the gate and what was decided.
 
 The graph saves a draft here twice. Once when it is composed, so the parent's

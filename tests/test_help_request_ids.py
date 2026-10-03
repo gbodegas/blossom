@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """One request for help per form: the id a form carries makes one request and never another,
 taken back, resolved or gone. Only the ids are kept once a request's words are removed."""
 

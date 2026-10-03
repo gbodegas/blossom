@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What a store says about a kept row it can't read, in names alone.
 
 A row that fails to decode may hold her words in any column, and both a pydantic

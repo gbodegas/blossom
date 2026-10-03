@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A saved plan's dates set against the record as it stands, with no page and no store.
 
 The planner's rule is run on a composition, the composition is saved to a drafts table in

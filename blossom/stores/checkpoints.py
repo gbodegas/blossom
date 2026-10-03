@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Where a paused graph's saved state, and any draft it holds, lives on disk.
 
 A graph that pauses at the approval gate has to survive the process that paused

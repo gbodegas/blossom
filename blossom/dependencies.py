@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Application-scoped objects, built once at startup and injected per request.
 
 Construction happens once, in the application lifespan, and routes receive

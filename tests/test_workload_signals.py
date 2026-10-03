@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The workload signal: one press, a visible result, a reduced plan, brief and hers to remove.
 
 The design's third tier of verification is whether a plan is right for her,

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Today's plan is hers: asked for from her page, shown the moment it is made, reviewed after.
 
 The parent's review is shown under the plan and never stands between her and

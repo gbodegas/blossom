@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her hand-in update, from an assignment's details: two routes beside her work update's.
 
 Done means she finished her part and turns nothing in, so what she says about

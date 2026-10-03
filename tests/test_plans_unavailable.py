@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her week and the family page when a GET cannot read the record: a page of their own that
 says so, keeps any plan already read as saved, and reads nothing more.
 

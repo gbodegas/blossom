@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The fixture set: a fictional student's week as a school portal would show it.
 
 These tests hold the fixtures to the shapes the model was given: an undated

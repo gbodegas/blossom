@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Parent routes: review the plan she has, and start one for her when asked.
 
 A parent is a collaborator who sets goals, corrects information and reviews

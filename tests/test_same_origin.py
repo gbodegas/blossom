@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A request that would change something must come from this server's own pages.
 
 A page on another site can make a signed-in browser send a form here, cookie

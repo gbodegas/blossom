@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Shared test helpers.
 
 Anything two test modules need lives here rather than in one of them, so the

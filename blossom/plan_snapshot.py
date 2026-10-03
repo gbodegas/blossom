@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The saved plan as data: one versioned snapshot kept beside the text she reads.
 
 A plan is composed once, from what a run read, and saved as the text both

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The system's notion of "now" and of "today", as an injectable dependency.
 
 Time is read through a seam, the way any other external input is: tests supply

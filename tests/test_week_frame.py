@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her page frames the school week, Monday to Sunday, and moves between weeks.
 
 The planner keeps its own horizon, the seven days from the evening it plans,

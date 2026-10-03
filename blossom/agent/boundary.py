@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Runtime backstop for the tool boundary.
 
 ``blossom/tools.py`` is the only constructor of framework tool objects this

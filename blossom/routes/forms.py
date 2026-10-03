@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Reading a form whole, for the pages that take a form and nothing else.
 
 A page's form is a fixed set of fields, each sent once, each text, and all

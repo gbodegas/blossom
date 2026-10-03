@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Docstring coverage checks for the blossom package.
 
 Every module needs a module docstring, and every public class, function and

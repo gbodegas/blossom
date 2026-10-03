@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The masthead and the family page's Add assignments forms on a narrow screen with large
 text, worked out from the stylesheet and the pages as rendered.
 

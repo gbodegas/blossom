@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The way in and the way out: sign-in with a passphrase, sign-out by a press."""
 
 from datetime import UTC, datetime

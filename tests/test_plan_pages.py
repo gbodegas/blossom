@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The saved plan on both pages as her work changes: read by its rows, marked only where
 it is today's working plan, and never written by being read.
 

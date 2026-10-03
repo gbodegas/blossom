@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Gerardo Bodegas Martinez -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" role="img">
   <title>Blossom: a lotus resting on a stone in still water</title>
   <!-- Ripples, widest first, so each sits behind the next. -->

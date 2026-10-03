@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What is kept of the words a person writes into a field, and what is refused whole.
 
 Her hand-in notes, and the fields that follow them, keep a person's words as

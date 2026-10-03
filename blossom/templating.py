@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The one place the pages' templates are built, with the filters both pages use."""
 
 import hashlib
@@ -35,6 +37,11 @@ from blossom.routes.navigation import (
 )
 from blossom.school_instructions import to_wire, travels_in_words
 from blossom.settings import STATIC_PATH, TEMPLATE_PATH
+
+SOURCE_URL: Final = "https://github.com/gbodegas/blossom"
+"""Where every page's footer offers Blossom's source to the people who use it, as section 13
+of the GNU AGPL asks of a copy that serves people over a network. A modified copy run for
+others points this at its own source."""
 
 ASSETS = ("blossom.css", "blossom.js")
 """The packaged files a page links, whose tag changes whenever either does."""
@@ -78,7 +85,8 @@ def page_templates() -> Jinja2Templates:
     today's plan,
     ``instructions_id`` and ``update_or_turn_in_id`` for the places on an assignment's
     details that its links land on,
-    ``asset_tag`` for the files a page links, ``wire`` for an instruction's words as a
+    ``asset_tag`` for the files a page links, ``source_url`` for the source the footer
+    offers, ``wire`` for an instruction's words as a
     form carries them, ``step_label`` and ``step_sentence`` for a run's steps as a parent
     reads them, and the test ``in_words`` for words a form carries as they are."""
     templates = Jinja2Templates(directory=TEMPLATE_PATH)
@@ -91,6 +99,7 @@ def page_templates() -> Jinja2Templates:
     templates.env.filters["wire"] = to_wire
     templates.env.tests["in_words"] = travels_in_words
     templates.env.globals["asset_tag"] = asset_tag()
+    templates.env.globals["source_url"] = SOURCE_URL
     templates.env.globals["assignment_anchor"] = assignment_anchor
     templates.env.globals["details_href"] = details_href
     templates.env.globals["note_href"] = note_href

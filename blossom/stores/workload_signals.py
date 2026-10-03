@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her signal that today is too much, kept briefly, visibly, and on her terms.
 
 The signal is one gesture with nothing attached: no rating, no reason. Its

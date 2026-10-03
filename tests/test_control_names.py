@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Every control says its own words. The name a screen reader or voice control uses holds the
 words a button or link shows, as WCAG 2.5.3 asks, and Blossom's names start with them. Words
 hidden from sight start with a space, since a browser sets them off with one, and a name that

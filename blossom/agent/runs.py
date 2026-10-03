@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The contract every graph run carries: a thread, a version, and hard limits.
 
 Saved graph state outlives the code that wrote it. A thread paused at the gate

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her "Too much right now" signal is hers alone to give and to take back.
 
 A parent signed in reads what she said, in words that name her, and meets no control that

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """How the record tells that two pieces of homework carry the same class and title.
 
 One rule, kept apart so that everything that asks the question asks it the same

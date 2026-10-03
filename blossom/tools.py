@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The tool registry, the allowlist that bounds what a tool may do, and the one
 place a framework tool object is constructed.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Adding details to a homework note and adding the note to homework, through the pages.
 
 She may do both from her tree and a parent from the family's; the tree a press

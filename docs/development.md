@@ -737,6 +737,9 @@ Pip resolves transitive dependencies itself, so those versions can differ
 from `uv.lock`. Run the checks through the environment's own Python rather
 than `uv run`, which would try the download that failed.
 
+A new source file in `blossom/` or `tests/` starts with the two-line SPDX
+license header the others carry, in its own comment syntax; a test checks it.
+
 ## Troubleshooting
 
 **The app refuses to start and names `BLOSSOM_TIMEZONE`.** The household's

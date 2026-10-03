@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her To turn in list, drawn from a page's one reading of the record.
 
 Everything she reports as still to turn in, whatever her work update says and

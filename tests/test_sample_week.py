@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The sample week: a synthetic scenario for showing Blossom, kept apart from the family's state.
 
 Four ordinary assignments in the school week of September 7, 2026, each with one

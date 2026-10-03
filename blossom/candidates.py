@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Homework on record that a note's class and title name, as a person is shown it to choose.
 
 Adding a note to homework asks a question when homework of the same class and

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Student routes. She is the primary user, and this is the primary view.
 
 Nothing is filtered out of her week: an assignment the system cannot corroborate

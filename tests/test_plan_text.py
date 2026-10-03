@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The saved plan taken apart for reading, along the composer's own shapes, losing nothing."""
 
 from datetime import time

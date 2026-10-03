@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (C) 2026 Gerardo Bodegas Martinez */
 /*
   Blossom's look, from the logo: blush paper, pale pink petals, a powder-blue
   stone, a rounded lowercase wordmark. Everything below is a token, so both
@@ -432,7 +434,8 @@ article h2 {
    the date warning's link, the summary's, the notes', and the line that says
    how many instructions wait; in Help, a refusal's link and the family review
    link a parent reads; at the top of her week, the link from a problem to the
-   card it is about; on a note's small page, Try again. */
+   card it is about; on a note's small page, Try again; in every page's footer,
+   the link to the source. */
 .notice a,
 .refresh a,
 .return a,
@@ -443,7 +446,8 @@ article h2 {
 .school-instructions .source a,
 .help-panel .problem a,
 .help-panel #ask-for-help a,
-.week-problem a {
+.week-problem a,
+.colophon a {
   display: inline-block;
   padding: 0.8rem 0;
   margin: -0.8rem 0;
@@ -1204,6 +1208,12 @@ form.inline button {
   color: var(--text-soft);
   font-size: 0.9rem;
   text-align: center;
+}
+
+/* The footer sits outside the page's main part, so its link to the source takes the
+   action color here, visited or not. */
+.colophon a {
+  color: var(--blue-action);
 }
 
 /* Add assignments keeps its card's side insets to a share of the screen's width, so a date

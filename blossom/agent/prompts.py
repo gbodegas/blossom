@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What the planner and the critic are told, and in what order.
 
 Two rules shape every prompt here. The data comes first and the request comes

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The tool boundary, both layers, and the approval gate.
 
 Construction: a framework tool object exists only for an entry of the

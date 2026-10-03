@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Where a claim about a due date came from, and whether it still counts.
 
 A claim made from a homework note names the note and its revision, so the same

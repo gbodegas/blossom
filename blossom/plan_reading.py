@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """One saved plan as a page reads it: by assignment when it can be, as saved text when not.
 
 A page shows a plan in one of two readings. The structured reading is built

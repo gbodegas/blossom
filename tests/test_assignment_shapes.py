@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The shapes a school portal shows, and what the code does with each.
 
 An item with no due date, an item with an assigned date as well as a due date,

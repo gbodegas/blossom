@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Readings that must hold together: the family page's drafts read once, a snapshot held to
 its whole shape, one household day for a page, and a way back that survives a failure.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her week folds the form of a card with no update under Update this homework, and opens it
 when a response is about that form.
 

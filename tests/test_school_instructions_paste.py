@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The school's instructions through the paste review, from the pasted text to the record.
 
 Every case here runs the whole path a parent's paste takes: the reader, the

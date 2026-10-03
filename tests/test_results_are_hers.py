@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A result is hers: what her save, Undo, press or delete did is said to her alone.
 
 A press of hers sends her to an address that names what it did, and the page there says so

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A receipt of her own press is said to her alone, on Help and on a note's page.
 
 The line Help says for the request her Ask for help form's address names, sent, already

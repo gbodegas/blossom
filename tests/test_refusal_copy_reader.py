@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The refusal copy's reader on its own, with nothing of the application around it.
 
 ``kept_fields_of`` reads a refused press's body within a bound in bytes and a deadline in

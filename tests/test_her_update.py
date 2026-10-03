@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her own update on an assignment, from her page: Done or Not yet, with a note if she wants.
 
 Synthetic fixtures, a pinned clock, and forms alone: what a card offers, what a

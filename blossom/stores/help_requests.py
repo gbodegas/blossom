@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her request for help, and what a parent did with it, kept where she can see both.
 
 Asking for help is a gesture like the "too much" signal: one press, with a

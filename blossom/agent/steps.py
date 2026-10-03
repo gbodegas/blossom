@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What each node of the plan graph expected and found, kept as the record of a run.
 
 A run of the plan graph is a few decisions in a row: what the week holds,

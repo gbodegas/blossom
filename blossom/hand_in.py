@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her account of turning work in, kept apart from her account of the work.
 
 Done means she finished her part; it turns nothing in. What she says about

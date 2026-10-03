@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her account of turning work in: a chain of events kept apart from her account of the work.
 
 Three things are read from one chain and never stand in for one another: the

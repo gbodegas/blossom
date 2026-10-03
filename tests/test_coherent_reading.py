@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """One reading of the record costs at most seven reads, however much it holds, and is one
 snapshot.
 

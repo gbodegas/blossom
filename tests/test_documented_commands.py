@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Guards the setup instructions in the README and the development guide against drift.
 
 These tests parse the shell commands out of the bash and PowerShell fences in

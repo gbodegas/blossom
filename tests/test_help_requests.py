@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Asking for help: one press from her page, a state a parent moves, each step shown to her."""
 
 import pathlib

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Properties of model access that hold before any model is called.
 
 The API key is read from the environment and kept out of ``repr`` and ``str``

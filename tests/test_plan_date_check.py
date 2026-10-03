@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A plan for another evening than the one asked for is sent back, never saved or repaired.
 
 The evening a run plans is fixed when the run starts. A planner that answers

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Where a state file may live, and where it may not.
 
 Every file the household's state lives in goes through one guard at startup:

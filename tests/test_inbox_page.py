@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The way in, on the family page: paste, review, save; type, review, save.
 
 Nothing is written when the text is read; the review page says what saving

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Verification: the tier-one hard checks, kept separate from the other two tiers.
 
 The tiers exist so the system cannot claim more confidence than its evidence

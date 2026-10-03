@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Tier-one checks over a proposed plan: what code can decide without judgment.
 
 These run before a critic sees a plan and before a person does. Everything
