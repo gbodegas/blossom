@@ -31,6 +31,7 @@ from tests.support import (
     SUBSTITUTION,
     Element,
     Selector,
+    StyleRule,
     Supports,
     UnreadCss,
     View,
@@ -853,7 +854,7 @@ def check_comments(css: str) -> None:
 
 
 ANIMATION = ("animation", "animation-name")
-SCALES = frozenset(("transform", "scale"))
+SCALES = frozenset(("transform", "scale", "translate", "rotate", "offset", "offset-path"))
 BOX_SIZES = frozenset(("height", "max-height", "block-size", "max-block-size"))
 LEFT_AS_IS = frozenset(("none", "auto"))
 FIRST_LINE = re.compile(r"::?first-line(?![\w-])", re.I)
@@ -889,15 +890,246 @@ def hides(name: str, value: str) -> bool:
     return value in HIDING[name] or SUBSTITUTION.search(value) is not None or "\\" in value
 
 
+CLIPPING = {
+    **dict.fromkeys(
+        ("overflow", "overflow-x", "overflow-y", "overflow-block", "overflow-inline"),
+        ("auto", "clip", "hidden", "overlay", "scroll"),
+    ),
+    "contain": ("content", "paint", "strict"),
+    "content-visibility": ("auto",),
+}
+"""The words, by property, that make an element clip what it holds to its own box. A
+browser clips an element drawn only when near, as it does one that paints alone."""
+HEIGHTS = BOX_SIZES | {"logical-height", "max-logical-height"}
+WIDTHS = frozenset(
+    ("width", "max-width", "inline-size", "max-inline-size", "logical-width", "max-logical-width")
+)
+TRACKS = frozenset(
+    (
+        "aspect-ratio",
+        "flex",
+        "flex-basis",
+        "grid",
+        "grid-template",
+        "grid-template-rows",
+        "grid-template-columns",
+        "grid-auto-rows",
+        "grid-auto-columns",
+        "columns",
+        "column-count",
+        "column-width",
+        "line-clamp",
+    )
+)
+"""Properties that size a box, or the boxes it holds, by a ratio, a basis, a track, a column
+or a count of lines. `HEIGHTS`, `WIDTHS` and these read a name under `PREFIX` without it."""
+CONTAINERS = ("contain", "container", "container-type")
+NARROWEST = min(view.width for view in FOOTER_VIEWS)
+"""The narrowest view's width, at which the footer's line is checked to hold the link."""
+PLACED = ("absolute", "fixed", "relative", "sticky")
+"""The positions that take an element out of the page's flow, or move it by its offsets."""
+CLIPS = frozenset(
+    ("clip", "clip-path", "mask", "mask-image", "mask-box-image", "mask-box-image-source")
+)
+"""Properties that clip or mask an element at any value but those `LEFT_AS_IS`, with the
+names a browser takes only under `PREFIX` read without it."""
+SHIFTS = frozenset(
+    (
+        "margin",
+        *(f"margin-{side}" for side in ("top", "right", "bottom", "left")),
+        *(f"margin-{axis}{end}" for axis in ("block", "inline") for end in ("", "-start", "-end")),
+        *(f"margin-{side}" for side in ("before", "after", "start", "end")),
+        "letter-spacing",
+        "word-spacing",
+    )
+)
+"""Properties that move an element, or the letters and words of its text, by a length,
+with the names a browser takes only under `PREFIX` read without it."""
+
+
+def out_of_view(name: str, value: str) -> bool:
+    """Whether a declaration may clip or mask its element or move it out of view: a clip or
+    mask, a position `PLACED` names, a shift by a negative length or a function, a text
+    indent other than zero, which moves the first line either way, or any of these with a
+    `SUBSTITUTION` or an escape, which may stand for one."""
+    if name not in CLIPS and name not in SHIFTS and name not in ("position", "text-indent"):
+        return False
+    value = value.strip().lower()
+    if SUBSTITUTION.search(value) or "\\" in value:
+        return True
+    if name in CLIPS:
+        return value not in LEFT_AS_IS
+    if name == "text-indent":
+        return "(" in value or any(float(number) for number in NUMBER.findall(value))
+    if name in SHIFTS:
+        return any(negative(word) or "(" in word for word in value.split())
+    return any(word in PLACED for word in value.split())
+
+
+def clips(name: str, value: str) -> bool:
+    """Whether a declaration makes its element clip what it holds to its own box: a word
+    `CLIPPING` names, or a value with a `SUBSTITUTION` or an escape, which may stand for one."""
+    if name not in CLIPPING:
+        return False
+    value = value.strip().lower()
+    return (
+        SUBSTITUTION.search(value) is not None
+        or "\\" in value
+        or any(word in CLIPPING[name] for word in value.split())
+    )
+
+
+def bounds(name: str, value: str, view: View) -> bool:
+    """Whether a declaration bounds its element's box, or the boxes it holds, on ``view``, so
+    what a clipping element holds may not fit: a height or a `TRACKS` size of any value but
+    those `LEFT_AS_IS`, size containment on either axis, or a width under the `NARROWEST`
+    view's. A width or containment this can't read is refused."""
+    name = name.removeprefix(PREFIX)
+    value = value.strip().lower()
+    if name in HEIGHTS or name in TRACKS:
+        return value not in LEFT_AS_IS
+    if name in CONTAINERS:
+        sizes = any(word.endswith("size") or word == "strict" for word in value.split())
+        return sizes or SUBSTITUTION.search(value) is not None or "\\" in value
+    return name in WIDTHS and value not in LEFT_AS_IS and pixels(value, view) < NARROWEST
+
+
+BLOCKS = frozenset(("block", "flow-root", "list-item", "block flow", "block flow-root"))
+"""The display values that keep an element as wide as the line it sits in."""
+SIDEWAYS = ("left", "right", "inline", "start", "end")
+SQUEEZING = frozenset(
+    (
+        "display",
+        "float",
+        "width",
+        "inline-size",
+        "logical-width",
+        "min-width",
+        "min-inline-size",
+        "min-logical-width",
+        "letter-spacing",
+        "word-spacing",
+    )
+)
+PUSH_ROOM = 1.25
+"""The most, in `rem`, a padding may set on one side of the line on the link or an element
+up to the one that clips it: the footer's own side padding."""
+
+
+def across(name: str, value: str) -> list[str]:
+    """The words a padding or margin declaration sets on the left and right of the line, with
+    the names a browser takes only under `PREFIX` read without it."""
+    kind, _, side = name.removeprefix(PREFIX).partition("-")
+    words = value.strip().lower().split()
+    if kind not in ("padding", "margin"):
+        return []
+    if not side:
+        return [words[at] for at in {1: (0,), 2: (1,), 3: (1,), 4: (1, 3)}.get(len(words), ())]
+    return words if side.partition("-")[0] in SIDEWAYS else []
+
+
+def may_squeeze(name: str) -> bool:
+    """Whether `squeezes` reads a declaration of this property at all."""
+    name = name.removeprefix(PREFIX)
+    return name in SQUEEZING or name.partition("-")[0] in ("padding", "margin", "border")
+
+
+def squeezes(name: str, value: str, view: View, *, at: int, top: int) -> bool:
+    """Whether a declaration on the element ``at`` places above the link may leave the link or
+    its outline too little room inside the element ``top`` places above it, which clips what
+    it holds: a display other than `BLOCKS` above the link or a float, which shrink a box to
+    what it holds, and up to that element a width or least width, wider letters or words, a
+    side border, a side padding over `PUSH_ROOM`, or below it a side margin, which push the
+    link along the line. A length this can't read is refused."""
+    name = name.removeprefix(PREFIX)
+    value = value.strip().lower()
+    if name == "display":
+        return at > 0 and value not in BLOCKS
+    if name == "float":
+        return value != "none"
+    if at > top:
+        return False
+    if name in ("width", "inline-size", "logical-width"):
+        return value != "auto"
+    if name in ("min-width", "min-inline-size", "min-logical-width"):
+        return value not in ("auto", "0")
+    if name in ("letter-spacing", "word-spacing"):
+        return value not in ("normal", "0")
+    kind, _, side = name.partition("-")
+    if kind == "border":
+        return side.partition("-")[0] in ("", "width", *SIDEWAYS) and value not in ("none", "0")
+    if kind == "margin" and at == top:
+        return False
+    most = PUSH_ROOM * view.root_text if kind == "padding" else 0
+    return any(word != "auto" and pixels(word, view) > most for word in across(name, value))
+
+
+def check_clipping(styles: list[StyleRule], link: Element) -> None:
+    """Refuse a rule that makes the link or an element above it clip what it holds by `clips`
+    when a rule that reaches either also bounds a box by `bounds` on some view, as a box of no
+    height does, or, for an element above the link, leaves the link too little room in it by
+    `squeezes`. A bound anywhere on the way counts: a clipping element holds the ones below
+    it, and a flex or grid container above it may size it."""
+    chain = (link, *link.ancestors())
+
+    def reaching(test: Callable[[str, str], bool]) -> list[tuple[str, str, str]]:
+        return [
+            (style.selectors, name, value)
+            for style in styles
+            for name, value, _ in style.declarations
+            if test(name, value)
+            and any(
+                reach_of(head, one) is not None
+                for head in style.selectors.split(",")
+                for one in chain
+            )
+        ]
+
+    clipped = reaching(clips)
+    sizes = HEIGHTS | WIDTHS | TRACKS | set(CONTAINERS)
+    if clipped and any(
+        bounds(name, value, view)
+        for _, name, value in reaching(lambda name, _: name.removeprefix(PREFIX) in sizes)
+        for view in FOOTER_VIEWS
+    ):
+        raise UnreadCss(clipped[0][0])
+
+    def places(style: StyleRule, test: Callable[[str], bool]) -> set[int]:
+        if not any(test(name) for name, _, _ in style.declarations):
+            return set()
+        heads = style.selectors.split(",")
+        return {
+            at
+            for at, one in enumerate(chain)
+            if any(reach_of(head, one) is not None for head in heads)
+        }
+
+    tops = [
+        at
+        for style in styles
+        for at in places(style, lambda name: name in CLIPPING) - {0}
+        if any(clips(name, value) for name, value, _ in style.declarations)
+    ]
+    for style in styles if tops else ():
+        if any(
+            squeezes(name, value, view, at=at, top=max(tops))
+            for at in places(style, may_squeeze)
+            for name, value, _ in style.declarations
+            for view in FOOTER_VIEWS
+        ):
+            raise UnreadCss(style.selectors)
+
+
 def check_root_text(css: str, link: Element) -> None:
     """Refuse a rule that sets the root element's text size, which the views give and every
-    `rem` is read by, that zooms, scales or transforms the link or an element above it, or
-    fades either with an opacity short of `opaque` or a filter, or hides either by `hides`,
-    that sets the link's height, that sets the text size or line height of the first line
-    of either, or that reaches either with an escaped property name or an animation, which
-    may stand for any of these. A name with `PREFIX` is read as the name without it, except
-    by `hides`."""
+    `rem` is read by, that zooms, scales, moves or transforms the link or an element above
+    it, or fades either with an opacity short of `opaque` or a filter, hides either by
+    `hides`, or clips or moves either by `out_of_view` or `check_clipping`, that sets the
+    link's height, that sets the text size or line height of the first line of either, or
+    that reaches either with an escaped property name or an animation, which may stand for
+    any of these. A name with `PREFIX` is read as the name without it, except by `hides`."""
     styles = rules_of(css)
+    check_clipping(styles, link)
     for one in (link, *link.ancestors()):
         names = {"zoom", "font", "font-size"} if one.tag == "html" else {"zoom"}
         sized = SCALES | BOX_SIZES if one is link else SCALES
@@ -911,6 +1143,7 @@ def check_root_text(css: str, link: Element) -> None:
                 or (name in ANIMATION and value != "none")
                 or (name == "opacity" and not opaque(value))
                 or (name == "filter" and value.strip().lower() != "none")
+                or out_of_view(name, value)
                 for name, value in declared
             ) and any(reach_of(head, one) is not None for head in heads):
                 raise UnreadCss(style.selectors)
@@ -1017,7 +1250,8 @@ def check_footer_link(css: str) -> None:
     and at least 44 pixels tall with the line height it inherits; no rule takes the press
     area back with a margin; and its margin and the room a scroll to it keeps are at least
     as deep above and below as its outline reaches, and the outline is drawn in a color that
-    shows, and neither the link nor an element above it is faded or hidden."""
+    shows, and neither the link nor an element above it is faded, hidden, clipped or moved
+    out of view."""
     check_comments(css)
     for link in footer_links():
         check_root_text(css, link)
@@ -1159,6 +1393,7 @@ TAKES_THE_ROOM = {
     "the-root-font": ":root { font: 8px sans-serif; }",
     "zoomed-above": "footer { zoom: 0.5; }",
     "an-escaped-unit": ".colophon a { margin: 0\\70x 0; scroll-margin: 0\\70x 0; }",
+    "an-escaped-padding-side": ".colophon a { padding: 0.8rem \\30 ; }",
     "an-escaped-quote-before-a-joining-comment": '.a\\"b{} footer/**/.colophon a{margin:0} '
     '.c::after{content:"x"}',
     "the-root-text-animated": "@keyframes shrink { to { font-size: 50%; } }\n"
@@ -1607,6 +1842,198 @@ TAKES_THE_ROOM = {
     "a-visibility-named-by-an-escape": ".colophon { \\76isibility: hidden; }",
     "a-footer-shown-as-a-table-column": ".colophon { display: table-column; }",
     "a-paragraph-shown-as-a-column-group": ".colophon p { DISPLAY: TABLE-COLUMN-GROUP; }",
+    "a-footer-of-no-height-that-clips": ".colophon { height: 0; overflow: hidden; }",
+    "a-paragraph-of-no-height-that-clips": ".colophon p { max-height: 0; overflow: hidden; }",
+    "a-footer-clipped-away": ".colophon { clip-path: inset(100%); }",
+    "a-footer-placed-off-the-left": ".colophon { position: absolute; left: -9999px; }",
+    "a-footer-translated-away": ".colophon { translate: -9999px 0; }",
+    "a-footer-turned-edge-on": ".colophon { rotate: x 90deg; }",
+    "a-paragraph-of-no-width-that-clips": ".colophon p { width: 0; overflow: hidden; }",
+    "a-footer-clipped-on-one-axis": ".colophon { height: 0; overflow-y: clip; }",
+    "a-footer-clipped-along-its-block": ".colophon { block-size: 0; overflow-block: hidden; }",
+    "a-paragraph-clipped-along-its-line": ".colophon p { inline-size: 0; "
+    "overflow-inline: hidden; }",
+    "a-footer-that-scrolls-in-no-height": ".colophon { height: 0; overflow: auto; }",
+    "a-footer-that-always-scrolls": ".colophon { max-height: 0; overflow: scroll; }",
+    "a-footer-that-scrolls-under-an-overlay": ".colophon { height: 0; overflow: overlay; }",
+    "a-footer-clipped-on-one-of-two-axes": ".colophon { height: 0; overflow: visible hidden; }",
+    "a-paragraph-of-no-height-that-paints-alone": ".colophon p { height: 0; contain: paint; }",
+    "a-footer-in-strict-containment": ".colophon { contain: strict; }",
+    "a-footer-clipped-to-its-middle": ".colophon { clip-path: inset(50%); }",
+    "a-link-clipped-to-its-middle": ".colophon a { clip-path: inset(50%); }",
+    "a-footer-bounded-in-another-rule": ".colophon { overflow: hidden; } "
+    ".colophon { max-height: 1px; }",
+    "a-paragraph-narrower-than-the-press-area-in-rem": ".colophon p { max-width: 2rem; "
+    "overflow: hidden; }",
+    "a-paragraph-just-narrower-than-the-press-area": ".colophon p { max-width: 43px; "
+    "overflow: hidden; }",
+    "a-paragraph-of-a-width-the-guard-cannot-read": ".colophon p { width: 10%; overflow: hidden; }",
+    "a-link-of-no-width-that-clips": ".colophon a { width: 0; overflow: hidden; }",
+    "a-footer-sized-alone-that-clips": ".colophon { contain: size; overflow: hidden; }",
+    "a-paragraph-as-wide-as-the-press-area-that-clips": ".colophon p { max-width: 44px; "
+    "overflow: hidden; }",
+    "a-footer-narrower-than-its-padding-and-outline-that-clips": ".colophon { "
+    "max-width: 60px; overflow: hidden; }",
+    "a-paragraph-in-rem-narrower-than-the-narrowest-screen": ".colophon p { "
+    "max-width: 5rem; overflow: hidden; }",
+    "a-paragraph-in-rem-narrower-than-the-narrowest-screen-at-ordinary-text": ".colophon p { "
+    "max-width: 19rem; overflow: hidden; }",
+    "a-paragraph-just-narrower-than-the-narrowest-screen": ".colophon p { "
+    "max-width: 319px; overflow: hidden; }",
+    "a-footer-contained-as-a-container": ".colophon { container-type: size; overflow: hidden; }",
+    "a-footer-contained-through-the-container-shorthand": ".colophon { "
+    "container: footer / size; contain: paint; }",
+    "a-footer-contained-across-as-a-container": ".colophon { container-type: inline-size; "
+    "overflow: hidden; }",
+    "a-footer-contained-across": ".colophon { contain: inline-size; overflow: hidden; }",
+    "a-footer-kept-to-a-thin-ratio": ".colophon { aspect-ratio: 1000 / 1; overflow: hidden; }",
+    "a-footer-of-a-grid-row-of-no-height": ".colophon { display: grid; "
+    "grid-template-rows: 0; overflow: hidden; }",
+    "a-footer-of-no-logical-height-under-a-prefix": ".colophon { "
+    "-webkit-logical-height: 0; overflow: hidden; }",
+    "a-footer-of-no-most-logical-height-under-a-prefix": ".colophon { "
+    "-webkit-max-logical-height: 0; overflow: hidden; }",
+    "a-footer-narrow-in-its-logical-width-under-a-prefix": ".colophon { "
+    "-webkit-max-logical-width: 30px; overflow: hidden; }",
+    "a-paragraph-of-no-basis-that-clips": ".colophon { display: flex; "
+    "flex-direction: column; } .colophon p { flex-basis: 0; overflow: hidden; }",
+    "a-footer-squeezed-by-a-flex-page-of-no-height": "body { display: flex; "
+    "flex-direction: column; height: 0; } .colophon { overflow: hidden; }",
+    "a-footer-in-columns-that-clips": ".colophon { columns: 1px; overflow: hidden; }",
+    "a-paragraph-of-one-line-that-clips": ".colophon p { display: -webkit-box; "
+    "-webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }",
+    "a-paragraph-of-no-height-in-a-clipping-footer": ".colophon p { height: 0; } "
+    ".colophon { overflow: hidden; }",
+    "a-paragraph-of-no-height-in-a-clipping-footer-of-no-padding": ".colophon p { "
+    "max-height: 0; } .colophon { padding: 0; contain: paint; }",
+    "a-link-bounded-in-a-clipping-paragraph": ".colophon p { overflow: hidden; } "
+    ".colophon p { block-size: 0; }",
+    "a-paragraph-padded-past-a-clipping-footer": ".colophon { overflow: hidden; } .colophon p { "
+    "padding-left: 2000px; }",
+    "a-paragraph-pushed-past-a-clipping-footer": ".colophon { overflow: hidden; } .colophon p { "
+    "margin-left: 2000px; }",
+    "a-link-pushed-past-a-clipping-footer": ".colophon { overflow: hidden; } .colophon a { "
+    "margin-left: 2000px; }",
+    "a-link-padded-past-a-clipping-footer": ".colophon { overflow: hidden; } .colophon a { "
+    "padding: 0.8rem 2000px; }",
+    "a-link-padded-on-one-side-past-a-clipping-footer": ".colophon { overflow: hidden; } "
+    ".colophon a { padding-left: 2000px; }",
+    "a-link-spaced-past-a-clipping-footer": ".colophon { overflow: hidden; } .colophon a { "
+    "letter-spacing: 200px; }",
+    "a-link-widened-past-a-clipping-footer": ".colophon { overflow: hidden; } .colophon a { "
+    "width: 2000px; }",
+    "a-link-of-a-least-width-past-a-clipping-footer": ".colophon { overflow: hidden; } "
+    ".colophon a { min-width: 2000px; }",
+    "a-clipping-footer-padded-past-its-link": ".colophon { overflow: hidden; padding-left: "
+    "2000px; }",
+    "a-clipping-footer-with-a-wide-side-border": ".colophon { overflow: hidden; border-left: "
+    "2000px solid transparent; }",
+    "a-clipping-footer-padded-just-past-the-room": ".colophon { overflow: hidden; padding: 0 "
+    "1.3rem 2rem; }",
+    "a-clipping-footer-narrowed-by-its-padding": ".colophon { overflow: hidden; max-width: "
+    "20rem; padding: 0 0 2rem 19rem; }",
+    "a-painting-footer-padded-past-its-link": ".colophon { contain: paint; padding-left: 2000px; }",
+    "a-link-pushed-past-a-clipping-paragraph": ".colophon p { overflow: hidden; } .colophon a { "
+    "margin-left: 2000px; }",
+    "a-link-padded-past-a-clipping-paragraph": ".colophon p { overflow: clip; } .colophon a { "
+    "padding: 0.8rem 2000px; }",
+    "a-clipping-paragraph-padded-past-its-link": ".colophon p { overflow: hidden; padding-left: "
+    "2000px; }",
+    "a-clipping-paragraph-shrunk-to-the-link": ".colophon p { display: inline-block; overflow: "
+    "hidden; }",
+    "a-clipping-paragraph-shrunk-as-a-flex-box": ".colophon p { display: inline-flex; overflow: "
+    "hidden; }",
+    "a-clipping-paragraph-shrunk-as-a-grid": ".colophon p { display: inline-grid; overflow: "
+    "hidden; }",
+    "a-clipping-paragraph-shrunk-under-a-prefix": ".colophon p { display: -webkit-inline-box; "
+    "overflow: hidden; }",
+    "a-clipping-paragraph-floated": ".colophon p { float: left; overflow: hidden; }",
+    "a-clipping-paragraph-floated-to-the-start": ".colophon p { float: inline-start; overflow: "
+    "hidden; }",
+    "a-painting-paragraph-shrunk-to-the-link": ".colophon p { display: inline-block; contain: "
+    "paint; }",
+    "a-paragraph-shrunk-to-the-link-drawn-when-near": ".colophon p { display: inline-block; "
+    "content-visibility: auto; }",
+    "a-clipping-paragraph-shrunk-in-another-rule": ".colophon p { display: inline-block; } "
+    ".colophon p { overflow: hidden; }",
+    "a-clipping-paragraph-shrunk-by-a-flex-footer": ".colophon { display: flex; } .colophon p { "
+    "overflow: hidden; }",
+    "a-link-pushed-past-a-footer-clipped-for-good": ".colophon { overflow: clip; } .colophon a "
+    "{ margin-left: 2000px; }",
+    "a-paragraph-widened-past-a-painting-footer": ".colophon { contain: paint; } .colophon p { "
+    "width: 2000px; }",
+    "a-link-spaced-by-words-past-a-clipping-footer": ".colophon { overflow: hidden; } .colophon "
+    "a { word-spacing: 2000px; }",
+    "a-link-padded-at-its-start-under-a-prefix-past-a-clipping-footer": ".colophon { overflow: "
+    "hidden; } .colophon a { -webkit-padding-start: 2000px; }",
+    "a-link-pushed-at-its-inline-start-past-a-clipping-footer": ".colophon { overflow: hidden; "
+    "} .colophon a { margin-inline-start: 1px; }",
+    "a-paragraph-of-a-side-border-in-a-clipping-footer": ".colophon { overflow: hidden; } "
+    ".colophon p { border-inline: 2000px solid; }",
+    "a-paragraph-pushed-by-a-variable-in-a-clipping-footer": ".colophon { overflow: hidden; } "
+    ".colophon p { margin: 0 var(--side); }",
+    "a-clipping-paragraph-pushed-in-a-clipping-footer": ".colophon { overflow: hidden; } "
+    ".colophon p { overflow: hidden; margin-left: 2000px; }",
+    "a-footer-bounded-on-narrow-screens": "@media (max-width: 30rem) { "
+    ".colophon { max-height: 0; } } .colophon { overflow: hidden; }",
+    "a-footer-contained-by-a-variable": ".colophon { contain: var(--contain); }",
+    "a-footer-of-no-height-drawn-when-near": ".colophon { height: 0; content-visibility: auto; }",
+    "a-paragraph-of-no-height-drawn-when-near": ".colophon p { max-height: 0; "
+    "content-visibility: auto; }",
+    "a-footer-of-no-height-in-content-containment": ".colophon { height: 0; contain: content; }",
+    "a-footer-sized-and-painted-alone": ".colophon { contain: size paint; }",
+    "a-fixed-footer-off-the-top": ".colophon { position: fixed; top: -9999px; }",
+    "a-link-moved-off-the-left": ".colophon a { position: relative; left: -9999px; }",
+    "a-paragraph-placed-off-the-page": ".colophon p { position: absolute; "
+    "inset: -9999px auto auto; }",
+    "a-sticky-footer": ".colophon { position: sticky; }",
+    "a-footer-clipped-under-a-prefix": ".colophon { -webkit-clip-path: inset(50%); }",
+    "a-placed-footer-clipped-to-nothing": ".colophon { position: absolute; clip: rect(0 0 0 0); }",
+    "a-paragraph-clipped-to-a-point": ".colophon p { clip-path: circle(0); }",
+    "a-masked-footer": ".colophon { mask-image: linear-gradient(transparent, transparent); }",
+    "a-masked-link": ".colophon a { mask: linear-gradient(transparent, transparent); }",
+    "a-paragraph-masked-under-a-prefix": ".colophon p { -webkit-mask-image: "
+    "linear-gradient(transparent, transparent); }",
+    "a-footer-masked-by-a-box-image": ".colophon { -webkit-mask-box-image: "
+    "linear-gradient(transparent, transparent); }",
+    "a-footer-masked-by-a-box-image-source": ".colophon { -webkit-mask-box-image-source: "
+    "linear-gradient(transparent, transparent); }",
+    "a-link-translated-away-with-focus": ".colophon a:focus-visible { translate: 0 -9999px; }",
+    "a-turned-paragraph": ".colophon p { rotate: 180deg; }",
+    "a-footer-moved-along-a-path": ".colophon { offset-path: path('M 0 0 L -9999 0'); "
+    "offset-distance: 100%; }",
+    "a-footer-moved-along-a-path-by-the-shorthand": ".colophon { "
+    "offset: path('M 0 0 L -9999 0') 100%; }",
+    "a-footer-pulled-off-the-left": ".colophon { margin-left: -9999px; }",
+    "a-footer-pulled-off-the-top": ".colophon { margin: -9999px auto 0; }",
+    "a-paragraph-pulled-off-the-start": ".colophon p { margin-inline-start: -9999px; }",
+    "a-paragraph-pulled-by-its-block-margins": ".colophon p { margin-block: -9999px 0; }",
+    "a-link-pulled-off-the-left": ".colophon a { margin-left: -9999px; }",
+    "a-footer-pulled-by-a-prefixed-margin": ".colophon { -webkit-margin-start: -9999px; }",
+    "a-footer-pulled-up-by-a-prefixed-margin": ".colophon { -webkit-margin-before: -9999px; }",
+    "a-footer-pulled-by-a-calculation": ".colophon { margin-left: calc(0px - 9999px); }",
+    "a-footer-pulled-by-a-variable": ".colophon { margin-left: var(--pull, 0); }",
+    "a-paragraph-pulled-up-a-little": ".colophon p { margin-top: -0.5rem; }",
+    "a-paragraph-indented-off-the-left": ".colophon p { text-indent: -9999px; }",
+    "a-footer-indenting-its-text-off-the-left": ".colophon { text-indent: -100%; }",
+    "a-paragraph-indented-past-the-right": ".colophon p { text-indent: 9999px; }",
+    "an-indented-paragraph": ".colophon p { text-indent: 2em; }",
+    "a-link-with-its-letters-pulled-off-the-left": ".colophon a { letter-spacing: -9999px; }",
+    "a-paragraph-with-its-words-pulled-off-the-left": ".colophon p { word-spacing: -9999px; }",
+    "a-footer-that-clips-on-narrow-screens": "@media (max-width: 30rem) { "
+    ".colophon { height: 0; overflow: hidden; } }",
+    "a-clipping-footer-in-a-selector-list": "footer.colophon, .missing { height: 0; "
+    "overflow: hidden; }",
+    "an-important-clip": ".colophon { clip-path: inset(100%) !important; }",
+    "a-footer-placed-in-capitals": ".colophon { POSITION: ABSOLUTE; LEFT: -9999PX; }",
+    "a-clipping-footer-over-a-visible-one": ".colophon { height: 0; overflow: visible; "
+    "overflow: hidden; }",
+    "an-overflow-written-with-an-escape": ".colophon { height: 0; overflow: hi\\64 den; }",
+    "an-overflow-from-a-variable": ".colophon { height: 0; overflow: var(--clip); }",
+    "a-position-named-by-an-escape": ".colophon { \\70osition: absolute; left: -9999px; }",
+    "a-footer-out-of-view-with-focus-inside": ".colophon:focus-within { translate: -9999px 0; }",
+    "a-link-margin-with-a-percentage-below-zero-at-the-sides": ".colophon a { margin: 0; "
+    "margin: 5px -5%; }",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
 view or state, fades or hides the link, or which the resolver can't read and so refuses."""
@@ -1706,8 +2133,7 @@ LEAVES_THE_ROOM = {
     "a-scroll-margin-a-browser-drops-for-a-percentage": ".colophon a { scroll-margin: 0 5%; }",
     "a-margin-a-browser-drops-for-a-plain-number": ".colophon a { margin: 0 8; }",
     "a-margin-with-auto-at-the-sides": ".colophon a { margin: 0; margin: 5px auto; }",
-    "a-margin-with-a-percentage-below-zero-at-the-sides": ".colophon a { margin: 0; "
-    "margin: 5px -5%; }",
+    "a-margin-with-a-percentage-at-the-sides": ".colophon a { margin: 0; margin: 5px 5%; }",
     "a-margin-in-ems-at-the-sides": ".colophon a { margin: 0; margin: 5px 1em; }",
     "padding-with-a-percentage-at-the-sides": ".colophon a { padding: 0; padding: 0.8rem 5%; }",
     "padding-in-rem-at-the-sides": ".colophon a { padding: 0; padding: 0.8rem 1rem; }",
@@ -1851,7 +2277,6 @@ LEAVES_THE_ROOM = {
     "a-footer-displayed-as-a-block": ".colophon { display: block; }",
     "a-footer-displayed-as-its-contents": ".colophon { display: contents; }",
     "a-paragraph-displayed-as-a-flex-box": ".colophon p { DISPLAY: FLEX; }",
-    "a-footer-drawn-when-near": ".colophon { content-visibility: auto; }",
     "an-interactive-footer": ".colophon { interactivity: auto; }",
     "a-hidden-mark-after-the-link": ".colophon a::after { visibility: hidden; }",
     "a-hidden-link-elsewhere": ".week-problem a { display: none; }",
@@ -1861,6 +2286,83 @@ LEAVES_THE_ROOM = {
     "a-display-under-a-prefix-a-browser-drops": ".colophon p { -webkit-display: none; }",
     "a-footer-shown-as-a-table-row": ".colophon { display: table-row; }",
     "a-paragraph-shown-as-a-table-caption": ".colophon p { display: table-caption; }",
+    "a-footer-that-shows-what-overflows": ".colophon { overflow: visible; }",
+    "a-footer-of-no-height": ".colophon { height: 0; }",
+    "a-paragraph-of-no-height": ".colophon p { max-height: 0; }",
+    "a-footer-overflowing-as-its-parent": ".colophon { overflow: inherit; }",
+    "no-clip-path": ".colophon { clip-path: none; }",
+    "no-clip": ".colophon { clip: auto; }",
+    "no-mask": ".colophon p { mask: none; -webkit-mask-image: none; }",
+    "a-footer-in-its-place": ".colophon { position: static; }",
+    "a-footer-placed-as-its-parent": ".colophon { position: inherit; }",
+    "no-translation": ".colophon { translate: none; rotate: none; }",
+    "no-path": ".colophon { offset-path: none; }",
+    "a-footer-margined-as-it-is": ".colophon { margin: 1rem auto; }",
+    "a-paragraph-with-no-indent": ".colophon p { text-indent: 0; }",
+    "a-margin-of-minus-zero": ".colophon { margin-left: -0px; }",
+    "a-footer-laid-out-alone": ".colophon { contain: layout style; }",
+    "a-footer-sized-alone": ".colophon { contain: size; }",
+    "a-footer-that-wraps-long-words": ".colophon { overflow-wrap: anywhere; }",
+    "a-sticky-position-a-browser-drops": ".colophon { position: -webkit-sticky; }",
+    "a-clip-path-a-browser-drops": ".colophon { clip-path: auto; }",
+    "a-clipping-paragraph-elsewhere": "main p { height: 0; overflow: hidden; }",
+    "a-placed-mark-after-the-link": ".colophon a::after { position: absolute; left: -9999px; }",
+    "a-page-beside-the-footer-out-of-view": "main { position: absolute; left: -9999px; }",
+    "custom-properties-named-like-clips": ".colophon { --overflow: hidden; "
+    "--clip-path: inset(100%); }",
+    "a-scroll-margin-pulled-in": ".colophon { scroll-margin-left: -10px; }",
+    "a-clipping-root": "html { overflow: hidden; }",
+    "a-clipping-link": ".colophon a { overflow: clip; }",
+    "a-footer-drawn-when-near": ".colophon { content-visibility: auto; }",
+    "a-footer-that-clips-with-its-height-left-free": ".colophon { height: auto; "
+    "overflow: hidden; }",
+    "a-footer-as-wide-as-the-narrowest-screen-that-clips": ".colophon { max-width: 20rem; "
+    "overflow: hidden; }",
+    "a-paragraph-just-wider-than-the-narrowest-screen-that-clips": ".colophon p { "
+    "max-width: 321px; overflow: hidden; }",
+    "a-footer-as-a-container-of-no-size-that-clips": ".colophon { container: footer; "
+    "container-type: normal; overflow: hidden; }",
+    "a-footer-of-a-free-ratio-that-clips": ".colophon { aspect-ratio: auto; overflow: hidden; }",
+    "a-footer-without-grid-rows-that-clips": ".colophon { grid-template-rows: none; "
+    "overflow: hidden; }",
+    "a-footer-of-no-flex-that-clips": ".colophon { flex: none; overflow: hidden; }",
+    "a-footer-contained-as-a-container-without-a-clip": ".colophon { container-type: size; }",
+    "a-clipping-footer-beside-a-bound-elsewhere": "main p { height: 0; } "
+    ".colophon { overflow: hidden; }",
+    "a-footer-of-no-height-beside-a-clip-elsewhere": ".colophon { height: 0; } "
+    "main { overflow: hidden; }",
+    "a-footer-of-a-least-logical-height-that-clips": ".colophon { "
+    "-webkit-min-logical-height: 0; overflow: hidden; }",
+    "a-clipping-footer-with-less-side-padding": ".colophon { overflow: hidden; padding: 0 1rem "
+    "2rem; }",
+    "a-clipping-footer-with-its-own-side-padding": ".colophon { overflow: hidden; "
+    "padding-inline: 1.25rem; }",
+    "a-clipping-footer-with-its-own-side-margins": ".colophon { overflow: hidden; margin: 0 "
+    "2rem; }",
+    "a-clipping-footer-whose-paragraph-is-centered": ".colophon { overflow: hidden; } .colophon "
+    "p { margin: 0 auto; }",
+    "a-clipping-footer-with-a-block-paragraph": ".colophon { overflow: hidden; } .colophon p { "
+    "display: block; }",
+    "a-clipping-footer-with-its-link-as-it-is": ".colophon { overflow: hidden; } .colophon a { "
+    "display: inline-block; }",
+    "a-clipping-footer-with-spacing-left-as-is": ".colophon { overflow: hidden; letter-spacing: "
+    "normal; word-spacing: 0; }",
+    "a-clipping-footer-with-a-top-border": ".colophon { overflow: hidden; border-top: 1px solid; }",
+    "a-clipping-footer-without-a-float": ".colophon { overflow: hidden; float: none; }",
+    "a-footer-shrunk-to-its-paragraph-without-a-clip": ".colophon p { display: inline-block; }",
+    "a-link-pushed-without-a-clip": ".colophon a { margin-left: 2rem; }",
+    "a-link-that-clips-its-own-side-padding": ".colophon a { overflow: clip; padding-left: 2rem; }",
+    "an-unreadable-selector-elsewhere-beside-a-clipping-footer": ".colophon { overflow: hidden; } "
+    '.week-problem[title="display: none"] { color: red; }',
+    "a-footer-that-paints-alone": ".colophon { contain: paint; }",
+    "a-footer-of-no-height-clipping-under-a-prefix-a-browser-drops": ".colophon { "
+    "height: 0; -webkit-overflow: hidden; }",
+    "a-footer-with-a-least-height-that-clips": ".colophon { min-height: 0; overflow: hidden; }",
+    "a-footer-of-no-height-that-shows-what-overflows": ".colophon { height: 0; "
+    "overflow: visible; }",
+    "a-footer-with-its-letters-spaced-out": ".colophon { letter-spacing: 0.05em; "
+    "word-spacing: 0.1em; }",
+    "a-footer-pushed-to-the-right": ".colophon { margin-left: 9999px; }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
@@ -2038,3 +2540,300 @@ it from Tab, or may stand for a value that does."""
 def test_only_a_value_that_hides_reads_as_hiding(declared: str, hidden: bool) -> None:
     name, _, value = declared.partition(": ")
     assert hides(name, value) is hidden
+
+
+MOVES_AND_CLIPS = {
+    "position: absolute": True,
+    "position: fixed": True,
+    "position: relative": True,
+    "position: STICKY": True,
+    "clip: rect(0 0 0 0)": True,
+    "clip-path: inset(100%)": True,
+    "mask: url(#hide)": True,
+    "mask-image: linear-gradient(red, red)": True,
+    "mask-box-image: url(#hide)": True,
+    "mask-box-image-source: url(#hide)": True,
+    "margin-left: -9999px": True,
+    "margin-right: -1px": True,
+    "margin-bottom: -1px": True,
+    "margin-block-end: -1px": True,
+    "margin-after: -1px": True,
+    "margin-end: -1px": True,
+    "position: var(--place)": True,
+    "margin: 0 -1px": True,
+    "margin-inline-start: -.5em": True,
+    "margin-block: 0 -1rem": True,
+    "margin-start: -1px": True,
+    "margin-before: -1px": True,
+    "margin-top: calc(1px - 2px)": True,
+    "margin-left: max(-9999px, 0px)": True,
+    "text-indent: -9999px": True,
+    "text-indent: -1px hanging": True,
+    "text-indent: -100%": True,
+    "text-indent: 2em": True,
+    "text-indent: 9999px": True,
+    "text-indent: calc(0px)": True,
+    "letter-spacing: -1px": True,
+    "word-spacing: -0.5em": True,
+    "position: abs\\6f lute": True,
+    "clip-path: env(--shape)": True,
+    "margin: var(--pull)": True,
+    "position: static": False,
+    "position: -webkit-sticky": False,
+    "clip: auto": False,
+    "clip-path: none": False,
+    "mask: NONE": False,
+    "mask-image: none": False,
+    "margin: 0 auto": False,
+    "margin-left: -0px": False,
+    "margin: 5px 0": False,
+    "text-indent: 0": False,
+    "text-indent: -0px": False,
+    "letter-spacing: 0.1em": False,
+    "word-spacing: normal": False,
+    "scroll-margin-left: -10px": False,
+    "padding-left: -10px": False,
+    "--overflow: hidden": False,
+    "--margin: -1px": False,
+    "overflow: hidden": False,
+    "contain: strict": False,
+}
+"""Declarations, as `check_root_text` reads them, with whether each may clip what its element
+holds or move it out of view, or may stand for a value that does."""
+
+
+@pytest.mark.parametrize(("declared", "out"), MOVES_AND_CLIPS.items(), ids=MOVES_AND_CLIPS.keys())
+def test_only_a_value_that_clips_or_moves_reads_as_out_of_view(declared: str, out: bool) -> None:
+    name, _, value = declared.partition(": ")
+    assert out_of_view(name, value) is out
+
+
+CLIPPED = {
+    "overflow: hidden": True,
+    "overflow: Clip": True,
+    "overflow: auto ": True,
+    "overflow: scroll": True,
+    "overflow: overlay": True,
+    "overflow: visible hidden": True,
+    "overflow-x: hidden": True,
+    "overflow-y: clip": True,
+    "overflow-block: auto": True,
+    "overflow-inline: scroll": True,
+    "contain: paint": True,
+    "contain: strict": True,
+    "contain: content": True,
+    "contain: size paint": True,
+    "overflow: var(--clip)": True,
+    "overflow: hi\\64 den": True,
+    "content-visibility: auto": True,
+    "overflow: visible": False,
+    "overflow: inherit": False,
+    "overflow-wrap: anywhere": False,
+    "contain: none": False,
+    "contain: layout": False,
+    "contain: size": False,
+    "contain: inline-size style": False,
+    "content-visibility: visible": False,
+    "position: absolute": False,
+    "--overflow: hidden": False,
+}
+"""Declarations, as `check_root_text` reads them, with whether each makes its element clip
+what it holds, or may stand for a value that does."""
+
+
+@pytest.mark.parametrize(("declared", "clipped"), CLIPPED.items(), ids=CLIPPED.keys())
+def test_only_a_value_that_clips_what_it_holds_reads_as_clipping(
+    declared: str, clipped: bool
+) -> None:
+    name, _, value = declared.partition(": ")
+    assert clips(name, value) is clipped
+
+
+BOUNDED = {
+    "height: 0": True,
+    "max-height: 1px": True,
+    "block-size: 50%": True,
+    "max-block-size: var(--most)": True,
+    "height: auto": False,
+    "max-height: none": False,
+    "min-height: 0": False,
+    "width: 0": True,
+    "max-width: 43px": True,
+    "inline-size: 2.7rem": True,
+    "max-width: 44px": True,
+    "max-inline-size: 2.75rem": True,
+    "max-width: 60px": True,
+    "max-width: 319px": True,
+    "max-width: 320px": False,
+    "max-width: 321px": False,
+    "inline-size: 19.9375rem": True,
+    "max-inline-size: 20rem": False,
+    "max-width: 46rem": False,
+    "width: auto": False,
+    "max-width: NONE": False,
+    "min-width: 0": False,
+    "contain: size": True,
+    "contain: strict": True,
+    "contain: layout size": True,
+    "contain: var(--contain)": True,
+    "contain: s\\69 ze": True,
+    "contain: inline-size": True,
+    "contain: inline-size style": True,
+    "contain: paint": False,
+    "container-type: size": True,
+    "container-type: inline-size": True,
+    "container: footer / size": True,
+    "container: footer/inline-size": True,
+    "container: Footer / SIZE": True,
+    "container-type: var(--kind)": True,
+    "container: footer / s\\69 ze": True,
+    "container-type: normal": False,
+    "container-type: scroll-state": False,
+    "container: footer": False,
+    "aspect-ratio: 1000 / 1": True,
+    "aspect-ratio: auto": False,
+    "grid-template-rows: 0": True,
+    "grid-template-columns: repeat(2, 1fr)": True,
+    "grid-auto-rows: 0": True,
+    "grid-auto-columns: 0": True,
+    "grid: 0 / auto": True,
+    "grid-template: 0 / auto": True,
+    "grid-template: none": False,
+    "grid-template-rows: none": False,
+    "flex-basis: 0": True,
+    "flex: 0 0 0": True,
+    "flex: none": False,
+    "flex-basis: auto": False,
+    "columns: 1px": True,
+    "column-count: 3": True,
+    "column-width: 1px": True,
+    "column-width: auto": False,
+    "line-clamp: 1": True,
+    "-webkit-line-clamp: 1": True,
+    "line-clamp: none": False,
+    "-webkit-logical-height: 0": True,
+    "-webkit-max-logical-height: 0": True,
+    "-webkit-max-logical-width: 30px": True,
+    "-webkit-logical-width: 0": True,
+    "-webkit-logical-width: 30rem": False,
+    "-webkit-flex-basis: 0": True,
+    "-webkit-min-logical-height: 0": False,
+    "overflow: hidden": False,
+}
+"""Declarations, as `check_root_text` reads them, with whether each bounds its element's
+box on a view with 16 pixel text, so what it clips may not fit."""
+
+
+@pytest.mark.parametrize(("declared", "bounded"), BOUNDED.items(), ids=BOUNDED.keys())
+def test_only_a_size_that_may_not_fit_reads_as_a_bound(declared: str, bounded: bool) -> None:
+    name, _, value = declared.partition(": ")
+    assert bounds(name, value, FOOTER_VIEWS[0]) is bounded
+
+
+@pytest.mark.parametrize("value", ["50%", "10vw", "var(--wide)", "3em"])
+def test_a_width_bound_the_guard_cannot_read_is_refused(value: str) -> None:
+    with pytest.raises(UnreadCss):
+        bounds("max-width", value, FOOTER_VIEWS[0])
+
+
+ACROSS = {
+    "padding: 1px": ["1px"],
+    "padding: 1px 2px": ["2px"],
+    "padding: 1px 2px 3px": ["2px"],
+    "padding: 1px 2px 3px 4px": ["2px", "4px"],
+    "margin: 0 AUTO": ["auto"],
+    "padding-left: 1px": ["1px"],
+    "padding-right: 1px": ["1px"],
+    "margin-inline: 1px 2px": ["1px", "2px"],
+    "margin-inline-start: 1px": ["1px"],
+    "padding-inline-end: 1px": ["1px"],
+    "-webkit-padding-start: 1px": ["1px"],
+    "-webkit-margin-end: 1px": ["1px"],
+    "padding-top: 1px": [],
+    "margin-block: 1px": [],
+    "-webkit-margin-before: 1px": [],
+    "scroll-margin: 1px": [],
+    "border-left: 1px": [],
+}
+"""Declarations with the words each sets on the left and right of the line."""
+
+
+@pytest.mark.parametrize(("declared", "words"), ACROSS.items(), ids=ACROSS.keys())
+def test_only_the_side_words_of_a_padding_or_margin_are_read_across(
+    declared: str, words: list[str]
+) -> None:
+    name, _, value = declared.partition(": ")
+    assert across(name, value) == words
+
+
+SQUEEZED = {
+    ("display: flow-root", 1): False,
+    ("display: list-item", 1): False,
+    ("display: block flow", 1): False,
+    ("display: block flow-root", 1): False,
+    ("display: Block", 1): False,
+    ("display: inline-block", 1): True,
+    ("display: inline-block", 0): False,
+    ("display: flex", 3): True,
+    ("display: var(--shown)", 1): True,
+    ("float: none", 1): False,
+    ("float: left", 3): True,
+    ("float: right", 0): True,
+    ("width: 2000px", 3): False,
+    ("width: 2000px", 2): True,
+    ("width: auto", 1): False,
+    ("inline-size: 20rem", 1): True,
+    ("-webkit-logical-width: 30rem", 1): True,
+    ("min-width: 0", 1): False,
+    ("min-width: auto", 1): False,
+    ("min-width: 1px", 1): True,
+    ("min-inline-size: 1px", 0): True,
+    ("-webkit-min-logical-width: 1px", 0): True,
+    ("letter-spacing: normal", 0): False,
+    ("letter-spacing: 0", 0): False,
+    ("letter-spacing: 1px", 0): True,
+    ("word-spacing: 1px", 2): True,
+    ("border-left: 1px solid", 1): True,
+    ("border: 1px solid", 2): True,
+    ("border-width: 1px", 1): True,
+    ("border-inline-start: 1px solid", 0): True,
+    ("-webkit-border-start: 1px solid", 0): True,
+    ("border-right-width: thin", 1): True,
+    ("border-top: 1px solid", 1): False,
+    ("border-left: none", 1): False,
+    ("border-left: 0", 1): False,
+    ("border-left: 2000px solid", 3): False,
+    ("margin: 0 1px", 1): True,
+    ("margin: 0 1px", 2): False,
+    ("margin: 0 auto", 1): False,
+    ("margin-left: 1px", 0): True,
+    ("margin-top: 2000px", 0): False,
+    ("padding: 0 1.25rem", 2): False,
+    ("padding: 0 20px", 2): False,
+    ("padding: 0 21px", 2): True,
+    ("padding: 0 1.3rem", 1): True,
+    ("padding-right: 1.25rem", 0): False,
+    ("padding-top: 2000px", 0): False,
+    ("padding-left: 21px", 3): False,
+    ("color: red", 1): False,
+}
+"""Declarations on the element a place above the link, with the element two places above it
+clipping what it holds, and whether each may leave the link too little room there on a view
+with 16 pixel text."""
+
+
+@pytest.mark.parametrize(
+    ("declared", "squeezed"), SQUEEZED.items(), ids=[f"{d}@{at}" for d, at in SQUEEZED]
+)
+def test_only_what_shrinks_or_pushes_the_link_inside_a_clip_squeezes_it(
+    declared: tuple[str, int], squeezed: bool
+) -> None:
+    name, _, value = declared[0].partition(": ")
+    assert squeezes(name, value, FOOTER_VIEWS[0], at=declared[1], top=2) is squeezed
+    assert may_squeeze(name) is (name != "color")
+
+
+@pytest.mark.parametrize("value", ["0 2em", "0 5%", "0 var(--side)", "0 calc(1px)"])
+def test_a_side_length_the_guard_cannot_read_inside_a_clip_is_refused(value: str) -> None:
+    with pytest.raises(UnreadCss):
+        squeezes("padding", value, FOOTER_VIEWS[0], at=1, top=2)
