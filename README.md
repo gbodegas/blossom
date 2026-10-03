@@ -14,6 +14,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="AGPL-3.0 license"></a>
 </p>
 
+[Try the sample](#try-it-locally) · [What works today](#what-works-today) ·
+[Technical details](docs/architecture.md)
+
 ## Why this exists
 
 Blossom is a homework and deadline tracker I am building for my teenage
@@ -34,133 +37,54 @@ I intend to define what success looks like with her rather than on her behalf.
 
 ## What works today
 
-Blossom is still an early project, built around our household. A parent adds
-assignments by hand or pastes text from the school. It doesn't connect to the
-school platform or read our email.
+Blossom is still an early project, built around our household.
 
-**My week.** She can see what's due this week, where each date came from, and
-work assigned this week but due later. Missing dates and disagreements stay
-visible, so she can see what still needs checking.
+**My week.** She can see deadlines, school instructions, and work assigned
+this week but due later. Missing dates and disagreements stay visible.
 
-**Add assignments.** Paste the school's homework page, weekly summary, or
-"Missing" email, or add an assignment by hand. Blossom shows what it found
-before anything is saved. Pasting the same work again doesn't create
-duplicates, and dates that disagree keep their sources. I built this around
-our school's formats; anything it can't read is left for us to check. When
-the school names work differently from how we saved it, the review can
-search the homework already here and point the school's row at it, and
-Blossom remembers that for the next paste. It never combines two assignments
-on its own.
+**Homework notes.** She can **Write down homework** now and add the class
+and date later. It can stay a note, become an assignment, or link to
+homework already here. Her original words stay separate from the
+assignment details.
 
-**The school's instructions.** The teacher's words under each card are kept as
-the school's, apart from any note she or a parent writes. When a paste brings
-instructions that differ from the saved ones, Blossom asks which apply now and
-keeps the rest as history, so nothing the school said is lost. A parent can
-change that choice later from the assignment. Plans use only the instructions
-that apply.
+**Finishing and turning it in.** She can say Done or Not yet and change
+her answer. Done means she finished her part. A separate **To turn in**
+list keeps her next step visible across weeks. Neither update confirms
+that the school received the work.
 
-**Plan today.** She can ask for an evening plan, with time set aside for work
-and a reason for each choice. Blossom checks the plan and can ask for up to
-two revisions. The saved plan opens on her page, with links to the work and
-any concerns the review couldn't resolve. If she later says something is
-Done, she can see which block to skip; the saved times stay as they were.
-A parent can look it over, but she doesn't have to wait to get started.
+**Plan today.** She can ask for an evening plan with time set aside for
+work. **Too much right now** asks for a shorter plan when she next makes
+one. A parent's review does not stop her getting started.
+
+**Working together.** Parents can review plans, answer requests for help,
+and check differences between her account and the school's. They can
+enter assignments or paste school text for review before saving. The
+reader is built around our school's formats.
+
+Blossom doesn't connect to the school platform, read email, submit work,
+or send reminders. Planning needs an API key; the other features work
+without one.
 
 <p align="center">
-  <img src="docs/assets/student-week.png" alt="Student week with today's saved plan open, assignment links, and a completed block marked as skippable" width="640">
+  <a href="docs/assets/student-week.png"><img src="docs/assets/student-week.png" alt="My week in the sample for September 7 to 13, 2026: no plan for today yet, the Too much right now, Write down homework, and Ask for help controls, links to To turn in and Homework notes, a note that planning is unavailable, and a See homework link" width="640"></a>
 </p>
 
-*The screenshots use made-up schoolwork. This plan and its review were
-prepared for the example, without a live model call. She has marked one
-assignment Done, so that block now says she can skip it.*
-
-**Too much right now.** One press asks for a shorter evening of work. There
-is no rating to fill in and no explanation to give. She chooses when to make
-that plan and can change her mind.
-
-**Her own update.** She can say Done or Not yet, leave a note, and change or
-undo her answer later. Done means she has finished her part. Blossom leaves
-it out of new plans while keeping the school's report separate.
-
-**Turning it in.** Finishing the work doesn't always mean it made it to the
-teacher. She can keep a **To turn in** list with a next step for each item,
-even after she says Done. That work stays visible across weeks. She can mark
-it turned in and undo that choice too.
+*My week in the made-up sample. No API key or saved plan.*
 
 <p align="center">
-  <img src="docs/assets/to-turn-in.png" alt="To turn in list with a next step for finished work and an I turned it in button" width="640">
+  <a href="docs/assets/to-turn-in.png"><img src="docs/assets/to-turn-in.png" alt="To turn in list with one finished Geometry assignment, its next step, Put it in the Geometry tray before first period, and an I turned it in button" width="640"></a>
 </p>
 
-*An example of finished work with one step left: handing it in.*
-
-**Homework notes.** Not every assignment makes it into the portal. She can
-jot down something she heard in class or from a classmate, in her own words.
-A class and date are optional. She can edit it, put it away, or ask for help.
-A note she wrote by mistake can be deleted, with its history, as long as it
-was never added to homework, linked, or asked about; a used note can only be
-put away. Her parents can read it but can't change it. A note stays a note,
-and out of every plan, until she or a parent adds it to homework.
-
-**Add it to homework.** From a note, she can open a form that shows her words
-and asks for the class, a title, and optionally a due date, a kind, and a
-note about the work; a parent can do the same from Family review. Nothing is
-guessed from what she wrote. **Save details** keeps those on the note;
-**Add to homework** makes the assignment, once, and keeps the note as
-evidence on it. Anything a parent fills in is marked as theirs. If homework
-with that class and title is already here, Blossom lists it with its date and
-what she and the school currently say about it, and asks whether this is the
-same homework or a separate assignment. It doesn't merge on its own. From
-then on the assignment goes to the planner like any other; her original words
-still don't. When a school paste names such homework, the review asks
-whether the school's row is the same homework or different homework with the
-same title, and saves nothing until a parent answers.
-
-**Link to homework already here.** Sometimes the homework is already on the
-list under another name: the school's title, or a classmate's. From a note,
-she or a parent can search the homework already here by class or title, Done
-work and older work included, and join the note to one result. Nothing is
-joined by the search itself, and nothing on that assignment changes; a date
-the note gives is kept as one more source for its due date. A note joined
-that way can be moved to other homework or unlinked later, which puts it back
-among her notes with its details kept and withdraws only that note's date. A
-note that became an assignment of its own stays with it.
-
-**Family review.** If she asks for help, a parent can reply and mark the
-request resolved. If she says Done but the school says Missing, we can see
-both accounts and check together. A parent can record that we checked
-without changing what either side said. Refresh the pages to see the latest
-updates.
-
-<p align="center">
-  <img src="docs/assets/family-help.png" alt="Family review with a help request and a Done beside Missing discrepancy that a parent can mark checked" width="640">
-</p>
-
-*A request for help and something to check together, with her account and
-the school's side by side.*
-
-**Household sign-in.** She and her parents can use separate passphrases to
-open their pages. You can leave these unset while trying Blossom on your own
-computer. The [development guide](docs/development.md#running-for-the-household)
-walks through setting it up for the family's devices.
-
-Texting, reminders, and a connection to the family calendar aren't built
-yet. Blossom doesn't contact the school or submit work. The
-[architecture notes](docs/architecture.md) go into the design and its limits.
+*Finished work with one step left before handing it in.*
 
 ## Try it locally
 
-You can try the sample without a school account or an API key. It gives you
-a week of made-up assignments to browse, update, and ask for help with.
-Making a new plan is optional and needs an Anthropic API key.
+You can try the sample without a school account or an API key. You'll need
+Git and Python 3.12 or 3.13.
 
-You'll need Git and Python 3.12 or 3.13. I've put the Python and pip
-instructions first so uv isn't another thing you need to install. If you
-already use uv, there's a shorter setup below.
-
-These steps are for Windows PowerShell. The
-[development guide](docs/development.md#when-uv-cannot-download) covers macOS
-and Linux. Choose a local folder that isn't synced by OneDrive or a similar
-service.
+These steps are for Windows PowerShell with Python and pip. For uv, macOS,
+or Linux, see [other ways to start the sample](docs/development.md#other-ways-to-start-the-sample).
+Choose a local folder that isn't synced by OneDrive or a similar service.
 
 **Get the code once.** In PowerShell:
 
@@ -169,10 +93,7 @@ git clone https://github.com/gbodegas/blossom.git
 cd blossom
 ```
 
-If you already have the code, open PowerShell in your Blossom folder and
-start with the next step.
-
-**Install once.** From the repository folder:
+**Install once.** From the Blossom folder:
 
 ```powershell
 py -3.12 -m venv .venv
@@ -180,11 +101,10 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-Use `py -3.13` in the first line if Python 3.13 is installed instead. If your
-installation has no `py` launcher, use `python -m venv .venv` after checking
-that `python --version` says 3.12 or 3.13. You don't need to activate the
-environment or change PowerShell's execution policy. The `ensurepip` line
-makes sure pip is available, including if an earlier uv attempt left it out.
+Use `py -3.13` in the first line if that's the version you have. If there's
+no `py` launcher, use [the guide's fallback](docs/development.md#other-ways-to-start-the-sample)
+for that line. You don't need to activate the environment or change
+PowerShell's execution policy.
 
 **Start the sample.** From the Blossom folder, paste this whole block. Use
 it again whenever you want to start the app:
@@ -202,42 +122,27 @@ Get-Content $settingsFile, data\sample\sample.env |
 .\.venv\Scripts\python.exe -m uvicorn blossom.app:app --reload
 ```
 
-This uses your own `.env` settings if you've made that file, or `.env.example`
-if you haven't. It then loads the sample week and keeps anything you change
-under `.local/sample/`. A key or passphrases you've added to `.env` work here
-too. If you edit either settings file, use `KEY=value` without quotes around
-the value.
+It reads your `.env` if you've made one, or `.env.example` if not, then
+the sample settings last. Blossom doesn't load `.env` on its own. If you edit either settings file, use `KEY=value` without
+quotes around the value. Your sample changes stay under `.local/sample/`
+until you [reset the sample](docs/development.md#the-sample-week).
 
 Open [My week](http://127.0.0.1:8000/student/due-this-week) or
-[Family review](http://127.0.0.1:8000/parent). Both pages say "Sample week".
-The date stays at September 7, 2026, so the example still makes sense
-whenever you try it. You'll see two active assignments due that week, one
-under "Reported done", and a reading log due the following week. There
-isn't a saved plan on your first visit; the screenshot shows a prepared
-example.
+[Family review](http://127.0.0.1:8000/parent). The sample uses made-up
+schoolwork and stays at September 7, 2026. There is no saved plan at first,
+and **Plan today** appears only after adding an API key.
+
+Without a key, you can still write down homework, record a Done update,
+add an item to **To turn in**, or ask for help. The
+[sample guide](docs/development.md#the-sample-week) walks through those steps.
 
 Leave PowerShell open while using Blossom, and press **Ctrl+C** to stop it.
-Your sample updates will still be there when you come back. To start fresh,
-see [resetting the sample](docs/development.md#the-sample-week). If something
-doesn't work, the [troubleshooting notes](docs/development.md#troubleshooting)
-are a good place to start.
 
-<details>
-<summary>Already use uv? The shorter setup works too.</summary>
-
-From the repository folder:
-
-```bash
-uv sync
-uv run --env-file .env.example --env-file data/sample/sample.env uvicorn blossom.app:app --reload
-```
-
-Use `--env-file .env` in place of `--env-file .env.example` if you have your
-own settings. Keep the sample file last. The
-[uv installation page](https://docs.astral.sh/uv/getting-started/installation/)
-covers installing uv if you want it.
-
-</details>
+For your own schoolwork, follow the
+[household setup guide](docs/development.md#running-for-the-household).
+It covers separate records, the real date, student and parent sign-in,
+and access on the home network. Open a fresh terminal when switching from
+the sample.
 
 ## Using the planner
 
@@ -254,24 +159,24 @@ notepad .env
 ```
 
 Set `ANTHROPIC_API_KEY` to your key, save the file, and repeat the **Start the
-sample** block above. Blossom will pick up the new settings when it starts.
-"Plan today" will appear on her page. If you use uv, launch with `.env` in
-place of `.env.example` as described above.
+sample** block above. "Plan today" will appear on her page.
 
-When she asks for a plan, Blossom sends the unfinished assignments and their
-date sources, her Not yet updates and notes on that work, any supplied
-household rules and system notes, and whether she has said the evening is
-too much. Her homework notes and her reports about turning work in stay out
-of those requests; a note she has added to homework goes in as the assignment
-it became, never as her words. Later calls also include the proposed plan and
-feedback on it. Making a plan can take one to six model calls. If there's
-nothing left to schedule, it makes none. A parent's review doesn't call the
-model.
+Planning sends Anthropic the assignments and school instructions in the
+planning window, assignment notes, her Not yet updates, household rules,
+and planning context. That can include her separate **Note about the work**;
+the original **Homework notes** text and history stay out of the requests.
+Her help requests and hand-in reports stay out too.
 
-Blossom saves the full prompts and responses locally. The
-[development guide](docs/development.md) explains where they live, how long
-they're kept, and the settings you can change. The
-[architecture notes](docs/architecture.md) cover the checks and their limits.
+One planning attempt can make up to six model calls, or none if there is
+nothing to schedule. Prompts and responses are also saved locally; model
+processing still happens at Anthropic. The
+[development guide](docs/development.md) explains exactly what is shared,
+what is stored, and how long it is kept.
+
+The app is written in Python. FastAPI serves the pages, SQLite keeps the
+local records, and LangGraph runs planning. Code checks the proposed plan
+before a separate model call reviews it. See the
+[architecture notes](docs/architecture.md) for the workflow and its limits.
 
 ## Contributing
 

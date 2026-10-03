@@ -2,9 +2,10 @@
 
 The README gets Blossom running once. This is everything else a person
 working on it locally needs: what the server serves, how it is configured,
-what it writes to disk, what the planner sends and costs, the fallback when
-uv cannot download, and the problems seen so far with their fixes. The design
-and the reasons behind it are in [architecture.md](architecture.md).
+what it writes to disk, what the planner sends and costs, running it for the
+household, other ways to start the sample, the fallback when uv cannot
+download, and the problems seen so far with their fixes. The design and the
+reasons behind it are in [architecture.md](architecture.md).
 
 ## Installing uv
 
@@ -120,6 +121,12 @@ the JSON routes, send an Origin header matching the URL's scheme, host, and
 port, for example `-H 'Origin: http://localhost:8000'` when calling
 `http://localhost:8000`. The interactive API page sends it on its own.
 
+The pages don't change on their own. Refresh one to see the latest updates;
+her page's **Refresh replies** does that for her help requests. A saved plan
+opens on her page with a link to each assignment. If she says Done on work in
+it afterward, its block says she can skip it, and the saved times stay as
+they were.
+
 ## Configuration
 
 Every setting is an environment variable named in `.env.example`, and
@@ -131,9 +138,10 @@ Each path has a working default under `.local/`.
 One variable has no default and must be set: `BLOSSOM_TIMEZONE`, the
 household's IANA zone, because "due this week" means the days you live in and
 no value is right for everyone. `BLOSSOM_TODAY` pins the clock to a date;
-unset, the real clock is used. `.env.example` sets both, which is why the
-first run needs nothing else. Either can also be set as an ordinary
-environment variable in the shell.
+unset or blank, the real clock is used. `.env.example` sets the zone and
+leaves the date blank, which is why the first run needs nothing else and
+shows the real week. The sample week's launch file sets its own date. Either
+can also be set as an ordinary environment variable in the shell.
 
 Two variables are numbers: `BLOSSOM_EVENING_MINUTES`, how many minutes of
 schoolwork an evening's plan may hold, and `BLOSSOM_TOO_MUCH_MINUTES`, what a
@@ -239,27 +247,102 @@ variable left in the shell still names whatever it named.
 
 ## Running the planner for real
 
-Copy `.env.example` to `.env`, put an Anthropic API key in
-`ANTHROPIC_API_KEY`, start the app with `--env-file .env`, and use "Plan it"
-on the parent's page. The model is `claude-opus-5`, at high effort for the
-planner and medium for the critic, with each answer capped at 16,000 tokens.
+Copy `.env.example` to `.env` if there is no `.env` yet, put an Anthropic API
+key in `ANTHROPIC_API_KEY`, start the app with `.env` loaded, by the README's
+launch block or `--env-file .env` with uv, and use "Plan today" on her page
+or "Plan it" on the parent's page. The model is `claude-opus-5`, at high
+effort for the planner and medium for the critic, with each answer capped at
+16,000 tokens.
 The endpoint is fixed in code, so no shell variable can change where a prompt
 is sent.
 
-Each request carries the week's assignments with their courses, dates, and
-confidence labels, the household's standing rules, the planner's notes about
-past plans, and whether she has said the evening is too much; the critic also
-receives the proposed plan, and a revision receives what was wrong with the
-last one. With the bundled fixtures, all of
-that is synthetic. A run is one to six calls. The planner is one; only a plan
-that passes the checks goes to the critic, which is another; and a plan that
-fails the checks or the critic's review goes back to the planner, up to two
-more times. A run the model cuts short ends with the call that failed. What
-it costs depends on the week and the revisions; the API's usage page says
-after a run. All of this happens before the plan reaches her page and the
-parent's for review, and a review sends nothing anywhere.
+A run is one to six calls, and none when nothing is left to schedule. The
+planner is one; only a plan that passes the checks goes to the critic, which
+is another; and a plan that fails the checks or the critic's review goes back
+to the planner, up to two more times. A run the model cuts short ends with
+the call that failed. What it costs depends on the week and the revisions;
+the API's usage page says after a run. All of this happens before the plan
+reaches her page and the parent's for review, and a review sends nothing
+anywhere.
+
+## What the planner shares
+
+Every call carries the evening being planned: its date and weekday, the
+household's time zone, and the minutes the evening may hold. When she has
+said the evening is too much, the call says so in a sentence Blossom writes,
+with the shorter budget; any words she added to that signal stay here.
+
+Each unfinished assignment in the planning window goes in with its class,
+title, kind, due date and assigned date, how sure the family is of the due
+date given its sources, and what the school reports about it. If the sources
+disagree about a due date, the call marks it with a label. What each source
+says goes in only when the dates they give contradict the record: none of
+them is the recorded due date, or the record has no due date. The school's
+instructions go in only when they apply, as the teacher's words; instructions said before,
+waiting for a parent's review, or left in the old note field stay out. A
+note on an assignment goes in under the name of whose words it is: a
+parent's as the family's guidance, and her **Note about the work** as hers.
+Her Not yet updates go in with any note she wrote on them. Work she has
+reported done is left out.
+
+The call also carries any household rules and system notes about past plans
+read from the fixture folder. The critic receives the proposed plan and the
+due dates it should treat as uncertain or missing, and a revision receives
+the plan it revises and what was wrong with it. With the bundled fixtures,
+all of that is synthetic.
+
+Her homework notes are another matter. When she or a parent adds a note to
+homework, the assignment it becomes goes in like any other: its class,
+title, dates, kind, and the separate Note about the work typed on that form.
+The note's original text and its history never go, and neither does a note
+that is waiting, put away, or linked to homework already here; a date a
+linked note gives counts only as one more source for that due date. Her
+requests for help and her reports about turning work in stay out of every
+call.
+
+The full prompts and responses are also kept on this computer, in
+`traces.sqlite3` for two weeks, and each run's plan and record in
+`blossom.sqlite3`, as "What survives a restart" describes. The model still
+processes every call at Anthropic. A parent's review does not call the
+model.
 
 ## Running for the household
+
+Before the first household start, make the household's settings file from the
+example if there isn't one yet, and open it. This never replaces a `.env`
+that's already there:
+
+```powershell
+if (-not (Test-Path .env)) {
+    Copy-Item .env.example .env
+}
+
+notepad .env
+```
+
+On macOS or Linux, copy `.env.example` to `.env` the same way, only when
+there's no `.env` yet. Then check these lines in `.env`:
+
+- `BLOSSOM_TIMEZONE` names the household's own time zone.
+- `BLOSSOM_FIXTURE_PATH` is blank, so nothing synthetic is read in.
+- `BLOSSOM_TODAY` is blank, so the pages show the real date.
+- `BLOSSOM_SAMPLE` is blank, so sample mode is off.
+- The three state paths name the household's own files, never
+  `.local/sample/`. The defaults under `.local/` are fine in a folder that
+  isn't synced.
+- `BLOSSOM_STUDENT_PASSPHRASE` and `BLOSSOM_PARENT_PASSPHRASE` are set and
+  differ, for access from the family's devices.
+
+A `.env` written from an example that pinned `BLOSSOM_TODAY` keeps that date
+until the line is cleared by hand; a new example changes nothing in a `.env`
+already made. Edit the line rather than copying the example again, which
+would replace the household's own settings.
+
+Stop the sample and open a fresh terminal before starting the household's
+Blossom, since the sample's settings stay in the window that loaded them.
+The household's launch reads only `.env`, never `data/sample/sample.env`.
+Leave the sample's files under `.local/sample/` where they are; they are not
+a start for the household's record.
 
 Her computer, her tablet, and a parent's computer all open Blossom over the
 home network, so the pages ask who is there. Set two passphrases in `.env`,
@@ -313,10 +396,25 @@ a file the start creates, but the planner would read that set's rules and
 notes as the household's.
 
 Start the app so the other devices can reach it, on the computer that stays
-on:
+on. With uv:
 
 ```bash
 uv run --env-file .env uvicorn blossom.app:app --host 0.0.0.0 --port 8000
+```
+
+With Python and pip in Windows PowerShell, from the Blossom folder, paste
+this whole block. It loads `.env` the way the README's sample block does,
+without the sample:
+
+```powershell
+Get-Content .env |
+    Where-Object { $_ -match '^\s*[A-Za-z_][A-Za-z0-9_]*=' } |
+    ForEach-Object {
+        $setting, $value = $_ -split '=', 2
+        Set-Item -Path "Env:$($setting.Trim())" -Value $value.Trim()
+    }
+
+.\.venv\Scripts\python.exe -m uvicorn blossom.app:app --host 0.0.0.0 --port 8000
 ```
 
 Windows asks once whether to allow Python through the firewall for private
@@ -357,6 +455,29 @@ see the moved instructions: assignments show no school instruction, and
 nothing tells the planner about them. A school note it saves is found by the
 next start of the newer version and, beside instructions already kept, waits
 for a parent's review.
+
+## Homework notes
+
+**Write down homework** saves a note in her words, with the class and due date
+optional. She can edit it, archive it, or ask for help about it; her parents
+can read it but not change it. A note stays out of every plan until it is
+added to homework. A note never used can be deleted with its history, and
+"What survives a restart" says what counts as used.
+
+**Add it to homework** asks for the class and a title, with a due date, the
+kind, and a Note about the work optional; a parent can do the same from
+Family review, and what a parent fills in is marked as theirs. Nothing is
+guessed from her words. **Save details** keeps them on the note, which stays
+a note. **Add to homework** makes the assignment once and keeps the note on
+it as evidence. When homework with that class and title is already here, the
+form asks whether it is the same homework or a separate assignment, and
+nothing is merged on its own.
+
+**Link to homework already here** searches by class or title, Done and older
+work included, and joins the note to one result without changing that
+assignment; a date the note gives becomes one more source for its due date.
+A joined note can be moved to other homework or unlinked, which puts it back
+among her notes with its details kept and withdraws only its date.
 
 ## Adding assignments
 
@@ -613,13 +734,27 @@ uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app
 
 The README's [Start the sample](../README.md#try-it-locally) block does the
 same loading in PowerShell without uv: the household's `.env`, or the
-example when there is none, followed by the sample's paths and clock. The
-pip instructions below also cover macOS and Linux. Neither Python nor the
-app reads `.env` automatically.
+example when there is none, followed by the sample's paths and clock.
+"Other ways to start the sample" below covers uv in full, and macOS and
+Linux. Neither Python nor the app reads `.env` automatically.
 
 The variables last for that PowerShell window. Use a fresh window when
 switching from the sample to the household's own settings. Without a key in
 `.env` the pages work and the plan button is not offered.
+
+A short tour works without a key. From her page, My week:
+
+1. Open the Geometry assignment's **Details**, choose **Done**, and press
+   **Save update**.
+2. Beside the saved update, open **Help me remember to turn this in**, type
+   one next step, and press **Save hand-in update**. Go **Back to the week**
+   and open **To turn in**, where the Geometry work waits with its next step
+   and **I turned it in**. Done alone puts nothing on that list.
+3. Open **Write down homework**, type a made-up note, leave the class and
+   date empty, and press **Save homework note**.
+4. Under **Help**, add a short note if you like and press **Ask for help**.
+   In **Family review**, under "Help she asked for", type a reply and press
+   **I can help**. Back on My week, press **Refresh replies** to see it.
 
 To start the sample again from nothing, stop the app and delete the
 `.local/sample/` folder; the family's own state under `.local/` is untouched,
@@ -652,16 +787,30 @@ was not made by the planner and no review of it has run, and it says so at
 the top. Show it as prepared, never as a plan the system made or one that
 passed its checks; the app has no way to serve it as a plan, by design.
 
-## When uv cannot download
+## Other ways to start the sample
 
-Depending on your network and certificate settings, uv can have trouble
-downloading packages even when pip works. If that happens, or you'd rather
-use the tools you already have, Python and pip are enough to run Blossom. The
-[README](../README.md#try-it-locally) gives the full Windows PowerShell path,
-including creating the environment and loading the sample settings.
+The README's path is Windows PowerShell with Python and pip. Use `py -3.13`
+in its first install line if Python 3.13 is installed instead. If there's no
+`py` launcher, check that `python --version` says 3.12 or 3.13 and use
+`python -m venv .venv` in its place.
 
-For macOS and Linux, run these once from the repository folder, with Python
-3.12 or 3.13 installed. Use `python3.13` in the first line if that is the
+### With uv
+
+"Installing uv" above covers getting uv. From the repository folder:
+
+```bash
+uv sync
+uv run --env-file .env.example --env-file data/sample/sample.env uvicorn blossom.app:app --reload
+```
+
+Use `--env-file .env` in place of `--env-file .env.example` once you have
+your own settings, such as an API key for the planner. Keep the sample file
+last, so its date and paths apply.
+
+### macOS and Linux
+
+Run these once from the repository folder, with Python 3.12 or 3.13
+installed. Use `python3.13` in the first line if that is the
 version you have:
 
 ```bash
@@ -706,6 +855,15 @@ Uvicorn also has an `--env-file` option, but it needs an extra package,
 it. If an earlier uv attempt left an environment without pip, the `ensurepip`
 step puts it back. You don't need to activate the environment on either
 platform.
+
+## When uv cannot download
+
+Depending on your network and certificate settings, uv can have trouble
+downloading packages even when pip works. If that happens, or you'd rather
+use the tools you already have, Python and pip are enough to run Blossom. The
+[README](../README.md#try-it-locally) gives the full Windows PowerShell path,
+including creating the environment and loading the sample settings, and
+"Other ways to start the sample" above has the same for macOS and Linux.
 
 If you are contributing code, install the development tools as well. These
 are not needed just to try the app.
@@ -788,8 +946,7 @@ starting a new plan needs a key. To plan for real, see above.
 
 **Windows: `BLOSSOM_TODAY=2026-08-19 uv run ...` says the command is not
 recognized.** That is bash syntax. In PowerShell use
-`$env:BLOSSOM_TODAY = "2026-08-19"` on its own line first, or just use
-`--env-file .env.example`.
+`$env:BLOSSOM_TODAY = "2026-08-19"` on its own line first.
 
 **Port 8000 is already in use.** Add `--port 8765` (or any free port) to the
 uvicorn command and open that port instead.
