@@ -21,11 +21,12 @@ stylesheet reading in `tests/support.py`, for the part of CSS these elements dep
 compound selectors of a type, an id, classes, attributes and pseudo-classes, with
 descendant and child combinators, in comma lists; importance, then specificity, then
 source order; and inheritance for the properties a browser inherits. A rule inside a media
-query counts only where the query holds. A media query reads its `rem` from the browser's
-own text size, so large text is checked two ways: the browser's text size doubled, which
-moves the narrow layout's breakpoint with it, and the page's own text doubled, which
-leaves the breakpoint where it is. A media feature the resolver does not know is refused,
-never assumed either way.
+query counts only where the query holds, and one inside a `@supports` block only in a
+browser that passes its test, Edge unless a view says otherwise. A media query reads its
+`rem` from the browser's own text size, so large text is checked two ways: the browser's
+text size doubled, which moves the narrow layout's breakpoint with it, and the page's own
+text doubled, which leaves the breakpoint where it is. A media feature or `@supports` test
+the resolver does not know is refused, never assumed either way.
 """
 
 import functools
@@ -4077,7 +4078,9 @@ class" fill the whole width."""
 
 def sits_apart(sheet: Sheet, card: Element, model: Element, view: View) -> list[str]:
     """Each side inset, edge and surface where a note's details card differs from Add
-    assignments' card on ``view``, with the side padding of their fields."""
+    assignments' card on ``view``, with the side padding of their fields: a select's as a
+    browser without the customizable select draws it, which `select_insets_wrong` holds to
+    its inset in one with it."""
     found = [
         name
         for name in CARD_SIDES
@@ -4088,10 +4091,10 @@ def sits_apart(sheet: Sheet, card: Element, model: Element, view: View) -> list[
     for one in elements_of_card(card):
         if one.tag in ("input", "select") and one.attributes.get("type") != "hidden":
             for side in ("padding-left", "padding-right"):
-                wanted = value_of(sheet, theirs[-1], side, view)
+                wanted, seen = value_of(sheet, theirs[-1], side, view), view
                 if one.tag == "select":
-                    wanted = SELECT_PADDING
-                if value_of(sheet, one, side, view) != wanted:
+                    wanted, seen = SELECT_PADDING, without(view)
+                if value_of(sheet, one, side, seen) != wanted:
                     found.append(f"{one.tag} {side}")
     return found
 
@@ -4698,3 +4701,357 @@ def test_the_way_out_check_fails_when_press_areas_meet(
     assert css.count(WAY_OUT_RULE) == 1
     css = css.replace(WAY_OUT_RULE, becomes)
     assert way_out_apart(css, note_pages["parent, review"], View(320, 16, 32)) <= 0
+
+
+# ------------------------------------------------------------- a wrapping select's inset
+
+
+CUSTOMIZABLE = "appearance: base-select"
+"""The `@supports` test for the customizable select, whose chosen value wraps."""
+INSET_RULE = """  @supports (appearance: base-select) {
+    .adding-note select {
+      padding-inline: clamp(0.4rem, 4vw - 0.4rem, 0.85rem);
+    }
+  }"""
+SPACING_OVERRIDES = """
+* { line-height: 1.5 !important; letter-spacing: 0.12em !important;
+  word-spacing: 0.16em !important; }
+p { margin-bottom: 2em !important; }
+"""
+"""The text spacing of WCAG 1.4.12, as a reader's own stylesheet sets it."""
+DOUBLED_ON_A_PHONE = [
+    pytest.param((320, 32, 32), id="the browser's text at 200%"),
+    pytest.param((320, 16, 32), id="the page's text at 200%"),
+]
+
+
+def without(view: View, test: str = CUSTOMIZABLE) -> View:
+    """``view`` in a browser that fails ``test``."""
+    return replace(view, unsupported=view.unsupported | {test})
+
+
+def clamped_px(value: str | None, view: View) -> float:
+    """A padding in pixels, as `padding_px` reads one, or a ``clamp()`` of three lengths,
+    each a length or lengths added and taken away."""
+    found = re.fullmatch(r"clamp\(([^(),]+),([^(),]+),([^(),]+)\)", value or "")
+    if found is None:
+        return padding_px(value, view)
+    least, wanted, most = (summed_px(one.strip(), view) for one in found.groups())
+    return max(0.0, least, min(wanted, most))
+
+
+def class_selects_of(page: str) -> list[Element]:
+    found = elements_of(page)
+    card = adding_card_of(found)
+    selects = [one for one in found if one.tag == "select" and one.within(card)]
+    assert [one.attributes.get("name") for one in selects] == ["course_choice", "kind"]
+    return selects
+
+
+def select_paddings(sheet: Sheet, page: str, view: View) -> list[float]:
+    """The left and right padding of each select on a note's details card, in pixels."""
+    return [
+        clamped_px(value_of(sheet, one, side, view), view)
+        for one in class_selects_of(page)
+        for side in ("padding-left", "padding-right")
+    ]
+
+
+def select_insets_wrong(sheet: Sheet, page: str, view: View) -> list[str]:
+    """Each side of a select on a note's details card whose padding on ``view`` is not as it
+    should be. In a browser without the customizable select, a narrow screen keeps
+    `SELECT_PADDING`, none once the text is doubled on a phone, so the one-line select fits
+    "Choose a class". In one with it, the chosen value wraps, and the padding is the same
+    but never under 0.4rem. A wider screen keeps the same padding in both."""
+    lacking = without(view)
+    wrong = []
+    for one in class_selects_of(page):
+        for side in ("padding-left", "padding-right"):
+            offered = value_of(sheet, one, side, view)
+            fallback = value_of(sheet, one, side, lacking)
+            name = f"{one.attributes['name']} {side}"
+            if not narrow(view):
+                if offered != fallback:
+                    wrong.append(f"{name} {offered}, {fallback} without the customizable select")
+                continue
+            if fallback != SELECT_PADDING:
+                wrong.append(f"{name} {fallback} without the customizable select")
+            least = max(0.4 * view.root_text, clamped_px(fallback, view))
+            if round(clamped_px(offered, view), 6) != round(least, 6):
+                wrong.append(f"{name} {clamped_px(offered, view)} px, not {least}")
+    return wrong
+
+
+@pytest.mark.parametrize("spacing", ["", SPACING_OVERRIDES], ids=["", "spacing overrides"])
+@pytest.mark.parametrize("sizes", DOUBLED_ON_A_PHONE)
+def test_a_class_select_keeps_a_small_inset_with_doubled_text_on_a_phone(
+    note_pages: dict[str, str], sizes: tuple[int, int, int], spacing: str
+) -> None:
+    """With the text doubled on a 320 px screen, a browser that offers the customizable
+    select keeps 0.4rem, 12.8 px, between each select's border and its value, which wraps;
+    one without it keeps no side padding, so its one-line select fits "Choose a class". A
+    reader's text spacing changes neither."""
+    view = View(*sizes)
+    sheet = read_sheet(stylesheet() + spacing)
+    adding = {name: page for name, page in note_pages.items() if name.endswith("adding")}
+    assert len(adding) == 4
+    for name, page in adding.items():
+        assert select_paddings(sheet, page, view) == [12.8] * 4, name
+        assert select_paddings(sheet, page, without(view)) == [0.0] * 4, name
+
+
+@pytest.mark.parametrize("view", VIEWS, ids=str)
+def test_a_class_select_keeps_its_padding_but_never_under_a_small_inset_where_its_value_wraps(
+    note_pages: dict[str, str], view: View
+) -> None:
+    sheet = read_sheet(stylesheet())
+    adding = {name: page for name, page in note_pages.items() if name.endswith("adding")}
+    for name, page in adding.items():
+        assert select_insets_wrong(sheet, page, view) == [], name
+
+
+@pytest.mark.parametrize(
+    ("css", "sizes"),
+    [
+        pytest.param(lambda css: css.replace(INSET_RULE, ""), (320, 32, 32), id="no-inset"),
+        pytest.param(
+            lambda css: css.replace(INSET_RULE, INSET_RULE.replace("(appear", "not (appear")),
+            (320, 32, 32),
+            id="turned-around",
+        ),
+        pytest.param(
+            lambda css: css.replace(INSET_RULE, INSET_RULE.replace("base-select)", "auto)")),
+            (320, 32, 32),
+            id="another-test",
+        ),
+        pytest.param(
+            lambda css: css.replace(
+                INSET_RULE,
+                "  .adding-note select {\n"
+                "    padding-inline: clamp(0.4rem, 4vw - 0.4rem, 0.85rem);\n  }",
+            ),
+            (320, 32, 32),
+            id="every-browser",
+        ),
+        pytest.param(
+            lambda css: css.replace(INSET_RULE, INSET_RULE.replace("(0.4rem", "(0.2rem")),
+            (320, 16, 32),
+            id="smaller",
+        ),
+        pytest.param(
+            lambda css: css.replace(
+                INSET_RULE, INSET_RULE.replace("clamp(0.4rem, 4vw - 0.4rem, 0.85rem)", "0.4rem")
+            ),
+            (820, 32, 32),
+            id="flat",
+        ),
+        pytest.param(
+            lambda css: css.replace(INSET_RULE, INSET_RULE.replace("-inline", "-left")),
+            (320, 32, 32),
+            id="one-side",
+        ),
+        pytest.param(
+            lambda css: css.replace(INSET_RULE, INSET_RULE.replace("select {", "input {")),
+            (320, 32, 32),
+            id="elsewhere",
+        ),
+        pytest.param(
+            lambda css: css.replace(INSET_RULE, "").replace(
+                ADDING_SELECT_RULE, INSET_RULE + "\n\n" + ADDING_SELECT_RULE
+            ),
+            (320, 32, 32),
+            id="overridden",
+        ),
+        pytest.param(
+            lambda css: css.replace(INSET_RULE, "") + "\n" + INSET_RULE,
+            (1440, 16, 16),
+            id="every-width",
+        ),
+        pytest.param(
+            lambda css: css.replace(ADDING_SELECT_RULE, ""), (320, 32, 32), id="no-fallback"
+        ),
+    ],
+)
+def test_the_select_inset_check_fails_when_the_inset_is_lost_or_reaches_too_far(
+    note_pages: dict[str, str], css: Callable[[str], str], sizes: tuple[int, int, int]
+) -> None:
+    written = stylesheet()
+    assert written.count(INSET_RULE) == 1
+    assert written.count(ADDING_SELECT_RULE) == 1
+    sheet = read_sheet(css(written))
+    assert select_insets_wrong(sheet, note_pages["parent, parent tree, adding"], View(*sizes))
+
+
+SUPPORTS_SHEET = "p {{ flex-wrap: nowrap; }}\n{} {{ p {{ flex-wrap: wrap; }} }}"
+
+
+def supports_read(css: str, view: View) -> str | None:
+    (one,) = [one for one in elements_of("<main><p>a</p></main>") if one.tag == "p"]
+    return value_of(read_sheet(css), one, "flex-wrap", view)
+
+
+@pytest.mark.parametrize(
+    ("prelude", "applies"),
+    [
+        ("@supports (appearance: base-select)", True),
+        ("@supports not (appearance: base-select)", False),
+        ("@supports (appearance: auto)", True),
+        ("@supports not (appearance: auto)", False),
+        ("@supports (appearance: none)", True),
+        ("@supports not (appearance: none)", False),
+        ("@supports (appearance: banana)", False),
+        ("@supports not (appearance: banana)", True),
+        ("@supports (overflow-wrap: anywhere)", True),
+        ("@supports not (overflow-wrap: anywhere)", False),
+        ("@supports (overflow-wrap: banana)", False),
+        ("@supports not (overflow-wrap: banana)", True),
+        ("@supports (APPEARANCE: BASE-SELECT)", True),
+        ("@SUPPORTS (appearance: base-select)", True),
+        ("@supports NOT (appearance: banana)", True),
+        ("@supports (appearance:base-select)", True),
+        ("@supports ( appearance : base-select )", True),
+        ("@supports(appearance: base-select)", True),
+        ("@supports\tnot\n(appearance:\tbanana)", True),
+        ("@supports /* a */ (appearance: /* b */ base-select)", True),
+        ("@supports not/**/(appearance: banana)", True),
+    ],
+)
+def test_the_resolver_reads_a_supports_test_as_a_browser_reads_it(
+    prelude: str, applies: bool
+) -> None:
+    """Edge 154's answer for each test and each way of writing it."""
+    css = SUPPORTS_SHEET.format(prelude)
+    assert supports_read(css, View(320)) == ("wrap" if applies else "nowrap")
+
+
+@pytest.mark.parametrize(
+    ("css", "width", "applies"),
+    [
+        pytest.param(
+            "p { flex-wrap: nowrap; } @media (max-width: 30rem) { @supports (appearance: "
+            "base-select) { p { flex-wrap: wrap; } } }",
+            320,
+            True,
+            id="narrow",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @media (max-width: 30rem) { @supports (appearance: "
+            "base-select) { p { flex-wrap: wrap; } } }",
+            1440,
+            False,
+            id="wide",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @media (max-width: 30rem) { @supports not (appearance: "
+            "base-select) { p { flex-wrap: wrap; } } }",
+            320,
+            False,
+            id="narrow-not",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @media (max-width: 30rem) { @supports (appearance: "
+            "base-select) { p { flex-wrap: wrap; } } p { flex-wrap: nowrap; } }",
+            320,
+            False,
+            id="later-rule",
+        ),
+    ],
+)
+def test_the_resolver_reads_a_supports_test_inside_a_media_query_as_a_browser_reads_it(
+    css: str, width: int, applies: bool
+) -> None:
+    assert supports_read(css, View(width)) == ("wrap" if applies else "nowrap")
+
+
+@pytest.mark.parametrize(
+    ("prelude", "applies"),
+    [
+        ("@supports (appearance: base-select)", False),
+        ("@supports not (appearance: base-select)", True),
+        ("@supports (appearance: auto)", True),
+        ("@supports not (appearance: banana)", True),
+    ],
+)
+def test_the_resolver_reads_a_supports_test_in_a_browser_that_fails_it(
+    prelude: str, applies: bool
+) -> None:
+    """A view whose browser fails ``appearance: base-select`` stands for one without the
+    customizable select; every other test keeps Edge's answer."""
+    css = SUPPORTS_SHEET.format(prelude)
+    lacking = View(320, unsupported=frozenset({CUSTOMIZABLE, "appearance: banana"}))
+    assert supports_read(css, lacking) == ("wrap" if applies else "nowrap")
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        pytest.param(
+            SUPPORTS_SHEET.format("@supports (appearance: base-select) and (appearance: none)"),
+            id="and",
+        ),
+        pytest.param(
+            SUPPORTS_SHEET.format("@supports (appearance: banana) or (appearance: base-select)"),
+            id="or",
+        ),
+        pytest.param(SUPPORTS_SHEET.format("@supports selector(select)"), id="selector"),
+        pytest.param(
+            SUPPORTS_SHEET.format("@supports ((appearance: base-select))"), id="doubled-brackets"
+        ),
+        pytest.param(
+            SUPPORTS_SHEET.format("@supports not (not (appearance: base-select))"), id="not-not"
+        ),
+        pytest.param(
+            SUPPORTS_SHEET.format("@supports (appearance: base-select !important)"),
+            id="important",
+        ),
+        pytest.param(SUPPORTS_SHEET.format("@supports"), id="empty"),
+        pytest.param(SUPPORTS_SHEET.format("@supports (--x: y)"), id="custom-property"),
+        pytest.param(SUPPORTS_SHEET.format("@supports (display: grid)"), id="unknown-test"),
+        pytest.param(SUPPORTS_SHEET.format("@supports (width: 1px)"), id="length"),
+        pytest.param(SUPPORTS_SHEET.format('@supports (appearance: "base-select")'), id="string"),
+        pytest.param(SUPPORTS_SHEET.format("@supports (appe\\61rance: base-select)"), id="escape"),
+        pytest.param(
+            SUPPORTS_SHEET.format("@supports not(appearance: base-select)"), id="not-function"
+        ),
+        pytest.param(
+            SUPPORTS_SHEET.format("@supports not(appearance: banana)"), id="not-function-fails"
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @supports (appearance: base-select) { @supports "
+            "(overflow-wrap: anywhere) { p { flex-wrap: wrap; } } }",
+            id="inside-supports",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @supports (appearance: base-select) { @media "
+            "(max-width: 30rem) { p { flex-wrap: wrap; } } }",
+            id="media-inside",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @supports (appearance: base-select) { p { & { "
+            "flex-wrap: wrap; } } }",
+            id="nested-rule",
+        ),
+        pytest.param(
+            "p { flex-wrap: nowrap; } @media (hover: hover) { @supports not (appearance: "
+            "base-select) { p { flex-wrap: wrap; } } }",
+            id="unknown-media-around-a-failing-test",
+        ),
+    ],
+)
+def test_the_resolver_refuses_a_supports_condition_it_does_not_read(css: str) -> None:
+    with pytest.raises(UnreadCss):
+        supports_read(css, View(320))
+
+
+def test_the_resolver_refuses_a_view_failing_a_test_it_does_not_know() -> None:
+    css = SUPPORTS_SHEET.format("@supports (appearance: base-select)")
+    assert supports_read(css, View(320)) == "wrap"
+    with pytest.raises(UnreadCss):
+        supports_read(css, View(320, unsupported=frozenset({"display: grid"})))
+    wide = (
+        "p { flex-wrap: nowrap; } @media (min-width: 72rem) { @supports (appearance: "
+        "base-select) { p { flex-wrap: wrap; } } }"
+    )
+    assert supports_read(wide, View(320)) == "nowrap"
+    with pytest.raises(UnreadCss):
+        supports_read(wide, View(320, unsupported=frozenset({"display: grid"})))
