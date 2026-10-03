@@ -67,9 +67,18 @@ def test_the_readme_links_to_the_documents_it_leans_on() -> None:
         assert (REPO_ROOT / target).exists(), f"{target} is missing"
 
 
-HEADING = re.compile(r"^(#{1,6}) +(.+?)(?: +#+)? *$", re.MULTILINE)
+HEADING = re.compile(r"^(#{1,6}) +(.+?)(?: +#+)? *\r?$", re.MULTILINE)
 """A heading's level and text, without the closing run of #s Markdown allows."""
-FENCE = re.compile(r"^(`{3,}|~{3,}).*?^\1", re.MULTILINE | re.DOTALL)
+FENCE = re.compile(
+    r"^(?:(?P<shallow> {0,3})|(?P<deep>[ \t]*))(?P<run>(?P<mark>[`~])(?P=mark){2,})"
+    r"(?!(?<=`)[^\n]*`)[^\n]*"
+    r"(?:\n(?:[^\n]*\n)*?(?(shallow) {0,3}|(?P=deep))(?P=run)(?P=mark)*[ \t]*\r?$|.*\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+"""A fenced code block as GitHub reads it: a run of three or more backticks or tildes at any
+depth, so a step in a list counts, closed by a bare run of the same mark at least as long, at
+most three spaces in when the opener is, or as deep as a deeper opener, or by the end of the
+document when nothing closes it."""
 GUIDE_LINK = re.compile(r"\]\(docs/development\.md#([^)\s]+)\)")
 MARKUP = re.compile(r"[*\[\]<>]|(?<!\w)_|_(?!\w)")
 """Emphasis, a link or HTML in a heading, which GitHub names by the text they show."""
@@ -168,6 +177,22 @@ MISSES_THE_FALLBACK = {
         "says 3.12 or 3.13 and never use `python -m venv .venv` in its place.\n",
         "fallback",
     ),
+    "in-a-fence-left-open": ("```markdown\n## Fallback\n\n" + FALLBACK_SENTENCE + "\n", "fallback"),
+    "in-a-tilde-fence-left-open": ("~~~\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-a-shorter-run": ("````\nx\n```\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-the-other-mark": ("```\nx\n~~~\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-a-run-with-words": ("```markdown\nx\n```bash\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "in-a-fence-three-spaces-in": ("   ```\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-a-run-four-spaces-in": ("```\nx\n    ```\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-a-run-past-a-tab": ("```\nx\n\t```\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-a-run-deeper-than-a-shallow-opener": (
+        " ```bash\n x\n    ```\n## Fallback\n\n" + FALLBACK,
+        "fallback",
+    ),
+    "after-a-run-shallower-than-a-list-step": (
+        "1. Run:\n\n    ```bash\n    x\n  ```\n## Fallback\n\n" + FALLBACK,
+        "fallback",
+    ),
 }
 LANDS_ON_THE_FALLBACK = {
     "a-comment-in-a-tilde-fence": (
@@ -184,12 +209,31 @@ LANDS_ON_THE_FALLBACK = {
         "fallback",
     ),
     "a-closing-hash-run": ("## Fallback ##\n\n" + FALLBACK, "fallback"),
+    "a-heading-ending-in-crlf": ("## Fallback ##\r\n\r\n" + FALLBACK, "fallback"),
     "an-underscore-in-code": ("## The `_private` fallback\n\n" + FALLBACK, "the-_private-fallback"),
     "code-in-the-heading": ("## The `py` fallback\n\n" + FALLBACK, "the-py-fallback"),
     "an-underscore-in-a-name": (
         "## BLOSSOM_TODAY and Python\n\n" + FALLBACK,
         "blossom_today-and-python",
     ),
+    "after-a-closed-fence": (
+        "```markdown\n## Fallback\n```\n\n## Fallback\n\n" + FALLBACK,
+        "fallback",
+    ),
+    "after-a-longer-run": ("```\n## Fallback\n`````\n\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-spaces-past-the-run": ("```\nx\n```  \n\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-an-empty-fence": ("```\n```\n\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-a-fence-closed-with-crlf": (
+        "## Fallback\r\n\r\n```bash\r\n# create it\r\n```\r\n\r\n" + FALLBACK,
+        "fallback",
+    ),
+    "after-a-run-three-spaces-in": ("```\nx\n   ```\n\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "after-a-fence-in-a-list-step": (
+        "1. Run:\n\n    ```bash\n    # x\n    ```\n\n## Fallback\n\n" + FALLBACK,
+        "fallback",
+    ),
+    "two-backticks-are-no-fence": ("``\n\n## Fallback\n\n" + FALLBACK, "fallback"),
+    "a-backtick-in-its-words-is-no-fence": ("```a`b\n\n## Fallback\n\n" + FALLBACK, "fallback"),
 }
 
 
@@ -206,6 +250,253 @@ def test_a_link_that_misses_the_fallback_fails(guide: str, anchor: str) -> None:
 )
 def test_a_link_that_lands_on_the_fallback_passes(guide: str, anchor: str) -> None:
     check_install_fallback(readme_linking_to(anchor), guide)
+
+
+COMMENT = re.compile(r"(?:^|(?<=\s))#.*$", re.MULTILINE)
+"""A shell comment: a ``#`` that opens a line or follows a space, to the end of its line."""
+
+
+def section_with_commands(document: str, anchor: str) -> str:
+    """`section_of`, with the section's fenced commands kept where they stand, less their
+    comments, which run nothing."""
+    fences: list[str] = []
+
+    def held(found: re.Match[str]) -> str:
+        fences.append(COMMENT.sub("", found.group()))
+        return f"<fence {len(fences) - 1}>"
+
+    section = section_of(FENCE.sub(held, document), anchor)
+    return re.sub(r"<fence (\d+)>", lambda found: fences[int(found.group(1))], section)
+
+
+MAKE_SETTINGS = re.compile(
+    r"if \(-not \(Test-Path \.env\)\) \{ Copy-Item \.env\.example \.env \}", re.IGNORECASE
+)
+"""The household's settings file made from the example, never over one already there."""
+READS_SETTINGS = re.compile(
+    r"(?:Get-Content|gc|cat|type)\s+(?:-Path\s+)?['\"]?(?:\.[\\/])?\.env(?![\w.])"
+    r"|--env-file[=\s]+['\"]?(?:\.[\\/])?\.env(?![\w.])|lines in `\.env`",
+    re.IGNORECASE,
+)
+"""A step that reads `.env`: a command that prints or loads it, or the checklist of its lines."""
+COPIES = re.compile(r"(?<![\w-])(?:copy-item|cpi|copy|cp)(?![\w-])", re.IGNORECASE)
+"""A copy command, by its name or a short name PowerShell or a shell gives it."""
+
+
+def check_household_settings(readme: str, guide: str) -> None:
+    """Assert that the README's household link lands on a section that makes `.env` from the
+    example before any step reads it, and whose commands copy nothing over a `.env` already
+    there."""
+    anchors = [anchor for anchor in GUIDE_LINK.findall(readme) if "household" in anchor]
+    assert anchors, "the README links to no household section of the guide"
+    for anchor in anchors:
+        section = section_with_commands(guide, anchor)
+        steps = " ".join(section.split())
+        commands = " ".join(" ".join(found.group().split()) for found in FENCE.finditer(section))
+        made = MAKE_SETTINGS.search(steps)
+        read = READS_SETTINGS.search(steps)
+        assert made, f"#{anchor} doesn't make `.env` from the example"
+        assert read is None or made.start() < read.start(), (
+            f"#{anchor} reads `.env` before making it"
+        )
+        assert len(COPIES.findall(commands)) == len(MAKE_SETTINGS.findall(commands)), (
+            f"#{anchor} copies over a `.env` already there"
+        )
+
+
+def test_the_household_setup_makes_its_settings_file_before_reading_it() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    guide = (REPO_ROOT / "docs" / "development.md").read_text(encoding="utf-8")
+    check_household_settings(readme, guide)
+
+
+HOUSEHOLD_LINK = "Follow the [household guide](docs/development.md#running-for-the-household).\n"
+MAKE_IT = (
+    "```powershell\nif (-not (Test-Path .env)) {\n    Copy-Item .env.example .env\n}\n\n"
+    "notepad .env\n```\n\n"
+)
+CHECK_IT = "Then check these lines in `.env`:\n\n- `BLOSSOM_TODAY` is blank.\n\n"
+LAUNCH_IT = "```powershell\nGet-Content .env |\n    ForEach-Object { $_ }\n```\n"
+
+READS_BEFORE_MAKING = {
+    "never-made": ("## Running for the household\n\n" + CHECK_IT + LAUNCH_IT, HOUSEHOLD_LINK),
+    "made-after-the-launch": (
+        "## Running for the household\n\n" + LAUNCH_IT + "\n" + MAKE_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-after-the-checklist": (
+        "## Running for the household\n\n" + CHECK_IT + MAKE_IT + LAUNCH_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "made-before-a-uv-launch-only-in-another-section": (
+        "## Using the planner\n\n" + MAKE_IT + "## Running for the household\n\n"
+        "```bash\nuv run --env-file .env uvicorn blossom.app:app\n```\n",
+        HOUSEHOLD_LINK,
+    ),
+    "made-over-the-household-file": (
+        "## Running for the household\n\n```powershell\nCopy-Item .env.example .env\n```\n\n"
+        + CHECK_IT
+        + LAUNCH_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "copied-over-it-again-later": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + CHECK_IT
+        + "```powershell\nCopy-Item -Force .env.example .env\n```\n\n"
+        + LAUNCH_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "a-creation-that-is-only-a-comment": (
+        "## Running for the household\n\n```powershell\n"
+        "# if (-not (Test-Path .env)) { Copy-Item .env.example .env }\nnotepad .env\n```\n\n"
+        + LAUNCH_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "read-from-the-current-folder-first": (
+        "## Running for the household\n\n```powershell\nGet-Content .\\.env\n```\n\n"
+        + MAKE_IT
+        + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "copied-over-it-in-lowercase": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + CHECK_IT
+        + "```powershell\ncopy-item -Force .env.example .env\n```\n\n"
+        + LAUNCH_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "copied-over-it-with-cp": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + "```bash\ncp .env.example .env\n```\n\n"
+        + LAUNCH_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "copied-over-it-in-an-indented-fence": (
+        "## Running for the household\n\n1. Make it:\n\n   ```powershell\n"
+        "   if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n   ```\n\n"
+        "2. Then:\n\n   ```powershell\n   Copy-Item -Force .env.example .env\n   ```\n",
+        HOUSEHOLD_LINK,
+    ),
+    "a-uv-launch-reading-it-first-from-the-current-folder": (
+        "## Running for the household\n\n```powershell\n"
+        "uv run --env-file .\\.env uvicorn blossom.app:app\n```\n\n" + MAKE_IT + CHECK_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "no-household-link": (
+        "## Running for the household\n\n" + MAKE_IT + CHECK_IT + LAUNCH_IT,
+        "Follow the [guide](docs/development.md#the-sample-week).\n",
+    ),
+    "the-heading-in-a-fence-left-open": (
+        "~~~\n## Running for the household\n\n" + MAKE_IT + CHECK_IT + LAUNCH_IT,
+        HOUSEHOLD_LINK,
+    ),
+    "copied-over-it-in-a-fence-left-open": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + CHECK_IT
+        + "```powershell\nCopy-Item .env.example .env\n",
+        HOUSEHOLD_LINK,
+    ),
+    "copied-over-it-in-a-list-step": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + CHECK_IT
+        + "1. Then:\n\n    ```powershell\n    Copy-Item -Force .env.example .env\n    ```\n",
+        HOUSEHOLD_LINK,
+    ),
+    "copied-over-it-in-a-nested-list-step": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + CHECK_IT
+        + "1. Then:\n\n   - again:\n\n     ```powershell\n"
+        "     Copy-Item .env.example .env\n     ```\n",
+        HOUSEHOLD_LINK,
+    ),
+    "copied-over-it-past-a-deeper-run": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + CHECK_IT
+        + " ```powershell\n# first\n    ```\nCopy-Item -Force .env.example .env\n ```\n",
+        HOUSEHOLD_LINK,
+    ),
+    "copied-over-it-past-a-deeper-run-in-a-list-step": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + CHECK_IT
+        + "1. Then:\n\n    ```powershell\n    # first\n       ```\n"
+        "    Copy-Item -Force .env.example .env\n    ```\n",
+        HOUSEHOLD_LINK,
+    ),
+}
+MAKES_BEFORE_READING = {
+    "made-first": ("## Running for the household\n\n" + MAKE_IT + CHECK_IT + LAUNCH_IT),
+    "made-on-one-line": (
+        "## Running for the household\n\n```powershell\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
+    "a-comment-beside-the-creation": (
+        "## Running for the household\n\n```powershell\n# make it once\n"
+        "if (-not (Test-Path .env)) { Copy-Item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
+    "made-in-lowercase": (
+        "## Running for the household\n\n```powershell\n"
+        "if (-not (test-path .env)) { copy-item .env.example .env }\n```\n\n" + CHECK_IT
+    ),
+    "copy-named-in-the-prose": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + "Elsewhere, copy `.env.example` to `.env` the same way.\n\n"
+        + CHECK_IT
+    ),
+    "made-before-a-uv-launch": (
+        "## Running for the household\n\n"
+        + MAKE_IT
+        + CHECK_IT
+        + "```bash\nuv run --env-file .env uvicorn blossom.app:app\n```\n"
+    ),
+    "made-first-with-crlf": (
+        "## Running for the household\n\n" + MAKE_IT + CHECK_IT + LAUNCH_IT
+    ).replace("\n", "\r\n"),
+}
+
+
+@pytest.mark.parametrize(
+    ("guide", "readme"), READS_BEFORE_MAKING.values(), ids=READS_BEFORE_MAKING.keys()
+)
+def test_a_household_section_that_reads_settings_it_never_made_fails(
+    guide: str, readme: str
+) -> None:
+    with pytest.raises(AssertionError):
+        check_household_settings(readme, guide)
+
+
+@pytest.mark.parametrize("guide", MAKES_BEFORE_READING.values(), ids=MAKES_BEFORE_READING.keys())
+def test_a_household_section_that_makes_its_settings_first_passes(guide: str) -> None:
+    check_household_settings(HOUSEHOLD_LINK, guide)
+
+
+SOURCE_DATES = (
+    "If the sources disagree about a due date, the call marks it with a label. What each "
+    "source says goes in only when the dates they give contradict the record: none of them "
+    "is the recorded due date, or the record has no due date."
+)
+"""When the planner is told each source's date, as `prompts.contradictions_block` decides."""
+KEPT_OUT = (
+    "The note's original text and its history never go",
+    "Her requests for help and her reports about turning work in stay out of every call.",
+)
+
+
+def test_the_guide_says_when_the_planner_is_told_each_source() -> None:
+    guide = (REPO_ROOT / "docs" / "development.md").read_text(encoding="utf-8")
+    shares = " ".join(section_of(guide, "what-the-planner-shares").split())
+    assert SOURCE_DATES in shares
+    assert "disagree about a date, the call says what each source says" not in shares
+    for sentence in KEPT_OUT:
+        assert sentence in shares
 
 
 def test_documented_uvicorn_targets_are_importable() -> None:

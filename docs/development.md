@@ -274,9 +274,11 @@ with the shorter budget; any words she added to that signal stay here.
 
 Each unfinished assignment in the planning window goes in with its class,
 title, kind, due date and assigned date, how sure the family is of the due
-date given its sources, and what the school reports about it. Where the sources disagree about
-a date, the call says what each source says. The school's instructions go in
-only when they apply, as the teacher's words; instructions said before,
+date given its sources, and what the school reports about it. If the sources
+disagree about a due date, the call marks it with a label. What each source
+says goes in only when the dates they give contradict the record: none of
+them is the recorded due date, or the record has no due date. The school's
+instructions go in only when they apply, as the teacher's words; instructions said before,
 waiting for a parent's review, or left in the old note field stay out. A
 note on an assignment goes in under the name of whose words it is: a
 parent's as the family's guidance, and her **Note about the work** as hers.
@@ -306,7 +308,20 @@ model.
 
 ## Running for the household
 
-Before the first household start, check these lines in `.env`:
+Before the first household start, make the household's settings file from the
+example if there isn't one yet, and open it. This never replaces a `.env`
+that's already there:
+
+```powershell
+if (-not (Test-Path .env)) {
+    Copy-Item .env.example .env
+}
+
+notepad .env
+```
+
+On macOS or Linux, copy `.env.example` to `.env` the same way, only when
+there's no `.env` yet. Then check these lines in `.env`:
 
 - `BLOSSOM_TIMEZONE` names the household's own time zone.
 - `BLOSSOM_FIXTURE_PATH` is blank, so nothing synthetic is read in.

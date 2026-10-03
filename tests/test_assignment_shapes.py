@@ -20,13 +20,19 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from blossom.agent.compose import compose_draft
-from blossom.agent.prompts import assignments_block, critic_brief
+from blossom.agent.prompts import assignments_block, critic_brief, planner_brief
 from blossom.app import create_app
 from blossom.heuristic_relevance import CriticVerdict
-from blossom.noticing import expect_due_date, notice_due_date
+from blossom.noticing import expect_due_date, notice_due_date, reconcile_dates
 from blossom.plan_checks import PlanCheck, check_plan
 from blossom.plans import DailyPlan, Deferral, PlanBlock
-from blossom.reconciliation import Reconciler, SourceChannel, SourceConfidence, SourceRecord
+from blossom.reconciliation import (
+    Reconciler,
+    SourceChannel,
+    SourceConfidence,
+    SourceRecord,
+    classify_confidence,
+)
 from blossom.routes.navigation import segment
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from blossom.views import StudentAssignmentView
@@ -275,6 +281,80 @@ def test_the_critic_is_told_which_assignments_have_no_date() -> None:
     )
 
     assert "<undated>assignment-signed-syllabus</undated>" in str(brief[1].content)
+
+
+SEEN_ON_SEPTEMBER_7 = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("due", "values", "label", "named"),
+    [
+        (date(2026, 9, 8), ("2026-09-08", "2026-09-09"), True, False),
+        (date(2026, 9, 10), ("2026-09-08", "2026-09-09"), True, True),
+        (None, ("2026-09-08", "2026-09-09"), True, True),
+        (date(2026, 9, 10), ("2026-09-08", "2026-09-08"), False, True),
+        (date(2026, 9, 10), ("next week", "soon"), False, False),
+    ],
+    ids=[
+        "a-source-gives-the-record",
+        "no-source-gives-the-record",
+        "no-record",
+        "sources-agree-on-another-date",
+        "no-source-gives-a-date",
+    ],
+)
+def test_each_source_is_named_only_when_the_dates_they_give_contradict_the_record(
+    due: date | None, values: tuple[str, str], label: bool, named: bool
+) -> None:
+    records = [
+        SourceRecord(
+            channel=channel, asserted_value=value, observed_at=SEEN_ON_SEPTEMBER_7, confidence=1
+        )
+        for channel, value in zip((SourceChannel.LMS, SourceChannel.EMAIL), values, strict=True)
+    ]
+    item = Assignment(
+        assignment_id="docs-date",
+        course="Science",
+        title="Lab write-up",
+        due_date=due,
+        dependencies=[],
+        reported_submission_status="not_started",
+    )
+    evening = date(2026, 9, 7)
+    confidence = {"docs-date": classify_confidence(reconcile_dates(records))}
+    noticings = [notice_due_date(expect_due_date(item), records)]
+    plan = DailyPlan(plan_date=evening, blocks=[], deferred=[])
+    verification = check_plan(plan, due_in_window=[item], zone=ZONE, requested_evening=evening)
+    planner = planner_brief(
+        plan_date=evening,
+        zone=ZONE.key,
+        budget_minutes=120,
+        assignments=[item],
+        confidence=confidence,
+        support_rules=[],
+        reflections=[],
+        feedback=[],
+        round_number=1,
+        noticings=noticings,
+    )
+    critic = critic_brief(
+        plan_date=evening,
+        zone=ZONE.key,
+        budget_minutes=120,
+        assignments=[item],
+        confidence=confidence,
+        support_rules=[],
+        reflections=[],
+        plan=plan,
+        verification=verification,
+        noticings=noticings,
+    )
+
+    for brief in (planner, critic):
+        text = str(brief[1].content)
+        assert ("SOURCES_DISAGREE" in text) is label
+        for channel, value in (("LMS", values[0]), ("EMAIL", values[1])):
+            assert (f"{channel}: {value}" in text) is named
 
 
 # --------------------------------------------------------------------- the draft
