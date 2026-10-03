@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Runtime configuration, resolved once from the environment.
 
 Reads the ``BLOSSOM_*`` variables documented in ``.env.example``. Relative

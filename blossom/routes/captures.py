@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her homework notes, through pages: a first save that asks for words and nothing else.
 
 A note is written on a page of its own, reached from her week. The form is

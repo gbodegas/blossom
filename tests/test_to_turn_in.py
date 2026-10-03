@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her To turn in list: everything she reports as still to turn in, found from her main page.
 
 Outside the fold of finished work and outside any week, however old, in the

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The three principals the system serves.
 
 The student is the primary user, a parent reviews and corrects, and the

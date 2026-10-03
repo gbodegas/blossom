@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Review school instructions: which of the school's instructions for one assignment apply,
 chosen after the paste that brought them.
 

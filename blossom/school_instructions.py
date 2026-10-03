@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The school's instructions for an assignment, kept apart from anyone's own note.
 
 A teacher's instruction under a card is the school's words: where to do the

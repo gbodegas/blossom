@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Today's planning window, named by its days wherever a page speaks of it (spec v1.4 U-05,
 T-U3). It is the household's day through six days later, the same on every week shown: under
 Today's controls on this week, and under the link back to this week on another, where no

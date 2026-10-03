@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The family's check of her Done beside a school Missing: marked on the family page,
 reopened there, shown on her card.
 

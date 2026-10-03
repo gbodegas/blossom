@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Verifier routes: what was claimed, and what backs it.
 
 The verifier is a checking layer between generation and anything that leaves

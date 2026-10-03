@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Allowlist-based guards on what the package is capable of.
 
 Everything the package may import is listed here with a justification, and

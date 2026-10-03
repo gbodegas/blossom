@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A homework note made into homework, or joined to homework already on record.
 
 Details are added to a note by her or by a parent, each field saying who

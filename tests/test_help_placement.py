@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Help on her week: one section below the homework, a link and a count in Today, closed
 requests shown for seven days and kept for fourteen, and a place to land for every help link,
 result and refusal. Synthetic words only. The household day stays pinned to the fixture's

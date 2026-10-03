@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The household sign-in: two passphrases, two people, three devices on one home network.
 
 With both passphrases set, every page and route asks who is there. Hers opens

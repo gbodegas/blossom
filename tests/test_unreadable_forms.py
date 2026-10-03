@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A form the parser can't read: 400, on a page that reads no store, says that the form could
 not be read and that nothing was saved, and offers the ways back its route gives.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The parent's routes, end to end: start a run, see the queue, decide.
 
 The graph is substituted through the route's own dependency, so these tests

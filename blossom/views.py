@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What each principal is allowed to see, as three separate models.
 
 There is no shared view with a role flag. Each principal has its own model with

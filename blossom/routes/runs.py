@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Running the plan graph for one evening, from either page.
 
 She plans from her page; a parent may start an evening's plan for her from

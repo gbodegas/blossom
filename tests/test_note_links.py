@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Finding and correcting a note's link to homework: the store and the line of changes.
 
 A note joins homework found by search through an explicit choice of one row,

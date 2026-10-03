@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The clock, the household's zone, and the "due this week" window they drive.
 
 An instant is UTC and a date is local, and the difference is not academic: for

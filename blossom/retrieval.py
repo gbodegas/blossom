@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Retrieval: exact lookup by key, semantic lookup by resemblance, and a router.
 
 A question with a lookup key (a due date) goes to structured state: similarity

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The drafts table: the record of what waited at the gate and what was decided.
 
 The store is written twice per draft by nodes that may run twice, so the

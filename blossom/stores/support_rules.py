@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Store two: operational support rules derived from her accommodations.
 
 Rules are written as instructions (for example, break a long assignment into

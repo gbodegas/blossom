@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The plan graph, driven end to end with scripted models and no network.
 
 The planner and the critic are the two places a model speaks, so each test

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Saved graph state: on a safe path, strict about what it revives, versioned.
 
 A pause at the approval gate and the decision that ends it survive the process

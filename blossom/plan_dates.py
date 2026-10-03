@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A saved plan's dates beside the record as it stands.
 
 One rule says when an assignment's due date is in doubt: no date on record, sources that

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A school paste that touches homework made from a note asks first, and writes nothing until
 answered.
 

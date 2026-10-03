@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """One process serves a household, and the process says so by holding its files.
 
 The drafts file and the saved-state file are shared state, and the rules that

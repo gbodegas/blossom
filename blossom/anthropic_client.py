@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The one place a model client is constructed.
 
 Every model call in this system goes through ``chat_model``. The import

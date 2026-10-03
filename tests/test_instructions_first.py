@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """An assignment's details say what the work is before they ask about it: the school's
 instructions first, whole and each with where it came from, then the notes and the way to
 help, then her update and Turning it in, then the rest of the record. A jump at the top

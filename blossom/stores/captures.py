@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her homework notes in the record's file: the part of the record's store that keeps them.
 
 The notes live in the file the assignments live in, behind the same connection

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The shape every long-term store shares.
 
 ``name`` is what a retrieval result reports as its origin, so a fact can always

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The parent's page: the same three things as the JSON routes, as forms.
 
 Driven with the test client as a browser would drive it: a form post, a

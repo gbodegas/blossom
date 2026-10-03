@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Turn a plan, and what was found about it, into the text she reads on her page.
 
 The draft is text, and one text serves both readers: she reads it as her plan

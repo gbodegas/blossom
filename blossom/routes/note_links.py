@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Finding homework already here, and joining a note to it or correcting the link.
 
 A note can be joined to homework named nothing like it. The search page

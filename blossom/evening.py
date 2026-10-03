@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Whether a plan still fits the evening it was made for.
 
 A plan is made for the evening as she had described it when the run read it:

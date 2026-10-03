@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What a test sees in a run whose shell named a household's files.
 
 Not collected with the suite: ``tests/test_state_guard.py`` runs this file in a

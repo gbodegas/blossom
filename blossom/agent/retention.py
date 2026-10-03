@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What saved graph state keeps, and for how long.
 
 A graph's saved state is the loop's short-term memory: the evening, the plan,

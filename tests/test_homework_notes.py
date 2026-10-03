@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her homework notes through the pages: a first save that asks for words only, every
 refusal with her words kept, edits and the archive by revision, what a parent may read and
 may not do, and results that stay true when another device got there first.

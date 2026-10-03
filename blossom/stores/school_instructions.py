@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The part of the record's store that keeps the school's instructions.
 
 Mixed into the store of the record, which supplies the connection, the lock,

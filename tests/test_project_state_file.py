@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Assignments and the claims about their dates live in the household's file.
 
 They outlive a restart; a fixture is read only into a blank file and leaves a

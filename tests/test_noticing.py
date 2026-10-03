@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Expectation before action: a typed comparison with a three-way verdict.
 
 The comparator is deterministic tier-one code, so its error rate is not

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What a parent pastes or types, read into what the record can keep.
 
 The school's portal writes its homework page and its weekly summary in two

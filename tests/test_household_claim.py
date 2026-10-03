@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """One process per household: a second one over the same files is refused before it opens them."""
 
 import pathlib

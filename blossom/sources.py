@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Where observations come from, behind one protocol.
 
 ``StateSource`` exists so the rest of the system cannot tell a fixture from a

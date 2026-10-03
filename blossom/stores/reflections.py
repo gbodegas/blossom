@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Store three: what the agent learns about itself, and never about her.
 
 When a plan does not work, the agent records a short note to read the next time

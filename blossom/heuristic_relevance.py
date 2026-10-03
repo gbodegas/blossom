@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Tier two: a critic's judgment about a plan, kept out of the verifier.
 
 A hard check in ``blossom/verification.py`` and ``blossom/plan_checks.py`` is

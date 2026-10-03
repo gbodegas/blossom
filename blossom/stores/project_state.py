@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Store one: structured project state, queried exactly.
 
 Assignments, due dates, dependencies and reported submission status. Small,

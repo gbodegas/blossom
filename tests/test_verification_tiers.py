@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Tests that the three verification tiers stay separate and tier one stays unfalsifiable.
 
 The workload signal is a tier-three judgment about whether a plan suits her.

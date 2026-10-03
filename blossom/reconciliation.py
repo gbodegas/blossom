@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Assembling one fact from several channels that routinely disagree.
 
 Assignment state is assembled from a school platform, email notifications, a

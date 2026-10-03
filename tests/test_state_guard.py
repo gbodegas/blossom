@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The suite cannot open a household's files, and says so before it touches them.
 
 Every case here names a protected place and watches what would reach it. The

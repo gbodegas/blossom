@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Reading the school's text: the weekly summary, the homework page, and the email.
 
 The text here is synthetic, in the portal's shapes: a fictional first name in

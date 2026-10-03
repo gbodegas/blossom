@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Review school instructions: the family's later choice of which of the school's instructions
 apply to an assignment, and her reading of them without the control.
 

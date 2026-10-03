@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Addresses the pages make for one another, built from values and never from a URL handed in.
 
 A link to an assignment's details names the assignment by id in the path and

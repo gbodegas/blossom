@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A request for help about one homework note: the reference, and what becomes of it.
 
 The help store has a connection of its own to the record's file. A request that names a

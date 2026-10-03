@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her week reads in the order the work is done in, and a press lands where its answer is.
 
 Today comes first, with today's plan or, when there is none and work is left, a link down

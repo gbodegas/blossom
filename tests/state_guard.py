@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Keeps the suite away from a household's files.
 
 The per-test fixture moves the default state folder to a temporary one, which

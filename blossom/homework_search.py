@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Homework on record found by its class or title, for a note to be joined to by choice.
 
 A note can be joined to homework named nothing like it: a classmate's word

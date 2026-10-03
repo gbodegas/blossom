@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Turning it in, on the pages: her own account of delivery, kept apart from Done.
 
 The fixture week through the app, a pinned clock, and forms read from the

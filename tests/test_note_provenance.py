@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Whose words an assignment's note is: the teacher's, a parent's, or hers.
 
 Once she can add homework herself, a note on it may be her own words. The

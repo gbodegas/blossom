@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Reading an answer about the school's instructions from a form, one rule for the paste review
 and for the family's review of one assignment.
 

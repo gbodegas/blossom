@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A tracer that keeps the framework's run tree on this machine and nowhere else.
 
 ``BaseTracer`` is the framework's own callback base. It assembles a tree of

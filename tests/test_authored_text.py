@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The words a person writes into the newer fields: what is kept, and what is refused whole.
 
 Nothing is ever taken out of what she wrote. Text that holds something the

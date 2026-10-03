@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Who is at the keyboard: a sign-in for a household whose pages are reached from three devices.
 
 Her computer, her tablet, and a parent's computer all open Blossom over the

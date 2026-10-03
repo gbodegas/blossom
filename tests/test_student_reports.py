@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Her own account of her work, kept as a chain of events in the household's file.
 
 Synthetic assignments, a pinned clock, and the store alone: what she says

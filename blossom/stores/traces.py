@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The framework's trace of a run, kept on this machine: every call with what went in and out.
 
 The step records in the drafts file are Blossom's own account of a run, one

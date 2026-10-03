@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Application assembly: three route trees over one set of stores.
 
 The student, parent and verifier routers are mounted separately rather than

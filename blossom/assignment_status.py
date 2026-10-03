@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What stands about each assignment's work: her account, and the school's, read apart.
 
 Her report answers one question, whether she has finished her part; the

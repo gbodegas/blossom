@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The labeled table the comparator is held to.
 
 Each row states what the record said, what the sources said, and the verdict a

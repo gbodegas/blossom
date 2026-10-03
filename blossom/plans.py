@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What a daily plan is: blocks of time, and the work left out of them on purpose.
 
 A plan is a proposal about her evening, so it is written down as data rather

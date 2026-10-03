@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """A homework note: her own words about something to remember, kept before it is homework.
 
 She hears about work outside the portal, from a classmate, in class, on the

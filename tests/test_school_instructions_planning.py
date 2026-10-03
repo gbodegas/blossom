@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """The school's instructions that apply, put to the planner and the critic, and carried by the
 fingerprint a plan is checked against. Those said before and any waiting for review are
 neither: a plan is made from what applies, and only a change in what applies is a change.

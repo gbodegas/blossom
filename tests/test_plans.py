@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """What a plan is, what code can decide about one, and what it cannot.
 
 The tier-one checks here settle the questions that have answers: does this

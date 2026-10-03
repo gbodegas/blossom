@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Gerardo Bodegas Martinez
 """Drafts: the only form in which work leaves the agent.
 
 Everything outbound terminates here. A draft is text for a human to read and
