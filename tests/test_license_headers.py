@@ -70,6 +70,7 @@ LF line endings, which ``.gitattributes`` keeps in every checkout."""
 
 FOOTER = re.compile(r'<footer class="colophon">(.*?)</footer>', re.DOTALL)
 SOURCE_LINK = re.compile(r'<a href="([^"]*)">Source code</a>')
+PARAGRAPH = re.compile(r"<p\b[^>]*>(.*?)</p>", re.DOTALL)
 
 
 def source_files() -> list[pathlib.Path]:
@@ -243,21 +244,39 @@ def test_only_the_shared_layout_writes_a_footer() -> None:
     assert writers == ["base.html"]
 
 
-def test_every_page_links_once_to_its_source(tmp_path: pathlib.Path) -> None:
+def footer_pages(tmp_path: pathlib.Path) -> dict[str, str]:
     """Her week and the family page with the sign-in off, and the sign-in page with it on,
-    each link once from the footer to the source the templates are given, a public address
-    on the web."""
-    source = page_templates().env.globals["source_url"]
-    assert isinstance(source, str)
-    assert source.startswith("https://")
+    as each is served."""
     with browser() as client:
         pages = {path: client.get(path, headers=PAGE_HEADERS) for path in (HER_PAGE, "/parent")}
     with client_for(signed_in_household(tmp_path)) as client:
         pages["/sign-in"] = client.get("/sign-in", headers=PAGE_HEADERS)
     for path, page in pages.items():
         assert page.status_code == 200, path
-        assert source_links(page.text) == [source], path
-        assert page.text.count("Source code") == 1, path
+    return {path: page.text for path, page in pages.items()}
+
+
+def test_every_page_links_once_to_its_source(tmp_path: pathlib.Path) -> None:
+    """Each page links once from the footer to the source the templates are given, a public
+    address on the web."""
+    source = page_templates().env.globals["source_url"]
+    assert isinstance(source, str)
+    assert source.startswith("https://")
+    for path, page in footer_pages(tmp_path).items():
+        assert source_links(page) == [source], path
+        assert page.count("Source code") == 1, path
+
+
+def test_the_source_link_is_a_line_of_its_own(tmp_path: pathlib.Path) -> None:
+    """The Source code link is the whole of its footer paragraph, with no period after it,
+    and the sentence on the license before it keeps its own period."""
+    for path, page in footer_pages(tmp_path).items():
+        (footer,) = FOOTER.findall(page)
+        paragraphs = [text.strip() for text in PARAGRAPH.findall(footer)]
+        (at,) = [index for index, text in enumerate(paragraphs) if SOURCE_LINK.search(text)]
+        assert SOURCE_LINK.fullmatch(paragraphs[at]), (path, paragraphs[at])
+        assert at > 0, path
+        assert paragraphs[at - 1] == "Blossom is free software under the GNU AGPL.", path
 
 
 STYLESHEET = PACKAGE_ROOT / "static" / "blossom.css"

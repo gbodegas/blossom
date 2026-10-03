@@ -1209,9 +1209,10 @@ form.inline button {
 }
 
 /* The footer sits outside the page's main part, so its link to the source takes the
-   action color here, visited or not. It is as tall as a button to press, and the padding
-   grows its own line rather than reaching into the line above, as Help's own-line links
-   do. The margin above and below holds its focus outline, 3 pixels drawn 2 pixels out, so
+   action color here, visited or not. It is as tall as a button to press and is the whole
+   of its paragraph, so the padding grows that line rather than reaching into the sentence
+   above, as Help's own-line links do, and no punctuation sits beside it. The margin above
+   and below holds its focus outline, 3 pixels drawn 2 pixels out, so
    with large text or a reader's own spacing the outline never covers the line above or
    below, and a Tab that scrolls to the link brings the whole outline onto the screen. */
 .colophon a {
