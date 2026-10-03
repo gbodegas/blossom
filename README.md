@@ -66,10 +66,10 @@ or send reminders. Planning needs an API key; the other features work
 without one.
 
 <p align="center">
-  <a href="docs/assets/student-week.png"><img src="docs/assets/student-week.png" alt="My week in the sample for September 7 to 13, 2026: no plan for today yet, the Too much right now, Write down homework, and Ask for help controls, a note that planning is unavailable, and the first Geometry homework due this week" width="640"></a>
+  <a href="docs/assets/student-week.png"><img src="docs/assets/student-week.png" alt="My week in the sample for September 7 to 13, 2026: no plan for today yet, the Too much right now, Write down homework, and Ask for help controls, links to To turn in and Homework notes, a note that planning is unavailable, and a See homework link" width="640"></a>
 </p>
 
-*My week, with made-up schoolwork. No API key or saved plan.*
+*My week in the made-up sample. No API key or saved plan.*
 
 <p align="center">
   <a href="docs/assets/to-turn-in.png"><img src="docs/assets/to-turn-in.png" alt="To turn in list with one finished Geometry assignment, its next step, Put it in the Geometry tray before first period, and an I turned it in button" width="640"></a>
