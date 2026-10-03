@@ -34,12 +34,15 @@ from tests.support import (
     Supports,
     UnreadCss,
     View,
+    blocks,
     browser,
     client_for,
     compound,
     elements_of,
     holds,
+    importance_of,
     selector,
+    shielded,
     signed_in_household,
     style_rules,
     unshielded,
@@ -520,10 +523,41 @@ def outline_parts(value: str, tokens: Mapping[str, str | None]) -> dict[str, str
     return (None if given is None else read_outline(given.lower())) or dict(UNSET_OUTLINE)
 
 
+@functools.lru_cache(maxsize=4)
+def empty_tokens(css: str) -> frozenset[str]:
+    """The custom properties a declaration of ``css`` leaves empty, which `style_rules` passes
+    over and a browser puts in place as nothing at all. Font faces and keyframes are passed
+    over, as `style_rules` passes them over, and an empty value under an escaped name is
+    refused, since the name may be a custom property's."""
+    found: set[str] = set()
+
+    def read(part: str) -> None:
+        for before, inside in blocks(part):
+            keyword = re.match(r"@[\w-]*", before)
+            if keyword and keyword.group().lower() in ("@font-face", "@keyframes"):
+                continue
+            if "{" in inside:
+                read(inside)
+                continue
+            for line in inside.split(";"):
+                name, colon, value = line.partition(":")
+                name = name.strip()
+                if not colon or importance_of(value.strip())[0]:
+                    continue
+                if "\\" in name:
+                    raise UnreadCss(name)
+                if name.startswith("--"):
+                    found.add(name)
+
+    read(shielded(css))
+    return frozenset(found)
+
+
 def root_tokens(css: str) -> dict[str, str | None]:
     """The custom properties ``css`` sets on the root, each by the cascade (important, then
     the later) among the rules for ``:root`` alone that hold everywhere, and ``None`` for one
-    any other rule sets, which the resolver can't weigh for the footer link."""
+    any other rule sets or any rule leaves empty, which the resolver can't weigh for the
+    footer link."""
     given: dict[str, tuple[bool, str]] = {}
     elsewhere: set[str] = set()
     for style in rules_of(css):
@@ -535,7 +569,9 @@ def root_tokens(css: str) -> dict[str, str | None]:
                 elsewhere.add(name)
             elif important or not given.get(name, (False, ""))[0]:
                 given[name] = (important, value.strip())
-    return {name: value for name, (_, value) in given.items()} | dict.fromkeys(elsewhere)
+    return {name: value for name, (_, value) in given.items()} | dict.fromkeys(
+        elsewhere | empty_tokens(css)
+    )
 
 
 REFUSED = "refused"
@@ -794,9 +830,10 @@ def check_root_text(css: str, link: Element) -> None:
 
 
 TEXT_PROPERTIES = ("font-size", "line-height")
-INHERITED = "inherited"
+INHERITED = chr(0) + "inherit"
 """What `text_longhands` sets for ``inherit`` or ``unset``, which take the parent's value
-for the text size and the line height."""
+for the text size and the line height. It opens with a NUL, which `plain_ascii` refuses in
+any sheet `style_rules` reads, so no value a rule writes is taken for it."""
 
 
 def text_longhands(name: str, value: str) -> dict[str, str]:
@@ -1254,6 +1291,45 @@ TAKES_THE_ROOM = {
     ".colophon a:focus-visible { outline: var(--w) rgb(76 113 147var(--a)); }",
     "a-style-glued-before-a-fallback": ":root { --w: 3px; }\n"
     ".colophon a:focus-visible { outline: var(--w) solidvar(--unset-color, red); }",
+    "an-outline-color-token-left-empty": ":root { --blue-action: ; }",
+    "a-whole-outline-token-left-empty-over-its-fallback": ":root { --ring: ; }\n"
+    ".colophon a:focus-visible { outline: var(--ring, 3px solid red); }",
+    "a-whole-outline-token-left-empty-with-no-space": ":root { --ring:; }\n"
+    ".colophon a:focus-visible { outline: var(--ring, 3px solid red); }",
+    "an-outline-color-token-left-empty-with-no-space": ":root { --blue-action:; }",
+    "an-outline-color-token-left-empty-and-important": ":root { --blue-action: !important; }",
+    "an-outline-color-token-left-empty-but-for-a-comment": ":root { --blue-action: /* - */ ; }",
+    "an-outline-color-token-left-empty-at-the-end-of-its-rule": ":root { --blue-action: }",
+    "an-outline-color-token-left-empty-at-the-end-of-the-sheet": ":root { --blue-action:",
+    "an-escaped-token-name-left-empty-over-a-fallback": ":root { --r\\69ng: ; }\n"
+    ".colophon a:focus-visible { outline: var(--ring, 3px solid red); }",
+    "a-token-name-with-escaped-dashes-left-empty-over-a-fallback": ":root { \\2d-ring: ; }\n"
+    ".colophon a:focus-visible { outline: var(--ring, 3px solid red); }",
+    "a-token-name-with-an-escaped-dash-left-empty-on-some-screens": "@media (min-width: 1px) { "
+    ":root { -\\-ring: ; } }\n.colophon a:focus-visible { outline: var(--ring, 3px solid red); }",
+    "an-outline-width-token-left-empty-then-set-wider": ":root { --w: ; }\n"
+    ":root { --w: 10px; }\n.colophon a:focus-visible { outline: var(--w) solid red; }",
+    "an-outline-color-token-left-empty-on-some-screens": "@media (min-width: 1px) { "
+    ":root { --blue-action: ; } }",
+    "an-outline-color-token-left-empty-where-supported": "@supports (overflow-wrap: anywhere) { "
+    ":root { --blue-action: ; } }",
+    "an-outline-color-token-left-empty-above-the-link": ".colophon { --blue-action: ; }",
+    "a-line-height-a-browser-drops-over-a-short-one": ".colophon a { line-height: 0; "
+    "line-height: inherited; }",
+    "a-text-size-a-browser-drops-over-a-small-one": ".colophon a { font-size: 0; "
+    "font-size: inherited; }",
+    "a-line-height-a-browser-drops-in-capitals": ".colophon a { line-height: 0; "
+    "line-height: INHERITED; }",
+    "a-line-height-a-browser-drops-after-a-minus": ".colophon a { line-height: 0; "
+    "line-height: -inherited; }",
+    "a-line-height-a-browser-drops-made-important": ".colophon a { line-height: 0; }\n"
+    ".colophon a { line-height: inherited !important; }",
+    "a-line-height-a-browser-drops-above-the-link": ".colophon { line-height: 0; "
+    "line-height: inherited; }",
+    "a-line-height-of-a-word-a-browser-drops": ".colophon a { line-height: inherited; }",
+    "a-text-size-of-a-word-a-browser-drops": ".colophon a { font-size: inherited; }",
+    "a-line-height-written-as-the-inherit-marker": ".colophon a { line-height: 0; "
+    f"line-height: {INHERITED}; }}",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
 view or state, or which the resolver can't read and so refuses."""
@@ -1399,6 +1475,19 @@ LEAVES_THE_ROOM = {
     ".colophon a:focus-visible { outline: 3px solid rgb(var(--r),113,147); }",
     "a-substitution-beside-a-slash": ":root { --c: 76 113 147; }\n"
     ".colophon a:focus-visible { outline: 3px solid rgb(var(--c)/1); }",
+    "an-empty-token-the-link-does-not-use": ":root { --unused-ring: ; }",
+    "an-empty-token-in-other-capitals": ":root { --Blue-Action: ; }",
+    "an-empty-token-for-another-link": ".card { --ring: ; }\n"
+    ".card a:focus-visible { outline: var(--ring, 3px solid red); }",
+    "an-empty-token-written-in-a-string": '.card::after { content: "a;--blue-action:;b"; }',
+    "an-empty-token-written-in-a-comment": ".card { color: red; /* ;--blue-action: ; */ }",
+    "an-empty-token-in-keyframes": "@keyframes fade { to { --blue-action: ; } }",
+    "an-empty-token-in-a-font-face": "@font-face { font-family: x; --blue-action: ; }",
+    "a-token-name-with-no-colon": ":root { --blue-action }",
+    "a-token-name-with-no-colon-over-a-fallback": ":root { --ring }\n"
+    ".colophon a:focus-visible { outline: var(--ring, 3px solid red); }",
+    "a-whole-outline-token-set-over-its-fallback": ":root { --ring: 3px solid red; }\n"
+    ".colophon a:focus-visible { outline: var(--ring, 3px solid red); }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
@@ -1413,6 +1502,14 @@ def test_a_later_rule_that_takes_the_footer_link_room_fails(rule: str) -> None:
 @pytest.mark.parametrize("rule", LEAVES_THE_ROOM.values(), ids=LEAVES_THE_ROOM.keys())
 def test_a_later_rule_that_leaves_the_footer_link_room_passes(rule: str) -> None:
     check_footer_link(STYLESHEET.read_text(encoding="utf-8") + "\n" + rule + "\n")
+
+
+def test_only_custom_properties_left_empty_are_found() -> None:
+    css = ":root { color: ; --Ring: ; --w:; --v }\n.card { --c: red; --d: !important; }"
+    assert empty_tokens(css) == {"--Ring", "--w", "--d"}
+    for escaped in (":root { --r\\69ng: ; }", ":root { \\2d-ring: ; }"):
+        with pytest.raises(UnreadCss):
+            empty_tokens(escaped)
 
 
 COLORS_SHOWN = {
