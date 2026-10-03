@@ -324,10 +324,32 @@ def words_of(value: str) -> list[str]:
     return re.findall(r"(?:[^\s(]|\([^()]*\))+", value)
 
 
-COLOR_FUNCTIONS = frozenset(
-    ("rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch", "oklab", "oklch", "color", "color-mix")
-) | {"light-dark"}
-"""The functions that give a color, the only functions an ``outline`` shorthand may hold."""
+NUMBER = re.compile(r"\d+(?:\.\d+)?|\.\d+")
+"""A number as CSS writes it, with no sign: digits after a point, if it has one."""
+SIGNED = rf"[+-]?(?:{NUMBER.pattern})"
+AMOUNT = rf"{SIGNED}%?|none"
+"""A color channel or an opacity written apart by spaces: a number, a percentage, or
+``none``."""
+HUE = rf"{SIGNED}(?:deg|grad|rad|turn)?"
+COLOR_CHANNELS: dict[str, tuple[str, ...]] = {
+    **dict.fromkeys(("rgb", "rgba", "lab", "oklab"), (AMOUNT,) * 3),
+    **dict.fromkeys(("hsl", "hsla", "hwb"), (rf"{HUE}|none", AMOUNT, AMOUNT)),
+    **dict.fromkeys(("lch", "oklch"), (AMOUNT, AMOUNT, rf"{HUE}|none")),
+    "color": (
+        "srgb|srgb-linear|display-p3|a98-rgb|prophoto-rgb|rec2020|xyz|xyz-d50|xyz-d65",
+        *(AMOUNT,) * 3,
+    ),
+}
+"""The color functions the resolver reads, each with what its channels may be when they
+are written apart by spaces."""
+LEGACY_CHANNELS: dict[str, tuple[tuple[str, ...], ...]] = {
+    **dict.fromkeys(("rgb", "rgba"), ((SIGNED,) * 3, (rf"{SIGNED}%",) * 3)),
+    **dict.fromkeys(("hsl", "hsla"), ((HUE, rf"{SIGNED}%", rf"{SIGNED}%"),)),
+}
+"""What the channels of ``rgb()`` and ``hsl()`` may be when written apart by commas, with no
+``none``: all numbers or all percentages in ``rgb()``."""
+COLOR_FUNCTIONS = frozenset(COLOR_CHANNELS)
+"""The only functions an ``outline`` shorthand may hold."""
 UNSET_OUTLINE = {
     "outline-width": "medium",
     "outline-style": "none",
@@ -359,8 +381,6 @@ NAMED_COLORS = frozenset(COLOR_NAMES.split())
 """The colors CSS names, each gray in its American spelling only, and the two keywords
 that give a color."""
 HEX_COLOR = re.compile(r"#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})")
-NUMBER = re.compile(r"\d+(?:\.\d+)?|\.\d+")
-"""A number as CSS writes it, with no sign: digits after a point, if it has one."""
 
 
 def negative(value: str) -> bool:
@@ -382,27 +402,43 @@ def visible(color: str) -> bool:
     if HEX_COLOR.fullmatch(color):
         digits = color[1:]
         return len(digits) in (3, 6) or int(digits[len(digits) // 4 * 3 :], 16) > 0
-    found = re.fullmatch(r"(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\((.*)\)", color)
-    if found:
-        name, inside = found.groups()
-        if re.match(r"\s*from\b", inside):
-            raise UnreadCss(color)
-        alpha = inside.rpartition("/")[2] if "/" in inside else None
-        if alpha is None and name in ("rgb", "rgba", "hsl", "hsla") and inside.count(",") == 3:
-            alpha = inside.rpartition(",")[2]
-        if alpha is None:
-            return True
-        number = re.fullmatch(rf"([+-]?(?:{NUMBER.pattern}))%?", alpha.strip())
-        if number:
-            return float(number.group(1)) > 0
-    raise UnreadCss(color)
+    alpha = alpha_of(color)
+    if alpha is None:
+        return True
+    number = re.fullmatch(rf"({SIGNED})%?", alpha)
+    if number is None:
+        raise UnreadCss(color)
+    return float(number.group(1)) > 0
+
+
+def alpha_of(color: str) -> str | None:
+    """The opacity a color function gives, as written, or ``None`` where it names none. A
+    function whose channels don't fit `COLOR_CHANNELS` or `LEGACY_CHANNELS`, which a
+    browser drops with its declaration, is refused."""
+    found = re.fullmatch(r"([a-z]+)\((.*)\)", color, re.S)
+    if found is None or found.group(1) not in COLOR_CHANNELS:
+        raise UnreadCss(color)
+    name, inside = found.groups()
+    if "," in inside:
+        words = [word.strip() for word in inside.split(",")]
+        alpha = words.pop() if len(words) == 4 else None
+        shapes, last = LEGACY_CHANNELS.get(name, ()), rf"{SIGNED}%?"
+    else:
+        channels, slash, after = inside.partition("/")
+        words, alpha = channels.split(), after.strip() if slash else None
+        shapes, last = (COLOR_CHANNELS[name],), AMOUNT
+    if not any(
+        len(shape) == len(words) and all(map(re.fullmatch, shape, words)) for shape in shapes
+    ) or (alpha is not None and not re.fullmatch(last, alpha)):
+        raise UnreadCss(color)
+    return alpha
 
 
 def read_outline(value: str) -> dict[str, str] | None:
     """The width, style and color an ``outline`` shorthand with no substitution sets, each its
     initial value where it names none, or ``None`` where a browser can't read it: a negative
-    width, a part named twice, or a keyword among other words. An escape, a function that
-    gives no color or holds another, or a word that is none of a width, a style or a color,
+    width, a part named twice, or a keyword among other words. An escape, a function other
+    than a color `alpha_of` reads, or a word that is none of a width, a style or a color,
     is refused."""
     if "\\" in value:
         raise UnreadCss(value)
@@ -419,6 +455,8 @@ def read_outline(value: str) -> dict[str, str] | None:
             return None
         elif "(" in word or word in NAMED_COLORS or HEX_COLOR.fullmatch(word):
             part = "outline-color"
+            if "(" in word:
+                alpha_of(word)
         else:
             raise UnreadCss(value)
         if part in named or (part == "outline-width" and negative(word)):
@@ -481,18 +519,35 @@ REFUSED = "refused"
 """What `link_longhands` sets for a declaration the resolver can't weigh, which a rule that
 reaches the footer link may not hold."""
 
-BOX_WORD = re.compile(rf"[+-]?(?:{NUMBER.pattern})(?:[a-z]+|%)?|auto|[a-z-]+\(.*\)")
-"""A word a browser may take in a padding or margin: a number with its unit, ``auto``, or a
-function. A declaration with any other word is dropped, as a browser drops it, unless
-it holds an escape or a number this can't read, which are refused."""
+LENGTH_UNITS = frozenset(("px", "rem", "em"))
+"""The units the resolver takes in a padding, margin or scroll margin."""
+
+
+def box_word(box: str, word: str) -> bool | None:
+    """Whether a browser takes ``word`` as one side of ``box``: a length, a percentage
+    anywhere but a scroll margin, ``auto`` in a margin alone, and nothing below zero in a
+    padding. ``None`` for a unit outside `LENGTH_UNITS` or a number this can't read."""
+    found = re.fullmatch(rf"({SIGNED})([a-z]+|%)?", word)
+    if found is None:
+        if re.match(r"[+-]?[\d.]", word):
+            return None
+        return box == "margin" and word == "auto"
+    amount, unit = float(found.group(1)), found.group(2)
+    if unit is None:
+        return amount == 0
+    if unit != "%" and unit not in LENGTH_UNITS:
+        return None
+    return not ((box == "padding" and amount < 0) or (box == "scroll-margin" and unit == "%"))
 
 
 def link_longhands(name: str, value: str, tokens: Mapping[str, str | None]) -> dict[str, str]:
     """What one declaration sets among `LINK_PROPERTIES`: a padding, margin or scroll
     margin shorthand, or its block form, the top and bottom it reaches, a logical side
     the top or bottom it is in a page written top to bottom, and an outline by
-    `outline_parts` with ``tokens``. ``all`` sets `REFUSED`; `check_root_text` refuses an
-    escaped name and an animation."""
+    `outline_parts` with ``tokens``. A box declaration with a side a browser doesn't take,
+    by `box_word`, is dropped, as a browser drops it, and one with an escape, a function or
+    a side this can't read is refused, and so is an outline style a browser doesn't know.
+    ``all`` sets `REFUSED`; `check_root_text` refuses an escaped name and an animation."""
     if name == "all":
         return {REFUSED: name}
     if name == "outline":
@@ -500,13 +555,18 @@ def link_longhands(name: str, value: str, tokens: Mapping[str, str | None]) -> d
     value = value.lower()
     if name == "outline-width" and negative(value):
         return {}
+    if name == "outline-style" and value not in OUTLINE_STYLES:
+        raise UnreadCss(value)
     words = words_of(value)
-    if any(name.startswith(box) for box in BOXES) and not (
-        value in KEYWORDS or "\\" in value or all(BOX_WORD.fullmatch(word) for word in words)
-    ):
-        if any(re.match(r"[+-]?[\d.]", word) and not BOX_WORD.fullmatch(word) for word in words):
+    boxed = next((box for box in BOXES if name.startswith(box)), None)
+    if boxed and value not in KEYWORDS:
+        if "\\" in value or "(" in value:
             raise UnreadCss(value)
-        return {}
+        taken = [box_word(boxed, word) for word in words]
+        if False in taken:
+            return {}
+        if None in taken:
+            raise UnreadCss(value)
     for box in BOXES:
         if name == box:
             if not 1 <= len(words) <= 4:
@@ -1074,6 +1134,57 @@ TAKES_THE_ROOM = {
     "an-escaped-number": ".colophon a { margin: \\30 ; scroll-margin: \\30 ; }",
     "a-clear-color-unless-not-visited": ".colophon a:not(:not(:visited)) { "
     "outline-color: transparent; }",
+    "a-color-function-a-browser-drops": ".colophon a:focus-visible { outline: none; "
+    "outline: 3px solid rgb(banana); }",
+    "a-color-function-a-browser-drops-with-an-alpha": ".colophon a:focus-visible { "
+    "outline: none; outline: 3px solid rgb(banana / 1); }",
+    "a-legacy-color-function-a-browser-drops": ".colophon a:focus-visible { outline: none; "
+    "outline: 3px solid rgba(banana, banana, banana, 1); }",
+    "a-color-function-a-browser-drops-in-capitals": ".colophon a:focus-visible { "
+    "outline: none; outline: 3px solid RGB(BANANA); }",
+    "an-outline-color-a-browser-drops": ".colophon a:focus-visible { "
+    "outline-color: transparent; outline-color: rgb(banana); }",
+    "a-token-a-browser-cant-read": ":root { --blue-action: rgb(banana); }",
+    "a-width-from-an-outline-a-browser-drops": ".colophon a:focus-visible { "
+    "outline: 8px solid red; outline: 1px solid rgb(banana); outline-color: red; }",
+    "a-width-from-an-outline-with-a-mixed-color": ".colophon a:focus-visible { "
+    "outline: 8px solid red; outline: 1px solid color-mix(banana); outline-color: red; }",
+    "an-outline-style-a-browser-drops": ".colophon a:focus-visible { outline-style: none; "
+    "outline-style: banana; }",
+    "padding-a-browser-drops-for-auto": ".colophon a { padding: 0; padding: 0.8rem auto; }",
+    "padding-a-browser-drops-for-a-negative-side": ".colophon a { padding: 0; "
+    "padding: 0.8rem -1px; }",
+    "padding-a-browser-drops-for-a-side-just-below-zero": ".colophon a { padding: 0; "
+    "padding: 0.8rem -0.01px; }",
+    "padding-a-browser-drops-for-auto-on-the-left": ".colophon a { padding: 0; "
+    "padding: 0.8rem 0 0.8rem auto; }",
+    "padding-a-browser-drops-in-capitals": ".colophon a { padding: 0; PADDING: 0.8REM AUTO; }",
+    "a-scroll-margin-a-browser-drops-for-auto": ".colophon a { scroll-margin: 0; "
+    "scroll-margin: 5px auto; }",
+    "a-scroll-margin-a-browser-drops-for-a-percentage": ".colophon a { scroll-margin: 0; "
+    "scroll-margin: 5px 5%; }",
+    "a-margin-a-browser-drops-for-a-plain-number": ".colophon a { margin: 0; margin: 5px 8; }",
+    "a-margin-a-browser-drops-for-a-plain-number-on-the-left": ".colophon a { margin: 0; "
+    "margin: 5px 0 5px 8; }",
+    "a-margin-a-browser-drops-for-an-unknown-unit": ".colophon a { margin: 0; "
+    "margin: 5px 1banana; }",
+    "a-unit-at-the-sides-the-resolver-doesnt-read": ".colophon a { margin: 5px 1vw; }",
+    "a-calculation-at-the-sides": ".colophon a { margin: 5px calc(1px); }",
+    "an-escape-at-the-sides": ".colophon a { margin: 5px 0\\70x; }",
+    "a-legacy-color-function-a-browser-drops-for-one-channel": ".colophon a:focus-visible { "
+    "outline: none; outline: 3px solid rgba(banana,0,0,1); }",
+    "a-width-from-an-outline-with-an-alpha-a-browser-drops": ".colophon a:focus-visible { "
+    "outline: 8px solid red; outline: 1px solid rgb(0 0 0 / 1px); outline-color: red; }",
+    "a-function-glued-to-a-width-after-a-color": ".colophon a:focus-visible { outline: none; "
+    "outline: rgb(0 0 0) 3calc(1px) solid; outline-width: 3px; }",
+    "an-escaped-keyword-at-the-sides": ".colophon a { margin: 0 \\61uto; }",
+    "a-width-from-a-legacy-outline-with-an-alpha-of-none": ".colophon a:focus-visible { "
+    "outline: 8px solid red; outline: 1px solid rgba(0, 0, 0, none); outline-color: red; }",
+    "a-calculation-nested-in-a-side": ".colophon a { padding: calc(0px + (0px)) 0; }",
+    "a-fallback-with-a-calculation-in-a-margin": ".colophon a { "
+    "margin: var(--none-set, calc(0px)) 0; }",
+    "nested-functions-in-a-scroll-margin": ".colophon a { "
+    "scroll-margin: min(0px, max(0px, 1px)) 0; }",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
 view or state, or which the resolver can't read and so refuses."""
@@ -1166,6 +1277,28 @@ LEAVES_THE_ROOM = {
     "a-visited-footer-which-is-no-link": ".colophon:visited a { outline-color: transparent; }",
     "an-outline-a-browser-drops-for-a-keyword": ".colophon a:focus-visible { "
     "outline: 3px solid inherit; }",
+    "padding-a-browser-drops-for-auto": ".colophon a { padding: 0 auto; }",
+    "a-negative-padding-dropped": ".colophon a { padding: -1px 0; }",
+    "a-block-padding-a-browser-drops": ".colophon a { padding-block: 0 auto; }",
+    "a-top-padding-a-browser-drops": ".colophon a { padding-top: auto; }",
+    "a-scroll-margin-a-browser-drops-for-a-percentage": ".colophon a { scroll-margin: 0 5%; }",
+    "a-margin-a-browser-drops-for-a-plain-number": ".colophon a { margin: 0 8; }",
+    "a-margin-with-auto-at-the-sides": ".colophon a { margin: 0; margin: 5px auto; }",
+    "a-margin-with-a-percentage-below-zero-at-the-sides": ".colophon a { margin: 0; "
+    "margin: 5px -5%; }",
+    "a-margin-in-ems-at-the-sides": ".colophon a { margin: 0; margin: 5px 1em; }",
+    "padding-with-a-percentage-at-the-sides": ".colophon a { padding: 0; padding: 0.8rem 5%; }",
+    "padding-in-rem-at-the-sides": ".colophon a { padding: 0; padding: 0.8rem 1rem; }",
+    "padding-of-minus-zero-at-the-sides": ".colophon a { padding: 0; padding: 0.8rem -0; }",
+    "a-scroll-margin-below-zero-at-the-sides": ".colophon a { scroll-margin: 0; "
+    "scroll-margin: 5px -1px; }",
+    "an-outline-after-none-in-a-color-function": ".colophon a:focus-visible { outline: none; "
+    "outline: 3px solid rgb(0 0 0); }",
+    "an-outline-after-none-in-a-legacy-color-function": ".colophon a:focus-visible { "
+    "outline: none; outline: 3px solid rgba(0,0,0,1); }",
+    "padding-with-a-pixel-side": ".colophon a { padding: 0; padding: 0.8rem 1px; }",
+    "a-scroll-margin-with-zero-sides": ".colophon a { scroll-margin: 0; scroll-margin: 5px 0; }",
+    "a-margin-with-pixel-sides": ".colophon a { margin: 0; margin: 5px 8px; }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
@@ -1180,3 +1313,87 @@ def test_a_later_rule_that_takes_the_footer_link_room_fails(rule: str) -> None:
 @pytest.mark.parametrize("rule", LEAVES_THE_ROOM.values(), ids=LEAVES_THE_ROOM.keys())
 def test_a_later_rule_that_leaves_the_footer_link_room_passes(rule: str) -> None:
     check_footer_link(STYLESHEET.read_text(encoding="utf-8") + "\n" + rule + "\n")
+
+
+COLORS_SHOWN = {
+    "rgb(76 113 147)": True,
+    "rgb(76 113 147 / 0.5)": True,
+    "rgb(76 113 147/50%)": True,
+    "rgb(76, 113, 147)": True,
+    "rgba(76,113,147,0.5)": True,
+    "rgba(76 113 147 / 1)": True,
+    "rgb(30% 40 50)": True,
+    "rgb(30%, 40%, 50%)": True,
+    "rgb(none 0 0)": True,
+    "rgb(-10 +10 .5)": True,
+    "rgb( 76 113 147 )": True,
+    "RGB(76 113 147)": True,
+    "hsl(210deg 32% 44%)": True,
+    "hsl(210, 32%, 44%)": True,
+    "hsla(1turn, 32%, 44%, 50%)": True,
+    "hsl(210 32 44)": True,
+    "hsl(none 32% 44%)": True,
+    "hwb(210 10% 20% / 0.5)": True,
+    "lab(50% 20 30)": True,
+    "lch(50 20% 30deg)": True,
+    "oklab(0.5 0.1 0.1)": True,
+    "oklch(0.5 0.1 none)": True,
+    "color(srgb 1 0 0 / 0.5)": True,
+    "color(xyz-d65 0.1 0.2 0.3)": True,
+    "color(display-p3 100% 0% none)": True,
+    "rgb(0 0 0 / 0)": False,
+    "rgba(76, 113, 147, 0)": False,
+    "hsl(210, 32%, 44%, 0%)": False,
+    "color(srgb 1 0 0 / -0.5)": False,
+}
+"""Colors a browser takes, and whether an outline drawn in each shows."""
+
+COLORS_REFUSED = [
+    "rgb(banana)",
+    "rgb(banana / 1)",
+    "rgba(banana, banana, banana, 1)",
+    "rgb(30%, 40, 50)",
+    "rgb(none, 0, 0)",
+    "rgb(10deg 0 0)",
+    "rgb(0 0)",
+    "rgb(0 0 0 0)",
+    "rgb(0 0 0 / 1 / 1)",
+    "rgb(0,0 0)",
+    "rgb(0 0 0,)",
+    "rgb()",
+    "rgb(0 0 0 / 1px)",
+    "rgb(0, 0, 0, none)",
+    "rgb(0, 0, 0 / 1)",
+    "rgb(76 113 147 /)",
+    "rgb(5. 0 0)",
+    "hsl(210, 32, 44)",
+    "hsl(210px 32% 44%)",
+    "hsl(32% 32% 44%)",
+    "hsl(none, 32%, 44%)",
+    "hwb(210, 10%, 20%)",
+    "lab(50, 20, 30)",
+    "lab(50deg 20 30)",
+    "lch(50 20 30%)",
+    "oklch(0.5 0.1 30%)",
+    "color(banana 1 0 0)",
+    "color(srgb 1 0)",
+    "color(srgb, 1, 0, 0)",
+    "color(1 0 0)",
+    "color(srgb 1deg 0 0)",
+    "rgb(1e2 0 0)",
+    "rgb(0 0 0 / none)",
+    "color(display-p3-linear 1 0 0)",
+]
+"""Colors a browser drops, and a few it takes that the resolver doesn't read: a number in
+exponent notation, an opacity of ``none``, and a color space outside the common ones."""
+
+
+@pytest.mark.parametrize(("color", "shown"), COLORS_SHOWN.items(), ids=COLORS_SHOWN.keys())
+def test_a_color_a_browser_takes_is_read(color: str, shown: bool) -> None:
+    assert visible(color) is shown
+
+
+@pytest.mark.parametrize("color", COLORS_REFUSED)
+def test_a_color_a_browser_drops_is_refused(color: str) -> None:
+    with pytest.raises(UnreadCss):
+        visible(color)
