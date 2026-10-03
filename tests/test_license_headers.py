@@ -17,7 +17,7 @@ import math
 import pathlib
 import re
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 import pytest
 
@@ -30,6 +30,7 @@ from tests.support import (
     PAGE_HEADERS,
     SUBSTITUTION,
     Element,
+    Selector,
     Supports,
     UnreadCss,
     View,
@@ -297,12 +298,13 @@ LINK_PROPERTIES = frozenset(
         "display",
         "outline-width",
         "outline-style",
+        "outline-color",
         "outline-offset",
         *(f"{box}-{side}" for box in BOXES for side in SIDES),
     }
 )
 """What the footer link's room depends on: how it lays out, the top and bottom of its
-padding, margin and scroll margin, and its focus outline."""
+padding, margin and scroll margin, and its focus outline and the color it's drawn in."""
 
 OUTLINE_WIDTHS = {"thin": "1px", "medium": "3px", "thick": "5px"}
 OUTLINE_STYLES = frozenset(
@@ -313,61 +315,197 @@ ON_FOCUS = re.compile(r"(?P<before>.*?)(?P<states>(?::focus-visible|:focus)+)", 
 """A selector that holds while its element has focus: `:focus` or `:focus-visible` at its
 end, and no other state anywhere."""
 
+rules_of = functools.lru_cache(maxsize=4)(style_rules)
+"""`style_rules`, kept for the last few sheets, which each check reads once per element."""
+
 
 def words_of(value: str) -> list[str]:
     """The words of a value, a function such as ``calc(1px + 2px)`` kept whole."""
     return re.findall(r"(?:[^\s(]|\([^()]*\))+", value)
 
 
-def outline_parts(value: str) -> dict[str, str]:
-    """The width and style an ``outline`` shorthand sets, each its initial value where it
-    names none. A browser reads any other word as the color, so a `SUBSTITUTION` is read as
-    the color only when the width and the style are both written. A negative width
-    drops the declaration, as a browser drops it."""
-    found = {"outline-width": "medium", "outline-style": "none"}
+COLOR_FUNCTIONS = frozenset(
+    ("rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch", "oklab", "oklch", "color", "color-mix")
+) | {"light-dark"}
+"""The functions that give a color, the only functions an ``outline`` shorthand may hold."""
+UNSET_OUTLINE = {
+    "outline-width": "medium",
+    "outline-style": "none",
+    "outline-color": "currentcolor",
+}
+"""What an ``outline`` shorthand sets once a substitution leaves it unreadable: each part its
+initial value, as a browser sets them when it styles the page."""
+VAR = re.compile(r"var\(\s*(--[\w-]+)\s*(?:,([^()]*))?\)", re.IGNORECASE)
+"""A ``var()`` with the custom property it names, as written, and its fallback, if any."""
+COLOR_NAMES = """aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue
+    blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue
+    cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkkhaki
+    darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+    darkslateblue darkslategray darkturquoise darkviolet deeppink deepskyblue dimgray
+    dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold
+    goldenrod gray green greenyellow honeydew hotpink indianred indigo ivory khaki
+    lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+    lightgoldenrodyellow lightgray lightgreen lightpink lightsalmon lightseagreen
+    lightskyblue lightslategray lightsteelblue lightyellow lime limegreen linen magenta
+    maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen
+    mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue
+    mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange
+    orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip
+    peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue
+    saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue
+    slategray snow springgreen steelblue tan teal thistle tomato turquoise violet wheat
+    white whitesmoke yellow yellowgreen transparent currentcolor"""
+NAMED_COLORS = frozenset(COLOR_NAMES.split())
+"""The colors CSS names, each gray in its American spelling only, and the two keywords
+that give a color."""
+HEX_COLOR = re.compile(r"#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})")
+NUMBER = re.compile(r"\d+(?:\.\d+)?|\.\d+")
+"""A number as CSS writes it, with no sign: digits after a point, if it has one."""
+
+
+def negative(value: str) -> bool:
+    """Whether ``value`` opens with a number below zero, which a browser drops where none is
+    allowed. Minus zero is zero."""
+    found = re.match(rf"-({NUMBER.pattern})", value)
+    return found is not None and float(found.group(1)) > 0
+
+
+def visible(color: str) -> bool:
+    """Whether an outline drawn in ``color`` shows: any color but one with no opacity at all.
+    The text's own color, which the resolver doesn't follow, a color made from another, and a
+    color whose opacity it can't read are refused."""
+    color = color.strip().lower()
+    if color == "transparent":
+        return False
+    if color in NAMED_COLORS and color != "currentcolor":
+        return True
+    if HEX_COLOR.fullmatch(color):
+        digits = color[1:]
+        return len(digits) in (3, 6) or int(digits[len(digits) // 4 * 3 :], 16) > 0
+    found = re.fullmatch(r"(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\((.*)\)", color)
+    if found:
+        name, inside = found.groups()
+        if re.match(r"\s*from\b", inside):
+            raise UnreadCss(color)
+        alpha = inside.rpartition("/")[2] if "/" in inside else None
+        if alpha is None and name in ("rgb", "rgba", "hsl", "hsla") and inside.count(",") == 3:
+            alpha = inside.rpartition(",")[2]
+        if alpha is None:
+            return True
+        number = re.fullmatch(rf"([+-]?(?:{NUMBER.pattern}))%?", alpha.strip())
+        if number:
+            return float(number.group(1)) > 0
+    raise UnreadCss(color)
+
+
+def read_outline(value: str) -> dict[str, str] | None:
+    """The width, style and color an ``outline`` shorthand with no substitution sets, each its
+    initial value where it names none, or ``None`` where a browser can't read it: a negative
+    width, a part named twice, or a keyword among other words. An escape, a function that
+    gives no color or holds another, or a word that is none of a width, a style or a color,
+    is refused."""
+    if "\\" in value:
+        raise UnreadCss(value)
+    if any(name not in COLOR_FUNCTIONS for name in re.findall(r"([\w-]*)\(", value)):
+        raise UnreadCss(value)
+    found = dict(UNSET_OUTLINE)
     named: set[str] = set()
-    substituted = False
     for word in words_of(value):
         if word in OUTLINE_STYLES:
-            found["outline-style"] = word
-            named.add("style")
-        elif word.startswith("-") and re.match(r"-[\d.]", word):
-            return {}
+            part = "outline-style"
         elif word in OUTLINE_WIDTHS or re.match(r"[+-]?[\d.]", word):
-            found["outline-width"] = word
-            named.add("width")
-        elif SUBSTITUTION.search(word) or "\\" in word:
-            substituted = True
-    if value in KEYWORDS or (substituted and named != {"style", "width"}):
+            part = "outline-width"
+        elif word in KEYWORDS:
+            return None
+        elif "(" in word or word in NAMED_COLORS or HEX_COLOR.fullmatch(word):
+            part = "outline-color"
+        else:
+            raise UnreadCss(value)
+        if part in named or (part == "outline-width" and negative(word)):
+            return None
+        named.add(part)
+        found[part] = word
+    return {name: found[name] for name in UNSET_OUTLINE}
+
+
+def substituted(value: str, tokens: Mapping[str, str | None]) -> str | None:
+    """``value`` with each ``var()`` put in its place: the custom property's value from
+    ``tokens``, or the fallback where ``tokens`` has none, and ``None`` where neither is given.
+    A token ``tokens`` can't weigh is refused."""
+    parts: list[str] = []
+    end = 0
+    for found in VAR.finditer(value):
+        name, fallback = found.group(1), found.group(2)
+        if name in tokens and tokens[name] is None:
+            raise UnreadCss(found.group())
+        given = tokens.get(name, fallback)
+        if given is None:
+            return None
+        parts += [value[end : found.start()], given]
+        end = found.end()
+    return "".join([*parts, value[end:]])
+
+
+def outline_parts(value: str, tokens: Mapping[str, str | None]) -> dict[str, str]:
+    """The width, style and color an ``outline`` shorthand sets, by `read_outline`. One a browser
+    can't read is dropped, as a browser drops it, unless it holds a `SUBSTITUTION`: that is
+    put in its place from ``tokens`` first, and where it then can't be read, the outline is
+    `UNSET_OUTLINE`. A keyword alone is refused."""
+    if value.strip().lower() in KEYWORDS:
         raise UnreadCss(value)
-    return found
+    if not SUBSTITUTION.search(value):
+        return read_outline(value.lower()) or {}
+    given = substituted(value, tokens)
+    return (None if given is None else read_outline(given.lower())) or dict(UNSET_OUTLINE)
+
+
+def root_tokens(css: str) -> dict[str, str | None]:
+    """The custom properties ``css`` sets on the root, each by the cascade (important, then
+    the later) among the rules for ``:root`` alone that hold everywhere, and ``None`` for one
+    any other rule sets, which the resolver can't weigh for the footer link."""
+    given: dict[str, tuple[bool, str]] = {}
+    elsewhere: set[str] = set()
+    for style in rules_of(css):
+        plain = style.media is None and style.selectors.strip().lower() == ":root"
+        for name, value, important in style.declarations:
+            if not name.startswith("--"):
+                continue
+            if not plain:
+                elsewhere.add(name)
+            elif important or not given.get(name, (False, ""))[0]:
+                given[name] = (important, value.strip())
+    return {name: value for name, (_, value) in given.items()} | dict.fromkeys(elsewhere)
 
 
 REFUSED = "refused"
 """What `link_longhands` sets for a declaration the resolver can't weigh, which a rule that
 reaches the footer link may not hold."""
 
-BOX_WORD = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[a-z]+|%)?|auto|[a-z-]+\(.*\)")
+BOX_WORD = re.compile(rf"[+-]?(?:{NUMBER.pattern})(?:[a-z]+|%)?|auto|[a-z-]+\(.*\)")
 """A word a browser may take in a padding or margin: a number with its unit, ``auto``, or a
 function. A declaration with any other word is dropped, as a browser drops it, unless
-it holds an escape, which `link_rules` refuses."""
+it holds an escape or a number this can't read, which are refused."""
 
 
-def link_longhands(name: str, value: str) -> dict[str, str]:
+def link_longhands(name: str, value: str, tokens: Mapping[str, str | None]) -> dict[str, str]:
     """What one declaration sets among `LINK_PROPERTIES`: a padding, margin or scroll
-    margin shorthand, or its block form, the top and bottom it reaches, and a logical side
-    the top or bottom it is in a page written top to bottom. ``all`` sets `REFUSED`;
-    `check_root_text` refuses an escaped name and an animation."""
+    margin shorthand, or its block form, the top and bottom it reaches, a logical side
+    the top or bottom it is in a page written top to bottom, and an outline by
+    `outline_parts` with ``tokens``. ``all`` sets `REFUSED`; `check_root_text` refuses an
+    escaped name and an animation."""
     if name == "all":
         return {REFUSED: name}
     if name == "outline":
-        return outline_parts(value)
-    if name == "outline-width" and value.startswith("-"):
+        return outline_parts(value, tokens)
+    value = value.lower()
+    if name == "outline-width" and negative(value):
         return {}
     words = words_of(value)
     if any(name.startswith(box) for box in BOXES) and not (
         value in KEYWORDS or "\\" in value or all(BOX_WORD.fullmatch(word) for word in words)
     ):
+        if any(re.match(r"[+-]?[\d.]", word) and not BOX_WORD.fullmatch(word) for word in words):
+            raise UnreadCss(value)
         return {}
     for box in BOXES:
         if name == box:
@@ -396,18 +534,33 @@ class LinkRule:
     on_focus: bool
 
 
+def either_visit(chosen: Selector, link: Element, head: str) -> bool:
+    """Whether ``chosen`` matches ``link`` whether or not the link was visited. A selector
+    that matches it in only one of those states is refused."""
+    unvisited = chosen.matches(link)
+    if chosen.matches(link, "visited") != unvisited:
+        raise UnreadCss(unshielded(head))
+    return unvisited
+
+
 def reach_of(head: str, link: Element) -> tuple[tuple[int, int, int], bool] | None:
     """How one selector, as `style_rules` gives it, reaches ``link``: its specificity, and
-    whether only while the link has focus. ``None`` where its last compound can't match the
-    link in any state. A selector that would reach it in a state other than focus, or with
-    a state anywhere but its end, is refused."""
-    anyhow = STATES.sub("*", re.sub(r":not\([^()]*\)", "", head, flags=re.I)).strip()
-    if not compound(unshielded(re.split(r"[\s>+~]+", anyhow)[-1])).matches(link):
+    whether only while the link has focus. ``None`` where it can't match the link in any
+    state. A selector that would reach it in a state other than focus, or with a state
+    anywhere but its end, is refused, and so is one that reaches it only while it is visited,
+    or only while it isn't."""
+    anyhow = head
+    while (bare := re.sub(r":not\([^()]*\)", "", anyhow, flags=re.I)) != anyhow:
+        anyhow = bare
+    anyhow = STATES.sub("*", anyhow).strip()
+    last = compound(unshielded(re.split(r"[\s>+~]+", anyhow)[-1]))
+    if not (last.matches(link) or last.matches(link, "visited")):
         return None
     if not STATES.search(head):
         chosen = selector(unshielded(head))
-        return (chosen.specificity, False) if chosen.matches(link) else None
-    if not selector(unshielded(anyhow)).matches(link):
+        return (chosen.specificity, False) if either_visit(chosen, link, head) else None
+    shape = selector(unshielded(anyhow))
+    if not (shape.matches(link) or shape.matches(link, "visited")):
         return None
     focus = ON_FOCUS.fullmatch(head.strip())
     if focus is None or STATES.search(focus["before"]):
@@ -415,19 +568,30 @@ def reach_of(head: str, link: Element) -> tuple[tuple[int, int, int], bool] | No
     before = focus["before"]
     if not before.strip() or before[-1] in f"{CSS_SPACES}>":
         before += "*"
-    a, b, c = selector(unshielded(before)).specificity
+    chosen = selector(unshielded(before))
+    if not either_visit(chosen, link, head):
+        return None
+    a, b, c = chosen.specificity
     return (a, b + len(re.findall(":focus", focus["states"], re.I)), c), True
 
 
-def link_rules(css: str, link: Element) -> dict[str, list[LinkRule]]:
-    """Every value a rule of ``css`` gives ``link`` among `LINK_PROPERTIES`, by property,
-    each declaration of a rule over an earlier one unless that one is important. A value
-    the resolver cannot read, a keyword or a `SUBSTITUTION`, is refused."""
+def link_rules(
+    css: str, link: Element, read: Callable[[str, str], dict[str, str]] | None = None
+) -> dict[str, list[LinkRule]]:
+    """Every value a rule of ``css`` gives ``link`` among the properties ``read`` takes from
+    a declaration, `LINK_PROPERTIES` by default, by property, each declaration of a rule over
+    an earlier one unless that one is important. A value the resolver cannot read, a keyword
+    or a `SUBSTITUTION`, is refused where its rule reaches ``link``."""
+    tokens = root_tokens(css)
     found: dict[str, list[LinkRule]] = {}
-    for style in style_rules(css):
+    for style in rules_of(css):
         declared: dict[str, tuple[str, bool]] = {}
         for name, value, important in style.declarations:
-            for longhand, setting in link_longhands(name, value.lower()).items():
+            try:
+                given = read(name, value) if read else link_longhands(name, value, tokens)
+            except UnreadCss as unread:
+                given = {REFUSED: str(unread)}
+            for longhand, setting in given.items():
                 if important or not declared.get(longhand, ("", False))[1]:
                     declared[longhand] = (setting, important)
         if not declared:
@@ -464,18 +628,18 @@ def link_value(
 
 def pixels(value: str, view: View) -> float:
     """A length in CSS pixels on ``view``: pixels, or a `rem` of the root's text size."""
-    found = re.fullmatch(r"([+-]?(?:\d+\.?\d*|\.\d+))(px|rem)?", OUTLINE_WIDTHS.get(value, value))
+    found = re.fullmatch(rf"([+-]?(?:{NUMBER.pattern}))(px|rem)?", OUTLINE_WIDTHS.get(value, value))
     if found is None or (found.group(2) is None and float(found.group(1)) != 0):
         raise UnreadCss(value)
     return float(found.group(1)) * (view.root_text if found.group(2) == "rem" else 1)
 
 
-def views_for(rules: dict[str, list[LinkRule]]) -> list[View]:
-    """`FOOTER_VIEWS`, and the widths each length named by a media query around a rule that
-    reaches the link comes to at either text size, rounded down, and one pixel past that,
-    so a view falls in every window between two of them that holds a whole pixel."""
+def views_for(*found: dict[str, list[LinkRule]]) -> list[View]:
+    """`FOOTER_VIEWS`, and the widths each length named by a media query around a rule in
+    ``found`` comes to at either text size, rounded down, and one pixel past that, so a view
+    falls in every window between two of them that holds a whole pixel."""
     widths: set[int] = set()
-    for rule in (one for each in rules.values() for one in each):
+    for rule in (one for rules in found for each in rules.values() for one in each):
         media = rule.media.media if isinstance(rule.media, Supports) else rule.media
         for number, unit in re.findall(r"(\d*\.?\d+)(px|rem|em)", (media or "").lower()):
             for text in (16, 32):
@@ -512,21 +676,100 @@ def check_comments(css: str) -> None:
 
 
 ANIMATION = ("animation", "animation-name")
+SCALES = frozenset(("transform", "scale"))
+BOX_SIZES = frozenset(("height", "max-height", "block-size", "max-block-size"))
+LEFT_AS_IS = frozenset(("none", "auto"))
+FIRST_LINE = re.compile(r"::?first-line(?![\w-])", re.I)
+TEXT_NAMES = frozenset(("all", "font", "font-size", "line-height"))
 
 
 def check_root_text(css: str, link: Element) -> None:
     """Refuse a rule that sets the root element's text size, which the views give and every
-    `rem` is read by, that zooms the link or an element above it, or that reaches either
-    with an escaped property name or an animation, which may stand for any of these."""
-    styles = style_rules(css)
+    `rem` is read by, that zooms, scales or transforms the link or an element above it, that
+    sets the link's height, that sets the text size or line height of the first line of
+    either, or that reaches either with an escaped property name or an animation, which may
+    stand for any of these."""
+    styles = rules_of(css)
     for one in (link, *link.ancestors()):
         names = {"zoom", "font", "font-size"} if one.tag == "html" else {"zoom"}
+        sized = SCALES | BOX_SIZES if one is link else SCALES
         for style in styles:
+            heads = style.selectors.split(",")
             if any(
-                name in names or "\\" in name or (name in ANIMATION and value != "none")
+                name in names
+                or (name in sized and value.strip().lower() not in LEFT_AS_IS)
+                or "\\" in name
+                or (name in ANIMATION and value != "none")
                 for name, value, _ in style.declarations
-            ) and any(reach_of(head, one) is not None for head in style.selectors.split(",")):
+            ) and any(reach_of(head, one) is not None for head in heads):
                 raise UnreadCss(style.selectors)
+            lines = [FIRST_LINE.sub("", head) for head in heads if FIRST_LINE.search(head)]
+            if any(name in TEXT_NAMES or "\\" in name for name, _, _ in style.declarations) and any(
+                reach_of(head, one) is not None for head in lines
+            ):
+                raise UnreadCss(style.selectors)
+
+
+TEXT_PROPERTIES = ("font-size", "line-height")
+INHERITED = "inherited"
+"""What `text_longhands` sets for ``inherit`` or ``unset``, which take the parent's value
+for the text size and the line height."""
+
+
+def text_longhands(name: str, value: str) -> dict[str, str]:
+    """What one declaration sets of the text size and the line height: `INHERITED` for
+    ``inherit`` or ``unset``, nothing for a negative value, which a browser drops, and
+    `REFUSED` for ``all`` and any other ``font`` shorthand, which may set either."""
+    value = value.strip().lower()
+    if name == "all":
+        return {REFUSED: name}
+    if name == "font":
+        return (
+            dict.fromkeys(TEXT_PROPERTIES, INHERITED)
+            if value in ("inherit", "unset")
+            else {REFUSED: name}
+        )
+    if name not in TEXT_PROPERTIES:
+        return {}
+    if value in ("inherit", "unset"):
+        return {name: INHERITED}
+    return {} if negative(value) else {name: value.removeprefix("-")}
+
+
+def text_pixels(value: str, size: float, view: View) -> float:
+    """A text size or a line height in CSS pixels on ``view``: pixels, a `rem` of the root's
+    text size, or an `em` or a percent of ``size``. Any other value is refused."""
+    found = re.fullmatch(rf"({NUMBER.pattern})(px|rem|em|%)?", value)
+    if found is None or (found.group(2) is None and float(found.group(1)) != 0):
+        raise UnreadCss(value)
+    amount = float(found.group(1))
+    return {"rem": amount * view.root_text, "em": amount * size, "%": amount * size / 100}.get(
+        found.group(2) or "px", amount
+    )
+
+
+def line_pixels(texts: list[dict[str, list[LinkRule]]], view: View, *, focused: bool) -> float:
+    """The footer link's line height in CSS pixels on ``view``, inherited down ``texts``, the
+    text rules of each element from the root to the link: a number times the link's own text
+    size, or a length as it comes to where it is set. Only the link's own rules for focus
+    hold while it has focus. ``normal`` depends on the font and is refused."""
+    size: float = view.root_text
+    line, scaled = None, False
+    for depth, rules in enumerate(texts):
+        mine = focused and depth == len(texts) - 1
+        given = link_value(rules, "font-size", view, focused=mine)
+        if depth and given is not None and given != INHERITED:
+            size = text_pixels(given, size, view)
+        given = link_value(rules, "line-height", view, focused=mine)
+        if given == "normal":
+            line = None
+        elif given is not None and given != INHERITED:
+            scaled = NUMBER.fullmatch(given) is not None
+            line = float(given) if scaled else text_pixels(given, size, view)
+    if line is None:
+        msg = f"the footer link's line height is the font's own on {view}"
+        raise UnreadCss(msg)
+    return line * size if scaled else line
 
 
 @functools.cache
@@ -550,14 +793,16 @@ def footer_links() -> tuple[Element, ...]:
 def check_footer_link(css: str) -> None:
     """Assert that the footer's link keeps its 44 pixels to press and its focus outline in
     room of its own, on every view, at rest and with focus, whichever rules reach it: an
-    inline block padded at least 0.8rem above and below, so the padding grows its line; no
-    rule takes the press area back with a margin; and its margin and the room a scroll to
-    it keeps are at least as deep above and below as its outline reaches, and the outline is
-    drawn."""
+    inline block padded at least 0.8rem above and below, so the padding grows its line,
+    and at least 44 pixels tall with the line height it inherits; no rule takes the press
+    area back with a margin; and its margin and the room a scroll to it keeps are at least
+    as deep above and below as its outline reaches, and the outline is drawn in a color that
+    shows."""
     check_comments(css)
     for link in footer_links():
         check_root_text(css, link)
         rules = link_rules(css, link)
+        texts = [link_rules(css, one, text_longhands) for one in [link, *link.ancestors()][::-1]]
         taken = [
             rule.value
             for side in SIDES
@@ -565,12 +810,14 @@ def check_footer_link(css: str) -> None:
             if pixels(rule.value, FOOTER_VIEWS[0]) < 0
         ]
         assert not taken, f"a rule margins the footer link's press area back in: {taken}"
-        for view in views_for(rules):
+        for view in views_for(rules, *texts):
             style = link_value(rules, "outline-style", view, focused=True)
             if style is None or style == "auto":
                 msg = f"the browser's own focus outline on {view}"
                 raise UnreadCss(msg)
             assert style not in ("none", "hidden"), f"the footer link shows no outline on {view}"
+            color = link_value(rules, "outline-color", view, focused=True) or "currentcolor"
+            assert visible(color), f"the footer link's outline can't be seen on {view}"
             width = link_value(rules, "outline-width", view, focused=True) or "medium"
             offset = link_value(rules, "outline-offset", view, focused=True) or "0"
             assert pixels(width, view) > 0, f"the footer link's outline has no width on {view}"
@@ -579,6 +826,11 @@ def check_footer_link(css: str) -> None:
                 seen = f"{view}, {'with focus' if focused else 'at rest'}"
                 shown = link_value(rules, "display", view, focused=focused)
                 assert shown == "inline-block", f"the footer link is {shown} on {seen}"
+                tall = line_pixels(texts, view, focused=focused) + sum(
+                    pixels(link_value(rules, f"padding-{side}", view, focused=focused) or "0", view)
+                    for side in SIDES
+                )
+                assert tall >= 44, f"the footer link is {tall:.2f} pixels tall on {seen}"
                 for side in SIDES:
                     padding = link_value(rules, f"padding-{side}", view, focused=focused)
                     assert pixels(padding or "0", view) >= 0.8 * view.root_text, (
@@ -693,6 +945,135 @@ TAKES_THE_ROOM = {
     "past-a-fraction-of-a-pixel": "@media (min-width: 4000.5px) { .colophon a { margin: 0; } }",
     "narrower-than-any-phone": "@media (max-width: 300.5px) { .colophon a { margin: 0; } }",
     "very-wide-screens": "@media (min-width: 200rem) { .colophon a { margin: 0; } }",
+    "an-outline-width-calculated-to-nothing": ".colophon a:focus-visible { "
+    "outline: calc(0px) solid red; }",
+    "an-outline-width-calculated-too-wide": ".colophon a:focus-visible { "
+    "outline: calc(10px) solid red; }",
+    "an-outline-width-of-the-smaller": ".colophon a:focus-visible { "
+    "outline: min(3px, 10px) solid red; }",
+    "a-calculation-in-capitals": ".colophon a:focus-visible { outline: CALC(0px) solid red; }",
+    "a-calculation-where-the-color-goes": ".colophon a:focus-visible { "
+    "outline: 3px solid calc(1px); }",
+    "a-function-inside-a-color": ".colophon a:focus-visible { "
+    "outline: 3px solid color-mix(in srgb, rgb(0 0 0), red); }",
+    "an-outline-color-never-set": ".colophon a:focus-visible { "
+    "outline: 3px solid var(--undefined-footer-outline); }",
+    "an-outline-color-named-in-another-case": ".colophon a:focus-visible { "
+    "outline: 3px solid var(--Blue-action); }",
+    "an-outline-color-set-on-some-screens": "@media (max-width: 30rem) { :root { --ring: red; } }\n"
+    ".colophon a:focus-visible { outline: 3px solid var(--ring); }",
+    "an-outline-color-set-on-the-link": ".colophon a { --ring: red; }\n"
+    ".colophon a:focus-visible { outline: 3px solid var(--ring); }",
+    "an-outline-color-set-on-the-root-element-by-name": "html { --ring: red; }\n"
+    ".colophon a:focus-visible { outline: 3px solid var(--ring); }",
+    "an-outline-color-that-is-a-width": ":root { --blue-action: 10px; }",
+    "an-outline-color-that-is-a-keyword": ":root { --ring: inherit; }\n"
+    ".colophon a:focus-visible { outline: 3px solid var(--ring); }",
+    "an-important-token-before-a-later-one": ":root { --blue-action: 10px !important; }\n"
+    ":root { --blue-action: red; }",
+    "a-fallback-that-is-a-width": ".colophon a:focus-visible { "
+    "outline: 3px solid var(--unset-ring, 10px); }",
+    "a-whole-outline-too-wide": ":root { --ring: 4px solid red; }\n"
+    ".colophon a:focus-visible { outline: var(--ring); }",
+    "a-token-from-another-token": ":root { --ring: var(--blue-action); }\n"
+    ".colophon a:focus-visible { outline: 3px solid var(--ring); }",
+    "a-fallback-from-another-token": ".colophon a:focus-visible { "
+    "outline: 3px solid var(--unset-ring, var(--blue-action)); }",
+    "an-environment-value": ".colophon a:focus-visible { "
+    "outline: env(safe-area-inset-top) solid red; }",
+    "a-focus-rule-for-a-link-without-an-address": ".colophon a:focus-visible { margin: 0; }\n"
+    ".colophon a:not([href]):focus-visible { margin: 5px 0; }",
+    "a-focus-rule-for-no-link": ".colophon a:focus { margin: 0; }\n"
+    ".colophon a:not(a):focus { margin: 5px 0; }",
+    "no-line-to-the-link": "footer.colophon a { line-height: 0; }",
+    "no-line-above": "footer { line-height: 0; }",
+    "a-line-just-short": ".colophon a { padding: 1rem 0; line-height: 11.9px; }",
+    "text-too-small-for-the-line": ".colophon a { font-size: 0.1rem; }",
+    "a-line-in-ems-of-the-footer": ".colophon { line-height: 1em; }\n"
+    ".colophon a { font-size: 3rem; }",
+    "a-line-only-with-focus": ".colophon a:focus-visible { line-height: 0; }",
+    "a-line-on-narrow-screens": "@media (max-width: 30rem) { .colophon a { line-height: 0; } }",
+    "a-line-left-to-the-font": ".colophon a { line-height: normal; }",
+    "the-font-shorthand": ".colophon a { font: 8px/0 sans-serif; }",
+    "a-line-from-a-custom-property": ".colophon a { line-height: var(--line); }",
+    "a-calculated-line": ".colophon a { line-height: calc(0px); }",
+    "a-text-size-keyword": ".colophon a { font-size: smaller; }",
+    "a-set-height": ".colophon a { height: 20px; }",
+    "a-largest-block-size": ".colophon a { max-block-size: 1rem; }",
+    "a-scaled-link": ".colophon a { transform: scale(0.5); }",
+    "a-scaled-footer": "footer { scale: 0.5; }",
+    "a-short-line-in-a-media-window": "@media (min-width: 600px) and (max-width: 601px) { "
+    "footer { line-height: 0; } }",
+    "text-in-ems-too-small": ".colophon p { font-size: 0.1em; }",
+    "text-in-percent-too-small": ".colophon p { font-size: 10%; }",
+    "a-line-in-rem-just-short": ".colophon a { padding: 1rem 0; line-height: 0.74rem; }",
+    "everything-reset-above": "footer { all: initial; }",
+    "a-first-line-with-no-height": ".colophon a::first-line { line-height: 0; }",
+    "a-first-line-above": ".colophon p:first-line { font-size: 0.1rem; }",
+    "a-word-that-is-no-color": ".colophon a:focus-visible { outline: none; }\n"
+    ".colophon a:focus-visible { outline: 3px solid banana; }",
+    "a-calculation-glued-to-a-color": ".colophon a:focus-visible { "
+    "outline: solid rgb(0 0 0)calc(0px); }",
+    "a-line-height-with-a-trailing-point": ".colophon a { line-height: 0; }\n"
+    ".colophon a { line-height: 2.; }",
+    "a-margin-with-a-trailing-point": ".colophon a { margin: 0; scroll-margin: 0; }\n"
+    ".colophon a { margin: 5.px 0; scroll-margin: 5.px 0; }",
+    "a-line-of-minus-zero": ".colophon a { line-height: -0; }",
+    "an-outline-of-minus-zero": ".colophon a:focus-visible { outline: -0 solid red; }",
+    "an-outline-width-of-minus-zero": ".colophon a:focus-visible { outline-width: -0px; }",
+    "a-margin-in-exponent-notation": ".colophon a { margin: 0e0px 0; scroll-margin: 0e0px 0; }",
+    "two-numbers-run-together": ".colophon a { margin: 0.0.5px 0; }",
+    "an-escaped-name-on-the-first-line": ".colophon a::first-line { line-h\\65ight: 0; }",
+    "a-hex-color-of-five-digits": ".colophon a:focus-visible { outline: 3px solid #12345; }",
+    "the-footer-text-halved": ".colophon { font-size: 50%; }",
+    "no-line-to-this-link": ".colophon a { line-height: 0; }",
+    "a-clear-outline": ".colophon a:focus-visible { outline-color: transparent; }",
+    "a-clear-outline-in-capitals": ".colophon a:focus-visible { outline-color: TRANSPARENT; }",
+    "a-clear-outline-in-the-shorthand": ".colophon a:focus-visible { "
+    "outline: 3px solid transparent; }",
+    "a-clear-hex-of-four-digits": ".colophon a:focus-visible { outline: 3px solid #4c70; }",
+    "a-clear-hex-of-eight-digits": ".colophon a:focus-visible { outline-color: #4c719300; }",
+    "a-clear-rgba": ".colophon a:focus-visible { outline-color: rgba(76, 113, 147, 0); }",
+    "a-clear-rgb-in-percent": ".colophon a:focus-visible { outline-color: rgb(76 113 147 / 0%); }",
+    "a-clear-hsl": ".colophon a:focus-visible { outline: 3px solid hsl(210 32% 44% / 0); }",
+    "an-alpha-of-none": ".colophon a:focus-visible { outline-color: rgb(76 113 147 / none); }",
+    "a-negative-alpha": ".colophon a:focus-visible { outline-color: rgb(76 113 147 / -0.5); }",
+    "a-clear-token": ":root { --ring: transparent; }\n"
+    ".colophon a:focus-visible { outline: 3px solid var(--ring); }",
+    "the-action-color-cleared": ":root { --blue-action: transparent; }",
+    "a-clear-color-held-at-rest": ".colophon a { outline-color: transparent !important; }",
+    "a-clear-color-as-strong-as-the-focus-rule": ".colophon a { outline-color: transparent; }",
+    "the-text-color-for-an-outline": ".colophon a:focus-visible { outline-color: currentcolor; }",
+    "an-outline-with-no-color": ".colophon a:focus-visible { outline: 3px solid; }",
+    "an-empty-fallback": ".colophon a:focus-visible { outline: 3px solid var(--unset-ring,); }",
+    "a-mixed-color": ".colophon a:focus-visible { "
+    "outline: 3px solid color-mix(in srgb, transparent, transparent); }",
+    "a-color-by-the-scheme": ".colophon a:focus-visible { "
+    "outline: 3px solid light-dark(transparent, red); }",
+    "a-color-a-browser-cant-show": ".colophon a:focus-visible { outline-color: invert; }",
+    "a-color-made-from-a-clear-one": ".colophon a:focus-visible { "
+    "outline-color: rgb(from transparent r g b); }",
+    "a-color-made-from-a-clear-one-in-the-shorthand": ".colophon a:focus-visible { "
+    "outline: 3px solid rgb(from #0000 r g b); }",
+    "a-color-made-from-a-clear-one-in-a-token": ":root { "
+    "--blue-action: hsl(from #4c719300 h s l); }",
+    "a-clear-color-once-visited": ".colophon a:visited { outline-color: transparent; }",
+    "a-clear-color-once-visited-with-focus": ".colophon a:visited:focus-visible { "
+    "outline-color: transparent; }",
+    "a-clear-color-unless-unvisited": ".colophon a:not(:link) { outline-color: transparent; }",
+    "a-clear-color-unless-unvisited-with-focus": ".colophon a:not(:link):focus-visible { "
+    "outline-color: transparent; }",
+    "a-word-that-is-no-color-in-a-weaker-rule": "footer a { outline: 3px solid banana; }",
+    "an-undefined-width": ".colophon a:focus-visible { "
+    "outline: var(--undefined-footer-width) solid red; }",
+    "a-token-set-elsewhere-before-longhands": ".card { --ring: 1px dotted red; }\n"
+    ".colophon a:focus-visible { outline: var(--ring); outline-style: solid; "
+    "outline-color: red; }",
+    "a-clear-token-over-a-fallback": ":root { --ring: transparent; }\n"
+    ".colophon a:focus-visible { outline: 3px solid var(--ring, red); }",
+    "an-escaped-number": ".colophon a { margin: \\30 ; scroll-margin: \\30 ; }",
+    "a-clear-color-unless-not-visited": ".colophon a:not(:not(:visited)) { "
+    "outline-color: transparent; }",
 }
 """A rule added after the sheet's own, which takes some of the footer link's room on some
 view or state, or which the resolver can't read and so refuses."""
@@ -720,6 +1101,71 @@ LEAVES_THE_ROOM = {
     "no-animation": ".colophon a { animation: none; }",
     "an-animation-elsewhere": ".places a { animation: squash 1s; }",
     "text-size-below-the-root": "footer { font-size: 50%; }",
+    "an-outline-a-browser-drops-for-two-colors": ".colophon a:focus-visible { "
+    "outline: 6px solid red red; }",
+    "an-outline-a-browser-drops-for-two-widths": ".colophon a:focus-visible { "
+    "outline: 6px 6px solid; }",
+    "an-outline-a-browser-drops-for-two-styles": ".colophon a:focus-visible { "
+    "outline: 6px solid dotted; }",
+    "a-color-function": ".colophon a:focus-visible { outline: 3px solid rgb(76 113 147); }",
+    "a-hex-color": ".colophon a:focus-visible { outline: 3px solid #4c7193; }",
+    "an-outline-color-with-a-fallback": ".colophon a:focus-visible { "
+    "outline: 3px solid var(--unset-ring, red); }",
+    "a-whole-outline-from-the-root": ":root { --ring: 3px solid red; }\n"
+    ".colophon a:focus-visible { outline: var(--ring); }",
+    "a-later-token": ":root { --blue-action: 10px; }\n:root { --blue-action: red; }",
+    "a-token-on-the-root-in-capitals": ":ROOT { --ring: red; }\n"
+    ".colophon a:focus-visible { outline: 3px solid var(--ring); }",
+    "a-substitution-in-capitals": ".colophon a:focus-visible { "
+    "outline: 3px solid VAR(--blue-action); }",
+    "spaces-inside-a-substitution": ".colophon a:focus-visible { "
+    "outline: 3px solid var( --blue-action ); }",
+    "a-focus-rule-for-this-link-by-what-it-is-not": ".colophon a:focus-visible { margin: 0; }\n"
+    ".colophon a:not(.other):focus-visible { margin: 5px 0; }",
+    "a-line-at-the-value": ".colophon a { padding: 1rem 0; line-height: 12px; }",
+    "a-line-just-over": ".colophon a { padding: 1rem 0; line-height: 12.1px; }",
+    "a-taller-line-above": "footer { line-height: 2; }",
+    "a-line-in-numbers-of-the-link-text": ".colophon { line-height: 1; }\n"
+    ".colophon a { font-size: 2rem; }",
+    "the-font-inherited": ".colophon a { font: inherit; }",
+    "the-line-inherited": ".colophon a { line-height: inherit; font-size: unset; }",
+    "a-text-size-in-percent": ".colophon a { font-size: 100%; }",
+    "a-height-left-to-its-content": ".colophon a { height: auto; max-height: none; "
+    "block-size: auto; max-block-size: none; }",
+    "no-transform": ".colophon a { transform: none; scale: none; }",
+    "a-negative-line-dropped": ".colophon a { line-height: -1; }",
+    "a-short-line-elsewhere": ".places a { line-height: 0; }",
+    "the-font-line-overridden-below": "footer { line-height: normal; }\n"
+    ".colophon a { line-height: 2; }",
+    "an-outline-from-three-tokens": ":root { --w: 3px; --s: solid; --c: red; }\n"
+    ".colophon a:focus-visible { outline: var(--w) var(--s) var(--c); }",
+    "a-focus-rule-for-the-footer-itself": "footer:focus-visible { line-height: 0; }",
+    "a-token-for-another-element": ".card { --ring: red; }\n"
+    ".card a:focus-visible { outline: 3px solid var(--ring); }",
+    "a-keyword-outline-for-another-element": ".card a:focus-visible { outline: inherit; }",
+    "a-first-line-elsewhere": ".places p::first-line { line-height: 0; }",
+    "a-first-line-color": ".colophon a::first-line { color: red; }",
+    "a-text-size-in-ems-above": ".colophon p { font-size: 2em; }",
+    "a-line-in-ems-of-large-footer-text": ".colophon { font-size: 2rem; line-height: 1em; }\n"
+    ".colophon a { font-size: 0.5rem; }",
+    "the-line-inherited-over-a-short-one": ".colophon a { line-height: 0; }\n"
+    ".colophon a { line-height: inherit; }",
+    "an-outline-color-of-its-own": ".colophon a:focus-visible { outline-color: red; }",
+    "an-outline-color-in-capitals": ".colophon a:focus-visible { outline-color: RED; }",
+    "a-hex-with-full-alpha": ".colophon a:focus-visible { outline-color: #4c7193ff; }",
+    "a-hex-of-four-digits-just-seen": ".colophon a:focus-visible { outline: 3px solid #4c71; }",
+    "an-alpha-just-over-none": ".colophon a:focus-visible { "
+    "outline-color: rgb(76 113 147 / 0.01); }",
+    "an-alpha-in-a-legacy-rgba": ".colophon a:focus-visible { "
+    "outline-color: rgba(76, 113, 147, 1); }",
+    "an-alpha-in-percent": ".colophon a:focus-visible { "
+    "outline: 3px solid hsl(210 32% 44% / 50%); }",
+    "a-clear-color-weaker-than-the-focus-rule": "footer a { outline-color: transparent; }",
+    "a-clear-color-elsewhere": ".places a:focus-visible { outline-color: transparent; }",
+    "a-clear-color-for-another-visited-link": ".places a:visited { outline-color: transparent; }",
+    "a-visited-footer-which-is-no-link": ".colophon:visited a { outline-color: transparent; }",
+    "an-outline-a-browser-drops-for-a-keyword": ".colophon a:focus-visible { "
+    "outline: 3px solid inherit; }",
 }
 """A rule added after the sheet's own that leaves the footer link's room as it is."""
 
