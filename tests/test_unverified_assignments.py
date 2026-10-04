@@ -31,7 +31,7 @@ from blossom.reconciliation import (
     classify_confidence,
 )
 from blossom.stores.project_state import DUE_THIS_WEEK_SPAN
-from tests.support import SAME_ORIGIN, fixture_settings, record
+from tests.support import SAME_ORIGIN, fixture_settings, record, words
 
 PINNED_TODAY = "2026-08-19"
 
@@ -432,6 +432,46 @@ def test_a_contested_date_is_named_as_recorded_and_the_card_says_to_check_it(
     assert "LMS" not in contradicted
     assert "LMS" not in disagreeing
     assert "PARENT_ENTRY" not in disagreeing
+
+
+def due_line(card: str) -> str:
+    """The card's due line, as the words it reads."""
+    start = card.index('<p class="due">')
+    return words(card[start : card.index("</p>", start)])
+
+
+@pytest.mark.parametrize(
+    ("day", "said"),
+    [
+        ("2026-08-19", "Due Wednesday, August 19 Today School portal"),
+        ("2026-08-20", "Due Thursday, August 20 Tomorrow School portal"),
+        ("2026-08-21", "Due Friday, August 21 School portal"),
+        ("2026-08-18", "Due Tuesday, August 18 School portal"),
+    ],
+)
+def test_a_card_due_today_or_tomorrow_says_so_after_the_date(
+    tmp_path: pathlib.Path, day: str, said: str
+) -> None:
+    """The household's day decides it; the exact date comes first and stays."""
+    card = lab_page(tmp_path, [claim(day)], due_date=day)
+
+    assert due_line(card) == said
+    assert card.count('class="due-near"') == (1 if "Today" in said or "Tomorrow" in said else 0)
+
+
+def test_a_date_in_doubt_is_never_called_today_or_tomorrow(tmp_path: pathlib.Path) -> None:
+    contradicted = lab_page(tmp_path, [claim("2026-08-21")], due_date="2026-08-19")
+    disagreeing = lab_page(
+        tmp_path, [claim("2026-08-20"), claim("2026-08-21", "PARENT_ENTRY")], due_date="2026-08-20"
+    )
+    undated = lab_page(tmp_path, [claim("2026-08-19")], due_date=None)
+
+    assert due_line(contradicted) == "Recorded date Wednesday, August 19"
+    assert due_line(disagreeing) == "Recorded date Thursday, August 20"
+    assert due_line(undated) == "Due date not recorded"
+    for card in (contradicted, disagreeing, undated):
+        assert "due-near" not in card
+        assert "<strong>Check this date.</strong>" in card
 
 
 def test_every_card_carries_exactly_one_quiet_line_on_the_fixtures() -> None:

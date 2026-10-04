@@ -88,8 +88,8 @@ LONG = ("Read the chapter on the canal era and answer every question in full. " 
     :40_000
 ].strip()
 
-JUMP = '<p class="jump"><a href="#update-or-turn-in">Update or turn in</a></p>'
-HER_JUMP = '<p class="jump"><a href="#update-or-turn-in">Her update and turning it in</a></p>'
+JUMP = '<p class="jump"><a href="#update-or-turn-in">Your update and hand-in status</a></p>'
+HER_JUMP = '<p class="jump"><a href="#update-or-turn-in">Her update and hand-in status</a></p>'
 HEADING = (
     '<h2 class="update-heading" id="instructions" tabindex="-1">Instructions from the school</h2>'
 )
@@ -124,7 +124,12 @@ WAITING_HEADING = (
 FOLD = "<summary>Earlier instructions from the school</summary>"
 CARD_FOLD = "<summary>Instructions from the school waiting for review, and earlier ones</summary>"
 HER_HELP = (
-    '<p class="support-links"><a href="/student/due-this-week#ask-for-help">Ask for help</a></p>'
+    '<p class="support-links"><a href="/student/due-this-week#ask-for-help">'
+    "Ask a parent for help</a></p>"
+)
+NOT_ATTACHED = (
+    "This opens Help on My week. The request won't include this assignment, so name it in "
+    "your note if you like."
 )
 THEIR_HELP = (
     '<p class="support-links"><a href="/parent#help-she-asked-for">Help she asked for</a></p>'
@@ -490,7 +495,7 @@ def test_the_details_say_what_the_work_is_before_they_ask_about_it(
         *([NOTES] if state == "crowded" else []),
         THEIR_HELP if parent else HER_HELP,
         STUDENT_HEADING if parent else UPDATE_HEADING,
-        '<section class="hand-in" id="turning-it-in"',
+        '<h2 class="update-heading" id="turning-it-in" tabindex="-1">Turning it in</h2>',
         '<section class="evidence" id="evidence" tabindex="-1">',
         *(["<summary>Update history<span"] if state != "quiet" else []),
     ]
@@ -1574,15 +1579,19 @@ def test_help_is_one_plain_link_to_the_help_that_is_there(
     page = main_of(details)
     if reader == "a parent":
         assert THEIR_HELP in page
-        assert "Ask for help" not in page
+        assert "Ask a parent for help" not in page
+        assert "Help on My week" not in page
         assert family is not None
         assert '<section id="help-she-asked-for"' in family.text
     else:
         assert HER_HELP in page
+        assert NOT_ATTACHED in unescape(page)
         assert "Help she asked for" not in page
     assert 'id="ask-for-help"' in week
     help_link = re.search(
-        r'<p class="support-links"><a href="([^"]+)">(Ask for help|Help she asked for)</a>', page
+        r'<p class="support-links"><a href="([^"]+)">'
+        r"(Ask a parent for help|Help she asked for)</a>",
+        page,
     )
     assert help_link is not None
     assert urlsplit(unescape(help_link.group(1))).query == ""
@@ -1603,7 +1612,7 @@ def test_the_new_parts_speak_to_whoever_reads(tmp_path: pathlib.Path, reader: st
     opening = page[page.index('<p class="jump">') : page.index('id="update-or-turn-in"')]
     if reader == "a parent":
         for words in (
-            "Her update and turning it in",
+            "Her update and hand-in status",
             "Help she asked for",
             "From her homework note",
             "She wrote: <q>Show the working.</q>",
@@ -1614,8 +1623,8 @@ def test_the_new_parts_speak_to_whoever_reads(tmp_path: pathlib.Path, reader: st
         assert re.search(r"\b(you|your)\b", opening, re.IGNORECASE) is None
     else:
         for words in (
-            "Update or turn in",
-            "Ask for help",
+            "Your update and hand-in status",
+            "Ask a parent for help",
             "From your homework note",
             "You wrote: <q>Show the working.</q>",
             "nor your own updates",
@@ -1711,6 +1720,7 @@ def test_the_new_places_show_their_focus_and_their_links_are_as_tall_as_a_contro
         "#instructions:focus",
         "#waiting-instructions:focus",
         "#update-or-turn-in:focus",
+        "#turning-it-in:focus",
         "#problem-summary:focus",
         '.detail .problem[tabindex="-1"]:focus',
     ):

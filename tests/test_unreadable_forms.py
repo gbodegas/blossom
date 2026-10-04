@@ -735,7 +735,7 @@ def test_her_ask_for_help_goes_back_to_help_on_her_week(
         f"/student/actions/homework-notes/{NOT_A_NOTE}/ask-for-help": [BACK_TO_HELP],
     }
     assert week.status_code == 200
-    assert len(re.findall(r'<section [^>]*id="help" tabindex="-1"', week.text)) == 1
+    assert len(re.findall(r'<h2 id="help" tabindex="-1">', week.text)) == 1
 
 
 # ------------------------------------------------------------------ 8. half of a character

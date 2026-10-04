@@ -149,6 +149,7 @@ def test_the_fixtures_span_two_school_weeks_with_every_state_named() -> None:
     with TestClient(create_app(settings), headers=SAME_ORIGIN) as client:
         this_week = client.get("/student/due-this-week").text
         next_week = client.get("/student/due-this-week", params={"week": "2026-08-24"}).text
+        details = client.get("/student/assignments/assignment-science-fair-proposal").text
 
     both = this_week + next_week
     for title in json.loads((FIXTURES / "assignments.json").read_text(encoding="utf-8")):
@@ -161,7 +162,8 @@ def test_the_fixtures_span_two_school_weeks_with_every_state_named() -> None:
     assert "school portal (day header): 2026-08-21" in this_week
     assert "school portal (title): 2026-08-22" in this_week
     assert "Due date not recorded" in this_week
-    assert "Reported status: not started" in this_week
+    assert "Reported status:" not in this_week
+    assert "Reported status: not started" in details
     assert "Recorded date Wednesday, August 26" in this_week
     assert "The school says otherwise." in this_week
     assert "Assigned this week, due later" in this_week

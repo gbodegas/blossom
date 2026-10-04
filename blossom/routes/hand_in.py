@@ -514,7 +514,7 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     day; a page whose head has moved on is answered 409 with what stands now
     above a form still holding what she meant to save, and nothing is
     overwritten; anything else is appended. A next step left in the form
-    beside another state is not kept, and the page says so beside the field.
+    beside another state is not kept, and the result says so.
     Words the record will not keep are said beside the field they are in,
     422, with everything else as she left it. Her work update is not read
     and not changed.
@@ -534,6 +534,7 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     token = fields.get("expected_hand_in_id", "").strip()
     # A recoverable choice is not permission to accept the malformed form.
     chosen = said if said in STATES else None
+    step_dropped = said != NEEDS_HAND_IN and action.strip() != ""
 
     def refused(problem: str, code: int, *, field: str | None = None) -> Response:
         if view is not None:
@@ -643,9 +644,9 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
         case HandInAlreadySaved(head=stands) if view is not None:
             where = after_the_list(view, "same", assignment_id, stands.event_id)
         case HandInSaved():
-            where = after(assignment_id, "saved", back)
+            where = after(assignment_id, "saved_without_step" if step_dropped else "saved", back)
         case HandInAlreadySaved():
-            where = after(assignment_id, "same", back)
+            where = after(assignment_id, "same_without_step" if step_dropped else "same", back)
         case HandInConflict():
             return refused(HAND_IN_CHANGED, status.HTTP_409_CONFLICT)
         case HandInNotOffered():

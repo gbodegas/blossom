@@ -149,7 +149,7 @@ def test_the_instructions_come_before_the_update_and_every_fact_is_there_once() 
     in_order = [
         "<h1>",
         "<strong>Check this date.</strong>",
-        '<p class="jump"><a href="#update-or-turn-in">Update or turn in</a></p>',
+        '<p class="jump"><a href="#update-or-turn-in">Your update and hand-in status</a></p>',
         '<h2 class="update-heading" id="instructions" tabindex="-1">',
         "Bring the annotated map",
         '<h2 class="update-heading" id="update-or-turn-in" tabindex="-1">Your update</h2>',

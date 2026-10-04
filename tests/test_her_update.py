@@ -116,6 +116,8 @@ from tests.support import READING_LOG_ID as LOG
 from tests.support import SYLLABUS_ID as SYLLABUS
 from tests.support import after as redirected
 
+OFFERED = 'name="status" value="done"'
+"""Done offered on a card or a form: a button on her week, a choice on the details."""
 NAMED_BY_ITS_ROW = f'aria-label="{ESSAY_TITLE}, World History">{ESSAY_TITLE}</a> (World History).'
 """How a notice names the essay on a plan read by its rows: the saved title, a link to the
 assignment's details, and the course; never the id."""
@@ -182,8 +184,8 @@ def her_device(tmp_path: pathlib.Path, signed_in: bool) -> Iterator[TestClient]:
 
 
 def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit() -> None:
-    """The form is Done or Not yet, nothing chosen, a note behind a fold, and the line that
-    says what Done means. Saved, the card says so where it was, shows the update with its day
+    """The card offers Done and Not yet as buttons, a note behind a fold, and the page says
+    once what Done means. Saved, the card says so where it was, shows the update with its day
     and what it means, offers Change and Undo, and keeps its place among the active cards for
     the rest of the visit. A refresh or a return folds it under the active cards with a count."""
     with browser() as client:
@@ -198,11 +200,10 @@ def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit
         history = state_of(client).project_state.student_reports(ESSAY)
         week = read_week(state_of(client).project_state, state_of(client).project_state, PLAN_DATE)
 
-    assert "<legend>Your update<span" in card
-    assert 'type="radio" name="status" value="done">' in card
-    assert 'type="radio" name="status" value="not_yet">' in card
-    assert "checked" not in card
-    assert "Done means you have finished your part. It does not turn work in." in card
+    assert 'type="submit" name="status" value="done"' in card
+    assert 'type="submit" name="status" value="not_yet"' in card
+    assert 'type="radio"' not in card
+    assert "Done means you have finished your part. It does not turn work in." in before
     assert "<summary>Add a note (optional)<span" in card
     assert "Up to 500 characters. Your parents can read this. Notes on work being" in card
     assert "maxlength" not in card
@@ -245,6 +246,7 @@ def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit
     assert UPDATE_SAVED in card_for(refreshed, ESSAY)
     assert placed(returned)[1] == [ESSAY]
     assert '<details class="steps reported-done">' in returned
+    assert OFFERED not in saved
     assert [(item.status, item.note) for item in history] == [
         ("done", "Turned in on paper.\nTwo pages.")
     ]
@@ -268,6 +270,53 @@ def test_saving_another_card_in_the_same_visit_keeps_the_first_where_it_was() ->
     for name in (ESSAY, SYLLABUS):
         assert '<span class="pill">Your update: Done</span>' in card_for(second, name)
     assert sorted(placed(returned)[1]) == sorted([ESSAY, SYLLABUS])
+
+
+def quick_press(client: TestClient, page: str, name: str, status: str) -> Answer:
+    """A press of a card's own Done or Not yet button, sending the card's quick form as a
+    browser does: its hidden fields, the button's status, and the note as it stands."""
+    action = f"/student/actions/assignments/{name}/report"
+    start = page.index(f'<form method="post" action="{action}" class="quick">')
+    fields = form_fields(page[start:], action)
+    typed = {} if "note" in fields else {"note": ""}
+    return client.post(action, data={**fields, **typed, "status": status}, headers=PAGE_HEADERS)
+
+
+def test_a_cards_own_buttons_keep_the_cards_in_place_until_her_next_visit() -> None:
+    """Done and Not yet on a card, Done on a card saved as Not yet, and Undo each carry the
+    cards the visit keeps, their own among them, so no card moves until a refresh or a
+    return groups the week by its updates."""
+    undo = f"/student/actions/assignments/{SYLLABUS}/undo-report"
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        done = redirected(client, quick_press(client, before, ESSAY, "done")).text
+        not_yet = redirected(client, quick_press(client, done, SYLLABUS, "not_yet")).text
+        then_done = redirected(client, quick_press(client, not_yet, SYLLABUS, "done")).text
+        fields = form_fields(card_for(then_done, SYLLABUS), undo)
+        undone = client.post(undo, data=fields, headers=PAGE_HEADERS)
+        undone_page = redirected(client, undone).text
+        refreshed = client.get(undone.headers["location"], headers=PAGE_HEADERS).text
+        returned = client.get(PAGE, headers=PAGE_HEADERS).text
+        history = state_of(client).project_state.student_reports(SYLLABUS)
+
+    assert 'class="quick"' in card_for(before, ESSAY)
+    assert hidden(card_for(before, ESSAY), "in_place") == f"a:{place_key(ESSAY)}"
+    assert hidden(card_for(done, SYLLABUS), "in_place") == (
+        f"a:{place_key(ESSAY)}|a:{place_key(SYLLABUS)}"
+    )
+    assert fields["in_place"] == f"a:{place_key(ESSAY)}|a:{place_key(SYLLABUS)}"
+    for page in (done, not_yet, then_done, undone_page):
+        assert placed(page) == placed(before)
+        assert FOLD not in main_of(page)
+    assert '<span class="pill">Your update: Done</span>' in card_for(done, ESSAY)
+    assert '<span class="pill">Your update: Not yet</span>' in card_for(not_yet, SYLLABUS)
+    assert '<span class="pill">Your update: Done</span>' in card_for(then_done, SYLLABUS)
+    assert UPDATE_UNDONE in card_for(undone_page, SYLLABUS)
+    assert '<span class="pill">Your update: Not yet</span>' in card_for(undone_page, SYLLABUS)
+    assert [event.operation for event in history] == ["report", "report", "undo"]
+    assert placed(refreshed)[1] == [ESSAY]
+    assert SYLLABUS in placed(refreshed)[0]
+    assert placed(returned)[1] == [ESSAY]
 
 
 @pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])
@@ -880,7 +929,7 @@ def test_not_yet_says_what_it_means_inside_and_outside_todays_window() -> None:
         "Updates show the latest saved information, even when you view a different week." in later
     )
     assert (
-        "Saved as Not yet. It is outside today's planning window (August 19 to August 25, 2026)."
+        "Saved as Not yet. This is due after August 25, so it isn't included in today's plan yet."
         in card_for(later, poster)
     )
     assert "Reported August 19" in card_for(later, poster)
@@ -1008,7 +1057,7 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
     assert f'href="#title-{ESSAY}"' in stale.text
     assert to_nothing.status_code == 303
     assert UPDATE_UNDONE in blank_again
-    assert "<legend>Your update<span" in blank_again
+    assert OFFERED in blank_again
     assert hidden(blank_again, "expected_report_id") == statuses[LOG].head_id
     assert (statuses[ESSAY].work_state, statuses[LOG].work_state) == ("not_yet", "unreported")
 
@@ -1066,10 +1115,10 @@ def test_a_parent_signed_in_reads_her_update_and_cannot_make_one(tmp_path: pathl
     assert anonymous.status_code == 303
     assert anonymous.headers["location"] == "/sign-in"
     assert "No student update yet. Sign in as the student to update." in parent_card
-    assert "<legend>Your update<span" not in parent_card
+    assert OFFERED not in parent_card
     assert refused.status_code == 403
     assert NOT_HERS_TO_UPDATE in refused.text
-    assert "<legend>Your update<span" in card_for(as_her, ESSAY)
+    assert OFFERED in card_for(as_her, ESSAY)
     assert '<span class="pill">Your update: Done</span>' in card_for(saved, ESSAY)
     assert '<span class="pill">Student update: Done</span>' in parent_after
     assert "She wrote: <q>On paper.</q>" in parent_after
@@ -1185,7 +1234,7 @@ def test_the_assigned_later_list_takes_her_update_the_same_way() -> None:
         after = client.get(location, headers=PAGE_HEADERS).text
 
     _, _, later_before = before.partition("Assigned this week, due later")
-    assert "<legend>Your update<span" in card_for(later_before, LOG)
+    assert OFFERED in card_for(later_before, LOG)
     _, _, later_after = after.partition("Assigned this week, due later")
     assert "<summary>Reported done (1)</summary>" in later_after
     assert '<span class="pill">Your update: Done</span>' in card_for(later_after, LOG)
@@ -2078,7 +2127,7 @@ def test_a_not_yet_in_the_window_brings_the_plan_button_back_and_one_outside_doe
 
     assert outside.status_code == 303
     assert asks_for_nothing(still_nothing), still_nothing
-    assert "outside today's planning window (August 19 to August 25, 2026)." in card_for(
+    assert "This is due after August 25, so it isn't included in today's plan yet." in card_for(
         later_week, poster
     )
     assert 'action="/student/actions/plan"' in back
@@ -2149,7 +2198,7 @@ def test_taking_back_her_only_update_is_recent_activity_that_says_no_update_stan
     assert ESSAY_TITLE in section
     assert "She took back her update on August 19; no update stands." in section
     assert "She reported it" not in section
-    assert "<legend>Your update<span" in card_for(hers, ESSAY)
+    assert OFFERED in card_for(hers, ESSAY)
 
 
 def test_the_familys_planning_routes_refuse_a_run_that_found_nothing_left_to_plan(
@@ -2372,7 +2421,8 @@ def test_a_stale_undo_heads_nothing_as_her_unsaved_update(where: str, meanwhile:
     assert stale.status_code == 409
     assert (ALREADY_UNDONE if meanwhile == "undone" else CANNOT_UNDO) in stale.text
     assert UNSAVED_HEADING not in stale.text
-    assert ("<legend>Your update<span" in shown) is (meanwhile == "undone")
+    # With no update standing she is offered one; a card on her week left Not yet offers Done.
+    assert (OFFERED in shown) is (meanwhile == "undone" or where == "week")
 
 
 @pytest.mark.parametrize("where", ["week", "details"])

@@ -29,7 +29,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import StrEnum
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -182,6 +182,10 @@ def in_week(assignment: Assignment, noticing: Noticing, start: date) -> bool:
     return any(start <= given <= end for given in (assignment.due_date, *noticing.observed_dates))
 
 
+WindowSide = Literal["before", "after", "astride"]
+"""Where work outside today's planning window falls by every date given for it."""
+
+
 @dataclass(frozen=True)
 class PlanningWindow:
     """Today's planning window: the household's day through six days later, both included,
@@ -198,6 +202,19 @@ class PlanningWindow:
         if self.start.year != self.end.year:
             first = f"{first}, {self.start.year}"
         return f"{first} to {self.end:%B} {self.end.day}, {self.end.year}"
+
+    def outside(self, assignment: Assignment, noticing: Noticing) -> WindowSide | None:
+        """Where the record and every readable source date leave work the window does not
+        hold: all ``before`` it, all ``after`` it, or some each side, ``astride`` it.
+        ``None`` for work the window holds, undated work among it."""
+        if assignment.due_date is None or in_week(assignment, noticing, self.start):
+            return None
+        given = (assignment.due_date, *noticing.observed_dates)
+        if max(given) < self.start:
+            return "before"
+        if min(given) > self.end:
+            return "after"
+        return "astride"
 
 
 def planning_window(today: date) -> PlanningWindow:

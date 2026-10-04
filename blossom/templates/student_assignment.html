@@ -51,7 +51,7 @@
       first instruction: a plain link to the heading below, which takes the
       focus, so the next Tab reaches the update's first control.
     #}
-    <p class="jump"><a href="#{{ update_or_turn_in_id }}">{% if ctx.viewer == "parent" %}Her update and turning it in{% else %}Update or turn in{% endif %}</a></p>
+    <p class="jump"><a href="#{{ update_or_turn_in_id }}">{% if ctx.viewer == "parent" %}Her update and hand-in status{% else %}Your update and hand-in status{% endif %}</a></p>
     {% with words = assignment.words, to_a_parent = ctx.viewer == "parent", review_href = instructions_review %}{% include "student_instructions.html" %}{% endwith %}
     {#
       The notes on the assignment: a parent's words or hers typed with it, and
@@ -86,9 +86,13 @@
     {% endif %}
     {#
       Help is hers to ask for on her week, and a parent answers it on the
-      family page. The link carries nothing of this assignment.
+      family page. The link carries nothing of this assignment, and the line
+      beside it says so.
     #}
-    <p class="support-links"><a href="{{ help_href }}">{% if ctx.viewer == "parent" %}Help she asked for{% else %}Ask for help{% endif %}</a></p>
+    <p class="support-links"><a href="{{ help_href }}">{% if ctx.viewer == "parent" %}Help she asked for{% else %}Ask a parent for help{% endif %}</a></p>
+    {% if ctx.viewer != "parent" %}
+      <p class="note">This opens Help on My week. The request won't include this assignment, so name it in your note if you like.</p>
+    {% endif %}
     <h2 class="update-heading" id="{{ update_or_turn_in_id }}" tabindex="-1">{% if ctx.viewer == "parent" %}Student update{% else %}Your update{% endif %}</h2>
     {% include "student_update.html" %}
     {% include "student_hand_in.html" %}

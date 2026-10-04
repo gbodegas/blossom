@@ -80,10 +80,11 @@ from blossom.captures import derived_assignment_id, what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
-from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEEDS_HAND_IN, NEXT_ACTION_MAX_LENGTH
+from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEXT_ACTION_MAX_LENGTH
 from blossom.noticing import (
     Everything,
     Noticing,
+    WindowSide,
     expect_due_date,
     in_week,
     monday_of,
@@ -269,13 +270,13 @@ HELP_FORM_NOT_WHOLE: Final = (
     "nothing was sent. Your words are below; ask again."
 )
 HELP_NOT_SENT: Final = "Your request could not be sent, and nothing was changed. Try again."
-ALREADY_SENT: Final = "That request was already sent."
-SENT: Final = "Sent. Your parents can see the request."
+ALREADY_SENT: Final = "That request is already saved."
+SENT: Final = "Your request is saved. A parent can see it in Family review."
 NOT_ON_THIS_PAGE: Final = "That request is not on this page now."
 CANNOT_CHECK: Final = "That request can't be checked right now."
 """The lines for the request an address names, checked against the page's one reading and
-said to her alone: sent, for one she has just sent that still waits for a parent; already
-sent, beside any other request on the page; not on this page, when no request there is that
+said to her alone: saved, for one she has just sent that still waits for a parent; already
+saved, beside any other request on the page; not on this page, when no request there is that
 one; and can't be checked, when that reading failed."""
 ALREADY_RESPONDING: Final = (
     "A parent is already responding to this request, so it cannot be taken back. "
@@ -399,13 +400,17 @@ FAMILY_HELP: Final = f"{FAMILY_PAGE}#help-she-asked-for"
 HAND_IN_SAVED: Final = "Your hand-in update is saved."
 HAND_IN_ALREADY_SAVED: Final = "Already saved."
 HAND_IN_UNDONE: Final = "Your hand-in update is undone."
+STEP_NOT_SAVED: Final = "The next step was not saved: it goes only with Still to turn in."
 HAND_IN_CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": HAND_IN_SAVED,
     "same": HAND_IN_ALREADY_SAVED,
     "undone": HAND_IN_UNDONE,
+    "saved_without_step": f"{HAND_IN_SAVED} {STEP_NOT_SAVED}",
+    "same_without_step": f"{HAND_IN_ALREADY_SAVED} {STEP_NOT_SAVED}",
 }
 """What the address says a hand-in save or undo did, chosen by the server as her
-update's are; what stands is shown beside it, with its day."""
+update's are; what stands is shown beside it, with its day. A save of another answer with
+a next step typed says the step was not saved."""
 CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": UPDATE_SAVED,
     "same": UPDATE_ALREADY_SAVED,
@@ -1016,6 +1021,7 @@ def assignment_view(
     status: AssignmentStatus | None = None,
     *,
     in_planning_window: bool = False,
+    outside_window: WindowSide | None = None,
     hand_in: HandInView | None = None,
     claims_unreadable: bool = False,
     instructions: InstructionsStanding | None = None,
@@ -1033,6 +1039,8 @@ def assignment_view(
     channel says now goes on it as the school's, every channel, so a check of
     her "done" against a "missing" always shows the report it rests on. Every
     claim is carried too, as it was given, for the details to list whole.
+    ``outside_window`` is kept only while every claim reads as a date, since one that
+    cannot be read could put the work anywhere.
     """
     said = status.asserted if status is not None else None
     readable = [record for record in records if read_date(record.asserted_value) is not None]
@@ -1109,6 +1117,7 @@ def assignment_view(
         else status.head.report_id,
         hand_in=HandInView() if hand_in is None else hand_in,
         in_planning_window=in_planning_window,
+        outside_window=None if unreadable or claims_unreadable else outside_window,
         check_school=status is not None and status.check_the_school_record,
         checked_on=None if status is None or status.check is None else status.check.checked_on,
         check_note=None if status is None or status.check is None else status.check.note,
@@ -1218,15 +1227,18 @@ def build_student_due_this_week_view(
         if focus is not None and item.assignment_id == focus and focus not in listed
     ]
     in_window = {item.assignment_id for item in window.assignments}
+    todays = planning_window(today)
 
     def beside_view(item: Assignment) -> StudentAssignmentView:
         records = found.records[item.assignment_id]
+        noticed = notice_due_date(expect_due_date(item), records)
         return assignment_view(
             item,
             records,
-            notice_due_date(expect_due_date(item), records),
+            noticed,
             found.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            outside_window=todays.outside(item, noticed),
             claims_unreadable=item.assignment_id in found.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
             instructions=found.instructions.get(item.assignment_id),
@@ -1241,6 +1253,7 @@ def build_student_due_this_week_view(
             shown.noticings[item.assignment_id],
             shown.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            outside_window=todays.outside(item, shown.noticings[item.assignment_id]),
             claims_unreadable=item.assignment_id in shown.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
             instructions=found.instructions.get(item.assignment_id),
@@ -1687,6 +1700,13 @@ def student_page(
             "no_plan_now": NO_PLAN_NOW,
             # Today's window, which every week shown names, and the planner reads.
             "planning_window": planning_window(view.today).said(),
+            "planning_window_end": planning_window(view.today).end,
+            # Her Help, where a card that names it sends her: on this week, or this week's page.
+            "help_href": (
+                f"#{ASK_FOR_HELP}"
+                if view.week.current
+                else address(WEEK_PAGE, fragment=ASK_FOR_HELP)
+            ),
             "parent": parent_reads(request),
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
@@ -2234,6 +2254,7 @@ def detail_page(
         noticed,
         found[assignment_id],
         in_planning_window=in_week(item, noticed, today),
+        outside_window=planning_window(today).outside(item, noticed),
         hand_in=turning_in,
         claims_unreadable=claims_unavailable,
         instructions=instructions.readable.get(assignment_id),
@@ -2273,6 +2294,7 @@ def detail_page(
                 FAMILY_HELP if viewer == "parent" else address(WEEK_PAGE, fragment=ASK_FOR_HELP)
             ),
             "planning_window": planning_window(today).said(),
+            "planning_window_end": planning_window(today).end,
             "instructions_review": (
                 instructions_review_href(assignment_id) if family_chooses else None
             ),
@@ -2287,17 +2309,10 @@ def detail_page(
                 ),
                 "keep": details_href(assignment_id, fragment=TURNING_IT_IN, **back.fields()),
                 "open": details_href(assignment_id, fragment=TURNING_IT_IN),
-                "remember": details_href(
-                    assignment_id, fragment=TURNING_IT_IN, hand_in="remember", **back.fields()
-                ),
             },
             "hand_in_change_fields": [
                 *[(name, value) for name, value in back.fields().items() if value],
                 ("hand_in", "change"),
-            ],
-            "hand_in_remember_fields": [
-                *[(name, value) for name, value in back.fields().items() if value],
-                ("hand_in", "remember"),
             ],
             "next_action_max_length": NEXT_ACTION_MAX_LENGTH,
             "hand_in_note_max_length": HAND_IN_NOTE_MAX_LENGTH,
@@ -2352,10 +2367,9 @@ def assignment_details(
     turning_in = None
     if hand_in in HAND_IN_CONFIRMATIONS:
         turning_in = HandInCard(said=HAND_IN_CONFIRMATIONS[hand_in])
-    elif hand_in == "change":
+    elif hand_in in ("change", "remember"):
+        # A link that says ``remember`` opens the same form, so a saved address still lands.
         turning_in = HandInCard(change=True)
-    elif hand_in == "remember":
-        turning_in = HandInCard(change=True, state=NEEDS_HAND_IN)
     try:
         return detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
     except sqlite3.Error as error:

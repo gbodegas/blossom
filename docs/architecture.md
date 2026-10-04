@@ -116,11 +116,14 @@ work, and a window with nothing left ends a run before any model is asked. A
 Done beside a school report of Missing is something for the family to check,
 said on both pages and decided by neither. The form is a form alone, a parent
 signed in reads her update and cannot make one, and nothing writes her
-account but her own device. On her week the form of a card with no update is
-folded under Update this homework, and the server opens it for an address that
-asks to change the card, a refusal, or a save refused because the card changed
-elsewhere. Closing the fold keeps what she typed only in the page: saving
-another card or leaving the page can lose it. A parent's save, hand-in update,
+account but her own device. On her week a card she has not reported done
+offers its reports as buttons through the same route: Done and Not yet on a
+card with no update, with an optional note folded beside them that the press
+sends too, and Done beside Change and Undo on a card left Not yet, carrying her
+note as it stands. Only a press saves. The server shows the whole form instead
+for an address that asks to change the card, a refusal, or a save refused
+because the card changed elsewhere. What Done means is said once above the
+cards. A parent's save, hand-in update,
 or Undo, from a page left open when the sign-in changed as from anywhere else,
 is answered 403 on her current week from the sign-in and the route alone: no
 form is read, the assignment it names is not looked up, and the decision lock
@@ -209,9 +212,12 @@ the refusal, on the list or off it, with the press again only while it is
 still to turn in. A write the file refuses, when the list cannot be read
 back either, is answered by the plain page that reads no store, whose one
 sentence takes the focus as the page arrives. The way back
-from the details gains a fourth place, the list. Help
-remembering is a GET that opens the form with Still to turn in chosen and
-writes nothing. Her week's rows show one line and a link, the family page lists
+from the details gains a fourth place, the list. Update hand-in status is
+the one way into the form, a GET that writes nothing. The form asks "Has this
+been turned in?" with the four answers, and shows the next step only while
+Still to turn in is chosen; the stylesheet hides it otherwise and keeps what
+she typed, and a save of another answer with a step typed says the step was
+not saved. Her week's rows show one line and a link, the family page lists
 what is still to turn in, however old, then what else she said in the last
 fourteen days, with no form, and a row worth checking together carries it as
 context that decides nothing. A page's one reading holds every chain, read
@@ -381,8 +387,8 @@ To turn in list refuses is said on the list's own line, which takes the
 focus, on her week and on the list's own page. A save or an
 undo from a card lands on the card's result, and the card stays where it was
 for the rest of her visit, Done among the active cards included. Each update
-form on her week carries the cards the visit keeps in place, its own among
-them; a save or an undo leaves them in a short-lived cookie for the page its
+form on her week, a card's own Done and Not yet buttons among them, carries the
+cards the visit keeps in place, its own among them; a save or an undo leaves them in a short-lived cookie for the page its
 redirect names, and Change and Keep it as it is carry them in the address,
 answered with the same address without them and the cookie. Each card goes
 by a short key of its id, so forty cards fit one cookie whatever the ids hold.
@@ -1529,11 +1535,18 @@ looks. Both go through `read_week`, so they never differ about whether an
 item is in a window, only about where the window starts. Every week her page
 shows names today's planning window by its days, from `planning_window` in
 `blossom/noticing.py`: under Today's controls on this week, and under the link
-back to this week on another, which has no Today panel. The last day carries
+back to this week on another, which has no Today panel. Beside the plan
+button the same line first says what a plan is made from: unfinished homework
+due in the next 7 days and homework without a due date. The last day carries
 its year, and the first its own when the window reaches into a new year. A Not
 yet and a note added to homework say whether the work can be in today's plan
 by the planner's own rule, so undated work is in and a source's date inside
-the window counts; work outside it is named with the window's days.
+the window counts. A Not yet outside it says where every date given puts it,
+from `PlanningWindow.outside`: due before today, with a link to Help since
+earlier work is not planned; due after the window's last day; or dates on both
+sides, which names the disagreement and chooses no date. When a claim cannot
+be read as a date, it could put the work anywhere, so the line names the
+window's days instead.
 
 **Not built:** a calendar policy. Nothing yet knows about no-school days,
 bedtimes, or a term calendar. Durations that cross a daylight-saving night

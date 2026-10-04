@@ -11,14 +11,20 @@
 
   What stands shows as a short statement with the day she entered that state,
   one next step when something is still to turn in, her note, and a way to
-  change or take it back. The form opens from its own button, a plain GET as
-  her update's Change is, and works without a script: every field is there,
-  and the page says which one goes with which choice. It carries the last event the page showed, so a save lands on the
-  chain the page showed or is shown what changed, with what she chose and
-  wrote still in the form under a heading that says it is not saved. A parent
-  signed in reads all of it and is told the update is hers to make. A problem
-  here is said as an alert once, by the summary at the top of the details, and
-  the line here is plain text the summary links to.
+  change or take it back. When she says turned in and the school reports the
+  work missing, both are shown, apart, for the family to check. The form
+  opens from one button, a plain GET as her update's Change is, and asks one
+  question with the four answers. The next step shows while Still to turn in
+  is chosen: the stylesheet hides it otherwise and keeps what she typed in
+  it, and a browser that can't tell which answer is chosen shows it with the
+  line that says which answer keeps it. The note is in a fold. Before the
+  button the form says that nothing leaves Blossom. It carries the last event
+  the page showed, so a save lands on the chain the page showed or is shown
+  what changed, with what she chose and wrote still in the form under a
+  heading that says it is not saved. A parent signed in reads all of it and
+  is told the update is hers to make. A problem here is said as an alert
+  once, by the summary at the top of the details, and the line here is plain
+  text the summary links to. A link to this section lands on its heading.
 
   ``assignment.hand_in`` is what the record says, ``hand_in_card`` what this
   visit adds to it, and ``hand_in_links`` and ``hand_in_fields`` the ways on
@@ -45,8 +51,9 @@
   on that visit, so the page never offers the same thing twice.
 #}
 {% set offered_above = card and card.assignment_id == assignment.assignment_id and card.said and assignment.update_status == "done" and hi.state is none %}
-<section class="hand-in" id="turning-it-in" tabindex="-1" aria-labelledby="turning-it-in-heading">
-  <h2 class="update-heading" id="turning-it-in-heading">Turning it in</h2>
+{% set school_missing = assignment.school_statements|selectattr("status", "equalto", "missing")|list %}
+<section class="hand-in" aria-labelledby="turning-it-in">
+  <h2 class="update-heading" id="turning-it-in" tabindex="-1">Turning it in</h2>
   <div class="update">
     {% if hc and hc.said %}
       <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1">{{ hc.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
@@ -81,25 +88,15 @@
       {% if hi.note %}
         <p class="from-teacher">{{ who }} wrote: <q class="authored-text">{{ hi.note }}</q>{% if hi.note_updated_on %} <span class="note">Note updated {{ on(hi.note_updated_on) }}.</span>{% endif %}</p>
       {% endif %}
+      {% if hi.state == "turned_in" and school_missing %}
+        <p class="confidence disagree">The school reports this missing, and {% if mine %}you{% else %}she{% endif %} reported it turned in. Blossom keeps both as they are, so the family can check.</p>
+      {% endif %}
       {% if hi.state is not none %}
         <p class="effect">This is {% if mine %}your{% else %}her{% endif %} own report, kept on the day Blossom took it. It sends nothing to the school, and the school's record is separate.</p>
       {% endif %}
       {% if ctx.can_update and not form_open and not offered_above %}
         <div class="actions">
-          {#
-            Help remembering is hers to ask for, before she has said anything and
-            after saying she is not sure. It opens the form with Still to turn in
-            chosen, since that is what she asked for, and saves nothing: only the
-            form's own button does. It is never asked of her.
-          #}
-          {% if hi.state is none or hi.state == "unknown" %}
-            <form method="get" action="{{ hand_in_links.open }}" class="action">
-              {% for name, value in hand_in_remember_fields %}
-              <input type="hidden" name="{{ name }}" value="{{ value }}">
-              {% endfor %}
-              <button type="submit" class="secondary" aria-label="Help me remember to turn this in: {{ assignment.title }}, {{ assignment.course }}">Help me remember to turn this in</button>
-            </form>
-          {% endif %}
+          {# One way in. It opens the form and saves nothing: only the form's own button does. #}
           <form method="get" action="{{ hand_in_links.open }}" class="action">
             {% for name, value in hand_in_change_fields %}
             <input type="hidden" name="{{ name }}" value="{{ value }}">
@@ -120,31 +117,35 @@
         <p class="note">Sign in as the student to update.</p>
       {% endif %}
       {% if form_open %}
-        <form method="post" action="{{ hand_in_actions[0] }}" class="report">
+        <form method="post" action="{{ hand_in_actions[0] }}" class="report hand-in-form">
           {% if hc.unsaved %}
             <h3 class="update-heading">Your unsaved update</h3>
           {% endif %}
           <fieldset class="choice"{% if at_state %} aria-describedby="hand-in-problem-{{ key }}"{% endif %}>
-            <legend>Turning it in<span class="visually-hidden"> for {{ assignment.title }}, {{ assignment.course }}</span></legend>
+            <legend>Has this been turned in?<span class="visually-hidden"> {{ assignment.title }}, {{ assignment.course }}</span></legend>
             {% for value in ("needs_hand_in", "turned_in", "not_required", "unknown") %}
             <label><input{% if loop.first %} id="hand-in-state-{{ key }}"{% endif %} type="radio" name="state" value="{{ value }}"{% if chosen == value %} checked{% endif %}{% if at_state and loop.first %} autofocus{% endif %}> {{ named(value) }}</label>
             {% endfor %}
           </fieldset>
-          <p class="note">Done means you have finished your part. It does not turn work in.</p>
-          <div class="note-fold">
-            <label for="next-action-{{ key }}">One next step (optional)<span class="visually-hidden"> for {{ assignment.title }}, {{ assignment.course }}</span></label>
-            <input type="text" id="next-action-{{ key }}" name="next_action" value="{{ typed_action }}" aria-describedby="{% if at_action %}hand-in-problem-{{ key }} {% endif %}next-action-hint-{{ key }}"{% if at_action %} aria-invalid="true" autofocus{% endif %}>
-            <p class="note" id="next-action-hint-{{ key }}">Goes with Still to turn in; with any other choice it is not kept. One line, up to {{ next_action_max_length }} characters, such as where to put it. Left empty, the page says "Turn it in."</p>
-            <label for="hand-in-note-{{ key }}">Your note (optional)<span class="visually-hidden"> for {{ assignment.title }}, {{ assignment.course }}</span></label>
+          <div class="next-step">
+            <label for="next-action-{{ key }}">Your next step (optional)<span class="visually-hidden"> for {{ assignment.title }}, {{ assignment.course }}</span></label>
+            <p class="note" id="next-action-hint-{{ key }}">This appears on your To turn in list. For example: Put it in my blue folder.</p>
+            <input type="text" id="next-action-{{ key }}" name="next_action" value="{{ typed_action }}" aria-describedby="{% if at_action %}hand-in-problem-{{ key }} {% endif %}next-action-hint-{{ key }} next-action-limit-{{ key }}"{% if at_action %} aria-invalid="true" autofocus{% endif %}>
+            <p class="note" id="next-action-limit-{{ key }}">One line, up to {{ next_action_max_length }} characters. A next step is saved only with Still to turn in.</p>
+          </div>
+          <details class="steps note-fold"{% if typed_note or at_note %} open{% endif %}>
+            <summary>Add a note (optional)<span class="visually-hidden"> about turning in {{ assignment.title }}, {{ assignment.course }}</span></summary>
+            <label for="hand-in-note-{{ key }}">Your note<span class="visually-hidden"> about turning in {{ assignment.title }}, {{ assignment.course }}</span></label>
             <textarea id="hand-in-note-{{ key }}" name="note" rows="2" aria-describedby="{% if at_note %}hand-in-problem-{{ key }} {% endif %}hand-in-note-hint-{{ key }}"{% if at_note %} aria-invalid="true" autofocus{% endif %}>{{ typed_note }}</textarea>
             <p class="note" id="hand-in-note-hint-{{ key }}">Up to {{ hand_in_note_max_length }} characters. Your parents can read this. It is not shared with the planning model.</p>
-          </div>
+          </details>
+          <p class="note" id="hand-in-stays-{{ key }}">This stays in Blossom. It does not send work to school or send an alert.</p>
           <input type="hidden" name="expected_hand_in_id" value="{{ hi.head_id or '' }}">
           {% for name, value in hand_in_fields %}
           <input type="hidden" name="{{ name }}" value="{{ value }}">
           {% endfor %}
           <div class="actions">
-            <button type="submit" class="primary" aria-label="{% if hc.unsaved %}Save again: your hand-in update{% else %}Save hand-in update{% endif %} for {{ assignment.title }}, {{ assignment.course }}">{% if hc.unsaved %}Save again{% else %}Save hand-in update{% endif %}</button>
+            <button type="submit" class="primary" aria-label="{% if hc.unsaved %}Save again: your hand-in update{% else %}Save hand-in update{% endif %} for {{ assignment.title }}, {{ assignment.course }}" aria-describedby="hand-in-stays-{{ key }}">{% if hc.unsaved %}Save again{% else %}Save hand-in update{% endif %}</button>
             <a class="cancel" href="{{ hand_in_links.keep }}" aria-label="{{ keep_words }}: the hand-in status for {{ assignment.title }}, {{ assignment.course }}">{{ keep_words }}</a>
           </div>
         </form>

@@ -108,7 +108,7 @@ def no_autofocus(page: str) -> bool:
 def help_part(page: str) -> str:
     """Help, from its heading up to the row list: where a line with no row to go beside is
     said, and what a parent is told about her requests."""
-    start = page.index('<section class="panel help-panel" id="help"')
+    start = page.index('<section class="panel help-panel" aria-labelledby="help">')
     end = page.find('<div id="help-updates"', start)
     return page[start : end if end >= 0 else page.index("</section>", start)]
 

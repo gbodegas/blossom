@@ -514,33 +514,36 @@ def test_a_parent_reads_the_list_and_cannot_press(tmp_path: pathlib.Path) -> Non
     assert kept == 1
 
 
-# --------------------------------------------------- help remembering, and the way back
+# ------------------------------------------- the hand-in update after Done, and the way back
 
 
-def test_help_remembering_is_offered_after_done_and_after_not_sure_and_writes_nothing() -> None:
+def test_the_hand_in_update_is_offered_once_after_done_and_opening_it_writes_nothing() -> None:
     details = f"/student/assignments/{ESSAY_ID}"
-    offer = "Help me remember to turn this in"
+    offer = "Update hand-in status"
     with browser() as client:
         store = state_of(client).project_state
         where = report(client, ESSAY_ID, "done")
         card = card_for(client.get(where).text, ESSAY_ID)
-        assert offer in card
-        assert "hand_in=remember" in card
+        assert "Want to keep track of turning it in?" in card
+        assert card.count(f">{offer}<") == 1
+        assert "hand_in=change" in card
+        assert "remember" not in card
 
-        opened = client.get(details, params={"hand_in": "remember"}).text
-        assert 'value="needs_hand_in" checked' in opened
+        opened = client.get(details, params={"hand_in": "change"}).text
+        assert "Has this been turned in?" in opened
+        assert " checked" not in opened[opened.index("Has this been turned in?") :]
         assert store.hand_in_chains() == {}
 
         said(store, ESSAY_ID, "unknown", date(2026, 8, 19))
         unsure = client.get(details).text
-        assert offer in unsure
-
         head = store.hand_in_chains([ESSAY_ID])[ESSAY_ID][-1].event_id
         said(store, ESSAY_ID, NEEDS_HAND_IN, date(2026, 8, 19), head=head)
         waiting = client.get(details).text
         kept = len(store.hand_in_chains([ESSAY_ID])[ESSAY_ID])
 
-    assert offer not in waiting
+    for page in (unsure, waiting):
+        assert "Help me remember" not in page
+        assert ">Change</button>" in page
     assert kept == 2
 
 
