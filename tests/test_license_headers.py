@@ -350,11 +350,11 @@ def uncommented(found: re.Match[str]) -> str:
 
 def css_rules(css: str) -> list[tuple[str, str, list[str]]]:
     """Every style rule as the conditions around it, its selector list, and its declarations.
-    A ``;`` outside a rule stays in the next selector, as a browser reads it. Anything else
-    fails: a nested rule, an at-rule outside GROUPS and SKIPPED, a statement such as
-    ``@import``, an unclosed brace, bracket, string or comment, a brace inside brackets, an
-    escape, a ``url()`` without quotes, and, outside strings, ``-->`` or a space a browser
-    doesn't read as one."""
+    Anything else fails: a ``;`` outside every block or directly inside a group, which a
+    browser reads as the end of an at-rule or as part of the next selector, a nested rule, an
+    at-rule outside GROUPS and SKIPPED, a statement such as ``@import``, an unclosed brace,
+    bracket, string or comment, a brace inside brackets, an escape, a ``url()`` without
+    quotes, and, outside strings, ``<!--``, ``-->`` or a space a browser doesn't read as one."""
     assert "\\" not in css, "escape"
     assert not UNQUOTED_URL.search(css), "url() without quotes"
     text = COMMENT_OR_STRING.sub(uncommented, css)
@@ -369,7 +369,7 @@ def css_rules(css: str) -> list[tuple[str, str, list[str]]]:
             assert quoted, f"unclosed string at {index}"
             index = quoted.end()
             continue
-        assert not text.startswith(("/*", "-->"), index), f"comment mark at {index}"
+        assert not text.startswith(("/*", "<!--", "-->"), index), f"comment mark at {index}"
         assert not character.isspace() or character in CSS_SPACE, f"odd space at {index}"
         if character in "([":
             closers.append(")" if character == "(" else "]")
@@ -377,6 +377,9 @@ def css_rules(css: str) -> list[tuple[str, str, list[str]]]:
             assert closers[-1:] == [character], f"stray {character} at {index}"
             closers.pop()
         assert not (closers and character in "{}"), f"brace inside brackets at {index}"
+        assert not (character == ";" and (not heads or heads[-1].startswith(GROUPS))), (
+            f"semicolon between rules at {index}"
+        )
         if character == "{":
             assert not heads or heads[-1].startswith(GROUPS + SKIPPED), (
                 f"rule nested in {heads[-1]}"
@@ -525,6 +528,12 @@ REACHES = {
     "nested": ".colophon { & a { margin: 0; } }",
     "layer": "@layer x { a { margin: 0; } }",
     "import": '@import url("other.css");',
+    "media-statement": "@media all; .colophon a { display: none; }",
+    "supports-statement": "@supports (x: y); .colophon a { display: none; }",
+    "keyframes-statement": "@keyframes k; .colophon a { display: none; }",
+    "statement-inside-media": "@media (min-width: 1px) { @media all; .colophon a { opacity: 0; } }",
+    "statement-inside-supports": "@supports (x: y) { @keyframes k; .colophon a { opacity: 0; } }",
+    "statement-inside-container": "@container (x) { @supports x; .colophon a { opacity: 0; } }",
     "property": "@property --blue-action { syntax: '*'; inherits: true; }",
     "unclosed": ".colophon a { margin: 0;",
     "list-inside-is-on-the-link": ".colophon a:is(a, button) { display: none; }",
@@ -551,6 +560,9 @@ REACHES = {
     "bracket-closed-by-the-other-kind": "@media (min-width: 1px] {}",
     "comment-left-open": "/* main a { margin: 0; }",
     "html-comment-mark": "--> .colophon a { display: none; }",
+    "html-comment-mark-before-a-property": (
+        '<!-- @property --blue-action { syntax: "<length>"; inherits: true; initial-value: 0; }'
+    ),
     "form-feed-inside-a-string": '.colophon a { --unused: "\f; display: none; --x: "; }',
     "url-after-a-no-break-space": (
         'main { background: url(\xa0"x" /*); } .colophon a { display: none; } /* */ ); }'
@@ -596,6 +608,9 @@ LEAVES = {
     "a-bracket-inside-a-string-elsewhere": 'main a[title="("] { margin: 0; }',
     "a-comment-against-a-brace": "main a {/* note */ margin: 0; }",
     "a-transparent-token-it-doesn't-use": ":root { --unused-token: transparent; }",
+    "a-semicolon-inside-a-string-elsewhere": 'main a[title=";"] { margin: 0; }',
+    "a-semicolon-inside-a-comment-elsewhere": "/* a; b */ main a { margin: 0; }",
+    "a-rule-under-a-condition-elsewhere": "@media (min-width: 1px) { main a { margin: 0; } }",
 }
 
 
