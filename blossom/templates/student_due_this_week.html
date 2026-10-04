@@ -32,7 +32,7 @@
     address asks for no focus.
   #}
   {% if problem %}
-    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ assignment_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}</p>
+    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}</p>
   {% endif %}
 
   {% if view.week.current %}
@@ -256,7 +256,7 @@
       {% endif %}
       {% set work_left = (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
       {% if work_left %}
-        <p><a class="to-help" href="#{{ assignment_anchor(work_left[0].assignment_id) }}">See homework</a></p>
+        <p><a class="to-help" href="#{{ title_anchor(work_left[0].assignment_id) }}">See homework</a></p>
       {% endif %}
     {% endif %}
   </section>
@@ -291,6 +291,15 @@
   #}
   <h2 class="list-heading" id="homework" tabindex="-1">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
 
+  {#
+    An address that brings a card into view, as a way back from its details does,
+    when the card is on record no more: the place it would land on says so, above
+    the week's homework.
+  #}
+  {% if shown_gone %}
+    <p class="note card-gone" id="{{ title_anchor(card.assignment_id) }}" tabindex="-1">That assignment is not on record now. The week's homework is below.</p>
+  {% endif %}
+
   {% if not view.assignments %}
     <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.{% if viewer != "parent" %} Heard about something? <a href="{{ new_note_page }}">Write down homework</a>{% endif %}</p>
   {% endif %}
@@ -298,12 +307,14 @@
   {#
     Work she has reported done stays in the week, under the active cards and
     folded, with its count, so the week still reads whole and the cards that
-    need her come first. The fold opens when the card the address names is
-    inside it, so a save on such a card lands in view. The same card template
-    renders both groups.
+    need her come first. A card she saves stays in the group it was in for the
+    rest of her visit, Done among the active cards included, and moves on her
+    next visit; ``shown_done`` is the cards shown in the fold. The fold opens
+    when the card the address names is inside it, so a save on such a card
+    lands in view. The same card template renders both groups.
   #}
-  {% set active_cards = view.assignments|rejectattr("update_status", "equalto", "done")|list %}
-  {% set done_cards = view.assignments|selectattr("update_status", "equalto", "done")|list %}
+  {% set active_cards = view.assignments|rejectattr("assignment_id", "in", shown_done)|list %}
+  {% set done_cards = view.assignments|selectattr("assignment_id", "in", shown_done)|list %}
   {% set to_check = (view.assignments + view.assigned_this_week)|selectattr("check_school")|list %}
   {% if not view.week.current and (view.assignments or view.assigned_this_week or view.apart) %}
     <p class="note">Updates show the latest saved information, even when you view a different week.</p>
@@ -331,12 +342,12 @@
   {% if view.assigned_this_week %}
     <section class="panel assigned">
       <h2>Assigned this week, due later</h2>
-      {% set later_active = view.assigned_this_week|rejectattr("update_status", "equalto", "done")|list %}
-      {% set later_done = view.assigned_this_week|selectattr("update_status", "equalto", "done")|list %}
+      {% set later_active = view.assigned_this_week|rejectattr("assignment_id", "in", shown_done)|list %}
+      {% set later_done = view.assigned_this_week|selectattr("assignment_id", "in", shown_done)|list %}
       <ul>
         {% for assignment in later_active %}
-          <li id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
-            <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
+          <li id="{{ assignment_anchor(assignment.assignment_id) }}">
+            <span class="row-title" id="{{ title_anchor(assignment.assignment_id) }}" tabindex="-1"><strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}</span><br>
             Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
             {% include "student_claim_warning.html" %}
             {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
@@ -353,8 +364,8 @@
           <summary>Reported done ({{ later_done|length }})</summary>
           <ul>
             {% for assignment in later_done %}
-              <li id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
-                <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
+              <li id="{{ assignment_anchor(assignment.assignment_id) }}">
+                <span class="row-title" id="{{ title_anchor(assignment.assignment_id) }}" tabindex="-1"><strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}</span><br>
                 Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
                 {% include "student_claim_warning.html" %}
                 {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}

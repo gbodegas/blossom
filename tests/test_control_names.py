@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
-from blossom.routes.navigation import TO_TURN_IN_PAGE, assignment_anchor
+from blossom.routes.navigation import TO_TURN_IN_PAGE, assignment_anchor, title_anchor
 from blossom.routes.runs import plan_graphs
 from blossom.settings import REPOSITORY_ROOT, TEMPLATE_PATH
 from blossom.stores.project_state import ProjectStateStore
@@ -296,7 +296,7 @@ def to_check_link(page: str, assignment_id: str) -> str:
     found: list[str] = [
         link
         for link in re.findall(r"<a\b[^>]*>.*?</a>", line.group(0), re.S)
-        if f'#{assignment_anchor(assignment_id)}"' in link
+        if f'#{title_anchor(assignment_id)}"' in link
     ]
     assert len(found) == 1, found
     return found[0]

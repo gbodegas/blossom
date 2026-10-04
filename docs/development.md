@@ -39,8 +39,9 @@ With the app running as the README describes:
   work assigned that week and due after it. `?week=` with any date shows the
   week that holds it. Each card takes her update, Done or Not yet with an
   optional note, through a form alone, and offers to change or undo it; work
-  she has reported done folds under the active cards. There is no JSON route
-  for her updates.
+  she has reported done folds under the active cards, and a card she saves
+  stays where it was until her next visit. There is no JSON route for her
+  updates.
 - <http://127.0.0.1:8000/student/assignments/ASSIGNMENT-ID> is one
   assignment's details: its current record, her update through the same form
   and the same two routes as her cards, and a link back to where the reader

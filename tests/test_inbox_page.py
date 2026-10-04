@@ -989,7 +989,7 @@ def test_a_text_with_the_email_and_the_page_keeps_the_teachers_words_as_the_teac
         hers = client.get("/student/due-this-week", headers=PAGE).text
 
     assert kept.headers["location"] == "/parent?added=1&updated=0&unchanged=0"
-    card = article_for(hers, "<h2>Practice</h2>")
+    card = article_for(hers, 'tabindex="-1">Practice</h2>')
     assert 'From the school: <q class="authored-text">Bring the packet.</q>' in card
     assert "<strong>The school reports this missing.</strong>" in card
     assert "Due Thursday, September 10" in card

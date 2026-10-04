@@ -1550,7 +1550,7 @@ def test_read_instructions_is_on_every_card_and_row_with_instructions_to_read(
             ], place
     assert HEADING in landed
     assert (
-        f'href="/student/due-this-week?week=2026-08-24&amp;show={ESSAY_ID}#assignment-{ESSAY_ID}"'
+        f'href="/student/due-this-week?week=2026-08-24&amp;show={ESSAY_ID}#title-{ESSAY_ID}"'
         in landed
     )
 

@@ -13,7 +13,7 @@ import pathlib
 import re
 import sqlite3
 from datetime import UTC, date, datetime
-from typing import Annotated
+from typing import Annotated, Final
 
 import pytest
 from fastapi import Depends
@@ -42,6 +42,7 @@ from blossom.routes.student import (
     CANNOT_UNDO,
     CHOOSE_ONE,
     GONE,
+    IN_PLACE_COOKIE,
     NOT_HERS_TO_UPDATE,
     NOT_SAVED,
     NOT_THIS_CARDS,
@@ -53,6 +54,7 @@ from blossom.routes.student import (
     UPDATE_ALREADY_SAVED,
     UPDATE_SAVED,
     UPDATE_UNDONE,
+    InPlace,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
 from blossom.stores.project_state import (
@@ -63,8 +65,8 @@ from blossom.stores.project_state import (
     StatusReport,
     UnknownAssignment,
 )
-from tests.support import ESSAY_ID as ESSAY
 from tests.support import (
+    ESCAPED,
     ESSAY_TITLE,
     HERS,
     MISSING_EMAIL,
@@ -81,35 +83,76 @@ from tests.support import (
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
+    form_fields,
     hidden,
     human_text,
+    main_of,
     ok,
     report,
+    reported,
+    save,
     school_said,
     signed_in_household,
     state_of,
+    store_of,
+    week_card,
     whole_form,
 )
+from tests.support import ESSAY_ID as ESSAY
 from tests.support import FIXTURE_WEEK as WEEK
 from tests.support import HER_PAGE as PAGE
 from tests.support import QUIZ_ID as QUIZ
 from tests.support import READING_LOG_ID as LOG
+from tests.support import SYLLABUS_ID as SYLLABUS
+from tests.support import after as redirected
 
 NAMED_BY_ITS_ROW = f'aria-label="{ESSAY_TITLE}, World History">{ESSAY_TITLE}</a> (World History).'
 """How a notice names the essay on a plan read by its rows: the saved title, a link to the
 assignment's details, and the course; never the id."""
 
 
-def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -> None:
+FOLD: Final = '<details class="steps reported-done"'
+UNDO_ESSAY: Final = f"/student/actions/assignments/{ESSAY}/undo-report"
+CHANGE_ESSAY: Final = f"/student/due-this-week#update-choice-{ESSAY}"
+
+
+def placed(page: str) -> tuple[list[str], list[str]]:
+    """Her week's cards in page order, the active ones and the ones in Reported done: each
+    card's id as the card writes it, split where the week's Reported done fold starts."""
+    main = main_of(page)
+    later = main.find('<section class="panel assigned">')
+    cards = main if later < 0 else main[:later]
+    fold = cards.find(FOLD)
+    found = [
+        (card.start(), card.group(1))
+        for card in re.finditer(r'<article class="assignment[^"]*" id="assignment-([^"]+)"', cards)
+    ]
+    active = [name for at, name in found if fold < 0 or at < fold]
+    return active, [name for at, name in found if fold >= 0 and at > fold]
+
+
+def left_for_the_page(answer: Answer) -> str:
+    """The cookie a press leaves for the page that answers it, as the response sets it."""
+    line = answer.headers.get("set-cookie", "")
+    assert line.startswith(IN_PLACE_COOKIE), line
+    return line
+
+
+def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit() -> None:
     """The form is Done or Not yet, nothing chosen, a note behind a fold, and the line that
-    says what Done means. Saved, the card says so, shows the update with its day and what
-    it means, offers Change and Undo, and folds under the active cards with a count."""
+    says what Done means. Saved, the card says so where it was, shows the update with its day
+    and what it means, offers Change and Undo, and keeps its place among the active cards for
+    the rest of the visit. A refresh or a return folds it under the active cards with a count."""
     with browser() as client:
         before = client.get(PAGE, headers=PAGE_HEADERS).text
         card = card_for(before, ESSAY)
-        location = report(client, ESSAY, "done", "Turned in on paper.\r\nTwo pages.")
-        after = client.get(location, headers=PAGE_HEADERS).text
+        answer = save(client, week_card(client, ESSAY), "done", "Turned in on paper.\r\nTwo pages.")
+        landed = redirected(client, answer)
+        left = client.cookies.get(IN_PLACE_COOKIE, path=PAGE)
+        refreshed = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
+        returned = client.get(PAGE, headers=PAGE_HEADERS).text
         history = state_of(client).project_state.student_reports(ESSAY)
+        week = read_week(state_of(client).project_state, state_of(client).project_state, PLAN_DATE)
 
     assert "<legend>Your update<span" in card
     assert 'type="radio" name="status" value="done">' in card
@@ -124,23 +167,152 @@ def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -
     )
     assert hidden(card, "expected_report_id") == ""
     assert hidden(card, "week") == WEEK
-    assert location == f"{PAGE}?week={WEEK}&saved={ESSAY}#update-result-{ESSAY}"
-    active, _, folded = after.partition('<details class="steps reported-done" open>')
-    assert f'id="assignment-{ESSAY}"' not in active
-    assert "<summary>Reported done (1)</summary>" in folded
-    saved = card_for(folded, ESSAY)
-    assert UPDATE_SAVED in saved
+    assert hidden(card, "in_place") == f"a:{ESSAY}"
+    assert answer.headers["location"] == f"{PAGE}?week={WEEK}&saved={ESSAY}#update-result-{ESSAY}"
+    cookie = left_for_the_page(answer)
+    assert cookie.startswith(f"{IN_PLACE_COOKIE}=a:{ESSAY};")
+    for part in ("HttpOnly", "Max-Age=60", f"Path={PAGE}", "SameSite=lax"):
+        assert part in cookie, part
+    assert placed(landed.text) == placed(before)
+    assert FOLD not in main_of(landed.text)
+    saved = card_for(landed.text, ESSAY)
+    assert (
+        f'<p class="note update-result" role="status" id="update-result-{ESSAY}" '
+        f'tabindex="-1">{UPDATE_SAVED}</p>'
+    ) in saved
     assert '<span class="pill">Your update: Done</span>' in saved
     assert "Reported August 19" in saved
     assert "You wrote: <q>Turned in on paper.\nTwo pages.</q>" in saved
     assert "This is out of work to plan. Your school record is separate." in saved
     assert ">Change<span" in saved
-    assert f'action="/student/actions/assignments/{ESSAY}/undo-report"' in saved
+    assert f'action="{UNDO_ESSAY}"' in saved
     assert "<legend>Your update<span" not in saved
+    assert left is None
+    assert left_for_the_page(landed).startswith(f'{IN_PLACE_COOKIE}=""; ')
+    assert ESSAY not in [item.assignment_id for item in week.active()]
+    active, done = placed(refreshed)
+    assert ESSAY not in active
+    assert done == [ESSAY]
+    assert '<details class="steps reported-done" open>' in refreshed
+    assert "<summary>Reported done (1)</summary>" in refreshed
+    assert UPDATE_SAVED in card_for(refreshed, ESSAY)
+    assert placed(returned)[1] == [ESSAY]
+    assert '<details class="steps reported-done">' in returned
     assert [(item.status, item.note) for item in history] == [
         ("done", "Turned in on paper.\nTwo pages.")
     ]
     assert history[0].reported_on == PLAN_DATE
+
+
+def test_saving_another_card_in_the_same_visit_keeps_the_first_where_it_was() -> None:
+    """Each form on the page carries the cards the visit keeps, its own among them, so a
+    second save keeps the first card where it was; a return groups both by their updates."""
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        first = redirected(client, save(client, week_card(client, ESSAY), "done")).text
+        other = card_for(first, SYLLABUS)
+        second = redirected(client, save(client, other, "done", assignment_id=SYLLABUS)).text
+        returned = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    assert hidden(other, "in_place") == f"a:{ESSAY}|a:{SYLLABUS}"
+    assert placed(second) == placed(before)
+    assert UPDATE_SAVED in card_for(second, SYLLABUS)
+    assert UPDATE_SAVED not in card_for(second, ESSAY)
+    for name in (ESSAY, SYLLABUS):
+        assert '<span class="pill">Your update: Done</span>' in card_for(second, name)
+    assert sorted(placed(returned)[1]) == sorted([ESSAY, SYLLABUS])
+
+
+def test_change_undo_and_keep_it_as_it_is_keep_the_card_where_it_was() -> None:
+    """Change and Keep it as it is carry the cards in their address, which is answered with
+    the same address without them and the cookie; a save from the opened form and an Undo
+    keep the card among the active cards too."""
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        first = redirected(client, save(client, week_card(client, ESSAY), "done")).text
+        fields = form_fields(card_for(first, ESSAY), CHANGE_ESSAY)
+        change = client.get(PAGE, params=fields, headers=PAGE_HEADERS)
+        opened = redirected(client, change).text
+        cancel = re.search(r'<a class="cancel" href="([^"]+)"', card_for(opened, ESSAY))
+        assert cancel is not None
+        keep = client.get(cancel.group(1).replace("&amp;", "&"), headers=PAGE_HEADERS)
+        kept = redirected(client, keep).text
+        reopened = redirected(client, client.get(PAGE, params=fields, headers=PAGE_HEADERS)).text
+        changed = redirected(client, save(client, card_for(reopened, ESSAY), "not_yet")).text
+        undo = form_fields(card_for(changed, ESSAY), UNDO_ESSAY)
+        undone = redirected(client, client.post(UNDO_ESSAY, data=undo, headers=PAGE_HEADERS)).text
+
+    assert fields == {"week": WEEK, "change": ESSAY, "in_place": f"a:{ESSAY}"}
+    assert change.status_code == 303
+    assert change.headers["location"] == f"{PAGE}?week={WEEK}&change={ESSAY}#update-choice-{ESSAY}"
+    assert left_for_the_page(change).startswith(f"{IN_PLACE_COOKIE}=a:{ESSAY};")
+    assert keep.headers["location"] == f"{PAGE}?week={WEEK}&show={ESSAY}#title-{ESSAY}"
+    for page in (opened, kept, changed, undone):
+        assert placed(page) == placed(before)
+        assert FOLD not in main_of(page)
+    assert "<legend>Your update<span" in card_for(opened, ESSAY)
+    assert "<legend>Your update<span" not in card_for(kept, ESSAY)
+    assert '<span class="pill">Your update: Not yet</span>' in card_for(changed, ESSAY)
+    assert undo["in_place"] == f"a:{ESSAY}"
+    assert UPDATE_UNDONE in card_for(undone, ESSAY)
+    assert '<span class="pill">Your update: Done</span>' in card_for(undone, ESSAY)
+
+
+def test_a_card_changed_from_done_stays_in_reported_done_for_the_visit() -> None:
+    """A card in Reported done that she changes to Not yet stays in that fold, open around
+    it, for the rest of the visit, and is among the active cards on her next visit."""
+    with browser() as client:
+        reported(store_of(client), "done", ESSAY)
+        card = week_card(client, ESSAY)
+        landed = redirected(client, save(client, card, "not_yet")).text
+        returned = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    assert hidden(card, "in_place") == f"d:{ESSAY}"
+    assert placed(landed)[1] == [ESSAY]
+    assert '<details class="steps reported-done" open>' in landed
+    assert "Still unfinished. It can be included in today's plan." in card_for(landed, ESSAY)
+    assert ESSAY in placed(returned)[0]
+    assert FOLD not in main_of(returned)
+
+
+def test_a_refused_save_keeps_the_cards_the_visit_holds_in_place() -> None:
+    """A field error and a save from a page that has moved on are answered on the page with
+    the cards the form carried still where they were."""
+    with browser() as client:
+        first = redirected(client, save(client, week_card(client, ESSAY), "done")).text
+        stale = card_for(first, SYLLABUS)
+        unchosen = save(client, stale, None, assignment_id=SYLLABUS)
+        reported(store_of(client), "done", SYLLABUS)
+        conflict = save(client, stale, "not_yet", assignment_id=SYLLABUS)
+
+    assert unchosen.status_code == 422
+    assert conflict.status_code == 409
+    for answer in (unchosen, conflict):
+        active, done = placed(answer.text)
+        assert ESSAY in active, answer.status_code
+        assert SYLLABUS in active, answer.status_code
+        assert done == [], answer.status_code
+        assert IN_PLACE_COOKIE not in answer.headers.get("set-cookie", "")
+    assert CHOOSE_ONE in card_for(unchosen.text, SYLLABUS)
+    assert SAVED_ELSEWHERE in card_for(conflict.text, SYLLABUS)
+
+
+def test_what_a_visit_keeps_in_place_is_read_only_as_the_pages_write_it() -> None:
+    """Escaped ids come back as they were; parts these pages never write are passed over,
+    and a card named twice keeps its first place."""
+    written = InPlace(((ESCAPED, False), (ESSAY, True)))
+    said = written.said()
+
+    assert said == "a:set%2F2%20it%27s%20%231%3F%20%C3%A9|d:assignment-canal-essay"
+    assert InPlace.read(said) == written
+    assert InPlace.read(None) == InPlace()
+    for junk in ("", "x:" + ESSAY, "a:", "a:set/2", "a:%ZZ", "a:%FF", "a:" + "x" * 201, "a"):
+        assert InPlace.read(junk) == InPlace(), junk
+    assert InPlace.read(f"d:{ESSAY}|a:{ESSAY}").cards == ((ESSAY, True),)
+    assert InPlace.read("|".join(f"a:card-{n}" for n in range(60))).cards[-1][0] == "card-39"
+    assert written.shown_done(ESSAY, False) is True
+    assert written.shown_done(QUIZ, True) is True
+    assert written.keeping(ESSAY, False) == written
 
 
 def test_the_same_update_is_already_saved_and_a_changed_note_is_a_new_one() -> None:
@@ -321,7 +493,7 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
     assert ">Change<span" in restored
     assert stale.status_code == 409
     assert ALREADY_UNDONE in card_for(stale.text, ESSAY)
-    assert f'href="#assignment-{ESSAY}"' in stale.text
+    assert f'href="#title-{ESSAY}"' in stale.text
     assert to_nothing.status_code == 303
     assert UPDATE_UNDONE in blank_again
     assert "<legend>Your update<span" in blank_again
@@ -478,7 +650,7 @@ def test_her_done_beside_the_schools_missing_is_something_to_check_on_both_pages
         still = statuses_for(state_of(client).project_state, [ESSAY])[ESSAY]
 
     assert "<strong>1 finished assignment\n      has a school report to check:</strong>" in hers
-    assert f"show={ESSAY}#assignment-{ESSAY}" in link.group(1)
+    assert f"show={ESSAY}#title-{ESSAY}" in link.group(1)
     assert '<details class="steps reported-done" open>' in followed
     assert "<strong>The school reports this missing.</strong>" in card_for(followed, ESSAY)
     checking, _, rest = family.partition("<h3>School reports</h3>")
@@ -1047,7 +1219,7 @@ def test_change_and_errors_land_on_the_card_and_name_the_field() -> None:
     card = card_for(saved, ESSAY)
     assert f'action="/student/due-this-week#update-choice-{ESSAY}"' in card
     back = card_for(changing, ESSAY)
-    assert f"week={WEEK}&amp;show={ESSAY}#assignment-{ESSAY}" in back
+    assert f"week={WEEK}&amp;show={ESSAY}&amp;in_place=d%3A{ESSAY}#title-{ESSAY}" in back
     assert '<details class="steps reported-done" open>' in changing
     group = card_for(unchosen.text, LOG)
     assert (
@@ -1066,7 +1238,7 @@ def test_change_and_errors_land_on_the_card_and_name_the_field() -> None:
     top = conflict.text
     assert (
         f'<p class="problem week-problem">{SAVED_ELSEWHERE} '
-        f'<a href="#assignment-{QUIZ}">Go to the assignment.</a></p>' in top
+        f'<a href="#title-{QUIZ}">Go to the assignment.</a></p>' in top
     )
     assert (
         f'<p class="problem" role="alert" id="update-problem-{QUIZ}" tabindex="-1" '

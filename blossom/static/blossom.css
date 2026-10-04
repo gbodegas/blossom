@@ -766,11 +766,12 @@ a.assignment-link:focus-visible {
   font-weight: 600;
 }
 
-/* Places a press or a link lands on. On her week: the homework's heading, a card
-   or a row due later, the problem at the top when no card holds it, a card's
-   problem line, and the choices of the form Change opens. On her week and on the
-   list's own page, the problem line of her To turn in list. Plain :focus, since a
-   fragment arrival after a click need not match :focus-visible. */
+/* Places a press or a link lands on. On her week: the homework's heading, the title
+   of a card or the name of a row due later, the line for a card not on record now,
+   the problem at the top when no card holds it, a card's problem line, and the choices
+   of the form Change opens. On her week and on the list's own page, the problem line
+   of her To turn in list. Plain :focus, since a fragment arrival after a click need
+   not match :focus-visible. */
 .ask:focus,
 .update-result:focus,
 .evidence:focus,
@@ -781,14 +782,33 @@ a.assignment-link:focus-visible {
 #note-problem:focus,
 .detail .problem[tabindex="-1"]:focus,
 .list-heading:focus,
-.assignment[tabindex="-1"]:focus,
-.assigned li[tabindex="-1"]:focus,
+.assignment h2[tabindex="-1"]:focus,
+.assigned .row-title:focus,
+.card-gone:focus,
 .week-problem:focus,
 .update .choice:focus,
 .update .problem[tabindex="-1"]:focus,
 #to-turn-in-problem:focus {
   outline: 2px solid var(--blue-action);
   outline-offset: 4px;
+}
+
+/* A link to a card lands on its title with the course above it and the card's edge in
+   view; a row's name keeps its outline on the screen. What a save did, and the choices
+   Change opens, land a third of the way down the screen, so the card they belong to is
+   still around them. */
+.assignment h2[tabindex="-1"] {
+  scroll-margin-top: 3.25rem;
+}
+
+.assigned .row-title,
+.card-gone {
+  scroll-margin-top: 1rem;
+}
+
+.update .update-result,
+.update .choice {
+  scroll-margin-top: 33vh;
 }
 
 /* Help's places to land: the section, each row, result or problem in it that a

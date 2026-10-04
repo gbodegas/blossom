@@ -35,9 +35,9 @@ from blossom.routes.hand_in import (
 )
 from blossom.routes.navigation import (
     TO_TURN_IN_PAGE,
-    assignment_anchor,
     details_href,
     result_anchor,
+    title_anchor,
     update_choice_anchor,
 )
 from blossom.routes.runs import NOTHING_TO_SCHEDULE
@@ -71,6 +71,7 @@ from tests.support import (
     THEIRS,
     Answer,
     a_row,
+    after,
     as_served,
     browser,
     card_for,
@@ -1582,9 +1583,9 @@ def test_a_card_on_her_week_and_the_way_back_to_it_land_on_the_card_for_any_id(n
         assert f'id="{escape(result_anchor(name))}"' in result
         assert 'class="note update-result"' in result
         assert result in card_for(shown, name)
-    assert f'id="{assignment_anchor(name)}"' in lands_on(returned, html.unescape(way_back.group(1)))
+    assert f'id="{title_anchor(name)}"' in lands_on(returned, html.unescape(way_back.group(1)))
     assert parse_qs(urlsplit(html.unescape(way_back.group(1))).query)["show"] == [name]
-    assert f'id="{assignment_anchor(name)}"' in lands_on(checked, html.unescape(to_check.group(1)))
+    assert f'id="{title_anchor(name)}"' in lands_on(checked, html.unescape(to_check.group(1)))
     assert parse_qs(urlsplit(html.unescape(to_check.group(1))).query)["show"] == [name]
 
 
@@ -1703,8 +1704,10 @@ def test_every_way_to_a_card_lands_on_that_card_when_another_id_differs_only_by_
     """Both assignments are on her week together, as cards or as rows due later. From the
     way back, a refusal's link, a save, the same save again, the link to something worth
     checking, Change, keeping it as it is, and an undo, the place reached is the one
-    assignment's, active or under Reported done with that fold open, and the other's
-    record is as it was; Change reaches the choices of the form it opens. The paths are
+    assignment's, and the other's record is as it was; Change reaches the choices of the
+    form it opens. A save keeps the card where it was for the rest of the visit, through
+    Change and keeping it as it is; the link to something worth checking starts a visit
+    and finds the card under Reported done with that fold open. The paths are
     decoded as a server decodes them, once, which for an id that holds an escaped percent
     sign is not what the test client does by itself."""
     other = next(name for name in PAIR if name != target)
@@ -1758,14 +1761,19 @@ def test_every_way_to_a_card_lands_on_that_card_when_another_id_differs_only_by_
         found = re.search(r'<form method="get" action="([^"]+)" class="action">', mine)
         assert found is not None
         change = html.unescape(found.group(1))
-        opened = client.get(
-            urlsplit(change).path, params=form_fields(mine, found.group(1)), headers=PAGE_HEADERS
+        opened = after(
+            client,
+            client.get(
+                urlsplit(change).path,
+                params=form_fields(mine, found.group(1)),
+                headers=PAGE_HEADERS,
+            ),
         ).text
         reached["Change"] = (opened, change)
         found = re.search(r'<a class="cancel" href="([^"]+)"', landed(opened, change))
         assert found is not None
         keep = html.unescape(found.group(1))
-        reached["keeping it"] = (client.get(keep).text, keep)
+        reached["keeping it"] = (after(client, client.get(keep)).text, keep)
 
         undone = client.post(undo, data=form_fields(mine, undo), headers=PAGE_HEADERS)
         reached["an undo"] = (
@@ -1790,11 +1798,10 @@ def test_every_way_to_a_card_lands_on_that_card_when_another_id_differs_only_by_
             assert tag not in card_for(page, other), how
         else:
             place = landed(page, address)
-            assert f'id="{assignment_anchor(target)}"' in tag, how
+            assert f'id="{title_anchor(target)}"' in tag, how
             assert PAIR[target] in place, how
             assert PAIR[other] not in place, how
-        done_now = how not in ("the way back", "the refusal's link", "an undo")
-        assert in_an_open_fold(page, address) == done_now, how
+        assert in_an_open_fold(page, address) == (how == "worth checking"), how
     assert parse_qs(urlsplit(reached["a save"][1]).query)["saved"] == [target]
     assert parse_qs(urlsplit(way_back).query)["show"] == [target]
     assert reports == {target: 2, other: 0}

@@ -189,9 +189,12 @@ A place a redirect lands on is named by one helper, used by the page that
 writes the id and by the address sent to it, and her week with a card in view
 is one address builder that escapes the id in the query and in the fragment,
 so the two agree whatever an id holds. A card or a row on her week writes its
-id with one helper too, the assignment's id escaped, and every fragment that
-names it is made by that helper, so two ids that differ only by an escape
-are two places. The redirect names the event the save accepted, and the page
+id with one helper too, and its title an id of its own with another, the
+assignment's id escaped in both. Every link to a card is made by the title's
+helper and lands on the title, which takes the focus, so two ids that differ
+only by an escape are two places and the outline marks a title, never a whole
+card. A link to a card not on record now lands on a line above the week's
+homework that says so. The redirect names the event the save accepted, and the page
 that answers looks it up in that assignment's history in its one reading:
 while that event is the latest the result is what stands, said with the
 dated statement that stands, with an Undo for that event and no other, and a
@@ -376,7 +379,14 @@ the card, and a refusal with no card line on the week, a parent's press among
 them, is said at the top, which takes the focus after a press. A press her
 To turn in list refuses is said on the list's own line, which takes the
 focus, on her week and on the list's own page. A save or an
-undo from a card lands on the card's result. A result is hers: a parent who
+undo from a card lands on the card's result, and the card stays where it was
+for the rest of her visit, Done among the active cards included. Each update
+form on her week carries the cards the visit keeps in place, its own among
+them; a save or an undo leaves them in a short-lived cookie for the page its
+redirect names, and Change and Keep it as it is carry them in the address,
+answered with the same address without them and the cookie. The page reads
+the cookie once and clears it, so a refresh, a return, or Back to an address
+shows the week grouped by its updates. A result is hers: a parent who
 opens an address her save, undo, press, delete or request for help left reads
 what stands, in the parent's words, and no result, on her week, the details,
 her To turn in list, her homework notes, Help and a note's own page. Help then

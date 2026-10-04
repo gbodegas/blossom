@@ -215,10 +215,12 @@ def shown(client: TestClient) -> Answer:
 
 
 def followed(client: TestClient, page: str, pattern: str) -> Answer:
-    """The page a link on ``page`` opens, the first whose opening tag matches ``pattern``."""
+    """The page a link on ``page`` opens, the first whose opening tag matches ``pattern``,
+    through the redirect that answers a link carrying the cards a visit keeps in place."""
     link = re.search(pattern, page, re.S)
     assert link is not None, pattern
-    return client.get(link.group(1).replace("&amp;", "&"), headers=PAGE_HEADERS)
+    answer = client.get(link.group(1).replace("&amp;", "&"), headers=PAGE_HEADERS)
+    return after(client, answer) if answer.status_code == 303 else answer
 
 
 def to_check(client: TestClient) -> Answer:
@@ -481,7 +483,7 @@ def test_a_cards_facts_links_and_lines_stay_outside_its_fold(
     assert len(folded) == count
     for name, item in folded.items():
         outside, record = without_the_fold(item), records[name]
-        assert re.search(rf"<(h2|strong)>{re.escape(record.title)}</\1>", outside), name
+        assert re.search(rf"<(h2|strong)\b[^>]*>{re.escape(record.title)}</\1>", outside), name
         assert record.course in outside
         assert re.search(r'<p class="due">|<br>\s*Due \w+day, ', outside), name
         assert 'aria-label="Details: ' in outside
@@ -695,10 +697,11 @@ def test_change_lands_on_the_group_of_the_form_it_opens_and_asks_for_no_focus(
         form = re.search(r'<form method="get" action="([^"]+)" class="action">', card)
         assert form is not None
         answer = client.get(form.group(1), params=form_fields(card, form.group(1)))
-        page = main_of(answer.text)
+        page = main_of(after(client, answer).text)
         row = main_of(page_of(client, change=READING_LOG_ID))
 
     assert form.group(1) == f"/student/due-this-week#{group}"
+    assert answer.headers["location"].endswith(f"#{group}")
     assert lands_on(page, form.group(1)) == f'<fieldset class="choice" id="{group}" tabindex="-1">'
     assert update_folds(card_for(page, name)) == []
     assert autofocused(page) == []
