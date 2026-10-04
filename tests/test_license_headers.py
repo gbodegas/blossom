@@ -267,12 +267,20 @@ def test_the_source_link_is_a_line_of_its_own(tmp_path: pathlib.Path) -> None:
 
 STYLESHEET = PACKAGE_ROOT / "static" / "blossom.css"
 
-COMMENT_OR_STRING = re.compile(r"/\*.*?\*/|(\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*')", re.DOTALL)
+COMMENT_OR_STRING = re.compile(
+    r"/\*.*?\*/|(\"(?:[^\"\\\n\r\f]|\\.)*\"|'(?:[^'\\\n\r\f]|\\.)*')|[\"']", re.DOTALL
+)
+"""A comment, a string, or a quote that opens no string a browser can read."""
 GROUPS = ("@media", "@supports", "@container")
 """At-rules whose rules apply under a condition, which is pinned with each rule."""
-SKIPPED = ("@font-face", "@keyframes", "@-webkit-keyframes")
+SKIPPED = ("@keyframes", "@-webkit-keyframes")
 """At-rules that hold no rules for elements."""
+FONT_FACE = "@font-face"
+"""Kept with the rules that reach the link, since a font face changes how its text is drawn."""
+CSS_SPACE = " \t\n\r\f"
 VAR_NAME = re.compile(r"var\(\s*(--[\w-]+)")
+UNQUOTED_URL = re.compile(r"url\(\s*[^\s'\"]", re.IGNORECASE)
+"""A ``url()`` without quotes, in which a browser reads ``/*`` as part of the address."""
 
 CHECK = (
     "A rule that can reach the footer's Source code link changed or appeared. Check the footer "
@@ -282,6 +290,12 @@ CHECK = (
 )
 
 FOOTER_RULES = (
+    '@font-face { font-family: "Quicksand"; '
+    'src: url("/static/fonts/Quicksand-Variable.ttf") format("truetype"); '
+    "font-weight: 300 700; font-style: normal; font-display: swap }",
+    '@font-face { font-family: "Outfit"; '
+    'src: url("/static/fonts/Outfit-Variable.ttf") format("truetype"); '
+    "font-weight: 300 700; font-style: normal; font-display: swap }",
     ":root { --canvas: #fdf5f7; --rule: rgba(155, 184, 211, 0.1); "
     "--blue-action: #4c7193; --text: #4a5c6f; --text-soft: #56687a; "
     '--font-body: "Outfit", "Rubik", "Quicksand", system-ui, sans-serif }',
@@ -299,8 +313,8 @@ FOOTER_RULES = (
     ".colophon a { display: inline-block; padding: 0.8rem 0; margin: 5px 0; "
     "scroll-margin: 5px 0; color: var(--blue-action) }",
 )
-"""Every rule that can reach the footer's link, with the custom properties it uses, as the
-stylesheet writes them: what the footer was checked with in a browser."""
+"""Every rule that can reach the footer's link, with the custom properties it uses and the
+font faces, as the stylesheet writes them: what the footer was checked with in a browser."""
 
 
 def flat(text: str) -> str:
@@ -308,9 +322,11 @@ def flat(text: str) -> str:
 
 
 def split_top(text: str, at: str) -> list[str]:
-    """``text`` split at each ``at`` outside brackets, each part flattened, empty ones left out."""
+    """``text`` split at each ``at`` outside brackets and strings, each part flattened, empty
+    ones left out."""
+    shadow = COMMENT_OR_STRING.sub(lambda found: "_" * len(found.group(0)), text)
     parts, depth, start = [], 0, 0
-    for index, character in enumerate(text):
+    for index, character in enumerate(shadow):
         depth += 1 if character in "([" else -1 if character in ")]" else 0
         if character == at and depth == 0:
             parts.append(text[start:index])
@@ -318,13 +334,33 @@ def split_top(text: str, at: str) -> list[str]:
     return [flat(part) for part in [*parts, text[start:]] if part.strip()]
 
 
+def uncommented(found: re.Match[str]) -> str:
+    """A string as it is, or a comment as a space, which is what a comment is to a browser
+    when a space is next to it. A comment between two tokens fails, and so does a quote that
+    opens no string a browser can read."""
+    if found.group(1):
+        return found.group(1)
+    text, (start, end) = found.string, found.span()
+    assert found.group(0).startswith("/*"), f"unclosed string at {start}"
+    assert text[start - 1 : start] in CSS_SPACE or text[end : end + 1] in CSS_SPACE, (
+        f"comment between two tokens at {start}"
+    )
+    return " "
+
+
 def css_rules(css: str) -> list[tuple[str, str, list[str]]]:
     """Every style rule as the conditions around it, its selector list, and its declarations.
-    Anything else fails: a nested rule, an at-rule outside GROUPS and SKIPPED, a statement
-    such as ``@import``, or an unclosed brace."""
-    text = COMMENT_OR_STRING.sub(lambda found: found.group(1) or " ", css)
+    A ``;`` outside a rule stays in the next selector, as a browser reads it. Anything else
+    fails: a nested rule, an at-rule outside GROUPS and SKIPPED, a statement such as
+    ``@import``, an unclosed brace, bracket, string or comment, a brace inside brackets, an
+    escape, a ``url()`` without quotes, and, outside strings, ``-->`` or a space a browser
+    doesn't read as one."""
+    assert "\\" not in css, "escape"
+    assert not UNQUOTED_URL.search(css), "url() without quotes"
+    text = COMMENT_OR_STRING.sub(uncommented, css)
     rules: list[tuple[str, str, list[str]]] = []
     heads: list[str] = []
+    closers: list[str] = []
     start = index = 0
     while index < len(text):
         character = text[index]
@@ -333,11 +369,18 @@ def css_rules(css: str) -> list[tuple[str, str, list[str]]]:
             assert quoted, f"unclosed string at {index}"
             index = quoted.end()
             continue
-        if character == ";" and (not heads or heads[-1].startswith(GROUPS)):
-            assert not text[start:index].strip(), f"statement: {flat(text[start:index])}"
-            start = index + 1
-        elif character == "{":
-            assert not heads or heads[-1].startswith("@"), f"rule nested in {heads[-1]}"
+        assert not text.startswith(("/*", "-->"), index), f"comment mark at {index}"
+        assert not character.isspace() or character in CSS_SPACE, f"odd space at {index}"
+        if character in "([":
+            closers.append(")" if character == "(" else "]")
+        elif character in ")]":
+            assert closers[-1:] == [character], f"stray {character} at {index}"
+            closers.pop()
+        assert not (closers and character in "{}"), f"brace inside brackets at {index}"
+        if character == "{":
+            assert not heads or heads[-1].startswith(GROUPS + SKIPPED), (
+                f"rule nested in {heads[-1]}"
+            )
             heads.append(flat(text[start:index]))
             start = index + 1
         elif character == "}":
@@ -345,7 +388,7 @@ def css_rules(css: str) -> list[tuple[str, str, list[str]]]:
             head = heads.pop()
             if any(above.startswith(SKIPPED) for above in [*heads, head]):
                 pass
-            elif head.startswith("@"):
+            elif head.startswith("@") and head != FONT_FACE:
                 assert head.startswith(GROUPS), f"at-rule: {head}"
             else:
                 rules.append((" / ".join(heads), head, split_top(text[start:index], ";")))
@@ -362,7 +405,7 @@ Chain = tuple[tuple[str, frozenset[str], str | None], ...]
 def may_match(compound: str, chain: Chain) -> bool:
     """Whether one compound selector could match the link or an element around it, by tag,
     classes and id alone. Everything else is set aside, which can only widen the match."""
-    bare = re.sub(r"::?[\w-]+", "", re.sub(r"\[[^\]]*\]|\([^()]*\)", "", compound))
+    bare = re.sub(r"::?[\w-]+", "", compound)
     tag = re.match(r"\*|[\w-]*", bare).group(0).lower()  # type: ignore[union-attr]
     classes = set(re.findall(r"\.([\w-]+)", bare))
     ids = set(re.findall(r"#([\w-]+)", bare))
@@ -374,11 +417,14 @@ def may_match(compound: str, chain: Chain) -> bool:
 def may_reach(one: str, chain: Chain) -> bool:
     """Whether a selector could style the link or an element around it. It cannot only when
     a compound that has to match the link or an element above it matches none of them; a
-    compound before ``+`` or ``~`` matches a sibling and is passed over. A selector with an
-    escape, a namespace, ``&`` or a bracket inside a bracket counts as reaching."""
-    if re.search(r"[\\|&]|\([^)]*\(|\[[^\]]*\[", one):
+    compound before ``+`` or ``~`` matches a sibling and is passed over. What brackets and
+    strings hold is set aside first. A selector with a namespace, ``&`` or a bracket inside a
+    bracket of its kind counts as reaching."""
+    one = COMMENT_OR_STRING.sub('""', one)
+    if re.search(r"[|&]|\([^)]*\(|\[[^\]]*\[", one):
         return True
-    pieces = [piece for piece in re.split(r"\s*([>+~])\s*|\s+", one.strip()) if piece]
+    bare = re.sub(r"\[[^\]]*\]|\([^()]*\)", "", one)
+    pieces = [piece for piece in re.split(r"\s*([>+~])\s*|\s+", bare.strip()) if piece]
     for place, piece in enumerate(pieces):
         after = pieces[place + 1] if place + 1 < len(pieces) else ""
         if piece not in (">", "+", "~") and after not in ("+", "~") and not may_match(piece, chain):
@@ -392,7 +438,7 @@ def footer_rules(css: str, chain: Chain) -> list[str]:
     reaching = [
         rule
         for rule in css_rules(css)
-        if any(may_reach(one, chain) for one in split_top(rule[1], ","))
+        if rule[1] == FONT_FACE or any(may_reach(one, chain) for one in split_top(rule[1], ","))
     ]
     declared = [line for _, _, lines in reaching for line in lines]
     named = {
@@ -481,7 +527,62 @@ REACHES = {
     "import": '@import url("other.css");',
     "property": "@property --blue-action { syntax: '*'; inherits: true; }",
     "unclosed": ".colophon a { margin: 0;",
+    "list-inside-is-on-the-link": ".colophon a:is(a, button) { display: none; }",
+    "list-inside-is-above-the-link": ":is(.unused, .colophon) a { display: none; }",
+    "list-inside-is-on-the-footer": ".colophon:is(.x, footer) a { display: none; }",
+    "list-inside-is-naming-the-footer": ":is(footer, .other) a { display: none; }",
+    "attribute-with-a-flag": '.colophon a[href^="https://" i] { display: none; }',
+    "sum-inside-nth-child": ".colophon a:nth-child(2n+1) { display: none; }",
+    "child-inside-not": ".colophon a:not(.x > .y) { display: none; }",
+    "class-inside-a-string": '.colophon a:not([title=").x"]) { display: none; }',
+    "space-inside-a-string": '.colophon a:not([class~="x y"]) { display: none; }',
+    "bracket-inside-a-string-in-a-list": '[title="]"], .x a, .colophon a { display: none; }',
+    "bracket-inside-a-string-in-a-value": '.colophon a { --unused: "("; display: none; }',
+    "escaped-token-name": ":root { --blue\\2d action: transparent; }",
+    "escaped-hyphen-on-the-link": ".colophon a { --blue\\-action: transparent; }",
+    "escaped-hyphen-in-a-token": ":root { --blue\\-action: transparent; }",
+    "escape-before-a-declaration": ".colophon a { --unused: \\(; display: none; }",
+    "closer-with-nothing-open": ".colophon a { --unused: ); display: none; }",
+    "bracket-left-open": "@media (min-width: 1px {}",
+    "bracket-left-open-in-a-rule": ".colophon a { --unused: (; display: none; }",
+    "comment-inside-a-url": (
+        ".colophon a { --unused: url( /* ); display: none; } main { --unused: */ ); }"
+    ),
+    "bracket-closed-by-the-other-kind": "@media (min-width: 1px] {}",
+    "comment-left-open": "/* main a { margin: 0; }",
+    "html-comment-mark": "--> .colophon a { display: none; }",
+    "form-feed-inside-a-string": '.colophon a { --unused: "\f; display: none; --x: "; }',
+    "url-after-a-no-break-space": (
+        'main { background: url(\xa0"x" /*); } .colophon a { display: none; } /* */ ); }'
+    ),
+    "font-face-for-the-footer-font": (
+        '@font-face { font-family: "Outfit"; src: local("Arial"); size-adjust: 5%; }'
+    ),
+    "block-inside-a-font-face": "@font-face { x { } }",
+    "quote-that-opens-no-string": '.x { y: "a /*\n} .colophon a { display: none; } /* */ " }',
+    "escape-before-a-new-line-in-a-string": (
+        '.x { y: "a/*\\41\n"; } .colophon a { display: none; } .z { w: "*/" }'
+    ),
 }
+
+EDITS = {
+    "comment-between-compounds": (".colophon a {", ".colophon/**/a {"),
+    "comment-inside-a-sum": ("calc(2rem + 1px)", "calc(2rem/**/+/**/1px)"),
+    "no-break-space-in-a-selector": (".colophon a {", ".colophon\xa0a {"),
+    "no-break-space-in-a-value": (
+        "outline: 3px solid var(--blue-action)",
+        "outline: 3px\xa0solid var(--blue-action)",
+    ),
+    "html-comment-mark-before-the-footer": (".colophon {", "--> .colophon {"),
+    "comment-inside-a-name": (".colophon a {", ".colo/**/phon a {"),
+    "comment-inside-a-value": ("scroll-margin: 5px 0", "scroll-margin: 5/**/px 0"),
+    "comment-across-a-new-line-in-a-string": (
+        'font-family: "Outfit";',
+        'font-family: "Out/*\n*/fit";',
+    ),
+    "semicolon-before-a-rule": (".colophon a {", ";\n.colophon a {"),
+}
+"""Changes to the stylesheet's own text that a browser reads differently."""
 
 LEAVES = {
     "another-panel's-link": ".help-panel a.ask-again { color: red; }",
@@ -489,8 +590,12 @@ LEAVES = {
     "links-in-main": "main a { margin: 0; }",
     "by-an-id-elsewhere": "#main p { margin: 0; }",
     "token-it-doesn't-use": ":root { --unused-token: 1px; }",
-    "font-face": '@font-face { font-family: "X"; src: url("x.woff2"); }',
     "keyframes": "@keyframes x { from { opacity: 0; } }",
+    "a-list-inside-is-elsewhere": "main :is(h1, h2) a { margin: 0; }",
+    "an-attribute-flag-elsewhere": 'main a[href^="https://" i] { margin: 0; }',
+    "a-bracket-inside-a-string-elsewhere": 'main a[title="("] { margin: 0; }',
+    "a-comment-against-a-brace": "main a {/* note */ margin: 0; }",
+    "a-transparent-token-it-doesn't-use": ":root { --unused-token: transparent; }",
 }
 
 
@@ -498,6 +603,14 @@ LEAVES = {
 def test_a_rule_that_can_reach_the_footer_link_fails_the_check(rule: str) -> None:
     with pytest.raises(AssertionError):
         check_footer_rules(STYLESHEET.read_text(encoding="utf-8") + "\n" + rule + "\n")
+
+
+@pytest.mark.parametrize(("before", "after"), EDITS.values(), ids=EDITS.keys())
+def test_an_edit_a_browser_reads_differently_fails_the_check(before: str, after: str) -> None:
+    css = STYLESHEET.read_text(encoding="utf-8")
+    assert css.count(before) == 1
+    with pytest.raises(AssertionError):
+        check_footer_rules(css.replace(before, after))
 
 
 @pytest.mark.parametrize("rule", LEAVES.values(), ids=LEAVES.keys())
