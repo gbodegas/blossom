@@ -35,6 +35,7 @@ from blossom.routes.student import (
     UPDATE_ALREADY_SAVED,
     UPDATE_SAVED,
     UPDATE_UNDONE,
+    place_key,
 )
 from tests.support import (
     DETAILS,
@@ -104,7 +105,7 @@ def test_details_show_the_current_record_with_its_facts_her_update_and_the_way_b
     assert text.index('<p class="return">') < text.index("<h1>")
     assert (
         f'<a href="/student/due-this-week?week={FIXTURE_WEEK}&amp;show={ESSAY_ID}'
-        f'#assignment-{ESSAY_ID}">Back to the week</a>'
+        f'#title-{ESSAY_ID}">Back to the week</a>'
     ) in text
     assert "Current assignment record." not in text
     assert '<h2 class="update-heading">What is on record now</h2>' in text
@@ -475,6 +476,7 @@ def test_her_week_cards_still_save_as_they_did_and_offer_the_details() -> None:
     assert form_fields(week, f"{DETAILS_ACTIONS}/report") == {
         "expected_report_id": "",
         "week": FIXTURE_WEEK,
+        "in_place": f"a:{place_key(ESSAY_ID)}",
     }
 
 
@@ -644,8 +646,7 @@ def test_a_way_back_these_pages_do_not_make_is_the_safe_default(query: str) -> N
     assert page.status_code == 200
     assert "example.org" not in page.text
     assert (
-        f'<a href="/student/due-this-week?show={ESSAY_ID}#assignment-{ESSAY_ID}">'
-        "Back to the week</a>"
+        f'<a href="/student/due-this-week?show={ESSAY_ID}#title-{ESSAY_ID}">Back to the week</a>'
     ) in page.text
 
 

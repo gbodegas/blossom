@@ -543,8 +543,7 @@ def test_change_save_and_undo_on_the_details_keep_the_way_back_they_came_with(or
             [
                 (f"{DETAILS}?return_to=week&amp;week=2026-08-10", "Back to the assignment"),
                 (
-                    f"/student/due-this-week?week=2026-08-10&amp;show={ESSAY_ID}"
-                    f"#assignment-{ESSAY_ID}",
+                    f"/student/due-this-week?week=2026-08-10&amp;show={ESSAY_ID}#title-{ESSAY_ID}",
                     "Back to the week",
                 ),
             ],
@@ -574,7 +573,7 @@ def test_change_save_and_undo_on_the_details_keep_the_way_back_they_came_with(or
             [
                 (
                     f"/student/due-this-week?week={FIXTURE_WEEK}&amp;show={ESSAY_ID}"
-                    f"#assignment-{ESSAY_ID}",
+                    f"#title-{ESSAY_ID}",
                     "Back to the week",
                 )
             ],

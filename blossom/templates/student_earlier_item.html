@@ -39,6 +39,7 @@ today's plan put it, what a press just did, and the press, hers alone.
       <input type="hidden" name="made_with" value="{{ earlier_made_with[item.assignment_id] }}">
       <input type="hidden" name="week" value="{{ "" if view.week.current else view.week.start.isoformat() }}">
     <input type="hidden" name="place" value="{{ "fold" if item.folded else "list" }}">
+    <input type="hidden" name="in_place" value="{{ earlier_in_place }}">
       {% if item.chosen %}
         <button type="submit" class="secondary" aria-label="Remove from today's plan: {{ item.title }}, {{ item.course }}">Remove from today's plan</button>
       {% else %}

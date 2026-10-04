@@ -37,6 +37,7 @@ from blossom.routes.student import (
     earlier_action,
     earlier_anchor,
     earlier_made_with,
+    place_key,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE as KEY_VARIABLE
 from blossom.stores.catch_up import ChoiceMade, ChoiceStood
@@ -59,11 +60,13 @@ from tests.support import (
     plan_block,
     record,
     report,
+    save,
     scripted_graphs,
     signed_in,
     signed_in_household,
     state_of,
     store_of,
+    week_card,
     with_clock,
     words,
 )
@@ -1019,3 +1022,36 @@ def test_the_details_say_whether_she_chose_earlier_work_and_link_to_the_list() -
         after
     )
     assert "Include it in today's plan" not in after
+
+
+# ------------------------------------------------------------------ cards kept in place
+
+REPORTED_DONE = '<details class="steps reported-done"'
+
+
+def done_from_the_card(client: TestClient, assignment_id: str) -> str:
+    """Her Done saved from a card of this week, as its form sends it; the page it lands on."""
+    answer = save(client, week_card(client, assignment_id), "done", assignment_id=assignment_id)
+    assert answer.status_code == 303, answer.status_code
+    return client.get(answer.headers["location"], headers=PAGE_HEADERS).text
+
+
+@pytest.mark.parametrize("where", ["list", "card"])
+def test_an_include_keeps_the_cards_this_visit_keeps_in_place(where: str) -> None:
+    with household(OCT_2, OCT_3) as client:
+        if where == "card":
+            report(client, OCT_2.assignment_id, "not_yet", week=THIS_WEEK)
+        kept = done_from_the_card(client, OCT_3.assignment_id)
+        action = earlier_action(OCT_2.assignment_id)
+        pressed = card_for(kept, OCT_2.assignment_id) if where == "card" else section(kept)
+        fields = form_fields(pressed, action)
+        answer = client.post(action, data=fields, headers=PAGE_HEADERS)
+        landed = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
+        fresh = page(client)
+
+    assert REPORTED_DONE not in kept
+    assert f"a:{place_key(OCT_3.assignment_id)}" in fields["in_place"].split("|")
+    assert "landing=" in answer.headers["location"]
+    assert REPORTED_DONE not in landed
+    assert "Included in today's plan." in words(landed)
+    assert REPORTED_DONE in fresh

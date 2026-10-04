@@ -133,6 +133,7 @@
           <input type="hidden" name="made_with" value="{{ earlier_made_with[assignment.assignment_id] }}">
           <input type="hidden" name="week" value="{{ "" if view.week.current else view.week.start.isoformat() }}">
           <input type="hidden" name="place" value="card">
+          {% for name, value in ctx.post_fields if name == "in_place" %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
           <button type="submit" class="secondary" aria-label="Include in today's plan: {{ assignment.title }}, {{ assignment.course }}">Include in today's plan</button>
         </form>
       {% endif %}

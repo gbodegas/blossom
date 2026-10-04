@@ -26,7 +26,7 @@ from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import unescape
 from html.parser import HTMLParser
 from typing import Annotated, Any, Protocol
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -1009,6 +1009,13 @@ def after(client: TestClient, answer: Answer) -> Answer:
     """The page a redirect sends her to."""
     assert answer.status_code == 303, answer.text[:300]
     return client.get(answer.headers["location"], headers=PAGE_HEADERS)
+
+
+def landing_in(address: str) -> str:
+    """The landing a redirect to her week names, which is new for every redirect."""
+    named = parse_qs(urlsplit(address).query, keep_blank_values=True).get("landing", [])
+    assert len(named) == 1, address
+    return named[0]
 
 
 def refuse_writes(client: TestClient) -> None:
