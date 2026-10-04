@@ -24,6 +24,7 @@ from langgraph.types import Command
 from blossom.agent.graph import (
     MAX_REVISIONS,
     WORST_CASE_SUPERSTEPS,
+    Ask,
     CompiledPlanGraph,
     ModelAnswer,
     PlanState,
@@ -36,6 +37,7 @@ from blossom.agent.runs import (
     RECURSION_LIMIT,
     RUN_DEADLINE_SECONDS,
     RunBudget,
+    RunTimedOut,
     run_config,
 )
 from blossom.agent.steps import KEPT_FOR_REVIEW, StageTime, StepRecord
@@ -964,8 +966,8 @@ def test_work_the_school_dates_before_the_evening_ends_the_run_before_any_model_
     assert ended.outcome == "date_problem"
     assert [item.node for item in ended.steps] == ["retrieve"]
     assert (
-        "World History \u00b7 Canal Era comparison essay is due 2026-08-18, before this evening, "
-        "so no plan can keep every rule; no model was asked."
+        "World History \u00b7 Canal Era comparison essay is due 2026-08-18, before the evening "
+        "being planned, so no plan can keep every rule; no model was asked."
     ) in ended.steps[0].found
     verification = check_plan(
         good_plan(),
@@ -2011,3 +2013,158 @@ def test_a_service_that_refuses_the_request_is_not_asked_again() -> None:
 
     assert view.outcome == "service_failed"
     assert planner.calls == 1
+
+
+def an_answer_after(budget: RunBudget, spend: Callable[[], None]) -> str:
+    """Ask once through ``budget`` with a request that spends time by ``spend``, never
+    yielding to the event loop, and then answers."""
+
+    async def request() -> str:
+        spend()
+        return "answer"
+
+    return asyncio.run(budget.ask(request, stage="critique", round_number=1))
+
+
+def test_an_answer_that_comes_back_past_the_limit_is_not_taken() -> None:
+    """A request that holds the event loop gives the timeout no chance to cut it off, so
+    its answer is checked against the limit as it comes back."""
+    clock = FakeTime()
+    on_a_fake_clock = clock.budget(2.0)
+    on_the_process_clock = RunBudget(seconds=0.2)
+
+    def held_past() -> None:
+        clock.now += 2.001
+
+    with pytest.raises(RunTimedOut):
+        an_answer_after(on_a_fake_clock, held_past)
+    with pytest.raises(RunTimedOut):
+        an_answer_after(on_the_process_clock, lambda: time.sleep(0.3))
+
+    for budget in (on_a_fake_clock, on_the_process_clock):
+        assert budget.waiting_on == ("critique", 1)
+        assert (budget.model_calls, budget.retries) == (1, 0)
+
+
+@pytest.mark.parametrize("spent", [2.0, 1.999])
+def test_an_answer_that_comes_back_by_the_limit_is_taken(spent: float) -> None:
+    clock = FakeTime()
+    budget = clock.budget(2.0)
+
+    def held() -> None:
+        clock.now += spent
+
+    assert an_answer_after(budget, held) == "answer"
+    assert budget.waiting_on is None
+
+
+@pytest.mark.parametrize(
+    ("third", "outcome"), [(RUN_DEADLINE_SECONDS - 1.999, "timed_out"), (88.0, "checks_failed")]
+)
+def test_a_last_plan_that_comes_back_past_the_limit_times_the_run_out(
+    third: float, outcome: str
+) -> None:
+    """Two plans that break a rule take a second each; the third comes back just past the
+    run's limit, or right at it. Past it, the run is kept as timed out, not as a run whose
+    every plan broke a rule."""
+    clock = FakeTime()
+    planner: Spending[DailyPlan] = Spending(
+        clock,
+        (1, ok(forgetful_fixture_plan())),
+        (1, ok(forgetful_fixture_plan())),
+        (third, ok(forgetful_fixture_plan())),
+    )
+    state = a_household()
+    try:
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=planner, critic=Scripted()),
+                PLAN_DATE,
+                state,
+                budget=clock.budget(),
+            )
+        )
+        (ended,) = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert view.outcome == outcome
+    assert planner.calls == 3
+    assert ended.outcome == outcome
+    if outcome == "timed_out":
+        assert (ended.steps[-1].node, ended.steps[-1].round) == ("plan", 3)
+        assert ended.steps[-1].found == (
+            "No plan came back: the run's time ran out while it waited."
+        )
+
+
+class HoldsTheLoop:
+    """A reviewer whose request holds the event loop for ``seconds``, then accepts."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[CriticVerdict]:
+        time.sleep(self.seconds)  # noqa: ASYNC251
+        return ok(accepting())
+
+
+@pytest.mark.parametrize("holds_the_loop", [False, True])
+def test_a_verdict_that_comes_back_past_the_limit_publishes_nothing(
+    holds_the_loop: bool,
+) -> None:
+    clock = FakeTime()
+    critic: Ask[CriticVerdict]
+    if holds_the_loop:
+        critic, budget = HoldsTheLoop(0.3), RunBudget(seconds=0.2)
+    else:
+        critic = Spending(clock, (RUN_DEADLINE_SECONDS + 0.001, ok(accepting())))
+        budget = clock.budget()
+    state = a_household()
+    try:
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=Scripted(ok(fixture_week_plan())), critic=critic),
+                PLAN_DATE,
+                state,
+                budget=budget,
+            )
+        )
+        latest = state.drafts.latest_for(PLAN_DATE)
+        (ended,) = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert view.outcome == "timed_out"
+    assert latest is None
+    assert (ended.steps[-1].node, ended.steps[-1].round) == ("critique", 1)
+
+
+@pytest.mark.parametrize(
+    ("late_on", "spent", "raised"),
+    [
+        (1, 20.0, RunTimedOut),
+        (2, 20.0, RunTimedOut),
+        (3, 20.0, RunTimedOut),
+        (3, 8.0, ServiceBusy),
+    ],
+)
+def test_a_busy_answer_that_comes_back_past_the_limit_times_the_run_out(
+    late_on: int, spent: float, raised: type[Exception]
+) -> None:
+    """Busy answers take a quarter second, then one takes ``spent`` seconds of a ten-second
+    run on the ``late_on`` try. Past the limit it times the run out, whichever try it was;
+    the last try's busy answer at the limit is still the service failing."""
+    clock = FakeTime()
+    budget = clock.budget(10.0)
+    tries = [0]
+
+    async def request() -> str:
+        tries[0] += 1
+        clock.now += spent if tries[0] == late_on else 0.25
+        msg = "overloaded"
+        raise ServiceBusy(msg)
+
+    with pytest.raises(raised):
+        asyncio.run(budget.ask(request, stage="plan", round_number=1))
+    assert tries[0] == late_on

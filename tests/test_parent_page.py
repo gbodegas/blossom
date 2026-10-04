@@ -18,7 +18,7 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 
 from blossom.agent.graph import plan_graph_for
-from blossom.agent.steps import StepRecord
+from blossom.agent.steps import StepRecord, describe_past_due
 from blossom.app import create_app
 from blossom.clock import spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
@@ -417,6 +417,32 @@ def test_a_past_evening_is_refused_by_the_form_and_a_past_draft_says_it_is_not_o
     assert refused.status_code == 422
     assert "The evening of 2026-08-18 has passed." in refused.text
     assert "This plan was for Tuesday, August 18, which has passed. It is not on her page" in page
+
+
+def test_a_date_problem_for_a_later_evening_is_said_against_that_evening() -> None:
+    """Planning the day after tomorrow, work due tomorrow comes before the evening but
+    hasn't passed, and the family page doesn't say it has."""
+    evening = PLAN_DATE + timedelta(days=2)
+    found = describe_past_due(
+        ["World History \u00b7 Canal Era comparison essay"], [PLAN_DATE + timedelta(days=1)]
+    )
+    with browser() as client:
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        state.drafts.record_run(
+            thread_id=f"plan:{evening.isoformat()}:later",
+            plan_date=evening,
+            outcome="date_problem",
+            steps=[
+                StepRecord(node="retrieve", round=0, expected="", found=found, recorded_at=CREATED)
+            ],
+        )
+        page = client.get("/parent").text
+
+    assert "No plan for Friday, August 21, 2026" in page
+    assert "A due date on record comes before the evening being planned" in page
+    assert "is due 2026-08-20, before the evening being planned" in page
+    assert "already passed" not in page
+    assert "before this evening" not in page
 
 
 def test_a_waiting_draft_for_a_past_evening_is_never_told_to_plan_again() -> None:

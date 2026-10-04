@@ -110,8 +110,8 @@ OUTCOMES = {
     ),
     "nothing_to_schedule": "The run ended because nothing was left to schedule.",
     "date_problem": (
-        "A due date on record has already passed, so no plan could keep every rule. "
-        "No model was asked. Check the dates named in the steps."
+        "A due date on record comes before the evening being planned, so no plan could keep "
+        "every rule. No model was asked. Check the dates named in the steps."
     ),
     "timed_out": (
         "Planning took longer than the time a run is allowed, so it stopped with no plan to review."
@@ -277,9 +277,9 @@ def describe_verdict(verdict: CriticVerdict) -> str:
 
 
 def seconds_said(seconds: float) -> str:
-    """``0.4 seconds``, ``12 seconds``: a time as a parent reads it."""
+    """``0.4 seconds``, ``1.0 second``, ``12 seconds``: a time as a parent reads it."""
     amount = f"{seconds:.1f}" if seconds < SECONDS_SAID else f"{round(seconds)}"
-    return f"{amount} second" if amount == "1" else f"{amount} seconds"
+    return f"{amount} second" if amount in ("1", "1.0") else f"{amount} seconds"
 
 
 def describe_timing(timing: RunTiming) -> str:
@@ -303,10 +303,12 @@ def tokens_said(number: int) -> str:
 
 
 def describe_past_due(names: Sequence[str], due: Sequence[date]) -> str:
-    """Why a run ended before any model was asked: work whose due date has already passed."""
+    """Why a run ended before any model was asked: work due before the evening it plans,
+    which a parent may set days ahead, so the date hasn't always passed."""
     said = [f"{name} is due {day}" for name, day in zip(names, due, strict=True)]
     return (
-        f"{joined(said)}, before this evening, so no plan can keep every rule; no model was asked."
+        f"{joined(said)}, before the evening being planned, so no plan can keep every rule; "
+        "no model was asked."
     )
 
 

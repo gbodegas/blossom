@@ -13,7 +13,7 @@ it took, and the page says which. Every run's time is kept with its record.
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Annotated, Any, Final
@@ -23,7 +23,14 @@ from fastapi import Depends, HTTPException, status
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread, finish_held_reviews
-from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, RunBudget, draft_id_for, run_config
+from blossom.agent.runs import (
+    DURABILITY,
+    RUN_DEADLINE_SECONDS,
+    RunBudget,
+    RunTimedOut,
+    draft_id_for,
+    run_config,
+)
 from blossom.agent.steps import DATE_PROBLEM, StepRecord, describe_failure
 from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
 from blossom.anthropic_client import (
@@ -351,6 +358,25 @@ async def hold_in_time(lock: asyncio.Lock, budget: RunBudget) -> bool:
     return True
 
 
+async def read_in_time[T](reading: Awaitable[T], budget: RunBudget) -> T:
+    """What ``reading`` returns, with time left in the run, or ``RunTimedOut``.
+
+    Only the run's own limit is a timeout here: a ``TimeoutError`` the reading raises
+    itself is the failure it is.
+    """
+    limit = asyncio.timeout(budget.remaining())
+    try:
+        async with limit:
+            read = await reading
+    except TimeoutError as error:
+        if limit.expired():
+            raise RunTimedOut from error
+        raise
+    if budget.remaining() <= 0:
+        raise RunTimedOut
+    return read
+
+
 def keep_timing(
     state: ApplicationState, thread_id: str, budget: RunBudget, outcome: str | None
 ) -> None:
@@ -405,7 +431,8 @@ async def run_plan(
     has one is refused with ``AlreadyPlanning`` before any thread is written or
     model asked. The run has ``budget``, made as it starts, and no more: each model request
     gets what is left of it, and the whole run is cut off when it is spent, waits
-    for the decision lock included, to start and to publish. A
+    for the decision lock included, to start and to publish, and the reads of
+    held reviews before publishing. A
     run cut off, or whose service failed, publishes nothing and is recorded,
     with its steps, as timed out or as a service failure. A late result never
     replaces a newer plan either: the evening's last publication is noted as
@@ -480,11 +507,16 @@ async def run_plan(
                     # A review a waiting draft's thread holds, that the table
                     # never got, is recorded before this plan takes the draft's
                     # place, so the review is never superseded away with the thread.
-                    finished = await finish_held_reviews(
-                        state.checkpointer,
-                        state.drafts,
-                        plan_date=plan_date,
-                        in_flight=state.in_flight,
+                    # Reading the threads spends the run's time too, and the plan
+                    # is published only with time left.
+                    finished = await read_in_time(
+                        finish_held_reviews(
+                            state.checkpointer,
+                            state.drafts,
+                            plan_date=plan_date,
+                            in_flight=state.in_flight,
+                        ),
+                        budget,
                     )
                     displaced = state.drafts.publish(draft_id_for(thread_id))
                     for thread in [
@@ -494,6 +526,11 @@ async def run_plan(
                         await tidy_thread(thread, state)
             finally:
                 state.decision_lock.release()
+        except RunTimedOut:
+            # The time ran out before the draft was published, so it never is. The
+            # reviews already recorded stand, and the sweep clears their threads.
+            outcome = TIMED_OUT
+            return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
         except Exception:
             # The run paused but its draft could not be published. Left as it
             # is, the sweep would publish it later, after the page had said

@@ -12,6 +12,7 @@ import pathlib
 import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
+from time import monotonic
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ from langgraph.checkpoint.base import (
     ChannelVersions,
     Checkpoint,
     CheckpointMetadata,
+    CheckpointTuple,
 )
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, Durability, StateSnapshot
@@ -1633,3 +1635,216 @@ def test_a_run_waits_for_the_decision_lock_only_until_its_time_runs_out(where: s
     assert threads == set()
     assert state.in_flight == set()
     assert not state.decision_lock.locked()
+
+
+class SlowToRead(InMemorySaver):
+    """A saver whose read of one thread takes ``seconds``: waited out on the process's
+    clock, or moved on a ``FakeTime`` with no wait, as a read that holds the loop would.
+    With ``error`` the read raises it instead."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.slow: str | None = None
+        self.seconds = 0.0
+        self.clock: FakeTime | None = None
+        self.error: Exception | None = None
+
+    async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
+        if config["configurable"]["thread_id"] == self.slow:
+            if self.error is not None:
+                raise self.error
+            if self.clock is None:
+                await asyncio.sleep(self.seconds)
+            else:
+                self.clock.now += self.seconds
+        return await super().aget_tuple(config)
+
+
+type SlowRead = tuple[str, PlanRunView, DraftRecord | None, list[RunRecord], set[str], PlanRunView]
+
+
+def published_after_a_slow_read(
+    state: ApplicationState, saver: SlowToRead, seconds: float, read: float, *, waits: bool
+) -> SlowRead:
+    """Today's plan, then a run whose model answers at once and whose publication reads that
+    plan's thread for a review it holds, the read taking ``read`` of the run's ``seconds``.
+    Then a press with time to spare."""
+    clock = FakeTime()
+
+    async def scenario() -> SlowRead:
+        first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+        saver.slow, saver.seconds, saver.clock = first.thread_id, read, None if waits else clock
+        budget = RunBudget(seconds=seconds) if waits else clock.budget(seconds)
+        late = await run_plan(
+            graph_for(state, fixture_week_plan()), PLAN_DATE, state, budget=budget
+        )
+        latest = state.drafts.latest_for(PLAN_DATE)
+        ended = state.drafts.runs_without_a_draft()
+        threads = await thread_ids(state)
+        assert state.in_flight == set()
+        assert not state.decision_lock.locked()
+        saver.slow = None
+        again = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+        return first.thread_id, late, latest, ended, threads, again
+
+    return asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("waits", "seconds", "read"),
+    [(True, 2.0, 2.3), (False, 2.0, 2.3), (False, 2.0, 2.0), (False, 90.0, 90.001)],
+)
+def test_a_run_whose_time_runs_out_reading_held_reviews_publishes_nothing(
+    waits: bool, seconds: float, read: float
+) -> None:
+    """The run got the lock in time, but reading today's plan's thread for a held review
+    spent the rest. Today's plan stays, the late draft and its thread are taken back, the
+    run is kept as timed out, and the next press publishes."""
+    saver = SlowToRead()
+    state = application(saver=saver)
+    try:
+        first, late, latest, ended, threads, again = published_after_a_slow_read(
+            state, saver, seconds, read, waits=waits
+        )
+        latest_after = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert late.outcome == "timed_out"
+    assert (late.draft_id, late.waiting) == (None, False)
+    assert latest is not None
+    assert latest.thread_id == first
+    assert [(run.thread_id, run.outcome) for run in ended] == [(late.thread_id, "timed_out")]
+    assert ended[0].timing is not None
+    assert ended[0].timing.category == "timeout"
+    assert ended[0].steps[-1].found == f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out."
+    assert threads == {first}
+    assert again.outcome == "accepted"
+    assert latest_after is not None
+    assert latest_after.thread_id == again.thread_id
+
+
+@pytest.mark.parametrize(
+    ("waits", "seconds", "read"), [(True, 5.0, 2.3), (False, 5.0, 2.3), (False, 2.0, 1.999)]
+)
+def test_a_run_whose_publication_read_ends_in_time_publishes(
+    waits: bool, seconds: float, read: float
+) -> None:
+    saver = SlowToRead()
+    state = application(saver=saver)
+    try:
+        first, late, latest, ended, threads, _ = published_after_a_slow_read(
+            state, saver, seconds, read, waits=waits
+        )
+    finally:
+        state.close()
+
+    assert late.outcome == "accepted"
+    assert latest is not None
+    assert latest.thread_id == late.thread_id != first
+    assert ended == []
+    assert threads == {late.thread_id}
+
+
+@pytest.mark.parametrize("waits", [True, False])
+def test_a_review_held_through_a_publication_out_of_time_still_lands(
+    monkeypatch: pytest.MonkeyPatch, waits: bool
+) -> None:
+    """A review of today's plan whose record failed is held in its thread when a run runs
+    out of time reading it. The review is not lost: by the next press it is recorded, and
+    that press's plan is published."""
+    saver = SlowToRead()
+    state = application(saver=saver)
+    clock = FakeTime()
+    try:
+        monkeypatch.setattr(state.drafts, "record_decision", failing_once_then(state.drafts))
+
+        async def scenario() -> tuple[str, PlanRunView, PlanRunView]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            assert first.draft_id is not None
+            with pytest.raises(RuntimeError, match="database is locked"):
+                await decide_draft(
+                    state,
+                    lambda: graph_for(state),
+                    first.draft_id,
+                    DecisionRequest(approved=True, reason="good pacing"),
+                )
+            saver.slow, saver.seconds, saver.clock = first.thread_id, 2.3, None if waits else clock
+            budget = RunBudget(seconds=2.0) if waits else clock.budget(2.0)
+            late = await run_plan(
+                graph_for(state, fixture_week_plan()), PLAN_DATE, state, budget=budget
+            )
+            saver.slow = None
+            again = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            return first.draft_id, late, again
+
+        draft_id, late, again = asyncio.run(scenario())
+        reviewed = state.drafts.get(draft_id)
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert late.outcome == "timed_out"
+    assert reviewed is not None
+    assert (reviewed.decision, reviewed.reason) == ("approved", "good pacing")
+    assert again.outcome == "accepted"
+    assert latest is not None
+    assert latest.thread_id == again.thread_id
+
+
+@pytest.mark.parametrize("where", ["read", "publish"])
+def test_a_timeout_error_that_is_not_the_runs_limit_is_a_failed_publication(
+    monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """A store raises a ``TimeoutError`` of its own while the run has time left. The
+    publication failed, as with any other error, and the run isn't kept as out of time."""
+    saver = SlowToRead()
+    state = application(saver=saver)
+    try:
+
+        def timing_out(draft_id: str) -> list[DraftRecord]:
+            msg = "the store timed out"
+            raise TimeoutError(msg)
+
+        async def scenario() -> tuple[str, set[str]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            if where == "read":
+                saver.slow, saver.error = first.thread_id, TimeoutError("the store timed out")
+            else:
+                monkeypatch.setattr(state.drafts, "publish", timing_out)
+            with pytest.raises(TimeoutError, match="the store timed out"):
+                await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            return first.thread_id, await thread_ids(state)
+
+        first, threads = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+        ended = [run.outcome for run in state.drafts.runs_without_a_draft()]
+    finally:
+        state.close()
+
+    assert latest is not None
+    assert latest.thread_id == first
+    assert ended == ["interrupted"]
+    assert threads == {first}
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()
+
+
+def test_a_publication_read_is_cut_off_at_the_runs_limit() -> None:
+    """A read that would go on long past the run's limit isn't waited out: the run ends at
+    its limit, timed out, and today's plan stays."""
+    saver = SlowToRead()
+    state = application(saver=saver)
+    try:
+        started = monotonic()
+        first, late, latest, _, _, _ = published_after_a_slow_read(
+            state, saver, 1.0, 30.0, waits=True
+        )
+        took = monotonic() - started
+    finally:
+        state.close()
+
+    assert late.outcome == "timed_out"
+    assert latest is not None
+    assert latest.thread_id == first
+    assert took < 10

@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """The words a step record uses, held to what a person would read on the page."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -14,12 +14,14 @@ from blossom.agent.steps import (
     describe_failure,
     describe_last_check,
     describe_outcome,
+    describe_past_due,
     describe_plan,
     describe_timing,
     describe_verdict,
     describe_verification,
     describe_week,
     expect_plan,
+    seconds_said,
     step_label,
     step_sentence,
 )
@@ -150,6 +152,18 @@ def test_an_outcome_reads_as_plain_sentences_for_the_family_page() -> None:
     )
     assert describe_outcome("something_new") == "The run ended with something_new."
     assert "_" not in describe_outcome("checks_failed")
+
+
+def test_a_date_problem_is_said_against_the_evening_planned() -> None:
+    """A parent can plan a later evening, so work due before it may not have passed yet."""
+    assert describe_outcome("date_problem") == (
+        "A due date on record comes before the evening being planned, so no plan could keep "
+        "every rule. No model was asked. Check the dates named in the steps."
+    )
+    assert describe_past_due(["World History \u00b7 Essay"], [date(2026, 8, 20)]) == (
+        "World History \u00b7 Essay is due 2026-08-20, before the evening being planned, so "
+        "no plan can keep every rule; no model was asked."
+    )
 
 
 def test_a_run_with_nothing_to_schedule_reads_as_one_sentence() -> None:
@@ -398,3 +412,23 @@ def test_the_family_page_says_the_runs_output_in_all_and_its_longest_answer(
     )
 
     assert describe_timing(timing) == said
+
+
+@pytest.mark.parametrize(
+    ("seconds", "said"),
+    [
+        (1.0, "1.0 second"),
+        (0.96, "1.0 second"),
+        (1.04, "1.0 second"),
+        (0.94, "0.9 seconds"),
+        (1.06, "1.1 seconds"),
+        (0.0, "0.0 seconds"),
+        (2.0, "2.0 seconds"),
+        (9.96, "10.0 seconds"),
+        (10.0, "10 seconds"),
+    ],
+)
+def test_one_second_is_said_in_the_singular(seconds: float, said: str) -> None:
+    assert seconds_said(seconds) == said
+    timing = RunTiming(seconds=seconds, model_calls=1)
+    assert describe_timing(timing) == f"Took {said} in all and 1 model request."

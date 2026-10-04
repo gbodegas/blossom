@@ -127,7 +127,8 @@ class RunBudget:
         """Make one request within what is left, asking again while the service is busy.
 
         No request starts once the limit is reached, and none runs past it: one
-        still waiting then is canceled and the run has timed out. A busy service
+        still waiting then is canceled, one that held the event loop past it has
+        its answer set aside, busy or not, and the run has timed out. A busy service
         is asked again at most ``MODEL_RETRIES`` times, after a pause cut to what
         is left; the last busy answer is raised when retries are spent.
         """
@@ -146,9 +147,14 @@ class RunBudget:
             except TimeoutError as error:
                 raise RunTimedOut from error
             except ServiceBusy:
-                if attempt == MODEL_RETRIES:
+                # A busy answer that came back after the limit times the run out instead.
+                if attempt == MODEL_RETRIES and self.elapsed() <= self.seconds:
                     raise
             else:
+                # The timeout can only cancel a request at an await, so an answer that
+                # came back after the limit is checked here.
+                if self.elapsed() > self.seconds:
+                    raise RunTimedOut
                 self.waiting_on = None
                 return answer
             await self.sleep(min(RETRY_PAUSE_SECONDS * 2**attempt, self.remaining()))
