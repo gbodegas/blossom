@@ -277,6 +277,17 @@
   {% endif %}
 
   {#
+    What Done means is said once, above the cards, and each Done button on
+    them is described by this line, so the page does not repeat it per card.
+    A card shown apart comes first, so the line goes above it then.
+  #}
+  {% set done_means = viewer != "parent" and ((view.assignments + view.assigned_this_week + ([view.apart] if view.apart else []))|rejectattr("update_status", "equalto", "done")|list) %}
+  {% set done_means_line %}<p class="note" id="done-means">Done means you have finished your part. It does not turn work in.</p>{% endset %}
+  {% if done_means and view.apart %}
+    {{ done_means_line }}
+  {% endif %}
+
+  {#
     The card a save, an undo, or a link named, when its dates have taken it
     out of the week shown: apart, so the result and anything she typed are
     never lost to a week the card has left.
@@ -297,6 +308,9 @@
 
   {% if not view.assignments %}
     <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.{% if viewer != "parent" %} Heard about something? <a href="{{ new_note_page }}">Write down homework</a>{% endif %}</p>
+  {% endif %}
+  {% if done_means and not view.apart %}
+    {{ done_means_line }}
   {% endif %}
 
   {#
@@ -340,8 +354,8 @@
       <ul>
         {% for assignment in later_active %}
           <li id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
-            <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
-            Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
+            <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}
+            <p class="due">Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}</p>
             {% include "student_claim_warning.html" %}
             {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
             {% with words = assignment.words, to_a_parent = report_contexts[assignment.assignment_id].viewer == "parent", review_href = none %}{% include "school_words.html" %}{% endwith %}
@@ -358,8 +372,8 @@
           <ul>
             {% for assignment in later_done %}
               <li id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
-                <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
-                Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
+                <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}
+                <p class="due">Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}</p>
                 {% include "student_claim_warning.html" %}
                 {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
                 {% with words = assignment.words, to_a_parent = report_contexts[assignment.assignment_id].viewer == "parent", review_href = none %}{% include "school_words.html" %}{% endwith %}

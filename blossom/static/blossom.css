@@ -238,7 +238,6 @@ section {
 
 .note,
 .empty,
-.due,
 .status,
 .when {
   color: var(--text-soft);
@@ -279,15 +278,31 @@ article h2 {
   color: var(--rose-ink);
 }
 
+/* The due date is a line of its own in the card's strong text, so it is found at a glance
+   under the title. */
 .due {
-  margin: 0.15rem 0 0.75rem;
+  margin: 0.15rem 0 0.35rem;
+  color: var(--text-strong);
+  font-weight: 600;
 }
 
-/* The due line carries where the date came from as a second phrase. */
+/* Today or Tomorrow after the date: a word in a tint, never the tint alone. */
+.due-near {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0 0.6rem;
+  border-radius: var(--pill);
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+  font-weight: 700;
+}
+
+/* The due line carries where the date came from as a second, quieter phrase in the
+   small type every source line has. */
 .due .source {
   display: inline;
-  margin: 0 0 0 1rem;
-  font-size: inherit;
+  margin: 0 0 0 0.75rem;
+  font-weight: 400;
 }
 
 .status {
@@ -852,7 +867,7 @@ a.assignment-link:focus-visible {
 }
 
 .details-link {
-  margin: 0.5rem 0 0;
+  margin: 0.25rem 0 0;
   font-size: 0.92rem;
 }
 
@@ -1676,8 +1691,8 @@ main.wide {
    fieldset for its two choices; the note is a short field, two rows, that
    she can pull taller. The controls keep the 44 pixels every button has. */
 .update {
-  margin-top: 0.9rem;
-  padding-top: 0.9rem;
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
   border-top: 1px solid var(--edge);
 }
 
@@ -1709,6 +1724,11 @@ main.wide {
 .update .actions {
   margin-top: 0.6rem;
   align-items: center;
+}
+
+/* On a card the buttons sit close under the folded note, which is as tall as they are. */
+.update .quick .actions {
+  margin-top: 0.25rem;
 }
 
 .update .actions form {

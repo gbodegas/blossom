@@ -16,7 +16,7 @@
         date is in a year the range does not cover: an item a source puts in
         this week while the record puts it in another year.
       #}
-      {% with due_with_year = assignment.due_date and assignment.due_date.year not in (view.week.start.year, view.week.end.year), facts_level = 3 %}{% include "student_card_facts.html" %}{% endwith %}
+      {% with due_with_year = assignment.due_date and assignment.due_date.year not in (view.week.start.year, view.week.end.year), facts_level = 3, today_is = view.today %}{% include "student_card_facts.html" %}{% endwith %}
       <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a></p>{% if assignment.words.to_read %}
       <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, fragment=instructions_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Read instructions: {{ assignment.title }}, {{ assignment.course }}">Read instructions</a></p>{% endif %}
       {% include "student_hand_in_line.html" %}

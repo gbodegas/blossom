@@ -116,11 +116,14 @@ work, and a window with nothing left ends a run before any model is asked. A
 Done beside a school report of Missing is something for the family to check,
 said on both pages and decided by neither. The form is a form alone, a parent
 signed in reads her update and cannot make one, and nothing writes her
-account but her own device. On her week the form of a card with no update is
-folded under Update this homework, and the server opens it for an address that
-asks to change the card, a refusal, or a save refused because the card changed
-elsewhere. Closing the fold keeps what she typed only in the page: saving
-another card or leaving the page can lose it. A parent's save, hand-in update,
+account but her own device. On her week a card she has not reported done
+offers its reports as buttons through the same route: Done and Not yet on a
+card with no update, with an optional note folded beside them that the press
+sends too, and Done beside Change and Undo on a card left Not yet, carrying her
+note as it stands. Only a press saves. The server shows the whole form instead
+for an address that asks to change the card, a refusal, or a save refused
+because the card changed elsewhere. What Done means is said once above the
+cards. A parent's save, hand-in update,
 or Undo, from a page left open when the sign-in changed as from anywhere else,
 is answered 403 on her current week from the sign-in and the route alone: no
 form is read, the assignment it names is not looked up, and the decision lock
