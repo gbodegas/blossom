@@ -229,6 +229,7 @@ def test_a_refusal_on_her_week_is_said_without_the_week_when_the_week_cannot_be_
         None if press.week is None else date.fromisoformat(press.week),
         press.about,
         show=press.about,
+        in_place=data.get("in_place"),
     )
     assert ways_back_of(main) == [(str(escape(back)), "Back to the week")]
     assert after_the_failure(seen) == []
