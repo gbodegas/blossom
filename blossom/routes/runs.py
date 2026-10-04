@@ -176,7 +176,7 @@ def ended_without_a_plan(
     elif category == TIMEOUT:
         what = "Planning took too long, so Blossom stopped."
     elif category == SERVICE:
-        what = "Blossom couldn't reach the planning service this time."
+        what = "Blossom couldn't get a plan from the planning service this time."
     else:
         what = "Blossom couldn't finish a reliable plan this time."
     then = "Family review shows what happened." if parent else ""
@@ -243,8 +243,32 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
     )
 
 
-async def abandon(thread_id: str, state: ApplicationState) -> None:
-    """Take back what a failed run left behind: its draft first, then its thread.
+async def to_the_end[T](work: Awaitable[T]) -> T:
+    """What ``work`` returns, with the work seen to its end even when the caller is canceled
+    meanwhile: the cancel goes on once the work has stopped, so cleanup keeps its order
+    and is done before a run lets go of its evening."""
+    task = asyncio.ensure_future(work)
+    try:
+        return await asyncio.shield(task)
+    except BaseException:
+        while not task.done():
+            with contextlib.suppress(BaseException):
+                await asyncio.wait([task])
+        # Read so a failure that came with a cancel isn't reported as unhandled.
+        with contextlib.suppress(BaseException):
+            task.exception()
+        raise
+
+
+async def off_the_loop[**P, T](call: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    """What ``call`` returns, run on a worker thread so the server goes on answering while it
+    waits for the drafts file, and seen to its end like ``to_the_end``."""
+    return await to_the_end(asyncio.to_thread(call, *args, **kwargs))
+
+
+async def abandon(thread_id: str, state: ApplicationState) -> bool:
+    """Take back what a failed run left behind: its draft first, then its thread. True when
+    a draft was taken back.
 
     The draft comes first because the pages read the drafts file, and because
     the saved-state store is the likelier of the two to be what failed: a
@@ -256,13 +280,31 @@ async def abandon(thread_id: str, state: ApplicationState) -> None:
     sweep. The failure that ended the run is the one the caller sees, not the
     failure to tidy.
     """
+    taken = False
     try:
-        state.drafts.withdraw(draft_id_for(thread_id))
+        taken = await off_the_loop(state.drafts.withdraw, draft_id_for(thread_id))
     except Exception:
         logger.exception(
             "the draft of the failed run %s not taken back; the sweep takes it", thread_id
         )
     await tidy_thread(thread_id, state)
+    return taken
+
+
+async def taken_back_unless_published(thread_id: str, state: ApplicationState) -> bool:
+    """Take back what a canceled run left behind, its draft and then its thread, unless its
+    plan was published: True when its draft was taken back. The store checks publication as
+    it takes the draft back, and a draft it can't take back keeps its thread."""
+    try:
+        taken = await off_the_loop(
+            state.drafts.withdraw, draft_id_for(thread_id), unless_published=True
+        )
+    except Exception:
+        logger.exception("the draft of the canceled run %s not taken back", thread_id)
+        return False
+    if taken:
+        await tidy_thread(thread_id, state)
+    return taken
 
 
 async def tidy_thread(thread_id: str, state: ApplicationState) -> None:
@@ -273,7 +315,7 @@ async def tidy_thread(thread_id: str, state: ApplicationState) -> None:
     within the hour.
     """
     try:
-        await clear_thread(state.checkpointer, thread_id)
+        await to_the_end(clear_thread(state.checkpointer, thread_id))
     except Exception:
         logger.exception("saved state of thread %s not cleared; the sweep clears it", thread_id)
 
@@ -292,6 +334,27 @@ async def steps_so_far(graph: CompiledPlanGraph, thread_id: str) -> list[StepRec
     return list(snapshot.values.get("steps", []))
 
 
+async def kept_as(
+    thread_id: str,
+    plan_date: date,
+    state: ApplicationState,
+    outcome: str,
+    steps: list[StepRecord],
+) -> None:
+    """Take back what the run left behind, then keep its record under ``outcome``."""
+    await abandon(thread_id, state)
+    try:
+        await off_the_loop(
+            state.drafts.record_run,
+            thread_id=thread_id,
+            plan_date=plan_date,
+            outcome=outcome,
+            steps=steps,
+        )
+    except Exception:
+        logger.exception("the record of run %s could not be kept", thread_id)
+
+
 async def ended_on_the_way(
     graph: CompiledPlanGraph,
     thread_id: str,
@@ -305,7 +368,7 @@ async def ended_on_the_way(
     The steps it saved are kept, with one more for the request it was waiting on,
     and the run is recorded under ``outcome``. Whatever it left behind is taken
     back first, so nothing it made reaches a page: the plan already there, and
-    her updates, are as they were.
+    her updates, are as they were. A canceled request sees both through.
     """
     steps = await steps_so_far(graph, thread_id)
     node, round_number = budget.waiting_on or ("time_limit", 0)
@@ -324,13 +387,7 @@ async def ended_on_the_way(
             recorded_at=state.clock.now(),
         )
     )
-    await abandon(thread_id, state)
-    try:
-        state.drafts.record_run(
-            thread_id=thread_id, plan_date=plan_date, outcome=outcome, steps=steps
-        )
-    except Exception:
-        logger.exception("the record of run %s could not be kept", thread_id)
+    await to_the_end(kept_as(thread_id, plan_date, state, outcome, steps))
     return PlanRunView(
         thread_id=thread_id,
         plan_date=plan_date,
@@ -407,14 +464,14 @@ async def publish_in_time(
         raise
 
 
-def keep_timing(
+async def keep_timing(
     state: ApplicationState, thread_id: str, budget: RunBudget, outcome: str | None
 ) -> None:
-    """Keep the run's time with its record. Never a reason for the run to fail."""
+    """Keep the run's time with its record, off the event loop. Never a reason for the run to
+    fail."""
+    timing = budget.timing(None if outcome is None else failure_category(outcome))
     try:
-        state.drafts.record_timing(
-            thread_id, budget.timing(None if outcome is None else failure_category(outcome))
-        )
+        await off_the_loop(state.drafts.record_timing, thread_id, timing)
     except Exception:
         logger.exception("the time of run %s could not be kept", thread_id)
 
@@ -468,19 +525,22 @@ async def run_plan(
     replaces a newer plan either: the evening's last publication is noted as
     the run joins the runs in flight, and a run that pauses after another
     plan for the evening was published is taken back as overtaken. Every run's
-    time is kept with its record as it ends.
+    time is kept with its record as it ends. A request canceled before its plan is
+    published takes back its draft and thread before it lets the evening go.
     """
     thread_id = thread_for(plan_date)
     budget = RunBudget() if budget is None else budget
     # The outcome the run's time is kept under; a run that raises is interrupted.
     outcome: str | None = INTERRUPTED
+    # Whether the run's draft may have reached the pages, which only its own publication does.
+    publishing = False
     if not await hold_in_time(state.decision_lock, budget):
         # Out of time before it could start: a press while the evening has a run in
         # flight is still refused, and any other is kept as timed out.
         if has_a_run_in_flight(state, plan_date):
             raise AlreadyPlanning
         view = await ended_on_the_way(graph, thread_id, plan_date, state, budget, TIMED_OUT)
-        keep_timing(state, thread_id, budget, TIMED_OUT)
+        await keep_timing(state, thread_id, budget, TIMED_OUT)
         return view
     try:
         # Checked and joined under one hold of the lock, so two presses for one evening
@@ -519,6 +579,11 @@ async def run_plan(
         except Exception:
             await abandon(thread_id, state)
             raise
+        if budget.elapsed() > budget.seconds:
+            # Work that held the event loop past the limit kept it from firing, so the run
+            # is cut off now, whatever the graph ended with.
+            outcome = TIMED_OUT
+            return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
         view = run_view(thread_id, plan_date, dict(result))
         outcome = view.outcome
         if not view.waiting:
@@ -534,7 +599,9 @@ async def run_plan(
                     # A plan for the evening was published while this one was
                     # being made, from another press or the other page. That
                     # plan stays; this one is taken back and never shown.
-                    state.drafts.withdraw(draft_id_for(thread_id), outcome=OVERTAKEN)
+                    await off_the_loop(
+                        state.drafts.withdraw, draft_id_for(thread_id), outcome=OVERTAKEN
+                    )
                     outcome = OVERTAKEN
                     view = view.model_copy(
                         update={"outcome": OVERTAKEN, "draft_id": None, "waiting": False}
@@ -554,6 +621,7 @@ async def run_plan(
                         ),
                         budget,
                     )
+                    publishing = True
                     displaced = await publish_in_time(state, draft_id_for(thread_id), budget)
                     for thread in [
                         *(thread for _, thread in finished),
@@ -578,6 +646,25 @@ async def run_plan(
         if outcome == OVERTAKEN:
             await tidy_thread(thread_id, state)
         return view
+    except BaseException as error:
+        if isinstance(error, Exception):
+            raise
+        # A request canceled before its plan is published leaves a draft and a paused thread
+        # that the sweep would publish once the run is out of flight, so both are taken back
+        # first, even when the request is canceled again meanwhile. Once its publication has
+        # started, only a draft the store finds unpublished is taken back.
+        cleanup = asyncio.ensure_future(
+            taken_back_unless_published(thread_id, state)
+            if publishing
+            else abandon(thread_id, state)
+        )
+        try:
+            await to_the_end(cleanup)
+        finally:
+            with contextlib.suppress(BaseException):
+                if cleanup.result():
+                    outcome = INTERRUPTED
+        raise
     finally:
         state.in_flight.discard(thread_id)
-        keep_timing(state, thread_id, budget, outcome)
+        await keep_timing(state, thread_id, budget, outcome)

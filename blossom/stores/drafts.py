@@ -645,7 +645,9 @@ class DraftsStore:
         )
         return displaced
 
-    def withdraw(self, draft_id: str, *, outcome: str = INTERRUPTED) -> bool:
+    def withdraw(
+        self, draft_id: str, *, outcome: str = INTERRUPTED, unless_published: bool = False
+    ) -> bool:
         """Take back a waiting draft nobody can review, whose run failed or died before its pause.
 
         Such a draft was never anyone's plan, so its row goes and its run is
@@ -655,13 +657,17 @@ class DraftsStore:
         without a thread that could review it, which only a file from before
         publication can hold, goes the same way, and the evening's plans are
         brought back into line. False when there is no such draft, and a draft
-        a person decided, or the system closed, is left alone.
+        a person decided, or the system closed, is left alone, as is a published one
+        ``unless_published``.
         """
         with self._lock, self._connection:
             row = self._connection.execute(
-                "SELECT thread_id, decision, plan_date FROM drafts WHERE draft_id=?", (draft_id,)
+                "SELECT thread_id, decision, plan_date, published FROM drafts WHERE draft_id=?",
+                (draft_id,),
             ).fetchone()
             if row is None or row["decision"] is not None:
+                return False
+            if unless_published and row["published"]:
                 return False
             self._connection.execute("DELETE FROM drafts WHERE draft_id=?", (draft_id,))
             self._connection.execute(

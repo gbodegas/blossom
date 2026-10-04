@@ -18,7 +18,7 @@ from markupsafe import escape
 
 from blossom.agent.graph import MAX_REVISIONS, Ask, ModelAnswer
 from blossom.agent.runs import MODEL_RETRIES, RUN_DEADLINE_SECONDS
-from blossom.anthropic_client import ServiceBusy
+from blossom.anthropic_client import ServiceBusy, ServiceFailed
 from blossom.app import create_app
 from blossom.clock import spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
@@ -227,7 +227,12 @@ def test_why_there_is_no_plan_is_said_in_plain_words_to_whoever_reads_it() -> No
         "Planning took too long, so Blossom stopped. Your homework updates are saved."
     )
     assert ended_without_a_plan("service_failed", parent=False) == (
-        "Blossom couldn't reach the planning service this time. Your homework updates are saved."
+        "Blossom couldn't get a plan from the planning service this time. Your homework updates "
+        "are saved."
+    )
+    assert ended_without_a_plan("service_failed", parent=True) == (
+        "Blossom couldn't get a plan from the planning service this time. Her homework updates "
+        "are saved. Family review shows what happened."
     )
     quiz = PastDueView(
         assignment_id="assignment-map-quiz",
@@ -813,7 +818,11 @@ def test_each_way_a_run_ends_without_a_plan_is_said_with_a_way_forward() -> None
         ),
         "service": (
             lambda: Spending(clock, *[(1, ServiceBusy("overloaded"))] * (MODEL_RETRIES + 1)),
-            "Blossom couldn&#39;t reach the planning service this time.",
+            "Blossom couldn&#39;t get a plan from the planning service this time.",
+        ),
+        "refused": (
+            lambda: Spending(clock, (1, ServiceFailed("401 the key was refused"))),
+            "Blossom couldn&#39;t get a plan from the planning service this time.",
         ),
     }
     for name, (planner, said) in cases.items():
