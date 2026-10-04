@@ -375,7 +375,7 @@ def test_requests_live_in_the_drafts_file_stamped_by_the_real_clock() -> None:
 
 # ------------------------------------------------------------------ hers to ask, once per form
 
-ALREADY_SENT = "That request was already sent."
+ALREADY_SENT = "That request is already saved."
 FORM_USED = "This form was already used. Open a new help form to ask again."
 FORM_SENT_OTHER_WORDS = "This form already sent a request"
 

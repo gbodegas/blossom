@@ -95,14 +95,16 @@ from tests.support import HER_PAGE as PAGE
 from tests.support import QUIZ_ID as QUIZ
 from tests.support import READING_LOG_ID as LOG
 
+OFFERED = 'name="status" value="done"'
+"""Done offered on a card or a form: a button on her week, a choice on the details."""
 NAMED_BY_ITS_ROW = f'aria-label="{ESSAY_TITLE}, World History">{ESSAY_TITLE}</a> (World History).'
 """How a notice names the essay on a plan read by its rows: the saved title, a link to the
 assignment's details, and the course; never the id."""
 
 
 def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -> None:
-    """The form is Done or Not yet, nothing chosen, a note behind a fold, and the line that
-    says what Done means. Saved, the card says so, shows the update with its day and what
+    """The card offers Done and Not yet as buttons, a note behind a fold, and the page says
+    once what Done means. Saved, the card says so, shows the update with its day and what
     it means, offers Change and Undo, and folds under the active cards with a count."""
     with browser() as client:
         before = client.get(PAGE, headers=PAGE_HEADERS).text
@@ -111,11 +113,10 @@ def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -
         after = client.get(location, headers=PAGE_HEADERS).text
         history = state_of(client).project_state.student_reports(ESSAY)
 
-    assert "<legend>Your update<span" in card
-    assert 'type="radio" name="status" value="done">' in card
-    assert 'type="radio" name="status" value="not_yet">' in card
-    assert "checked" not in card
-    assert "Done means you have finished your part. It does not turn work in." in card
+    assert 'type="submit" name="status" value="done"' in card
+    assert 'type="submit" name="status" value="not_yet"' in card
+    assert 'type="radio"' not in card
+    assert "Done means you have finished your part. It does not turn work in." in before
     assert "<summary>Add a note (optional)<span" in card
     assert "Up to 500 characters. Your parents can read this. Notes on work being" in card
     assert "maxlength" not in card
@@ -137,6 +138,7 @@ def test_a_card_offers_her_update_and_a_done_folds_it_under_the_active_cards() -
     assert ">Change<span" in saved
     assert f'action="/student/actions/assignments/{ESSAY}/undo-report"' in saved
     assert "<legend>Your update<span" not in saved
+    assert OFFERED not in saved
     assert [(item.status, item.note) for item in history] == [
         ("done", "Turned in on paper.\nTwo pages.")
     ]
@@ -196,7 +198,7 @@ def test_not_yet_says_what_it_means_inside_and_outside_todays_window() -> None:
         "Updates show the latest saved information, even when you view a different week." in later
     )
     assert (
-        "Saved as Not yet. It is outside today's planning window (August 19 to August 25, 2026)."
+        "Saved as Not yet. This is due after August 25, so it isn't included in today's plan yet."
         in card_for(later, poster)
     )
     assert "Reported August 19" in card_for(later, poster)
@@ -324,7 +326,7 @@ def test_undo_restores_what_stood_before_and_a_stale_undo_is_refused() -> None:
     assert f'href="#assignment-{ESSAY}"' in stale.text
     assert to_nothing.status_code == 303
     assert UPDATE_UNDONE in blank_again
-    assert "<legend>Your update<span" in blank_again
+    assert OFFERED in blank_again
     assert hidden(blank_again, "expected_report_id") == statuses[LOG].head_id
     assert (statuses[ESSAY].work_state, statuses[LOG].work_state) == ("not_yet", "unreported")
 
@@ -382,10 +384,10 @@ def test_a_parent_signed_in_reads_her_update_and_cannot_make_one(tmp_path: pathl
     assert anonymous.status_code == 303
     assert anonymous.headers["location"] == "/sign-in"
     assert "No student update yet. Sign in as the student to update." in parent_card
-    assert "<legend>Your update<span" not in parent_card
+    assert OFFERED not in parent_card
     assert refused.status_code == 403
     assert NOT_HERS_TO_UPDATE in refused.text
-    assert "<legend>Your update<span" in card_for(as_her, ESSAY)
+    assert OFFERED in card_for(as_her, ESSAY)
     assert '<span class="pill">Your update: Done</span>' in card_for(saved, ESSAY)
     assert '<span class="pill">Student update: Done</span>' in parent_after
     assert "She wrote: <q>On paper.</q>" in parent_after
@@ -501,7 +503,7 @@ def test_the_assigned_later_list_takes_her_update_the_same_way() -> None:
         after = client.get(location, headers=PAGE_HEADERS).text
 
     _, _, later_before = before.partition("Assigned this week, due later")
-    assert "<legend>Your update<span" in card_for(later_before, LOG)
+    assert OFFERED in card_for(later_before, LOG)
     _, _, later_after = after.partition("Assigned this week, due later")
     assert "<summary>Reported done (1)</summary>" in later_after
     assert '<span class="pill">Your update: Done</span>' in card_for(later_after, LOG)
@@ -1394,7 +1396,7 @@ def test_a_not_yet_in_the_window_brings_the_plan_button_back_and_one_outside_doe
 
     assert outside.status_code == 303
     assert asks_for_nothing(still_nothing), still_nothing
-    assert "outside today's planning window (August 19 to August 25, 2026)." in card_for(
+    assert "This is due after August 25, so it isn't included in today's plan yet." in card_for(
         later_week, poster
     )
     assert 'action="/student/actions/plan"' in back
@@ -1465,7 +1467,7 @@ def test_taking_back_her_only_update_is_recent_activity_that_says_no_update_stan
     assert ESSAY_TITLE in section
     assert "She took back her update on August 19; no update stands." in section
     assert "She reported it" not in section
-    assert "<legend>Your update<span" in card_for(hers, ESSAY)
+    assert OFFERED in card_for(hers, ESSAY)
 
 
 def test_the_familys_planning_routes_refuse_a_run_that_found_nothing_left_to_plan(
@@ -1687,7 +1689,8 @@ def test_a_stale_undo_heads_nothing_as_her_unsaved_update(where: str, meanwhile:
     assert stale.status_code == 409
     assert (ALREADY_UNDONE if meanwhile == "undone" else CANNOT_UNDO) in stale.text
     assert UNSAVED_HEADING not in stale.text
-    assert ("<legend>Your update<span" in shown) is (meanwhile == "undone")
+    # With no update standing she is offered one; a card on her week left Not yet offers Done.
+    assert (OFFERED in shown) is (meanwhile == "undone" or where == "week")
 
 
 @pytest.mark.parametrize("where", ["week", "details"])

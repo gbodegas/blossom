@@ -32,26 +32,28 @@
   alert, and it takes the focus as the page arrives unless the field it is
   about does.
 
-  On her week the form of a card with no update waits in a fold, Update this
-  homework, so the week reads as its homework. The fold holds the form and
-  nothing else: every fact and line of the card stays outside it. It opens on
-  the server when the address asks to change the card or a response is about
-  its form, a refusal or a save refused because the card changed elsewhere.
-  Closing it keeps what she typed in the page, and only there: saving
-  another card or leaving the page can lose it. The form's group is the place
+  On her week a card she has not reported done offers its reports as buttons,
+  so one press saves one: Done and Not yet on a card with no update, with a
+  note folded beside them that the press sends too, and Done beside Change and
+  Undo on a card left Not yet, carrying her note as it stands. Nothing is
+  saved but by a press. The whole form is shown instead when the address asks
+  to change the card or a response is about its form, a refusal or a save
+  refused because the card changed elsewhere, and its group is the place
   Change and such an address land on.
 #}
 {% macro day(value) %}{{ value.strftime("%B") }} {{ value.day }}{% if ctx.with_year %}, {{ value.year }}{% endif %}{% endmacro %}
+{% macro press(status, words) %}<button type="submit" name="status" value="{{ status }}" class="{{ "primary" if status == "done" else "secondary" }}" aria-label="{{ words }}: {{ assignment.title }}, {{ assignment.course }}"{% if status == "done" %} aria-describedby="done-means"{% endif %}>{{ words }}</button>{% endmacro %}
 {% set here = card and card.assignment_id == assignment.assignment_id %}
 {% set standing = assignment.update_status is not none %}
 {% set unreadable = assignment.updates_unavailable %}
-{% set form_open = ctx.can_update and not unreadable and (not standing or (here and card.change)) %}
+{% set editing = here and card.change %}
+{% set quick = ctx.place == "week" and ctx.can_update and not unreadable and not editing %}
+{% set form_open = ctx.can_update and not unreadable and (editing or not (standing or quick)) %}
 {% set chosen = card.status if (here and card.status) else (assignment.update_status if (standing and here and card.change and not card.problem) else none) %}
 {% set typed = card.note if (here and card.note is not none) else ((assignment.update_note or "") if (standing and here and card.change) else "") %}
 {% set at_status = here and card.field == "status" %}
 {% set at_note = here and card.field == "note" %}
 {% set key = assignment.assignment_id %}
-{% set folded = ctx.place == "week" and not standing %}
 <div class="update">
   {#
     What a save or an undo did is said here, where she acted, in a place an
@@ -64,13 +66,11 @@
     <p class="note update-result" role="status" id="{{ result_anchor(key) }}" tabindex="-1">{{ card.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
     {#
       Done is saved and that is all she has to do. When she has said nothing yet
-      about turning it in, help remembering is offered once, with the quieter
-      way to say something else, beside the result; nothing is asked or written
-      if she leaves, and neither link writes anything.
+      about turning it in, the hand-in update is offered once beside the result;
+      nothing is asked or written if she leaves, and the link writes nothing.
     #}
     {% if ctx.can_update and assignment.update_status == "done" and assignment.hand_in.state is none and not assignment.hand_in.unavailable %}
-      <p class="note"><a class="assignment-link" href="{% if hand_in_links is defined %}{{ hand_in_links.remember }}{% else %}{{ details_href(assignment.assignment_id, fragment="turning-it-in", hand_in="remember", return_to="week", week=view.week.start.isoformat()) }}{% endif %}" aria-label="Help me remember to turn this in: {{ assignment.title }}, {{ assignment.course }}">Help me remember to turn this in</a></p>
-      <p class="note"><a class="assignment-link" href="{% if hand_in_links is defined %}{{ hand_in_links.change }}{% else %}{{ details_href(assignment.assignment_id, fragment="turning-it-in", hand_in="change", return_to="week", week=view.week.start.isoformat()) }}{% endif %}" aria-label="Update hand-in status for {{ assignment.title }}, {{ assignment.course }}">Update hand-in status</a></p>
+      <p class="note">Want to keep track of turning it in? <a class="assignment-link" href="{% if hand_in_links is defined %}{{ hand_in_links.change }}{% else %}{{ details_href(assignment.assignment_id, fragment="turning-it-in", hand_in="change", return_to="week", week=view.week.start.isoformat()) }}{% endif %}" aria-label="Update hand-in status for {{ assignment.title }}, {{ assignment.course }}">Update hand-in status</a></p>
     {% endif %}
   {% endif %}
   {% if here and card.problem %}
@@ -99,11 +99,44 @@
     {% if assignment.update_note %}
       <p class="from-teacher">{% if ctx.viewer == "parent" %}She wrote{% else %}You wrote{% endif %}: <q>{{ assignment.update_note }}</q></p>
     {% endif %}
+    {#
+      What a Not yet means for today's plan, by every date given for the work: in
+      the window, all before today, all after the window, or on both sides of it,
+      which names the doubt and chooses no date. With a claim that cannot be read
+      as a date, the window alone is named. Earlier work says whether she chose it
+      for today's plan; when she hasn't, her week's card offers "Include in today's
+      plan" through the same press as Earlier homework to check, and the details
+      link to it there. A parent reads the line and meets no control.
+    #}
+    {% set earlier_item = earlier_by_id.get(assignment.assignment_id) if earlier_by_id is defined else none %}
+    {% set earlier_now = earlier_item.chosen if earlier_item else (earlier_chosen is defined and earlier_chosen) %}
     <p class="effect">
       {% if assignment.update_status == "done" %}This is out of work to plan. {% if ctx.viewer == "parent" %}Her{% else %}Your{% endif %} school record is separate.
       {% elif assignment.in_planning_window %}Still unfinished. It can be included in today's plan.
+      {% elif assignment.outside_window == "before" %}Saved as Not yet. This was due before today.
+        {%- if earlier_now %} {% if ctx.viewer == "parent" %}She{% else %}You{% endif %} chose it for today's plan.
+        {%- elif ctx.viewer != "parent" and not earlier_item and earlier_link is defined %} <a href="{{ earlier_link }}">Include it in today's plan</a> from Earlier homework to check.{% endif %}
+      {% elif assignment.outside_window == "after" %}Saved as Not yet. This is due after {{ day(planning_window_end) }}, so it isn't included in today's plan yet.
+      {% elif assignment.outside_window == "astride" %}Saved as Not yet. Its dates disagree: one is before today and another is after {{ day(planning_window_end) }}, so it isn't included in today's plan.
       {% else %}Saved as Not yet. It is outside today's planning window ({{ planning_window }}).{% endif %}
     </p>
+    {% if earlier_item and assignment.update_status != "done" and assignment.outside_window == "before" %}
+      {% set card_note = earlier_note if earlier_note and earlier_note.on_card and earlier_note.assignment_id == assignment.assignment_id else none %}
+      {% if card_note and card_note.said %}
+        <p class="note update-result" role="status" id="{{ earlier_card_anchor(assignment.assignment_id) }}" tabindex="-1">{{ card_note.said }}</p>
+      {% elif card_note and card_note.problem %}
+        <p class="problem" role="alert" id="{{ earlier_card_anchor(assignment.assignment_id) }}" tabindex="-1" autofocus>{{ card_note.problem }}</p>
+      {% endif %}
+      {% if ctx.viewer != "parent" and not earlier_item.chosen %}
+        <form method="post" action="{{ earlier_action(assignment.assignment_id) }}" class="action">
+          <input type="hidden" name="choice" value="include">
+          <input type="hidden" name="made_with" value="{{ earlier_made_with[assignment.assignment_id] }}">
+          <input type="hidden" name="week" value="{{ "" if view.week.current else view.week.start.isoformat() }}">
+          <input type="hidden" name="place" value="card">
+          <button type="submit" class="secondary" aria-label="Include in today's plan: {{ assignment.title }}, {{ assignment.course }}">Include in today's plan</button>
+        </form>
+      {% endif %}
+    {% endif %}
     {% if assignment.checked_on %}
       <p class="checked-line">A parent marked this checked with {% if ctx.viewer == "parent" %}her{% else %}you{% endif %} on {{ day(assignment.checked_on) }}.{% if assignment.check_note %} The note with it: <q>{{ assignment.check_note }}</q>{% endif %}</p>
     {% elif assignment.checks_unavailable %}
@@ -111,6 +144,16 @@
     {% endif %}
     {% if ctx.can_update and not form_open %}
       <div class="actions">
+        {% if quick and assignment.update_status == "not_yet" %}
+          <form method="post" action="{{ ctx.report_action }}" class="quick">
+            <input type="hidden" name="note" value="{{ assignment.update_note or '' }}">
+            <input type="hidden" name="expected_report_id" value="{{ assignment.update_head_id or '' }}">
+            {% for name, value in ctx.post_fields %}
+            <input type="hidden" name="{{ name }}" value="{{ value }}">
+            {% endfor %}
+            {{ press("done", "Done") }}
+          </form>
+        {% endif %}
         <form method="get" action="{{ ctx.change_action }}" class="action">
           {% for name, value in ctx.change_fields %}
           <input type="hidden" name="{{ name }}" value="{{ value }}">
@@ -137,16 +180,30 @@
     {% if ctx.viewer == "parent" %}
       <p class="note">No student update yet. Sign in as the student to update.</p>
     {% endif %}
+    {% if quick %}
+      <form method="post" action="{{ ctx.report_action }}" class="quick">
+        <details class="steps note-fold">
+          <summary>Add a note (optional)<span class="visually-hidden"> on {{ assignment.title }}, {{ assignment.course }}</span></summary>
+          <label for="update-note-{{ key }}">Your note<span class="visually-hidden"> on {{ assignment.title }}, {{ assignment.course }}</span></label>
+          <textarea id="update-note-{{ key }}" name="note" rows="2" aria-describedby="update-hint-{{ key }}"></textarea>
+          <p class="note" id="update-hint-{{ key }}">Up to {{ update_note_max_length }} characters. Your parents can read this. Notes on work being planned are shared with the planning model.</p>
+        </details>
+        <input type="hidden" name="expected_report_id" value="{{ assignment.update_head_id or '' }}">
+        {% for name, value in ctx.post_fields %}
+        <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endfor %}
+        <div class="actions">
+          {{ press("done", "Done") }}
+          {{ press("not_yet", "Not yet") }}
+        </div>
+      </form>
+    {% endif %}
   {% endif %}
   {% if form_open %}
     {#
       A save refused because another update was saved first shows that update
       above, as it stands, and her own choice and words here, headed as not saved.
     #}
-    {% if folded %}
-    <details class="steps update-fold"{% if here and card.change %} open{% endif %}>
-      <summary>Update this homework<span class="visually-hidden"> for {{ assignment.title }}, {{ assignment.course }}</span></summary>
-    {% endif %}
     {% if here and card.change and card.saved_elsewhere %}<h3 class="update-heading">Your unsaved update</h3>{% endif %}
     <form method="post" action="{{ ctx.report_action }}" class="report">
       <fieldset class="choice" id="{{ update_choice_anchor(key) }}" tabindex="-1"{% if at_status %} aria-describedby="update-problem-{{ key }}"{% endif %}>
@@ -172,7 +229,6 @@
         {% endif %}
       </div>
     </form>
-    {% if folded %}</details>{% endif %}
   {% endif %}
   {% if not ctx.history_apart %}{% include "student_update_history.html" %}{% endif %}
 </div>

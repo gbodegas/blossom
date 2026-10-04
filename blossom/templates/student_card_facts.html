@@ -36,11 +36,18 @@
         only two are made prominent: sources that disagree, and a school
         date the record does not match. A page that shouts about every date
         teaches her to skim past the shouting.
+
+        ``today_is`` is the household's day, which a card on her week passes
+        in. A date no source disputes, due that day or the next, says Today or
+        Tomorrow after the date; a date in doubt never does.
       #}
       {% if show_date %}
+      {% set in_doubt = assignment.contradiction or assignment.deadline_confidence == "SOURCES_DISAGREE" %}
+      {% set days_away = (assignment.due_date - today_is).days if (today_is is defined and today_is and assignment.due_date) else none %}
       <p class="due">
         {% if assignment.due_date %}
-          {% if assignment.contradiction or assignment.deadline_confidence == "SOURCES_DISAGREE" %}Recorded date{% else %}Due{% endif %} {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if due_with_year %}, {{ assignment.due_date.year }}{% endif %}
+          {% if in_doubt %}Recorded date{% else %}Due{% endif %} {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if due_with_year %}, {{ assignment.due_date.year }}{% endif %}
+          {% if not in_doubt and days_away in (0, 1) %}<span class="due-near">{% if days_away == 0 %}Today{% else %}Tomorrow{% endif %}</span>{% endif %}
         {% else %}
           Due date not recorded
         {% endif %}
@@ -177,7 +184,11 @@
       {% if assignment.entered_by_a_parent %}
         <p class="source">Entered by a parent.</p>
       {% endif %}
-      {% if assignment.submission_status != "unknown" %}
+      {#
+        The status the record carries from the school is evidence for the
+        details; what each channel reports now stays on the card above.
+      #}
+      {% if assignment.submission_status != "unknown" and every_claim %}
         <p class="status">
           <span class="pill">Reported status: {{ assignment.submission_status|replace("_", " ") }}</span>
         </p>

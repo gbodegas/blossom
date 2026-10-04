@@ -47,6 +47,7 @@ from tests.support import (
     Scripted,
     SetClock,
     accepting,
+    card_for,
     client_for,
     due,
     fixture_clock,
@@ -55,6 +56,7 @@ from tests.support import (
     human_text,
     plan_block,
     record,
+    report,
     scripted_graphs,
     signed_in,
     signed_in_household,
@@ -831,3 +833,56 @@ def test_a_press_on_work_with_any_id_says_what_it_did(assignment_id: str) -> Non
 
     assert receipts(shown, assignment_id) == ["Included in today's plan."]
     assert rows == [(TODAY.isoformat(), assignment_id)]
+
+
+# ------------------------------------------------------------------ after her Not yet, on the card
+
+THIS_WEEK = "2026-09-28"
+
+
+def test_her_not_yet_on_earlier_work_offers_include_and_lands_back_on_the_card() -> None:
+    with household(OCT_2, OCT_3) as client:
+        landed = client.get(
+            report(client, OCT_2.assignment_id, "not_yet", week=THIS_WEEK), headers=PAGE_HEADERS
+        ).text
+        card = card_for(landed, OCT_2.assignment_id)
+        action = earlier_action(OCT_2.assignment_id)
+        answer = client.post(action, data=form_fields(card, action), headers=PAGE_HEADERS)
+        after = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
+        rows = kept_rows(client)
+
+    assert "Saved as Not yet. This was due before today." in words(card)
+    assert "Include in today's plan" in card
+    assert answer.status_code == 303
+    assert answer.headers["location"].endswith(f"#earlier-card-{OCT_2.assignment_id}")
+    assert "week=" not in answer.headers["location"]
+    chosen = words(card_for(after, OCT_2.assignment_id))
+    assert "Saved as Not yet. This was due before today. You chose it for today's plan." in chosen
+    assert "Included in today's plan." in chosen
+    assert f'id="earlier-card-{OCT_2.assignment_id}"' in card_for(after, OCT_2.assignment_id)
+    assert "Include in today's plan" not in card_for(after, OCT_2.assignment_id)
+    assert "Still unfinished" not in chosen
+    assert "Included in today's plan." not in words(item_of(after, OCT_2.assignment_id))
+    assert "Chosen for today" in item_of(after, OCT_2.assignment_id)
+    assert rows == [(TODAY.isoformat(), OCT_2.assignment_id)]
+
+
+def test_the_details_say_whether_she_chose_earlier_work_and_link_to_the_list() -> None:
+    details = f"/student/assignments/{OCT_2.assignment_id}"
+    with household(OCT_2, OCT_3) as client:
+        report(client, OCT_2.assignment_id, "not_yet", week=THIS_WEEK)
+        before = client.get(details, headers=PAGE_HEADERS).text
+        linked = client.get(f"{HER_PAGE}?earlier={OCT_2.assignment_id}", headers=PAGE_HEADERS).text
+        store_of(client).choose_catch_up(OCT_2.assignment_id, TODAY, include=True)
+        after = client.get(details, headers=PAGE_HEADERS).text
+
+    assert (
+        "Saved as Not yet. This was due before today. Include it in today's plan from Earlier "
+        "homework to check."
+    ) in words(before)
+    assert f'href="/student/due-this-week?earlier={OCT_2.assignment_id}#earlier-' in before
+    assert "Include in today's plan" in item_of(linked, OCT_2.assignment_id)
+    assert ("Saved as Not yet. This was due before today. You chose it for today's plan.") in words(
+        after
+    )
+    assert "Include it in today's plan" not in after

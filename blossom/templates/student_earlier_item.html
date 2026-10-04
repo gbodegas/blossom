@@ -6,7 +6,7 @@ date, her update ("Not yet", or "No update yet" when she has said nothing,
 which is no word that the work is unfinished), her choice for today and where
 today's plan put it, what a press just did, and the press, hers alone.
 #}
-{% set noted = earlier_note if earlier_note and earlier_note.assignment_id == item.assignment_id else none %}
+{% set noted = earlier_note if earlier_note and earlier_note.assignment_id == item.assignment_id and not earlier_note.on_card else none %}
 <li id="{{ earlier_anchor(item.assignment_id) }}" tabindex="-1">
   <strong>{{ item.title }}</strong> &middot; {{ item.course }}<br>
   Was due {{ item.earliest.strftime("%A, %B") }} {{ item.earliest.day }}{% if item.earliest.year != view.today.year %}, {{ item.earliest.year }}{% endif %}{% if item.dates_differ %}. The dates given for it differ; Details shows each one{% endif %}.
@@ -17,7 +17,7 @@ today's plan put it, what a press just did, and the press, hers alone.
       Today's plan includes it.
     {% elif item.in_plan == "put_off" %}
       Today's plan puts it off: {{ item.put_off_reason }}
-      {% if for_her %}It stays on this list, so you can choose it again tomorrow, or <a href="/student/due-this-week#ask-for-help">ask for help</a>.{% else %}It stays on this list for her to choose again.{% endif %}
+      {% if for_her %}It stays on this list, so you can choose it again tomorrow, or <a href="{{ help_href }}">ask for help</a>.{% else %}It stays on this list for her to choose again.{% endif %}
     {% elif item.in_plan == "missing" %}
       {% if for_her %}Today's plan was made before you chose it. Plan again to include it.{% else %}Today's plan was made before she chose it.{% endif %}
     {% else %}

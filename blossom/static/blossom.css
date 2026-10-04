@@ -238,7 +238,6 @@ section {
 
 .note,
 .empty,
-.due,
 .status,
 .when {
   color: var(--text-soft);
@@ -279,15 +278,31 @@ article h2 {
   color: var(--rose-ink);
 }
 
+/* The due date is a line of its own in the card's strong text, so it is found at a glance
+   under the title. */
 .due {
-  margin: 0.15rem 0 0.75rem;
+  margin: 0.15rem 0 0.35rem;
+  color: var(--text-strong);
+  font-weight: 600;
 }
 
-/* The due line carries where the date came from as a second phrase. */
+/* Today or Tomorrow after the date: a word in a tint, never the tint alone. */
+.due-near {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0 0.6rem;
+  border-radius: var(--pill);
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+  font-weight: 700;
+}
+
+/* The due line carries where the date came from as a second, quieter phrase in the
+   small type every source line has. */
 .due .source {
   display: inline;
-  margin: 0 0 0 1rem;
-  font-size: inherit;
+  margin: 0 0 0 0.75rem;
+  font-weight: 400;
 }
 
 .status {
@@ -769,14 +784,16 @@ a.assignment-link:focus-visible {
 /* Places a press or a link lands on. On her week: the homework's heading, a card
    or a row due later, the problem at the top when no card holds it, a card's
    problem line, and the choices of the form Change opens. On her week and on the
-   list's own page, the problem line of her To turn in list. Plain :focus, since a
-   fragment arrival after a click need not match :focus-visible. */
-.ask:focus,
+   list's own page, the problem line of her To turn in list. On an assignment's
+   details, the headings a jump or a section's link lands on, Turning it in's
+   among them. Plain :focus, since a fragment arrival after a click need not
+   match :focus-visible. */
 .update-result:focus,
 .evidence:focus,
 #instructions:focus,
 #waiting-instructions:focus,
 #update-or-turn-in:focus,
+#turning-it-in:focus,
 #problem-summary:focus,
 #note-problem:focus,
 .detail .problem[tabindex="-1"]:focus,
@@ -791,19 +808,37 @@ a.assignment-link:focus-visible {
   outline-offset: 4px;
 }
 
-/* Help's places to land: the section, each row, result or problem in it that a
-   link or a redirect names, and the family page's list of her requests. Plain
-   :focus, since a fragment arrival after a click need not match :focus-visible. */
-.help-panel:focus,
+/* The headings of Turning it in and of Help stop a little below the top of the screen when
+   a link lands on them, so their focus outline shows whole. */
+#turning-it-in,
+#help,
+#ask-for-help {
+  scroll-margin-top: 0.75rem;
+}
+
+/* Her form's link lands on the words of Help's heading, which fill the heading's line, so its
+   outline is the heading's own. */
+.help-panel h2 > span {
+  display: block;
+}
+
+/* Help's places to land: its heading, each row, result or problem in it that a link or a
+   redirect names, and the family page's list of her requests. Plain :focus, since a
+   fragment arrival after a click need not match :focus-visible. */
 .help-panel [tabindex="-1"]:focus,
 #help-she-asked-for:focus {
   outline: 2px solid var(--blue-action);
   outline-offset: 4px;
 }
 
-/* Help breaks a long word, hers or a parent's word back, rather than widen the page. */
+/* Help breaks a long word, hers or a parent's word back, rather than widen the page. Its
+   heading says what it is; a brighter surface with a petal edge sets it apart from the
+   homework as well, and leaves every text and link color as it is on a card. */
 .help-panel {
   overflow-wrap: anywhere;
+  background: var(--surface-strong);
+  border-color: var(--pink);
+  border-left: 3px solid var(--pink-deep);
 }
 
 /* In Help, Refresh replies sits between other links and controls with press areas of
@@ -852,7 +887,7 @@ a.assignment-link:focus-visible {
 }
 
 .details-link {
-  margin: 0.5rem 0 0;
+  margin: 0.25rem 0 0;
   font-size: 0.92rem;
 }
 
@@ -1676,8 +1711,8 @@ main.wide {
    fieldset for its two choices; the note is a short field, two rows, that
    she can pull taller. The controls keep the 44 pixels every button has. */
 .update {
-  margin-top: 0.9rem;
-  padding-top: 0.9rem;
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
   border-top: 1px solid var(--edge);
 }
 
@@ -1711,6 +1746,11 @@ main.wide {
   align-items: center;
 }
 
+/* On a card the buttons sit close under the folded note, which is as tall as they are. */
+.update .quick .actions {
+  margin-top: 0.25rem;
+}
+
 .update .actions form {
   margin: 0;
 }
@@ -1732,6 +1772,15 @@ main.wide {
 
 .update .effect {
   margin: 0.35rem 0;
+}
+
+/* Ask for help ends the line about earlier work, just above Change and Undo. It keeps
+   its 44 pixels to press inside its own line, which grows to hold it, so it never
+   reaches into the buttons and never splits across two lines. */
+.update .effect a {
+  display: inline-block;
+  padding: 0.8rem 0;
+  margin: 0;
 }
 
 /* Her homework notes: her own words, shown whole and wrapped however long they are. */
@@ -1890,6 +1939,29 @@ main.wide {
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
+}
+
+/* The next step: its label, the line on what it is for, then the field. */
+.hand-in .next-step label {
+  display: block;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.hand-in .next-step .note {
+  margin: 0.25rem 0;
+}
+
+/* The next step goes with Still to turn in, so it shows only while that answer is chosen.
+   Its contents are skipped otherwise, out of sight, out of the tab order and out of what a
+   screen reader reads, and what she typed stays in the field. Both rules ask with :has(),
+   so a browser that can't read them drops both and shows the field with every answer,
+   where the line under it says which answer keeps it. */
+.hand-in-form:has(input[name="state"]) .next-step {
+  content-visibility: hidden;
+}
+
+.hand-in-form:has(input[value="needs_hand_in"]:checked) .next-step {
+  content-visibility: visible;
 }
 
 .hand-in-line {

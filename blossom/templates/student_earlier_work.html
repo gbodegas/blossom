@@ -33,7 +33,7 @@
       </ul>
     {% endif %}
     {% if folded %}
-      {% set fold_open = earlier_note and earlier_note.assignment_id in folded|map(attribute="assignment_id")|list %}
+      {% set fold_open = earlier_note and not earlier_note.on_card and earlier_note.assignment_id in folded|map(attribute="assignment_id")|list %}
       <details class="steps earlier-more"{% if fold_open %} open{% endif %}>
         <summary>More earlier homework ({{ folded|length }})</summary>
         <ul>

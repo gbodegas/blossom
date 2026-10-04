@@ -389,7 +389,7 @@ APART: Final = '<section class="panel apart">'
 ASSIGNED: Final = '<section class="panel assigned">'
 TO_TURN_IN: Final = '<section class="panel to-turn-in" id="to-turn-in" tabindex="-1">'
 NOTES: Final = '<section class="panel homework-notes" id="homework-notes" tabindex="-1">'
-HELP: Final = '<section class="panel help-panel" id="help" tabindex="-1">'
+HELP: Final = '<section class="panel help-panel" aria-labelledby="help">'
 PRIVACY: Final = "<summary>How Blossom uses"
 PLACES: Final = (
     "Today",

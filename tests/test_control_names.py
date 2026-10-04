@@ -73,7 +73,8 @@ STATES = (
 HELP_STATES = ("week, help", "week, help, parent")
 """Her week's help, where no control is repeated per assignment."""
 REPEATED = (
-    "Update this homework",
+    "Done",
+    "Not yet",
     "Add a note (optional)",
     "Save update",
     "Keep it as it is",
@@ -145,8 +146,9 @@ def pages(tmp_path: pathlib.Path) -> dict[str, str]:
 
 
 def test_the_states_show_the_controls_they_are_for(pages: dict[str, str]) -> None:
-    assert ">Save update" in pages["week, new"]
-    assert "<summary>Update this homework<span" in pages["week, new"]
+    assert ">Done</button>" in pages["week, new"]
+    assert ">Not yet</button>" in pages["week, new"]
+    assert ">Save update" in pages["week, change"]
     assert ">Keep it as it is" in pages["details, change"]
     assert ">Change<span" in pages["week, saved"]
     assert ">Undo<span" in pages["details, saved"]
@@ -211,10 +213,11 @@ def test_each_repeated_control_names_what_it_is_about(pages: dict[str, str]) -> 
 
 PRACTICE_COURSES = ("History", "Science", "Art & <Design>")
 NAMESAKE_NAMES = (
-    ("week, new", "Update this homework", "Update this homework for Practice, {}"),
+    ("week, new", "Done", "Done: Practice, {}"),
+    ("week, new", "Not yet", "Not yet: Practice, {}"),
     ("week, new", "Add a note (optional)", "Add a note (optional) on Practice, {}"),
     ("details, new", "Add a note (optional)", "Add a note (optional) on Practice, {}"),
-    ("week, new", "Save update", "Save update for Practice, {}"),
+    ("week, change", "Save update", "Save update for Practice, {}"),
     ("week, new", "Read instructions", "Read instructions: Practice, {}"),
     ("week, change", "Read instructions", "Read instructions: Practice, {}"),
     ("details, new", "Save update", "Save update for Practice, {}"),
@@ -321,13 +324,16 @@ FIELDS = ("Your update", "Your note")
 def test_her_update_s_group_and_note_name_the_title_and_course(
     namesakes: dict[str, dict[str, str]], state: str
 ) -> None:
+    """A card on her week with no update offers buttons that name the assignment, and the
+    note beside them; every whole form names its group too."""
     named = {
         course: [heard for shown, heard in field_names(seen[state]) if shown in FIELDS]
         for course, seen in namesakes.items()
     }
+    group = [] if state == "week, new" else ["Your update on Practice, {}"]
 
     assert named == {
-        course: [f"Your update on Practice, {course}", f"Your note on Practice, {course}"]
+        course: [name.format(course) for name in [*group, "Your note on Practice, {}"]]
         for course in PRACTICE_COURSES
     }
 

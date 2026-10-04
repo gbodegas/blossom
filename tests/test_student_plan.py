@@ -433,7 +433,7 @@ def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away(
         assert page.index('href="#ask-for-help"') < page.index(
             '<div id="todays-plan" tabindex="-1">'
         )
-        assert 'class="ask" id="ask-for-help" tabindex="-1"' in page
+        assert '<span id="ask-for-help" tabindex="-1">Ask a parent for help</span>' in page
     assert whole(body, revisit), "the saved text, set out for reading, all of it"
     assert "This plan uses the earlier text format." in as_text
     assert "set aside for" in as_text
@@ -502,7 +502,7 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
         page = client.get(PAGE).text
 
     panel, _, rest = page.partition('<h2 class="list-heading"')
-    help_at = rest.index('<section class="panel help-panel" id="help" tabindex="-1">')
+    help_at = rest.index('<section class="panel help-panel" aria-labelledby="help">')
     help_part = rest[help_at : rest.index("<summary>How Blossom uses your information</summary>")]
     assert "Today, Wednesday, August 19" in panel
     assert '<a class="to-help" href="#ask-for-help">Ask for help</a>' in panel
@@ -511,7 +511,7 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
     assert "the essay outline" not in panel
     assert rest.index("Canal Era comparison essay") < help_at
     assert 'action="/student/actions/ask-for-help"' in help_part
-    assert "A note for your parents (optional)" in help_part
+    assert "What would you like help with? (optional)" in help_part
     assert help_part.index("Waiting for a parent to respond.") < help_part.index(
         "the essay outline"
     )
