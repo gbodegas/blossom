@@ -1522,6 +1522,16 @@ yet and a note added to homework say whether the work can be in today's plan
 by the planner's own rule, so undated work is in and a source's date inside
 the window counts; work outside it is named with the window's days.
 
+Work she has not reported done that every date puts before today is listed
+under Earlier unfinished work on every week shown, each with "Include in
+today's plan". A choice is hers, for the household's day, kept in
+`catch_up_choices` and nothing else; the next day starts with none and marks
+yesterday's. `planning_week` adds the work she chose to the window as catch-up
+work, so the run, the plan's fingerprint, and the pages read the same input.
+The planner is told it was due before today, and the checks let it be planned
+tonight or put off with its date kept. Work a source dates before the evening
+while another date is still to come is held to that next date and flagged.
+
 **Not built:** a calendar policy. Nothing yet knows about no-school days,
 bedtimes, or a term calendar. Durations that cross a daylight-saving night
 need to be computed in UTC when that arrives; both transitions fall inside the

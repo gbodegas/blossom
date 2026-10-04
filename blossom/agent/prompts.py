@@ -18,7 +18,7 @@ The critic's criteria are rendered from ``CRITERIA`` rather than written out
 here, so the critic is asked exactly what its verdict is checked against.
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import date
 from html import escape
 from typing import Final
@@ -71,8 +71,16 @@ Rules for the plan:
   about.
 - An assignment listed under <contradictions> has a due date on the family's
   record that no source supports. Plan so that the earliest of the dates
-  involved would still be met, and say in the rationale that the record needs
-  checking.
+  involved would still be met, or, when that date has passed, the next one
+  still to come, and say in the rationale that the record needs checking.
+- An assignment marked catch_up="due before today" is earlier work she chose
+  to include today. Its due date has passed and stays as given: never say or
+  suggest it is due later. Give it blocks tonight if it fits, or put it off
+  with a reason. Say plainly that it was due earlier, without blame.
+- An assignment marked date_passed has a date from the record or a source
+  that is before the plan date. That date has passed and can't be met. Plan
+  so that the next date still to come would be met, and say once that a date
+  given for it has passed and needs checking.
 - An assignment of kind TASK is a form to sign or a book to cover: minutes,
   not a sitting. Give it a short block or put it off with a reason; never
   stretch it to fill time.
@@ -111,6 +119,10 @@ order:
 """
     + "\n".join(f"- {criterion}: {question}" for criterion, question in CRITERIA.items())
     + """
+
+Work marked catch_up or date_passed was due before the plan date; that is not
+a fault of the plan, which can at best do it tonight or put it off with a
+reason.
 
 A plan says once that a date marked SINGLE_SOURCE, SOURCES_DISAGREE, or
 UNVERIFIED may be wrong, in the block where it changes what she does tonight;
@@ -174,6 +186,10 @@ def assignments_block(
     confidence: dict[str, SourceConfidence],
     student_reports: Mapping[str, StudentReport] | None = None,
     school_instructions: Mapping[str, Sequence[str]] | None = None,
+    *,
+    catch_up: Collection[str] = (),
+    noticings: Sequence[Noticing] = (),
+    plan_date: date | None = None,
 ) -> str:
     """Every assignment in the window still to do, with its due date, how sure the family
     is of it, and what she has said about her part when she has said anything.
@@ -186,11 +202,14 @@ def assignments_block(
     Those said before and any waiting for review are never passed here, and
     neither is a school note left in the old note field, which no one chose to
     apply: the teacher's words reach a model only as instructions that apply.
-    Her note and a parent's are put under their own names.
+    Her note and a parent's are put under their own names. Earlier work she chose is
+    marked as catch-up work, due before today, and other work with a date before
+    ``plan_date`` carries the earliest such date as ``date_passed``.
     """
     lines = []
     said_by_her = student_reports or {}
     applying = school_instructions or {}
+    earliest = {item.assignment_id: item.earliest_date for item in noticings}
     for item in assignments:
         attributes = {
             "id": item.assignment_id,
@@ -202,6 +221,11 @@ def assignments_block(
         }
         if item.assigned_on is not None:
             attributes["assigned"] = item.assigned_on.isoformat()
+        passed = earliest.get(item.assignment_id, item.due_date)
+        if item.assignment_id in catch_up:
+            attributes["catch_up"] = "due before today"
+        elif plan_date is not None and passed is not None and passed < plan_date:
+            attributes["date_passed"] = passed.isoformat()
         teachers = list(applying.get(item.assignment_id, ()))
         for name, words in zip(teacher_names(len(teachers)), teachers, strict=True):
             attributes[name] = words
@@ -301,6 +325,7 @@ def planner_brief(
     student_reports: Mapping[str, StudentReport] | None = None,
     school_instructions: Mapping[str, Sequence[str]] | None = None,
     last_plan: DailyPlan | None = None,
+    catch_up: Collection[str] = (),
 ) -> list[BaseMessage]:
     """Everything the planner reads, data first and the request last.
 
@@ -314,7 +339,15 @@ def planner_brief(
     parts = [
         evening_block(plan_date, zone, budget_minutes),
         *filter(None, [too_much_block(too_much, budget_minutes)]),
-        assignments_block(assignments, confidence, student_reports, school_instructions),
+        assignments_block(
+            assignments,
+            confidence,
+            student_reports,
+            school_instructions,
+            catch_up=catch_up,
+            noticings=noticings,
+            plan_date=plan_date,
+        ),
         contradictions_block(noticings),
         listed("support_rule", "support_rules", support_rules),
         listed("reflection", "reflections", reflections),
@@ -355,12 +388,21 @@ def critic_brief(
     too_much: bool = False,
     student_reports: Mapping[str, StudentReport] | None = None,
     school_instructions: Mapping[str, Sequence[str]] | None = None,
+    catch_up: Collection[str] = (),
 ) -> list[BaseMessage]:
     """Everything the critic reads: the same evening, then the plan, then the request."""
     parts = [
         evening_block(plan_date, zone, budget_minutes),
         *filter(None, [too_much_block(too_much, budget_minutes)]),
-        assignments_block(assignments, confidence, student_reports, school_instructions),
+        assignments_block(
+            assignments,
+            confidence,
+            student_reports,
+            school_instructions,
+            catch_up=catch_up,
+            noticings=noticings,
+            plan_date=plan_date,
+        ),
         contradictions_block(noticings),
         listed("support_rule", "support_rules", support_rules),
         listed("reflection", "reflections", reflections),

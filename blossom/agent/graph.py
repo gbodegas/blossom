@@ -212,6 +212,9 @@ class PlanState(TypedDict):
     school_instructions: NotRequired[dict[str, list[str]]]
     """The school's instructions that apply to each assignment in ``assignments`` that has
     any, in the one order, frozen with the rest of the reading."""
+    catch_up: NotRequired[list[str]]
+    """The earlier work she chose for the evening, among ``assignments``: due before it,
+    planned as catch-up work, its dates unchanged."""
     confidence: NotRequired[dict[str, SourceConfidence]]
     noticings: NotRequired[list[Noticing]]
     too_much: NotRequired[bool]
@@ -282,6 +285,7 @@ def build_plan_graph(
             "school_instructions": state.get("school_instructions", {}),
             "support_rules": state.get("support_rules", []),
             "reflections": state.get("reflections", []),
+            "catch_up": state.get("catch_up", []),
         }
 
     def reading(week: Week) -> dict[str, Any]:
@@ -312,6 +316,7 @@ def build_plan_graph(
                 if (standing := week.instructions.get(item.assignment_id)) is not None
                 and standing.texts
             },
+            "catch_up": sorted(week.catch_up),
             # Taken as the week is read, so a change between a reading and
             # the draft reads as a change too.
             "inputs_digest": planning_digest(week),
@@ -339,16 +344,16 @@ def build_plan_graph(
         asked; the route asks the same question before the run, and asks it
         here again because a report can land in between.
 
-        What is read here is the run's input from here on, her reports
-        included: both models, the checks, and every revision work from this
-        one reading, and the fingerprint saved with the draft is this
-        reading's. The models are asked without the decision lock, so a report
-        of hers can land while one is answering; it is not swapped in half
-        way, and no second plan is paid for on its account. The draft reads
-        as stale on both pages the moment it is published, its notice names
-        work she reports as done, and approving it is refused until a new
-        plan is asked for. Nothing left to do ends a run only here, before
-        any model is asked.
+        What is read here is the run's input from here on, her reports and the
+        earlier work she chose for the evening included: both models, the
+        checks, and every revision work from this one reading, and the
+        fingerprint saved with the draft is this reading's. The models are
+        asked without the decision lock, so a report of hers can land while
+        one is answering; it is not swapped in half way, and no second plan is
+        paid for on its account. The draft reads as stale on both pages the
+        moment it is published, its notice names work she reports as done, and
+        approving it is refused until a new plan is asked for. Nothing left to
+        do ends a run only here, before any model is asked.
         """
         read = reading(read_week(project_state, source, state["plan_date"]))
         rules = [rule.instruction for rule in support_rules.list_all()]
@@ -438,6 +443,7 @@ def build_plan_graph(
             daily_minutes=state.get("budget_minutes", evening_minutes),
             reported_done=state.get("done_ids", []),
             names=state.get("names"),
+            catch_up=state.get("catch_up", []),
         )
         record = step(
             "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
@@ -518,6 +524,7 @@ def build_plan_graph(
             confidence=state.get("confidence", {}),
             too_much=state.get("too_much", False),
             budget_minutes=state.get("budget_minutes", evening_minutes),
+            catch_up=state.get("catch_up", []),
         )
         if outcome not in REACHED_THE_GATE:
             msg = f"compose reached with outcome {outcome!r}, which produces no draft"

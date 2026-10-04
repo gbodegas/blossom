@@ -540,6 +540,32 @@ def noticed(expected: date | None, *observed: date, verdict: Verdict) -> Noticin
 
 
 def test_a_contradicted_record_is_measured_against_the_earlier_school_date() -> None:
+    school_says_monday = noticed(ESSAY.due_date, date(2026, 8, 20), verdict=Verdict.CONTRADICTED)
+    late = DailyPlan(
+        plan_date=date(2026, 8, 21),
+        blocks=[block("assignment-canal-essay", "16:30", "17:30")],
+        deferred=[Deferral(assignment_id="assignment-algebra-set", reason="tomorrow")],
+    )
+
+    result = check_plan(
+        late,
+        due_in_window=WINDOW,
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        noticings=[school_says_monday],
+    )
+
+    assert PlanCheck.BLOCKS_MEET_DEADLINES in result.failed_checks
+    assert (
+        "assignment-canal-essay is due 2026-08-20 by the earliest date the record or a "
+        "source gives and is scheduled 2026-08-21, after it"
+    ) in result.findings[PlanCheck.BLOCKS_MEET_DEADLINES]
+    assert result.contradicted == ("assignment-canal-essay",)
+
+
+def test_a_school_date_already_passed_holds_the_plan_to_the_next_date_and_is_flagged() -> None:
+    """No plan can meet a date before the evening asked for: tonight is the earliest the
+    work can be done, so a block tonight passes, flagged, and the date stays as given."""
     school_says_yesterday = noticed(ESSAY.due_date, date(2026, 8, 18), verdict=Verdict.CONTRADICTED)
 
     result = check_plan(
@@ -550,12 +576,76 @@ def test_a_contradicted_record_is_measured_against_the_earlier_school_date() -> 
         noticings=[school_says_yesterday],
     )
 
+    assert result.passed
+    assert result.past_due == ("assignment-canal-essay",)
+    assert result.contradicted == ("assignment-canal-essay",)
+
+
+def test_putting_off_work_past_its_next_date_still_to_come_fails() -> None:
+    school_says_yesterday = noticed(
+        date(2026, 8, 19), date(2026, 8, 18), verdict=Verdict.CONTRADICTED
+    )
+    tonight = ESSAY.model_copy(update={"due_date": date(2026, 8, 19)})
+    put_off = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[block("assignment-algebra-set", "18:00", "18:45")],
+        deferred=[Deferral(assignment_id="assignment-canal-essay", reason="later")],
+    )
+
+    result = check_plan(
+        put_off,
+        due_in_window=[tonight, PROBLEM_SET],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        noticings=[school_says_yesterday],
+    )
+
     assert result.failed_checks == (PlanCheck.BLOCKS_MEET_DEADLINES,)
     assert result.findings[PlanCheck.BLOCKS_MEET_DEADLINES] == (
-        "assignment-canal-essay is due 2026-08-18 by the earliest date the record or a "
-        "source gives and is scheduled 2026-08-19, after it",
+        "assignment-canal-essay is due 2026-08-19 by the next date still to come and is put "
+        "off from 2026-08-19, past it",
     )
-    assert result.contradicted == ("assignment-canal-essay",)
+    assert result.past_due == ("assignment-canal-essay",)
+
+
+@pytest.mark.parametrize("decision", ["worked on", "put off"])
+def test_catch_up_work_she_chose_may_be_worked_on_or_put_off_with_its_date_kept(
+    decision: str,
+) -> None:
+    earlier = ESSAY.model_copy(update={"due_date": date(2026, 8, 18)})
+    plan = DailyPlan(
+        plan_date=PLAN_DATE,
+        blocks=[
+            *(
+                [block("assignment-canal-essay", "16:30", "17:30")]
+                if decision == "worked on"
+                else []
+            ),
+            block("assignment-algebra-set", "18:00", "18:45"),
+        ],
+        deferred=(
+            [Deferral(assignment_id="assignment-canal-essay", reason="it doesn't fit tonight")]
+            if decision == "put off"
+            else []
+        ),
+    )
+
+    chosen = check_plan(
+        plan,
+        due_in_window=[earlier, PROBLEM_SET],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        catch_up=["assignment-canal-essay"],
+    )
+    not_chosen = check_plan(
+        plan, due_in_window=[earlier, PROBLEM_SET], zone=ZONE, requested_evening=PLAN_DATE
+    )
+
+    assert chosen.passed
+    assert chosen.past_due == ("assignment-canal-essay",)
+    assert earlier.due_date == date(2026, 8, 18)
+    assert not_chosen.failed_checks == (PlanCheck.BLOCKS_MEET_DEADLINES,)
+    assert not_chosen.past_due == ()
 
 
 def test_a_contradicted_record_keeps_its_own_date_when_the_school_says_later() -> None:

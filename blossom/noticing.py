@@ -225,6 +225,9 @@ class Week:
     reading. An id with no entry has none kept."""
     instructions_unavailable: frozenset[str] = frozenset()
     """The assignments whose kept instructions cannot be read, so a card says so."""
+    catch_up: frozenset[str] = frozenset()
+    """The earlier work she chose for this day's plan, among ``assignments``: due before
+    the day by every date anyone gives, planned as catch-up work, its dates unchanged."""
 
     def needs_homework(self, assignment_id: str) -> bool:
         """Whether an assignment is still work to plan: everything but a "done" of hers."""
@@ -271,11 +274,12 @@ def canonical_active_input(week: Week) -> list[dict[str, object]]:
     is, which the planner is told, or nothing when there is none, and
     reported status; the school's instructions that apply, in the one order,
     or nothing when they cannot be read; whether she has said "not yet" and
-    what she wrote with it; and each claim about its date, channel, value,
-    and where it was read, sorted. Left out: a school note left in the old
-    note field, which no one chose; when a claim or a report was made, which
-    report it was, how sure a claim was, her history, anything about work
-    reported done, which is out of what a plan is built on, and of the
+    what she wrote with it; each claim about its date, channel, value,
+    and where it was read, sorted; and, on earlier work she chose for the
+    day, that it is catch-up work, a key only those rows carry. Left out: a
+    school note left in the old note field, which no one chose; when a claim
+    or a report was made, which report it was, how sure a claim was, her
+    history, anything about work reported done, which is out of what a plan is built on, and of the
     school's instructions everything but the words of those that apply:
     their channel, card, card day, when and by whom they were pasted or
     chosen, those said before, and any waiting for review.
@@ -311,6 +315,8 @@ def canonical_active_input(week: Week) -> list[dict[str, object]]:
                 ),
             }
         )
+        if item.assignment_id in week.catch_up:
+            rows[-1]["catch_up"] = True
     return rows
 
 
@@ -368,6 +374,9 @@ class Everything:
     instructions_unavailable: frozenset[str] = frozenset()
     """The assignments with a kept instruction that cannot be read. A page says so, and
     never that none is kept."""
+    catch_up: Mapping[date, frozenset[str]] = field(default_factory=dict)
+    """The earlier work she chose for each day's plan, by day. A day with no entry has none
+    chosen, which is how every new day starts."""
 
     @property
     def ids(self) -> frozenset[str]:
@@ -391,9 +400,9 @@ def read_everything(
     them comes from the same batch: the school's reports, and her hand-in
     events, which stay in the file when an assignment leaves the record.
 
-    The cost is at most seven reads however much the record holds, the
-    claims, her hand-in events, and the school's instructions among them each
-    asked for once and not once per assignment. It is fewer for a
+    The cost is at most eight reads however much the record holds, the
+    claims, her hand-in events, the school's instructions, and her catch-up choices
+    among them each asked for once and not once per assignment. It is fewer for a
     record that holds nothing, since a reader asked about no assignments runs
     no statement. What comes back is plain lists and mappings with nothing
     left open, so the transaction is over before anything is rendered or a
@@ -407,6 +416,7 @@ def read_everything(
         statuses = statuses_for(project_state, [*on_record, *also])
         turned_in = project_state.hand_in_readings([*on_record, *also])
         instructions = project_state.school_instruction_readings(on_record)
+        chosen = project_state.catch_up_choices() if on_record else {}
     return Everything(
         assignments=everything,
         records=records,
@@ -416,6 +426,7 @@ def read_everything(
         claims_unavailable=claimed.unreadable,
         instructions=instructions.readable,
         instructions_unavailable=instructions.unreadable,
+        catch_up=chosen,
     )
 
 
@@ -461,6 +472,86 @@ def week_from(
     )
 
 
+def needs_homework(everything: Everything, assignment_id: str) -> bool:
+    """Whether an assignment is still work to plan at this reading: anything but her Done."""
+    status = everything.statuses.get(assignment_id)
+    return status is None or status.needs_homework
+
+
+def due_before(noticing: Noticing, day: date) -> bool:
+    """Whether some date anyone gives, record or source, falls before ``day``."""
+    earliest = noticing.earliest_date
+    return earliest is not None and earliest < day
+
+
+def earlier_unfinished(
+    everything: Everything, today: date, *, noticed: Mapping[str, Noticing] | None = None
+) -> list[Assignment]:
+    """Work she has not reported done that today's planning window leaves out and that some
+    date puts before today, most recently due first. Undated work is always in the window,
+    so it is never here; nothing she has not reported is read as anything but unreported."""
+    if noticed is None:
+        noticed = noticings_of(everything)
+    found = [
+        item
+        for item in everything.assignments
+        if needs_homework(everything, item.assignment_id)
+        and not in_week(item, noticed[item.assignment_id], today)
+        and due_before(noticed[item.assignment_id], today)
+    ]
+    return sorted(
+        found,
+        key=lambda item: (noticed[item.assignment_id].earliest_date or today),
+        reverse=True,
+    )
+
+
+def planning_week(
+    everything: Everything, plan_date: date, *, noticed: Mapping[str, Noticing] | None = None
+) -> Week:
+    """What a plan for ``plan_date`` is made from: the window from that day, and the earlier
+    unfinished work she chose for that day, as catch-up work. Every reader of a plan's
+    input, the run, its fingerprint, and the pages, takes it from here."""
+    if noticed is None:
+        noticed = noticings_of(everything)
+    window = week_from(everything, plan_date, noticed=noticed)
+    chosen = everything.catch_up.get(plan_date, frozenset())
+    extra = [
+        item
+        for item in earlier_unfinished(everything, plan_date, noticed=noticed)
+        if item.assignment_id in chosen
+    ]
+    if not extra:
+        return window
+    extra.sort(key=lambda item: everything.assignments.index(item))
+    return Week(
+        assignments=[*window.assignments, *extra],
+        records={
+            **window.records,
+            **{item.assignment_id: everything.records[item.assignment_id] for item in extra},
+        },
+        noticings={
+            **window.noticings,
+            **{item.assignment_id: noticed[item.assignment_id] for item in extra},
+        },
+        statuses={
+            **window.statuses,
+            **{item.assignment_id: everything.statuses[item.assignment_id] for item in extra},
+        },
+        claims_unavailable=window.claims_unavailable,
+        instructions={
+            **window.instructions,
+            **{
+                item.assignment_id: everything.instructions[item.assignment_id]
+                for item in extra
+                if item.assignment_id in everything.instructions
+            },
+        },
+        instructions_unavailable=window.instructions_unavailable,
+        catch_up=frozenset(item.assignment_id for item in extra),
+    )
+
+
 def read_week(project_state: ProjectStateStore, source: DateClaims, start: date) -> Week:
     """Read the week from ``start``: one reading of the record, and the week out of it.
 
@@ -470,6 +561,7 @@ def read_week(project_state: ProjectStateStore, source: DateClaims, start: date)
     looking at, the planner on the evening being planned, so a plan looks at
     the seven days ahead and her page says so. A reader that needs more than
     one week, or a week and a saved plan's updates, reads everything once
-    and takes each from it.
+    and takes each from it. The earlier work she chose for ``start`` comes with it, so a
+    plan for that day is made from what she chose.
     """
-    return week_from(read_everything(project_state, source), start)
+    return planning_week(read_everything(project_state, source), start)

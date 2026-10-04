@@ -929,16 +929,33 @@ def test_a_contradicted_record_reaches_the_planner_the_critic_and_the_draft() ->
     assert "worth checking with the school" not in body
 
 
-def test_a_block_after_the_school_date_fails_the_checks_though_the_record_allows_it() -> None:
-    planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
+def test_a_school_date_already_passed_is_said_to_the_planner_and_planned_tonight() -> None:
+    """A source's date before the evening can't be met by any plan. The work is held to
+    the record's date still to come, the planner is told the date passed, and the plan
+    tonight is checked and kept with the date as given."""
+    planner = Scripted(ok(good_plan()))
+    critic = Scripted(ok(accepting()))
 
-    result = run(graph_with(planner, Scripted(), source=SchoolSaysOtherwise("2026-08-18")))
+    result = run(graph_with(planner, critic, source=SchoolSaysOtherwise("2026-08-18")))
+
+    assert result["outcome"] == "accepted"
+    assert result["verification"].past_due == ("assignment-canal-essay",)
+    assert 'date_passed="2026-08-18"' in human_text(planner.briefs[0])
+    assert 'date_passed="2026-08-18"' in human_text(critic.briefs[0])
+    assert result["assignments"][0].due_date == ESSAY.due_date
+
+
+def test_a_block_after_the_school_date_still_to_come_fails_the_checks() -> None:
+    late = good_plan().model_copy(update={"plan_date": date(2026, 8, 21)})
+    planner = Scripted(*[ok(late)] * (MAX_REVISIONS + 1))
+
+    result = run(graph_with(planner, Scripted(), source=SchoolSaysOtherwise("2026-08-20")))
 
     assert result["outcome"] == "checks_failed"
-    assert result["feedback"] == [
-        "assignment-canal-essay is due 2026-08-18 by the earliest date the record or a "
-        "source gives and is scheduled 2026-08-19, after it"
-    ]
+    assert (
+        "assignment-canal-essay is due 2026-08-20 by the earliest date the record or a "
+        "source gives and is scheduled 2026-08-21, after it"
+    ) in result["feedback"]
 
 
 def test_an_item_the_record_puts_next_month_is_in_the_week_when_a_source_puts_it_here() -> None:

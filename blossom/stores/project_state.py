@@ -107,6 +107,7 @@ from blossom.stores.captures import (
     held_text_or_nothing,
     with_details,
 )
+from blossom.stores.catch_up import CatchUpRecords
 from blossom.stores.intake_decisions import IntakeDecisionRecords
 from blossom.stores.paths import refuse_unsafe_path
 from blossom.stores.school_instructions import (
@@ -677,7 +678,9 @@ class Reopened:
     check: FamilyCheck
 
 
-class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecisionRecords):
+class ProjectStateStore(
+    CaptureRecords, SchoolInstructionRecords, IntakeDecisionRecords, CatchUpRecords
+):
     """SQLite-backed project state, opened once and shared across worker threads.
 
     The connection is created at application startup rather than per request,
@@ -839,6 +842,9 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         # What a parent said about which homework a school row is about.
         with self._writing():
             self._create_intake_decision_table()
+        # The earlier work she chose for a day's plan, by day and assignment.
+        with self._writing():
+            self._create_catch_up_table()
 
     def _upgrade_date_claims(self) -> None:
         """Give the claims table the note a claim came from, the note's revision, whether

@@ -195,7 +195,7 @@ def test_a_page_costs_the_same_statements_however_many_notes_and_requests_there_
 
     assert costs[0] == costs[1] == costs[2]
     # One of them is the one read of the school's instructions, however many there are.
-    assert costs[0] <= 11
+    assert costs[0] <= 12
 
 
 # -------------------------------------------------------------- the family page

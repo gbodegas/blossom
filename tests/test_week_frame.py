@@ -21,7 +21,7 @@ from blossom.app import create_app
 from blossom.noticing import monday_of
 from blossom.settings import STATIC_PATH as STATIC
 from blossom.settings import TEMPLATE_PATH as TEMPLATES
-from tests.support import SAME_ORIGIN, fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings, outside_earlier_work
 
 PINNED_TODAY = "2026-08-19"
 MONDAY = "2026-08-17"
@@ -164,7 +164,7 @@ def test_work_assigned_this_week_is_due_later_only_when_it_is(tmp_path: pathlib.
 
     assert "<strong>Due after the week</strong> &middot; Science" in shown
     assert "Due Thursday, August 27" in shown
-    assert "Due before the week" not in shown
+    assert "Due before the week" not in outside_earlier_work(shown)
     assert "Due before the week" in week_before
 
 
