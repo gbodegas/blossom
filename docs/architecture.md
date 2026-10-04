@@ -1516,11 +1516,18 @@ looks. Both go through `read_week`, so they never differ about whether an
 item is in a window, only about where the window starts. Every week her page
 shows names today's planning window by its days, from `planning_window` in
 `blossom/noticing.py`: under Today's controls on this week, and under the link
-back to this week on another, which has no Today panel. The last day carries
+back to this week on another, which has no Today panel. Beside the plan
+button the same line first says what a plan is made from: unfinished homework
+due in the next 7 days and homework without a due date. The last day carries
 its year, and the first its own when the window reaches into a new year. A Not
 yet and a note added to homework say whether the work can be in today's plan
 by the planner's own rule, so undated work is in and a source's date inside
-the window counts; work outside it is named with the window's days.
+the window counts. A Not yet outside it says where every date given puts it,
+from `PlanningWindow.outside`: due before today, with a link to Help since
+earlier work is not planned; due after the window's last day; or dates on both
+sides, which names the disagreement and chooses no date. When a claim cannot
+be read as a date, it could put the work anywhere, so the line names the
+window's days instead.
 
 **Not built:** a calendar policy. Nothing yet knows about no-school days,
 bedtimes, or a term calendar. Durations that cross a daylight-saving night

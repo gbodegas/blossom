@@ -196,7 +196,7 @@ def test_not_yet_says_what_it_means_inside_and_outside_todays_window() -> None:
         "Updates show the latest saved information, even when you view a different week." in later
     )
     assert (
-        "Saved as Not yet. It is outside today's planning window (August 19 to August 25, 2026)."
+        "Saved as Not yet. This is due after August 25, so it isn't included in today's plan yet."
         in card_for(later, poster)
     )
     assert "Reported August 19" in card_for(later, poster)
@@ -1394,7 +1394,7 @@ def test_a_not_yet_in_the_window_brings_the_plan_button_back_and_one_outside_doe
 
     assert outside.status_code == 303
     assert asks_for_nothing(still_nothing), still_nothing
-    assert "outside today's planning window (August 19 to August 25, 2026)." in card_for(
+    assert "This is due after August 25, so it isn't included in today's plan yet." in card_for(
         later_week, poster
     )
     assert 'action="/student/actions/plan"' in back

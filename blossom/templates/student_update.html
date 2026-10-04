@@ -99,9 +99,18 @@
     {% if assignment.update_note %}
       <p class="from-teacher">{% if ctx.viewer == "parent" %}She wrote{% else %}You wrote{% endif %}: <q>{{ assignment.update_note }}</q></p>
     {% endif %}
+    {#
+      What a Not yet means for today's plan, by every date given for the work: in
+      the window, all before today, all after the window, or on both sides of it,
+      which names the doubt and chooses no date. With a claim that cannot be read
+      as a date, the window alone is named. Earlier work offers her Help.
+    #}
     <p class="effect">
       {% if assignment.update_status == "done" %}This is out of work to plan. {% if ctx.viewer == "parent" %}Her{% else %}Your{% endif %} school record is separate.
       {% elif assignment.in_planning_window %}Still unfinished. It can be included in today's plan.
+      {% elif assignment.outside_window == "before" %}Saved as Not yet. This was due before today. Earlier work isn't included in today's plan.{% if ctx.viewer != "parent" %} <a href="{{ help_href }}">Ask for help</a>{% endif %}
+      {% elif assignment.outside_window == "after" %}Saved as Not yet. This is due after {{ day(planning_window_end) }}, so it isn't included in today's plan yet.
+      {% elif assignment.outside_window == "astride" %}Saved as Not yet. Its dates disagree: one is before today and another is after {{ day(planning_window_end) }}, so it isn't included in today's plan.
       {% else %}Saved as Not yet. It is outside today's planning window ({{ planning_window }}).{% endif %}
     </p>
     {% if assignment.checked_on %}
