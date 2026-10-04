@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
+from blossom.app import BACK_TO_HELP
 from blossom.dependencies import STATE_ATTRIBUTE
 from blossom.routes import student as student_routes
 from blossom.routes.navigation import note_action, note_help_href, note_href
@@ -57,11 +58,24 @@ FOURTEEN = timedelta(days=14)
 NOBODY = "0" * 32
 """An id of the right shape that no form made."""
 
-SECTION = '<section class="panel help-panel" id="help" tabindex="-1">'
+SECTION = '<section class="panel help-panel" aria-labelledby="help">'
+LANDING = '<h2 id="help" tabindex="-1">'
+"""Where every address naming ``#help`` lands, for her and for a parent: Help's heading."""
 RESULT = '<p class="note update-result" role="status" id="help-result" tabindex="-1">'
 PROBLEM = '<p class="problem" role="alert" id="help-problem" tabindex="-1" autofocus>'
-SENT = "Sent. Your parents can see the request."
-ALREADY_SENT = "That request was already sent."
+SENT = "Your request is saved. A parent can see it in Family review."
+ALREADY_SENT = "That request is already saved."
+HEADING = (
+    '<h2 id="help" tabindex="-1"><span id="ask-for-help" tabindex="-1">Ask a parent for help'
+    "</span></h2>"
+)
+HER_LANDING = '<span id="ask-for-help" tabindex="-1">'
+"""Where her form's links land: the words of Help's heading."""
+BEFORE_ASKING = (
+    "Stuck on homework or unsure what to do next? Leave a request here for a parent to see in "
+    "Family review. You can add a note or just ask. Blossom does not send an alert. Replies "
+    "appear here when you refresh."
+)
 NOT_ON_THIS_PAGE = "That request is not on this page now."
 CANNOT_CHECK = "That request can't be checked right now."
 RESPONDING = (
@@ -126,7 +140,14 @@ def element(page: str, tag: str, ident: str) -> str:
 
 
 def section(page: str) -> str:
-    return element(page, "section", "help")
+    """Help on her week, from its opening tag to its own closing tag."""
+    start = page.index(SECTION)
+    depth = 0
+    for found in re.compile(r"<(/?)section\b[^>]*>").finditer(page, start):
+        depth += -1 if found.group(1) else 1
+        if depth == 0:
+            return page[start : found.end()]
+    raise AssertionError(SECTION)
 
 
 def today(page: str) -> str:
@@ -368,9 +389,10 @@ def test_help_is_one_section_after_the_homework_and_before_the_privacy_fold() ->
     assert at < page.index("<summary>How Blossom uses your information</summary>")
     part = section(page)
     marks = [
-        "<h2>Help</h2>",
+        HEADING,
+        "Stuck on homework",
         "Refreshed at",
-        'id="ask-for-help"',
+        f'action="{ASK}"',
         'id="help-updates"',
         '<p class="note refresh">',
         'id="help-older"',
@@ -437,7 +459,7 @@ def test_with_nothing_open_or_recent_today_has_no_count_and_help_no_updates(
             if held == "only earlier"
             else "No requests for help to show. When she asks, you can answer on Family review."
         )
-        assert lands_on(page, "#help") == SECTION
+        assert lands_on(page, "#help") == LANDING
     else:
         assert HER_LINK in today(page)
         assert "Her help requests" not in page
@@ -605,6 +627,46 @@ def test_each_reader_reads_help_in_their_own_words_and_meets_only_their_controls
         assert '<a href="/parent#help-she-asked-for">Family review</a>' in part
 
 
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_before_she_asks_help_says_who_sees_it_that_no_alert_goes_and_where_replies_show(
+    reader: Reader, tmp_path: pathlib.Path
+) -> None:
+    with household(tmp_path, reader) as client:
+        before = help_tables(client)
+        page = client.get(PAGE).text
+        after = help_tables(client)
+
+    part = section(page)
+    hers = reader != "parent"
+    assert after == before
+    assert (HEADING in part) is hers
+    assert (f"{LANDING}Her help requests</h2>" in part) is not hers
+    assert (BEFORE_ASKING in words(part)) is hers
+    if hers:
+        start = part.index(HEADING)
+        assert start < part.index("Stuck on homework") < part.index(f'action="{ASK}"')
+        assert '<label for="help-note">What would you like help with? (optional)</label>' in part
+        assert '<button type="submit" class="secondary">Ask a parent for help</button>' in part
+    else:
+        assert "Stuck on homework" not in part
+        assert "Ask a parent for help" not in page
+
+
+def test_asking_with_no_note_is_saved_and_the_line_says_saved_and_not_seen() -> None:
+    with browser() as client:
+        form = whole_form(client.get(PAGE).text, ASK)
+        sent = client.post(ASK, data={**form, "note": ""})
+        landed = client.get(sent.headers["location"]).text
+        kept = state_of(client).help_requests.retained().requests
+
+    assert sent.status_code == 303
+    assert [request.note for request in kept] == [None]
+    said = row(landed, form["request_id"])
+    assert f"{RESULT}{SENT}</p>" in said
+    assert "seen" not in words(said)
+    assert "Waiting for a parent to respond." in words(said)
+
+
 # ------------------------------------------------------------------ where a sent form lands
 
 
@@ -672,8 +734,8 @@ def not_on_this_page(page: str) -> None:
     part = section(page)
     assert page.count('id="help-result"') == 1
     assert f"{RESULT}{NOT_ON_THIS_PAGE}</p>" in part
-    assert part.index('id="help-result"') < part.index('id="ask-for-help"')
-    assert "Sent. Your parents" not in page
+    assert part.index('id="help-result"') < part.index(f'action="{ASK}"')
+    assert SENT not in page
     assert ALREADY_SENT not in page
 
 
@@ -864,8 +926,8 @@ def test_a_marker_on_a_failed_read_can_not_be_checked_and_never_says_sent(
     part = section(failed)
     assert failed.count('id="help-result"') == 1
     assert f"{RESULT}{escape(CANNOT_CHECK)}</p>" in part
-    assert part.index('id="help-result"') < part.index('id="ask-for-help"')
-    assert "Sent." not in failed
+    assert part.index('id="help-result"') < part.index(f'action="{ASK}"')
+    assert SENT not in failed
     assert ALREADY_SENT not in failed
     assert tries == 1
 
@@ -1072,10 +1134,7 @@ def lands_on_a_focus_target(page: str, address: str) -> str:
     assert 'tabindex="-1"' in target, target
     targets = outline_rule(CSS)
     if target.startswith("<section"):
-        assert ".help-panel:focus" in targets or "#help-she-asked-for:focus" in targets
-    elif target.startswith("<form"):
-        assert 'class="ask"' in target
-        assert ".ask:focus" in targets
+        assert "#help-she-asked-for:focus" in targets
     else:
         assert '.help-panel [tabindex="-1"]:focus' in targets
     return target
@@ -1116,14 +1175,14 @@ def test_every_help_link_and_redirect_lands_on_a_target_that_takes_the_focus(
     assert refresh.group(1) == f"{PAGE}?refreshed=1#help"
     for href in ("#ask-for-help", "#help-updates"):
         assert f'href="{href}"' in today(page)
-    assert lands_on_a_focus_target(page, "#ask-for-help").startswith('<form method="post"')
+    assert lands_on_a_focus_target(page, "#ask-for-help") == HER_LANDING
     assert lands_on_a_focus_target(page, "#help-updates").startswith('<div id="help-updates"')
     assert ASK_AGAIN in row(page, recent)
-    assert lands_on_a_focus_target(page, refresh.group(1)) == SECTION
+    assert lands_on_a_focus_target(page, refresh.group(1)) == LANDING
     assert f'<a href="#help-{taken}">Go to the request.</a>' in refused
     assert lands_on_a_focus_target(refused, f"#help-{taken}").startswith('<li class="help-request"')
     assert taken_back == f"{PAGE}#help"
-    assert lands_on_a_focus_target(landings[taken_back], taken_back) == SECTION
+    assert lands_on_a_focus_target(landings[taken_back], taken_back) == LANDING
     for where in (fresh, again, note_again.headers["location"]):
         assert where.endswith("#help-result")
         assert lands_on_a_focus_target(landings[where], where) == RESULT
@@ -1134,23 +1193,50 @@ def test_every_help_link_and_redirect_lands_on_a_target_that_takes_the_focus(
         theirs = client.get(PAGE).text
         family = client.get("/parent").text
 
-    assert lands_on_a_focus_target(theirs, "#help") == SECTION
+    assert lands_on_a_focus_target(theirs, "#help") == LANDING
     assert lands_on_a_focus_target(theirs, "#ask-for-help").startswith('<p class="note"')
     assert lands_on_a_focus_target(family, "/parent#help-she-asked-for") == (
         '<section id="help-she-asked-for" tabindex="-1">'
     )
 
 
+@pytest.mark.parametrize("reader", ["her", "parent", "open"])
+def test_every_address_naming_help_lands_on_its_heading_and_never_on_the_panel(
+    reader: Reader, tmp_path: pathlib.Path
+) -> None:
+    """Refresh replies, the way back from a request that could not be read, a parent's link
+    from Today, and the redirect after Take it back all name ``#help``."""
+    with household(tmp_path, reader) as client:
+        request_id = asked(state_of(client).help_requests, "Synthetic question")
+        page = client.get(PAGE).text
+        taken_back = None
+        if reader != "parent":
+            fields = whole_form(page, f"{TAKE_BACK}{request_id}")
+            taken_back = client.post(f"{TAKE_BACK}{request_id}", data=fields).headers["location"]
+
+    refresh = re.search(r'<a href="([^"]+)">Refresh replies</a>', page)
+    assert refresh is not None
+    addresses = [refresh.group(1), BACK_TO_HELP.href]
+    addresses += [PAGE + "#help"] if taken_back is None else [taken_back]
+    if reader == "parent":
+        addresses.append(PAGE + "#help")
+        assert PARENT_LINK in today(page)
+    for address in addresses:
+        assert address.endswith("#help"), address
+        assert lands_on_a_focus_target(page, address) == LANDING
+    assert 'tabindex="-1"' not in section(page)[: section(page).index(">") + 1]
+    if reader != "parent":
+        assert lands_on_a_focus_target(page, "#ask-for-help") == HER_LANDING
+        assert page.index(LANDING) < page.index(HER_LANDING) < page.index("Stuck on homework")
+
+
 def test_the_help_section_is_outlined_on_focus_its_links_are_tall_and_its_words_wrap() -> None:
     targets = outline_rule(CSS)
     tall = in_sentence_rule(CSS)
 
-    for selector in (
-        ".help-panel:focus",
-        '.help-panel [tabindex="-1"]:focus',
-        "#help-she-asked-for:focus",
-    ):
+    for selector in ('.help-panel [tabindex="-1"]:focus', "#help-she-asked-for:focus"):
         assert selector in targets
+    assert ".help-panel:focus" not in targets
     assert ".help-panel .problem a" in tall
     assert ".help-panel #ask-for-help a" in tall
     assert ".help-panel" in wrapping(CSS)
