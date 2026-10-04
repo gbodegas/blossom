@@ -1789,6 +1789,50 @@ main.wide {
   margin-right: 0.5rem;
 }
 
+/* A Done she has just saved is met in its result line with a few words and a small petal
+   beside them, which opens once on the page that answers the save. Only the petal turns
+   and fades in, inside the room it already has, so nothing around it moves; with reduced
+   motion asked for it is simply there. */
+.update-result .well-done {
+  font-weight: 600;
+}
+
+.update-result .petal {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin: 0 0.45em 0 0.1em;
+  border: 0.1em solid var(--pink-deep);
+  border-radius: 0 100%;
+  background: var(--pink);
+  vertical-align: -0.05em;
+  transform: rotate(45deg);
+  animation: bloom 0.8s ease-out;
+}
+
+@keyframes bloom {
+  from {
+    opacity: 0;
+    transform: rotate(-45deg) scale(0.3);
+  }
+
+  to {
+    opacity: 1;
+    transform: rotate(45deg) scale(1);
+  }
+}
+
+/* Shown again, from the browser's cache or a copy it kept, the petal holds still. */
+.update-result .seen .petal {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-result .petal {
+    animation: none;
+  }
+}
+
 .update .effect {
   margin: 0.35rem 0;
 }

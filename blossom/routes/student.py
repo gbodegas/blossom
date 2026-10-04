@@ -110,6 +110,7 @@ from blossom.reconciliation import (
 )
 from blossom.routes.forms import TOKEN_MAX_LENGTH, fields_of
 from blossom.routes.navigation import (
+    DETAILS,
     EVIDENCE,
     FAMILY_PAGE,
     NEW_NOTE_PAGE,
@@ -368,6 +369,17 @@ IN_PLACE_MAX: Final = 40
 IN_PLACE_KEY: Final = 16
 """How many hex digits of a card's key are carried: the same for an id of any length, so
 ``IN_PLACE_MAX`` cards fit the 4,096 bytes a browser keeps for one cookie."""
+DONE_COOKIE: Final = "blossom-done"
+"""The start of the cookie a save on an assignment's details that has just made it Done
+leaves for the one page that answers it, followed by that page's landing. The details keep
+no card in place, so this cookie holds that one mark and nothing else."""
+IN_PLACE_DONE: Final = "n"
+"""The mark the cookie a save leaves puts ahead of the cards it keeps in place, on the key of
+the card that save has just made Done. No form or address carries it, and ``InPlace.read``
+passes over it."""
+WELL_DONE: Final = "Done. Nice work."
+"""The words a save that has just made a card Done is met with, beside a small petal, on the
+one page that answers it."""
 REPORT_FIELDS: Final = (
     frozenset({"status", "note", "expected_report_id", "week", IN_PLACE}) | FROM_DETAILS
 )
@@ -1343,11 +1355,13 @@ class CardState:
     tie the words to it, and put the cursor there; a problem about neither,
     an update saved elsewhere among them, takes the focus on the card, and is
     said at the top of the page too, with a link to the card. ``saved_elsewhere``
-    marks the refusal that comes with a newer update to look at.
+    marks the refusal that comes with a newer update to look at. ``well_done`` is the words
+    for a Done the save has just made, on the page that answers it alone.
     """
 
     assignment_id: str
     said: str | None = None
+    well_done: str | None = None
     change: bool = False
     problem: str | None = None
     field: str | None = None
@@ -1393,8 +1407,8 @@ class InPlace:
     @classmethod
     def read(cls, given: str | None) -> "InPlace":
         """The cards a form, an address or the cookie named, the latest ``IN_PLACE_MAX`` of
-        them. A part that is not one these pages write is passed over: the value decides
-        only where a card is shown."""
+        them. A part that names no card's place, a card just made Done or anything these
+        pages never write, is passed over: the value decides only where a card is shown."""
         kept = cls()
         for part in (given or "").split("|")[-IN_PLACE_MAX:]:
             mark, _, key = part.partition(":")
@@ -1419,14 +1433,18 @@ def carried(in_place: InPlace | None) -> str | None:
     return None if in_place is None else in_place.said() or None
 
 
-def leave_in_place[Answered: Response](response: Answered, kept: InPlace, landing: str) -> Answered:
+def leave_in_place[Answered: Response](
+    response: Answered, kept: InPlace, landing: str, made_done: str | None = None
+) -> Answered:
     """Leave the cards a press keeps in place for the one page whose address names this
-    landing; with none kept, nothing is left."""
+    landing, after the key of the card ``made_done`` names when the press has just made it
+    Done; with none kept, nothing is left."""
     if not kept.cards:
         return response
+    done = "" if made_done is None else f"{IN_PLACE_DONE}:{place_key(made_done)}|"
     response.set_cookie(
         landing_cookie(landing),
-        kept.said(),
+        done + kept.said(),
         max_age=IN_PLACE_SECONDS,
         path=WEEK_PAGE,
         httponly=True,
@@ -1435,10 +1453,11 @@ def leave_in_place[Answered: Response](response: Answered, kept: InPlace, landin
     return response
 
 
-def sent_in_place(location: str, kept: InPlace) -> RedirectResponse:
+def sent_in_place(location: str, kept: InPlace, made_done: str | None = None) -> RedirectResponse:
     """The redirect to her week that keeps these cards in place on the page it lands on and
-    on no other: its address names a new landing, and the cookie that holds the cards is
-    named for it. With none kept, the address is sent as it is."""
+    on no other: its address names a new landing, and the cookie that holds the cards, and
+    the card the press has just made Done, is named for it. With none kept, the address is
+    sent as it is."""
     if not kept.cards:
         return RedirectResponse(location, status_code=status.HTTP_303_SEE_OTHER)
     landing = secrets.token_hex(IN_PLACE_LANDING_DIGITS // 2)
@@ -1446,7 +1465,14 @@ def sent_in_place(location: str, kept: InPlace) -> RedirectResponse:
         str(URL(location).include_query_params(**{IN_PLACE_LANDING: landing})),
         status_code=status.HTTP_303_SEE_OTHER,
     )
-    return leave_in_place(moved, kept, landing)
+    return leave_in_place(moved, kept, landing, made_done)
+
+
+def newly_done(left: str | None) -> str | None:
+    """The key of the card a save has just made Done, when the cookie it left for its landing
+    names one ahead of the cards it keeps in place."""
+    mark, _, key = (left or "").partition("|")[0].partition(":")
+    return key if mark == IN_PLACE_DONE else None
 
 
 def landing_cookie(landing: str) -> str:
@@ -1458,6 +1484,39 @@ def forget_landing[Answered: Response](response: Answered, landing: str) -> Answ
     """Clear the cookie one landing's cards were left in."""
     response.delete_cookie(landing_cookie(landing), path=WEEK_PAGE, httponly=True, samesite="lax")
     return response
+
+
+def done_cookie(landing: str) -> str:
+    """The name of the cookie that tells one landing on an assignment's details that the save
+    it answers has just made the assignment Done."""
+    return f"{DONE_COOKIE}-{landing}"
+
+
+def forget_done[Answered: Response](response: Answered, landing: str) -> Answered:
+    """Clear the cookie one landing on the details was told of a new Done in."""
+    response.delete_cookie(done_cookie(landing), path=DETAILS, httponly=True, samesite="lax")
+    return response
+
+
+def sent_done_to_the_details(location: str, assignment_id: str) -> RedirectResponse:
+    """The redirect back to an assignment's details after a save that has just made it Done:
+    its address names a new landing, and a cookie named for it, for the details alone, says
+    so to the one page that answers it, as her week's landing cookie does. It holds no card,
+    since the details keep none in place."""
+    landing = secrets.token_hex(IN_PLACE_LANDING_DIGITS // 2)
+    moved = RedirectResponse(
+        str(URL(location).include_query_params(**{IN_PLACE_LANDING: landing})),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    moved.set_cookie(
+        done_cookie(landing),
+        f"{IN_PLACE_DONE}:{place_key(assignment_id)}",
+        max_age=IN_PLACE_SECONDS,
+        path=DETAILS,
+        httponly=True,
+        samesite="lax",
+    )
+    return moved
 
 
 def named_once(request: Request, name: str) -> str | None:
@@ -1810,7 +1869,9 @@ def due_this_week(
     refresh, a return, or Back to an address asks for the week grouped by its updates. When
     the record cannot be read, the page that says so leaves the cards again for its landing,
     and its Try again carries them in ``in_place``, so a try made after the cookie is gone
-    still finds them where they were.
+    still finds them where they were. A save that has just made a card Done says so in its
+    cookie, and that one page meets the card with a few words beside a small petal, and is
+    sent to be kept by no cache, so a step back or forward through history asks again.
     """
     landing = landing_asked(request)
     if in_place is not None:
@@ -1818,6 +1879,7 @@ def due_this_week(
         return moved if landing is None else forget_landing(moved, landing)
     left = None if landing is None else request.cookies.get(landing_cookie(landing))
     kept = InPlace.read(left)
+    card = met(card_shown(saved, same, undone, change, show), left)
     try:
         page = week_page(
             request,
@@ -1826,7 +1888,7 @@ def due_this_week(
             week=week,
             plan_asked=show_plan == "1",
             was_refreshed=refreshed == "1",
-            card=card_shown(saved, same, undone, change, show),
+            card=card,
             turning_in=receipt_asked(hand_in_said, about, hand_in_event),
             marker=marker_from(asked, asked_again),
         )
@@ -1836,7 +1898,21 @@ def due_this_week(
         return unreadable if landing is None else leave_in_place(unreadable, kept, landing)
     if landing is not None and left is not None:
         forget_landing(page, landing)
+    if card is not None and card.well_done:
+        # Not kept by the browser, so Back or Forward to it asks again and meets no petal.
+        page.headers["Cache-Control"] = "no-store"
     return page
+
+
+def met(card: CardState | None, left: str | None) -> CardState | None:
+    """The card a save names, with the words for a Done it has just made when the cookie its
+    landing left names that card so. Only the page whose address names the landing reads the
+    cookie, once, so a refresh, a return, or Back to the address shows the result alone."""
+    if card is None or card.said != UPDATE_SAVED:
+        return card
+    if newly_done(left) != place_key(card.assignment_id):
+        return card
+    return replace(card, well_done=WELL_DONE)
 
 
 def carrying(query: bytes, kept: InPlace) -> bytes:
@@ -2352,16 +2428,20 @@ def assignment_details(
     save or an undo can have done, which the server chose and the address
     only carries: any other word says nothing. When the record can't be read,
     503: a page that says so, offers the same address again and the way back
-    the address names, and says nothing of a save.
+    the address names, and says nothing of a save. A save that has just made
+    the assignment Done names a landing whose cookie says so; the page that
+    reads it, once, meets the update with a few words beside a small petal.
     """
     back, _ = read_return(
         {"return_to": return_to or "", "week": week or "", "plan_id": plan_id or ""},
         viewer=viewer_of(request),
         showable=showable,
     )
+    landing = landing_asked(request)
+    left = None if landing is None else request.cookies.get(done_cookie(landing))
     card = None
     if said in CONFIRMATIONS:
-        card = CardState(assignment_id, said=CONFIRMATIONS[said])
+        card = met(CardState(assignment_id, said=CONFIRMATIONS[said]), left)
     elif change == "1":
         card = CardState(assignment_id, change=True)
     turning_in = None
@@ -2371,9 +2451,9 @@ def assignment_details(
         # A link that says ``remember`` opens the same form, so a saved address still lands.
         turning_in = HandInCard(change=True)
     try:
-        return detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
+        page = detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
     except sqlite3.Error as error:
-        return unavailable_page(
+        failed = unavailable_page(
             request,
             state,
             error,
@@ -2382,6 +2462,13 @@ def assignment_details(
             again=asked_address(details_href(assignment_id), request.scope["query_string"]),
             ways_back=[plain_way_back(back, assignment_id)],
         )
+        return failed if left is None or landing is None else forget_done(failed, landing)
+    if left is not None and landing is not None:
+        forget_done(page, landing)
+    if card is not None and card.well_done:
+        # Not kept by the browser, so Back or Forward to it asks again and meets no petal.
+        page.headers["Cache-Control"] = "no-store"
+    return page
 
 
 @dataclass(frozen=True)
@@ -2470,11 +2557,18 @@ def after(origin: Origin, said: str, assignment_id: str) -> str:
     return back_to_the_card(origin.week, said, assignment_id)
 
 
-def answered(origin: Origin, said: str, assignment_id: str, kept: InPlace) -> Response:
+def answered(
+    origin: Origin, said: str, assignment_id: str, kept: InPlace, *, made_done: bool = False
+) -> Response:
     """The redirect a committed save or undo is answered with. From her week it leaves the
-    cards the form kept in place for the page it lands on, the saved card where it was."""
+    cards the form kept in place for the page it lands on, the saved card where it was; from
+    her week or the details it says, to the one page that answers it, when the save has just
+    made that card Done."""
     if not origin.detail:
-        return sent_in_place(after(origin, said, assignment_id), kept)
+        done = assignment_id if made_done else None
+        return sent_in_place(after(origin, said, assignment_id), kept, done)
+    if made_done:
+        return sent_done_to_the_details(after(origin, said, assignment_id), assignment_id)
     return RedirectResponse(
         after(origin, said, assignment_id), status_code=status.HTTP_303_SEE_OTHER
     )
@@ -2821,8 +2915,9 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
             kept,
         )
     match result:
-        case Saved():
-            return answered(origin, "saved", assignment_id, kept)
+        case Saved(before=before):
+            new = said == DONE and before != DONE
+            return answered(origin, "saved", assignment_id, kept, made_done=new)
         case AlreadySaved():
             return answered(origin, "same", assignment_id, kept)
         case Conflict():

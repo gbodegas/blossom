@@ -395,7 +395,28 @@ by a short key of its id, so forty cards fit one cookie whatever the ids hold.
 The page reads the cookie once and clears it, so a refresh, a return, or Back
 to an address shows the week grouped by its updates. A page that can't read
 her week leaves the cards again, and its way back carries them in the address,
-so trying again shows them where they were, even after the cookie is gone. A result is hers: a parent who
+so trying again shows them where they were, even after the cookie is gone. A
+save that has just made a card Done, over no update or a Not yet, says so in
+that cookie, and the one page that reads it meets the card with "Done. Nice
+work." in the result line beside a small petal that opens once and holds still
+when reduced motion is asked for. Whether the save is new is decided from the
+status the store read in the same hold that checks the page's head and
+appends, with the writer reserved, so two presses of one Done, together or one
+after the other, find one new save and one already saved. A save on an
+assignment's details is met the same way, through a landing of its own and a
+`blossom-done-` cookie for the details path, which holds that mark and no card.
+Either page is sent with `Cache-Control: no-store`. A browser may still keep it
+in its back/forward cache, and Edge does, signed in or not; `blossom.js` then
+retires the petal on `pageshow` with `persisted`, as it does on a page shown
+again from a kept copy: the petal holds still, its words leave the
+accessibility tree, and nothing moves and the focus stays. Without scripts a
+page restored that way comes back as it was left, the petal already still. A
+page fetched again by Back, Forward or a refresh has no cookie, so it shows the
+result alone; `blossom.js` lands it on the place its address names, so the
+card she saved is in view, inside an open Reported done once her week has
+regrouped. A new note on a card already Done, the same press sent twice, an
+Undo, a refusal, a refresh, a return, and Back meet no petal. A result is
+hers: a parent who
 opens an address her save, undo, press, delete or request for help left reads
 what stands, in the parent's words, and no result, on her week, the details,
 her To turn in list, her homework notes, Help and a note's own page. Help then

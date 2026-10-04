@@ -621,9 +621,11 @@ class UnknownAssignment(LookupError):
 
 @dataclass(frozen=True)
 class Saved:
-    """A report was appended."""
+    """A report was appended. ``before`` is the status that stood before it, ``None`` when
+    none did."""
 
     report: StudentReport
+    before: StudentStatus | None
 
 
 @dataclass(frozen=True)
@@ -1387,7 +1389,8 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
         is rolled back whole and raised as ``CouldNotSave``. The note
         is normalized here, whatever the caller did with it, so what is
         compared is what is kept; one past the limit is ``NoteTooLong``, with
-        nothing read or written.
+        nothing read or written. A save carries the status it replaced, read
+        in that same hold, so two saves of one change can't both find it new.
         """
         note = normalize_note(note)
         if note is not None and len(note) > NOTE_MAX_LENGTH:
@@ -1398,6 +1401,9 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                 self._require_readable_reports_locked(assignment_id)
                 if expected_head is not None:
                     self._require_report_locked(assignment_id, expected_head)
+                # What stands is read once, with the writer reserved and inside the write
+                # transaction that checks the head and appends, so the status a save reports
+                # as ``before`` is the one its append replaced, whatever else is saving.
                 head = self._head_locked(assignment_id)
                 standing = (head.status, head.note) if head is not None else (None, None)
                 if standing == (status, note):
@@ -1416,7 +1422,7 @@ class ProjectStateStore(CaptureRecords, SchoolInstructionRecords, IntakeDecision
                     previous_report_id=None if head is None else head.report_id,
                 )
                 self._append_student_report_locked(report)
-                return Saved(report)
+                return Saved(report, before=standing[0])
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             refused = error
         raise CouldNotSave(assignment_id, refused) from kept_cause(refused)
