@@ -945,6 +945,30 @@ def test_a_school_date_already_passed_is_said_to_the_planner_and_planned_tonight
     assert result["assignments"][0].due_date == ESSAY.due_date
 
 
+@pytest.mark.parametrize("school", ["2026-08-18", "2026-08-17"])
+def test_undated_work_whose_only_school_date_passed_is_not_told_the_date_passed(
+    school: str,
+) -> None:
+    """With no date still to come, there is no later date to plan for, so the planner is
+    not told it may do the work tonight or put it off, and the deadline check stays strict."""
+    undated = ESSAY.model_copy(update={"due_date": None})
+    planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
+
+    result = run(
+        graph_with(
+            planner,
+            Scripted(),
+            assignments=(undated, PROBLEM_SET),
+            source=SchoolSaysOtherwise(school),
+        )
+    )
+
+    assert planner.briefs
+    assert not any("date_passed" in human_text(brief) for brief in planner.briefs)
+    assert result["outcome"] == "checks_failed"
+    assert result["verification"].past_due == ()
+
+
 def test_a_block_after_the_school_date_still_to_come_fails_the_checks() -> None:
     late = good_plan().model_copy(update={"plan_date": date(2026, 8, 21)})
     planner = Scripted(*[ok(late)] * (MAX_REVISIONS + 1))

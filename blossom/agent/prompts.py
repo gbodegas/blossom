@@ -203,13 +203,14 @@ def assignments_block(
     neither is a school note left in the old note field, which no one chose to
     apply: the teacher's words reach a model only as instructions that apply.
     Her note and a parent's are put under their own names. Earlier work she chose is
-    marked as catch-up work, due before today, and other work with a date before
-    ``plan_date`` carries the earliest such date as ``date_passed``.
+    marked as catch-up work, due before today. Other work given a date before
+    ``plan_date`` and another on or after it carries the earliest date as
+    ``date_passed``, as the plan checks hold it to the next date still to come.
     """
     lines = []
     said_by_her = student_reports or {}
     applying = school_instructions or {}
-    earliest = {item.assignment_id: item.earliest_date for item in noticings}
+    observed = {item.assignment_id: item.observed_dates for item in noticings}
     for item in assignments:
         attributes = {
             "id": item.assignment_id,
@@ -221,11 +222,12 @@ def assignments_block(
         }
         if item.assigned_on is not None:
             attributes["assigned"] = item.assigned_on.isoformat()
-        passed = earliest.get(item.assignment_id, item.due_date)
+        given = [item.due_date, *observed.get(item.assignment_id, ())]
+        dates = [day for day in given if day is not None]
         if item.assignment_id in catch_up:
             attributes["catch_up"] = "due before today"
-        elif plan_date is not None and passed is not None and passed < plan_date:
-            attributes["date_passed"] = passed.isoformat()
+        elif plan_date is not None and dates and min(dates) < plan_date <= max(dates):
+            attributes["date_passed"] = min(dates).isoformat()
         teachers = list(applying.get(item.assignment_id, ()))
         for name, words in zip(teacher_names(len(teachers)), teachers, strict=True):
             attributes[name] = words
