@@ -473,11 +473,7 @@ async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> Plan
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=beyond(evening))
     require_work(state, evening)
     require_model(graphs)
-    run = await run_plan(
-        graphs.build(),
-        evening,
-        state,
-    )
+    run = await run_plan(graphs.build(), evening, state, budget=graphs.budget())
     refuse_an_empty_run(run)
     return run
 
@@ -1242,11 +1238,7 @@ async def plan_from_the_page(
     try:
         require_work(state, evening)
         require_model(graphs)
-        run = await run_plan(
-            graphs.build(),
-            evening,
-            state,
-        )
+        run = await run_plan(graphs.build(), evening, state, budget=graphs.budget())
         refuse_an_empty_run(run)
     except HTTPException as error:
         return refused_on_the_page(request, state, str(error.detail), error.status_code)

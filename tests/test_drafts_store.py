@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from blossom.agent.steps import StepRecord
+from blossom.agent.steps import RunTiming, StageTime, StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Draft, DraftStatus
 from blossom.stores.drafts import (
@@ -748,6 +748,48 @@ def test_a_file_written_before_drafts_carried_the_signal_gains_the_column() -> N
     assert new.too_much is True
     assert displaced is not None
     assert displaced.decision == "superseded"
+
+
+def test_a_runs_time_is_kept_with_its_record() -> None:
+    timing = RunTiming(
+        seconds=41.25,
+        stages=[StageTime(node="retrieve", round=0, seconds=0.01)],
+        model_calls=3,
+        retries=1,
+        output_tokens=2400,
+        largest_output_tokens=1800,
+        category="invalid_output",
+    )
+    store = DraftsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    store.record_run(thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+    store.record_timing("plan:a", timing)
+    store.record_timing("plan:never-saved", timing)
+
+    (ended,) = store.runs_without_a_draft()
+
+    assert ended.timing == timing
+
+
+def test_a_file_written_before_runs_kept_time_gains_the_column() -> None:
+    """Its runs keep no time; a run saved after the upgrade does."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        "CREATE TABLE runs (thread_id TEXT PRIMARY KEY, plan_date TEXT NOT NULL, "
+        "outcome TEXT NOT NULL, recorded_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO runs VALUES ('plan:old', '2026-08-19', 'checks_failed', "
+        "'2026-08-19T22:00:00+00:00')"
+    )
+    connection.commit()
+
+    store = DraftsStore(connection, fixture_clock())
+    store.record_run(thread_id="plan:new", plan_date=PLAN_DATE, outcome="timed_out", steps=[])
+    store.record_timing("plan:new", RunTiming(seconds=90.0, category="timeout"))
+    timed = {run.thread_id: run.timing for run in store.runs_without_a_draft()}
+
+    assert timed["plan:old"] is None
+    assert timed["plan:new"] == RunTiming(seconds=90.0, category="timeout")
 
 
 # ---------------------------------------------------------------- publication

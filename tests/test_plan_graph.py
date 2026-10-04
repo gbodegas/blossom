@@ -11,6 +11,7 @@ because where a title sits in the message is a security property.
 
 import asyncio
 import pathlib
+import time
 from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any
@@ -29,10 +30,16 @@ from blossom.agent.graph import (
     plan_graph_for,
 )
 from blossom.agent.prompts import assignments_block
-from blossom.agent.runs import DURABILITY, RECURSION_LIMIT, run_config
-from blossom.agent.steps import KEPT_FOR_REVIEW, StepRecord
-from blossom.anthropic_client import ModelUnavailable
-from blossom.dependencies import build_application_state
+from blossom.agent.runs import (
+    DURABILITY,
+    MODEL_RETRIES,
+    RECURSION_LIMIT,
+    RUN_DEADLINE_SECONDS,
+    run_config,
+)
+from blossom.agent.steps import KEPT_FOR_REVIEW, StageTime, StepRecord
+from blossom.anthropic_client import ModelUnavailable, ServiceBusy, ServiceFailed
+from blossom.dependencies import ApplicationState, build_application_state
 from blossom.drafts import Draft, DraftStatus
 from blossom.heuristic_relevance import (
     CRITERIA,
@@ -41,10 +48,11 @@ from blossom.heuristic_relevance import (
     Judgment,
 )
 from blossom.noticing import Verdict, planning_digest, read_week
-from blossom.plan_checks import ONLY_WHAT_IS_LISTED, PlanCheck
+from blossom.plan_checks import ONLY_WHAT_IS_LISTED, PlanCheck, check_plan
 from blossom.plan_snapshot import read_snapshot
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
+from blossom.routes.runs import run_plan
 from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import DraftsStore
 from blossom.stores.project_state import (
@@ -60,7 +68,10 @@ from tests.support import (
     OBSERVED,
     PLAN_DATE,
     PROBLEM_SET,
+    ZONE,
+    FakeTime,
     Scripted,
+    Spending,
     TwoChannelSource,
     accepting,
     block,
@@ -68,6 +79,8 @@ from tests.support import (
     finding,
     fixture_clock,
     fixture_settings,
+    fixture_week_plan,
+    forgetful_fixture_plan,
     good_plan,
     graph_with,
     human_text,
@@ -929,16 +942,55 @@ def test_a_contradicted_record_reaches_the_planner_the_critic_and_the_draft() ->
     assert "worth checking with the school" not in body
 
 
-def test_a_block_after_the_school_date_fails_the_checks_though_the_record_allows_it() -> None:
-    planner = Scripted(*[ok(good_plan())] * (MAX_REVISIONS + 1))
+def test_work_the_school_dates_before_the_evening_ends_the_run_before_any_model_is_asked() -> None:
+    """The record says the essay is due after the evening and the portal says before it. The
+    deadline check holds a plan to the earlier day, so every plan fails it, scheduled or put
+    off; the run ends at its first node as a date problem naming the essay and its day, with
+    its record kept and no model asked. The check itself still holds a plan to that day."""
+    planner: Scripted[DailyPlan] = Scripted()
+    critic: Scripted[CriticVerdict] = Scripted()
+    drafts = drafts_in_memory()
 
-    result = run(graph_with(planner, Scripted(), source=SchoolSaysOtherwise("2026-08-18")))
+    result = run(
+        graph_with(planner, critic, drafts=drafts, source=SchoolSaysOtherwise("2026-08-18"))
+    )
 
-    assert result["outcome"] == "checks_failed"
-    assert result["feedback"] == [
+    assert result["outcome"] == "date_problem"
+    assert result["past_due"] == {ESSAY.assignment_id: date(2026, 8, 18)}
+    assert (planner.calls, critic.calls) == (0, 0)
+    assert "draft" not in result
+    (ended,) = drafts.runs_without_a_draft()
+    assert ended.outcome == "date_problem"
+    assert [item.node for item in ended.steps] == ["retrieve"]
+    assert (
+        "World History \u00b7 Canal Era comparison essay is due 2026-08-18, before this evening, "
+        "so no plan can keep every rule; no model was asked."
+    ) in ended.steps[0].found
+    verification = check_plan(
+        good_plan(),
+        due_in_window=result["assignments"],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        noticings=result["noticings"],
+    )
+    assert verification.findings[PlanCheck.BLOCKS_MEET_DEADLINES] == (
         "assignment-canal-essay is due 2026-08-18 by the earliest date the record or a "
-        "source gives and is scheduled 2026-08-19, after it"
-    ]
+        "source gives and is scheduled 2026-08-19, after it",
+    )
+
+
+def test_work_the_record_dates_before_the_evening_is_a_date_problem_too() -> None:
+    """No source is needed: a record date already passed, for work still in the window
+    because a source puts it there, is named the same way."""
+    planner: Scripted[DailyPlan] = Scripted()
+    late = ESSAY.model_copy(update={"due_date": date(2026, 8, 17)})
+    school = SchoolSaysOtherwise("2026-08-20")
+
+    result = run(graph_with(planner, Scripted(), assignments=(late, PROBLEM_SET), source=school))
+
+    assert result["outcome"] == "date_problem"
+    assert result["past_due"] == {ESSAY.assignment_id: date(2026, 8, 17)}
+    assert planner.calls == 0
 
 
 def test_an_item_the_record_puts_next_month_is_in_the_week_when_a_source_puts_it_here() -> None:
@@ -1662,3 +1714,236 @@ def test_her_report_comes_back_from_the_saved_state_as_itself(tmp_path: pathlib.
         values["assignments"], values["confidence"], values["student_reports"]
     )
     assert 'student_says="not yet"' in brief
+
+
+# ------------------------------------------------------------------ the run's time
+
+
+def a_household() -> ApplicationState:
+    """The fixture week through the application's own stores, on the pinned day."""
+    return build_application_state(
+        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()), InMemorySaver()
+    )
+
+
+def answered(plan: DailyPlan, tokens: int | None = None) -> ModelAnswer[DailyPlan]:
+    return ModelAnswer(
+        parsed=plan, stop_reason="end_turn", parsing_error=None, output_tokens=tokens
+    )
+
+
+def test_the_limit_is_ninety_seconds_in_one_place() -> None:
+    assert RUN_DEADLINE_SECONDS == 90.0
+    assert MODEL_RETRIES == 2
+
+
+def test_no_request_starts_once_the_run_has_spent_its_time() -> None:
+    """Two plans that break a rule take 45 seconds each. The third is never asked for: the
+    run has timed out, nothing is published, and its record keeps the steps it took and
+    the request it was about to make, with its time."""
+    clock = FakeTime()
+    planner: Spending[DailyPlan] = Spending(
+        clock, (45, ok(forgetful_fixture_plan())), (45, ok(forgetful_fixture_plan()))
+    )
+    state = a_household()
+    try:
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=planner, critic=Scripted()),
+                PLAN_DATE,
+                state,
+                budget=clock.budget(),
+            )
+        )
+        latest = state.drafts.latest_for(PLAN_DATE)
+        (ended,) = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert view.outcome == "timed_out"
+    assert view.draft_id is None
+    assert planner.calls == 2
+    assert latest is None
+    assert ended.outcome == "timed_out"
+    assert [(item.node, item.round) for item in ended.steps] == [
+        ("retrieve", 0),
+        ("plan", 1),
+        ("verify", 1),
+        ("plan", 2),
+        ("verify", 2),
+        ("plan", 3),
+    ]
+    assert ended.steps[-1].found == "No plan came back: the run's time ran out while it waited."
+    assert ended.timing is not None
+    assert ended.timing.seconds == 90.0
+    assert ended.timing.model_calls == 2
+    assert ended.timing.category == "timeout"
+    assert [stage.node for stage in ended.timing.stages] == [
+        "retrieve",
+        "plan",
+        "verify",
+        "plan",
+        "verify",
+        "plan",
+    ]
+
+
+def test_a_request_still_waiting_when_the_time_runs_out_is_cut_off() -> None:
+    """The second request starts with a twentieth of a second left and never answers; it
+    is canceled when that is spent, not when the client's own timeout would end it."""
+    clock = FakeTime()
+    planner: Spending[DailyPlan] = Spending(
+        clock, (RUN_DEADLINE_SECONDS - 0.05, ok(forgetful_fixture_plan())), (0, None)
+    )
+    state = a_household()
+    try:
+        started = time.monotonic()
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=planner, critic=Scripted()),
+                PLAN_DATE,
+                state,
+                budget=clock.budget(),
+            )
+        )
+        waited = time.monotonic() - started
+        (ended,) = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert view.outcome == "timed_out"
+    assert planner.calls == 2
+    assert waited < 5
+    assert (ended.steps[-1].node, ended.steps[-1].round) == ("plan", 2)
+
+
+def test_a_busy_service_is_asked_again_inside_the_runs_time() -> None:
+    """Two busy answers, then a plan: the retries wait half a second and then one, the run's
+    clock never starts again, and its time keeps every request, each step's time, and the
+    size of each answer."""
+    clock = FakeTime()
+    planner: Spending[DailyPlan] = Spending(
+        clock,
+        (10, ServiceBusy("overloaded")),
+        (10, ServiceBusy("overloaded")),
+        (10, answered(fixture_week_plan(), tokens=1200)),
+    )
+    critic: Spending[CriticVerdict] = Spending(
+        clock,
+        (
+            5,
+            ModelAnswer(
+                parsed=accepting(), stop_reason="end_turn", parsing_error=None, output_tokens=300
+            ),
+        ),
+    )
+    state = a_household()
+    budget = clock.budget()
+    try:
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=planner, critic=critic),
+                PLAN_DATE,
+                state,
+                budget=budget,
+            )
+        )
+        latest = state.drafts.latest_for(PLAN_DATE)
+        timing = budget.timing(None)
+    finally:
+        state.close()
+
+    assert view.outcome == "accepted"
+    assert latest is not None
+    assert latest.draft_id == view.draft_id
+    assert planner.calls == MODEL_RETRIES + 1
+    assert timing.seconds == 36.5
+    assert (timing.model_calls, timing.retries) == (4, 2)
+    assert (timing.output_tokens, timing.largest_output_tokens) == (1500, 1200)
+    assert timing.stages == [
+        StageTime(node="retrieve", round=0, seconds=0.0),
+        StageTime(node="plan", round=1, seconds=31.5),
+        StageTime(node="verify", round=1, seconds=0.0),
+        StageTime(node="critique", round=1, seconds=5.0),
+    ]
+
+
+def test_retries_are_bounded_and_a_service_still_busy_is_a_service_failure() -> None:
+    clock = FakeTime()
+    planner: Spending[DailyPlan] = Spending(
+        clock, *[(1, ServiceBusy("overloaded"))] * (MODEL_RETRIES + 1)
+    )
+    state = a_household()
+    budget = clock.budget()
+    try:
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=planner, critic=Scripted()),
+                PLAN_DATE,
+                state,
+                budget=budget,
+            )
+        )
+        latest = state.drafts.latest_for(PLAN_DATE)
+        (ended,) = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert view.outcome == "service_failed"
+    assert planner.calls == MODEL_RETRIES + 1
+    assert latest is None
+    assert ended.outcome == "service_failed"
+    assert ended.steps[-1].found == (
+        "No plan came back: the planning service failed or didn't answer."
+    )
+    assert ended.timing is not None
+    assert (ended.timing.model_calls, ended.timing.retries) == (3, 2)
+    assert ended.timing.category == "service"
+
+
+def test_retries_share_the_runs_time_and_never_start_it_again() -> None:
+    """Each busy answer takes 44.7 seconds. After the second, the pause is cut to what is
+    left, and no third request starts: the run has timed out, not failed for the service."""
+    clock = FakeTime()
+    planner: Spending[DailyPlan] = Spending(
+        clock, (44.7, ServiceBusy("overloaded")), (44.7, ServiceBusy("overloaded"))
+    )
+    state = a_household()
+    try:
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=planner, critic=Scripted()),
+                PLAN_DATE,
+                state,
+                budget=clock.budget(),
+            )
+        )
+        (ended,) = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert view.outcome == "timed_out"
+    assert planner.calls == 2
+    assert ended.timing is not None
+    assert ended.timing.seconds == 90.0
+    assert (ended.timing.model_calls, ended.timing.retries) == (2, 2)
+
+
+def test_a_service_that_refuses_the_request_is_not_asked_again() -> None:
+    clock = FakeTime()
+    planner: Spending[DailyPlan] = Spending(clock, (1, ServiceFailed("invalid request")))
+    state = a_household()
+    try:
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=planner, critic=Scripted()),
+                PLAN_DATE,
+                state,
+                budget=clock.budget(),
+            )
+        )
+    finally:
+        state.close()
+
+    assert view.outcome == "service_failed"
+    assert planner.calls == 1

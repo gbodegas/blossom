@@ -16,6 +16,9 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
+from blossom.agent.graph import MAX_REVISIONS, Ask, ModelAnswer
+from blossom.agent.runs import MODEL_RETRIES, RUN_DEADLINE_SECONDS
+from blossom.anthropic_client import ServiceBusy
 from blossom.app import create_app
 from blossom.clock import spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
@@ -24,14 +27,26 @@ from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdi
 from blossom.noticing import read_week
 from blossom.plan_text import present_plan
 from blossom.plans import DailyPlan
-from blossom.routes.runs import NOTHING_TO_SCHEDULE, ended_without_a_plan, plan_graphs
+from blossom.reconciliation import SourceChannel
+from blossom.routes.runs import (
+    NOTHING_TO_SCHEDULE,
+    already_planning,
+    ended_without_a_plan,
+    plan_graphs,
+)
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
 from blossom.stores.drafts import DraftsStore
+from blossom.stores.project_state import Assignment
+from blossom.views import PastDueView
 from tests.support import (
+    ESSAY_ID,
     FIXTURE_TIMEZONE,
     PLAN_DATE,
     SAME_ORIGIN,
     THEIRS,
+    FakeTime,
+    Scripted,
+    Spending,
     accepting,
     client_for,
     drafts_in_memory,
@@ -39,9 +54,15 @@ from tests.support import (
     fixture_week_plan,
     forgetful_fixture_plan,
     light_fixture_plan,
+    model_graphs,
+    ok,
+    record,
+    report,
     scripted_graphs,
     signed_in,
     signed_in_household,
+    state_of,
+    status_of,
 )
 
 PAGE = "/student/due-this-week"
@@ -189,23 +210,40 @@ def test_without_a_key_the_page_says_so_and_keeps_working() -> None:
 
 
 def test_why_there_is_no_plan_is_said_in_plain_words_to_whoever_reads_it() -> None:
-    """Her page never shows the run's code. She is told what she can do; a parent reading
-    her page is sent to the family page, where the run's record is."""
-    for outcome in ("model_truncated", "model_refused", "model_unparseable", "interrupted"):
+    """Her page never shows the run's code, and never says her homework is too much. Each
+    way a run can fail is told apart: an answer that couldn't be used, time running out,
+    the service, and a date already passed, named only from the record. Her updates are
+    always said to be saved; a parent reading her page is sent to the family page, where
+    the run's record is."""
+    invalid = "Blossom couldn't finish a reliable plan this time."
+    for outcome in ("checks_failed", "model_truncated", "model_refused", "model_unparseable"):
         assert ended_without_a_plan(outcome, parent=False) == (
-            "Blossom couldn't finish a plan this time. Try again in a minute; if it happens "
-            "again, tell a parent."
+            f"{invalid} Your homework updates are saved."
         )
         assert ended_without_a_plan(outcome, parent=True) == (
-            "Blossom couldn't finish a plan this time. Family review shows what happened."
+            f"{invalid} Her homework updates are saved. Family review shows what happened."
         )
-    assert ended_without_a_plan("checks_failed", parent=False) == (
-        "Blossom couldn't make a plan that fits this evening. You can try again, or ask a "
-        "parent to look at what went wrong."
+    assert ended_without_a_plan("timed_out", parent=False) == (
+        "Planning took too long, so Blossom stopped. Your homework updates are saved."
     )
-    assert ended_without_a_plan("checks_failed", parent=True) == (
-        "Blossom couldn't make a plan that fits this evening. Family review shows what went wrong."
+    assert ended_without_a_plan("service_failed", parent=False) == (
+        "Blossom couldn't reach the planning service this time. Your homework updates are saved."
     )
+    quiz = PastDueView(
+        assignment_id="assignment-map-quiz",
+        title="Map quiz",
+        course="Geography",
+        due_date=date(2026, 8, 18),
+    )
+    assert ended_without_a_plan("date_problem", parent=False, past_due=[quiz]) == (
+        "Blossom can't make today's plan: Map quiz (Geography, due August 18) has a due date "
+        "that already passed, so no plan can finish it on time. Your homework updates are saved."
+    )
+    assert ended_without_a_plan("date_problem", parent=False) == (
+        f"{invalid} Your homework updates are saved."
+    ), "nothing is named that the record does not show"
+    for outcome in ("checks_failed", "timed_out", "service_failed", "date_problem"):
+        assert "fits this evening" not in ended_without_a_plan(outcome, parent=False)
     assert ended_without_a_plan("nothing_to_schedule", parent=False) == NOTHING_TO_SCHEDULE
     assert ended_without_a_plan("nothing_to_schedule", parent=True) == NOTHING_TO_SCHEDULE
 
@@ -223,10 +261,10 @@ def test_a_parent_who_plans_from_her_page_is_told_where_the_record_is(
 
     assert response.status_code == 409
     assert (
-        "Blossom couldn&#39;t make a plan that fits this evening. Family review shows what "
-        "went wrong."
+        "Blossom couldn&#39;t finish a reliable plan this time. Her homework updates are saved. "
+        "Family review shows what happened."
     ) in response.text
-    assert "You can try again" not in response.text
+    assert "Your homework updates" not in response.text
 
 
 def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() -> None:
@@ -244,8 +282,8 @@ def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() ->
 
     assert response.status_code == 409
     assert (
-        "Blossom couldn&#39;t make a plan that fits this evening. You can try again, or "
-        "ask a parent to look at what went wrong." in response.text
+        "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are "
+        "saved." in response.text
     )
     assert "checks_failed" not in response.text
     assert "No plan for today yet." in response.text
@@ -519,8 +557,8 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
     assert "Planning uses the model provider." in panel
     assert 'href="#what-is-shared"' in panel
     assert 'id="what-is-shared"' in rest
-    assert "Planning takes a minute or two." in rest
-    assert "Planning takes a minute or two." not in panel
+    assert "Planning can take up to about a minute and a half." in rest
+    assert "Planning can take up to about a minute and a half." not in panel
     assert "Canal Era comparison essay" in rest
 
 
@@ -596,7 +634,15 @@ def test_the_planning_forms_carry_the_pending_words_and_the_others_do_not() -> N
     assert 'data-pending="Making your plan"' in hers
     assert 'data-pending="Making the plan"' in theirs
     assert hers.count('data-pending="') == 1
-    assert 'data-pending-later="Still working.' in hers
+    assert (
+        'data-pending-later="Still working. The planner reads your week and writes the plan, '
+        'which can take up to about a minute and a half"'
+    ) in hers
+    assert (
+        'data-pending-later="Still working. The planner reads her week and writes the plan, '
+        'which can take up to about a minute and a half"'
+    ) in theirs
+    assert "minute or two" not in hers + theirs, "no wait is said longer than a run may take"
     assert theirs.count('data-pending="') == 1
     assert 'name="decision" value="approve"' in theirs
     assert 'name="step" value="accept"' in theirs
@@ -698,3 +744,198 @@ def test_with_nothing_left_to_plan_her_routes_refuse_before_any_run() -> None:
     assert from_the_page.status_code == 409
     assert NOTHING_TO_SCHEDULE in from_the_page.text
     assert ended == []
+
+
+# ------------------------------------------------------- a run that ends without a plan
+
+MAP_QUIZ = Assignment(
+    assignment_id="assignment-map-quiz",
+    course="Geography",
+    title="Map quiz",
+    due_date=date(2026, 8, 18),
+    dependencies=[],
+    reported_submission_status="not_started",
+)
+"""Work the record dates the day before the evening, kept in the window by a portal date
+after it: no plan for the evening can schedule it or put it off in time."""
+
+
+def answer(
+    parsed: DailyPlan | None = None,
+    *,
+    stop_reason: str = "end_turn",
+    parsing_error: str | None = None,
+) -> ModelAnswer[DailyPlan]:
+    """An answer as the service can send one: whole, cut off, or unreadable."""
+    return ModelAnswer(parsed=parsed, stop_reason=stop_reason, parsing_error=parsing_error)
+
+
+def ended_page(client: TestClient) -> str:
+    """Her plan press, as a page: the top line and the plan button."""
+    response = client.post("/student/actions/plan")
+    assert response.status_code == 409
+    return response.text
+
+
+def the_line(page: str) -> str:
+    start = page.index('<p class="problem week-problem"')
+    return page[start : page.index("</p>", start) + 4]
+
+
+def test_each_way_a_run_ends_without_a_plan_is_said_with_a_way_forward() -> None:
+    """Wrong-date answers, a plan cut off, an answer that couldn't be read, time running
+    out, and a service still busy after its retries: each is said in its own words, says
+    her updates are saved, takes the focus, links to her homework, and the plan button
+    offers to try again. None says the evening is too full, and none asks for a parent."""
+    clock = FakeTime()
+    tomorrow = fixture_week_plan().model_copy(update={"plan_date": date(2026, 8, 20)})
+    cases: dict[str, tuple[Callable[[], Ask[DailyPlan]], str]] = {
+        "wrong date": (
+            lambda: Scripted(*[ok(tomorrow)] * (MAX_REVISIONS + 1)),
+            "Blossom couldn&#39;t finish a reliable plan this time.",
+        ),
+        "truncated": (
+            lambda: Scripted(answer(parsed=fixture_week_plan(), stop_reason="max_tokens")),
+            "Blossom couldn&#39;t finish a reliable plan this time.",
+        ),
+        "malformed": (
+            lambda: Scripted(answer(parsing_error="not valid JSON")),
+            "Blossom couldn&#39;t finish a reliable plan this time.",
+        ),
+        "timeout": (
+            lambda: Spending(clock, (RUN_DEADLINE_SECONDS, ok(forgetful_fixture_plan()))),
+            "Planning took too long, so Blossom stopped.",
+        ),
+        "service": (
+            lambda: Spending(clock, *[(1, ServiceBusy("overloaded"))] * (MODEL_RETRIES + 1)),
+            "Blossom couldn&#39;t reach the planning service this time.",
+        ),
+    }
+    for name, (planner, said) in cases.items():
+        with browser() as client:
+            client.app.dependency_overrides[plan_graphs] = model_graphs(  # type: ignore[attr-defined]
+                planner, Scripted, budget=clock.budget
+            )
+            page = ended_page(client)
+
+        line = the_line(page)
+        assert f"{said} Your homework updates are saved." in line, name
+        assert 'role="alert" tabindex="-1" autofocus' in line, name
+        assert '<a href="#assignment-assignment-science-fair-proposal">See homework.</a>' in line, (
+            name
+        )
+        assert '<button type="submit" class="primary">Try again</button>' in page, name
+        assert "fits this evening" not in page, name
+        assert "parent" not in line, name
+        assert "No plan for today yet." in page, name
+
+
+def test_work_dated_before_today_is_named_with_a_link_to_its_dates_and_no_model_is_asked() -> None:
+    planners: list[Scripted[DailyPlan]] = []
+    with browser() as client:
+        state = state_of(client)
+        state.project_state.upsert_assignments([MAP_QUIZ])
+        state.project_state.record_claims(
+            MAP_QUIZ.assignment_id, [record(SourceChannel.LMS, "2026-08-20")]
+        )
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            list, list, planners=planners
+        )
+        page = ended_page(client)
+        ended = state.drafts.runs_without_a_draft()
+
+    line = the_line(page)
+    assert (
+        "Blossom can&#39;t make today&#39;s plan: Map quiz (Geography, due August 18) has a due "
+        "date that already passed, so no plan can finish it on time. Your homework updates "
+        "are saved."
+    ) in line
+    assert (
+        '<a href="/student/assignments/assignment-map-quiz?return_to=week#evidence">'
+        "Check the dates for Map quiz.</a>"
+    ) in line
+    assert '<a href="#assignment-assignment-map-quiz">See homework.</a>' in line
+    assert '<button type="submit" class="primary">Try again</button>' in page
+    assert planners[-1].calls == 0
+    assert [run.outcome for run in ended] == ["date_problem"]
+
+
+def test_a_failed_run_keeps_her_updates_and_the_plan_already_there() -> None:
+    """She has a plan, saves Done on the essay, and plans again; the run times out. Her
+    update stands, today's plan is the one she had, dated and marked as made before her
+    update, and nothing waits in its place."""
+    clock = FakeTime()
+    with browser() as client:
+        assert client.post("/student/actions/plan").status_code == 303
+        state = state_of(client)
+        first = state.drafts.latest_for(PLAN_DATE)
+        assert first is not None
+        report(client, ESSAY_ID, "done")
+        client.app.dependency_overrides[plan_graphs] = model_graphs(  # type: ignore[attr-defined]
+            lambda: Spending(clock, (RUN_DEADLINE_SECONDS, ok(fixture_week_plan()))),
+            Scripted,
+            budget=clock.budget,
+        )
+        page = ended_page(client)
+        latest = state.drafts.latest_for(PLAN_DATE)
+        waiting = [item.draft_id for item in state.drafts.waiting()]
+        essay = status_of(state.project_state, ESSAY_ID)
+
+    assert "Planning took too long, so Blossom stopped. Your homework updates are saved." in page
+    assert latest is not None
+    assert latest.draft_id == first.draft_id
+    assert waiting == [first.draft_id]
+    assert essay.asserted is not None
+    assert essay.asserted.status == "done"
+    assert "Plan for Wednesday, August 19, 2026" in page
+    assert "A plan is ready." in page
+    assert (
+        "Canal Era comparison essay"
+        in page.split('class="confidence disagree" role="status"', 1)[1]
+    )
+
+
+def test_one_press_is_one_run() -> None:
+    """A press makes one run and one record, whether it ends with a plan or without, and
+    the button that makes it is the one form that holds itself busy after a press."""
+    planners: list[Scripted[DailyPlan]] = []
+    with browser() as client:
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [forgetful_fixture_plan()] * (MAX_REVISIONS + 1), list, planners=planners
+        )
+        client.post("/student/actions/plan")
+        page = client.get(PAGE).text
+        runs = state_of(client).drafts.runs_without_a_draft()
+
+    assert len(planners) == 1
+    assert len(runs) == 1
+    assert page.count('action="/student/actions/plan"') == 1
+    assert page.count("data-pending=") == 1
+
+
+def test_a_press_while_a_plan_for_today_is_being_made_starts_nothing() -> None:
+    """The run in flight is the one plan for today being made: a second press starts no run,
+    asks no model, and says so in the failure line, with the way to her homework."""
+    planners: list[Scripted[DailyPlan]] = []
+    with browser() as client:
+        state = state_of(client)
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [fixture_week_plan()], lambda: [accepting()], planners=planners
+        )
+        state.in_flight.add(f"plan:{PLAN_DATE.isoformat()}:inflight")
+        page = ended_page(client)
+        over_json = client.post("/student/plans")
+        runs = state.drafts.runs_without_a_draft()
+        latest = state.drafts.latest_for(PLAN_DATE)
+
+    line = the_line(page)
+    assert "A plan for today is already being made. Your homework updates are saved." in line
+    assert '<a href="#assignment-assignment-science-fair-proposal">See homework.</a>' in line
+    assert all(planner.calls == 0 for planner in planners)
+    assert runs == []
+    assert latest is None
+    assert over_json.status_code == 409
+    assert over_json.json()["detail"] == "A plan for this evening is already being made."
+    assert already_planning(parent=True) == (
+        "A plan for today is already being made. Her homework updates are saved."
+    )

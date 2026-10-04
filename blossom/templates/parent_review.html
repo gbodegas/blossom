@@ -573,7 +573,7 @@ Cover both books with paper.</pre>
       {% if model_available %}
         <form method="post" action="/parent/actions/plan" class="plan-form"
               data-pending="Making the plan"
-              data-pending-later="Still working. The planner reads her week and writes the plan, which takes a minute or two"
+              data-pending-later="Still working. The planner reads her week and writes the plan, which can take up to about a minute and a half"
               data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
           <label>Evening of
             <input type="date" name="plan_date" value="{{ today }}">
@@ -644,6 +644,7 @@ Cover both books with paper.</pre>
               <span class="when">Ended {{ local(run.recorded_at) }}.</span>
             </p>
             {% if run.last_check %}<p class="note">{{ run.last_check }}</p>{% endif %}
+            {% if run.timing %}<p class="note">{{ run.timing }}{% if run.stages %} By step: {% for stage in run.stages %}{{ stage.label }}, {{ stage.seconds }}{% if loop.last %}.{% else %}; {% endif %}{% endfor %}{% endif %}</p>{% endif %}
             {{ steps_list(run.steps, "How this run went") }}
           </article>
         {% endfor %}

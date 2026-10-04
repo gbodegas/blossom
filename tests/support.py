@@ -16,6 +16,7 @@ This is a plain module rather than `conftest.py`: importing from a conftest
 makes the same file reachable under two module names, which mypy rejects.
 """
 
+import asyncio
 import dataclasses
 import pathlib
 import re
@@ -48,6 +49,7 @@ from blossom.agent.graph import (
     build_plan_graph,
     plan_graph_for,
 )
+from blossom.agent.runs import RUN_DEADLINE_SECONDS, RunBudget
 from blossom.app import create_app
 from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.candidates import candidate_readings, reader, readings_for, row_reader
@@ -492,6 +494,83 @@ def scripted_graphs(
         return PlanGraphs(build=build, may_start=True)
 
     return override
+
+
+def model_graphs(
+    planner: Callable[[], Ask[DailyPlan]],
+    critic: Callable[[], Ask[CriticVerdict]],
+    *,
+    budget: Callable[[], RunBudget] = RunBudget,
+) -> Callable[..., PlanGraphs]:
+    """The graphs dependency over the app's own stores, with the model callables and the run
+    budget each build is given: for a model that is slow, busy, or answers badly."""
+
+    def override(
+        state: Annotated[ApplicationState, Depends(get_application_state)],
+    ) -> PlanGraphs:
+        return PlanGraphs(
+            build=lambda: plan_graph_for(state, planner=planner(), critic=critic()),
+            may_start=True,
+            budget=budget,
+        )
+
+    return override
+
+
+class FakeTime:
+    """A monotonic clock a test moves by hand, and a sleep that moves it instead of waiting."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+    def budget(self, seconds: float = RUN_DEADLINE_SECONDS) -> RunBudget:
+        """A run's time limit read from this clock."""
+        return RunBudget(seconds=seconds, clock=self, sleep=self.sleep)
+
+
+type Turn[T: BaseModel] = tuple[float, ModelAnswer[T] | Exception | None]
+"""Seconds a request takes on a ``FakeTime``, then its answer, the error it raises, or
+``None`` for a request that never answers."""
+
+
+class Spending[T: BaseModel]:
+    """A model callable whose requests each take some seconds of a ``FakeTime``.
+
+    The clock moves on as the request is made, and then the turn's answer is returned or
+    its error raised; a turn with no answer waits until the run's own limit ends it. Like
+    ``Scripted``, it keeps every brief and raises when its turns run out.
+    """
+
+    def __init__(self, time: FakeTime, *turns: Turn[T]) -> None:
+        self.time = time
+        self.turns = list(turns)
+        self.briefs: list[list[BaseMessage]] = []
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[T]:
+        self.briefs.append(list(messages))
+        if not self.turns:
+            msg = f"the script ran out after {len(self.briefs) - 1} calls"
+            raise AssertionError(msg)
+        seconds, answer = self.turns.pop(0)
+        self.time.now += seconds
+        if answer is None:
+            await asyncio.Event().wait()
+            msg = "a request that never answers answered"
+            raise AssertionError(msg)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    @property
+    def calls(self) -> int:
+        """How many requests the run made."""
+        return len(self.briefs)
 
 
 def work_listed(brief: Sequence[BaseMessage]) -> str:

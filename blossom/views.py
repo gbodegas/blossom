@@ -18,7 +18,14 @@ from datetime import date
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from blossom.agent.steps import StepRecord, describe_last_check, describe_outcome
+from blossom.agent.steps import (
+    StepRecord,
+    describe_last_check,
+    describe_outcome,
+    describe_timing,
+    seconds_said,
+    step_label,
+)
 from blossom.assignment_status import HistoryRow
 from blossom.captures import Capture
 from blossom.drafts import Decision, DraftStatus
@@ -687,6 +694,17 @@ class ParentCheckpointView(BaseModel):
     assignments: list[ParentCheckpointAssignmentView]
 
 
+class PastDueView(BaseModel):
+    """One assignment due before the evening a run was asked to plan, as the run read it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    assignment_id: str
+    title: str
+    course: str
+    due_date: date
+
+
 class PlanRunView(BaseModel):
     """How a run of the plan graph ended, for the parent who started it.
 
@@ -704,6 +722,17 @@ class PlanRunView(BaseModel):
     waiting: bool
     steps: list[StepRecord] = []
     """What each node expected and found, in order, so the run explains itself."""
+    past_due: list[PastDueView] = []
+    """The work due before the evening that ended the run before any model was asked."""
+
+
+class StageView(BaseModel):
+    """How long one step of a run took, as a parent reads it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: str
+    seconds: str
 
 
 class RunView(BaseModel):
@@ -725,10 +754,15 @@ class RunView(BaseModel):
     recorded_at: AwareDatetime
     newest: bool
     steps: list[StepRecord]
+    timing: str | None = None
+    """How long the run took and what it asked for, in one sentence, when it kept time."""
+    stages: list[StageView] = []
+    """How long each step took, in order, when the run kept time."""
 
     @classmethod
     def from_record(cls, record: RunRecord) -> "RunView":
         """The parent's projection of a run row. The thread id stays out of it."""
+        timing = record.timing
         return cls(
             plan_date=record.plan_date,
             heading=no_plan_title(record.plan_date),
@@ -738,6 +772,15 @@ class RunView(BaseModel):
             recorded_at=record.recorded_at,
             newest=record.newest,
             steps=record.steps,
+            timing=None if timing is None else describe_timing(timing),
+            stages=[]
+            if timing is None
+            else [
+                StageView(
+                    label=step_label(stage.node, stage.round), seconds=seconds_said(stage.seconds)
+                )
+                for stage in timing.stages
+            ],
         )
 
 

@@ -27,21 +27,21 @@ from langgraph.checkpoint.base import (
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, Durability, StateSnapshot
 
-from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
+from blossom.agent.graph import CompiledPlanGraph, ModelAnswer, PlanState, plan_graph_for
 from blossom.agent.retention import (
     EXPIRED_REASON,
     PAUSED_RETENTION_DAYS,
     Swept,
     sweep_saved_state,
 )
-from blossom.agent.runs import DURABILITY, run_config
+from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, run_config
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import ApplicationState, build_application_state
 from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.plans import DailyPlan, PlanBlock
 from blossom.routes.parent import DecisionRequest, decide_draft
-from blossom.routes.runs import plan_graphs, run_plan
+from blossom.routes.runs import AlreadyPlanning, plan_graphs, run_plan
 from blossom.settings import (
     CALENDAR_MARGIN,
     CHECKPOINT_PATH_VARIABLE,
@@ -49,11 +49,14 @@ from blossom.settings import (
     TRACE_PATH_VARIABLE,
 )
 from blossom.stores.drafts import Displaced, DraftRecord, DraftsStore
+from blossom.views import PlanRunView
 from tests.support import (
     FIXTURE_TIMEZONE,
     OBSERVED_AT,
     SAME_ORIGIN,
+    FakeTime,
     Scripted,
+    Spending,
     accepting,
     fixture_settings,
     fixture_week_plan,
@@ -1237,3 +1240,179 @@ def test_a_draft_that_cannot_be_taken_back_still_loses_its_thread(
     assert swept.published == ()
     assert waiting == [first]
     assert unpublished == []
+
+
+# ---------------------------------------------------------------- late results
+
+
+class HeldUntil:
+    """A planner whose one answer waits for the test to let it go."""
+
+    def __init__(self) -> None:
+        self.go = asyncio.Event()
+
+    async def __call__(self, messages: Sequence[object]) -> ModelAnswer[DailyPlan]:
+        await self.go.wait()
+        return ok(fixture_week_plan())
+
+
+class Counted(HeldUntil):
+    """A held planner that counts how often it was asked."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    async def __call__(self, messages: Sequence[object]) -> ModelAnswer[DailyPlan]:
+        self.calls += 1
+        return await super().__call__(messages)
+
+
+def test_two_presses_for_one_evening_start_one_run() -> None:
+    """Both presses arrive together. One run starts and asks its model; the other is refused
+    before any thread is written or model asked, and once the first ends a press starts a new
+    run again."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[list[PlanRunView | BaseException], int, str, str]:
+            first, second = Counted(), Counted()
+            presses = [
+                asyncio.create_task(
+                    run_plan(
+                        plan_graph_for(state, planner=asked, critic=Scripted(ok(accepting()))),
+                        PLAN_DATE,
+                        state,
+                    )
+                )
+                for asked in (first, second)
+            ]
+            await asyncio.sleep(0.2)
+            first.go.set()
+            second.go.set()
+            ended = await asyncio.gather(*presses, return_exceptions=True)
+            later = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            made = [view.thread_id for view in ended if not isinstance(view, BaseException)]
+            return ended, first.calls + second.calls, made[0], later.thread_id
+
+        ended, calls, made, later = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+        recorded = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    refused = [item for item in ended if isinstance(item, BaseException)]
+    assert len(refused) == 1
+    assert isinstance(refused[0], AlreadyPlanning)
+    assert refused[0].status_code == 409
+    assert calls == 1
+    assert recorded == []
+    assert latest is not None
+    assert latest.thread_id == later != made
+    assert state.in_flight == set()
+
+
+def test_a_run_overtaken_by_a_newer_plan_never_replaces_it() -> None:
+    """A plan for the evening is published while a run is working, as the sweep publishes a
+    recovered one. When the run's answer comes, the published plan stays today's; the late
+    draft is taken back and never shown, its run is kept as overtaken, and its thread is
+    cleared."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[str, str, set[str]]:
+            slow = HeldUntil()
+            working = asyncio.create_task(
+                run_plan(
+                    plan_graph_for(state, planner=slow, critic=Scripted(ok(accepting()))),
+                    PLAN_DATE,
+                    state,
+                )
+            )
+            await asyncio.sleep(0.2)
+            async with state.decision_lock:
+                recovered = Draft(
+                    draft_id="draft:plan:recovered", body="recovered", created_at=CREATED_LATER
+                )
+                state.drafts.record_waiting(
+                    recovered, thread_id="plan:recovered", plan_date=PLAN_DATE, outcome="accepted"
+                )
+                state.drafts.publish(recovered.draft_id)
+            slow.go.set()
+            late = await working
+            return late.thread_id, late.outcome, await thread_ids(state)
+
+        late, outcome, threads = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+        waiting = [record.thread_id for record in state.drafts.waiting()]
+        late_draft = state.drafts.get(f"draft:{late}")
+        ended = {run.thread_id: run.outcome for run in state.drafts.runs_without_a_draft()}
+    finally:
+        state.close()
+
+    assert outcome == "overtaken"
+    assert latest is not None
+    assert latest.thread_id == "plan:recovered"
+    assert waiting == ["plan:recovered"]
+    assert late_draft is None
+    assert ended == {late: "overtaken"}
+    assert late not in threads
+    assert state.in_flight == set()
+
+
+def test_a_run_started_after_a_plan_was_published_still_replaces_it() -> None:
+    """Planning again is how a newer plan is made: a run that starts after the evening's
+    last publication is not overtaken by it."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[str, str]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            second = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            return first.thread_id, second.thread_id
+
+        first, second = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert latest is not None
+    assert latest.thread_id == second != first
+
+
+def test_a_run_that_times_out_publishes_nothing_and_leaves_no_thread() -> None:
+    """Today's plan and its thread are as they were; the run that ran out of time is on
+    record as timed out and nothing of it waits or is saved."""
+    state = application()
+    clock = FakeTime()
+    try:
+
+        async def scenario() -> tuple[str, str, set[str]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            slow: Spending[DailyPlan] = Spending(
+                clock, (RUN_DEADLINE_SECONDS, ok(forgetful_fixture_plan()))
+            )
+            late = await run_plan(
+                plan_graph_for(state, planner=slow, critic=Scripted()),
+                PLAN_DATE,
+                state,
+                budget=clock.budget(),
+            )
+            return first.thread_id, late.outcome, await thread_ids(state)
+
+        first, outcome, threads = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+        waiting = [record.thread_id for record in state.drafts.waiting()]
+        unpublished = state.drafts.unpublished()
+        ended = [run.outcome for run in state.drafts.runs_without_a_draft()]
+    finally:
+        state.close()
+
+    assert outcome == "timed_out"
+    assert latest is not None
+    assert latest.thread_id == first
+    assert waiting == [first]
+    assert unpublished == []
+    assert ended == ["timed_out"]
+    assert threads == {first}
+    assert state.in_flight == set()

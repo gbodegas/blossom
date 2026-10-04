@@ -805,6 +805,22 @@ naming which, and no draft. The stop reason is read before the parsed value,
 because a plan cut off after two of its three blocks is valid JSON and a wrong
 plan.
 
+A run is bounded in time as well. It has `RUN_DEADLINE_SECONDS` in all, held by a
+`RunBudget` that travels in the graph's context and is never saved: each planner
+and reviewer request gets only what is left of it, a busy service is asked again
+at most `MODEL_RETRIES` times inside it, and no request starts once it is spent.
+A run that runs out of time, or whose service fails, publishes nothing and is
+recorded as `timed_out` or `service_failed` with the steps it took. Work in the
+window due before the evening ends a run at `retrieve` as `date_problem`, before
+any model is asked, since no plan could pass the deadline check over it. One run
+per evening is in flight at a time: a press while one is working is refused with
+`AlreadyPlanning`, checked and joined under the decision lock, so it starts no run
+and asks no model. A run that pauses after another plan for its evening was
+published, as the sweep publishes a recovered one, is taken back as `overtaken`,
+so a late result never replaces a newer plan. Each run's time, node
+by node, its requests and retries, and the size of its answers are kept with its
+record.
+
 The prompts in `blossom/agent/prompts.py` put the data first and the request
 last, and everything copied from another system sits inside a labeled block
 with its markup characters escaped: assignment titles from the school portal,

@@ -35,7 +35,7 @@ from typing import Final, Literal, NamedTuple, cast
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from blossom.agent.steps import StepRecord
+from blossom.agent.steps import RunTiming, StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.plan_snapshot import PlanSnapshot
@@ -51,6 +51,11 @@ is published, from whichever page. System-recorded, like an expiry: no person sa
 INTERRUPTED: Final = "interrupted"
 """The outcome recorded on a run that saved its draft and then failed before the
 draft could wait for review. The draft is taken back; the run keeps its steps."""
+
+OVERTAKEN: Final = "overtaken"
+"""The outcome recorded on a run that paused with its draft after a newer plan for the
+evening was published. The draft is taken back, so a late result never replaces a newer
+plan; the run keeps its steps."""
 
 
 class Displaced(NamedTuple):
@@ -162,6 +167,8 @@ class RunRecord(BaseModel):
     newest: bool = False
     """Whether no later run of the same evening, with a draft or without, was saved; read
     only for runs that ended without a draft."""
+    timing: RunTiming | None = None
+    """How long the run took and what it asked for; ``None`` for a run that kept no time."""
 
 
 class DraftsStore:
@@ -266,10 +273,16 @@ class DraftsStore:
                 thread_id TEXT PRIMARY KEY,
                 plan_date TEXT NOT NULL,
                 outcome TEXT NOT NULL,
-                recorded_at TEXT NOT NULL
+                recorded_at TEXT NOT NULL,
+                timing TEXT
             )
             """
         )
+        if "timing" not in {
+            str(row["name"]) for row in self._connection.execute("PRAGMA table_info(runs)")
+        }:
+            # A file from before runs were timed: its runs keep no time.
+            self._connection.execute("ALTER TABLE runs ADD COLUMN timing TEXT")
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS steps (
@@ -570,12 +583,12 @@ class DraftsStore:
             )
         return displaced
 
-    def withdraw(self, draft_id: str) -> bool:
+    def withdraw(self, draft_id: str, *, outcome: str = INTERRUPTED) -> bool:
         """Take back a waiting draft nobody can review, whose run failed or died before its pause.
 
         Such a draft was never anyone's plan, so its row goes and its run is
-        kept with its steps under the outcome ``interrupted``, so the account
-        of what happened survives while the plan does not. An unpublished
+        kept with its steps under ``outcome``, ``interrupted`` unless the caller
+        names why, so the account of what happened survives while the plan does not. An unpublished
         draft displaced nothing, so nothing is given back. A published draft
         without a thread that could review it, which only a file from before
         publication can hold, goes the same way, and the evening's plans are
@@ -590,7 +603,7 @@ class DraftsStore:
                 return False
             self._connection.execute("DELETE FROM drafts WHERE draft_id=?", (draft_id,))
             self._connection.execute(
-                "UPDATE runs SET outcome=? WHERE thread_id=?", (INTERRUPTED, str(row["thread_id"]))
+                "UPDATE runs SET outcome=? WHERE thread_id=?", (outcome, str(row["thread_id"]))
             )
             self._keep_one_waiting_per_evening(str(row["plan_date"]))
         return True
@@ -642,6 +655,32 @@ class DraftsStore:
         """
         with self._lock, self._connection:
             self._write_run(thread_id, plan_date, outcome, steps)
+
+    def record_timing(self, thread_id: str, timing: RunTiming) -> None:
+        """Keep how long a saved run took and what it asked for, once it has ended or paused.
+
+        A thread never saved has no row, and nothing is written for it.
+        """
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE runs SET timing=? WHERE thread_id=?",
+                (timing.model_dump_json(), thread_id),
+            )
+
+    def newest_published(self, plan_date: date) -> int:
+        """The place in the published order of the evening's last publication, or 0.
+
+        A run reads it as it starts and again before it publishes, under the decision
+        lock both times: a different answer means a newer plan reached the pages while
+        the run was working.
+        """
+        with self._lock:
+            (newest,) = self._connection.execute(
+                "SELECT COALESCE(MAX(published_order), 0) FROM drafts "
+                "WHERE plan_date=? AND published=1",
+                (plan_date.isoformat(),),
+            ).fetchone()
+        return int(newest)
 
     def _write_run(
         self, thread_id: str, plan_date: date, outcome: str, steps: Sequence[StepRecord]
@@ -701,6 +740,7 @@ class DraftsStore:
             rows = self._connection.execute(
                 """
                 SELECT runs.thread_id, runs.plan_date, runs.outcome, runs.recorded_at,
+                       runs.timing,
                        NOT EXISTS (
                            SELECT 1 FROM runs AS later
                            WHERE later.plan_date = runs.plan_date
@@ -728,6 +768,9 @@ class DraftsStore:
                 recorded_at=datetime.fromisoformat(str(row["recorded_at"])),
                 steps=steps,
                 newest=bool(row["newest"]),
+                timing=None
+                if row["timing"] is None
+                else RunTiming.model_validate_json(str(row["timing"])),
             )
             for thread_id, (row, steps) in grouped.items()
         ]

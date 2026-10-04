@@ -237,9 +237,10 @@ def test_a_planner_that_never_names_the_evening_asked_for_ends_as_checks_failed(
 
 def test_the_wrong_evening_every_time_leaves_the_plan_already_there_alone() -> None:
     """Through her page: today's plan is made and waits. She plans again and every answer is
-    dated tomorrow. Her page says the run ended with its checks failed, 409, never that
-    something went wrong on the way; the earlier plan is still today's, still waiting, not
-    displaced; the run is on record without a draft; and nothing is left in flight."""
+    dated tomorrow. Her page says Blossom couldn't finish a reliable plan, 409, never that
+    the evening is too full or that something went wrong on the way; the earlier plan is
+    still today's, still waiting, not displaced; the run is on record without a draft; and
+    nothing is left in flight."""
     with browser(key=True) as client:
         assert client.post("/student/actions/plan").status_code == 303
         state = state_of(client)
@@ -262,9 +263,10 @@ def test_the_wrong_evening_every_time_leaves_the_plan_already_there_alone() -> N
 
     assert again.status_code == 409
     assert (
-        "Blossom couldn&#39;t make a plan that fits this evening. You can try again, or "
-        "ask a parent to look at what went wrong." in again.text
+        "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are "
+        "saved." in again.text
     )
+    assert "fits this evening" not in again.text
     assert "something went wrong on the way" not in again.text
     assert planners[-1].calls == MAX_REVISIONS + 1
     assert latest is not None

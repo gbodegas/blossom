@@ -35,7 +35,7 @@ from fastapi.testclient import TestClient
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
 from blossom.plans import DailyPlan
 from blossom.routes.hand_in import GONE_FROM_THE_LIST
-from blossom.routes.runs import PlanGraphs
+from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import REPOSITORY_ROOT
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
@@ -1190,10 +1190,10 @@ PLAN_REFUSED: Final = {
         503,
         "Blossom could not make a plan: no model can be constructed: ANTHROPIC_API_KEY is not set",
     ),
-    "no plan fits": (
+    "no reliable plan": (
         planner(forgetful_fixture_plan),
         409,
-        "Blossom couldn&#39;t make a plan that fits this evening.",
+        "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are saved.",
     ),
     "a failure on the way": (
         scripted_graphs(list, lambda: [accepting()]),
@@ -1373,3 +1373,23 @@ def test_a_press_on_the_list_for_homework_gone_is_said_on_the_lists_own_line_wit
     assert f'id="to-turn-in-{ESSAY_ID}"' not in page
     if where == "her week":
         assert page.index(HEADING) < page.index(LIST_LINE)
+
+
+@pytest.mark.parametrize("planned", [False, True])
+def test_the_top_lines_see_homework_goes_where_the_plans_place_sends_it(
+    planned: bool, tmp_path: pathlib.Path
+) -> None:
+    """After a plan press that made no plan, every See homework on her week goes to the first
+    card still to do, whether or not a plan from earlier keeps the plan's place."""
+    with reading("her", tmp_path, graphs=planner(fixture_week_plan)) as client:
+        if planned:
+            assert client.post(PLAN, headers=PAGE_HEADERS).status_code == 303
+        client.app.dependency_overrides[plan_graphs] = planner(forgetful_fixture_plan)  # type: ignore[attr-defined]
+        answer = client.post(PLAN, headers=PAGE_HEADERS)
+
+    assert answer.status_code == 409
+    page = main_of(answer.text)
+    targets = re.findall(r'<a[^>]*href="([^"]*)"[^>]*>See homework\.?</a>', page)
+    assert set(targets) == {f"#assignment-{FAIR}"}
+    assert f'<a href="#assignment-{FAIR}">See homework.</a>' in top_line(page)
+    assert (see_homework(FAIR) in page) is not planned

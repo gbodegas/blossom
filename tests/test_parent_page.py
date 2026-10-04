@@ -612,6 +612,11 @@ def test_a_run_that_ended_without_a_plan_is_on_the_page_with_its_steps() -> None
     for label in ("First plan", "Second plan", "Third plan"):
         assert f'<span class="step-node">{label}</span>' in page
     assert page.count('<span class="step-node">Rules check</span>') == 3
+    assert re.search(
+        r'<p class="note">Took [\d.]+ seconds? in all and 3 model requests\. By step: '
+        r"Read the week, [\d.]+ seconds?; First plan, [\d.]+ seconds?; Rules check, ",
+        page,
+    )
     assert "No plans need your review." in page
 
 

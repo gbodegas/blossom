@@ -19,8 +19,8 @@ record date the school's sources contradict says so on her page.
 Today's plan is hers. She asks for it from this page, it appears here the
 moment it is made, and a parent's review of it shows under it afterwards
 without ever being a condition on it. Making a plan asks the model, which
-takes a minute or two and needs a key; without one the page says so and
-everything else on it still works.
+can take up to about a minute and a half and needs a key; without one the page
+says so and everything else on it still works.
 
 The workload signal takes no argument: rating or describing the load requires
 stepping back, and that capacity is least available exactly when the signal
@@ -69,6 +69,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
+from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
 from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.captures import derived_assignment_id, what_remains
@@ -126,7 +127,9 @@ from blossom.routes.navigation import (
     week_href,
 )
 from blossom.routes.runs import (
+    AlreadyPlanning,
     Graphs,
+    already_planning,
     ended_without_a_plan,
     no_plan_made,
     require_model,
@@ -136,7 +139,7 @@ from blossom.routes.runs import (
 from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
-from blossom.stores.drafts import DraftRecord
+from blossom.stores.drafts import OVERTAKEN, DraftRecord
 from blossom.stores.help_requests import (
     HELP_RECENT_DAYS,
     NOTE_MAX_LENGTH,
@@ -303,6 +306,16 @@ SIGNAL_NOT_SAVED: Final = "That could not be saved, and nothing was changed. Try
 """What a take-back or a signal the file refused says: each store rolls back a write it
 could not finish, a refused commit included, so nothing was changed and pressing again is
 safe."""
+
+
+@dataclass(frozen=True)
+class PlanFailure:
+    """A plan press that ended without a plan, for the line that says so: each assignment the
+    run named for a date that already passed, by its title and the address of its dates."""
+
+    checks: tuple[tuple[str, str], ...] = ()
+
+
 PLAN_FAILED: Final = (
     "Blossom could not make a plan: something went wrong on the way. "
     "The plan already here, if any, is unchanged."
@@ -939,11 +952,7 @@ async def make_todays_plan(state: State, graphs: Graphs) -> StudentPlanView:
     """
     require_work(state, state.clock.today())
     require_model(graphs)
-    run = await run_plan(
-        graphs.build(),
-        state.clock.today(),
-        state,
-    )
+    run = await run_plan(graphs.build(), state.clock.today(), state, budget=graphs.budget())
     if run.draft_id is None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=no_plan_made(run.outcome))
     record = state.drafts.get(run.draft_id)
@@ -1394,6 +1403,7 @@ def student_page(
     help_marker: HelpMarker | None = None,
     help_problem: HelpProblem | None = None,
     pressed: bool = False,
+    plan_failure: PlanFailure | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
@@ -1414,7 +1424,9 @@ def student_page(
     is the alert and takes the focus there, unless its field does. A problem no
     card on the page holds is the top line's alone. ``pressed`` says a form's press
     brought her here, and then that top line takes the focus; a visit by address
-    asks for none. ``help_form`` is her Ask for
+    asks for none. ``plan_failure`` is a plan press that ended without a plan: the
+    top line then links to her homework, and to any assignment it names, and the plan
+    button offers to try again. ``help_form`` is her Ask for
     help form as a refusal shows it again, beside the form; ``help_marker`` is what the
     address says a help form did, checked against the page's one reading of her requests;
     and ``help_problem`` is what a press in the Help section could not do, said there. Each
@@ -1500,6 +1512,7 @@ def student_page(
             "problem": card.problem if card is not None and by_a_card else problem,
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "pressed": pressed,
+            "plan_failure": plan_failure,
             "plan_reading": None if todays is None else todays.reading,
             "plan_asked": plan_asked,
             "list_card": list_card_shown(turning_in, everything, viewer),
@@ -2634,11 +2647,18 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     page that reads no store says so, with the same status.
     """
 
-    def not_made(problem: str, code: int) -> HTMLResponse:
+    def not_made(problem: str, code: int, failure: PlanFailure | None = None) -> HTMLResponse:
         return shown_once(
             request,
             state,
-            lambda: student_page(request, state, problem=problem, pressed=True, status_code=code),
+            lambda: student_page(
+                request,
+                state,
+                problem=problem,
+                pressed=True,
+                plan_failure=failure,
+                status_code=code,
+            ),
             week_not_shown(request, PLAN_NOT_MADE, problem),
             code,
         )
@@ -2646,20 +2666,35 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     try:
         require_work(state, state.clock.today())
         require_model(graphs)
-        run = await run_plan(
-            graphs.build(),
-            state.clock.today(),
-            state,
+        run = await run_plan(graphs.build(), state.clock.today(), state, budget=graphs.budget())
+    except AlreadyPlanning as error:
+        return not_made(
+            already_planning(parent=parent_reads(request)), error.status_code, PlanFailure()
         )
     except HTTPException as error:
         return not_made(f"Blossom could not make a plan: {error.detail}", error.status_code)
     except Exception:
         logger.exception("today's plan failed on the way")
-        return not_made(PLAN_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return not_made(PLAN_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR, PlanFailure())
+    if run.outcome == OVERTAKEN:
+        # A newer plan for today reached the page while this one was being made; that
+        # plan is the one shown.
+        return RedirectResponse(f"{PAGE}?show_plan=1", status_code=status.HTTP_303_SEE_OTHER)
     if run.draft_id is None:
         return not_made(
-            ended_without_a_plan(run.outcome, parent=parent_reads(request)),
+            ended_without_a_plan(run.outcome, parent=parent_reads(request), past_due=run.past_due),
             status.HTTP_409_CONFLICT,
+            None
+            if run.outcome == NOTHING_TO_SCHEDULE_OUTCOME
+            else PlanFailure(
+                checks=tuple(
+                    (
+                        work.title,
+                        details_href(work.assignment_id, fragment=EVIDENCE, return_to="week"),
+                    )
+                    for work in run.past_due
+                )
+            ),
         )
     return RedirectResponse(f"{PAGE}?show_plan=1", status_code=status.HTTP_303_SEE_OTHER)
 

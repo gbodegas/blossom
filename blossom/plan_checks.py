@@ -201,6 +201,32 @@ class PlanVerification(BaseModel):
         return self.as_findings() if self.model_feedback is None else self.model_feedback
 
 
+def deadline_for(assignment: Assignment, noticed: Noticing | None) -> tuple[date | None, str]:
+    """The day the work must be done by, as the deadline check reads it, and where that day
+    comes from: the record's date, or the earliest date anyone gives when the sources
+    contradict the record."""
+    if noticed is None or not noticed.contradicted:
+        return assignment.due_date, ""
+    return noticed.earliest_date, " by the earliest date the record or a source gives"
+
+
+def past_deadlines(
+    due_in_window: Sequence[Assignment], noticings: Sequence[Noticing], evening: date
+) -> dict[str, date]:
+    """The window's work due before ``evening``, as the deadline check reads it, with that day.
+
+    Every plan for the evening has to schedule or put off each of these, and either
+    one runs past the day, so no plan can pass the checks while any is in the window.
+    """
+    noticed = {item.assignment_id: item for item in noticings}
+    found: dict[str, date] = {}
+    for assignment in due_in_window:
+        deadline, _ = deadline_for(assignment, noticed.get(assignment.assignment_id))
+        if deadline is not None and deadline < evening:
+            found[assignment.assignment_id] = deadline
+    return found
+
+
 def check_plan(
     plan: DailyPlan,
     *,
@@ -302,11 +328,7 @@ def check_plan(
             )
 
     def deadline_of(assignment: Assignment) -> tuple[date | None, str]:
-        """The day the work must be done by, and where that day comes from."""
-        noticed = contradicted.get(assignment.assignment_id)
-        if noticed is None:
-            return assignment.due_date, ""
-        return noticed.earliest_date, " by the earliest date the record or a source gives"
+        return deadline_for(assignment, contradicted.get(assignment.assignment_id))
 
     for block in plan.blocks:
         assignment = known.get(block.assignment_id)

@@ -29,14 +29,24 @@ configuration, because the framework takes it as a separate argument and
 defaults to ``async`` when it is left out. A scan in
 ``tests/test_architecture_constraints.py`` refuses a run that builds a
 configuration here and then omits it.
+
+A run also has a time limit, ``RUN_DEADLINE_SECONDS``, held by a ``RunBudget``
+that travels in the graph's context: every planner and reviewer request, and
+every retry, gets only what is left of it, and the run is timed node by node.
 """
 
-from collections.abc import Sequence
+import asyncio
+import time
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Final
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Durability, StateSnapshot
+
+from blossom.agent.steps import RunTiming, StageTime
+from blossom.anthropic_client import ServiceBusy
 
 GRAPH_VERSION: Final = 1
 """Bumped whenever a change would mislead a thread paused under the old graph."""
@@ -54,6 +64,106 @@ DURABILITY: Final[Durability] = "sync"
 
 Passed to ``ainvoke`` beside the configuration; the framework defaults to
 ``async``, which lets a crash lose the step that recorded a decision."""
+
+
+RUN_DEADLINE_SECONDS: Final = 90.0
+"""The most one run may take, every planning attempt, review, and retry included. A
+ceiling, not a target: an ordinary run should finish well inside it."""
+
+MODEL_RETRIES: Final = 2
+"""How many times one request is sent again when the service is busy, inside the limit."""
+
+RETRY_PAUSE_SECONDS: Final = 0.5
+"""The wait before the first retry; each later one waits twice as long, never past the limit."""
+
+
+class RunTimedOut(TimeoutError):
+    """The run's time ran out while it waited for a model, or before it could ask one."""
+
+    def __init__(self) -> None:
+        super().__init__(f"the run's {RUN_DEADLINE_SECONDS:g} seconds ran out")
+
+
+@dataclass
+class RunBudget:
+    """One run's time, read from a monotonic clock, and what the run spent of it.
+
+    Made when the run starts, so every request and every retry draws on the same
+    limit and nothing starts the clock again. ``clock`` and ``sleep`` are the
+    process's own unless a test gives others.
+    """
+
+    seconds: float = RUN_DEADLINE_SECONDS
+    clock: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    started: float = field(init=False)
+    stages: list[StageTime] = field(default_factory=list)
+    model_calls: int = 0
+    retries: int = 0
+    outputs: list[int] = field(default_factory=list)
+    waiting_on: tuple[str, int] | None = None
+    """The node and round of the request in progress, kept when one ends the run."""
+    _lap: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.started = self._lap = self.clock()
+
+    def elapsed(self) -> float:
+        """Seconds since the run started."""
+        return self.clock() - self.started
+
+    def remaining(self) -> float:
+        """Seconds left before the limit, never below nothing."""
+        return max(0.0, self.seconds - self.elapsed())
+
+    def lap(self, node: str, round_number: int) -> None:
+        """Note that ``node`` ended now, timed from the end of the node before it."""
+        now = self.clock()
+        seconds = round(now - self._lap, 3)
+        self.stages.append(StageTime(node=node, round=round_number, seconds=seconds))
+        self._lap = now
+
+    async def ask[T](self, call: Callable[[], Awaitable[T]], *, stage: str, round_number: int) -> T:
+        """Make one request within what is left, asking again while the service is busy.
+
+        No request starts once the limit is reached, and none runs past it: one
+        still waiting then is canceled and the run has timed out. A busy service
+        is asked again at most ``MODEL_RETRIES`` times, after a pause cut to what
+        is left; the last busy answer is raised when retries are spent.
+        """
+        self.waiting_on = (stage, round_number)
+        attempt = 0
+        while True:
+            left = self.remaining()
+            if left <= 0:
+                raise RunTimedOut
+            self.model_calls += 1
+            try:
+                async with asyncio.timeout(left):
+                    answer = await call()
+            except TimeoutError as error:
+                raise RunTimedOut from error
+            except ServiceBusy:
+                if attempt == MODEL_RETRIES:
+                    raise
+            else:
+                self.waiting_on = None
+                return answer
+            self.retries += 1
+            await self.sleep(min(RETRY_PAUSE_SECONDS * 2**attempt, self.remaining()))
+            attempt += 1
+
+    def timing(self, category: str | None) -> RunTiming:
+        """The run's record of time and requests, as it stands now."""
+        return RunTiming(
+            seconds=round(self.elapsed(), 3),
+            stages=self.stages,
+            model_calls=self.model_calls,
+            retries=self.retries,
+            output_tokens=sum(self.outputs) if self.outputs else None,
+            largest_output_tokens=max(self.outputs) if self.outputs else None,
+            category=category,
+        )
 
 
 class StaleGraphVersion(RuntimeError):
