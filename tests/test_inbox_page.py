@@ -950,6 +950,9 @@ def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
         kept = client.post("/parent/inbox/keep", data={"text": EMAIL})
         family = client.get(kept.headers["location"], headers=PAGE).text
         hers = client.get("/student/due-this-week", headers=PAGE).text
+        details_link = re.search(r'href="([^"]+)" aria-label="Details: Book Covers', hers)
+        assert details_link is not None
+        details = client.get(html.unescape(details_link.group(1)), headers=PAGE).text
 
     assert '<span class="pill">School reported: missing</span>' in shown
     assert "1 assignment with no due date yet:" in shown
@@ -968,7 +971,9 @@ def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
     assert "From the school email, pasted Monday, September 7, 2026." in family
     assert "<strong>The school reports this missing.</strong>" in hers
     assert "From the school email, pasted Monday, September 7, 2026." in hers
-    assert "Reported status: missing" in hers
+    assert "Reported status: missing" not in hers
+    assert "<strong>The school reports this missing.</strong>" in details
+    assert "Reported status: missing" in details
     assert "Due Tuesday, September 8\n" in article_for(hers, "Book Covers")
 
 
