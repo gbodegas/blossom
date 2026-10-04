@@ -9,9 +9,11 @@ day, and the next day starts with none and marks yesterday's. Today is Saturday,
 2026, throughout."""
 
 import dataclasses
+import json
 import pathlib
 import re
 import sqlite3
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
@@ -21,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from blossom.agent.compose import CATCH_UP, CATCH_UP_PUT_OFF
 from blossom.app import create_app
-from blossom.noticing import read_week
+from blossom.noticing import PLANNING_DIGEST, canonical_active_input, planning_digest, read_week
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel
 from blossom.routes.runs import plan_graphs
@@ -31,6 +33,8 @@ from blossom.routes.student import (
     NOT_EARLIER_NOW,
     NOT_HERS_TO_CHOOSE,
     earlier_action,
+    earlier_anchor,
+    earlier_made_with,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE as KEY_VARIABLE
 from blossom.stores.catch_up import ChoiceMade, ChoiceStood
@@ -80,6 +84,13 @@ BOTH_PAST = due("both-past", "Map quiz review", date(2026, 10, 1))
 """Recorded October 1; the school portal says September 30. Every date is before today."""
 PAST_AND_AHEAD = due("past-and-ahead", "Lab write-up", date(2026, 10, 5))
 """Recorded October 5; the school portal says October 1. One date has passed."""
+PAST_AND_LATER = (
+    due("later-oct-20", "Book report", date(2026, 10, 20)),
+    due("later-oct-21", "Spelling list", date(2026, 10, 21)),
+    due("past-oct-2", "Science notes", date(2026, 10, 2)),
+)
+"""Recorded October 20, October 21, and October 2; the school portal says October 1 for the
+first two and October 20 for the last. One date has passed and one is after the window."""
 SECTION = "Earlier homework to check"
 
 
@@ -90,7 +101,7 @@ def household(
     briefs: list[Scripted[DailyPlan]] | None = None,
 ) -> Iterator[TestClient]:
     """Her page on October 3 with only ``assignments`` on record, the dates the school portal
-    gives for two of them, and scripted models that answer with ``plans``."""
+    gives for some of them, and scripted models that answer with ``plans``."""
     settings = fixture_settings(
         BLOSSOM_TODAY=TODAY.isoformat(),
         BLOSSOM_FIXTURE_PATH="",
@@ -109,6 +120,9 @@ def put_on_record(store: ProjectStateStore, assignments: tuple[Assignment, ...])
     claims = {
         BOTH_PAST.assignment_id: [record(SourceChannel.LMS, "2026-09-30")],
         PAST_AND_AHEAD.assignment_id: [record(SourceChannel.LMS, "2026-10-01")],
+        PAST_AND_LATER[0].assignment_id: [record(SourceChannel.LMS, "2026-10-01")],
+        PAST_AND_LATER[1].assignment_id: [record(SourceChannel.LMS, "2026-10-01")],
+        PAST_AND_LATER[2].assignment_id: [record(SourceChannel.LMS, "2026-10-20")],
     }
     named = {item.assignment_id for item in assignments}
     store.put_on_record(
@@ -636,3 +650,184 @@ def test_her_place_holds_through_presses_until_her_next_visit() -> None:
     assert "ago-02" in shown_ids(listed)
     assert " open" not in the_fold(listed)
     assert rows == [(TODAY.isoformat(), "ago-02"), (TODAY.isoformat(), "ago-30")]
+
+
+# ------------------------------------------------------------------ dates on both sides of today
+
+
+@pytest.mark.parametrize(
+    "work", PAST_AND_LATER, ids=["recorded Oct 20", "recorded Oct 21", "recorded Oct 2"]
+)
+def test_work_with_a_date_after_the_window_is_not_earlier_work(work: Assignment) -> None:
+    """One date has passed and another is after today's window: it is listed in a later
+    week, never here, and can't be chosen or planned as catch-up work."""
+    with household(OCT_3, work) as client:
+        shown = page(client)
+        action = earlier_action(work.assignment_id)
+        made_with = earlier_made_with(
+            state_of(client).result_key, TODAY, work.assignment_id, "include"
+        )
+        fields = {"choice": "include", "made_with": made_with, "week": "", "place": "list"}
+        answer = client.post(action, data=fields, headers=PAGE_HEADERS)
+        rows = kept_rows(client)
+        store_of(client).choose_catch_up(work.assignment_id, TODAY, include=True)
+        planned = planned_ids(client)
+
+    assert f'id="earlier-{work.assignment_id}"' not in section(shown)
+    assert answer.status_code == 409
+    assert NOT_EARLIER_NOW in words(answer.text)
+    assert rows == []
+    assert planned == [OCT_3.assignment_id]
+
+
+# ------------------------------------------------------------------ the plan's fingerprint
+
+INSTRUCTIONS_SHAPE = uuid.UUID("6f1ef033-6648-4683-b6e9-1dd419f420b5")
+"""The namespace of the shape before catch-up work was marked."""
+
+
+def test_the_fingerprint_has_a_namespace_of_its_own_for_catch_up_work() -> None:
+    assert PLANNING_DIGEST not in (
+        INSTRUCTIONS_SHAPE,
+        uuid.UUID("7d1e6a34-2c9b-4f58-a0d7-93b5e1c8f264"),
+    )
+
+
+def test_a_plan_waiting_from_before_catch_up_work_reads_as_changed_once() -> None:
+    with household(OCT_2, OCT_3, plans=[only_tonight(), only_tonight()]) as client:
+        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        made = state_of(client).drafts.latest_for(TODAY)
+        assert made is not None
+        store = store_of(client)
+        week = read_week(store, store, TODAY)
+        shape = json.dumps(
+            canonical_active_input(week), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        before = uuid.uuid5(INSTRUCTIONS_SHAPE, shape).hex
+        fresh = client.get("/parent", headers=PAGE_HEADERS).text
+        drafts = state_of(client).drafts
+        drafts._connection.execute(
+            "UPDATE drafts SET inputs_digest=? WHERE draft_id=?", (before, made.draft_id)
+        )
+        drafts._connection.commit()
+        behind = client.get("/parent", headers=PAGE_HEADERS).text
+        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        again = client.get("/parent", headers=PAGE_HEADERS).text
+
+    assert week.catch_up == frozenset()
+    assert before != planning_digest(week)
+    assert "<strong>Plan again.</strong>" not in fresh
+    assert "<strong>Plan again.</strong>" in behind
+    assert "<strong>Plan again.</strong>" not in again
+
+
+# ------------------------------------------------------------------ what a press says
+
+SAID = (
+    "Included in today's plan.",
+    "Removed from today's plan.",
+    "This was already in today's plan.",
+    "This was already out of today's plan.",
+)
+
+
+def said_in(location: str) -> str:
+    found = re.search("earlier_said=([^&#]*)", location)
+    assert found is not None, location
+    return found.group(1)
+
+
+def receipts(html: str, assignment_id: str) -> list[str]:
+    """What the page says a press did, beside the item."""
+    listed = section(html)
+    start = listed.index(f'id="{earlier_anchor(assignment_id)}"')
+    item = words(listed[start : listed.index("</li>", start)])
+    return [said for said in SAID if said in item]
+
+
+@pytest.mark.parametrize("word", ["included", "removed", "already_included", "already_removed"])
+def test_an_address_no_press_made_says_nothing_about_a_choice(word: str) -> None:
+    with household(OCT_2, OCT_3) as client:
+        shown = page(client, earlier=OCT_2.assignment_id, earlier_said=word)
+        rows = kept_rows(client)
+
+    assert receipts(shown, OCT_2.assignment_id) == []
+    assert "Include in today's plan" in item_of(shown, OCT_2.assignment_id)
+    assert rows == []
+
+
+def test_a_press_says_what_it_did_only_while_its_choice_still_holds() -> None:
+    with household(OCT_2, OCT_3) as client:
+        included = choose(client, OCT_2.assignment_id)
+        right_after = client.get(included, headers=PAGE_HEADERS).text
+        action = earlier_action(OCT_2.assignment_id)
+        fields = form_fields(right_after, action)
+        removed = client.post(action, data=fields, headers=PAGE_HEADERS).headers["location"]
+        after_removal = client.get(removed, headers=PAGE_HEADERS).text
+        twice = client.post(action, data=fields, headers=PAGE_HEADERS).headers["location"]
+        removed_twice = client.get(twice, headers=PAGE_HEADERS).text
+        inclusion_again = client.get(included, headers=PAGE_HEADERS).text
+        choose(client, OCT_2.assignment_id)
+        removal_again = client.get(removed, headers=PAGE_HEADERS).text
+
+    assert receipts(right_after, OCT_2.assignment_id) == ["Included in today's plan."]
+    assert receipts(after_removal, OCT_2.assignment_id) == ["Removed from today's plan."]
+    assert receipts(removed_twice, OCT_2.assignment_id) == ["This was already out of today's plan."]
+    assert receipts(inclusion_again, OCT_2.assignment_id) == []
+    assert receipts(removal_again, OCT_2.assignment_id) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "another item",
+        "another word",
+        "no signature",
+        "a signature one short",
+        "a signature one long",
+        "the form's signature",
+    ],
+)
+def test_a_receipt_changed_in_any_way_says_nothing(change: str) -> None:
+    with household(OCT_2, BOTH_PAST, OCT_3) as client:
+        store_of(client).choose_catch_up(BOTH_PAST.assignment_id, TODAY, include=True)
+        given = said_in(choose(client, OCT_2.assignment_id))
+        word, _, signature = given.partition(".")
+        form = earlier_made_with(state_of(client).result_key, TODAY, OCT_2.assignment_id, "include")
+        about, said = {
+            "another item": (BOTH_PAST.assignment_id, given),
+            "another word": (OCT_2.assignment_id, f"already_included.{signature}"),
+            "no signature": (OCT_2.assignment_id, word),
+            "a signature one short": (OCT_2.assignment_id, given[:-1]),
+            "a signature one long": (OCT_2.assignment_id, f"{given}0"),
+            "the form's signature": (OCT_2.assignment_id, form),
+        }[change]
+        shown = page(client, earlier=about, earlier_said=said)
+        genuine = page(client, earlier=OCT_2.assignment_id, earlier_said=given)
+
+    assert word == "included"
+    assert receipts(shown, about) == []
+    assert receipts(genuine, OCT_2.assignment_id) == ["Included in today's plan."]
+
+
+def test_a_receipt_from_another_day_says_nothing() -> None:
+    with household(OCT_2, OCT_3) as client:
+        landed = choose(client, OCT_2.assignment_id)
+        with_clock(client, SetClock(TOMORROW, NOON))
+        store_of(client).choose_catch_up(OCT_2.assignment_id, TOMORROW, include=True)
+        shown = client.get(landed, headers=PAGE_HEADERS).text
+
+    assert "Chosen for today" in item_of(shown, OCT_2.assignment_id)
+    assert receipts(shown, OCT_2.assignment_id) == []
+
+
+@pytest.mark.parametrize("assignment_id", ["it's-due", "two words", "café-5", "a&b=c", "100%"])
+def test_a_press_on_work_with_any_id_says_what_it_did(assignment_id: str) -> None:
+    odd = due(assignment_id, "Fractions practice", date(2026, 10, 2))
+    with household(odd, OCT_3) as client:
+        landed = choose(client, assignment_id)
+        shown = client.get(landed, headers=PAGE_HEADERS).text
+        rows = kept_rows(client)
+
+    assert receipts(shown, assignment_id) == ["Included in today's plan."]
+    assert rows == [(TODAY.isoformat(), assignment_id)]

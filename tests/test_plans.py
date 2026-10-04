@@ -608,6 +608,60 @@ def test_putting_off_work_past_its_next_date_still_to_come_fails() -> None:
     assert result.past_due == ("assignment-canal-essay",)
 
 
+@pytest.mark.parametrize("verdict", [Verdict.UNDECIDABLE, Verdict.CONFIRMED, Verdict.CONTRADICTED])
+@pytest.mark.parametrize("decision", ["worked on", "put off"])
+def test_a_passed_date_beside_a_supported_later_one_holds_the_plan_to_the_next_date(
+    verdict: Verdict, decision: str
+) -> None:
+    """The school gives August 17 and August 19 beside the record's August 25, which a source
+    supports: August 17 has passed, so tonight is the next date still to come."""
+    later = ESSAY.model_copy(update={"due_date": date(2026, 8, 25)})
+    dates = noticed(
+        later.due_date, date(2026, 8, 17), PLAN_DATE, date(2026, 8, 25), verdict=verdict
+    )
+    plan = (
+        workable_plan()
+        if decision == "worked on"
+        else deferring("assignment-canal-essay", "assignment-algebra-set")
+    )
+
+    result = check_plan(
+        plan,
+        due_in_window=[later, PROBLEM_SET],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        noticings=[dates],
+    )
+
+    assert result.past_due == ("assignment-canal-essay",)
+    if decision == "worked on":
+        assert result.passed
+    else:
+        assert result.findings[PlanCheck.BLOCKS_MEET_DEADLINES] == (
+            "assignment-canal-essay is due 2026-08-19 by the next date still to come and is "
+            "put off from 2026-08-19, past it",
+        )
+
+
+@pytest.mark.parametrize(("earliest", "flagged"), [(date(2026, 8, 18), True), (PLAN_DATE, False)])
+def test_a_date_is_passed_only_before_the_evening_asked_for(earliest: date, flagged: bool) -> None:
+    later = ESSAY.model_copy(update={"due_date": date(2026, 8, 25)})
+    dates = noticed(
+        later.due_date, earliest, date(2026, 8, 20), date(2026, 8, 25), verdict=Verdict.UNDECIDABLE
+    )
+
+    result = check_plan(
+        deferring("assignment-canal-essay", "assignment-algebra-set"),
+        due_in_window=[later, PROBLEM_SET],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        noticings=[dates],
+    )
+
+    assert result.passed
+    assert result.past_due == (("assignment-canal-essay",) if flagged else ())
+
+
 @pytest.mark.parametrize("decision", ["worked on", "put off"])
 def test_catch_up_work_she_chose_may_be_worked_on_or_put_off_with_its_date_kept(
     decision: str,

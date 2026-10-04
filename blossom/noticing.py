@@ -255,14 +255,14 @@ def monday_of(day: date) -> date:
 AUTHORED: Final = frozenset({"parent", "student"})
 """Whose notes are guidance a plan is made from: a parent's and hers."""
 
-PLANNING_DIGEST: Final = uuid.UUID("6f1ef033-6648-4683-b6e9-1dd419f420b5")
+PLANNING_DIGEST: Final = uuid.UUID("4fcf0d3f-3042-4144-8b89-5b608d49e134")
 """The namespace a week's fingerprint is drawn from. A namespace of its own for each
 shape the fingerprint has had, so a draft fingerprinted under an earlier one reads as
-stale rather than as unchanged. This one is the shape that carries the school's
-instructions that apply, apart from the note; the one before it, ``7d1e6a34``, said
-whose words a note is, and the one before that only whether a parent wrote it. A plan
-that was waiting when the shape changed reads as changed once and is asked for again.
-Nothing asks a model for it."""
+stale rather than as unchanged. This one is the shape that marks earlier work she chose
+as catch-up work; the one before it, ``6f1ef033``, carried the school's instructions
+that apply, apart from the note, ``7d1e6a34`` said whose words a note is, and the first
+only whether a parent wrote it. A plan that was waiting when the shape changed reads as
+changed once and is asked for again. Nothing asks a model for it."""
 
 
 def canonical_active_input(week: Week) -> list[dict[str, object]]:
@@ -479,15 +479,16 @@ def needs_homework(everything: Everything, assignment_id: str) -> bool:
 
 
 def due_before(noticing: Noticing, day: date) -> bool:
-    """Whether some date anyone gives, record or source, falls before ``day``."""
-    earliest = noticing.earliest_date
-    return earliest is not None and earliest < day
+    """Whether every date anyone gives, record or source, falls before ``day``, so none is
+    still to come."""
+    given = [*noticing.observed_dates, *([] if noticing.expected is None else [noticing.expected])]
+    return bool(given) and max(given) < day
 
 
 def earlier_to_check(
     everything: Everything, today: date, *, noticed: Mapping[str, Noticing] | None = None
 ) -> list[Assignment]:
-    """Work she has not reported done that today's planning window leaves out and that some
+    """Work she has not reported done that today's planning window leaves out and that every
     date puts before today, most recently due first. Undated work is always in the window,
     so it is never here; nothing she has not reported is read as anything but unreported."""
     if noticed is None:

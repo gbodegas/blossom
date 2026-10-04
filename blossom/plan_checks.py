@@ -321,19 +321,23 @@ def check_plan(
             return assignment.due_date, ""
         return noticed.earliest_date, " by the earliest date the record or a source gives"
 
+    def given_dates(assignment: Assignment) -> list[date]:
+        """Every date the record or a source gives for the work."""
+        noticed = noticed_by_id.get(assignment.assignment_id)
+        given = [assignment.due_date, *(() if noticed is None else noticed.observed_dates)]
+        return [day for day in given if day is not None]
+
     def still_to_come(assignment: Assignment) -> date | None:
         """The earliest date the record or a source gives that the evening asked for has
         not passed, or ``None`` when every date has."""
-        noticed = noticed_by_id.get(assignment.assignment_id)
-        given = [assignment.due_date, *(() if noticed is None else noticed.observed_dates)]
-        ahead = [day for day in given if day is not None and day >= requested_evening]
+        ahead = [day for day in given_dates(assignment) if day >= requested_evening]
         return min(ahead) if ahead else None
 
     def missed(assignment: Assignment) -> bool:
-        """Whether the deadline passed before the evening asked for and the work is still
-        plannable: catch-up work she chose, or work another date still holds for."""
-        deadline, _ = deadline_of(assignment)
-        if deadline is None or deadline >= requested_evening:
+        """Whether any date the record or a source gives passed before the evening asked for,
+        whichever date the record is held to, and the work is still plannable: catch-up
+        work she chose, or work another date still holds for."""
+        if all(day >= requested_evening for day in given_dates(assignment)):
             return False
         return assignment.assignment_id in chosen or still_to_come(assignment) is not None
 

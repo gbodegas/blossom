@@ -270,6 +270,8 @@ EARLIER_SAID: Final = {
     "already_removed": "This was already out of today's plan.",
 }
 """What a choice in Earlier homework to check did, by the word its address carries."""
+EARLIER_IN: Final = frozenset({EARLIER_SAID["included"], EARLIER_SAID["already_included"]})
+"""What a choice says that holds only while the item is chosen for today."""
 EARLIER_PLACES: Final = ("list", "fold")
 """Where an item was shown when she pressed it: above the fold, or in it."""
 CHOICE_NOT_SAVED: Final = "Your choice was not saved"
@@ -1343,6 +1345,13 @@ def fold_earlier(earlier: list[EarlierWorkView], today: date) -> list[EarlierWor
     return [item.model_copy(update={"folded": item.assignment_id not in shown}) for item in earlier]
 
 
+def receipt_holds(note: "EarlierNote", earlier: list[EarlierWorkView]) -> bool:
+    """Whether today's choices still agree with what a press said: the item in today's plan
+    after an Include, out of it after a Remove."""
+    chosen = {item.assignment_id: item.chosen for item in earlier}
+    return note.said is None or chosen.get(note.assignment_id) == (note.said in EARLIER_IN)
+
+
 def kept_in_place(
     earlier: list[EarlierWorkView], note: "EarlierNote | None"
 ) -> list[EarlierWorkView]:
@@ -1604,7 +1613,9 @@ def student_page(
     )
     planned = in_todays_plan(view.earlier, record, None if todays is None else todays.reading)
     view = view.model_copy(update={"earlier": kept_in_place(planned, earlier_note)})
-    if earlier_note is not None and viewer == "parent":
+    if earlier_note is not None and (
+        viewer == "parent" or not receipt_holds(earlier_note, planned)
+    ):
         earlier_note = replace(earlier_note, said=None)
     help_result = help_result_for(help_marker, groups, hers=not parent_reads(request))
     on_page = set() if groups is None else {item.request_id for item in groups.every()}
@@ -1743,7 +1754,7 @@ def due_this_week(
         str | None, Query(description="the earlier work a choice was about; a note")
     ] = None,
     earlier_said: Annotated[
-        str | None, Query(description="what that choice did; a note, from a fixed set")
+        str | None, Query(description="what that choice did, signed; a note, checked")
     ] = None,
     earlier_place: Annotated[
         str | None, Query(description="where that item was shown, list or fold; a note")
@@ -1767,7 +1778,8 @@ def due_this_week(
     are there. Either is said to her in Help, beside that request when it is on the page,
     and at the top of Help when it is not. When the record cannot be read, the page says so
     and offers the same address again. ``earlier`` and ``earlier_said`` name what a choice in
-    Earlier homework to check just did, said beside that item; a word not in the set says
+    Earlier homework to check just did, said beside that item only when this process signed
+    it for today and that item and today's choices still agree; a word not in the set says
     nothing.
     """
     try:
@@ -1775,13 +1787,18 @@ def due_this_week(
         plan_asked = show_plan == "1"
         card = card_shown(saved, same, undone, change, show)
         marker = marker_from(asked, asked_again)
+        signed = (
+            receipt_word(state.result_key, state.clock.today(), earlier, earlier_said)
+            if earlier and earlier_said
+            else None
+        )
         chose = (
             EarlierNote(
                 earlier,
-                said=EARLIER_SAID[earlier_said],
+                said=None if signed is None else EARLIER_SAID[signed],
                 folded={"fold": True, "list": False}.get(earlier_place or ""),
             )
-            if earlier and earlier_said in EARLIER_SAID
+            if earlier and (earlier_said or "").partition(".")[0] in EARLIER_SAID
             else None
         )
         if week is None:
@@ -3065,6 +3082,23 @@ def day_made_for(key: bytes, given: str, assignment_id: str, choice: str) -> dat
     return day if hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8")) else None
 
 
+def earlier_receipt(key: bytes, day: date, assignment_id: str, said: str) -> str:
+    """What a saved choice did, as its address carries it: the word, signed with the
+    running process's key for the day it was saved for and the item it was about."""
+    signed = json.dumps(["said", day.isoformat(), assignment_id, said]).encode("utf-8")
+    return f"{said}.{hmac.new(key, signed, 'sha256').hexdigest()[:16]}"
+
+
+def receipt_word(key: bytes, day: date, assignment_id: str, given: str) -> str | None:
+    """The word an address carries for what a choice did, or ``None`` for one this process
+    didn't sign for ``day`` and this item."""
+    said, _, _ = given.partition(".")
+    if said not in EARLIER_SAID:
+        return None
+    expected = earlier_receipt(key, day, assignment_id, said)
+    return said if hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8")) else None
+
+
 def after_choice(week: date | None, said: str, assignment_id: str, place: str) -> str:
     """Where a saved choice sends her: the week she was on, at the item, shown where she
     pressed it, with what it did."""
@@ -3159,6 +3193,7 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
         said = "included" if include else "removed"
     else:
         said = "already_included" if include else "already_removed"
+    receipt = earlier_receipt(state.result_key, today, assignment_id, said)
     return RedirectResponse(
-        after_choice(week, said, assignment_id, place), status_code=status.HTTP_303_SEE_OTHER
+        after_choice(week, receipt, assignment_id, place), status_code=status.HTTP_303_SEE_OTHER
     )
