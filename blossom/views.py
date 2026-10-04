@@ -31,6 +31,7 @@ from blossom.captures import Capture
 from blossom.drafts import Decision, DraftStatus
 from blossom.hand_in import HandInProjection
 from blossom.intake import spoken_report
+from blossom.noticing import WindowSide
 from blossom.plan_reading import no_plan_title
 from blossom.reconciliation import CHANNEL_NAMES, SCHOOL_CHANNELS, SourceChannel, SourceConfidence
 from blossom.school_instructions import InstructionsStanding, SchoolInstruction
@@ -369,6 +370,9 @@ class StudentAssignmentView(BaseModel):
     in_planning_window: bool = False
     """Whether the assignment is in today's planning window, which is what a "not yet"
     means for the next plan."""
+    outside_window: WindowSide | None = None
+    """Where every date given for work outside that window puts it, before today, after the
+    window, or both; ``None`` in the window and when a date claim cannot be read."""
     check_school: bool = False
     """Whether her "done" stands beside a school report of missing: something for the
     family to check, said on both pages and decided by neither."""

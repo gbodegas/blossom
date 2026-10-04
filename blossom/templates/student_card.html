@@ -7,16 +7,19 @@
   the ones she has reported done alike, so the two groups read the same.
   Beside Details, a link to the instructions on the details, while any of the
   school's words apply or wait for a parent's review, with the same way back.
+  A link to the card lands on its title, which takes the focus, so the outline
+  marks the title and not the whole card; an address naming the card itself
+  still brings it into view.
 #}
-    <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}" id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
+    <article class="assignment confidence-{{ assignment.deadline_confidence|lower }}" id="{{ assignment_anchor(assignment.assignment_id) }}">
       <p class="course">{{ assignment.course }}</p>
-      <h2>{{ assignment.title }}</h2>
+      <h2 id="{{ title_anchor(assignment.assignment_id) }}" tabindex="-1">{{ assignment.title }}</h2>
       {#
         The week's range carries the year, so a card repeats it only when its
         date is in a year the range does not cover: an item a source puts in
         this week while the record puts it in another year.
       #}
-      {% with due_with_year = assignment.due_date and assignment.due_date.year not in (view.week.start.year, view.week.end.year), facts_level = 3 %}{% include "student_card_facts.html" %}{% endwith %}
+      {% with due_with_year = assignment.due_date and assignment.due_date.year not in (view.week.start.year, view.week.end.year), facts_level = 3, today_is = view.today %}{% include "student_card_facts.html" %}{% endwith %}
       <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Details: {{ assignment.title }}, {{ assignment.course }}">Details</a></p>{% if assignment.words.to_read %}
       <p class="details-link"><a class="assignment-link" href="{{ details_href(assignment.assignment_id, fragment=instructions_id, return_to="week", week=view.week.start.isoformat()) }}" aria-label="Read instructions: {{ assignment.title }}, {{ assignment.course }}">Read instructions</a></p>{% endif %}
       {% include "student_hand_in_line.html" %}

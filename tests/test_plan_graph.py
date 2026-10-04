@@ -2171,12 +2171,13 @@ def test_a_verdict_that_comes_back_past_the_limit_publishes_nothing(
     clock = FakeTime()
     critic: Ask[CriticVerdict]
     if holds_the_loop:
-        critic, budget = HoldsTheLoop(0.3), RunBudget(seconds=0.2)
+        critic = HoldsTheLoop(1.5)
     else:
         critic = Spending(clock, (RUN_DEADLINE_SECONDS + 0.001, ok(accepting())))
-        budget = clock.budget()
     state = a_household()
     try:
+        # Made as the run starts, so building the household spends none of its second.
+        budget = RunBudget(seconds=1.0) if holds_the_loop else clock.budget()
         view = asyncio.run(
             run_plan(
                 plan_graph_for(state, planner=Scripted(ok(fixture_week_plan())), critic=critic),

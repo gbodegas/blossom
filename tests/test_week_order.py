@@ -35,6 +35,7 @@ from fastapi.testclient import TestClient
 from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN
 from blossom.plans import DailyPlan
 from blossom.routes.hand_in import GONE_FROM_THE_LIST
+from blossom.routes.navigation import title_anchor
 from blossom.routes.runs import PlanGraphs, plan_graphs
 from blossom.settings import REPOSITORY_ROOT
 from blossom.stores.project_state import ProjectStateStore
@@ -284,7 +285,7 @@ def next_tab_stop(page: str, after: int) -> int:
 def item_of(page: str, title: str) -> tuple[int, int]:
     """Where the card or the row due later with this title starts and ends on the page."""
     for opening, name, ending in (
-        ("<article ", f"<h2>{title}</h2>", "</article>"),
+        ("<article ", f'tabindex="-1">{title}</h2>', "</article>"),
         ("<li id=", f"<strong>{title}</strong>", "</li>"),
     ):
         if name in page:
@@ -389,7 +390,7 @@ APART: Final = '<section class="panel apart">'
 ASSIGNED: Final = '<section class="panel assigned">'
 TO_TURN_IN: Final = '<section class="panel to-turn-in" id="to-turn-in" tabindex="-1">'
 NOTES: Final = '<section class="panel homework-notes" id="homework-notes" tabindex="-1">'
-HELP: Final = '<section class="panel help-panel" id="help" tabindex="-1">'
+HELP: Final = '<section class="panel help-panel" aria-labelledby="help">'
 PRIVACY: Final = "<summary>How Blossom uses"
 PLACES: Final = (
     "Today",
@@ -564,7 +565,7 @@ def no_plan_one_later_row_left(client: TestClient) -> None:
 
 def see_homework(name: str) -> str:
     """See homework as it links to the card or row with this id."""
-    return f'<p><a class="to-help" href="#assignment-{name}">See homework</a></p>'
+    return f'<p><a class="to-help" href="#title-{name}">See homework</a></p>'
 
 
 SHOWN: Final[dict[str, tuple[Callable[[TestClient], None], str]]] = {
@@ -590,8 +591,8 @@ def test_with_no_plan_and_work_left_see_homework_links_to_the_homework(
     today = page[at(page, TODAY) : page.index("</section>", at(page, TODAY))]
     assert page.count(see_homework(first)) == 1
     assert today.rstrip().endswith(see_homework(first))
-    landing = lands_on(page, f"#assignment-{first}")
-    assert landing.endswith(f'id="assignment-{first}" tabindex="-1">')
+    landing = lands_on(page, f"#title-{first}")
+    assert landing.endswith(f'id="title-{first}" tabindex="-1">')
     assert lands_on(page, "#homework") == HEADING.removesuffix("Due this week</h2>")
     assert NO_PLAN_YET in today
     assert "autofocus" not in page
@@ -676,8 +677,9 @@ WORK_LEFT: Final[dict[str, tuple[Callable[[TestClient], dict[str, str]], str]]] 
 def test_after_see_homework_the_next_tab_is_inside_the_first_work_left(
     case: str, reader: str, tmp_path: pathlib.Path
 ) -> None:
-    """See homework lands on the first card or row still to do, outside every fold, so the
-    next Tab is inside it whatever sits above it under the heading, which stays in place."""
+    """See homework lands on the title of the first card or row still to do, outside every
+    fold, so the next Tab is inside it whatever sits above it under the heading, which stays
+    in place."""
     make, first = WORK_LEFT[case]
     with reading(reader, tmp_path) as client:
         params = make(client)
@@ -690,9 +692,8 @@ def test_after_see_homework_the_next_tab_is_inside_the_first_work_left(
     assert landing, links[0]
     start, end = item_of(page, titles[first])
     stop = next_tab_stop(page, page.index(landing) + len(landing))
-    assert start < stop < end, page[stop : stop + 160]
-    assert page.index(landing) == start
-    assert landing.endswith(' tabindex="-1">')
+    assert start < page.index(landing) < stop < end, page[stop : stop + 160]
+    assert landing.endswith(f'id="{title_anchor(first)}" tabindex="-1">')
     assert folds_open_around(page, landing)
     assert '<details class="steps reported-done" open' not in page
     heading = at(page, HEADING)
@@ -788,15 +789,44 @@ def test_every_place_the_week_links_to_is_there_to_land_on(
     assert "See homework" not in page
 
 
+@pytest.mark.parametrize("reader", READERS)
+def test_a_way_back_lands_on_the_cards_title_or_says_the_card_is_gone(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    """A link to a card lands on its title, never on the whole card, which keeps its id for
+    an address that names it. A link to a card not on record now lands on a line above the
+    week's homework that says so; a card on record has no such line."""
+    with reading(reader, tmp_path) as client:
+        shown = main_of(page_of(client, show=ESSAY_ID))
+        gone = main_of(page_of(client, show="assignment-nowhere"))
+        saved = main_of(page_of(client, saved="assignment-nowhere"))
+
+    assert lands_on(shown, f"#{title_anchor(ESSAY_ID)}") == (
+        f'<h2 id="{title_anchor(ESSAY_ID)}" tabindex="-1">'
+    )
+    assert re.search(r'<article class="assignment[^>]*tabindex', shown) is None
+    assert re.search(r'<li id="assignment-[^"]*" tabindex', shown) is None
+    assert lands_on(shown, f"#assignment-{ESSAY_ID}").startswith('<article class="assignment')
+    assert "card-gone" not in shown
+    line = '<p class="note card-gone" id="title-assignment-nowhere" tabindex="-1">'
+    assert lands_on(gone, "#title-assignment-nowhere") == line
+    assert gone.index(HEADING) < gone.index(line)
+    assert "That assignment is not on record now. The week's homework is below." in gone
+    assert "card-gone" not in saved
+    assert "autofocus" not in gone
+
+
 def test_the_homework_heading_is_an_outlined_place_to_land() -> None:
-    """The heading, a card or a row due later, the top line, a card's problem line, the To
-    turn in list's problem line and a result line each show an outline when they take the
-    focus, and the top line's link is as tall as a control."""
+    """The heading, the title of a card or a row due later, the line for a card not on
+    record, the top line, a card's problem line, the To turn in list's problem line and a
+    result line each show an outline when they take the focus, and the top line's link is as
+    tall as a control."""
     selectors = outlined()
     for selector in (
         ".list-heading:focus",
-        '.assignment[tabindex="-1"]:focus',
-        '.assigned li[tabindex="-1"]:focus',
+        '.assignment h2[tabindex="-1"]:focus',
+        ".assigned .row-title:focus",
+        ".card-gone:focus",
         ".week-problem:focus",
         '.update .problem[tabindex="-1"]:focus',
         "#to-turn-in-problem:focus",
@@ -961,10 +991,10 @@ def test_a_refusal_about_a_card_is_said_on_the_card_which_takes_the_focus(
     assert ("autofocus" in line) == (focus in (CARD_LINE, LOG_LINE))
     assert top_line(page).startswith(TOP_BESIDE_A_CARD)
     assert said in words(top_line(page))
-    assert f'<a href="#assignment-{about}">Go to the assignment.</a></p>' in top_line(page)
+    assert f'<a href="#title-{about}">Go to the assignment.</a></p>' in top_line(page)
     assert "tabindex" not in top_line(page).split(">", 1)[0]
     assert said in words(page[page.index(line) :])
-    assert lands_on(page, f"#assignment-{about}")
+    assert lands_on(page, f"#title-{about}")
     if "apart" in case:
         assert page.index('<section class="panel apart">') < page.index(line)
     if "Done" in case:
@@ -1390,6 +1420,6 @@ def test_the_top_lines_see_homework_goes_where_the_plans_place_sends_it(
     assert answer.status_code == 409
     page = main_of(answer.text)
     targets = re.findall(r'<a[^>]*href="([^"]*)"[^>]*>See homework\.?</a>', page)
-    assert set(targets) == {f"#assignment-{FAIR}"}
-    assert f'<a href="#assignment-{FAIR}">See homework.</a>' in top_line(page)
+    assert set(targets) == {f"#title-{FAIR}"}
+    assert f'<a href="#title-{FAIR}">See homework.</a>' in top_line(page)
     assert (see_homework(FAIR) in page) is not planned

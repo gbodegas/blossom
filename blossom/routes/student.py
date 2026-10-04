@@ -41,13 +41,17 @@ It is her account, kept apart from the school's and from the record's dates,
 and it decides one thing, whether the assignment is still work to plan. A
 card with a standing update shows it with its day, what it means for the next
 plan, and a way to change or take it back; work reported done folds under
-the active cards rather than leaving the week. The form is a form alone, so
+the active cards rather than leaving the week. A card she saves stays where it
+was for the rest of her visit, and the week groups it by its update on her
+next visit: a fresh arrival, a return, or a refresh. The form is a form alone, so
 it works without a script, and a save that lands on a card another device
 has since changed is shown that change and asked to look again. A parent
 signed in sees her update and cannot make one in her name.
 """
 
+import hashlib
 import logging
+import secrets
 import sqlite3
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -68,6 +72,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.datastructures import URL
 
 from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
 from blossom.anthropic_client import model_configured
@@ -76,10 +81,11 @@ from blossom.captures import derived_assignment_id, what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
-from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEEDS_HAND_IN, NEXT_ACTION_MAX_LENGTH
+from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEXT_ACTION_MAX_LENGTH
 from blossom.noticing import (
     Everything,
     Noticing,
+    WindowSide,
     expect_due_date,
     in_week,
     monday_of,
@@ -122,6 +128,7 @@ from blossom.routes.navigation import (
     result_anchor,
     safe_default,
     segment,
+    title_anchor,
     todays_plan_href,
     update_choice_anchor,
     week_href,
@@ -266,13 +273,13 @@ HELP_FORM_NOT_WHOLE: Final = (
     "nothing was sent. Your words are below; ask again."
 )
 HELP_NOT_SENT: Final = "Your request could not be sent, and nothing was changed. Try again."
-ALREADY_SENT: Final = "That request was already sent."
-SENT: Final = "Sent. Your parents can see the request."
+ALREADY_SENT: Final = "That request is already saved."
+SENT: Final = "Your request is saved. A parent can see it in Family review."
 NOT_ON_THIS_PAGE: Final = "That request is not on this page now."
 CANNOT_CHECK: Final = "That request can't be checked right now."
 """The lines for the request an address names, checked against the page's one reading and
-said to her alone: sent, for one she has just sent that still waits for a parent; already
-sent, beside any other request on the page; not on this page, when no request there is that
+said to her alone: saved, for one she has just sent that still waits for a parent; already
+saved, beside any other request on the page; not on this page, when no request there is that
 one; and can't be checked, when that reading failed."""
 ALREADY_RESPONDING: Final = (
     "A parent is already responding to this request, so it cannot be taken back. "
@@ -355,10 +362,37 @@ FROM_DETAILS: Final = frozenset({"report_view", "return_to", "plan_id"})
 """The fields a form on an assignment's details sends beside the rest: that the result is
 to be shown there, and where its reader came from. A card on her week sends none of them,
 and is as whole without them as it always was."""
-REPORT_FIELDS: Final = frozenset({"status", "note", "expected_report_id", "week"}) | FROM_DETAILS
-UNDO_FIELDS: Final = frozenset({"report_id", "week"}) | FROM_DETAILS
+IN_PLACE: Final = "in_place"
+"""The field her update forms on her week carry, and the query Change and Keep it as it is
+carry: the cards this visit keeps where they were, the form's own card among them."""
+IN_PLACE_LANDING: Final = "landing"
+"""The query a redirect that keeps cards in place sends her to her week with: a value new for
+each redirect, naming the cookie that holds the cards, so only the page it lands on reads
+them and no other visit to her week does."""
+IN_PLACE_LANDING_DIGITS: Final = 16
+"""How many hex digits a landing has."""
+IN_PLACE_COOKIE: Final = "blossom-in-place"
+"""The start of the cookie a save, an undo, Change or Keep it as it is leaves for the one
+page that answers it, followed by that page's landing. The page reads it once and clears it."""
+IN_PLACE_SECONDS: Final = 60
+"""How long that cookie waits for the page that answers it, which a browser asks for at once."""
+IN_PLACE_MAX: Final = 40
+"""The most cards one visit keeps in place; a visit that saves more keeps the latest."""
+IN_PLACE_KEY: Final = 16
+"""How many hex digits of a card's key are carried: the same for an id of any length, so
+``IN_PLACE_MAX`` cards fit the 4,096 bytes a browser keeps for one cookie."""
+REPORT_FIELDS: Final = (
+    frozenset({"status", "note", "expected_report_id", "week", IN_PLACE}) | FROM_DETAILS
+)
+UNDO_FIELDS: Final = frozenset({"report_id", "week", IN_PLACE}) | FROM_DETAILS
 """The fields each form sends, each once. Anything else, anything twice, or a form with one
 of them left out, is refused."""
+PLAN_FIELDS: Final = frozenset({IN_PLACE})
+"""What the plan button's form sends: only the cards the visit keeps in place, when it keeps
+any. Planning reads none of it; it decides only where the page it returns to shows cards."""
+FROM_A_CARD: Final = FROM_DETAILS | {IN_PLACE}
+"""The fields a form may leave out: the details' own, and the cards a week's form keeps in
+place, which a form from the details carries none of."""
 NOTHING_CHOSEN: Final = frozenset({"status"})
 """The field her browser leaves out when neither Done nor Not yet is chosen: two radio
 buttons with none checked send nothing. The card then asks her to choose one."""
@@ -382,13 +416,17 @@ FAMILY_HELP: Final = f"{FAMILY_PAGE}#help-she-asked-for"
 HAND_IN_SAVED: Final = "Your hand-in update is saved."
 HAND_IN_ALREADY_SAVED: Final = "Already saved."
 HAND_IN_UNDONE: Final = "Your hand-in update is undone."
+STEP_NOT_SAVED: Final = "The next step was not saved: it goes only with Still to turn in."
 HAND_IN_CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": HAND_IN_SAVED,
     "same": HAND_IN_ALREADY_SAVED,
     "undone": HAND_IN_UNDONE,
+    "saved_without_step": f"{HAND_IN_SAVED} {STEP_NOT_SAVED}",
+    "same_without_step": f"{HAND_IN_ALREADY_SAVED} {STEP_NOT_SAVED}",
 }
 """What the address says a hand-in save or undo did, chosen by the server as her
-update's are; what stands is shown beside it, with its day."""
+update's are; what stands is shown beside it, with its day. A save of another answer with
+a next step typed says the step was not saved."""
 CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": UPDATE_SAVED,
     "same": UPDATE_ALREADY_SAVED,
@@ -995,6 +1033,7 @@ def assignment_view(
     status: AssignmentStatus | None = None,
     *,
     in_planning_window: bool = False,
+    outside_window: WindowSide | None = None,
     hand_in: HandInView | None = None,
     claims_unreadable: bool = False,
     instructions: InstructionsStanding | None = None,
@@ -1012,6 +1051,8 @@ def assignment_view(
     channel says now goes on it as the school's, every channel, so a check of
     her "done" against a "missing" always shows the report it rests on. Every
     claim is carried too, as it was given, for the details to list whole.
+    ``outside_window`` is kept only while every claim reads as a date, since one that
+    cannot be read could put the work anywhere.
     """
     said = status.asserted if status is not None else None
     readable = [record for record in records if read_date(record.asserted_value) is not None]
@@ -1088,6 +1129,7 @@ def assignment_view(
         else status.head.report_id,
         hand_in=HandInView() if hand_in is None else hand_in,
         in_planning_window=in_planning_window,
+        outside_window=None if unreadable or claims_unreadable else outside_window,
         check_school=status is not None and status.check_the_school_record,
         checked_on=None if status is None or status.check is None else status.check.checked_on,
         check_note=None if status is None or status.check is None else status.check.note,
@@ -1197,15 +1239,18 @@ def build_student_due_this_week_view(
         if focus is not None and item.assignment_id == focus and focus not in listed
     ]
     in_window = {item.assignment_id for item in window.assignments}
+    todays = planning_window(today)
 
     def beside_view(item: Assignment) -> StudentAssignmentView:
         records = found.records[item.assignment_id]
+        noticed = notice_due_date(expect_due_date(item), records)
         return assignment_view(
             item,
             records,
-            notice_due_date(expect_due_date(item), records),
+            noticed,
             found.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            outside_window=todays.outside(item, noticed),
             claims_unreadable=item.assignment_id in found.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
             instructions=found.instructions.get(item.assignment_id),
@@ -1220,6 +1265,7 @@ def build_student_due_this_week_view(
             shown.noticings[item.assignment_id],
             shown.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            outside_window=todays.outside(item, shown.noticings[item.assignment_id]),
             claims_unreadable=item.assignment_id in shown.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
             instructions=found.instructions.get(item.assignment_id),
@@ -1323,6 +1369,126 @@ class CardState:
 
 
 @dataclass(frozen=True)
+class InPlace:
+    """The cards her saves keep where they were for the rest of one visit to her week.
+
+    Each is a card's key (``place_key``) and whether it is shown with the work reported done. A
+    card saved Done stays among the active cards, and one changed or undone from Done stays
+    in Reported done, until her next visit groups the week by its updates again. Only the
+    page uses it; what is saved and what a plan reads never do.
+    """
+
+    cards: tuple[tuple[str, bool], ...] = ()
+
+    def shown_done(self, assignment_id: str, done: bool) -> bool:
+        """Whether a card is shown with the work reported done: where this visit keeps it,
+        or by its update when the visit keeps it nowhere."""
+        key = place_key(assignment_id)
+        return next((kept for name, kept in self.cards if name == key), done)
+
+    def keeping(self, assignment_id: str, done: bool) -> "InPlace":
+        """These cards and one more, kept where it is shown now."""
+        return self.holding(place_key(assignment_id), done)
+
+    def holding(self, key: str, done: bool) -> "InPlace":
+        """These cards and the one with this key. A card kept already stays where it was
+        first kept, and only the latest ``IN_PLACE_MAX`` are kept."""
+        if any(name == key for name, _ in self.cards):
+            return self
+        return InPlace((*self.cards, (key, done))[-IN_PLACE_MAX:])
+
+    def said(self) -> str:
+        """The cards as a form, an address and the cookie carry them: each key after ``d:``
+        or ``a:``, joined by ``|``."""
+        return "|".join(f"{'d' if done else 'a'}:{key}" for key, done in self.cards)
+
+    @classmethod
+    def read(cls, given: str | None) -> "InPlace":
+        """The cards a form, an address or the cookie named, the latest ``IN_PLACE_MAX`` of
+        them. A part that is not one these pages write is passed over: the value decides
+        only where a card is shown."""
+        kept = cls()
+        for part in (given or "").split("|")[-IN_PLACE_MAX:]:
+            mark, _, key = part.partition(":")
+            if mark in ("a", "d") and len(key) == IN_PLACE_KEY and set(key) <= HEX_DIGITS:
+                kept = kept.holding(key, mark == "d")
+        return kept
+
+
+HEX_DIGITS: Final = frozenset("0123456789abcdef")
+"""The characters of a key as ``place_key`` writes it."""
+
+
+def place_key(assignment_id: str) -> str:
+    """The key a card is kept in place by: the start of its id's SHA-256, in hex. Ids that
+    differ in any way, case and spacing included, get different keys."""
+    return hashlib.sha256(assignment_id.encode()).hexdigest()[:IN_PLACE_KEY]
+
+
+def carried(in_place: InPlace | None) -> str | None:
+    """The cards an address to her week carries for the page to keep in place, or ``None``
+    when it keeps none."""
+    return None if in_place is None else in_place.said() or None
+
+
+def leave_in_place[Answered: Response](response: Answered, kept: InPlace, landing: str) -> Answered:
+    """Leave the cards a press keeps in place for the one page whose address names this
+    landing; with none kept, nothing is left."""
+    if not kept.cards:
+        return response
+    response.set_cookie(
+        landing_cookie(landing),
+        kept.said(),
+        max_age=IN_PLACE_SECONDS,
+        path=WEEK_PAGE,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+def sent_in_place(location: str, kept: InPlace) -> RedirectResponse:
+    """The redirect to her week that keeps these cards in place on the page it lands on and
+    on no other: its address names a new landing, and the cookie that holds the cards is
+    named for it. With none kept, the address is sent as it is."""
+    if not kept.cards:
+        return RedirectResponse(location, status_code=status.HTTP_303_SEE_OTHER)
+    landing = secrets.token_hex(IN_PLACE_LANDING_DIGITS // 2)
+    moved = RedirectResponse(
+        str(URL(location).include_query_params(**{IN_PLACE_LANDING: landing})),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    return leave_in_place(moved, kept, landing)
+
+
+def landing_cookie(landing: str) -> str:
+    """The name of the cookie that holds the cards kept for one landing."""
+    return f"{IN_PLACE_COOKIE}-{landing}"
+
+
+def forget_landing[Answered: Response](response: Answered, landing: str) -> Answered:
+    """Clear the cookie one landing's cards were left in."""
+    response.delete_cookie(landing_cookie(landing), path=WEEK_PAGE, httponly=True, samesite="lax")
+    return response
+
+
+def named_once(request: Request, name: str) -> str | None:
+    """The value her week's address gives a query, or ``None`` when it gives none or gives
+    more than one."""
+    named = request.query_params.getlist(name)
+    return named[0] if len(named) == 1 else None
+
+
+def landing_asked(request: Request) -> str | None:
+    """The landing her week's address names, or ``None`` when it names none, names one more
+    than once, or names one in a form these pages don't write."""
+    named = named_once(request, IN_PLACE_LANDING)
+    if named is None or len(named) != IN_PLACE_LANDING_DIGITS:
+        return None
+    return named if set(named) <= HEX_DIGITS else None
+
+
+@dataclass(frozen=True)
 class HandInCard:
     """What the hand-in section shows beyond its record, as ``CardState`` is for her update.
 
@@ -1404,6 +1570,7 @@ def student_page(
     help_problem: HelpProblem | None = None,
     pressed: bool = False,
     plan_failure: PlanFailure | None = None,
+    in_place: InPlace | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
@@ -1430,9 +1597,13 @@ def student_page(
     help form as a refusal shows it again, beside the form; ``help_marker`` is what the
     address says a help form did, checked against the page's one reading of her requests;
     and ``help_problem`` is what a press in the Help section could not do, said there. Each
-    Ask for help form gets a fresh id, which needs no read.
+    Ask for help form gets a fresh id, which needs no read. ``in_place`` is the cards this
+    visit keeps where they were; every update form on the page carries them on, with its own
+    card kept where it is shown.
     """
     viewer = viewer_of(request)
+    # An address that only brings a card into view, as a way back from its details does.
+    only_shown = card is not None and card == CardState(card.assignment_id)
     card = as_read_by(card, viewer)
     today = state.clock.today()
     # The record is read once for the page, with today's plan's assignments
@@ -1492,6 +1663,12 @@ def student_page(
         None if help_problem is None else help_problem.request_id,
     }
     listed = [*view.assignments, *view.assigned_this_week, *([view.apart] if view.apart else [])]
+    kept = InPlace() if in_place is None else in_place
+    shown_done = {
+        item.assignment_id
+        for item in listed
+        if kept.shown_done(item.assignment_id, item.update_status == "done")
+    }
     by_a_card = card is not None and card.problem is not None and problem is None
     # A card's problem is said on the card only when the card is on the page: a form made
     # for an id that is not on record is refused before any lookup, and has no card.
@@ -1506,13 +1683,23 @@ def student_page(
         {
             "view": view,
             "report_contexts": {
-                item.assignment_id: week_context(item.assignment_id, view.week.start, viewer)
+                item.assignment_id: week_context(
+                    item.assignment_id,
+                    view.week.start,
+                    viewer,
+                    kept.keeping(item.assignment_id, item.assignment_id in shown_done),
+                )
                 for item in listed
             },
+            "shown_done": shown_done,
+            "shown_gone": only_shown
+            and card is not None
+            and card.assignment_id not in {item.assignment_id for item in listed},
             "problem": card.problem if card is not None and by_a_card else problem,
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "pressed": pressed,
             "plan_failure": plan_failure,
+            "in_place_said": kept.said(),
             "plan_reading": None if todays is None else todays.reading,
             "plan_asked": plan_asked,
             "list_card": list_card_shown(turning_in, everything, viewer),
@@ -1530,6 +1717,13 @@ def student_page(
             "no_plan_now": NO_PLAN_NOW,
             # Today's window, which every week shown names, and the planner reads.
             "planning_window": planning_window(view.today).said(),
+            "planning_window_end": planning_window(view.today).end,
+            # Her Help, where a card that names it sends her: on this week, or this week's page.
+            "help_href": (
+                f"#{ASK_FOR_HELP}"
+                if view.week.current
+                else address(WEEK_PAGE, fragment=ASK_FOR_HELP)
+            ),
             "parent": parent_reads(request),
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
@@ -1601,7 +1795,11 @@ def due_this_week(
     asked_again: Annotated[
         str | None, Query(description="the request a help form sent twice had made; a note")
     ] = None,
-) -> HTMLResponse:
+    in_place: Annotated[
+        str | None,
+        Query(description="the cards Change or Keep it as it is keeps in place; read once"),
+    ] = None,
+) -> Response:
     """Render her week and today's plan.
 
     The week is the school week that holds today, or the one holding the day
@@ -1620,51 +1818,120 @@ def due_this_week(
     are there. Either is said to her in Help, beside that request when it is on the page,
     and at the top of Help when it is not. When the record cannot be read, the page says so
     and offers the same address again.
+
+    The cards a visit keeps where they were come to the page once. A save or an undo leaves
+    them in a cookie named for the landing its redirect names in ``landing``; Change and Keep
+    it as it is carry them in ``in_place``, which is answered with the same address, a new
+    landing in place of it, and that landing's cookie. Only the page whose address names the
+    landing reads the cookie, and it clears it, so another tab's visit leaves it alone, and a
+    refresh, a return, or Back to an address asks for the week grouped by its updates. When
+    the record cannot be read, the page that says so leaves the cards again for its landing,
+    and its Try again carries them in ``in_place``, so a try made after the cookie is gone
+    still finds them where they were.
     """
+    landing = landing_asked(request)
+    if in_place is not None:
+        moved = sent_in_place(once_more(request), InPlace.read(named_once(request, IN_PLACE)))
+        return moved if landing is None else forget_landing(moved, landing)
+    left = None if landing is None else request.cookies.get(landing_cookie(landing))
+    kept = InPlace.read(left)
     try:
-        was_refreshed = refreshed == "1"
-        plan_asked = show_plan == "1"
-        card = card_shown(saved, same, undone, change, show)
-        marker = marker_from(asked, asked_again)
-        if week is None:
-            return student_page(
-                request,
-                state,
-                refreshed=was_refreshed,
-                card=card,
-                plan_asked=plan_asked,
-                turning_in=receipt_asked(hand_in_said, about, hand_in_event),
-                help_marker=marker,
-            )
-        try:
-            chosen = date.fromisoformat(week.strip())
-        except ValueError:
-            return student_page(
-                request,
-                state,
-                problem=NOT_A_WEEK,
-                card=card,
-                help_marker=marker,
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            )
-        if not showable(chosen):
-            return student_page(
-                request,
-                state,
-                problem=BEYOND_THE_CALENDAR,
-                card=card,
-                help_marker=marker,
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            )
-        return student_page(
-            request, state, week=chosen, card=card, plan_asked=plan_asked, help_marker=marker
+        page = week_page(
+            request,
+            state,
+            kept,
+            week=week,
+            plan_asked=show_plan == "1",
+            was_refreshed=refreshed == "1",
+            card=card_shown(saved, same, undone, change, show),
+            turning_in=receipt_asked(hand_in_said, about, hand_in_event),
+            marker=marker_from(asked, asked_again),
         )
     except sqlite3.Error as error:
-        return week_unreadable(
+        again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
+        unreadable = week_unreadable(request, error, again=again)
+        return unreadable if landing is None else leave_in_place(unreadable, kept, landing)
+    if landing is not None and left is not None:
+        forget_landing(page, landing)
+    return page
+
+
+def carrying(query: bytes, kept: InPlace) -> bytes:
+    """A query as a request sent it with the cards a visit keeps in place added, so an
+    address made from it finds them where they were after the cookie is gone."""
+    if not kept.cards:
+        return query
+    added = URL().include_query_params(**{IN_PLACE: kept.said()}).query.encode()
+    return query + b"&" + added if query else added
+
+
+def once_more(request: Request) -> str:
+    """Her week's address as asked, without the cards it keeps in place or the landing it
+    named, landing where Change or Keep it as it is lands."""
+    asked = request.url.remove_query_params([IN_PLACE, IN_PLACE_LANDING])
+    change = request.query_params.get("change")
+    show = request.query_params.get("show")
+    fragment = update_choice_anchor(change) if change else title_anchor(show) if show else ""
+    query = f"?{asked.query}" if asked.query else ""
+    return f"{WEEK_PAGE}{query}{f'#{fragment}' if fragment else ''}"
+
+
+def week_page(
+    request: Request,
+    state: ApplicationState,
+    in_place: InPlace,
+    *,
+    week: str | None,
+    plan_asked: bool,
+    was_refreshed: bool,
+    card: CardState | None,
+    turning_in: ListCard | None,
+    marker: HelpMarker | None,
+) -> HTMLResponse:
+    """Her week as an address asks for it, with the cards a visit keeps in place. A record
+    that cannot be read raises ``sqlite3.Error``."""
+    if week is None:
+        return student_page(
             request,
-            error,
-            again=asked_address(WEEK_PAGE, request.scope["query_string"]),
+            state,
+            refreshed=was_refreshed,
+            card=card,
+            plan_asked=plan_asked,
+            turning_in=turning_in,
+            help_marker=marker,
+            in_place=in_place,
         )
+    try:
+        chosen = date.fromisoformat(week.strip())
+    except ValueError:
+        return student_page(
+            request,
+            state,
+            problem=NOT_A_WEEK,
+            card=card,
+            help_marker=marker,
+            in_place=in_place,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    if not showable(chosen):
+        return student_page(
+            request,
+            state,
+            problem=BEYOND_THE_CALENDAR,
+            card=card,
+            help_marker=marker,
+            in_place=in_place,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    return student_page(
+        request,
+        state,
+        week=chosen,
+        card=card,
+        plan_asked=plan_asked,
+        help_marker=marker,
+        in_place=in_place,
+    )
 
 
 def week_unreadable(request: Request, error: sqlite3.Error, *, again: str) -> HTMLResponse:
@@ -1778,19 +2045,23 @@ def report_actions(assignment_id: str) -> tuple[str, str]:
     return f"{base}/report", f"{base}/undo-report"
 
 
-def week_context(assignment_id: str, week: date, viewer: str) -> ReportContext:
+def week_context(
+    assignment_id: str, week: date, viewer: str, kept: InPlace | None = None
+) -> ReportContext:
     """The component on a card of her week: results come back to the card, and Change lands
-    on the group of the form it opens."""
+    on the group of the form it opens. Its save, Undo, Change and Keep it as it is carry the
+    cards ``kept`` keeps in place, this one among them."""
     report, undo = report_actions(assignment_id)
+    carried = [] if kept is None else [(IN_PLACE, kept.said())]
     return ReportContext(
         viewer=viewer,
         can_update=viewer != "parent",
         report_action=report,
         undo_action=undo,
         change_action=address(WEEK_PAGE, fragment=update_choice_anchor(assignment_id)),
-        change_fields=[("week", week.isoformat()), ("change", assignment_id)],
-        cancel_href=week_href(week, assignment_id, show=assignment_id),
-        post_fields=[("week", week.isoformat())],
+        change_fields=[("week", week.isoformat()), ("change", assignment_id), *carried],
+        cancel_href=week_href(week, assignment_id, show=assignment_id, **dict(carried)),
+        post_fields=[("week", week.isoformat()), *carried],
         place="week",
     )
 
@@ -1837,7 +2108,12 @@ class ReturnLink:
 
 
 def way_back(
-    state: ApplicationState, back: ReturnTo, assignment_id: str, *, today: date
+    state: ApplicationState,
+    back: ReturnTo,
+    assignment_id: str,
+    *,
+    today: date,
+    in_place: InPlace | None = None,
 ) -> ReturnLink:
     """The link an assignment's details offer back to where their reader came from.
 
@@ -1848,11 +2124,13 @@ def way_back(
     there either way. Today itself, with a word, when no plan is left as the
     link is written. The family page at this assignment's row, or at the plan
     that was being read when it is still on the pages; a plan that is not sends
-    the reader to the family page and nothing more.
+    the reader to the family page and nothing more. A link to her week carries the cards
+    ``in_place`` names.
     """
     if back.target == "week":
         return ReturnLink(
-            week_href(back.week, assignment_id, show=assignment_id), "Back to the week"
+            week_href(back.week, assignment_id, show=assignment_id, in_place=carried(in_place)),
+            "Back to the week",
         )
     if back.target == "to_turn_in":
         return ReturnLink(address(TO_TURN_IN_PAGE, fragment=TO_TURN_IN), "Back to To turn in")
@@ -1884,10 +2162,12 @@ def gone_page(
     card: CardState | None = None,
     hand_in: HandInCard | None = None,
     today: date | None = None,
+    in_place: InPlace | None = None,
 ) -> HTMLResponse:
     """The small page for an assignment that is not on record: said plainly, 404, with a
     safe way back and, when a form brought her here, what she chose and wrote, so it can
-    be copied. No form, and nothing is put back on record.
+    be copied. No form, and nothing is put back on record. A way back to her week carries
+    the cards ``in_place`` names.
 
     The explanation takes the focus when a form's press brought her here,
     whatever the form carried, and never on a look by link, whatever the
@@ -1895,7 +2175,11 @@ def gone_page(
     way back is made from the address alone and nothing more is read."""
     try:
         link = way_back(
-            state, back, assignment_id, today=state.clock.today() if today is None else today
+            state,
+            back,
+            assignment_id,
+            today=state.clock.today() if today is None else today,
+            in_place=in_place,
         )
     except sqlite3.Error as error:
         logger.warning("a way back could not be read: %s", type(error).__name__)
@@ -1987,6 +2271,7 @@ def detail_page(
         noticed,
         found[assignment_id],
         in_planning_window=in_week(item, noticed, today),
+        outside_window=planning_window(today).outside(item, noticed),
         hand_in=turning_in,
         claims_unreadable=claims_unavailable,
         instructions=instructions.readable.get(assignment_id),
@@ -2026,6 +2311,7 @@ def detail_page(
                 FAMILY_HELP if viewer == "parent" else address(WEEK_PAGE, fragment=ASK_FOR_HELP)
             ),
             "planning_window": planning_window(today).said(),
+            "planning_window_end": planning_window(today).end,
             "instructions_review": (
                 instructions_review_href(assignment_id) if family_chooses else None
             ),
@@ -2040,17 +2326,10 @@ def detail_page(
                 ),
                 "keep": details_href(assignment_id, fragment=TURNING_IT_IN, **back.fields()),
                 "open": details_href(assignment_id, fragment=TURNING_IT_IN),
-                "remember": details_href(
-                    assignment_id, fragment=TURNING_IT_IN, hand_in="remember", **back.fields()
-                ),
             },
             "hand_in_change_fields": [
                 *[(name, value) for name, value in back.fields().items() if value],
                 ("hand_in", "change"),
-            ],
-            "hand_in_remember_fields": [
-                *[(name, value) for name, value in back.fields().items() if value],
-                ("hand_in", "remember"),
             ],
             "next_action_max_length": NEXT_ACTION_MAX_LENGTH,
             "hand_in_note_max_length": HAND_IN_NOTE_MAX_LENGTH,
@@ -2105,10 +2384,9 @@ def assignment_details(
     turning_in = None
     if hand_in in HAND_IN_CONFIRMATIONS:
         turning_in = HandInCard(said=HAND_IN_CONFIRMATIONS[hand_in])
-    elif hand_in == "change":
+    elif hand_in in ("change", "remember"):
+        # A link that says ``remember`` opens the same form, so a saved address still lands.
         turning_in = HandInCard(change=True)
-    elif hand_in == "remember":
-        turning_in = HandInCard(change=True, state=NEEDS_HAND_IN)
     try:
         return detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
     except sqlite3.Error as error:
@@ -2167,9 +2445,11 @@ def result_page(
     *,
     card: CardState | None = None,
     problem: str | None = None,
+    in_place: InPlace | None = None,
     status_code: int,
 ) -> HTMLResponse:
-    """The page a form's result is shown on: the details it came from, or her week."""
+    """The page a form's result is shown on: the details it came from, or her week, with
+    the cards her visit keeps in place."""
     if origin.detail:
         return detail_page(
             request,
@@ -2187,6 +2467,7 @@ def result_page(
         card=card,
         problem=problem,
         pressed=True,
+        in_place=in_place,
         status_code=status_code,
     )
 
@@ -2206,18 +2487,33 @@ def after(origin: Origin, said: str, assignment_id: str) -> str:
     return back_to_the_card(origin.week, said, assignment_id)
 
 
-def plain_ways_back(origin: Origin, assignment_id: str) -> list[ReturnLink]:
+def answered(origin: Origin, said: str, assignment_id: str, kept: InPlace) -> Response:
+    """The redirect a committed save or undo is answered with. From her week it leaves the
+    cards the form kept in place for the page it lands on, the saved card where it was."""
+    if not origin.detail:
+        return sent_in_place(after(origin, said, assignment_id), kept)
+    return RedirectResponse(
+        after(origin, said, assignment_id), status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+def plain_ways_back(
+    origin: Origin, assignment_id: str, in_place: InPlace | None = None
+) -> list[ReturnLink]:
     """The ways back a failure page offers, made from checked values and nothing else.
 
     No store is read, since this is the page for when the record cannot be:
     a form from the details gets the assignment's details again, with the
     way back they carried, and the page that way back names; a card gets
-    its week with the card in view.
+    its week with the card in view and the cards ``in_place`` names.
     """
     if not origin.detail:
         return [
             ReturnLink(
-                week_href(origin.week, assignment_id, show=assignment_id), "Back to the week"
+                week_href(
+                    origin.week, assignment_id, show=assignment_id, in_place=carried(in_place)
+                ),
+                "Back to the week",
             )
         ]
     details = ReturnLink(
@@ -2320,10 +2616,10 @@ def week_not_shown(request: Request, heading: str, problem: str, *, fragment: st
 
 
 def card_not_shown(
-    request: Request, origin: Origin, assignment_id: str, card: CardState
+    request: Request, origin: Origin, assignment_id: str, card: CardState, in_place: InPlace
 ) -> NotShown:
     """What a refused update says when the page its form came from can't be read: the
-    details, or her week."""
+    details, or her week with the cards ``in_place`` names."""
     said = card.problem or ""
     if origin.detail:
         line = ASSIGNMENT_NOT_SHOWN
@@ -2333,7 +2629,7 @@ def card_not_shown(
         UPDATE_NOT_SAVED,
         WITHOUT_THE_PAGE.get(said, said),
         line,
-        plain_ways_back(origin, assignment_id),
+        plain_ways_back(origin, assignment_id, in_place),
         card=card,
     )
 
@@ -2396,6 +2692,7 @@ def could_not(
     assignment_id: str,
     origin: Origin,
     card: CardState,
+    in_place: InPlace | None = None,
 ) -> HTMLResponse:
     """The page after a write the file refused: the component with what she typed, and no
     word of a save. When the page itself cannot be read back, a plain page with her words
@@ -2407,20 +2704,22 @@ def could_not(
             assignment_id,
             origin,
             card=card,
+            in_place=in_place,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     except Exception:
         logger.exception("her page could not be read back after a failed save")
-        return templates.TemplateResponse(
+        recovery = templates.TemplateResponse(
             request,
             "student_update_recovery.html",
             {
                 "card": card,
-                "ways_back": plain_ways_back(origin, assignment_id),
+                "ways_back": plain_ways_back(origin, assignment_id, in_place),
                 "sample": state.settings.sample,
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+        return recovery
 
 
 @router.post(
@@ -2460,9 +2759,11 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     if viewer_of(request) == "parent":
         return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
     fields, whole = await fields_of(
-        request, REPORT_FIELDS, may_be_absent=NOTHING_CHOSEN | FROM_DETAILS
+        request, REPORT_FIELDS, may_be_absent=NOTHING_CHOSEN | FROM_A_CARD
     )
     origin = origin_of(request, fields)
+    # The details are not her week, so a press there keeps no card in place.
+    kept = InPlace() if origin.detail else InPlace.read(fields.get(IN_PLACE))
     said = fields.get("status", "").strip()
     note = fields.get("note", "")
     words = normalize_note(note)
@@ -2484,8 +2785,10 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
         return shown_once(
             request,
             state,
-            lambda: result_page(request, state, assignment_id, origin, card=card, status_code=code),
-            card_not_shown(request, origin, assignment_id, card),
+            lambda: result_page(
+                request, state, assignment_id, origin, card=card, in_place=kept, status_code=code
+            ),
+            card_not_shown(request, origin, assignment_id, card, kept),
             code,
         )
 
@@ -2511,13 +2814,14 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
             )
     except UnknownAssignment:
         # The card is gone, so her choice and words go to the page that keeps them to
-        # copy, with the way back to where she was.
+        # copy, with the way back to where she was and the other cards still in place.
         return gone_page(
             request,
             state,
             origin.back if origin.detail else ReturnTo("week", origin.week),
             assignment_id,
             card=CardState(assignment_id, status=chosen, note=note),
+            in_place=kept,
         )
     except UnknownReport:
         return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
@@ -2531,16 +2835,13 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
             assignment_id,
             origin,
             CardState(assignment_id, change=True, problem=NOT_SAVED, status=said, note=note),
+            kept,
         )
     match result:
         case Saved():
-            return RedirectResponse(
-                after(origin, "saved", assignment_id), status_code=status.HTTP_303_SEE_OTHER
-            )
+            return answered(origin, "saved", assignment_id, kept)
         case AlreadySaved():
-            return RedirectResponse(
-                after(origin, "same", assignment_id), status_code=status.HTTP_303_SEE_OTHER
-            )
+            return answered(origin, "same", assignment_id, kept)
         case Conflict():
             return refused(SAVED_ELSEWHERE, status.HTTP_409_CONFLICT, saved_elsewhere=True)
 
@@ -2566,8 +2867,10 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
     """
     if viewer_of(request) == "parent":
         return not_hers(request, state, UPDATE_NOT_SAVED, NOT_HERS_TO_UPDATE)
-    fields, whole = await fields_of(request, UNDO_FIELDS, may_be_absent=FROM_DETAILS)
+    fields, whole = await fields_of(request, UNDO_FIELDS, may_be_absent=FROM_A_CARD)
     origin = origin_of(request, fields)
+    # The details are not her week, so a press there keeps no card in place.
+    kept = InPlace() if origin.detail else InPlace.read(fields.get(IN_PLACE))
     named = fields.get("report_id", "").strip()
 
     def refused(problem: str, code: int, *, saved_elsewhere: bool = False) -> Response:
@@ -2575,8 +2878,10 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
         return shown_once(
             request,
             state,
-            lambda: result_page(request, state, assignment_id, origin, card=card, status_code=code),
-            card_not_shown(request, origin, assignment_id, card),
+            lambda: result_page(
+                request, state, assignment_id, origin, card=card, in_place=kept, status_code=code
+            ),
+            card_not_shown(request, origin, assignment_id, card, kept),
             code,
         )
 
@@ -2606,10 +2911,15 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
                 week=origin.week,
                 problem=NOT_ON_RECORD,
                 pressed=True,
+                in_place=kept,
                 status_code=status.HTTP_404_NOT_FOUND,
             ),
             card_not_shown(
-                request, origin, assignment_id, CardState(assignment_id, problem=NOT_ON_RECORD)
+                request,
+                origin,
+                assignment_id,
+                CardState(assignment_id, problem=NOT_ON_RECORD),
+                kept,
             ),
             status.HTTP_404_NOT_FOUND,
         )
@@ -2618,13 +2928,16 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
     except CouldNotSave:
         logger.exception("her update on %s could not be undone", assignment_id)
         return could_not(
-            request, state, assignment_id, origin, CardState(assignment_id, problem=NOT_UNDONE)
+            request,
+            state,
+            assignment_id,
+            origin,
+            CardState(assignment_id, problem=NOT_UNDONE),
+            kept,
         )
     match result:
         case Undone():
-            return RedirectResponse(
-                after(origin, "undone", assignment_id), status_code=status.HTTP_303_SEE_OTHER
-            )
+            return answered(origin, "undone", assignment_id, kept)
         case Conflict(head=head):
             repeat = head is not None and head.operation == UNDO and head.undoes_report_id == named
             return refused(
@@ -2645,7 +2958,13 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     goes to the process log, and the page says something went wrong rather
     than answering with a bare error. When her week can't be read either, the
     page that reads no store says so, with the same status.
+
+    A press stays in the visit: the cards the visit keeps in place, which the form carries,
+    stay where they were on the page that answers it, a plan made or not. A form that is
+    not whole keeps none, and plans all the same.
     """
+    fields, whole = await fields_of(request, PLAN_FIELDS, may_be_absent=PLAN_FIELDS)
+    kept = InPlace.read(fields.get(IN_PLACE)) if whole else InPlace()
 
     def not_made(problem: str, code: int, failure: PlanFailure | None = None) -> HTMLResponse:
         return shown_once(
@@ -2657,6 +2976,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 problem=problem,
                 pressed=True,
                 plan_failure=failure,
+                in_place=kept,
                 status_code=code,
             ),
             week_not_shown(request, PLAN_NOT_MADE, problem),
@@ -2679,7 +2999,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     if run.outcome == OVERTAKEN:
         # A newer plan for today reached the page while this one was being made; that
         # plan is the one shown.
-        return RedirectResponse(f"{PAGE}?show_plan=1", status_code=status.HTTP_303_SEE_OTHER)
+        return sent_in_place(f"{PAGE}?show_plan=1", kept)
     if run.draft_id is None:
         return not_made(
             ended_without_a_plan(run.outcome, parent=parent_reads(request), past_due=run.past_due),
@@ -2696,7 +3016,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                 )
             ),
         )
-    return RedirectResponse(f"{PAGE}?show_plan=1", status_code=status.HTTP_303_SEE_OTHER)
+    return sent_in_place(f"{PAGE}?show_plan=1", kept)
 
 
 @router.post("/actions/ask-for-help", response_class=HTMLResponse, include_in_schema=False)

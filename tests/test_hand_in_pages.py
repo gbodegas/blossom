@@ -42,6 +42,7 @@ from blossom.routes.student import (
     HAND_IN_SAVED,
     HAND_IN_UNDONE,
     NOT_HERS_TO_UPDATE,
+    STEP_NOT_SAVED,
 )
 from blossom.stores.project_state import ProjectStateStore
 from tests.support import (
@@ -67,22 +68,30 @@ from tests.support import (
     fixture_week_plan,
     form_fields,
     human_text,
+    lands_on,
     report,
+    school_missing,
     scripted_graphs,
     signed_in_household,
     spoil,
     state_of,
     with_clock,
+    words,
 )
 
 ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
 FAMILY = "/parent"
 NOT_RECORDED = "Hand-in status not recorded."
+QUESTION = "Has this been turned in?"
+STEP_LABEL = "Your next step (optional)"
+STEP_HELP = "This appears on your To turn in list. For example: Put it in my blue folder."
+STAYS = "This stays in Blossom. It does not send work to school or send an alert."
+DISCREPANCY = "The school reports this missing, and {who} reported it turned in."
 
 
 def section(page: str) -> str:
-    """The Turning it in section of a details page."""
-    start = page.index('id="turning-it-in"')
+    """The Turning it in section of a details page, from the section around its heading."""
+    start = page.rindex("<section", 0, page.index('id="turning-it-in"'))
     return page[start : page.index("</section>", start)]
 
 
@@ -147,7 +156,8 @@ def test_details_say_nothing_is_recorded_until_she_says_something_and_offer_the_
         for label in ("Still to turn in", "Turned in", "Nothing to turn in", "Not sure"):
             assert label in form
         assert "Save hand-in update" in form
-        assert "Done means you have finished your part. It does not turn work in." in form
+        assert QUESTION in form
+        assert STAYS in form
         assert chain(client) == []
 
 
@@ -290,6 +300,149 @@ def test_a_save_from_a_page_that_is_behind_shows_what_stands_and_keeps_her_words
         assert len(chain(client)) == 1
         again = save(client, shown, NEEDS_HAND_IN, action="Hand it to her", note="my words")
         assert again.status_code == 303
+
+
+# ----------------------------------------------------- one way in, and one question
+
+
+def test_one_button_opens_the_form_and_opening_or_keeping_it_writes_nothing() -> None:
+    with browser() as client:
+        page = section(client.get(DETAILS, params={"return_to": "week", "week": FIXTURE_WEEK}).text)
+        openers = re.findall(r'<form method="get"[^>]*>.*?</form>', page, re.S)
+        from_a_saved_address = section(client.get(DETAILS, params={"hand_in": "remember"}).text)
+        form = section(opened(client, return_to="week", week=FIXTURE_WEEK))
+        keep = re.search(r'<a class="cancel" href="([^"]+)"', form)
+        assert keep is not None
+        kept = section(client.get(keep.group(1).replace("&amp;", "&")).text)
+
+        assert lands_on(page, "#turning-it-in") == (
+            '<h2 class="update-heading" id="turning-it-in" tabindex="-1">'
+        )
+        assert len(openers) == 1
+        assert ">Update hand-in status</button>" in openers[0]
+        assert 'name="hand_in" value="change"' in openers[0]
+        assert "remember" not in page
+        for shown in (form, from_a_saved_address):
+            assert QUESTION in shown
+            assert " checked" not in shown
+        assert QUESTION not in kept
+        assert ">Update hand-in status</button>" in kept
+        assert chain(client) == []
+
+
+def test_the_form_asks_one_question_and_says_what_the_step_is_before_the_field() -> None:
+    with browser() as client:
+        form = section(opened(client))
+        landed(client, save(client, form, NEEDS_HAND_IN, note="in the folder"))
+        with_a_note = section(opened(client))
+
+    legend = re.search(r"<legend>(.*?)</legend>", form, re.S)
+    assert legend is not None
+    assert words(legend.group(1)).startswith(QUESTION)
+    answers = re.findall(r'name="state" value="(\w+)"', form)
+    assert answers == [NEEDS_HAND_IN, TURNED_IN, "not_required", "unknown"]
+    start = form.index('<div class="next-step">')
+    step = form[start : form.index("</div>", start)]
+    assert step.index(STEP_LABEL) < step.index(STEP_HELP) < step.index('name="next_action"')
+    assert "A next step is saved only with Still to turn in." in step
+    assert f'aria-describedby="next-action-hint-{ESSAY_ID} next-action-limit-{ESSAY_ID}"' in step
+    note = form[form.index('<details class="steps note-fold">') :]
+    assert note.index("<summary>Add a note (optional)") < note.index('name="note"')
+    assert "Your parents can read this. It is not shared with the planning model." in note
+    assert '<details class="steps note-fold" open>' in with_a_note
+    assert form.index('name="note"') < form.index(STAYS) < form.index("Save hand-in update")
+
+
+@pytest.mark.parametrize("state", [TURNED_IN, "not_required", "unknown"])
+def test_a_step_typed_beside_another_answer_is_not_saved_and_the_result_says_so(
+    state: str,
+) -> None:
+    with browser() as client:
+        result = section(landed(client, save(client, opened(client), state, action="Blue folder")))
+        again = section(landed(client, save(client, opened(client), state, action="Blue folder")))
+        stored = state_of(client).project_state.hand_in_chains([ESSAY_ID])[ESSAY_ID]
+
+    assert f"{HAND_IN_SAVED} {STEP_NOT_SAVED}" in result
+    assert f"{HAND_IN_ALREADY_SAVED} {STEP_NOT_SAVED}" in again
+    assert "Blue folder" not in result
+    assert [event.next_action for event in stored] == [None]
+
+
+@pytest.mark.parametrize(
+    ("state", "action"),
+    [(NEEDS_HAND_IN, "Blue folder"), (NEEDS_HAND_IN, ""), (TURNED_IN, ""), (TURNED_IN, "   ")],
+    ids=["a step with its answer", "no step", "another answer, no step", "only spaces"],
+)
+def test_a_save_with_no_step_left_behind_says_nothing_of_one(state: str, action: str) -> None:
+    with browser() as client:
+        result = section(landed(client, save(client, opened(client), state, action=action)))
+
+    assert HAND_IN_SAVED in result
+    assert STEP_NOT_SAVED not in result
+
+
+def test_a_step_typed_beside_another_answer_stays_in_the_form_when_the_save_is_refused() -> None:
+    with browser() as client:
+        answer = save(client, opened(client), TURNED_IN, action="Blue folder", note="x" * 501)
+
+        assert answer.status_code == 422
+        shown = section(answer.text)
+        assert 'value="turned_in" checked' in shown
+        assert 'name="next_action" value="Blue folder"' in shown
+        assert '<details class="steps note-fold" open>' in shown
+        assert chain(client) == []
+
+
+@pytest.mark.parametrize("reader", ["her", "a parent"])
+def test_turned_in_beside_a_school_missing_is_shown_as_the_two_reports(
+    reader: str, tmp_path: pathlib.Path
+) -> None:
+    app = create_app(signed_in_household(tmp_path))
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        landed(client, save(client, opened(client), TURNED_IN))
+        store = state_of(client).project_state
+        store.record_status_reports(ESSAY_ID, [school_missing(PLAN_DATE)])
+        if reader == "a parent":
+            client.post("/sign-out")
+            client.post("/sign-in", data={"passphrase": THEIRS})
+        page = client.get(DETAILS).text
+        stands = store.hand_in_chains([ESSAY_ID])[ESSAY_ID]
+
+    turning = words(section(page))
+    who = "you" if reader == "her" else "she"
+    assert DISCREPANCY.format(who=who) in turning
+    assert "Blossom keeps both as they are, so the family can check." in turning
+    assert "The school reports this missing." in words(page[page.index('id="evidence"') :])
+    assert [event.state for event in stands] == [TURNED_IN]
+
+
+@pytest.mark.parametrize("work", [None, "not_yet", "done"])
+@pytest.mark.parametrize("state", [NEEDS_HAND_IN, TURNED_IN, "not_required", "unknown"])
+def test_each_answer_stands_beside_any_work_update_and_neither_save_changes_the_other(
+    work: str | None, state: str
+) -> None:
+    with browser() as client:
+        store = state_of(client).project_state
+        if work is not None:
+            report(client, ESSAY_ID, work)
+        works = store.student_report_chains([ESSAY_ID]).get(ESSAY_ID, [])
+        landed(client, save(client, opened(client), state))
+        hand_ins = chain(client)
+        after_hand_in = store.student_report_chains([ESSAY_ID]).get(ESSAY_ID, [])
+        report(client, ESSAY_ID, "not_yet" if work == "done" else "done")
+        after_work = chain(client)
+        page = section(client.get(DETAILS).text)
+
+    assert after_hand_in == works
+    assert after_work == hand_ins
+    assert len(hand_ins) == 1
+    assert {
+        NEEDS_HAND_IN: "You reported Still to turn in",
+        TURNED_IN: "You reported it turned in",
+        "not_required": "You reported nothing to turn in",
+        "unknown": "Hand-in status: Not sure",
+    }[state] in page
 
 
 # ------------------------------------------------------------- forms that are refused
@@ -436,6 +589,8 @@ def test_a_parent_reads_it_and_cannot_write_it_and_a_forged_role_changes_nothing
         assert "Put it in my folder" in read
         assert "Sign in as the student to update." in read
         assert f"{ACTIONS}/hand-in" not in read
+        assert "<button" not in read
+        assert QUESTION not in read
         assert (refused.status_code, undo.status_code) == (403, 403)
         assert escape(NOT_HERS_TO_UPDATE) in refused.text
         assert len(chain(client)) == 1

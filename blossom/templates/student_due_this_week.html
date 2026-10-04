@@ -32,13 +32,14 @@
     address asks for no focus. A plan press that ended without a plan links on
     to her homework, and to the dates of any assignment it names; the plan
     button below offers to try again. Its See homework goes where the plan's
-    place sends it: the first card or row still to do in the week shown, or the
-    week's homework heading when none is, so the page never offers two.
+    place sends it: the title of the first card or row still to do in the week
+    shown, or the week's homework heading when none is, so the page never offers
+    two.
   #}
   {% set work_left = (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
-  {% set see_homework_href = "#" ~ assignment_anchor(work_left[0].assignment_id) if work_left else "#homework" %}
+  {% set see_homework_href = "#" ~ title_anchor(work_left[0].assignment_id) if work_left else "#homework" %}
   {% if problem %}
-    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ assignment_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}{% if plan_failure %}{% for title, href in plan_failure.checks %} <a href="{{ href }}">Check the dates for {{ title }}.</a>{% endfor %} <a href="{{ see_homework_href }}">See homework.</a>{% endif %}</p>
+    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}{% if plan_failure %}{% for title, href in plan_failure.checks %} <a href="{{ href }}">Check the dates for {{ title }}.</a>{% endfor %} <a href="{{ see_homework_href }}">See homework.</a>{% endif %}</p>
   {% endif %}
 
   {% if view.week.current %}
@@ -159,7 +160,8 @@
               data-pending="Making your plan"
               data-pending-later="Still working. The planner reads your week and writes the plan, which can take up to about a minute and a half"
               data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
-          <button type="submit" class="primary">{% if plan_failure %}Try again{% else %}{{ plan_label }}{% endif %}</button>
+          {% if in_place_said %}<input type="hidden" name="in_place" value="{{ in_place_said }}">{% endif %}
+          <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure %}Try again{% else %}{{ plan_label }}{% endif %}</button>
         </form>
       {% endif %}
       {#
@@ -185,7 +187,12 @@
       {% if viewer != "parent" %}<a class="to-help" href="{{ new_note_page }}">Write down homework</a>{% endif %}
       {% if viewer != "parent" %}<a class="to-help" href="#ask-for-help">Ask for help</a>{% else %}<a class="to-help" href="#help">Her help requests</a>{% endif %}
     </div>
-    <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
+    {#
+      Where the plan button is, what a plan is made from is said beside it, before
+      the window's days, in words that suit either reader, and the button names this
+      line as its description.
+    #}
+    <p class="note planning-window"{% if view.can_plan and not view.nothing_to_plan %} id="plan-scope"{% endif %}>{% if view.can_plan and not view.nothing_to_plan %}Makes a plan for today using unfinished homework due in the next 7 days and homework without a due date. {% endif %}Today's planning window is {{ planning_window }}.</p>
     {#
       The places that hold what is left to do beside the plan, under the
       controls and never in the masthead. Each link goes to a page of its
@@ -278,6 +285,17 @@
   {% endif %}
 
   {#
+    What Done means is said once, above the cards, and each Done button on
+    them is described by this line, so the page does not repeat it per card.
+    A card shown apart comes first, so the line goes above it then.
+  #}
+  {% set done_means = viewer != "parent" and ((view.assignments + view.assigned_this_week + ([view.apart] if view.apart else []))|rejectattr("update_status", "equalto", "done")|list) %}
+  {% set done_means_line %}<p class="note" id="done-means">Done means you have finished your part. It does not turn work in.</p>{% endset %}
+  {% if done_means and view.apart %}
+    {{ done_means_line }}
+  {% endif %}
+
+  {#
     The card a save, an undo, or a link named, when its dates have taken it
     out of the week shown: apart, so the result and anything she typed are
     never lost to a week the card has left.
@@ -296,19 +314,33 @@
   #}
   <h2 class="list-heading" id="homework" tabindex="-1">Due {% if view.week.current %}this{% else %}that{% endif %} week</h2>
 
+  {#
+    An address that brings a card into view, as a way back from its details does,
+    when the card is on record no more: the place it would land on says so, above
+    the week's homework.
+  #}
+  {% if shown_gone %}
+    <p class="note card-gone" id="{{ title_anchor(card.assignment_id) }}" tabindex="-1">That assignment is not on record now. The week's homework is below.</p>
+  {% endif %}
+
   {% if not view.assignments %}
     <p class="empty">No assignments are recorded as due {% if view.week.current %}this{% else %}that{% endif %} week.{% if viewer != "parent" %} Heard about something? <a href="{{ new_note_page }}">Write down homework</a>{% endif %}</p>
+  {% endif %}
+  {% if done_means and not view.apart %}
+    {{ done_means_line }}
   {% endif %}
 
   {#
     Work she has reported done stays in the week, under the active cards and
     folded, with its count, so the week still reads whole and the cards that
-    need her come first. The fold opens when the card the address names is
-    inside it, so a save on such a card lands in view. The same card template
-    renders both groups.
+    need her come first. A card she saves stays in the group it was in for the
+    rest of her visit, Done among the active cards included, and moves on her
+    next visit; ``shown_done`` is the cards shown in the fold. The fold opens
+    when the card the address names is inside it, so a save on such a card
+    lands in view. The same card template renders both groups.
   #}
-  {% set active_cards = view.assignments|rejectattr("update_status", "equalto", "done")|list %}
-  {% set done_cards = view.assignments|selectattr("update_status", "equalto", "done")|list %}
+  {% set active_cards = view.assignments|rejectattr("assignment_id", "in", shown_done)|list %}
+  {% set done_cards = view.assignments|selectattr("assignment_id", "in", shown_done)|list %}
   {% set to_check = (view.assignments + view.assigned_this_week)|selectattr("check_school")|list %}
   {% if not view.week.current and (view.assignments or view.assigned_this_week or view.apart) %}
     <p class="note">Updates show the latest saved information, even when you view a different week.</p>
@@ -336,13 +368,13 @@
   {% if view.assigned_this_week %}
     <section class="panel assigned">
       <h2>Assigned this week, due later</h2>
-      {% set later_active = view.assigned_this_week|rejectattr("update_status", "equalto", "done")|list %}
-      {% set later_done = view.assigned_this_week|selectattr("update_status", "equalto", "done")|list %}
+      {% set later_active = view.assigned_this_week|rejectattr("assignment_id", "in", shown_done)|list %}
+      {% set later_done = view.assigned_this_week|selectattr("assignment_id", "in", shown_done)|list %}
       <ul>
         {% for assignment in later_active %}
-          <li id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
-            <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
-            Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
+          <li id="{{ assignment_anchor(assignment.assignment_id) }}">
+            <span class="row-title" id="{{ title_anchor(assignment.assignment_id) }}" tabindex="-1"><strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}</span>
+            <p class="due">Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}</p>
             {% include "student_claim_warning.html" %}
             {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
             {% with words = assignment.words, to_a_parent = report_contexts[assignment.assignment_id].viewer == "parent", review_href = none %}{% include "school_words.html" %}{% endwith %}
@@ -358,9 +390,9 @@
           <summary>Reported done ({{ later_done|length }})</summary>
           <ul>
             {% for assignment in later_done %}
-              <li id="{{ assignment_anchor(assignment.assignment_id) }}" tabindex="-1">
-                <strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}<br>
-                Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}
+              <li id="{{ assignment_anchor(assignment.assignment_id) }}">
+                <span class="row-title" id="{{ title_anchor(assignment.assignment_id) }}" tabindex="-1"><strong>{{ assignment.title }}</strong> &middot; {{ assignment.course }}</span>
+                <p class="due">Due {{ assignment.due_date.strftime("%A, %B") }} {{ assignment.due_date.day }}{% if assignment.due_date.year != view.week.end.year %}, {{ assignment.due_date.year }}{% endif %}</p>
                 {% include "student_claim_warning.html" %}
                 {% for statement in assignment.school_statements %}<br><span class="pill">The school reports this {{ statement.status|replace("_", " ") }}</span> {{ statement.sentence }}{% endfor %}
                 {% with words = assignment.words, to_a_parent = report_contexts[assignment.assignment_id].viewer == "parent", review_href = none %}{% include "school_words.html" %}{% endwith %}
@@ -437,10 +469,22 @@
       beside the request it names, or at the top when none here is that one;
       it never opens a control. A refusal is said here and takes the focus,
       and a fold holding the request a line or a refusal names is open.
+
+      Before she asks, the section says who sees a request, that nothing is
+      sent as an alert, and where a reply shows. Its heading names what it
+      does, and every link to Help lands on it: ``#help`` on the heading, and
+      her ``#ask-for-help`` on the heading's words. The surface sets it apart
+      from the homework, after the heading has.
     #}
     {% set asker = "She" if parent else "You" %}
-    <section class="panel help-panel" id="help" tabindex="-1">
-      <h2>Help</h2>
+    <section class="panel help-panel" aria-labelledby="help">
+      {% if viewer == "parent" %}
+        <h2 id="help" tabindex="-1">Her help requests</h2>
+      {% else %}
+        <h2 id="help" tabindex="-1"><span id="ask-for-help" tabindex="-1">Ask a parent for help</span></h2>
+        <p>Stuck on homework or unsure what to do next? Leave a request here for a parent to see in Family review. You can add a note or just ask.</p>
+        <p class="note">Blossom does not send an alert. Replies appear here when you refresh.</p>
+      {% endif %}
       {% if refreshed_at %}
         <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
       {% endif %}
@@ -461,11 +505,11 @@
           <p class="note" id="ask-for-help" tabindex="-1">No requests for help to show. When she asks, you can answer on <a href="{{ family_help }}">Family review</a>.</p>
         {% endif %}
       {% else %}
-        <form method="post" action="/student/actions/ask-for-help" class="ask" id="ask-for-help" tabindex="-1">
-          <label for="help-note">A note for your parents (optional)</label>
+        <form method="post" action="/student/actions/ask-for-help" class="ask">
+          <label for="help-note">What would you like help with? (optional)</label>
           <input id="help-note" type="text" name="note" value="{{ help_form.words if help_form else "" }}" maxlength="{{ note_max_length }}" placeholder="A short note"{% if help_form and help_form.problem %} aria-describedby="help-problem"{% endif %}{% if help_form and help_form.at_words %} aria-invalid="true" autofocus{% endif %}>
           <input type="hidden" name="request_id" value="{{ help_request_id }}">
-          <button type="submit" class="secondary">Ask for help</button>
+          <button type="submit" class="secondary">Ask a parent for help</button>
         </form>
       {% endif %}
       {% if view.help_unavailable %}

@@ -30,6 +30,7 @@ from blossom.routes.navigation import (
     note_search_href,
     note_unlink_action,
     result_anchor,
+    title_anchor,
     todays_plan_href,
     update_choice_anchor,
     update_row_href,
@@ -77,6 +78,7 @@ def page_templates() -> Jinja2Templates:
     year, ``present`` for a saved plan's text, ``ended`` for typed words that close a
     sentence, ``details_href`` for the address of an
     assignment's details, ``assignment_anchor`` for the id of an assignment's card or row,
+    ``title_anchor`` for the id of its title on her week, where a link to it lands,
     ``week_href`` for her week with one card in view,
     ``result_anchor`` and ``hand_in_result_anchor`` for the places a save's redirect lands
     on, so a page and the address sent to it name a place the same way,
@@ -101,6 +103,7 @@ def page_templates() -> Jinja2Templates:
     templates.env.globals["asset_tag"] = asset_tag()
     templates.env.globals["source_url"] = SOURCE_URL
     templates.env.globals["assignment_anchor"] = assignment_anchor
+    templates.env.globals["title_anchor"] = title_anchor
     templates.env.globals["details_href"] = details_href
     templates.env.globals["note_href"] = note_href
     templates.env.globals["note_help_href"] = note_help_href

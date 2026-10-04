@@ -471,7 +471,7 @@ def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away(
         assert page.index('href="#ask-for-help"') < page.index(
             '<div id="todays-plan" tabindex="-1">'
         )
-        assert 'class="ask" id="ask-for-help" tabindex="-1"' in page
+        assert '<span id="ask-for-help" tabindex="-1">Ask a parent for help</span>' in page
     assert whole(body, revisit), "the saved text, set out for reading, all of it"
     assert "This plan uses the earlier text format." in as_text
     assert "set aside for" in as_text
@@ -540,7 +540,7 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
         page = client.get(PAGE).text
 
     panel, _, rest = page.partition('<h2 class="list-heading"')
-    help_at = rest.index('<section class="panel help-panel" id="help" tabindex="-1">')
+    help_at = rest.index('<section class="panel help-panel" aria-labelledby="help">')
     help_part = rest[help_at : rest.index("<summary>How Blossom uses your information</summary>")]
     assert "Today, Wednesday, August 19" in panel
     assert '<a class="to-help" href="#ask-for-help">Ask for help</a>' in panel
@@ -549,7 +549,7 @@ def test_the_page_puts_the_week_ahead_of_the_report_and_keeps_help_at_hand() -> 
     assert "the essay outline" not in panel
     assert rest.index("Canal Era comparison essay") < help_at
     assert 'action="/student/actions/ask-for-help"' in help_part
-    assert "A note for your parents (optional)" in help_part
+    assert "What would you like help with? (optional)" in help_part
     assert help_part.index("Waiting for a parent to respond.") < help_part.index(
         "the essay outline"
     )
@@ -760,6 +760,11 @@ MAP_QUIZ = Assignment(
 after it: no plan for the evening can schedule it or put it off in time."""
 
 
+TRY_AGAIN = '<button type="submit" class="primary" aria-describedby="plan-scope">Try again</button>'
+"""The plan button after a press that made no plan, described by the line that says what a
+plan is made from."""
+
+
 def answer(
     parsed: DailyPlan | None = None,
     *,
@@ -821,10 +826,8 @@ def test_each_way_a_run_ends_without_a_plan_is_said_with_a_way_forward() -> None
         line = the_line(page)
         assert f"{said} Your homework updates are saved." in line, name
         assert 'role="alert" tabindex="-1" autofocus' in line, name
-        assert '<a href="#assignment-assignment-science-fair-proposal">See homework.</a>' in line, (
-            name
-        )
-        assert '<button type="submit" class="primary">Try again</button>' in page, name
+        assert '<a href="#title-assignment-science-fair-proposal">See homework.</a>' in line, name
+        assert TRY_AGAIN in page, name
         assert "fits this evening" not in page, name
         assert "parent" not in line, name
         assert "No plan for today yet." in page, name
@@ -854,8 +857,8 @@ def test_work_dated_before_today_is_named_with_a_link_to_its_dates_and_no_model_
         '<a href="/student/assignments/assignment-map-quiz?return_to=week#evidence">'
         "Check the dates for Map quiz.</a>"
     ) in line
-    assert '<a href="#assignment-assignment-map-quiz">See homework.</a>' in line
-    assert '<button type="submit" class="primary">Try again</button>' in page
+    assert '<a href="#title-assignment-map-quiz">See homework.</a>' in line
+    assert TRY_AGAIN in page
     assert planners[-1].calls == 0
     assert [run.outcome for run in ended] == ["date_problem"]
 
@@ -930,7 +933,7 @@ def test_a_press_while_a_plan_for_today_is_being_made_starts_nothing() -> None:
 
     line = the_line(page)
     assert "A plan for today is already being made. Your homework updates are saved." in line
-    assert '<a href="#assignment-assignment-science-fair-proposal">See homework.</a>' in line
+    assert '<a href="#title-assignment-science-fair-proposal">See homework.</a>' in line
     assert all(planner.calls == 0 for planner in planners)
     assert runs == []
     assert latest is None

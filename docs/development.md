@@ -39,8 +39,9 @@ With the app running as the README describes:
   work assigned that week and due after it. `?week=` with any date shows the
   week that holds it. Each card takes her update, Done or Not yet with an
   optional note, through a form alone, and offers to change or undo it; work
-  she has reported done folds under the active cards. There is no JSON route
-  for her updates.
+  she has reported done folds under the active cards, and a card she saves
+  stays where it was until her next visit. There is no JSON route for her
+  updates.
 - <http://127.0.0.1:8000/student/assignments/ASSIGNMENT-ID> is one
   assignment's details: its current record, her update through the same form
   and the same two routes as her cards, and a link back to where the reader
@@ -746,13 +747,14 @@ A short tour works without a key. From her page, My week:
 
 1. Open the Geometry assignment's **Details**, choose **Done**, and press
    **Save update**.
-2. Beside the saved update, open **Help me remember to turn this in**, type
-   one next step, and press **Save hand-in update**. Go **Back to the week**
+2. Beside the saved update, open **Update hand-in status**, choose
+   **Still to turn in**, type one next step, and press **Save hand-in update**. Go **Back to the week**
    and open **To turn in**, where the Geometry work waits with its next step
    and **I turned it in**. Done alone puts nothing on that list.
 3. Open **Write down homework**, type a made-up note, leave the class and
    date empty, and press **Save homework note**.
-4. Under **Help**, add a short note if you like and press **Ask for help**.
+4. Under **Ask a parent for help**, add a short note if you like and press
+   **Ask a parent for help**.
    In **Family review**, under "Help she asked for", type a reply and press
    **I can help**. Back on My week, press **Refresh replies** to see it.
 

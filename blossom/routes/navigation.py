@@ -67,6 +67,12 @@ def assignment_anchor(assignment_id: str) -> str:
     return f"assignment-{segment(assignment_id)}"
 
 
+def title_anchor(assignment_id: str) -> str:
+    """The id of an assignment's title on her week, a card's heading or a row's name: where a
+    link to the card lands and takes the focus, so the outline marks the title alone."""
+    return f"title-{segment(assignment_id)}"
+
+
 def update_row_href(assignment_id: str) -> str:
     """A link to an assignment's row on the family page, from the same page. The row's id is
     the id as it is; the link escapes it as one segment, which a browser undoes to find it."""
@@ -311,11 +317,11 @@ def read_return(
 
 def week_href(week: date | None, assignment_id: str, **more: str | None) -> str:
     """Her week with one card in view, the fold around it open. The fragment is the
-    card's own id, which the page writes with the same helper, so the address names that
+    card's title, which the page writes with the same helper, so the address names that
     card as written and no other, whatever the assignment's id holds."""
     return address(
         WEEK_PAGE,
-        fragment=assignment_anchor(assignment_id),
+        fragment=title_anchor(assignment_id),
         week=None if week is None else week.isoformat(),
         **more,
     )
