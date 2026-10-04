@@ -384,9 +384,11 @@ for the rest of her visit, Done among the active cards included. Each update
 form on her week carries the cards the visit keeps in place, its own among
 them; a save or an undo leaves them in a short-lived cookie for the page its
 redirect names, and Change and Keep it as it is carry them in the address,
-answered with the same address without them and the cookie. The page reads
-the cookie once and clears it, so a refresh, a return, or Back to an address
-shows the week grouped by its updates. A result is hers: a parent who
+answered with the same address without them and the cookie. Each card goes
+by a short key of its id, so forty cards fit one cookie whatever the ids hold.
+The page reads the cookie once and clears it, so a refresh, a return, or Back
+to an address shows the week grouped by its updates. A page that can't read
+her week leaves the cards again, so trying again shows them where they were. A result is hers: a parent who
 opens an address her save, undo, press, delete or request for help left reads
 what stands, in the parent's words, and no result, on her week, the details,
 her To turn in list, her homework notes, Help and a note's own page. Help then

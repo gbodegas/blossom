@@ -35,6 +35,7 @@ from blossom.routes.student import (
     UPDATE_ALREADY_SAVED,
     UPDATE_SAVED,
     UPDATE_UNDONE,
+    place_key,
 )
 from tests.support import (
     DETAILS,
@@ -475,7 +476,7 @@ def test_her_week_cards_still_save_as_they_did_and_offer_the_details() -> None:
     assert form_fields(week, f"{DETAILS_ACTIONS}/report") == {
         "expected_report_id": "",
         "week": FIXTURE_WEEK,
-        "in_place": f"a:{ESSAY_ID}",
+        "in_place": f"a:{place_key(ESSAY_ID)}",
     }
 
 

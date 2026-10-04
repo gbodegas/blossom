@@ -67,28 +67,6 @@ def assignment_anchor(assignment_id: str) -> str:
     return f"assignment-{segment(assignment_id)}"
 
 
-def unsegment(escaped: str) -> str | None:
-    """The value ``segment`` wrote as ``escaped``, or ``None`` when ``segment`` would not have
-    written it so: a character it escapes left bare, a broken escape, or bytes not UTF-8."""
-    written = bytearray()
-    at = 0
-    while at < len(escaped):
-        pair = escaped[at + 1 : at + 3]
-        if escaped[at] == "%" and len(pair) == 2 and all(c in "0123456789ABCDEF" for c in pair):
-            written.append(int(pair, 16))
-            at += 3
-        elif escaped[at] in UNRESERVED:
-            written.append(ord(escaped[at]))
-            at += 1
-        else:
-            return None
-    try:
-        value = written.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    return value if segment(value) == escaped else None
-
-
 def title_anchor(assignment_id: str) -> str:
     """The id of an assignment's title on her week, a card's heading or a row's name: where a
     link to the card lands and takes the focus, so the outline marks the title alone."""

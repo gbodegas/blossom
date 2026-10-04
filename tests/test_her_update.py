@@ -12,11 +12,13 @@ import json
 import pathlib
 import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from typing import Annotated, Final
 
 import pytest
-from fastapi import Depends
+from fastapi import Depends, Response
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
@@ -31,7 +33,7 @@ from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceChannel
 from blossom.routes import parent as parent_routes
 from blossom.routes import student as student_routes
-from blossom.routes.navigation import week_href
+from blossom.routes.navigation import segment, week_href
 from blossom.routes.parent import ASSIGNMENTS_CHANGED as THEIR_ASSIGNMENTS_CHANGED
 from blossom.routes.parent import PLAN_INCLUDES_DONE as SHE_REPORTS
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
@@ -43,6 +45,7 @@ from blossom.routes.student import (
     CHOOSE_ONE,
     GONE,
     IN_PLACE_COOKIE,
+    IN_PLACE_MAX,
     NOT_HERS_TO_UPDATE,
     NOT_SAVED,
     NOT_THIS_CARDS,
@@ -55,6 +58,8 @@ from blossom.routes.student import (
     UPDATE_SAVED,
     UPDATE_UNDONE,
     InPlace,
+    leave_in_place,
+    place_key,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
 from blossom.stores.project_state import (
@@ -77,6 +82,7 @@ from tests.support import (
     Answer,
     ReportsWhileAsked,
     Scripted,
+    a_row,
     accepting,
     browser,
     card_for,
@@ -88,6 +94,7 @@ from tests.support import (
     human_text,
     main_of,
     ok,
+    refusing,
     report,
     reported,
     save,
@@ -138,6 +145,19 @@ def left_for_the_page(answer: Answer) -> str:
     return line
 
 
+@contextmanager
+def her_device(tmp_path: pathlib.Path, signed_in: bool) -> Iterator[TestClient]:
+    """Her device on the fixture week, with the sign-in off or signed in as her."""
+    if not signed_in:
+        with browser() as client:
+            yield client
+        return
+    settings = signed_in_household(tmp_path)
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        yield client
+
+
 def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit() -> None:
     """The form is Done or Not yet, nothing chosen, a note behind a fold, and the line that
     says what Done means. Saved, the card says so where it was, shows the update with its day
@@ -167,10 +187,10 @@ def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit
     )
     assert hidden(card, "expected_report_id") == ""
     assert hidden(card, "week") == WEEK
-    assert hidden(card, "in_place") == f"a:{ESSAY}"
+    assert hidden(card, "in_place") == f"a:{place_key(ESSAY)}"
     assert answer.headers["location"] == f"{PAGE}?week={WEEK}&saved={ESSAY}#update-result-{ESSAY}"
     cookie = left_for_the_page(answer)
-    assert cookie.startswith(f"{IN_PLACE_COOKIE}=a:{ESSAY};")
+    assert cookie.startswith(f"{IN_PLACE_COOKIE}=a:{place_key(ESSAY)};")
     for part in ("HttpOnly", "Max-Age=60", f"Path={PAGE}", "SameSite=lax"):
         assert part in cookie, part
     assert placed(landed.text) == placed(before)
@@ -214,7 +234,7 @@ def test_saving_another_card_in_the_same_visit_keeps_the_first_where_it_was() ->
         second = redirected(client, save(client, other, "done", assignment_id=SYLLABUS)).text
         returned = client.get(PAGE, headers=PAGE_HEADERS).text
 
-    assert hidden(other, "in_place") == f"a:{ESSAY}|a:{SYLLABUS}"
+    assert hidden(other, "in_place") == f"a:{place_key(ESSAY)}|a:{place_key(SYLLABUS)}"
     assert placed(second) == placed(before)
     assert UPDATE_SAVED in card_for(second, SYLLABUS)
     assert UPDATE_SAVED not in card_for(second, ESSAY)
@@ -242,10 +262,10 @@ def test_change_undo_and_keep_it_as_it_is_keep_the_card_where_it_was() -> None:
         undo = form_fields(card_for(changed, ESSAY), UNDO_ESSAY)
         undone = redirected(client, client.post(UNDO_ESSAY, data=undo, headers=PAGE_HEADERS)).text
 
-    assert fields == {"week": WEEK, "change": ESSAY, "in_place": f"a:{ESSAY}"}
+    assert fields == {"week": WEEK, "change": ESSAY, "in_place": f"a:{place_key(ESSAY)}"}
     assert change.status_code == 303
     assert change.headers["location"] == f"{PAGE}?week={WEEK}&change={ESSAY}#update-choice-{ESSAY}"
-    assert left_for_the_page(change).startswith(f"{IN_PLACE_COOKIE}=a:{ESSAY};")
+    assert left_for_the_page(change).startswith(f"{IN_PLACE_COOKIE}=a:{place_key(ESSAY)};")
     assert keep.headers["location"] == f"{PAGE}?week={WEEK}&show={ESSAY}#title-{ESSAY}"
     for page in (opened, kept, changed, undone):
         assert placed(page) == placed(before)
@@ -253,7 +273,7 @@ def test_change_undo_and_keep_it_as_it_is_keep_the_card_where_it_was() -> None:
     assert "<legend>Your update<span" in card_for(opened, ESSAY)
     assert "<legend>Your update<span" not in card_for(kept, ESSAY)
     assert '<span class="pill">Your update: Not yet</span>' in card_for(changed, ESSAY)
-    assert undo["in_place"] == f"a:{ESSAY}"
+    assert undo["in_place"] == f"a:{place_key(ESSAY)}"
     assert UPDATE_UNDONE in card_for(undone, ESSAY)
     assert '<span class="pill">Your update: Done</span>' in card_for(undone, ESSAY)
 
@@ -267,7 +287,7 @@ def test_a_card_changed_from_done_stays_in_reported_done_for_the_visit() -> None
         landed = redirected(client, save(client, card, "not_yet")).text
         returned = client.get(PAGE, headers=PAGE_HEADERS).text
 
-    assert hidden(card, "in_place") == f"d:{ESSAY}"
+    assert hidden(card, "in_place") == f"d:{place_key(ESSAY)}"
     assert placed(landed)[1] == [ESSAY]
     assert '<details class="steps reported-done" open>' in landed
     assert "Still unfinished. It can be included in today's plan." in card_for(landed, ESSAY)
@@ -298,21 +318,202 @@ def test_a_refused_save_keeps_the_cards_the_visit_holds_in_place() -> None:
 
 
 def test_what_a_visit_keeps_in_place_is_read_only_as_the_pages_write_it() -> None:
-    """Escaped ids come back as they were; parts these pages never write are passed over,
-    and a card named twice keeps its first place."""
-    written = InPlace(((ESCAPED, False), (ESSAY, True)))
+    """Each card is carried by a short key of its id; parts these pages never write are
+    passed over, and a card named twice keeps its first place."""
+    written = InPlace().keeping(ESCAPED, False).keeping(ESSAY, True)
     said = written.said()
+    key = place_key(ESSAY)
 
-    assert said == "a:set%2F2%20it%27s%20%231%3F%20%C3%A9|d:assignment-canal-essay"
+    assert said == f"a:{place_key(ESCAPED)}|d:{key}"
+    assert re.fullmatch(r"[0-9a-f]{16}", key)
     assert InPlace.read(said) == written
     assert InPlace.read(None) == InPlace()
-    for junk in ("", "x:" + ESSAY, "a:", "a:set/2", "a:%ZZ", "a:%FF", "a:" + "x" * 201, "a"):
+    for junk in (
+        "",
+        "x:" + key,
+        "a:",
+        "a:" + key[:-1],
+        "a:" + key + "0",
+        "a:" + "A" * 16,
+        "a:" + "g" * 16,
+        "a: " + key,
+        "a:" + ESSAY,
+        "a",
+    ):
         assert InPlace.read(junk) == InPlace(), junk
-    assert InPlace.read(f"d:{ESSAY}|a:{ESSAY}").cards == ((ESSAY, True),)
-    assert InPlace.read("|".join(f"a:card-{n}" for n in range(60))).cards[-1][0] == "card-39"
+    assert InPlace.read(f"d:{key}|a:{key}").cards == ((key, True),)
+    many = InPlace.read("|".join(f"a:{place_key(f'card-{n}')}" for n in range(60))).cards
+    assert [key for key, _ in many] == [place_key(f"card-{n}") for n in range(20, 60)]
+    keys = [place_key(f"card-{n}") for n in range(IN_PLACE_MAX)]
+    over = InPlace.read("|".join(f"a:{key}" for key in [*keys, keys[0]])).cards
+    assert [key for key, _ in over] == [*keys[1:], keys[0]]
     assert written.shown_done(ESSAY, False) is True
     assert written.shown_done(QUIZ, True) is True
     assert written.keeping(ESSAY, False) == written
+
+
+def test_ids_that_differ_only_in_case_or_spacing_are_kept_apart() -> None:
+    kept = InPlace().keeping("Essay", True)
+
+    assert kept.shown_done("Essay", False) is True
+    for other in ("essay", "Essay ", " Essay", "Es say"):
+        assert kept.shown_done(other, False) is False, other
+        assert place_key(other) != place_key("Essay"), other
+
+
+LONG_IDS: Final = [f"{n:02d}" + "\U0001f4d8" * 198 for n in range(IN_PLACE_MAX + 1)]
+"""Ids of the longest length a form takes, each character four bytes once encoded."""
+
+
+def test_the_cookie_holds_every_card_a_visit_keeps_within_a_browsers_limit() -> None:
+    """Forty cards with the longest ids fit the 4,096 bytes a browser keeps for one cookie;
+    one more keeps the latest forty."""
+    full = InPlace()
+    for name in LONG_IDS[:IN_PLACE_MAX]:
+        full = full.keeping(name, False)
+    over = full.keeping(LONG_IDS[-1], True)
+    lines = [leave_in_place(Response(), kept).headers["set-cookie"] for kept in (full, over)]
+
+    assert len(full.cards) == len(over.cards) == IN_PLACE_MAX
+    for line in lines:
+        assert len(line.encode()) <= 4096, len(line.encode())
+    assert InPlace.read(full.said()) == full
+    assert InPlace.read(over.said()) == over
+    assert over.shown_done(LONG_IDS[0], True) is True
+    assert over.shown_done(LONG_IDS[1], True) is False
+    assert over.shown_done(LONG_IDS[-1], False) is True
+
+
+def test_cards_with_long_ids_keep_their_place_through_each_save() -> None:
+    """Three cards with the longest ids, saved Done one after another, each leave a cookie
+    a browser keeps, and all three stay among the active cards."""
+    names = LONG_IDS[:3]
+    with browser() as client:
+        store_of(client).upsert_assignments(
+            [
+                a_row(name, f"Set {n}").model_copy(update={"due_date": PLAN_DATE})
+                for n, name in enumerate(names)
+            ]
+        )
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        page, lines = before, []
+        for name in names:
+            action = student_routes.report_actions(name)[0]
+            fields = form_fields(card_for(page, name), action)
+            answer = client.post(
+                action, data={**fields, "status": "done", "note": ""}, headers=PAGE_HEADERS
+            )
+            lines.append(left_for_the_page(answer))
+            page = redirected(client, answer).text
+            assert placed(page) == placed(before), name
+
+    for line in lines:
+        assert len(line.encode()) <= 4096, len(line.encode())
+    assert all(segment(name) in placed(page)[0] for name in names)
+
+
+@pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])
+def test_a_week_that_cannot_be_read_keeps_the_cards_in_place_for_a_try_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, signed_in: bool
+) -> None:
+    """The page that says her week can't be read leaves the cards in place again, so a try
+    again shows them where they were; a return after it groups them by their updates."""
+    real = student_routes.student_page
+    with her_device(tmp_path, signed_in) as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        page, failures, retries = before, [], []
+        for name, tries in ((ESSAY, 2), (SYLLABUS, 1)):
+            answer = save(client, card_for(page, name), "done", assignment_id=name)
+            for _ in range(tries):
+                monkeypatch.setattr(student_routes, "student_page", refusing())
+                failures.append(client.get(answer.headers["location"], headers=PAGE_HEADERS))
+                monkeypatch.setattr(student_routes, "student_page", real)
+            retries.append(client.get(answer.headers["location"], headers=PAGE_HEADERS))
+            page = retries[-1].text
+        returned = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    first, both = f"a:{place_key(ESSAY)}", f"a:{place_key(ESSAY)}|a:{place_key(SYLLABUS)}"
+    for failure, kept in zip(failures, (first, first, both), strict=True):
+        assert failure.status_code == 503
+        line = left_for_the_page(failure)
+        assert line.startswith(f"{IN_PLACE_COOKIE}={kept};"), line
+        assert "Max-Age=60" in line
+    for retry in retries:
+        assert placed(retry.text) == placed(before)
+        assert left_for_the_page(retry).startswith(f'{IN_PLACE_COOKIE}=""; ')
+    assert sorted(placed(returned)[1]) == sorted([ESSAY, SYLLABUS])
+
+
+@pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])
+@pytest.mark.parametrize(
+    "press",
+    ["refused", "not saved", "save of a card gone", "undo refused", "undo of a card gone"],
+)
+def test_a_press_whose_page_cannot_be_read_keeps_the_cards_in_place(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, signed_in: bool, press: str
+) -> None:
+    """A press from her week answered on the page that reads no store leaves the cards its
+    form kept in place, so the way back shows them where they were."""
+    with her_device(tmp_path, signed_in) as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        first = redirected(client, save(client, week_card(client, ESSAY), "done")).text
+        other = card_for(first, SYLLABUS)
+        store = store_of(client)
+        if press == "not saved":
+            store._connection.execute(
+                "CREATE TRIGGER refuse_reports BEFORE INSERT ON student_reports "
+                "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+            )
+            store._connection.commit()
+        monkeypatch.setattr(student_routes, "student_page", refusing())
+        if press.startswith("undo"):
+            form = form_fields(card_for(first, ESSAY), UNDO_ESSAY)
+            if press == "undo refused":
+                form["report_id"] = "not-a-report"
+            else:
+                monkeypatch.setattr(store, "undo_report", refusing(UnknownAssignment))
+            answer: Answer = client.post(UNDO_ESSAY, data=form, headers=PAGE_HEADERS)
+            kept = InPlace.read(form["in_place"])
+        else:
+            if press == "save of a card gone":
+                monkeypatch.setattr(store, "report_status", refusing(UnknownAssignment))
+            status = None if press == "refused" else "not_yet"
+            answer = save(client, other, status, assignment_id=SYLLABUS)
+            kept = InPlace.read(hidden(other, "in_place"))
+        monkeypatch.undo()
+        back = client.get(f"{PAGE}?week={WEEK}", headers=PAGE_HEADERS)
+
+    assert answer.status_code in (404, 422, 500)
+    assert kept.cards
+    assert left_for_the_page(answer).startswith(f"{IN_PLACE_COOKIE}={kept.said()};")
+    assert placed(back.text) == placed(before)
+    assert left_for_the_page(back).startswith(f'{IN_PLACE_COOKIE}=""; ')
+
+
+def test_a_press_from_the_details_keeps_no_card_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The details are not her week: a press there leaves no cookie, whatever its form
+    names, when it saves and when its page can't be read."""
+    action = student_routes.report_actions(ESSAY)[0]
+    named = {"in_place": f"a:{place_key(QUIZ)}"}
+    with browser() as client:
+        form = whole_form(
+            client.get(f"/student/assignments/{ESSAY}", headers=PAGE_HEADERS).text, action
+        )
+        monkeypatch.setattr(student_routes, "detail_page", refusing())
+        refused = client.post(action, data={**form, **named}, headers=PAGE_HEADERS)
+        undo = {name: form[name] for name in form if name not in ("status", "note")}
+        not_undone = client.post(
+            student_routes.report_actions(ESSAY)[1],
+            data={**undo, "report_id": "not-a-report", **named},
+            headers=PAGE_HEADERS,
+        )
+        monkeypatch.undo()
+        saved = client.post(action, data={**form, **named, "status": "done"}, headers=PAGE_HEADERS)
+
+    assert refused.status_code == not_undone.status_code == 422
+    assert saved.status_code == 303
+    for answer in (refused, not_undone, saved):
+        assert IN_PLACE_COOKIE not in answer.headers.get("set-cookie", "")
 
 
 def test_the_same_update_is_already_saved_and_a_changed_note_is_a_new_one() -> None:
@@ -1219,7 +1420,7 @@ def test_change_and_errors_land_on_the_card_and_name_the_field() -> None:
     card = card_for(saved, ESSAY)
     assert f'action="/student/due-this-week#update-choice-{ESSAY}"' in card
     back = card_for(changing, ESSAY)
-    assert f"week={WEEK}&amp;show={ESSAY}&amp;in_place=d%3A{ESSAY}#title-{ESSAY}" in back
+    assert f"week={WEEK}&amp;show={ESSAY}&amp;in_place=d%3A{place_key(ESSAY)}#title-{ESSAY}" in back
     assert '<details class="steps reported-done" open>' in changing
     group = card_for(unchosen.text, LOG)
     assert (
