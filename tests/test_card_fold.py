@@ -806,6 +806,37 @@ def test_every_button_names_its_assignment_and_the_page_says_what_done_means_onc
     assert page.count('aria-describedby="done-means"') == len(UNREPORTED)
 
 
+@pytest.mark.parametrize("essay", [None, "not_yet", "done"])
+@pytest.mark.parametrize(
+    "params", [{}, {"week": LATER_WEEK}, {"week": LATER_WEEK, "show": ESSAY_ID}]
+)
+def test_what_done_means_is_said_once_above_every_done_button(
+    essay: str | None, params: dict[str, str]
+) -> None:
+    with browser() as client:
+        if essay is not None:
+            reported(store_of(client), essay)
+        page = main_of(page_of(client, **params))
+    buttons = page.count('aria-describedby="done-means"')
+
+    assert ("show" in params) == ('<section class="panel apart">' in page)
+    assert buttons > 0
+    assert page.count(DONE_MEANS) == 1
+    assert page.index(DONE_MEANS) < page.index('aria-describedby="done-means"')
+
+
+@pytest.mark.parametrize("reading_log", [None, "not_yet", "done"])
+def test_work_due_later_has_its_due_date_on_a_line_of_its_own(reading_log: str | None) -> None:
+    with browser() as client:
+        if reading_log is not None:
+            reported(store_of(client), reading_log, READING_LOG_ID)
+        page = main_of(page_of(client))
+    row = card_for(page, READING_LOG_ID)
+
+    assert re.search(r'<p class="due">Due \w+, \w+ \d+</p>', row)
+    assert '<span class="due">' not in page
+
+
 # ------------------------------------------------------------------ edit intent
 
 
