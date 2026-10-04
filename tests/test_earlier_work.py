@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""Earlier unfinished work: homework due before today that she has not reported done, listed
-on every week shown, each with a choice for today's plan. A choice makes the work catch-up
+"""Earlier homework to check: homework due before today that she has not reported done, listed
+on every week shown, each with a choice for today's plan. Ten from the last fourteen days show,
+newest first, with her choices for today and yesterday; the rest are in a fold that says how
+many. A choice makes the work catch-up
 work a plan may schedule tonight or put off, with its dates as given; it lasts the household's
 day, and the next day starts with none and marks yesterday's. Today is Saturday, October 3,
 2026, throughout."""
 
 import dataclasses
 import pathlib
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -77,7 +80,7 @@ BOTH_PAST = due("both-past", "Map quiz review", date(2026, 10, 1))
 """Recorded October 1; the school portal says September 30. Every date is before today."""
 PAST_AND_AHEAD = due("past-and-ahead", "Lab write-up", date(2026, 10, 5))
 """Recorded October 5; the school portal says October 1. One date has passed."""
-SECTION = "Earlier unfinished work"
+SECTION = "Earlier homework to check"
 
 
 @contextmanager
@@ -118,7 +121,7 @@ def page(client: TestClient, **params: str) -> str:
 
 
 def section(html: str) -> str:
-    """The Earlier unfinished work section, or nothing when the page has none."""
+    """The Earlier homework to check section, or nothing when the page has none."""
     start = html.find('id="earlier-work"')
     if start < 0:
         return ""
@@ -266,7 +269,7 @@ def test_a_parent_reads_her_choices_and_meets_no_control(tmp_path: pathlib.Path)
         rows = kept_rows(client)
 
     listed = section(shown)
-    assert "Homework due before today that she hasn't reported done." in words(listed)
+    assert "Homework due before today with no Done update from her." in words(listed)
     assert "Chosen for today" in listed
     assert "<form" not in listed
     assert "you" not in words(listed).lower().split()
@@ -311,8 +314,18 @@ def test_the_same_press_twice_keeps_one_choice_and_says_so() -> None:
 
 @pytest.mark.parametrize(
     "over",
-    [{"made_with": "2026-10-03.0000000000000000"}, {"choice": "remove"}, {"extra": "1"}],
-    ids=["unsigned", "another choice than the page offered", "a field the page doesn't send"],
+    [
+        {"made_with": "2026-10-03.0000000000000000"},
+        {"choice": "remove"},
+        {"extra": "1"},
+        {"place": "elsewhere"},
+    ],
+    ids=[
+        "unsigned",
+        "another choice than the page offered",
+        "a field the page doesn't send",
+        "a place the page doesn't name",
+    ],
 )
 def test_a_form_no_page_made_changes_nothing(over: dict[str, str]) -> None:
     with household(OCT_2, OCT_3) as client:
@@ -437,3 +450,189 @@ def test_choosing_after_a_plan_was_made_says_to_plan_again() -> None:
 
     listed = words(item_of(shown, OCT_2.assignment_id))
     assert "Today's plan was made before you chose it. Plan again to include it." in listed
+
+
+# ------------------------------------------------------------------ how much of it shows
+
+
+def days_ago(count: int) -> date:
+    return date.fromordinal(TODAY.toordinal() - count)
+
+
+def due_days_ago(*counts: int) -> tuple[Assignment, ...]:
+    """Geometry homework due ``count`` days before today, one for each count."""
+    return tuple(
+        due(f"ago-{count:02d}", f"Set from {count} days ago", days_ago(count)) for count in counts
+    )
+
+
+def shown_ids(html: str) -> list[str]:
+    """The items of the section above its fold, in the order shown."""
+    listed = section(html)
+    fold = listed.find("<details")
+    return re.findall(r'<li id="earlier-([^"]+)"', listed if fold < 0 else listed[:fold])
+
+
+def folded_ids(html: str) -> list[str]:
+    """The items inside the section's fold, in the order shown."""
+    listed = section(html)
+    fold = listed.find("<details")
+    return [] if fold < 0 else re.findall(r'<li id="earlier-([^"]+)"', listed[fold:])
+
+
+def the_fold(html: str) -> str:
+    """The fold's opening tag."""
+    listed = section(html)
+    start = listed.index("<details")
+    return listed[start : listed.index(">", start) + 1]
+
+
+def test_day_fourteen_shows_and_day_fifteen_is_folded_with_its_count() -> None:
+    with household(*due_days_ago(1, 14, 15)) as client:
+        shown = page(client)
+
+    assert shown_ids(shown) == ["ago-01", "ago-14"]
+    assert folded_ids(shown) == ["ago-15"]
+    assert "<summary>More earlier homework (1)</summary>" in section(shown)
+    assert " open" not in the_fold(shown)
+
+
+def test_the_tenth_item_shows_and_the_eleventh_is_folded_newest_first() -> None:
+    with household(*due_days_ago(*range(1, 12))) as client:
+        shown = page(client)
+
+    assert shown_ids(shown) == [f"ago-{count:02d}" for count in range(1, 11)]
+    assert folded_ids(shown) == ["ago-11"]
+    assert "<summary>More earlier homework (1)</summary>" in section(shown)
+
+
+def test_ten_or_fewer_from_the_last_fourteen_days_need_no_fold() -> None:
+    with household(*due_days_ago(*range(1, 11))) as client:
+        shown = page(client)
+
+    assert len(shown_ids(shown)) == 10
+    assert "<details" not in section(shown)
+
+
+def test_choices_for_today_and_yesterday_show_once_whatever_their_age() -> None:
+    recent = due_days_ago(*range(1, 12))
+    old = due_days_ago(30, 40, 50)
+    with household(*recent, *old) as client:
+        store = store_of(client)
+        store.choose_catch_up("ago-30", TODAY, include=True)
+        store.choose_catch_up("ago-40", date(2026, 10, 2), include=True)
+        store.choose_catch_up("ago-02", TODAY, include=True)
+        store.choose_catch_up("ago-11", date(2026, 10, 2), include=True)
+        shown = page(client)
+
+    assert shown_ids(shown) == [
+        *[f"ago-{count:02d}" for count in range(1, 12)],
+        "ago-30",
+        "ago-40",
+    ]
+    assert folded_ids(shown) == ["ago-50"]
+    assert "<summary>More earlier homework (1)</summary>" in section(shown)
+    every = shown_ids(shown) + folded_ids(shown)
+    assert len(every) == len(set(every)) == 14
+    assert "Chosen yesterday" in item_of(shown, "ago-40")
+    assert "Include in today's plan" in item_of(shown, "ago-40")
+
+
+def test_a_press_in_the_fold_lands_on_its_item_with_the_fold_open() -> None:
+    with household(*due_days_ago(*range(1, 12)), *due_days_ago(30)) as client:
+        before = page(client)
+        landed = choose(client, "ago-30")
+        after = client.get(landed, headers=PAGE_HEADERS).text
+        later = page(client)
+        removed = choose(client, "ago-30")
+        after_removing = client.get(removed, headers=PAGE_HEADERS).text
+
+    assert "ago-30" in folded_ids(before)
+    assert landed.endswith("#earlier-ago-30")
+    assert "ago-30" in folded_ids(after)
+    assert the_fold(after).endswith(" open>")
+    assert "Included in today's plan." in words(item_of(after, "ago-30"))
+    assert "ago-30" in shown_ids(later)
+    assert "ago-30" in shown_ids(after_removing)
+    assert "Removed from today's plan." in words(item_of(after_removing, "ago-30"))
+
+
+def test_a_refused_press_in_the_fold_is_said_there_with_the_fold_open() -> None:
+    with household(*due_days_ago(*range(1, 12)), *due_days_ago(30)) as client:
+        yesterday = page(client)
+        with_clock(client, SetClock(TOMORROW, NOON))
+        action = earlier_action("ago-30")
+        answer = client.post(action, data=form_fields(yesterday, action), headers=PAGE_HEADERS)
+
+    assert answer.status_code == 409
+    assert "ago-30" in folded_ids(answer.text)
+    assert the_fold(answer.text).endswith(" open>")
+    assert CHOICE_FROM_ANOTHER_DAY in words(item_of(answer.text, "ago-30"))
+
+
+def test_the_fold_is_the_pages_own_and_reading_it_writes_nothing() -> None:
+    with household(*due_days_ago(*range(1, 12)), *due_days_ago(30)) as client:
+        store = store_of(client)
+        store.choose_catch_up("ago-02", TODAY, include=True)
+        before = (kept_rows(client), store.all_assignments(), store.student_reports("ago-30"))
+        shown = page(client)
+        opened = page(client, earlier="ago-30", earlier_said="included")
+        after = (kept_rows(client), store.all_assignments(), store.student_reports("ago-30"))
+
+    fold = section(shown)[section(shown).index("<details") :]
+    summary = fold[: fold.index("</summary>")]
+    assert "<form" not in summary
+    assert "<a " not in summary
+    assert the_fold(opened).endswith(" open>")
+    assert after == before
+
+
+def test_each_item_says_not_yet_or_no_update_yet_under_its_heading() -> None:
+    with household(OCT_2, BOTH_PAST) as client:
+        store_of(client).report_status(
+            OCT_2.assignment_id, "not_yet", None, expected_head=None, now=NOON, today=TODAY
+        )
+        shown = page(client)
+
+    assert "Earlier homework to check</h2>" in section(shown)
+    assert "Earlier unfinished work" not in shown
+    assert '<span class="pill">Not yet</span>' in item_of(shown, OCT_2.assignment_id)
+    assert "No update yet" not in item_of(shown, OCT_2.assignment_id)
+    assert '<span class="pill">No update yet</span>' in item_of(shown, BOTH_PAST.assignment_id)
+
+
+def test_a_parent_reads_the_fold_and_the_labels_with_no_control(tmp_path: pathlib.Path) -> None:
+    settings = dataclasses.replace(signed_in_household(tmp_path), today=TODAY, fixture_path=None)
+    with client_for(settings) as client:
+        put_on_record(store_of(client), due_days_ago(*range(1, 12)))
+        signed_in(client, THEIRS)
+        shown = page(client, earlier="ago-11", earlier_said="included")
+
+    listed = section(shown)
+    assert folded_ids(shown) == ["ago-11"]
+    assert "<summary>More earlier homework (1)</summary>" in listed
+    assert '<span class="pill">No update yet</span>' in item_of(shown, "ago-11")
+    assert "<form" not in listed
+    assert "Included in today's plan." not in words(listed)
+
+
+def test_her_place_holds_through_presses_until_her_next_visit() -> None:
+    with household(*due_days_ago(*range(1, 12)), *due_days_ago(30)) as client:
+        landed = client.get(choose(client, "ago-30"), headers=PAGE_HEADERS).text
+        action = earlier_action("ago-30")
+        answer = client.post(action, data=form_fields(landed, action), headers=PAGE_HEADERS)
+        removed = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
+        chosen_again = choose(client, "ago-30")
+        from_the_list = choose(client, "ago-02")
+        listed = client.get(from_the_list, headers=PAGE_HEADERS).text
+        rows = kept_rows(client)
+
+    assert "earlier_place=fold" in answer.headers["location"]
+    assert "ago-30" in folded_ids(removed)
+    assert the_fold(removed).endswith(" open>")
+    assert "Removed from today's plan." in words(item_of(removed, "ago-30"))
+    assert "earlier_place=fold" in chosen_again
+    assert "earlier_place=list" in from_the_list
+    assert "ago-02" in shown_ids(listed)
+    assert " open" not in the_fold(listed)
+    assert rows == [(TODAY.isoformat(), "ago-02"), (TODAY.isoformat(), "ago-30")]

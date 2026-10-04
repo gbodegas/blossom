@@ -81,7 +81,7 @@ from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEEDS_HAND_IN, NEXT_ACTION_
 from blossom.noticing import (
     Everything,
     Noticing,
-    earlier_unfinished,
+    earlier_to_check,
     expect_due_date,
     in_week,
     monday_of,
@@ -256,8 +256,12 @@ SAVED_ELSEWHERE: Final = "An update was saved on another device. Review it befor
 NOT_HERS_TO_UPDATE: Final = "Sign in as the student to update."
 NOT_ON_RECORD: Final = "That assignment is not on record, so nothing was changed."
 EARLIER_WORK: Final = "earlier-work"
-"""The id of the section that lists earlier unfinished work, on every week shown."""
-EARLIER_FIELDS: Final = frozenset({"choice", "made_with", "week"})
+"""The id of the section that lists earlier homework to check, on every week shown."""
+EARLIER_SHOWN: Final = 10
+"""How many items from the last ``EARLIER_DAYS`` show above the fold, newest first."""
+EARLIER_DAYS: Final = 14
+"""How many calendar days before today an item may be due and still show above the fold."""
+EARLIER_FIELDS: Final = frozenset({"choice", "made_with", "week", "place"})
 EARLIER_CHOICES: Final = ("include", "remove")
 EARLIER_SAID: Final = {
     "included": "Included in today's plan.",
@@ -265,7 +269,9 @@ EARLIER_SAID: Final = {
     "already_included": "This was already in today's plan.",
     "already_removed": "This was already out of today's plan.",
 }
-"""What a choice in Earlier unfinished work did, by the word its address carries."""
+"""What a choice in Earlier homework to check did, by the word its address carries."""
+EARLIER_PLACES: Final = ("list", "fold")
+"""Where an item was shown when she pressed it: above the fold, or in it."""
 CHOICE_NOT_SAVED: Final = "Your choice was not saved"
 NOT_HERS_TO_CHOOSE: Final = "Sign in as the student to choose work for today's plan."
 CHOICE_FROM_ANOTHER_DAY: Final = (
@@ -276,7 +282,8 @@ CHOICE_BAD_FORM: Final = (
     "That form isn't one this page sends, so nothing was changed. Choose again here."
 )
 NOT_EARLIER_NOW: Final = (
-    "That homework isn't earlier unfinished work now, so it can't be chosen. Nothing was changed."
+    "That homework isn't on the list of earlier homework now, so it can't be chosen. Nothing "
+    "was changed."
 )
 CHOICE_FAILED: Final = "Your choice could not be saved, so nothing was changed. Try again."
 NOT_THIS_CARDS: Final = (
@@ -1291,12 +1298,14 @@ def build_student_due_this_week_view(
 def earlier_views(
     found: Everything, today: date, noticed: Mapping[str, Noticing]
 ) -> list[EarlierWorkView]:
-    """Earlier unfinished work at one reading, with her choices for today and yesterday.
-    Today's plan date decides it, never the week a page shows."""
+    """Earlier homework to check at one reading, with her standing update and her choices for
+    today and yesterday, folded as ``fold_earlier`` says. Today's plan date decides it, never
+    the week a page shows."""
     chosen = found.catch_up.get(today, frozenset())
     before = found.catch_up.get(today - timedelta(days=1), frozenset())
     views = []
-    for item in earlier_unfinished(found, today, noticed=noticed):
+    for item in earlier_to_check(found, today, noticed=noticed):
+        standing = found.statuses.get(item.assignment_id)
         said = noticed[item.assignment_id]
         given = {day for day in (item.due_date, *said.observed_dates) if day is not None}
         views.append(
@@ -1309,9 +1318,44 @@ def earlier_views(
                 dates_differ=len(given) > 1,
                 chosen=item.assignment_id in chosen,
                 chosen_yesterday=item.assignment_id in before,
+                update="not_yet"
+                if standing is not None and standing.status == "not_yet"
+                else "none",
             )
         )
-    return views
+    return fold_earlier(views, today)
+
+
+def fold_earlier(earlier: list[EarlierWorkView], today: date) -> list[EarlierWorkView]:
+    """Which items show and which wait in the fold. Up to ``EARLIER_SHOWN`` due in the
+    ``EARLIER_DAYS`` before today show, newest first, and so does anything chosen for today
+    or yesterday, whatever its age; the rest are folded. Nothing here changes a choice or
+    an update."""
+    # Counted in days, so a clock pinned near the first day the calendar holds still works.
+    first = today.toordinal() - EARLIER_DAYS
+    recent = [
+        item.assignment_id
+        for item in earlier
+        if first <= item.earliest.toordinal() < today.toordinal()
+    ]
+    shown = set(recent[:EARLIER_SHOWN])
+    shown.update(item.assignment_id for item in earlier if item.chosen or item.chosen_yesterday)
+    return [item.model_copy(update={"folded": item.assignment_id not in shown}) for item in earlier]
+
+
+def kept_in_place(
+    earlier: list[EarlierWorkView], note: "EarlierNote | None"
+) -> list[EarlierWorkView]:
+    """The item a press named, shown where she pressed it, above the fold or in it, so her
+    place holds until her next visit wherever the rules would now put it."""
+    if note is None or note.folded is None:
+        return earlier
+    return [
+        item.model_copy(update={"folded": note.folded})
+        if item.assignment_id == note.assignment_id
+        else item
+        for item in earlier
+    ]
 
 
 def in_todays_plan(
@@ -1506,7 +1550,7 @@ def student_page(
     address says a help form did, checked against the page's one reading of her requests;
     and ``help_problem`` is what a press in the Help section could not do, said there. Each
     Ask for help form gets a fresh id, which needs no read. ``earlier_note`` is what a choice
-    in Earlier unfinished work did or could not do, said beside the item it named.
+    in Earlier homework to check did or could not do, said beside the item it named.
     """
     viewer = viewer_of(request)
     card = as_read_by(card, viewer)
@@ -1558,13 +1602,8 @@ def student_page(
         groups=groups,
         named=named,
     )
-    view = view.model_copy(
-        update={
-            "earlier": in_todays_plan(
-                view.earlier, record, None if todays is None else todays.reading
-            )
-        }
-    )
+    planned = in_todays_plan(view.earlier, record, None if todays is None else todays.reading)
+    view = view.model_copy(update={"earlier": kept_in_place(planned, earlier_note)})
     if earlier_note is not None and viewer == "parent":
         earlier_note = replace(earlier_note, said=None)
     help_result = help_result_for(help_marker, groups, hers=not parent_reads(request))
@@ -1706,6 +1745,9 @@ def due_this_week(
     earlier_said: Annotated[
         str | None, Query(description="what that choice did; a note, from a fixed set")
     ] = None,
+    earlier_place: Annotated[
+        str | None, Query(description="where that item was shown, list or fold; a note")
+    ] = None,
 ) -> HTMLResponse:
     """Render her week and today's plan.
 
@@ -1725,7 +1767,7 @@ def due_this_week(
     are there. Either is said to her in Help, beside that request when it is on the page,
     and at the top of Help when it is not. When the record cannot be read, the page says so
     and offers the same address again. ``earlier`` and ``earlier_said`` name what a choice in
-    Earlier unfinished work just did, said beside that item; a word not in the set says
+    Earlier homework to check just did, said beside that item; a word not in the set says
     nothing.
     """
     try:
@@ -1734,7 +1776,11 @@ def due_this_week(
         card = card_shown(saved, same, undone, change, show)
         marker = marker_from(asked, asked_again)
         chose = (
-            EarlierNote(earlier, said=EARLIER_SAID[earlier_said])
+            EarlierNote(
+                earlier,
+                said=EARLIER_SAID[earlier_said],
+                folded={"fold": True, "list": False}.get(earlier_place or ""),
+            )
             if earlier and earlier_said in EARLIER_SAID
             else None
         )
@@ -2973,23 +3019,25 @@ def signal_not_saved(request: Request, state: ApplicationState) -> HTMLResponse:
     )
 
 
-# ---------------------------------------------------------------- earlier unfinished work
+# ---------------------------------------------------------------- earlier homework to check
 
 
 @dataclass(frozen=True)
 class EarlierNote:
-    """What one choice in Earlier unfinished work did, ``said``, or could not do,
+    """What one choice in Earlier homework to check did, ``said``, or could not do,
     ``problem``, for the item it named, with ``choice`` the press she made, kept on a
-    refusal."""
+    refusal. ``folded`` is where the item was shown when she pressed it, in the fold or
+    above it, so it is shown there again; ``None`` places it by the rules."""
 
     assignment_id: str
     said: str | None = None
     problem: str | None = None
     choice: str | None = None
+    folded: bool | None = None
 
 
 def earlier_anchor(assignment_id: str) -> str:
-    """The id of an item in Earlier unfinished work, apart from its card's on a week."""
+    """The id of an item in Earlier homework to check, apart from its card's on a week."""
     return f"earlier-{segment(assignment_id)}"
 
 
@@ -3017,14 +3065,16 @@ def day_made_for(key: bytes, given: str, assignment_id: str, choice: str) -> dat
     return day if hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8")) else None
 
 
-def after_choice(week: date | None, said: str, assignment_id: str) -> str:
-    """Where a saved choice sends her: the week she was on, at the item, with what it did."""
+def after_choice(week: date | None, said: str, assignment_id: str, place: str) -> str:
+    """Where a saved choice sends her: the week she was on, at the item, shown where she
+    pressed it, with what it did."""
     return address(
         PAGE,
         fragment=earlier_anchor(assignment_id),
         week=None if week is None else week.isoformat(),
         earlier=assignment_id,
         earlier_said=said,
+        earlier_place=place,
     )
 
 
@@ -3034,14 +3084,15 @@ def after_choice(week: date | None, said: str, assignment_id: str) -> str:
     include_in_schema=False,
 )
 async def choose_earlier_work(request: Request, assignment_id: str, state: State) -> Response:
-    """Include earlier unfinished work in today's plan, or take it out.
+    """Include earlier homework in today's plan, or take it out.
 
     A parent is answered 403 before the form is read, and nothing is written. Her form is
     read whole, each field once. The choice is for the household's day now, and the form
     carries the day its page was made for, signed: a form no page made is refused, 422, and
     one made on another day is refused, 409, since its choices were that day's. Including
-    work that is not earlier unfinished work now, reported Done or redated, is refused, 409.
-    The same choice twice writes nothing and says so. Every refusal comes back on the week
+    work that is not on the earlier list now, reported Done or redated, is refused, 409.
+    The same choice twice writes nothing and says so. Where the item was shown, above the
+    fold or in it, only places it there again. Every refusal comes back on the week
     she was on with her press named beside the item. A refused write changes nothing. The
     choice never touches the assignment, its dates, her reports, or anyone's notes.
     """
@@ -3051,6 +3102,7 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
     choice = fields.get("choice", "")
     given = fields.get("week", "").strip()
     week = week_named(given)
+    place = fields.get("place", "")
     today = state.clock.today()
 
     def refused(problem: str, code: int) -> Response:
@@ -3058,6 +3110,7 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
             assignment_id,
             problem=problem,
             choice=choice if choice in EARLIER_CHOICES else None,
+            folded={"fold": True, "list": False}.get(place),
         )
         return shown_once(
             request,
@@ -3074,7 +3127,12 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
             code,
         )
 
-    if not whole or choice not in EARLIER_CHOICES or (given and week is None):
+    if (
+        not whole
+        or choice not in EARLIER_CHOICES
+        or place not in EARLIER_PLACES
+        or (given and week is None)
+    ):
         return refused(CHOICE_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
     made_for = day_made_for(state.result_key, fields["made_with"], assignment_id, choice)
     if made_for is None:
@@ -3088,7 +3146,7 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
                 found = read_everything(state.project_state, state.project_state)
                 if assignment_id not in {item.assignment_id for item in found.assignments}:
                     return refused(NOT_ON_RECORD, status.HTTP_404_NOT_FOUND)
-                eligible = {item.assignment_id for item in earlier_unfinished(found, today)}
+                eligible = {item.assignment_id for item in earlier_to_check(found, today)}
                 if assignment_id not in eligible:
                     return refused(NOT_EARLIER_NOW, status.HTTP_409_CONFLICT)
             outcome = state.project_state.choose_catch_up(assignment_id, today, include=include)
@@ -3102,5 +3160,5 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
     else:
         said = "already_included" if include else "already_removed"
     return RedirectResponse(
-        after_choice(week, said, assignment_id), status_code=status.HTTP_303_SEE_OTHER
+        after_choice(week, said, assignment_id, place), status_code=status.HTTP_303_SEE_OTHER
     )

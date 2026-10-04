@@ -700,7 +700,7 @@ def hidden(html: str, name: str) -> str:
 
 
 def outside_earlier_work(page: str) -> str:
-    """Her page without its Earlier unfinished work section, which lists work due before
+    """Her page without its Earlier homework to check section, which lists work due before
     today on every week shown: the week shown and everything else."""
     start = page.find('<section class="panel assigned earlier-work"')
     if start < 0:

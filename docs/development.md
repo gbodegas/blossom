@@ -178,7 +178,7 @@ Three files under `.local/` outlive a restart:
   or waits for a parent's review. A fifth, `intake_decisions`, keeps each
   answer about which homework a school row is about: the answer, the row's
   class, title, and due date, where it landed, and the homework the card
-  listed. A sixth, `catch_up_choices`, keeps the earlier unfinished work she
+  listed. A sixth, `catch_up_choices`, keeps the earlier homework she
   chose for a day's plan, one row of the day and the assignment each, and
   nothing else. A file from before any of them gains the tables on the
   first start.

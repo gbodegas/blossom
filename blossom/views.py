@@ -607,7 +607,7 @@ class WeekView(BaseModel):
 
 
 class EarlierWorkView(BaseModel):
-    """One piece of earlier unfinished work: due before today by every date given, not
+    """One piece of earlier homework to check: due before today by every date given, not
     reported done, and outside today's planning window, with her choice for today.
 
     ``due_date`` is the record's date and ``earliest`` the earliest date anyone gives;
@@ -615,7 +615,9 @@ class EarlierWorkView(BaseModel):
     and ``chosen_yesterday`` hers for the day before, which a new day does not carry.
     ``in_plan`` is where today's plan put it once chosen: ``scheduled``, ``put_off`` with
     ``put_off_reason``, ``missing`` when the plan was made without it, or ``None`` with no
-    plan or no choice.
+    plan or no choice. ``update`` is her standing update, ``not_yet`` or ``none`` when she
+    has said nothing, which is no word on whether the work is finished. ``folded`` puts it
+    in the fold under the shown part.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -630,6 +632,8 @@ class EarlierWorkView(BaseModel):
     chosen_yesterday: bool = False
     in_plan: str | None = None
     put_off_reason: str | None = None
+    update: str = "none"
+    folded: bool = False
 
 
 class StudentDueThisWeekView(BaseModel):
@@ -688,7 +692,7 @@ class StudentDueThisWeekView(BaseModel):
     week shown, its dates having changed: shown apart, so the result and anything she
     typed are never lost to a week the card has left."""
     earlier: list[EarlierWorkView] = []
-    """Earlier unfinished work and her choices for today's plan, the same on every week
+    """Earlier homework to check and her choices for today's plan, the same on every week
     shown: they are about today, never the week a page shows."""
 
 

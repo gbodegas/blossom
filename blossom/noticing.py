@@ -484,7 +484,7 @@ def due_before(noticing: Noticing, day: date) -> bool:
     return earliest is not None and earliest < day
 
 
-def earlier_unfinished(
+def earlier_to_check(
     everything: Everything, today: date, *, noticed: Mapping[str, Noticing] | None = None
 ) -> list[Assignment]:
     """Work she has not reported done that today's planning window leaves out and that some
@@ -510,7 +510,7 @@ def planning_week(
     everything: Everything, plan_date: date, *, noticed: Mapping[str, Noticing] | None = None
 ) -> Week:
     """What a plan for ``plan_date`` is made from: the window from that day, and the earlier
-    unfinished work she chose for that day, as catch-up work. Every reader of a plan's
+    work she chose for that day, as catch-up work. Every reader of a plan's
     input, the run, its fingerprint, and the pages, takes it from here."""
     if noticed is None:
         noticed = noticings_of(everything)
@@ -518,7 +518,7 @@ def planning_week(
     chosen = everything.catch_up.get(plan_date, frozenset())
     extra = [
         item
-        for item in earlier_unfinished(everything, plan_date, noticed=noticed)
+        for item in earlier_to_check(everything, plan_date, noticed=noticed)
         if item.assignment_id in chosen
     ]
     if not extra:

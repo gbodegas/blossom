@@ -1523,8 +1523,11 @@ by the planner's own rule, so undated work is in and a source's date inside
 the window counts; work outside it is named with the window's days.
 
 Work she has not reported done that every date puts before today is listed
-under Earlier unfinished work on every week shown, each with "Include in
-today's plan". A choice is hers, for the household's day, kept in
+under Earlier homework to check on every week shown, each with "Include in
+today's plan" and her update, "Not yet" or "No update yet": no Done report is no
+word that the work is unfinished. Up to ten due in the fourteen days before
+today show, newest first, with anything chosen for today or yesterday; the
+rest wait in a fold, "More earlier homework (N)", which only shows them. A choice is hers, for the household's day, kept in
 `catch_up_choices` and nothing else; the next day starts with none and marks
 yesterday's. `planning_week` adds the work she chose to the window as catch-up
 work, so the run, the plan's fingerprint, and the pages read the same input.

@@ -56,7 +56,7 @@ CATCH_UP = (
     "date stays as recorded."
 )
 CATCH_UP_PUT_OFF = (
-    "Earlier work you chose that this plan puts off stays under Earlier unfinished work "
+    "Earlier work you chose that this plan puts off stays under Earlier homework to check "
     "on your week, so you can choose it again."
 )
 
