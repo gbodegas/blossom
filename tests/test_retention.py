@@ -1536,7 +1536,7 @@ def test_a_run_whose_time_runs_out_waiting_to_publish_publishes_nothing(
     assert threads == {first}
 
 
-@pytest.mark.parametrize(("seconds", "waited"), [(5.0, 2.328), (2.0, 1.999)])
+@pytest.mark.parametrize(("seconds", "waited"), [(5.0, 2.328), (2.0, 1.9)])
 def test_a_run_that_gets_the_lock_in_time_publishes(seconds: float, waited: float) -> None:
     first, late, latest, ended, threads = published_after_a_wait(seconds, waited)
 
@@ -2169,15 +2169,26 @@ def test_a_run_canceled_while_its_publication_waits_publishes_nothing_later(
 
 @pytest.mark.parametrize("newer", [False, True])
 @pytest.mark.parametrize("times", [1, 2])
-@pytest.mark.parametrize("where", ["publishing", "waiting to publish", "draft held"])
+@pytest.mark.parametrize(
+    "where",
+    [
+        "publishing",
+        "waiting to publish",
+        "draft held",
+        "publishing, draft held",
+        "publishing, all held",
+        "waiting to publish, all held",
+    ],
+)
 def test_a_run_canceled_before_its_plan_is_published_is_never_published_by_the_sweep(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, where: str, times: int, newer: bool
 ) -> None:
     """A run canceled, once or twice, while its publication waits for the drafts file or while
     it waits for the decision lock to publish, takes back its draft and its paused thread
     before it lets the evening go, and is kept as interrupted. A draft that can't be taken
-    back then loses its thread all the same. Either way the sweep never puts it in place of
-    today's plan or of a newer one."""
+    back then loses its thread all the same, and one whose thread can't be cleared either
+    keeps both. Either way the sweep never puts it in place of today's plan or of a newer
+    one."""
     state = file_backed_application(tmp_path)
     try:
 
@@ -2187,9 +2198,9 @@ def test_a_run_canceled_before_its_plan_is_published_is_never_published_by_the_s
             first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
             loop = asyncio.get_running_loop()
             contended = HeldFile(state, tmp_path / "blossom.sqlite3", 1.0, loop)
-            if where == "publishing":
+            if where.startswith("publishing"):
                 monkeypatch.setattr(state.drafts, "publish", contended)
-            if where == "draft held":
+            if "held" in where:
 
                 def held(
                     draft_id: str, *, outcome: str = "interrupted", unless_published: bool = False
@@ -2198,6 +2209,13 @@ def test_a_run_canceled_before_its_plan_is_published_is_never_published_by_the_s
                     raise sqlite3.OperationalError(locked)
 
                 monkeypatch.setattr(state.drafts, "withdraw", held)
+            if where.endswith("all held"):
+
+                async def undeletable(thread_id: str) -> None:
+                    locked = "database is locked"
+                    raise sqlite3.OperationalError(locked)
+
+                monkeypatch.setattr(state.checkpointer, "adelete_thread", undeletable)
             joined = asyncio.Event()
             paused = asyncio.Event()
             holds: list[asyncio.Lock] = []
@@ -2222,7 +2240,7 @@ def test_a_run_canceled_before_its_plan_is_published_is_never_published_by_the_s
                         budget=RunBudget(seconds=5.0),
                     )
                 )
-                if where == "publishing":
+                if where.startswith("publishing"):
                     await contended.started.wait()
                     await asyncio.sleep(0.1)
                     for _ in range(times):
@@ -2265,8 +2283,12 @@ def test_a_run_canceled_before_its_plan_is_published_is_never_published_by_the_s
     finally:
         state.close()
 
-    assert threads == {first}
-    if where == "draft held":
+    if where.endswith("all held"):
+        assert first in threads
+        assert len(threads) == 2
+    else:
+        assert threads == {first}
+    if "held" in where:
         assert len(left) == 1
         assert ended == []
     else:
@@ -2557,6 +2579,406 @@ def test_cleanup_after_a_publication_runs_out_of_time_leaves_the_server_answerin
     assert retry.outcome == "accepted"
     assert latest is not None
     assert latest.thread_id == retry.thread_id
+
+
+@pytest.mark.parametrize("cycle", [1, 2])
+def test_a_run_for_another_evening_starts_on_time_while_an_expired_run_waits_to_tidy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, cycle: int
+) -> None:
+    """A run out of time takes its draft back while another connection holds the drafts file
+    for 0.9 seconds, and a run for the next evening starts meanwhile. A callback due 0.05
+    seconds later runs on time, today's plan stays, the other run plans, and a retry
+    publishes."""
+    state = file_backed_application(tmp_path)
+    try:
+
+        async def scenario() -> tuple[str, PlanRunView, PlanRunView, float, PlanRunView]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            loop = asyncio.get_running_loop()
+            held = HeldStoreCall(state.drafts.withdraw, tmp_path / "blossom.sqlite3", 0.9, loop)
+            withdrawing = asyncio.Event()
+
+            def noted(*args: object, **kwargs: object) -> object:
+                loop.call_soon_threadsafe(withdrawing.set)
+                return held(*args, **kwargs)
+
+            monkeypatch.setattr(state.drafts, "withdraw", noted)
+            try:
+                late = asyncio.create_task(
+                    run_plan(
+                        plan_graph_for(
+                            state, planner=HeldUntil(), critic=Scripted(ok(accepting()))
+                        ),
+                        PLAN_DATE,
+                        state,
+                        budget=RunBudget(seconds=0.2),
+                    )
+                )
+                await withdrawing.wait()
+                await asyncio.sleep(0.05)
+                tomorrow = PLAN_DATE + timedelta(days=1)
+                other = asyncio.create_task(
+                    run_plan(
+                        graph_for(
+                            state, fixture_week_plan().model_copy(update={"plan_date": tomorrow})
+                        ),
+                        tomorrow,
+                        state,
+                    )
+                )
+                on_time: asyncio.Future[float] = loop.create_future()
+                due = monotonic() + 0.05
+                loop.call_later(0.05, lambda: on_time.set_result(monotonic() - due))
+                late_by = await on_time
+                view = await late
+                next_evening = await other
+            finally:
+                held.close()
+            monkeypatch.undo()
+            retry = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            return first.thread_id, view, next_evening, late_by, retry
+
+        first, view, next_evening, late_by, retry = asyncio.run(scenario())
+        kept = state.drafts.latest_for(PLAN_DATE + timedelta(days=1))
+        latest = state.drafts.latest_for(PLAN_DATE)
+        timed_out = [run.thread_id for run in state.drafts.runs_without_a_draft()]
+    finally:
+        state.close()
+
+    assert late_by < 0.2
+    assert view.outcome == "timed_out"
+    assert view.thread_id in timed_out
+    assert next_evening.outcome == "accepted"
+    assert kept is not None
+    assert kept.thread_id == next_evening.thread_id
+    assert retry.outcome == "accepted"
+    assert latest is not None
+    assert latest.thread_id == retry.thread_id
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()
+
+
+@pytest.mark.parametrize(
+    ("method", "call"),
+    [("newest_published", 1), ("newest_published", 2), ("waiting", 1), ("record_decision", 1)],
+)
+def test_a_runs_reads_and_held_reviews_wait_for_the_drafts_file_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, method: str, call: int
+) -> None:
+    """A run that starts, or reaches its publication, while another connection holds the drafts
+    file reads the evening's last publication and the waiting drafts, and records a review a
+    thread holds, on a worker thread: a callback due meanwhile runs on time and the run
+    publishes its plan."""
+    state = file_backed_application(tmp_path)
+    try:
+
+        async def scenario() -> tuple[str, PlanRunView, float, DraftRecord | None]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            assert first.draft_id is not None
+            if method == "record_decision":
+                monkeypatch.setattr(
+                    state.drafts, "record_decision", failing_once_then(state.drafts)
+                )
+                with pytest.raises(RuntimeError, match="database is locked"):
+                    await decide_draft(
+                        state,
+                        lambda: graph_for(state),
+                        first.draft_id,
+                        DecisionRequest(approved=True, reason="good pacing"),
+                    )
+            original = getattr(state.drafts, method)
+            loop = asyncio.get_running_loop()
+            held = HeldStoreCall(original, tmp_path / "blossom.sqlite3", 0.5, loop)
+            calls: list[int] = []
+
+            def nth(*args: object, **kwargs: object) -> object:
+                calls.append(1)
+                return held(*args, **kwargs) if len(calls) == call else original(*args, **kwargs)
+
+            monkeypatch.setattr(state.drafts, method, nth)
+            try:
+                view = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+                late_by = await held.late_by
+            finally:
+                held.close()
+            monkeypatch.undo()
+            return first.draft_id, view, late_by, state.drafts.get(first.draft_id)
+
+        reviewed_id, view, late_by, reviewed = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert late_by < 0.2
+    assert view.outcome == "accepted"
+    assert latest is not None
+    assert latest.thread_id == view.thread_id
+    assert reviewed is not None
+    if method == "record_decision":
+        assert reviewed.decision == "approved"
+    else:
+        assert reviewed.decision == "superseded"
+    assert reviewed.draft_id == reviewed_id
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()
+
+
+@pytest.mark.parametrize("call", [1, 2])
+def test_a_press_while_a_runs_read_waits_is_refused_not_timed_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, call: int
+) -> None:
+    """A run reads the evening's last publication from a held drafts file, as it starts or
+    before it publishes, and a second press for the evening runs out of time waiting for the
+    lock meanwhile. The press is refused and keeps no record; the run publishes its plan."""
+    state = file_backed_application(tmp_path)
+    try:
+
+        async def scenario() -> tuple[str, PlanRunView, list[RunRecord]]:
+            await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            loop = asyncio.get_running_loop()
+            original: Callable[..., object] = state.drafts.newest_published
+            held = HeldStoreCall(original, tmp_path / "blossom.sqlite3", 0.8, loop)
+            reading = asyncio.Event()
+            calls: list[int] = []
+
+            def nth(*args: object, **kwargs: object) -> object:
+                calls.append(1)
+                if len(calls) != call:
+                    return original(*args, **kwargs)
+                loop.call_soon_threadsafe(reading.set)
+                return held(*args, **kwargs)
+
+            monkeypatch.setattr(state.drafts, "newest_published", nth)
+            try:
+                working = asyncio.create_task(
+                    run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+                )
+                await reading.wait()
+                await asyncio.sleep(0.05)
+                try:
+                    pressed = await run_plan(
+                        graph_for(state, fixture_week_plan()),
+                        PLAN_DATE,
+                        state,
+                        budget=RunBudget(seconds=0.15),
+                    )
+                    answer = pressed.outcome
+                except AlreadyPlanning:
+                    answer = "refused"
+                view = await working
+            finally:
+                held.close()
+            monkeypatch.undo()
+            return answer, view, state.drafts.runs_without_a_draft()
+
+        answer, view, kept = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert answer == "refused"
+    assert kept == []
+    assert view.outcome == "accepted"
+    assert latest is not None
+    assert latest.thread_id == view.thread_id
+    assert state.in_flight == set()
+
+
+@pytest.mark.parametrize("times", [1, 2])
+def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_after_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, times: int
+) -> None:
+    """A run canceled, once or twice, while it records a review a thread holds and the drafts
+    file is held lets the decision lock go only once the review is recorded. The review
+    stands and today's plan stays."""
+    state = file_backed_application(tmp_path)
+    try:
+
+        async def scenario() -> tuple[str, list[float], list[float], DraftRecord | None]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            assert first.draft_id is not None
+            monkeypatch.setattr(state.drafts, "record_decision", failing_once_then(state.drafts))
+            with pytest.raises(RuntimeError, match="database is locked"):
+                await decide_draft(
+                    state,
+                    lambda: graph_for(state),
+                    first.draft_id,
+                    DecisionRequest(approved=True, reason="good pacing"),
+                )
+            loop = asyncio.get_running_loop()
+            held = HeldStoreCall(
+                state.drafts.record_decision, tmp_path / "blossom.sqlite3", 0.5, loop
+            )
+            recording = asyncio.Event()
+            recorded: list[float] = []
+            releases: list[float] = []
+            release = state.decision_lock.release
+
+            def noted(*args: object, **kwargs: object) -> object:
+                loop.call_soon_threadsafe(recording.set)
+                try:
+                    return held(*args, **kwargs)
+                finally:
+                    recorded.append(monotonic())
+
+            def let_go() -> None:
+                releases.append(monotonic())
+                release()
+
+            monkeypatch.setattr(state.drafts, "record_decision", noted)
+            monkeypatch.setattr(state.decision_lock, "release", let_go)
+            try:
+                late = asyncio.create_task(
+                    run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+                )
+                await recording.wait()
+                await asyncio.sleep(0.05)
+                for _ in range(times):
+                    late.cancel()
+                    await asyncio.sleep(0)
+                await asyncio.gather(late, return_exceptions=True)
+            finally:
+                held.close()
+            monkeypatch.undo()
+            return first.thread_id, recorded, releases, state.drafts.get(first.draft_id)
+
+        first, recorded, releases, reviewed = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert len(recorded) == 1
+    assert releases[-1] >= recorded[0]
+    assert not state.decision_lock.locked()
+    assert reviewed is not None
+    assert reviewed.decision == "approved"
+    assert latest is not None
+    assert latest.thread_id == first
+    assert state.in_flight == set()
+
+
+def test_a_run_whose_time_runs_out_while_it_reads_the_last_publication_is_timed_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A run that starts while another connection holds the drafts file past the run's time is
+    timed out without holding up the event loop: it publishes nothing, lets the evening and
+    the lock go at its limit while the file is still held, and today's plan stays."""
+    state = file_backed_application(tmp_path)
+    try:
+
+        async def scenario() -> tuple[str, PlanRunView, float, list[tuple[bool, bool]]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            loop = asyncio.get_running_loop()
+            held = HeldStoreCall(
+                state.drafts.newest_published, tmp_path / "blossom.sqlite3", 0.6, loop
+            )
+            monkeypatch.setattr(state.drafts, "newest_published", held)
+            seen: list[tuple[bool, bool]] = []
+            loop.call_later(
+                0.4, lambda: seen.append((bool(state.in_flight), state.decision_lock.locked()))
+            )
+            try:
+                view = await run_plan(
+                    graph_for(state, fixture_week_plan()),
+                    PLAN_DATE,
+                    state,
+                    budget=RunBudget(seconds=0.2),
+                )
+                late_by = await held.late_by
+            finally:
+                held.close()
+            monkeypatch.undo()
+            return first.thread_id, view, late_by, seen
+
+        first, view, late_by, seen = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+        (run,) = state.drafts.runs_without_a_draft()
+        left = state.drafts.unpublished()
+    finally:
+        state.close()
+
+    assert late_by < 0.2
+    assert seen == [(False, False)]
+    assert view.outcome == "timed_out"
+    assert run.thread_id == view.thread_id
+    assert run.outcome == "timed_out"
+    assert run.timing is not None
+    assert run.timing.category == "timeout"
+    assert left == []
+    assert latest is not None
+    assert latest.thread_id == first
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()
+
+
+@pytest.mark.parametrize(
+    ("withdraw_fails", "fails_after"), [(False, False), (True, False), (False, True)]
+)
+@pytest.mark.parametrize("times", [1, 2])
+def test_a_run_canceled_while_its_plan_is_published_anyway_keeps_the_plan_and_its_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    times: int,
+    withdraw_fails: bool,
+    fails_after: bool,
+) -> None:
+    """A run canceled, once or twice, while its publication waits, whose publication commits all
+    the same, keeps its plan and the thread a review resumes, also when a draft can't be taken
+    back then or the publication fails after its commit, and the sweep leaves both in place."""
+    state = file_backed_application(tmp_path)
+    try:
+
+        async def scenario() -> tuple[str, DraftRecord | None, set[str]]:
+            await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            loop = asyncio.get_running_loop()
+            publish = state.drafts.publish
+            began = asyncio.Event()
+            gate = threading.Event()
+            seen: list[str] = []
+
+            def committed_late(
+                draft_id: str, *, within: Callable[[], float] | None = None
+            ) -> list[Displaced]:
+                seen.append(draft_id)
+                loop.call_soon_threadsafe(began.set)
+                gate.wait(5)
+                displaced = publish(draft_id)
+                if fails_after:
+                    failed = "disk I/O error"
+                    raise sqlite3.OperationalError(failed)
+                return displaced
+
+            def held(
+                draft_id: str, *, outcome: str = "interrupted", unless_published: bool = False
+            ) -> bool:
+                locked = "database is locked"
+                raise sqlite3.OperationalError(locked)
+
+            monkeypatch.setattr(state.drafts, "publish", committed_late)
+            if withdraw_fails:
+                monkeypatch.setattr(state.drafts, "withdraw", held)
+            late = asyncio.create_task(
+                run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            )
+            await began.wait()
+            for _ in range(times):
+                late.cancel()
+                await asyncio.sleep(0)
+            gate.set()
+            await asyncio.gather(late, return_exceptions=True)
+            monkeypatch.undo()
+            await sweep_aged(state)
+            published = state.drafts.get(seen[0])
+            assert published is not None
+            return published.thread_id, state.drafts.latest_for(PLAN_DATE), await thread_ids(state)
+
+        published, latest, threads = asyncio.run(scenario())
+    finally:
+        state.close()
+
+    assert latest is not None
+    assert latest.thread_id == published
+    assert published in threads
 
 
 @pytest.mark.parametrize(("plans", "outcome"), [(3, "checks_failed"), (1, "accepted")])

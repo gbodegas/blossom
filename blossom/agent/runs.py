@@ -36,6 +36,7 @@ every retry, gets only what is left of it, and the run is timed node by node.
 """
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -175,6 +176,23 @@ class RunBudget:
             largest_output_tokens=max(self.outputs) if self.outputs else None,
             category=category,
         )
+
+
+async def to_the_end[T](work: Awaitable[T]) -> T:
+    """What ``work`` returns, with the work seen to its end even when the caller is canceled
+    meanwhile: the cancel goes on once the work has stopped, so cleanup keeps its order
+    and is done before a run lets go of its evening."""
+    task = asyncio.ensure_future(work)
+    try:
+        return await asyncio.shield(task)
+    except BaseException:
+        while not task.done():
+            with contextlib.suppress(BaseException):
+                await asyncio.wait([task])
+        # Read so a failure that came with a cancel isn't reported as unhandled.
+        with contextlib.suppress(BaseException):
+            task.exception()
+        raise
 
 
 class StaleGraphVersion(RuntimeError):

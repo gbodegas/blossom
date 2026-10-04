@@ -100,6 +100,10 @@ class ApplicationState:
     so by claiming its files at startup. A run joins the set under the decision
     lock, so it starts either before a sweep or after one, never during its
     count of threads. Empty at startup, when nothing is in flight."""
+    canceled: set[str] = field(default_factory=set)
+    """The threads of runs canceled before their plan was published. The sweep takes
+    their drafts back and never publishes them, even when the run couldn't take back
+    its draft or clear its thread as it ended."""
     decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held while a decision is checked against the table and carried into the
     paused thread, so two decisions about one draft cannot both pass the check.
@@ -219,7 +223,11 @@ async def sweep_aged(state: ApplicationState) -> None:
     """
     async with state.decision_lock:
         await sweep_saved_state(
-            state.checkpointer, state.drafts, state.clock, in_flight=state.in_flight
+            state.checkpointer,
+            state.drafts,
+            state.clock,
+            in_flight=state.in_flight,
+            canceled=state.canceled,
         )
     state.traces.sweep()
     state.workload_signals.sweep()

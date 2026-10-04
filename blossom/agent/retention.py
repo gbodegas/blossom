@@ -34,6 +34,7 @@ tables, like a run that died there, so the caller names the threads it is
 running and the sweep leaves them and their drafts alone.
 """
 
+import asyncio
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -41,6 +42,7 @@ from typing import Any, Final
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from blossom.agent.runs import to_the_end
 from blossom.clock import Clock
 from blossom.drafts import Decision, DraftStatus
 from blossom.stores.drafts import DraftRecord, DraftsStore
@@ -137,7 +139,7 @@ async def finish_held_reviews(
     left alone.
     """
     finished: list[tuple[str, str]] = []
-    for record in drafts.waiting():
+    for record in await asyncio.to_thread(drafts.waiting):
         if record.thread_id in in_flight:
             continue
         if plan_date is not None and record.plan_date != plan_date:
@@ -147,11 +149,14 @@ async def finish_held_reviews(
             continue
         decision, reason = saved.held
         approved = decision == "approved"
-        drafts.record_decision(
-            record.draft_id,
-            status=DraftStatus.APPROVED_FOR_MANUAL_SEND if approved else DraftStatus.DRAFT,
-            decision=decision,
-            reason=reason,
+        await to_the_end(
+            asyncio.to_thread(
+                drafts.record_decision,
+                record.draft_id,
+                status=DraftStatus.APPROVED_FOR_MANUAL_SEND if approved else DraftStatus.DRAFT,
+                decision=decision,
+                reason=reason,
+            )
         )
         finished.append((record.draft_id, record.thread_id))
     return finished
@@ -163,6 +168,7 @@ async def sweep_saved_state(
     clock: Clock,
     *,
     in_flight: Collection[str] = (),
+    canceled: Collection[str] = (),
 ) -> Swept:
     """Finish or take back what a run left, close what waited too long, clear the rest.
 
@@ -177,7 +183,9 @@ async def sweep_saved_state(
     paused at the gate, the interrupt still pending, several in the order
     their checkpoints were written, which is the order they paused in; and
     taken back if its thread is missing, short of the draft, or holds the draft
-    without the pause, since no review could resume it. A published waiting
+    without the pause, since no review could resume it. ``canceled`` names the
+    threads of runs canceled before their plan was published, whose drafts are
+    taken back whatever their threads hold. A published waiting
     draft no review could resume, which only a file from before publication
     can hold, is taken back too.
     """
@@ -191,7 +199,7 @@ async def sweep_saved_state(
         if record.thread_id in in_flight:
             continue
         saved = await saved_thread(checkpointer, record.thread_id)
-        if reviewable(saved):
+        if reviewable(saved) and record.thread_id not in canceled:
             paused.append((saved.saved_at if saved else "", record))
         else:
             drafts.withdraw(record.draft_id)

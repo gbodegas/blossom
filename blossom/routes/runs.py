@@ -31,6 +31,7 @@ from blossom.agent.runs import (
     RunTimedOut,
     draft_id_for,
     run_config,
+    to_the_end,
 )
 from blossom.agent.steps import DATE_PROBLEM, StepRecord, describe_failure
 from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
@@ -243,23 +244,6 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
     )
 
 
-async def to_the_end[T](work: Awaitable[T]) -> T:
-    """What ``work`` returns, with the work seen to its end even when the caller is canceled
-    meanwhile: the cancel goes on once the work has stopped, so cleanup keeps its order
-    and is done before a run lets go of its evening."""
-    task = asyncio.ensure_future(work)
-    try:
-        return await asyncio.shield(task)
-    except BaseException:
-        while not task.done():
-            with contextlib.suppress(BaseException):
-                await asyncio.wait([task])
-        # Read so a failure that came with a cancel isn't reported as unhandled.
-        with contextlib.suppress(BaseException):
-            task.exception()
-        raise
-
-
 async def off_the_loop[**P, T](call: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     """What ``call`` returns, run on a worker thread so the server goes on answering while it
     waits for the drafts file, and seen to its end like ``to_the_end``."""
@@ -292,15 +276,20 @@ async def abandon(thread_id: str, state: ApplicationState) -> bool:
 
 
 async def taken_back_unless_published(thread_id: str, state: ApplicationState) -> bool:
-    """Take back what a canceled run left behind, its draft and then its thread, unless its
-    plan was published: True when its draft was taken back. The store checks publication as
-    it takes the draft back, and a draft it can't take back keeps its thread."""
+    """Take back what a canceled run left behind once its publication stopped short, its draft
+    and then its thread: True when its draft was taken back. The store checks publication
+    again as it takes the draft back, and a draft it finds published keeps its thread. A
+    draft that can't be taken back loses its thread all the same, so the sweep takes the
+    draft back rather than publish it."""
     try:
         taken = await off_the_loop(
             state.drafts.withdraw, draft_id_for(thread_id), unless_published=True
         )
     except Exception:
-        logger.exception("the draft of the canceled run %s not taken back", thread_id)
+        logger.exception(
+            "the draft of the canceled run %s not taken back; the sweep takes it", thread_id
+        )
+        await tidy_thread(thread_id, state)
         return False
     if taken:
         await tidy_thread(thread_id, state)
@@ -398,6 +387,12 @@ async def ended_on_the_way(
     )
 
 
+async def last_published(state: ApplicationState, plan_date: date, budget: RunBudget) -> int:
+    """The evening's last publication, read on a worker thread inside the run's time, so the
+    server goes on answering while the read waits for the drafts file."""
+    return await read_in_time(asyncio.to_thread(state.drafts.newest_published, plan_date), budget)
+
+
 async def hold_in_time(lock: asyncio.Lock, budget: RunBudget) -> bool:
     """True once ``lock`` is held with time left in the run; False, holding nothing, otherwise.
 
@@ -435,16 +430,26 @@ async def read_in_time[T](reading: Awaitable[T], budget: RunBudget) -> T:
     return read
 
 
+@dataclass
+class Publication:
+    """How far a run's publication went: whether it began, and whether the worker that
+    published saw the draft reach the pages."""
+
+    began: bool = False
+    published: bool = False
+
+
 async def publish_in_time(
-    state: ApplicationState, draft_id: str, budget: RunBudget
+    state: ApplicationState, draft_id: str, budget: RunBudget, publication: Publication
 ) -> list[Displaced]:
     """Publish ``draft_id`` with the run's time left, on a worker thread, so the server goes
     on answering while the publication waits for the drafts file.
 
     A caller that stops waiting, as when its request is canceled, ends the publication's
     time and waits for it to stop, so nothing is published after the run has let go of
-    the decision lock.
+    the decision lock. ``publication`` says how it ended, canceled or not.
     """
+    publication.began = True
     stopped = False
 
     def within() -> float:
@@ -452,16 +457,18 @@ async def publish_in_time(
 
     work = asyncio.ensure_future(asyncio.to_thread(state.drafts.publish, draft_id, within=within))
     try:
-        return await asyncio.shield(work)
+        displaced = await asyncio.shield(work)
     except BaseException:
         stopped = True
         while not work.done():
             with contextlib.suppress(BaseException):
                 await asyncio.wait([work])
         # How the worker ended, often out of time as asked, is read so it isn't
-        # reported as an error nobody handled.
-        work.exception()
+        # reported as an error nobody handled, and kept for the cleanup that follows.
+        publication.published = work.exception() is None
         raise
+    publication.published = True
+    return displaced
 
 
 async def keep_timing(
@@ -532,8 +539,8 @@ async def run_plan(
     budget = RunBudget() if budget is None else budget
     # The outcome the run's time is kept under; a run that raises is interrupted.
     outcome: str | None = INTERRUPTED
-    # Whether the run's draft may have reached the pages, which only its own publication does.
-    publishing = False
+    # How far the run's own publication went, the only way its draft reaches the pages.
+    publication = Publication()
     if not await hold_in_time(state.decision_lock, budget):
         # Out of time before it could start: a press while the evening has a run in
         # flight is still refused, and any other is kept as timed out.
@@ -542,16 +549,28 @@ async def run_plan(
         view = await ended_on_the_way(graph, thread_id, plan_date, state, budget, TIMED_OUT)
         await keep_timing(state, thread_id, budget, TIMED_OUT)
         return view
+    newest: int | None = None
     try:
         # Checked and joined under one hold of the lock, so two presses for one evening
-        # cannot both find it free. The read comes first, so one that fails leaves
-        # nothing in flight to refuse the next press.
+        # cannot both find it free. The run joins before its read, so a press that gives
+        # up waiting for the lock meanwhile is refused, and a read that fails or runs out
+        # of time leaves nothing in flight to refuse the next press.
         if has_a_run_in_flight(state, plan_date):
             raise AlreadyPlanning
-        newest = state.drafts.newest_published(plan_date)
         state.in_flight.add(thread_id)
+        try:
+            newest = await last_published(state, plan_date, budget)
+        except BaseException as error:
+            state.in_flight.discard(thread_id)
+            if not isinstance(error, RunTimedOut):
+                raise
     finally:
         state.decision_lock.release()
+    if newest is None:
+        # Out of time while it read the evening's last publication.
+        view = await ended_on_the_way(graph, thread_id, plan_date, state, budget, TIMED_OUT)
+        await keep_timing(state, thread_id, budget, TIMED_OUT)
+        return view
     try:
         limit = asyncio.timeout(budget.remaining())
         try:
@@ -595,7 +614,7 @@ async def run_plan(
             return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
         try:
             try:
-                if state.drafts.newest_published(plan_date) != newest:
+                if await last_published(state, plan_date, budget) != newest:
                     # A plan for the evening was published while this one was
                     # being made, from another press or the other page. That
                     # plan stays; this one is taken back and never shown.
@@ -621,8 +640,9 @@ async def run_plan(
                         ),
                         budget,
                     )
-                    publishing = True
-                    displaced = await publish_in_time(state, draft_id_for(thread_id), budget)
+                    displaced = await publish_in_time(
+                        state, draft_id_for(thread_id), budget, publication
+                    )
                     for thread in [
                         *(thread for _, thread in finished),
                         *(d.thread_id for d in displaced),
@@ -651,11 +671,14 @@ async def run_plan(
             raise
         # A request canceled before its plan is published leaves a draft and a paused thread
         # that the sweep would publish once the run is out of flight, so both are taken back
-        # first, even when the request is canceled again meanwhile. Once its publication has
-        # started, only a draft the store finds unpublished is taken back.
+        # first, even when the request is canceled again meanwhile. A plan its publication put
+        # on the pages stays, with the thread a review resumes.
+        if publication.published:
+            raise
+        state.canceled.add(thread_id)
         cleanup = asyncio.ensure_future(
             taken_back_unless_published(thread_id, state)
-            if publishing
+            if publication.began
             else abandon(thread_id, state)
         )
         try:
