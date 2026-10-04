@@ -298,6 +298,171 @@ def test_rows_survive_closing_and_reopening_the_file(tmp_path: pathlib.Path) -> 
     assert secure_delete is not None
 
 
+def test_a_withheld_draft_stays_withheld_across_a_restart_until_it_is_taken_back(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Withholding twice is the same as once, a draft whose id differs only in case is not
+    withheld, and taking the draft back removes the mark."""
+    path = tmp_path / "state" / "blossom.sqlite3"
+    named = Draft(draft_id="draft:plan:2026-08-19:abc", body="Plan", created_at=CREATED)
+    twin = Draft(draft_id="draft:plan:2026-08-19:ABC", body="Plan", created_at=CREATED)
+
+    first = DraftsStore.open(path, fixture_clock())
+    try:
+        for saved, thread in ((named, "plan:2026-08-19:abc"), (twin, "plan:2026-08-19:ABC")):
+            first.record_waiting(
+                saved, thread_id=thread, plan_date=PLAN_DATE, outcome="accepted", steps=()
+            )
+        withheld = [first.withhold(named.draft_id), first.withhold(named.draft_id)]
+    finally:
+        first.close()
+
+    second = DraftsStore.open(path, fixture_clock())
+    try:
+        reopened = second.withheld()
+        taken_back = second.withdraw(named.draft_id)
+        after = second.withheld()
+    finally:
+        second.close()
+
+    third = DraftsStore.open(path, fixture_clock())
+    try:
+        later = third.withheld()
+        twin_left = [record.draft_id for record in third.unpublished()]
+    finally:
+        third.close()
+
+    assert withheld == [True, True]
+    assert reopened == frozenset({named.draft_id})
+    assert taken_back is True
+    assert after == frozenset()
+    assert later == frozenset()
+    assert twin_left == [twin.draft_id]
+
+
+@pytest.mark.parametrize("kind", ["published", "decided", "missing"])
+def test_only_an_unpublished_undecided_draft_can_be_withheld(kind: str) -> None:
+    store = store_in_memory()
+    try:
+        if kind == "published":
+            save_and_publish(store, draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted")
+        if kind == "decided":
+            store.record_waiting(
+                draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted", steps=()
+            )
+            store.record_decision(
+                draft().draft_id, status=DraftStatus.DRAFT, decision="rejected", reason="no"
+            )
+        withheld = store.withhold(draft().draft_id)
+        named = store.withheld()
+        kept = store.get(draft().draft_id)
+    finally:
+        store.close()
+
+    assert withheld is False
+    assert named == frozenset()
+    if kind == "missing":
+        assert kept is None
+    else:
+        assert kept is not None
+        assert kept.published is (kind == "published")
+        assert kept.decision == (None if kind == "published" else "rejected")
+
+
+def test_a_published_draft_is_not_taken_back_when_asked_not_to() -> None:
+    store = store_in_memory()
+    try:
+        save_and_publish(store, draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted")
+        taken_back = store.withdraw(draft().draft_id, unless_published=True)
+        kept = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert taken_back is False
+    assert kept is not None
+    assert kept.draft_id == draft().draft_id
+
+
+class PublishedFirst:
+    """The store's connection, except that just before the mark is written another
+    connection tries to publish the draft, and notes whether the file let it."""
+
+    def __init__(self, real: sqlite3.Connection, path: pathlib.Path, draft_id: str) -> None:
+        self.real = real
+        self.other = sqlite3.connect(path, timeout=0.3, isolation_level=None)
+        self.draft_id = draft_id
+        self.published: bool | None = None
+
+    def execute(self, sql: str, parameters: tuple[str, ...] = ()) -> sqlite3.Cursor:
+        if sql.startswith("INSERT OR IGNORE INTO withheld_drafts"):
+            try:
+                self.other.execute(
+                    "UPDATE drafts SET published=1, published_order=1 WHERE draft_id=?",
+                    (self.draft_id,),
+                )
+                self.published = True
+            except sqlite3.OperationalError:
+                self.published = False
+        return self.real.execute(sql, parameters)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.real, name)
+
+
+def test_no_other_connection_publishes_a_draft_between_its_check_and_its_mark(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "state" / "blossom.sqlite3"
+    store = DraftsStore.open(path, fixture_clock())
+    try:
+        store.record_waiting(
+            draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted", steps=()
+        )
+        real = store._connection
+        between = PublishedFirst(real, path, draft().draft_id)
+        store._connection = between  # type: ignore[assignment]
+        try:
+            withheld = store.withhold(draft().draft_id)
+        finally:
+            store._connection = real
+            between.other.close()
+        named = store.withheld()
+        kept = store.get(draft().draft_id)
+    finally:
+        store.close()
+
+    assert between.published is False
+    assert withheld is True
+    assert named == frozenset({draft().draft_id})
+    assert kept is not None
+    assert not kept.published
+
+
+def test_a_file_from_before_drafts_were_withheld_opens_with_none_withheld(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "state" / "blossom.sqlite3"
+    DraftsStore.open(path, fixture_clock()).close()
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE withheld_drafts")
+    connection.close()
+
+    store = DraftsStore.open(path, fixture_clock())
+    try:
+        before = store.withheld()
+        store.record_waiting(
+            draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted", steps=()
+        )
+        withheld = store.withhold(draft().draft_id)
+        after = store.withheld()
+    finally:
+        store.close()
+
+    assert before == frozenset()
+    assert withheld is True
+    assert after == frozenset({draft().draft_id})
+
+
 def test_the_file_is_refused_where_the_saved_state_store_refuses_it(
     tmp_path: pathlib.Path,
 ) -> None:

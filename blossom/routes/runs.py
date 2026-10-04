@@ -258,11 +258,10 @@ async def abandon(thread_id: str, state: ApplicationState) -> bool:
     the saved-state store is the likelier of the two to be what failed: a
     checkpoint that could not be written is followed by a delete on the same
     file. Each is attempted whatever became of the other: a draft that cannot
-    be taken back now is logged and its thread cleared all the same, so the
-    sweep finds a draft with no thread and takes it back rather than a paused
-    thread it would publish; a thread that cannot be cleared now is left to the
-    sweep. The failure that ended the run is the one the caller sees, not the
-    failure to tidy.
+    be taken back now is logged, withheld and its thread cleared all the same, so
+    the sweep takes it back rather than publish it, after a restart too; a thread
+    that cannot be cleared now is left to the sweep. The failure that ended the
+    run is the one the caller sees, not the failure to tidy.
     """
     taken = False
     try:
@@ -271,6 +270,7 @@ async def abandon(thread_id: str, state: ApplicationState) -> bool:
         logger.exception(
             "the draft of the failed run %s not taken back; the sweep takes it", thread_id
         )
+        await withhold(thread_id, state)
     await tidy_thread(thread_id, state)
     return taken
 
@@ -279,8 +279,8 @@ async def taken_back_unless_published(thread_id: str, state: ApplicationState) -
     """Take back what a canceled run left behind once its publication stopped short, its draft
     and then its thread: True when its draft was taken back. The store checks publication
     again as it takes the draft back, and a draft it finds published keeps its thread. A
-    draft that can't be taken back loses its thread all the same, so the sweep takes the
-    draft back rather than publish it."""
+    draft that can't be taken back is withheld and loses its thread all the same, so the
+    sweep takes the draft back rather than publish it, after a restart too."""
     try:
         taken = await off_the_loop(
             state.drafts.withdraw, draft_id_for(thread_id), unless_published=True
@@ -289,11 +289,21 @@ async def taken_back_unless_published(thread_id: str, state: ApplicationState) -
         logger.exception(
             "the draft of the canceled run %s not taken back; the sweep takes it", thread_id
         )
+        await withhold(thread_id, state)
         await tidy_thread(thread_id, state)
         return False
     if taken:
         await tidy_thread(thread_id, state)
     return taken
+
+
+async def withhold(thread_id: str, state: ApplicationState) -> None:
+    """Mark the draft of a run that couldn't take it back so no sweep publishes it, or log
+    why not. The store leaves a draft that was published or decided as it is."""
+    try:
+        await off_the_loop(state.drafts.withhold, draft_id_for(thread_id))
+    except Exception:
+        logger.exception("the draft of the run %s not withheld either", thread_id)
 
 
 async def tidy_thread(thread_id: str, state: ApplicationState) -> None:

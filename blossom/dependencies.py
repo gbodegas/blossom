@@ -103,7 +103,7 @@ class ApplicationState:
     canceled: set[str] = field(default_factory=set)
     """The threads of runs canceled before their plan was published. The sweep takes
     their drafts back and never publishes them, even when the run couldn't take back
-    its draft or clear its thread as it ended."""
+    its draft, clear its thread or mark the draft withheld, which outlives a restart."""
     decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held while a decision is checked against the table and carried into the
     paused thread, so two decisions about one draft cannot both pass the check.

@@ -185,7 +185,8 @@ async def sweep_saved_state(
     taken back if its thread is missing, short of the draft, or holds the draft
     without the pause, since no review could resume it. ``canceled`` names the
     threads of runs canceled before their plan was published, whose drafts are
-    taken back whatever their threads hold. A published waiting
+    taken back whatever their threads hold, as are the drafts the store holds as
+    withheld, whichever start of the app withheld them. A published waiting
     draft no review could resume, which only a file from before publication
     can hold, is taken back too.
     """
@@ -195,11 +196,13 @@ async def sweep_saved_state(
     withdrawn: list[str] = []
     cleared: list[str] = []
     paused: list[tuple[str, DraftRecord]] = []
+    withheld = drafts.withheld()
     for record in drafts.unpublished():
         if record.thread_id in in_flight:
             continue
         saved = await saved_thread(checkpointer, record.thread_id)
-        if reviewable(saved) and record.thread_id not in canceled:
+        kept_back = record.thread_id in canceled or record.draft_id in withheld
+        if reviewable(saved) and not kept_back:
             paused.append((saved.saved_at if saved else "", record))
         else:
             drafts.withdraw(record.draft_id)

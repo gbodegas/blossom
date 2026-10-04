@@ -293,6 +293,10 @@ class DraftsStore:
         }:
             # A file from before runs were timed: its runs keep no time.
             self._connection.execute("ALTER TABLE runs ADD COLUMN timing TEXT")
+        # Drafts no sweep may publish, named until they are taken back.
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS withheld_drafts (draft_id TEXT PRIMARY KEY)"
+        )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS steps (
@@ -670,11 +674,36 @@ class DraftsStore:
             if unless_published and row["published"]:
                 return False
             self._connection.execute("DELETE FROM drafts WHERE draft_id=?", (draft_id,))
+            self._connection.execute("DELETE FROM withheld_drafts WHERE draft_id=?", (draft_id,))
             self._connection.execute(
                 "UPDATE runs SET outcome=? WHERE thread_id=?", (outcome, str(row["thread_id"]))
             )
             self._keep_one_waiting_per_evening(str(row["plan_date"]))
         return True
+
+    def withhold(self, draft_id: str) -> bool:
+        """Mark an unpublished draft so no sweep publishes it: True when it is marked.
+
+        For a run that ended short of publishing its draft and couldn't take it back. The
+        mark is kept in the file, so it outlives a restart, and goes when the draft is
+        taken back. A published, decided or missing draft is left as it is.
+        """
+        with self._lock, self._writing():
+            row = self._connection.execute(
+                "SELECT decision, published FROM drafts WHERE draft_id=?", (draft_id,)
+            ).fetchone()
+            if row is None or row["decision"] is not None or row["published"]:
+                return False
+            self._connection.execute(
+                "INSERT OR IGNORE INTO withheld_drafts (draft_id) VALUES (?)", (draft_id,)
+            )
+        return True
+
+    def withheld(self) -> frozenset[str]:
+        """The ids of the drafts marked by ``withhold`` and not yet taken back."""
+        with self._lock:
+            rows = self._connection.execute("SELECT draft_id FROM withheld_drafts").fetchall()
+        return frozenset(str(row["draft_id"]) for row in rows)
 
     def record_decision(
         self, draft_id: str, *, status: DraftStatus, decision: Decision, reason: str | None
