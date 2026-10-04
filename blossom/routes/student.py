@@ -51,6 +51,7 @@ signed in sees her update and cannot make one in her name.
 
 import hashlib
 import logging
+import secrets
 import sqlite3
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -350,9 +351,15 @@ and is as whole without them as it always was."""
 IN_PLACE: Final = "in_place"
 """The field her update forms on her week carry, and the query Change and Keep it as it is
 carry: the cards this visit keeps where they were, the form's own card among them."""
+IN_PLACE_LANDING: Final = "landing"
+"""The query a redirect that keeps cards in place sends her to her week with: a value new for
+each redirect, naming the cookie that holds the cards, so only the page it lands on reads
+them and no other visit to her week does."""
+IN_PLACE_LANDING_DIGITS: Final = 16
+"""How many hex digits a landing has."""
 IN_PLACE_COOKIE: Final = "blossom-in-place"
-"""The cookie a save, an undo, Change or Keep it as it is leaves for the one page that
-answers it, which reads it once and clears it."""
+"""The start of the cookie a save, an undo, Change or Keep it as it is leaves for the one
+page that answers it, followed by that page's landing. The page reads it once and clears it."""
 IN_PLACE_SECONDS: Final = 60
 """How long that cookie waits for the page that answers it, which a browser asks for at once."""
 IN_PLACE_MAX: Final = 40
@@ -1399,13 +1406,13 @@ def carried(in_place: InPlace | None) -> str | None:
     return None if in_place is None else in_place.said() or None
 
 
-def leave_in_place[Answered: Response](response: Answered, kept: InPlace) -> Answered:
-    """Leave the cards a press keeps in place for the one page that answers it; with none
-    kept, nothing is left."""
+def leave_in_place[Answered: Response](response: Answered, kept: InPlace, landing: str) -> Answered:
+    """Leave the cards a press keeps in place for the one page whose address names this
+    landing; with none kept, nothing is left."""
     if not kept.cards:
         return response
     response.set_cookie(
-        IN_PLACE_COOKIE,
+        landing_cookie(landing),
         kept.said(),
         max_age=IN_PLACE_SECONDS,
         path=WEEK_PAGE,
@@ -1413,6 +1420,47 @@ def leave_in_place[Answered: Response](response: Answered, kept: InPlace) -> Ans
         samesite="lax",
     )
     return response
+
+
+def sent_in_place(location: str, kept: InPlace) -> RedirectResponse:
+    """The redirect to her week that keeps these cards in place on the page it lands on and
+    on no other: its address names a new landing, and the cookie that holds the cards is
+    named for it. With none kept, the address is sent as it is."""
+    if not kept.cards:
+        return RedirectResponse(location, status_code=status.HTTP_303_SEE_OTHER)
+    landing = secrets.token_hex(IN_PLACE_LANDING_DIGITS // 2)
+    moved = RedirectResponse(
+        str(URL(location).include_query_params(**{IN_PLACE_LANDING: landing})),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    return leave_in_place(moved, kept, landing)
+
+
+def landing_cookie(landing: str) -> str:
+    """The name of the cookie that holds the cards kept for one landing."""
+    return f"{IN_PLACE_COOKIE}-{landing}"
+
+
+def forget_landing[Answered: Response](response: Answered, landing: str) -> Answered:
+    """Clear the cookie one landing's cards were left in."""
+    response.delete_cookie(landing_cookie(landing), path=WEEK_PAGE, httponly=True, samesite="lax")
+    return response
+
+
+def named_once(request: Request, name: str) -> str | None:
+    """The value her week's address gives a query, or ``None`` when it gives none or gives
+    more than one."""
+    named = request.query_params.getlist(name)
+    return named[0] if len(named) == 1 else None
+
+
+def landing_asked(request: Request) -> str | None:
+    """The landing her week's address names, or ``None`` when it names none, names one more
+    than once, or names one in a form these pages don't write."""
+    named = named_once(request, IN_PLACE_LANDING)
+    if named is None or len(named) != IN_PLACE_LANDING_DIGITS:
+        return None
+    return named if set(named) <= HEX_DIGITS else None
 
 
 @dataclass(frozen=True)
@@ -1735,19 +1783,20 @@ def due_this_week(
     and offers the same address again.
 
     The cards a visit keeps where they were come to the page once. A save or an undo leaves
-    them in a cookie for the page its redirect names; Change and Keep it as it is carry them
-    in ``in_place``, which is answered with the same address without it and the cookie. The
-    page reads the cookie and clears it, so a refresh, a return, or Back to an address asks
-    for the week grouped by its updates. When the record cannot be read, the page that says
-    so leaves the cards again, and its Try again carries them in ``in_place``, so a try made
-    after the cookie is gone still finds them where they were.
+    them in a cookie named for the landing its redirect names in ``landing``; Change and Keep
+    it as it is carry them in ``in_place``, which is answered with the same address, a new
+    landing in place of it, and that landing's cookie. Only the page whose address names the
+    landing reads the cookie, and it clears it, so another tab's visit leaves it alone, and a
+    refresh, a return, or Back to an address asks for the week grouped by its updates. When
+    the record cannot be read, the page that says so leaves the cards again for its landing,
+    and its Try again carries them in ``in_place``, so a try made after the cookie is gone
+    still finds them where they were.
     """
+    landing = landing_asked(request)
     if in_place is not None:
-        return leave_in_place(
-            RedirectResponse(once_more(request), status_code=status.HTTP_303_SEE_OTHER),
-            InPlace.read(in_place),
-        )
-    left = request.cookies.get(IN_PLACE_COOKIE)
+        moved = sent_in_place(once_more(request), InPlace.read(named_once(request, IN_PLACE)))
+        return moved if landing is None else forget_landing(moved, landing)
+    left = None if landing is None else request.cookies.get(landing_cookie(landing))
     kept = InPlace.read(left)
     try:
         page = week_page(
@@ -1763,9 +1812,10 @@ def due_this_week(
         )
     except sqlite3.Error as error:
         again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
-        return leave_in_place(week_unreadable(request, error, again=again), kept)
-    if left is not None:
-        page.delete_cookie(IN_PLACE_COOKIE, path=WEEK_PAGE, httponly=True, samesite="lax")
+        unreadable = week_unreadable(request, error, again=again)
+        return unreadable if landing is None else leave_in_place(unreadable, kept, landing)
+    if landing is not None and left is not None:
+        forget_landing(page, landing)
     return page
 
 
@@ -1779,9 +1829,9 @@ def carrying(query: bytes, kept: InPlace) -> bytes:
 
 
 def once_more(request: Request) -> str:
-    """Her week's address as asked, without the cards it keeps in place, landing where Change
-    or Keep it as it is lands."""
-    asked = request.url.remove_query_params(IN_PLACE)
+    """Her week's address as asked, without the cards it keeps in place or the landing it
+    named, landing where Change or Keep it as it is lands."""
+    asked = request.url.remove_query_params([IN_PLACE, IN_PLACE_LANDING])
     change = request.query_params.get("change")
     show = request.query_params.get("show")
     fragment = update_choice_anchor(change) if change else title_anchor(show) if show else ""
@@ -2409,10 +2459,11 @@ def after(origin: Origin, said: str, assignment_id: str) -> str:
 def answered(origin: Origin, said: str, assignment_id: str, kept: InPlace) -> Response:
     """The redirect a committed save or undo is answered with. From her week it leaves the
     cards the form kept in place for the page it lands on, the saved card where it was."""
-    moved = RedirectResponse(
+    if not origin.detail:
+        return sent_in_place(after(origin, said, assignment_id), kept)
+    return RedirectResponse(
         after(origin, said, assignment_id), status_code=status.HTTP_303_SEE_OTHER
     )
-    return moved if origin.detail else leave_in_place(moved, kept)
 
 
 def plain_ways_back(
@@ -2481,19 +2532,16 @@ def shown_once(
     page: Callable[[], HTMLResponse],
     fallback: NotShown,
     status_code: int,
-    in_place: InPlace | None = None,
 ) -> HTMLResponse:
     """The page a press is answered on, tried once. When a read for it fails, the page that
     reads no store, with the press's own status: made from what the request already held,
-    so no store is called after the failure and nothing is tried again. It leaves the cards
-    ``in_place`` names for her week's next page. The failure is logged by its kind alone;
-    any other failure is not caught here."""
+    so no store is called after the failure and nothing is tried again. The failure is
+    logged by its kind alone; any other failure is not caught here."""
     try:
         return page()
     except sqlite3.Error as error:
         logger.warning("the page for a press could not be read: %s", type(error).__name__)
-        answer = not_shown(request, state, fallback, status_code)
-        return answer if in_place is None else leave_in_place(answer, in_place)
+        return not_shown(request, state, fallback, status_code)
 
 
 def not_shown(
@@ -2617,8 +2665,7 @@ def could_not(
 ) -> HTMLResponse:
     """The page after a write the file refused: the component with what she typed, and no
     word of a save. When the page itself cannot be read back, a plain page with her words
-    and the way back her form carried, which reads no store and tries nothing again, and
-    leaves the cards ``in_place`` names for her week's next page."""
+    and the way back her form carried, which reads no store and tries nothing again."""
     try:
         return result_page(
             request,
@@ -2641,7 +2688,7 @@ def could_not(
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-        return recovery if in_place is None else leave_in_place(recovery, in_place)
+        return recovery
 
 
 @router.post(
@@ -2712,7 +2759,6 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
             ),
             card_not_shown(request, origin, assignment_id, card, kept),
             code,
-            kept,
         )
 
     if not whole:
@@ -2738,7 +2784,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
     except UnknownAssignment:
         # The card is gone, so her choice and words go to the page that keeps them to
         # copy, with the way back to where she was and the other cards still in place.
-        gone = gone_page(
+        return gone_page(
             request,
             state,
             origin.back if origin.detail else ReturnTo("week", origin.week),
@@ -2746,7 +2792,6 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
             card=CardState(assignment_id, status=chosen, note=note),
             in_place=kept,
         )
-        return leave_in_place(gone, kept)
     except UnknownReport:
         return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)
     except NoteTooLong:
@@ -2807,7 +2852,6 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
             ),
             card_not_shown(request, origin, assignment_id, card, kept),
             code,
-            kept,
         )
 
     if not whole:
@@ -2847,7 +2891,6 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
                 kept,
             ),
             status.HTTP_404_NOT_FOUND,
-            kept,
         )
     except UnknownReport:
         return refused(NOT_THIS_CARDS, status.HTTP_422_UNPROCESSABLE_CONTENT)

@@ -59,6 +59,7 @@ from blossom.routes.student import (
     UPDATE_SAVED,
     UPDATE_UNDONE,
     InPlace,
+    landing_cookie,
     leave_in_place,
     place_key,
 )
@@ -93,6 +94,7 @@ from tests.support import (
     form_fields,
     hidden,
     human_text,
+    landing_in,
     main_of,
     ok,
     refusing,
@@ -159,9 +161,11 @@ def cards_in(address: str) -> list[str]:
 
 
 def minute_passes(client: TestClient) -> None:
-    """The cookie a press left, dropped as a browser drops it once its minute is up."""
-    client.cookies.delete(IN_PLACE_COOKIE)
-    assert client.cookies.get(IN_PLACE_COOKIE, path=PAGE) is None
+    """The cookies presses left, dropped as a browser drops them once their minute is up."""
+    for name in {cookie.name for cookie in client.cookies.jar}:
+        if name.startswith(IN_PLACE_COOKIE):
+            client.cookies.delete(name)
+    assert not [cookie for cookie in client.cookies.jar if cookie.name.startswith(IN_PLACE_COOKIE)]
 
 
 @contextmanager
@@ -187,7 +191,8 @@ def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit
         card = card_for(before, ESSAY)
         answer = save(client, week_card(client, ESSAY), "done", "Turned in on paper.\r\nTwo pages.")
         landed = redirected(client, answer)
-        left = client.cookies.get(IN_PLACE_COOKIE, path=PAGE)
+        landing = landing_in(answer.headers["location"])
+        left = client.cookies.get(landing_cookie(landing), path=PAGE)
         refreshed = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
         returned = client.get(PAGE, headers=PAGE_HEADERS).text
         history = state_of(client).project_state.student_reports(ESSAY)
@@ -207,9 +212,12 @@ def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit
     assert hidden(card, "expected_report_id") == ""
     assert hidden(card, "week") == WEEK
     assert hidden(card, "in_place") == f"a:{place_key(ESSAY)}"
-    assert answer.headers["location"] == f"{PAGE}?week={WEEK}&saved={ESSAY}#update-result-{ESSAY}"
+    assert re.fullmatch(r"[0-9a-f]{16}", landing)
+    assert answer.headers["location"] == (
+        f"{PAGE}?week={WEEK}&saved={ESSAY}&landing={landing}#update-result-{ESSAY}"
+    )
     cookie = left_for_the_page(answer)
-    assert cookie.startswith(f"{IN_PLACE_COOKIE}=a:{place_key(ESSAY)};")
+    assert cookie.startswith(f"{landing_cookie(landing)}=a:{place_key(ESSAY)};")
     for part in ("HttpOnly", "Max-Age=60", f"Path={PAGE}", "SameSite=lax"):
         assert part in cookie, part
     assert placed(landed.text) == placed(before)
@@ -227,7 +235,7 @@ def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit
     assert f'action="{UNDO_ESSAY}"' in saved
     assert "<legend>Your update<span" not in saved
     assert left is None
-    assert left_for_the_page(landed).startswith(f'{IN_PLACE_COOKIE}=""; ')
+    assert left_for_the_page(landed).startswith(f'{landing_cookie(landing)}=""; ')
     assert ESSAY not in [item.assignment_id for item in week.active()]
     active, done = placed(refreshed)
     assert ESSAY not in active
@@ -262,6 +270,176 @@ def test_saving_another_card_in_the_same_visit_keeps_the_first_where_it_was() ->
     assert sorted(placed(returned)[1]) == sorted([ESSAY, SYLLABUS])
 
 
+@pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])
+def test_a_visit_from_another_tab_before_a_save_lands_leaves_its_cards_alone(
+    tmp_path: pathlib.Path, signed_in: bool
+) -> None:
+    """A fresh visit to her week between a save's redirect and its landing groups the week by
+    its updates and neither reads nor clears the cards the save keeps for its own landing."""
+    with her_device(tmp_path, signed_in) as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        answer = save(client, card_for(before, ESSAY), "done")
+        other = client.get(PAGE, headers=PAGE_HEADERS)
+        landed = redirected(client, answer)
+        refreshed = client.get(answer.headers["location"], headers=PAGE_HEADERS).text
+
+    landing = landing_in(answer.headers["location"])
+    assert placed(other.text)[1] == [ESSAY]
+    assert IN_PLACE_COOKIE not in other.headers.get("set-cookie", "")
+    assert placed(landed.text) == placed(before)
+    assert left_for_the_page(landed).startswith(f'{landing_cookie(landing)}=""; ')
+    assert placed(refreshed)[1] == [ESSAY]
+
+
+@pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])
+@pytest.mark.parametrize("first", [ESSAY, SYLLABUS], ids=["essay lands first", "other first"])
+def test_two_saves_before_either_lands_each_keep_their_own_card_in_place(
+    tmp_path: pathlib.Path, signed_in: bool, first: str
+) -> None:
+    """Two forms from one visit saved before either redirect is followed: each landing keeps
+    its own card where it was, whichever lands first, and a return groups both."""
+    with her_device(tmp_path, signed_in) as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        answers = {
+            name: save(client, card_for(before, name), "done", assignment_id=name)
+            for name in (ESSAY, SYLLABUS)
+        }
+        order = [first, *[name for name in answers if name != first]]
+        landed = {name: redirected(client, answers[name]) for name in order}
+        returned = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    landings = {name: landing_in(answer.headers["location"]) for name, answer in answers.items()}
+    assert landings[ESSAY] != landings[SYLLABUS]
+    for name, other in ((ESSAY, SYLLABUS), (SYLLABUS, ESSAY)):
+        cookie = landing_cookie(landings[name])
+        assert left_for_the_page(answers[name]).startswith(f"{cookie}=a:{place_key(name)};")
+        active, done = placed(landed[name].text)
+        assert name in active
+        assert done == [other]
+        assert left_for_the_page(landed[name]).startswith(f'{cookie}=""; ')
+    assert sorted(placed(returned)[1]) == sorted([ESSAY, SYLLABUS])
+
+
+@pytest.mark.parametrize(
+    "named",
+    ["", "{l}{l}", "{l}&landing={l}", "{u}", "{l}0", "{s}", " {l}", "{l} ", "%20{l}", "x{s}"],
+)
+def test_her_week_reads_only_the_cards_of_the_landing_its_address_names(named: str) -> None:
+    """Only an address that names a landing once, as these pages write it, reads the cards
+    left for it; any other value neither reads nor clears them, and the landing still finds
+    them after."""
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        answer = save(client, card_for(before, ESSAY), "done")
+        landing = landing_in(answer.headers["location"])
+        value = named.format(l=landing, u=landing.upper(), s=landing[:-1])
+        asked = client.get(f"{PAGE}?landing={value}", headers=PAGE_HEADERS)
+        landed = redirected(client, answer)
+
+    assert placed(asked.text)[1] == [ESSAY]
+    assert IN_PLACE_COOKIE not in asked.headers.get("set-cookie", "")
+    assert placed(landed.text) == placed(before)
+
+
+def test_a_landing_reads_its_own_cards_and_leaves_another_landings_alone() -> None:
+    """Two saves' landings each read and clear their own cookie and no other."""
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        essay = save(client, card_for(before, ESSAY), "done")
+        other = save(client, card_for(before, SYLLABUS), "done", assignment_id=SYLLABUS)
+        landed = redirected(client, essay)
+        names = {cookie.name for cookie in client.cookies.jar}
+
+    assert left_for_the_page(landed).count(IN_PLACE_COOKIE) == 1
+    assert landing_cookie(landing_in(essay.headers["location"])) not in names
+    assert landing_cookie(landing_in(other.headers["location"])) in names
+
+
+def test_try_again_after_try_again_keeps_one_cookie_for_the_visit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each Try again is sent to a new landing and clears the cookie of the landing it came
+    from, so a browser never holds more than one for a visit that keeps failing."""
+    held = "|".join(f"a:{place_key(f'card-{n}')}" for n in range(IN_PLACE_MAX))
+    with browser() as client:
+        monkeypatch.setattr(student_routes, "student_page", refusing())
+        moved = client.get(f"{PAGE}?{urlencode({'in_place': held})}", headers=PAGE_HEADERS)
+        tries, held_cookies = [], []
+        for _ in range(3):
+            failure = redirected(client, moved)
+            moved = client.get(link_named(failure.text, "Try again"), headers=PAGE_HEADERS)
+            tries.append(moved)
+            held_cookies.append(
+                [cookie.name for cookie in client.cookies.jar if IN_PLACE_COOKIE in cookie.name]
+            )
+
+    landings = [landing_in(answer.headers["location"]) for answer in tries]
+    assert len(set(landings)) == 3
+    for names, landing in zip(held_cookies, landings, strict=True):
+        assert names == [landing_cookie(landing)]
+    for answer, before in zip(tries[1:], landings, strict=False):
+        assert f'{landing_cookie(before)}=""; ' in answer.headers["set-cookie"]
+
+
+@pytest.mark.parametrize("repeated", ["same card", "two cards"])
+def test_cards_named_twice_in_her_weeks_address_keep_nothing_in_place(repeated: str) -> None:
+    """An address that names its cards twice is answered without them, a landing, or a cookie,
+    never with the last of them."""
+    first, other = f"a:{place_key(ESSAY)}", f"a:{place_key(SYLLABUS)}"
+    second = first if repeated == "same card" else other
+    with browser() as client:
+        moved = client.get(
+            f"{PAGE}?{urlencode([('in_place', first), ('in_place', second)])}",
+            headers=PAGE_HEADERS,
+        )
+
+    assert moved.status_code == 303
+    assert moved.headers["location"] == PAGE
+    assert IN_PLACE_COOKIE not in moved.headers.get("set-cookie", "")
+
+
+@pytest.mark.parametrize(
+    "named", ["", "{s}", "{l}0", "{u}", "x{s}", "{l}&landing={l}"], ids=lambda named: named
+)
+def test_change_with_a_landing_it_does_not_write_clears_no_cookie(named: str) -> None:
+    """Change from an address whose landing is not one these pages write, or is named twice,
+    clears no cookie and sets only its own new landing's."""
+    landing = "0123456789abcdef"
+    value = named.format(l=landing, u=landing.upper(), s=landing[:-1])
+    kept = f"a:{place_key(ESSAY)}"
+    query = urlencode({"week": WEEK, "change": ESSAY, "in_place": kept})
+    with browser() as client:
+        moved = client.get(f"{PAGE}?{query}&landing={value}", headers=PAGE_HEADERS)
+        nothing = client.get(
+            f"{PAGE}?week={WEEK}&in_place=&landing={landing}", headers=PAGE_HEADERS
+        )
+
+    new = landing_in(moved.headers["location"])
+    assert moved.headers["set-cookie"].count(IN_PLACE_COOKIE) == 1
+    assert moved.headers["set-cookie"].startswith(f"{landing_cookie(new)}={kept};")
+    assert nothing.headers["location"] == f"{PAGE}?week={WEEK}"
+    assert nothing.headers["set-cookie"].startswith(f'{landing_cookie(landing)}=""; ')
+
+
+def test_change_from_a_landing_is_sent_to_a_new_landing_of_its_own() -> None:
+    """Change from an address that names a landing, once or twice, is sent to a new landing
+    named once, and the address is answered without the old one."""
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        answer = save(client, card_for(before, ESSAY), "done")
+        old = landing_in(answer.headers["location"])
+        kept = f"a:{place_key(ESSAY)}"
+        query = urlencode({"week": WEEK, "change": ESSAY, "landing": old, "in_place": kept})
+        moved = client.get(f"{PAGE}?{query}&landing={old}", headers=PAGE_HEADERS)
+
+    new = landing_in(moved.headers["location"])
+    assert new != old
+    assert moved.headers["location"] == (
+        f"{PAGE}?week={WEEK}&change={ESSAY}&landing={new}#update-choice-{ESSAY}"
+    )
+    assert left_for_the_page(moved).startswith(f"{landing_cookie(new)}={kept};")
+
+
 def test_change_undo_and_keep_it_as_it_is_keep_the_card_where_it_was() -> None:
     """Change and Keep it as it is carry the cards in their address, which is answered with
     the same address without them and the cookie; a save from the opened form and an Undo
@@ -283,9 +461,17 @@ def test_change_undo_and_keep_it_as_it_is_keep_the_card_where_it_was() -> None:
 
     assert fields == {"week": WEEK, "change": ESSAY, "in_place": f"a:{place_key(ESSAY)}"}
     assert change.status_code == 303
-    assert change.headers["location"] == f"{PAGE}?week={WEEK}&change={ESSAY}#update-choice-{ESSAY}"
-    assert left_for_the_page(change).startswith(f"{IN_PLACE_COOKIE}=a:{place_key(ESSAY)};")
-    assert keep.headers["location"] == f"{PAGE}?week={WEEK}&show={ESSAY}#title-{ESSAY}"
+    to_change, to_keep = (landing_in(answer.headers["location"]) for answer in (change, keep))
+    assert to_change != to_keep
+    assert change.headers["location"] == (
+        f"{PAGE}?week={WEEK}&change={ESSAY}&landing={to_change}#update-choice-{ESSAY}"
+    )
+    assert left_for_the_page(change).startswith(
+        f"{landing_cookie(to_change)}=a:{place_key(ESSAY)};"
+    )
+    assert keep.headers["location"] == (
+        f"{PAGE}?week={WEEK}&show={ESSAY}&landing={to_keep}#title-{ESSAY}"
+    )
     for page in (opened, kept, changed, undone):
         assert placed(page) == placed(before)
         assert FOLD not in main_of(page)
@@ -391,7 +577,10 @@ def test_the_cookie_holds_every_card_a_visit_keeps_within_a_browsers_limit() -> 
     for name in LONG_IDS[:IN_PLACE_MAX]:
         full = full.keeping(name, False)
     over = full.keeping(LONG_IDS[-1], True)
-    lines = [leave_in_place(Response(), kept).headers["set-cookie"] for kept in (full, over)]
+    landing = "f" * 16
+    lines = [
+        leave_in_place(Response(), kept, landing).headers["set-cookie"] for kept in (full, over)
+    ]
 
     assert len(full.cards) == len(over.cards) == IN_PLACE_MAX
     for line in lines:
@@ -455,11 +644,13 @@ def test_a_week_that_cannot_be_read_keeps_the_cards_in_place_for_a_try_again(
     for failure, kept in zip(failures, (first, first, both), strict=True):
         assert failure.status_code == 503
         line = left_for_the_page(failure)
-        assert line.startswith(f"{IN_PLACE_COOKIE}={kept};"), line
+        cookie = landing_cookie(landing_in(str(failure.request.url)))
+        assert line.startswith(f"{cookie}={kept};"), line
         assert "Max-Age=60" in line
     for retry in retries:
         assert placed(retry.text) == placed(before)
-        assert left_for_the_page(retry).startswith(f'{IN_PLACE_COOKIE}=""; ')
+        cookie = landing_cookie(landing_in(str(retry.request.url)))
+        assert left_for_the_page(retry).startswith(f'{cookie}=""; ')
     assert sorted(placed(returned)[1]) == sorted([ESSAY, SYLLABUS])
 
 
@@ -506,15 +697,19 @@ def test_a_try_again_after_the_cookie_is_gone_keeps_the_cards_in_place(
     for name, (status, active) in zip((ESSAY, SYLLABUS), while_failing, strict=True):
         assert status == "done"
         assert name not in active
-    for answer, kept in zip(tries, (first, both), strict=True):
+    tried = links[failures - 1 :: failures]
+    for answer, kept, link in zip(tries, (first, both), tried, strict=True):
         assert answer.status_code == 303
         assert "in_place" not in answer.headers["location"]
-        assert left_for_the_page(answer).startswith(f"{IN_PLACE_COOKIE}={kept};")
-    for landed in landings:
+        landing = landing_in(answer.headers["location"])
+        assert landing != landing_in(link)
+        assert left_for_the_page(answer).startswith(f"{landing_cookie(landing)}={kept};")
+    for answer, landed in zip(tries, landings, strict=True):
         assert landed.status_code == 200
         assert placed(landed.text) == placed(before)
         assert FOLD not in main_of(landed.text)
-        assert left_for_the_page(landed).startswith(f'{IN_PLACE_COOKIE}=""; ')
+        cookie = landing_cookie(landing_in(answer.headers["location"]))
+        assert left_for_the_page(landed).startswith(f'{cookie}=""; ')
     for later in (refreshed, returned):
         assert sorted(placed(later)[1]) == sorted([ESSAY, SYLLABUS])
 
@@ -531,17 +726,18 @@ def test_try_again_adds_the_cards_the_cookie_held_to_the_address_as_asked(
         monkeypatch.setattr(student_routes, "student_page", refusing())
         plain = client.get(f"{PAGE}?{asked}", headers=PAGE_HEADERS)
         bare = client.get(PAGE, headers=PAGE_HEADERS)
-        pages = []
-        for address in (f"{PAGE}?{asked}", PAGE):
-            client.get(PAGE, params={"in_place": held}, headers=PAGE_HEADERS)
-            pages.append(client.get(address, headers=PAGE_HEADERS))
+        pages, landings = [], []
+        for address in (f"{PAGE}?{asked}&", f"{PAGE}?"):
+            moved = client.get(f"{address}{urlencode({'in_place': held})}", headers=PAGE_HEADERS)
+            landings.append(landing_in(moved.headers["location"]))
+            pages.append(redirected(client, moved))
 
     assert len(InPlace.read(held).cards) == IN_PLACE_MAX
     assert link_named(plain.text, "Try again") == f"{PAGE}?{asked}"
     assert link_named(bare.text, "Try again") == PAGE
     assert [link_named(page.text, "Try again") for page in pages] == [
-        f"{PAGE}?{asked}&{urlencode({'in_place': latest})}",
-        f"{PAGE}?{urlencode({'in_place': latest})}",
+        f"{PAGE}?{asked}&landing={landings[0]}&{urlencode({'in_place': latest})}",
+        f"{PAGE}?landing={landings[1]}&{urlencode({'in_place': latest})}",
     ]
     assert [cards_in(link_named(page.text, "Try again")) for page in pages] == [[latest]] * 2
 
@@ -554,9 +750,9 @@ def test_try_again_adds_the_cards_the_cookie_held_to_the_address_as_asked(
 def test_a_press_whose_page_cannot_be_read_keeps_the_cards_in_place(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, signed_in: bool, press: str
 ) -> None:
-    """A press from her week answered on the page that reads no store leaves the cards its
-    form kept in place, and its way back carries them, so the way back shows them where they
-    were, followed at once or after the cookie is gone."""
+    """A press from her week answered on the page that reads no store leaves no cookie for
+    another visit to take: its way back carries the cards its form kept in place, so the way
+    back shows them where they were, and a fresh visit groups the week by its updates."""
     with her_device(tmp_path, signed_in) as client:
         before = client.get(PAGE, headers=PAGE_HEADERS).text
         first = redirected(client, save(client, week_card(client, ESSAY), "done")).text
@@ -592,11 +788,12 @@ def test_a_press_whose_page_cannot_be_read_keeps_the_cards_in_place(
 
     assert answer.status_code in (404, 422, 500)
     assert kept.cards
-    assert left_for_the_page(answer).startswith(f"{IN_PLACE_COOKIE}={kept.said()};")
-    assert placed(back.text) == placed(before)
-    assert left_for_the_page(back).startswith(f'{IN_PLACE_COOKIE}=""; ')
+    assert IN_PLACE_COOKIE not in answer.headers.get("set-cookie", "")
+    assert placed(back.text)[1] == [ESSAY]
+    assert IN_PLACE_COOKIE not in back.headers.get("set-cookie", "")
     assert cards_in(way_back) == [kept.said()]
-    assert left_for_the_page(followed).startswith(f"{IN_PLACE_COOKIE}={kept.said()};")
+    landing = landing_in(followed.headers["location"])
+    assert left_for_the_page(followed).startswith(f"{landing_cookie(landing)}={kept.said()};")
     assert "in_place" not in followed.headers["location"]
     assert placed(later.text) == placed(before)
 
@@ -625,6 +822,7 @@ def test_a_press_from_the_details_keeps_no_card_in_place(monkeypatch: pytest.Mon
     assert saved.status_code == 303
     for answer in (refused, not_undone, saved):
         assert IN_PLACE_COOKIE not in answer.headers.get("set-cookie", "")
+    assert "landing=" not in saved.headers["location"]
     for answer in (refused, not_undone):
         assert "in_place=" not in answer.text
 
