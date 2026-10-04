@@ -179,7 +179,11 @@
       {% if viewer != "parent" %}<a class="to-help" href="{{ new_note_page }}">Write down homework</a>{% endif %}
       {% if viewer != "parent" %}<a class="to-help" href="#ask-for-help">Ask for help</a>{% else %}<a class="to-help" href="#help">Her help requests</a>{% endif %}
     </div>
-    <p class="note planning-window">Today's planning window is {{ planning_window }}.</p>
+    {#
+      Where the plan button is, what a plan is made from is said beside it, before
+      the window's days, in words that suit either reader.
+    #}
+    <p class="note planning-window">{% if view.can_plan and not view.nothing_to_plan %}Makes a plan for today using unfinished homework due in the next 7 days and homework without a due date. {% endif %}Today's planning window is {{ planning_window }}.</p>
     {#
       The places that hold what is left to do beside the plan, under the
       controls and never in the masthead. Each link goes to a page of its

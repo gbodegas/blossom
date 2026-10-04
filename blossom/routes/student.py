@@ -79,6 +79,7 @@ from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEEDS_HAND_IN, NEXT_ACTION_
 from blossom.noticing import (
     Everything,
     Noticing,
+    WindowSide,
     expect_due_date,
     in_week,
     monday_of,
@@ -986,6 +987,7 @@ def assignment_view(
     status: AssignmentStatus | None = None,
     *,
     in_planning_window: bool = False,
+    outside_window: WindowSide | None = None,
     hand_in: HandInView | None = None,
     claims_unreadable: bool = False,
     instructions: InstructionsStanding | None = None,
@@ -1003,6 +1005,8 @@ def assignment_view(
     channel says now goes on it as the school's, every channel, so a check of
     her "done" against a "missing" always shows the report it rests on. Every
     claim is carried too, as it was given, for the details to list whole.
+    ``outside_window`` is kept only while every claim reads as a date, since one that
+    cannot be read could put the work anywhere.
     """
     said = status.asserted if status is not None else None
     readable = [record for record in records if read_date(record.asserted_value) is not None]
@@ -1079,6 +1083,7 @@ def assignment_view(
         else status.head.report_id,
         hand_in=HandInView() if hand_in is None else hand_in,
         in_planning_window=in_planning_window,
+        outside_window=None if unreadable or claims_unreadable else outside_window,
         check_school=status is not None and status.check_the_school_record,
         checked_on=None if status is None or status.check is None else status.check.checked_on,
         check_note=None if status is None or status.check is None else status.check.note,
@@ -1188,15 +1193,18 @@ def build_student_due_this_week_view(
         if focus is not None and item.assignment_id == focus and focus not in listed
     ]
     in_window = {item.assignment_id for item in window.assignments}
+    todays = planning_window(today)
 
     def beside_view(item: Assignment) -> StudentAssignmentView:
         records = found.records[item.assignment_id]
+        noticed = notice_due_date(expect_due_date(item), records)
         return assignment_view(
             item,
             records,
-            notice_due_date(expect_due_date(item), records),
+            noticed,
             found.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            outside_window=todays.outside(item, noticed),
             claims_unreadable=item.assignment_id in found.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
             instructions=found.instructions.get(item.assignment_id),
@@ -1211,6 +1219,7 @@ def build_student_due_this_week_view(
             shown.noticings[item.assignment_id],
             shown.statuses.get(item.assignment_id),
             in_planning_window=item.assignment_id in in_window,
+            outside_window=todays.outside(item, shown.noticings[item.assignment_id]),
             claims_unreadable=item.assignment_id in shown.claims_unavailable,
             hand_in=hand_in_of(found, item.assignment_id),
             instructions=found.instructions.get(item.assignment_id),
@@ -1517,6 +1526,13 @@ def student_page(
             "no_plan_now": NO_PLAN_NOW,
             # Today's window, which every week shown names, and the planner reads.
             "planning_window": planning_window(view.today).said(),
+            "planning_window_end": planning_window(view.today).end,
+            # Her Help, where a card that names it sends her: on this week, or this week's page.
+            "help_href": (
+                f"#{ASK_FOR_HELP}"
+                if view.week.current
+                else address(WEEK_PAGE, fragment=ASK_FOR_HELP)
+            ),
             "parent": parent_reads(request),
             "refreshed_at": local_now(state.clock.zone) if refreshed else None,
             "note_max_length": NOTE_MAX_LENGTH,
@@ -1974,6 +1990,7 @@ def detail_page(
         noticed,
         found[assignment_id],
         in_planning_window=in_week(item, noticed, today),
+        outside_window=planning_window(today).outside(item, noticed),
         hand_in=turning_in,
         claims_unreadable=claims_unavailable,
         instructions=instructions.readable.get(assignment_id),
@@ -2013,6 +2030,7 @@ def detail_page(
                 FAMILY_HELP if viewer == "parent" else address(WEEK_PAGE, fragment=ASK_FOR_HELP)
             ),
             "planning_window": planning_window(today).said(),
+            "planning_window_end": planning_window(today).end,
             "instructions_review": (
                 instructions_review_href(assignment_id) if family_chooses else None
             ),
