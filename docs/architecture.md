@@ -206,9 +206,12 @@ the refusal, on the list or off it, with the press again only while it is
 still to turn in. A write the file refuses, when the list cannot be read
 back either, is answered by the plain page that reads no store, whose one
 sentence takes the focus as the page arrives. The way back
-from the details gains a fourth place, the list. Help
-remembering is a GET that opens the form with Still to turn in chosen and
-writes nothing. Her week's rows show one line and a link, the family page lists
+from the details gains a fourth place, the list. Update hand-in status is
+the one way into the form, a GET that writes nothing. The form asks "Has this
+been turned in?" with the four answers, and shows the next step only while
+Still to turn in is chosen; the stylesheet hides it otherwise and keeps what
+she typed, and a save of another answer with a step typed says the step was
+not saved. Her week's rows show one line and a link, the family page lists
 what is still to turn in, however old, then what else she said in the last
 fourteen days, with no form, and a row worth checking together carries it as
 context that decides nothing. A page's one reading holds every chain, read

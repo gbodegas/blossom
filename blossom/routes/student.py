@@ -75,7 +75,7 @@ from blossom.captures import derived_assignment_id, what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.evening import PlanUpdates, ReportedDone, Staleness, plan_updates, staleness
-from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEEDS_HAND_IN, NEXT_ACTION_MAX_LENGTH
+from blossom.hand_in import HAND_IN_NOTE_MAX_LENGTH, NEXT_ACTION_MAX_LENGTH
 from blossom.noticing import (
     Everything,
     Noticing,
@@ -263,13 +263,13 @@ HELP_FORM_NOT_WHOLE: Final = (
     "nothing was sent. Your words are below; ask again."
 )
 HELP_NOT_SENT: Final = "Your request could not be sent, and nothing was changed. Try again."
-ALREADY_SENT: Final = "That request was already sent."
-SENT: Final = "Sent. Your parents can see the request."
+ALREADY_SENT: Final = "That request is already saved."
+SENT: Final = "Your request is saved. A parent can see it in Family review."
 NOT_ON_THIS_PAGE: Final = "That request is not on this page now."
 CANNOT_CHECK: Final = "That request can't be checked right now."
 """The lines for the request an address names, checked against the page's one reading and
-said to her alone: sent, for one she has just sent that still waits for a parent; already
-sent, beside any other request on the page; not on this page, when no request there is that
+said to her alone: saved, for one she has just sent that still waits for a parent; already
+saved, beside any other request on the page; not on this page, when no request there is that
 one; and can't be checked, when that reading failed."""
 ALREADY_RESPONDING: Final = (
     "A parent is already responding to this request, so it cannot be taken back. "
@@ -369,13 +369,17 @@ FAMILY_HELP: Final = f"{FAMILY_PAGE}#help-she-asked-for"
 HAND_IN_SAVED: Final = "Your hand-in update is saved."
 HAND_IN_ALREADY_SAVED: Final = "Already saved."
 HAND_IN_UNDONE: Final = "Your hand-in update is undone."
+STEP_NOT_SAVED: Final = "The next step was not saved: it goes only with Still to turn in."
 HAND_IN_CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": HAND_IN_SAVED,
     "same": HAND_IN_ALREADY_SAVED,
     "undone": HAND_IN_UNDONE,
+    "saved_without_step": f"{HAND_IN_SAVED} {STEP_NOT_SAVED}",
+    "same_without_step": f"{HAND_IN_ALREADY_SAVED} {STEP_NOT_SAVED}",
 }
 """What the address says a hand-in save or undo did, chosen by the server as her
-update's are; what stands is shown beside it, with its day."""
+update's are; what stands is shown beside it, with its day. A save of another answer with
+a next step typed says the step was not saved."""
 CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": UPDATE_SAVED,
     "same": UPDATE_ALREADY_SAVED,
@@ -2027,17 +2031,10 @@ def detail_page(
                 ),
                 "keep": details_href(assignment_id, fragment=TURNING_IT_IN, **back.fields()),
                 "open": details_href(assignment_id, fragment=TURNING_IT_IN),
-                "remember": details_href(
-                    assignment_id, fragment=TURNING_IT_IN, hand_in="remember", **back.fields()
-                ),
             },
             "hand_in_change_fields": [
                 *[(name, value) for name, value in back.fields().items() if value],
                 ("hand_in", "change"),
-            ],
-            "hand_in_remember_fields": [
-                *[(name, value) for name, value in back.fields().items() if value],
-                ("hand_in", "remember"),
             ],
             "next_action_max_length": NEXT_ACTION_MAX_LENGTH,
             "hand_in_note_max_length": HAND_IN_NOTE_MAX_LENGTH,
@@ -2092,10 +2089,9 @@ def assignment_details(
     turning_in = None
     if hand_in in HAND_IN_CONFIRMATIONS:
         turning_in = HandInCard(said=HAND_IN_CONFIRMATIONS[hand_in])
-    elif hand_in == "change":
+    elif hand_in in ("change", "remember"):
+        # A link that says ``remember`` opens the same form, so a saved address still lands.
         turning_in = HandInCard(change=True)
-    elif hand_in == "remember":
-        turning_in = HandInCard(change=True, state=NEEDS_HAND_IN)
     try:
         return detail_page(request, state, assignment_id, back, card=card, hand_in=turning_in)
     except sqlite3.Error as error:

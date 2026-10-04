@@ -432,10 +432,22 @@
       beside the request it names, or at the top when none here is that one;
       it never opens a control. A refusal is said here and takes the focus,
       and a fold holding the request a line or a refusal names is open.
+
+      Before she asks, the section says who sees a request, that nothing is
+      sent as an alert, and where a reply shows. Its heading names what it
+      does, and every link to Help lands on it: ``#help`` on the heading, and
+      her ``#ask-for-help`` on the heading's words. The surface sets it apart
+      from the homework, after the heading has.
     #}
     {% set asker = "She" if parent else "You" %}
-    <section class="panel help-panel" id="help" tabindex="-1">
-      <h2>Help</h2>
+    <section class="panel help-panel" aria-labelledby="help">
+      {% if viewer == "parent" %}
+        <h2 id="help" tabindex="-1">Her help requests</h2>
+      {% else %}
+        <h2 id="help" tabindex="-1"><span id="ask-for-help" tabindex="-1">Ask a parent for help</span></h2>
+        <p>Stuck on homework or unsure what to do next? Leave a request here for a parent to see in Family review. You can add a note or just ask.</p>
+        <p class="note">Blossom does not send an alert. Replies appear here when you refresh.</p>
+      {% endif %}
       {% if refreshed_at %}
         <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
       {% endif %}
@@ -456,11 +468,11 @@
           <p class="note" id="ask-for-help" tabindex="-1">No requests for help to show. When she asks, you can answer on <a href="{{ family_help }}">Family review</a>.</p>
         {% endif %}
       {% else %}
-        <form method="post" action="/student/actions/ask-for-help" class="ask" id="ask-for-help" tabindex="-1">
-          <label for="help-note">A note for your parents (optional)</label>
+        <form method="post" action="/student/actions/ask-for-help" class="ask">
+          <label for="help-note">What would you like help with? (optional)</label>
           <input id="help-note" type="text" name="note" value="{{ help_form.words if help_form else "" }}" maxlength="{{ note_max_length }}" placeholder="A short note"{% if help_form and help_form.problem %} aria-describedby="help-problem"{% endif %}{% if help_form and help_form.at_words %} aria-invalid="true" autofocus{% endif %}>
           <input type="hidden" name="request_id" value="{{ help_request_id }}">
-          <button type="submit" class="secondary">Ask for help</button>
+          <button type="submit" class="secondary">Ask a parent for help</button>
         </form>
       {% endif %}
       {% if view.help_unavailable %}
