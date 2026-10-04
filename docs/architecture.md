@@ -810,7 +810,9 @@ A run is bounded in time as well. It has `RUN_DEADLINE_SECONDS` in all, held by 
 and reviewer request gets only what is left of it, a busy service is asked again
 at most `MODEL_RETRIES` times inside it, and no request starts once it is spent.
 A run that runs out of time, or whose service fails, publishes nothing and is
-recorded as `timed_out` or `service_failed` with the steps it took. Work in the
+recorded as `timed_out` or `service_failed` with the steps it took. Waiting for
+the decision lock, to start or to publish, spends the same time, so a draft is
+never published after it. Work in the
 window due before the evening ends a run at `retrieve` as `date_problem`, before
 any model is asked, since no plan could pass the deadline check over it. One run
 per evening is in flight at a time: a press while one is working is refused with

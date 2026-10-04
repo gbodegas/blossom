@@ -138,6 +138,8 @@ class RunBudget:
             if left <= 0:
                 raise RunTimedOut
             self.model_calls += 1
+            if attempt:
+                self.retries += 1
             try:
                 async with asyncio.timeout(left):
                     answer = await call()
@@ -149,7 +151,6 @@ class RunBudget:
             else:
                 self.waiting_on = None
                 return answer
-            self.retries += 1
             await self.sleep(min(RETRY_PAUSE_SECONDS * 2**attempt, self.remaining()))
             attempt += 1
 

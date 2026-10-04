@@ -290,9 +290,16 @@ def describe_timing(timing: RunTiming) -> str:
     ]
     if timing.retries:
         parts[-1] += f" ({timing.retries} {'retry' if timing.retries == 1 else 'retries'})"
+    if timing.output_tokens is not None:
+        parts.append(tokens_said(timing.output_tokens))
     if timing.largest_output_tokens is not None:
-        parts.append(f"the longest answer {timing.largest_output_tokens:,} output tokens")
+        parts.append(f"the longest answer {tokens_said(timing.largest_output_tokens)}")
     return joined(parts) + "."
+
+
+def tokens_said(number: int) -> str:
+    """``1 output token``, ``2,400 output tokens``."""
+    return f"{number:,} output token" if number == 1 else f"{number:,} output tokens"
 
 
 def describe_past_due(names: Sequence[str], due: Sequence[date]) -> str:

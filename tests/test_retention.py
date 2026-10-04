@@ -9,6 +9,7 @@ both rules to whatever a crash left behind.
 
 import asyncio
 import pathlib
+import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, cast
@@ -34,7 +35,7 @@ from blossom.agent.retention import (
     Swept,
     sweep_saved_state,
 )
-from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, run_config
+from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, RunBudget, run_config
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import ApplicationState, build_application_state
@@ -48,7 +49,7 @@ from blossom.settings import (
     DATABASE_PATH_VARIABLE,
     TRACE_PATH_VARIABLE,
 )
-from blossom.stores.drafts import Displaced, DraftRecord, DraftsStore
+from blossom.stores.drafts import Displaced, DraftRecord, DraftsStore, RunRecord
 from blossom.views import PlanRunView
 from tests.support import (
     FIXTURE_TIMEZONE,
@@ -1416,3 +1417,219 @@ def test_a_run_that_times_out_publishes_nothing_and_leaves_no_thread() -> None:
     assert ended == ["timed_out"]
     assert threads == {first}
     assert state.in_flight == set()
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_a_failed_read_of_the_evenings_last_plan_leaves_no_run_in_flight(failures: int) -> None:
+    """The read that notes the evening's last publication fails before the run starts. The
+    run never joins the runs in flight, so once the read works again each press makes a plan."""
+    state = application()
+    read = state.drafts.newest_published
+    left = [failures]
+
+    def failing_then_read(plan_date: date) -> int:
+        if left[0]:
+            left[0] -= 1
+            msg = "disk I/O error"
+            raise sqlite3.OperationalError(msg)
+        return read(plan_date)
+
+    state.drafts.newest_published = failing_then_read  # type: ignore[method-assign]
+    try:
+
+        async def scenario() -> tuple[int, list[str], int]:
+            for _ in range(failures):
+                with pytest.raises(sqlite3.OperationalError):
+                    await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            in_flight_after = len(state.in_flight)
+            planners = [Counted(), Counted()]
+            outcomes = []
+            for planner in planners:
+                planner.go.set()
+                view = await run_plan(
+                    plan_graph_for(state, planner=planner, critic=Scripted(ok(accepting()))),
+                    PLAN_DATE,
+                    state,
+                )
+                outcomes.append(view.outcome)
+            return in_flight_after, outcomes, sum(planner.calls for planner in planners)
+
+        in_flight_after, outcomes, calls = asyncio.run(scenario())
+        ended = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert in_flight_after == 0
+    assert outcomes == ["accepted", "accepted"]
+    assert calls == 2
+    assert ended == []
+    assert state.in_flight == set()
+
+
+type Waited = tuple[str, PlanRunView, DraftRecord | None, list[RunRecord], set[str]]
+
+
+def published_after_a_wait(seconds: float, waited: float) -> Waited:
+    """Today's plan, then a run whose model answers at once and whose publication waits on
+    the decision lock while ``waited`` seconds of the run's ``seconds`` pass."""
+    clock = FakeTime()
+    state = application()
+    try:
+
+        async def scenario() -> tuple[str, PlanRunView, set[str], set[str]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            answered = HeldUntil()
+            working = asyncio.create_task(
+                run_plan(
+                    plan_graph_for(state, planner=answered, critic=Scripted(ok(accepting()))),
+                    PLAN_DATE,
+                    state,
+                    budget=clock.budget(seconds),
+                )
+            )
+            await asyncio.sleep(0.2)
+            async with state.decision_lock:
+                answered.go.set()
+                await asyncio.sleep(0.3)
+                clock.now += waited
+                in_flight_while_held = set(state.in_flight)
+            late = await working
+            return first.thread_id, late, in_flight_while_held, await thread_ids(state)
+
+        first, late, in_flight_while_held, threads = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+        ended = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+    assert in_flight_while_held == {late.thread_id}
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()
+    return first, late, latest, ended, threads
+
+
+@pytest.mark.parametrize(("seconds", "waited"), [(2.0, 2.328), (2.0, 2.0), (90.0, 90.0)])
+def test_a_run_whose_time_runs_out_waiting_to_publish_publishes_nothing(
+    seconds: float, waited: float
+) -> None:
+    """The model answered in time, but the run's time ran out while it waited for the lock
+    it publishes under. Today's plan stays, the late draft and its thread are taken back,
+    and the run is kept as timed out."""
+    first, late, latest, ended, threads = published_after_a_wait(seconds, waited)
+
+    assert late.outcome == "timed_out"
+    assert (late.draft_id, late.waiting) == (None, False)
+    assert latest is not None
+    assert latest.thread_id == first
+    assert [(run.thread_id, run.outcome) for run in ended] == [(late.thread_id, "timed_out")]
+    assert ended[0].timing is not None
+    assert ended[0].timing.category == "timeout"
+    assert ended[0].steps[-1].found == f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out."
+    assert threads == {first}
+
+
+@pytest.mark.parametrize(("seconds", "waited"), [(5.0, 2.328), (2.0, 1.999)])
+def test_a_run_that_gets_the_lock_in_time_publishes(seconds: float, waited: float) -> None:
+    first, late, latest, ended, threads = published_after_a_wait(seconds, waited)
+
+    assert late.outcome == "accepted"
+    assert latest is not None
+    assert latest.thread_id == late.thread_id != first
+    assert ended == []
+    assert threads == {late.thread_id}
+
+
+def test_a_press_out_of_time_waiting_to_start_is_refused_while_a_run_is_in_flight() -> None:
+    """A run for the evening is working when the lock is held past a second press's limit.
+    The second press is refused as a plan already being made, and keeps no record; the
+    first run publishes its plan."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[BaseException | PlanRunView, PlanRunView, int]:
+            working_planner, pressed_planner = Counted(), Counted()
+            working = asyncio.create_task(
+                run_plan(
+                    plan_graph_for(
+                        state, planner=working_planner, critic=Scripted(ok(accepting()))
+                    ),
+                    PLAN_DATE,
+                    state,
+                )
+            )
+            await asyncio.sleep(0.2)
+            pressed_planner.go.set()
+            async with state.decision_lock:
+                pressed = asyncio.create_task(
+                    run_plan(
+                        plan_graph_for(
+                            state, planner=pressed_planner, critic=Scripted(ok(accepting()))
+                        ),
+                        PLAN_DATE,
+                        state,
+                        budget=RunBudget(seconds=0.4),
+                    )
+                )
+                await asyncio.sleep(1.0)
+            working_planner.go.set()
+            (refused,) = await asyncio.gather(pressed, return_exceptions=True)
+            return refused, await working, pressed_planner.calls
+
+        refused, made, calls = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+        ended = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert isinstance(refused, AlreadyPlanning)
+    assert calls == 0
+    assert made.outcome == "accepted"
+    assert latest is not None
+    assert latest.thread_id == made.thread_id
+    assert ended == []
+    assert state.in_flight == set()
+
+
+@pytest.mark.parametrize("where", ["start", "publication"])
+def test_a_run_waits_for_the_decision_lock_only_until_its_time_runs_out(where: str) -> None:
+    """On the process's own clock, the lock is held past the run's limit, before the run
+    starts or once its model has answered. The run ends at its limit, timed out, while the
+    lock is still held, and nothing of it is published or kept in flight."""
+    state = application()
+    try:
+
+        async def scenario() -> tuple[PlanRunView, bool, int]:
+            answered = Counted()
+            graph = plan_graph_for(state, planner=answered, critic=Scripted(ok(accepting())))
+            budget = RunBudget(seconds=1.0)
+            if where == "start":
+                answered.go.set()
+                async with state.decision_lock:
+                    working = asyncio.create_task(run_plan(graph, PLAN_DATE, state, budget=budget))
+                    await asyncio.sleep(2.5)
+                    ended_while_held = working.done()
+            else:
+                working = asyncio.create_task(run_plan(graph, PLAN_DATE, state, budget=budget))
+                await asyncio.sleep(0.2)
+                async with state.decision_lock:
+                    answered.go.set()
+                    await asyncio.sleep(2.5)
+                    ended_while_held = working.done()
+            return await working, ended_while_held, answered.calls
+
+        late, ended_while_held, calls = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+        ended = state.drafts.runs_without_a_draft()
+        threads = asyncio.run(thread_ids(state))
+    finally:
+        state.close()
+
+    assert late.outcome == "timed_out"
+    assert ended_while_held
+    assert calls == (0 if where == "start" else 1)
+    assert latest is None
+    assert [(run.thread_id, run.outcome) for run in ended] == [(late.thread_id, "timed_out")]
+    assert ended[0].timing is not None
+    assert ended[0].timing.category == "timeout"
+    assert threads == set()
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()

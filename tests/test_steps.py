@@ -8,12 +8,14 @@ import pytest
 
 from blossom.agent.steps import (
     KEPT_FOR_REVIEW,
+    RunTiming,
     StepRecord,
     count,
     describe_failure,
     describe_last_check,
     describe_outcome,
     describe_plan,
+    describe_timing,
     describe_verdict,
     describe_verification,
     describe_week,
@@ -362,3 +364,37 @@ def test_work_with_no_due_date_the_school_gives_one_for_has_no_due_date() -> Non
     )
 
     assert described == "1 assignment to plan. 1 has no due date. The evening allows 150 minutes."
+
+
+@pytest.mark.parametrize(
+    ("total", "largest", "said"),
+    [
+        (
+            2400,
+            1800,
+            "Took 40 seconds in all, 3 model requests, 2,400 output tokens, "
+            "and the longest answer 1,800 output tokens.",
+        ),
+        (
+            3000,
+            1800,
+            "Took 40 seconds in all, 3 model requests, 3,000 output tokens, "
+            "and the longest answer 1,800 output tokens.",
+        ),
+        (
+            1,
+            1,
+            "Took 40 seconds in all, 3 model requests, 1 output token, "
+            "and the longest answer 1 output token.",
+        ),
+        (None, None, "Took 40 seconds in all and 3 model requests."),
+    ],
+)
+def test_the_family_page_says_the_runs_output_in_all_and_its_longest_answer(
+    total: int | None, largest: int | None, said: str
+) -> None:
+    timing = RunTiming(
+        seconds=40.0, model_calls=3, output_tokens=total, largest_output_tokens=largest
+    )
+
+    assert describe_timing(timing) == said

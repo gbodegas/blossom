@@ -35,6 +35,7 @@ from blossom.agent.runs import (
     MODEL_RETRIES,
     RECURSION_LIMIT,
     RUN_DEADLINE_SECONDS,
+    RunBudget,
     run_config,
 )
 from blossom.agent.steps import KEPT_FOR_REVIEW, StageTime, StepRecord
@@ -1926,7 +1927,70 @@ def test_retries_share_the_runs_time_and_never_start_it_again() -> None:
     assert planner.calls == 2
     assert ended.timing is not None
     assert ended.timing.seconds == 90.0
-    assert (ended.timing.model_calls, ended.timing.retries) == (2, 2)
+    assert (ended.timing.model_calls, ended.timing.retries) == (2, 1)
+
+
+@pytest.mark.parametrize(
+    ("planner_turns", "critic_turns", "counted"),
+    [
+        ([(89.8, ServiceBusy("overloaded"))], [], (1, 0)),
+        ([(30, ServiceBusy("overloaded")), (59.6, ServiceBusy("overloaded"))], [], (2, 1)),
+        ([(10, ok(fixture_week_plan()))], [(79.8, ServiceBusy("overloaded"))], (2, 0)),
+        (
+            [(10, ok(fixture_week_plan()))],
+            [(30, ServiceBusy("overloaded")), (49.6, ServiceBusy("overloaded"))],
+            (3, 1),
+        ),
+    ],
+)
+def test_a_retry_is_counted_only_once_its_request_is_sent(
+    planner_turns: list[Any], critic_turns: list[Any], counted: tuple[int, int]
+) -> None:
+    """The run's time runs out during the pause after a busy answer, so the request is never
+    sent again: the record counts each request made, and a retry only for each one resent."""
+    clock = FakeTime()
+    planner: Spending[DailyPlan] = Spending(clock, *planner_turns)
+    critic: Spending[CriticVerdict] = Spending(clock, *critic_turns)
+    state = a_household()
+    try:
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=planner, critic=critic),
+                PLAN_DATE,
+                state,
+                budget=clock.budget(),
+            )
+        )
+        (ended,) = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert view.outcome == "timed_out"
+    assert planner.calls + critic.calls == counted[0]
+    assert ended.timing is not None
+    assert (ended.timing.model_calls, ended.timing.retries) == counted
+
+
+def test_a_pause_the_runs_own_limit_cuts_off_counts_no_retry() -> None:
+    """On the process's own clock: the pause after the busy answer is still going when the
+    run's limit ends it, so nothing was resent."""
+    planner: Spending[DailyPlan] = Spending(FakeTime(), (0, ServiceBusy("overloaded")))
+    state = a_household()
+    budget = RunBudget(seconds=0.3, sleep=lambda _: asyncio.sleep(5))
+    try:
+        view = asyncio.run(
+            run_plan(
+                plan_graph_for(state, planner=planner, critic=Scripted()),
+                PLAN_DATE,
+                state,
+                budget=budget,
+            )
+        )
+    finally:
+        state.close()
+
+    assert view.outcome == "timed_out"
+    assert (budget.model_calls, budget.retries) == (1, 0)
 
 
 def test_a_service_that_refuses_the_request_is_not_asked_again() -> None:

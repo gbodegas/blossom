@@ -183,6 +183,11 @@ def evening_prefix(plan_date: date) -> str:
     return f"plan:{plan_date.isoformat()}:"
 
 
+def has_a_run_in_flight(state: ApplicationState, plan_date: date) -> bool:
+    """Whether a run for the evening is in flight in this process."""
+    return any(thread.startswith(evening_prefix(plan_date)) for thread in state.in_flight)
+
+
 def thread_for(plan_date: date) -> str:
     """A new thread for one evening. The date is for a person reading the table."""
     return f"{evening_prefix(plan_date)}{uuid4().hex[:8]}"
@@ -328,6 +333,24 @@ async def ended_on_the_way(
     )
 
 
+async def hold_in_time(lock: asyncio.Lock, budget: RunBudget) -> bool:
+    """True once ``lock`` is held with time left in the run; False, holding nothing, otherwise.
+
+    The decision lock is held across saved-state reads by reviews and the sweep, so a
+    run waiting for it is still spending its time, and one that gets it too late goes
+    no further.
+    """
+    try:
+        async with asyncio.timeout(budget.remaining()):
+            await lock.acquire()
+    except TimeoutError:
+        return False
+    if budget.remaining() <= 0:
+        lock.release()
+        return False
+    return True
+
+
 def keep_timing(
     state: ApplicationState, thread_id: str, budget: RunBudget, outcome: str | None
 ) -> None:
@@ -381,7 +404,8 @@ async def run_plan(
     One run per evening is in flight at a time: a press for an evening that
     has one is refused with ``AlreadyPlanning`` before any thread is written or
     model asked. The run has ``budget``, made as it starts, and no more: each model request
-    gets what is left of it, and the whole run is cut off when it is spent. A
+    gets what is left of it, and the whole run is cut off when it is spent, waits
+    for the decision lock included, to start and to publish. A
     run cut off, or whose service failed, publishes nothing and is recorded,
     with its steps, as timed out or as a service failure. A late result never
     replaces a newer plan either: the evening's last publication is noted as
@@ -393,13 +417,24 @@ async def run_plan(
     budget = RunBudget() if budget is None else budget
     # The outcome the run's time is kept under; a run that raises is interrupted.
     outcome: str | None = INTERRUPTED
-    async with state.decision_lock:
-        # Checked and joined under one hold of the lock, so two presses for one evening
-        # cannot both find it free.
-        if any(thread.startswith(evening_prefix(plan_date)) for thread in state.in_flight):
+    if not await hold_in_time(state.decision_lock, budget):
+        # Out of time before it could start: a press while the evening has a run in
+        # flight is still refused, and any other is kept as timed out.
+        if has_a_run_in_flight(state, plan_date):
             raise AlreadyPlanning
-        state.in_flight.add(thread_id)
+        view = await ended_on_the_way(graph, thread_id, plan_date, state, budget, TIMED_OUT)
+        keep_timing(state, thread_id, budget, TIMED_OUT)
+        return view
+    try:
+        # Checked and joined under one hold of the lock, so two presses for one evening
+        # cannot both find it free. The read comes first, so one that fails leaves
+        # nothing in flight to refuse the next press.
+        if has_a_run_in_flight(state, plan_date):
+            raise AlreadyPlanning
         newest = state.drafts.newest_published(plan_date)
+        state.in_flight.add(thread_id)
+    finally:
+        state.decision_lock.release()
     try:
         try:
             async with asyncio.timeout(budget.remaining()):
@@ -426,8 +461,12 @@ async def run_plan(
         if not view.waiting:
             await tidy_thread(thread_id, state)
             return view
+        if not await hold_in_time(state.decision_lock, budget):
+            # The time ran out before the draft could be published, so it never is.
+            outcome = TIMED_OUT
+            return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
         try:
-            async with state.decision_lock:
+            try:
                 if state.drafts.newest_published(plan_date) != newest:
                     # A plan for the evening was published while this one was
                     # being made, from another press or the other page. That
@@ -453,6 +492,8 @@ async def run_plan(
                         *(d.thread_id for d in displaced),
                     ]:
                         await tidy_thread(thread, state)
+            finally:
+                state.decision_lock.release()
         except Exception:
             # The run paused but its draft could not be published. Left as it
             # is, the sweep would publish it later, after the page had said
