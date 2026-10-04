@@ -2133,6 +2133,7 @@ def week_page(
             help_marker=marker,
             in_place=in_place,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            today=today,
         )
     if not showable(chosen):
         return student_page(
@@ -2143,6 +2144,7 @@ def week_page(
             help_marker=marker,
             in_place=in_place,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            today=today,
         )
     return student_page(
         request,
@@ -3515,6 +3517,8 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
     place = fields.get("place", "")
     # The cards this visit keeps where they were, carried on so a choice regroups none.
     kept = InPlace.read(fields.get(IN_PLACE))
+    # The household day once the lock has read it, so a refusal is shown for that day.
+    today: date | None = None
 
     def refused(problem: str, code: int) -> Response:
         note = EarlierNote(
@@ -3535,6 +3539,7 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
                 pressed=True,
                 in_place=kept,
                 status_code=code,
+                today=today,
             ),
             week_not_shown(request, CHOICE_NOT_SAVED, problem, fragment=EARLIER_WORK),
             code,

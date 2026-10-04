@@ -31,17 +31,21 @@ from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import (
+    BEYOND_THE_CALENDAR,
     CHOICE_BAD_FORM,
+    CHOICE_FAILED,
     CHOICE_FROM_ANOTHER_DAY,
+    NOT_A_WEEK,
     NOT_EARLIER_NOW,
     NOT_HERS_TO_CHOOSE,
+    NOT_ON_RECORD,
     earlier_action,
     earlier_anchor,
     earlier_made_with,
     place_key,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE as KEY_VARIABLE
-from blossom.stores.catch_up import ChoiceMade, ChoiceStood
+from blossom.stores.catch_up import ChoiceMade, ChoiceNotSaved, ChoiceStood
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from tests.support import (
     HER_PAGE,
@@ -965,6 +969,105 @@ def test_a_receipt_and_the_page_it_is_on_are_about_one_day(
     assert ("Today, Saturday, October 3" in shown) == (week is None)
     assert earlier_anchor(OCT_3.assignment_id) not in section(shown)
     assert receipts(shown, OCT_2.assignment_id) == [said]
+    assert after == before
+
+
+def signed_days(html: str) -> set[str]:
+    """The days the page's earlier homework forms were made for."""
+    return set(re.findall(r'name="made_with" value="(\d{4}-\d{2}-\d{2})\.', html))
+
+
+def about_today_only(html: str, week: str | None = None) -> None:
+    """The page is about October 3 alone, the day the request read first."""
+    assert signed_days(html) == {TODAY.isoformat()}
+    if week is None:
+        assert "Today, Saturday, October 3" in html
+    assert "Sunday, October 4" not in html
+
+
+@pytest.mark.parametrize(
+    ("week", "problem"),
+    [
+        ("not-a-week", NOT_A_WEEK),
+        ("2026-10-33", NOT_A_WEEK),
+        ("0001-01-01", BEYOND_THE_CALENDAR),
+        ("9999-12-31", BEYOND_THE_CALENDAR),
+    ],
+    ids=["not a date", "no such day", "the first week", "the last week"],
+)
+@pytest.mark.parametrize("receipt", [False, True], ids=["plain", "with a receipt"])
+def test_a_week_the_page_cannot_show_is_answered_for_the_day_the_request_read(
+    week: str, problem: str, receipt: bool
+) -> None:
+    with household(OCT_2, OCT_3, BOTH_PAST) as client:
+        asked = f"{HER_PAGE}?week={week}"
+        if receipt:
+            landed = choose(client, OCT_2.assignment_id).partition("#")[0]
+            asked = f"{landed}&week={week}"
+        with_clock(client, TurnsAfterOneRead(TODAY, TOMORROW))
+        answer = client.get(asked, headers=PAGE_HEADERS)
+
+    assert answer.status_code == 422
+    assert problem in words(answer.text)
+    about_today_only(answer.text)
+
+
+def refused_choice(client: TestClient, shown: str, refusal: str) -> tuple[int, str]:
+    """Press Include or Remove on ``shown`` with the one change that ``refusal`` names,
+    while the household day turns to October 4 after its first read."""
+    key = state_of(client).result_key
+    store = store_of(client)
+    about, choice = OCT_2.assignment_id, "include"
+    fields = form_fields(shown, earlier_action(about))
+    if refusal == "made on another day":
+        fields["made_with"] = earlier_made_with(key, date(2026, 10, 2), about, choice)
+    elif refusal == "reported done since":
+        store.report_status(about, "done", None, expected_head=None, now=NOON, today=TODAY)
+    elif refusal in ("include work not on record", "remove work not on record"):
+        about, choice = "gone-oct-1", refusal.split()[0]
+        fields |= {"choice": choice, "made_with": earlier_made_with(key, TODAY, about, choice)}
+    elif refusal == "a malformed form":
+        fields["place"] = "elsewhere"
+    else:
+        error: Exception = sqlite3.OperationalError("disk I/O error")
+        if refusal == "a write the file refuses":
+            error = ChoiceNotSaved("synthetic")
+
+        def fails(*_: object, **__: object) -> ChoiceMade:
+            raise error
+
+        store.choose_catch_up = fails  # type: ignore[method-assign]
+    with_clock(client, TurnsAfterOneRead(TODAY, TOMORROW))
+    answer = client.post(earlier_action(about), data=fields, headers=PAGE_HEADERS)
+    return answer.status_code, answer.text
+
+
+@pytest.mark.parametrize("week", [None, "2026-09-21"], ids=["today's week", "another week"])
+@pytest.mark.parametrize(
+    ("refusal", "code", "problem"),
+    [
+        ("made on another day", 409, CHOICE_FROM_ANOTHER_DAY),
+        ("reported done since", 409, NOT_EARLIER_NOW),
+        ("include work not on record", 404, NOT_ON_RECORD),
+        ("remove work not on record", 404, NOT_ON_RECORD),
+        ("a store that cannot be read", 500, CHOICE_FAILED),
+        ("a write the file refuses", 500, CHOICE_FAILED),
+        ("a malformed form", 422, CHOICE_BAD_FORM),
+    ],
+    ids=lambda value: value if isinstance(value, str) and len(value) < 30 else "",
+)
+def test_a_refused_choice_is_shown_for_the_day_it_was_checked_against(
+    refusal: str, code: int, problem: str, week: str | None
+) -> None:
+    with household(OCT_2, OCT_3, BOTH_PAST) as client:
+        shown = page(client, **({} if week is None else {"week": week}))
+        before = kept_rows(client)
+        answer, text = refused_choice(client, shown, refusal)
+        after = kept_rows(client)
+
+    assert answer == code
+    assert problem in words(text)
+    about_today_only(text, week)
     assert after == before
 
 
