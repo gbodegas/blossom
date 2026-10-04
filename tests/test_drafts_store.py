@@ -13,7 +13,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
-from time import monotonic
+from time import monotonic, sleep
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -937,6 +937,79 @@ def test_a_publication_waits_for_the_store_only_as_long_as_it_has() -> None:
         store.close()
 
     assert 0.15 < waited < 1.0
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+
+
+def test_a_publication_waiting_for_the_file_lets_other_callers_use_the_store(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Another connection has reserved the file's writer. While a publication waits for it,
+    a read through the same store answers at once instead of waiting for the publication."""
+    path = tmp_path / "blossom.sqlite3"
+    store = DraftsStore.open(path, fixture_clock())
+    other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    gave_up: list[OutOfTime] = []
+
+    def publishing() -> None:
+        started = monotonic()
+        try:
+            store.publish("draft:b", within=lambda: 0.6 - (monotonic() - started))
+        except OutOfTime as error:
+            gave_up.append(error)
+
+    try:
+        one_published_and_one_waiting(store)
+        other.execute("BEGIN IMMEDIATE")
+        worker = threading.Thread(target=publishing)
+        worker.start()
+        sleep(0.1)
+        asked = monotonic()
+        latest = store.latest_for(PLAN_DATE)
+        answered = monotonic() - asked
+        worker.join()
+        other.execute("ROLLBACK")
+    finally:
+        other.close()
+        store.close()
+
+    assert answered < 0.1
+    assert len(gave_up) == 1
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+
+
+def test_a_publication_that_runs_out_of_time_waiting_for_the_store_stops_at_once() -> None:
+    """A caller's time can end early, as when it gives up. A publication waiting for the
+    store sees that within a moment, however long it had when it began to wait."""
+    store = store_in_memory()
+    stopped = threading.Event()
+    gave_up: list[float] = []
+
+    def publishing() -> None:
+        try:
+            store.publish("draft:b", within=lambda: 0.0 if stopped.is_set() else 3.0)
+        except OutOfTime:
+            gave_up.append(monotonic())
+
+    try:
+        one_published_and_one_waiting(store)
+        store._lock.acquire()
+        try:
+            worker = threading.Thread(target=publishing)
+            worker.start()
+            sleep(0.1)
+            stopped.set()
+            stopping = monotonic()
+            worker.join()
+        finally:
+            store._lock.release()
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert len(gave_up) == 1
+    assert gave_up[0] - stopping < 0.2
     assert latest is not None
     assert latest.draft_id == "draft:a"
 

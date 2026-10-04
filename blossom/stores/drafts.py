@@ -51,7 +51,7 @@ is published, from whichever page. System-recorded, like an expiry: no person sa
 
 WRITER_POLL_SECONDS: Final = 0.01
 """How long a publication with a time limit waits before asking a busy file for its
-writer again."""
+writer again, and the longest it waits for the store at a time."""
 
 INTERRUPTED: Final = "interrupted"
 """The outcome recorded on a run that saved its draft and then failed before the
@@ -557,38 +557,52 @@ class DraftsStore:
 
         ``within`` reads the seconds a run has left. Waits for this store and for the
         file's writer are cut to it, and a publication with none left when it would
-        commit is rolled back and raised as ``OutOfTime``.
+        commit is rolled back and raised as ``OutOfTime``. The store is let go between
+        tries for the writer, so other callers can use it while a publication waits.
         """
         if within is None:
             with self._lock, self._connection:
                 return self._published(draft_id)
-        left = within()
-        if left <= 0 or not self._lock.acquire(timeout=left):
-            raise OutOfTime
-        try:
-            (waits,) = self._connection.execute("PRAGMA busy_timeout").fetchone()
-            # SQLite's own wait for a busy writer can run well past a short limit, so the
-            # writer is asked for here, again and again, until it is free or time is up.
-            self._connection.execute("PRAGMA busy_timeout=0")
+        while True:
+            left = within()
+            if left <= 0:
+                raise OutOfTime
+            # The store is waited for a moment at a time, so time that ends early is seen.
+            if not self._lock.acquire(timeout=min(left, WRITER_POLL_SECONDS)):
+                continue
             try:
-                while True:
-                    if within() <= 0:
-                        raise OutOfTime
-                    try:
-                        with self._writing():
-                            displaced = self._published(draft_id)
-                            if within() <= 0:
-                                raise OutOfTime
-                    except sqlite3.OperationalError as error:
-                        if error.sqlite_errorcode != sqlite3.SQLITE_BUSY:
-                            raise
-                        time.sleep(WRITER_POLL_SECONDS)
-                    else:
-                        return displaced
+                displaced = self._published_unless_busy(draft_id, within)
             finally:
-                self._connection.execute(f"PRAGMA busy_timeout={int(waits)}")
+                self._lock.release()
+            if displaced is not None:
+                return displaced
+            time.sleep(WRITER_POLL_SECONDS)
+
+    def _published_unless_busy(
+        self, draft_id: str, within: Callable[[], float]
+    ) -> list[Displaced] | None:
+        """One try at ``publish`` by a caller holding the store, or None while another
+        connection has the file's writer.
+
+        SQLite's own wait for a busy writer can run well past a short limit, so this try
+        doesn't wait at all and the caller asks again.
+        """
+        (waits,) = self._connection.execute("PRAGMA busy_timeout").fetchone()
+        self._connection.execute("PRAGMA busy_timeout=0")
+        try:
+            if within() <= 0:
+                raise OutOfTime
+            with self._writing():
+                displaced = self._published(draft_id)
+                if within() <= 0:
+                    raise OutOfTime
+        except sqlite3.OperationalError as error:
+            if error.sqlite_errorcode != sqlite3.SQLITE_BUSY:
+                raise
+            return None
         finally:
-            self._lock.release()
+            self._connection.execute(f"PRAGMA busy_timeout={int(waits)}")
+        return displaced
 
     def _published(self, draft_id: str) -> list[Displaced]:
         """The writes of ``publish``, inside the caller's transaction."""

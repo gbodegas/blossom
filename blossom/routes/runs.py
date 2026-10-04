@@ -12,6 +12,7 @@ it took, and the page says which. Every run's time is kept with its record.
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -41,7 +42,7 @@ from blossom.anthropic_client import (
 )
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.noticing import read_week
-from blossom.stores.drafts import INTERRUPTED, OVERTAKEN, OutOfTime
+from blossom.stores.drafts import INTERRUPTED, OVERTAKEN, Displaced, OutOfTime
 from blossom.views import PastDueView, PlanRunView
 
 logger = logging.getLogger(__name__)
@@ -377,6 +378,35 @@ async def read_in_time[T](reading: Awaitable[T], budget: RunBudget) -> T:
     return read
 
 
+async def publish_in_time(
+    state: ApplicationState, draft_id: str, budget: RunBudget
+) -> list[Displaced]:
+    """Publish ``draft_id`` with the run's time left, on a worker thread, so the server goes
+    on answering while the publication waits for the drafts file.
+
+    A caller that stops waiting, as when its request is canceled, ends the publication's
+    time and waits for it to stop, so nothing is published after the run has let go of
+    the decision lock.
+    """
+    stopped = False
+
+    def within() -> float:
+        return 0.0 if stopped else budget.remaining()
+
+    work = asyncio.ensure_future(asyncio.to_thread(state.drafts.publish, draft_id, within=within))
+    try:
+        return await asyncio.shield(work)
+    except BaseException:
+        stopped = True
+        while not work.done():
+            with contextlib.suppress(BaseException):
+                await asyncio.wait([work])
+        # How the worker ended, often out of time as asked, is read so it isn't
+        # reported as an error nobody handled.
+        work.exception()
+        raise
+
+
 def keep_timing(
     state: ApplicationState, thread_id: str, budget: RunBudget, outcome: str | None
 ) -> None:
@@ -524,9 +554,7 @@ async def run_plan(
                         ),
                         budget,
                     )
-                    displaced = state.drafts.publish(
-                        draft_id_for(thread_id), within=budget.remaining
-                    )
+                    displaced = await publish_in_time(state, draft_id_for(thread_id), budget)
                     for thread in [
                         *(thread for _, thread in finished),
                         *(d.thread_id for d in displaced),

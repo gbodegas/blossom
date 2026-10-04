@@ -8,6 +8,7 @@ both rules to whatever a crash left behind.
 """
 
 import asyncio
+import gc
 import pathlib
 import sqlite3
 import threading
@@ -2002,6 +2003,167 @@ def test_a_publication_waiting_on_the_drafts_file_ends_at_the_runs_limit(
         assert publishing > 2.3
         assert kept.thread_id == late.thread_id
         assert ended == []
+
+
+class HeldFile:
+    """Publishes through the drafts store while another connection holds the file's write
+    lock for ``held`` seconds from just before the publication. Each publication asks the
+    event loop for a callback 0.05 seconds on and records how late it ran."""
+
+    def __init__(
+        self,
+        state: ApplicationState,
+        path: pathlib.Path,
+        held: float,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self.publish = state.drafts.publish
+        self.other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+        self.held = held
+        self.loop = loop
+        self.releases: list[threading.Timer] = []
+        self.started = asyncio.Event()
+        self.ended: list[float] = []
+        self.late_by: asyncio.Future[float] = loop.create_future()
+
+    def __call__(
+        self, draft_id: str, *, within: Callable[[], float] | None = None
+    ) -> list[Displaced]:
+        if self.held and not self.releases:
+            self.other.execute("BEGIN EXCLUSIVE")
+            self.releases.append(threading.Timer(self.held, self.release))
+            self.releases[0].start()
+        due = monotonic()
+
+        def ran() -> None:
+            self.late_by.set_result(monotonic() - due)
+
+        self.loop.call_soon_threadsafe(self.loop.call_later, 0.05, ran)
+        self.loop.call_soon_threadsafe(self.started.set)
+        try:
+            return self.publish(draft_id, within=within)
+        finally:
+            self.ended.append(monotonic())
+
+    def release(self) -> None:
+        self.other.execute("ROLLBACK")
+
+    def close(self) -> None:
+        for release in self.releases:
+            release.join()
+        self.other.close()
+
+
+def file_backed_application(tmp_path: pathlib.Path) -> ApplicationState:
+    return application(
+        BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
+        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
+        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("held", "seconds", "outcome"),
+    [(0.7, 5.0, "accepted"), (2.3, 1.0, "timed_out"), (0.0, 5.0, "accepted")],
+)
+def test_the_server_goes_on_answering_while_a_publication_waits_for_the_drafts_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    held: float,
+    seconds: float,
+    outcome: str,
+) -> None:
+    """A callback due on the same event loop 0.05 seconds after the publication starts runs
+    on time, whether the run waits for the file and publishes, runs out of time first, or
+    finds the file free."""
+    state = file_backed_application(tmp_path)
+    try:
+
+        async def scenario() -> tuple[str, PlanRunView, float, DraftRecord | None]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            contended = HeldFile(
+                state, tmp_path / "blossom.sqlite3", held, asyncio.get_running_loop()
+            )
+            monkeypatch.setattr(state.drafts, "publish", contended)
+            try:
+                late = await run_plan(
+                    graph_for(state, fixture_week_plan()),
+                    PLAN_DATE,
+                    state,
+                    budget=RunBudget(seconds=seconds),
+                )
+                late_by = await contended.late_by
+            finally:
+                contended.close()
+            return first.thread_id, late, late_by, state.drafts.latest_for(PLAN_DATE)
+
+        first, late, late_by, latest = asyncio.run(scenario())
+    finally:
+        state.close()
+
+    assert late_by < 0.3
+    assert late.outcome == outcome
+    assert latest is not None
+    assert latest.thread_id == (late.thread_id if outcome == "accepted" else first)
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()
+
+
+@pytest.mark.parametrize("times", [1, 2])
+def test_a_run_canceled_while_its_publication_waits_publishes_nothing_later(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, times: int
+) -> None:
+    """The run is canceled, once or twice, while its publication waits for the drafts file.
+    The publication has stopped by the time the caller sees the run end, so nothing is
+    published once the file frees, the lock and the evening are let go only then, and
+    nothing is left over for the event loop to report."""
+    state = file_backed_application(tmp_path)
+    try:
+
+        async def scenario() -> tuple[str, bool, list[float], bool, set[str], list[str]]:
+            reported: list[str] = []
+            loop = asyncio.get_running_loop()
+            loop.set_exception_handler(lambda _, context: reported.append(context["message"]))
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            contended = HeldFile(state, tmp_path / "blossom.sqlite3", 1.0, loop)
+            monkeypatch.setattr(state.drafts, "publish", contended)
+            try:
+                late = asyncio.create_task(
+                    run_plan(
+                        graph_for(state, fixture_week_plan()),
+                        PLAN_DATE,
+                        state,
+                        budget=RunBudget(seconds=5.0),
+                    )
+                )
+                await contended.started.wait()
+                await asyncio.sleep(0.1)
+                for _ in range(times):
+                    late.cancel()
+                    await asyncio.sleep(0)
+                (outcome,) = await asyncio.gather(late, return_exceptions=True)
+                stopped = isinstance(outcome, BaseException) and not isinstance(outcome, Exception)
+                ended = list(contended.ended)
+                locked = state.decision_lock.locked()
+                in_flight = set(state.in_flight)
+            finally:
+                contended.close()
+            return first.thread_id, stopped, ended, locked, in_flight, reported
+
+        first, stopped, ended, locked, in_flight, reported = asyncio.run(scenario())
+        # Whatever the run left behind is collected now, so the loop's reports of it are in.
+        gc.collect()
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert stopped
+    assert len(ended) == 1
+    assert not locked
+    assert in_flight == set()
+    assert reported == []
+    assert latest is not None
+    assert latest.thread_id == first
 
 
 def test_a_publication_read_is_cut_off_at_the_runs_limit() -> None:
