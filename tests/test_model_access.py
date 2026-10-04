@@ -12,6 +12,8 @@ refuses to exist without a key.
 
 import dataclasses
 import os
+import pathlib
+import re
 from collections.abc import Iterator
 
 import pytest
@@ -189,6 +191,16 @@ def test_the_client_carries_no_provider_side_tools_and_pins_its_limits() -> None
     assert model.max_retries == 2
     assert model._client.max_retries == 2
     assert model._client.timeout == TIMEOUT_SECONDS
+
+
+def test_the_guides_name_the_model_the_client_asks_for() -> None:
+    """The architecture notes and the developer guide name the model the code calls, and
+    no other."""
+    assert MODEL == "claude-opus-5-5"
+    root = pathlib.Path(__file__).parents[1]
+    for guide in ("docs/architecture.md", "docs/development.md"):
+        text = (root / guide).read_text(encoding="utf-8")
+        assert set(re.findall(r"`(claude-opus-[0-9-]+)`", text)) == {MODEL}, guide
 
 
 def test_the_key_never_appears_in_the_client_repr() -> None:

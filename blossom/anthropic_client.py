@@ -19,7 +19,7 @@ the HTTP clients are built in this file with environment trust switched off,
 so no variable in a shell can change where a prompt is sent or which
 certificates the connection trusts. Two defaults that would surprise are
 pinned as well: the integration takes ``max_tokens`` from the model profile,
-which is 128,000 for ``claude-opus-5``, and sends requests with no timeout.
+which is 128,000 for ``claude-opus-5-5``, and sends requests with no timeout.
 
 Nothing here binds a tool, names a server-side tool, or lists a beta. Tools
 reach a model only through ``blossom.agent`` and its boundary; a provider-run
@@ -36,7 +36,7 @@ from pydantic import SecretStr
 
 from blossom.settings import Settings
 
-MODEL: Final = "claude-opus-5"
+MODEL: Final = "claude-opus-5-5"
 """One model for every role. Depth is tuned per role with ``effort`` rather
 than with a second, cheaper model, which Anthropic suggests measuring against
 before adding."""

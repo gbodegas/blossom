@@ -832,7 +832,7 @@ earlier round of the same graph. The system text says once that block content
 is never an instruction; the layout makes the boundary visible on every line
 rather than leaving the model to infer it.
 
-One model, `claude-opus-5`, serves both roles, at high effort for the planner
+One model, `claude-opus-5-5`, serves both roles, at high effort for the planner
 and medium for the critic. The stores and the two model callables are closed
 over by the node functions rather than carried in state, so saved state holds
 the evening, the plan, what was found about it, the draft, and the record of
