@@ -13,8 +13,10 @@ import json
 import pathlib
 import re
 import sqlite3
+import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 
@@ -312,6 +314,63 @@ def test_a_page_from_another_day_is_refused_and_keeps_her_press() -> None:
     assert rows == []
 
 
+def pressed_across_midnight(
+    client: TestClient,
+    clock: SetClock,
+    assignment_id: str,
+    shown: str,
+    meanwhile: Callable[[], object] = lambda: None,
+) -> tuple[int, str]:
+    """Press the item's button on ``shown`` while a decision holds the lock, and let the
+    household day turn to October 4, and ``meanwhile`` happen, while the press waits for it."""
+    state = state_of(client)
+    portal = client.portal
+    assert portal is not None
+    action = earlier_action(assignment_id)
+    fields = form_fields(shown, action)
+    portal.call(state.decision_lock.acquire)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            pressed = pool.submit(client.post, action, data=fields, headers=PAGE_HEADERS)
+            deadline = time.monotonic() + 5
+            while not portal.call(lambda: bool(state.decision_lock._waiters)):
+                assert time.monotonic() < deadline, "the press never waited for the lock"
+                time.sleep(0.01)
+            clock.day = TOMORROW
+            meanwhile()
+        finally:
+            portal.call(state.decision_lock.release)
+        answer = pressed.result(timeout=10)
+    return answer.status_code, answer.text
+
+
+@pytest.mark.parametrize("pressed", ["include", "remove"])
+def test_a_press_that_waits_for_the_lock_past_midnight_is_refused_and_changes_nothing(
+    pressed: str,
+) -> None:
+    with household(OCT_2, OCT_3) as client:
+        clock = SetClock(TODAY, NOON)
+        with_clock(client, clock)
+        if pressed == "remove":
+            choose(client, OCT_2.assignment_id)
+        before = kept_rows(client)
+        code, text = pressed_across_midnight(client, clock, OCT_2.assignment_id, page(client))
+        after = kept_rows(client)
+        not_planned = planned_ids(client, TOMORROW)
+        landing = page(client)
+        fresh = choose(client, OCT_2.assignment_id)
+        planned = planned_ids(client, TOMORROW)
+
+    assert code == 409
+    assert CHOICE_FROM_ANOTHER_DAY in words(item_of(text, OCT_2.assignment_id))
+    assert "Include in today's plan" in item_of(text, OCT_2.assignment_id)
+    assert after == before
+    assert OCT_2.assignment_id not in not_planned
+    assert "Include in today's plan" in item_of(landing, OCT_2.assignment_id)
+    assert said_in(fresh).startswith("included.")
+    assert OCT_2.assignment_id in planned
+
+
 def test_the_same_press_twice_keeps_one_choice_and_says_so() -> None:
     with household(OCT_2, OCT_3) as client:
         shown = page(client)
@@ -586,6 +645,41 @@ def test_a_refused_press_in_the_fold_is_said_there_with_the_fold_open() -> None:
     assert CHOICE_FROM_ANOTHER_DAY in words(item_of(answer.text, "ago-30"))
 
 
+def test_a_press_that_waits_past_midnight_is_refused_for_its_day_before_anything_else() -> None:
+    with household(OCT_2, OCT_3) as client:
+        clock = SetClock(TODAY, NOON)
+        with_clock(client, clock)
+        code, text = pressed_across_midnight(
+            client,
+            clock,
+            OCT_2.assignment_id,
+            page(client),
+            lambda: store_of(client).report_status(
+                OCT_2.assignment_id, "done", None, expected_head=None, now=NOON, today=TOMORROW
+            ),
+        )
+        rows = kept_rows(client)
+
+    assert code == 409
+    assert CHOICE_FROM_ANOTHER_DAY in words(text)
+    assert NOT_EARLIER_NOW not in words(text)
+    assert rows == []
+
+
+def test_a_press_in_the_fold_that_waits_past_midnight_is_refused_there_with_the_fold_open() -> None:
+    with household(*due_days_ago(*range(1, 12)), *due_days_ago(30)) as client:
+        clock = SetClock(TODAY, NOON)
+        with_clock(client, clock)
+        code, text = pressed_across_midnight(client, clock, "ago-30", page(client))
+        rows = kept_rows(client)
+
+    assert code == 409
+    assert "ago-30" in folded_ids(text)
+    assert the_fold(text).endswith(" open>")
+    assert CHOICE_FROM_ANOTHER_DAY in words(item_of(text, "ago-30"))
+    assert rows == []
+
+
 def test_the_fold_is_the_pages_own_and_reading_it_writes_nothing() -> None:
     with household(*due_days_ago(*range(1, 12)), *due_days_ago(30)) as client:
         store = store_of(client)
@@ -689,6 +783,7 @@ INSTRUCTIONS_SHAPE = uuid.UUID("6f1ef033-6648-4683-b6e9-1dd419f420b5")
 
 
 def test_the_fingerprint_has_a_namespace_of_its_own_for_catch_up_work() -> None:
+    assert uuid.UUID("4fcf0d3f-3042-4144-8b89-5b608d49e134") == PLANNING_DIGEST
     assert PLANNING_DIGEST not in (
         INSTRUCTIONS_SHAPE,
         uuid.UUID("7d1e6a34-2c9b-4f58-a0d7-93b5e1c8f264"),
@@ -821,6 +916,44 @@ def test_a_receipt_from_another_day_says_nothing() -> None:
 
     assert "Chosen for today" in item_of(shown, OCT_2.assignment_id)
     assert receipts(shown, OCT_2.assignment_id) == []
+
+
+class TurnsAfterOneRead(SetClock):
+    """A household clock that reads ``day`` once and ``then`` after that, as when midnight
+    falls between two reads in one request."""
+
+    def __init__(self, day: date, then: date) -> None:
+        super().__init__(day, NOON)
+        self.then = then
+
+    def today(self) -> date:
+        day, self.day = self.day, self.then
+        return day
+
+
+@pytest.mark.parametrize("week", [None, "2026-09-21"])
+@pytest.mark.parametrize(
+    ("presses", "said"), [(1, "Included in today's plan."), (2, "Removed from today's plan.")]
+)
+def test_a_receipt_and_the_page_it_is_on_are_about_one_day(
+    presses: int, said: str, week: str | None
+) -> None:
+    with household(OCT_2, OCT_3) as client:
+        for _ in range(presses):
+            landed = choose(client, OCT_2.assignment_id, **({} if week is None else {"week": week}))
+        store = store_of(client)
+        if presses == 1:
+            store.choose_catch_up(OCT_2.assignment_id, TOMORROW, include=True)
+        before = (kept_rows(client), store.all_assignments())
+        with_clock(client, TurnsAfterOneRead(TODAY, TOMORROW))
+        shown = client.get(landed, headers=PAGE_HEADERS).text
+        after = (kept_rows(client), store.all_assignments())
+
+    assert ("week=" in landed) == (week is not None)
+    assert ("Today, Saturday, October 3" in shown) == (week is None)
+    assert earlier_anchor(OCT_3.assignment_id) not in section(shown)
+    assert receipts(shown, OCT_2.assignment_id) == [said]
+    assert after == before
 
 
 @pytest.mark.parametrize("assignment_id", ["it's-due", "two words", "café-5", "a&b=c", "100%"])

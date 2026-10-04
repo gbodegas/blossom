@@ -1555,6 +1555,7 @@ def student_page(
     pressed: bool = False,
     earlier_note: "EarlierNote | None" = None,
     status_code: int = status.HTTP_200_OK,
+    today: date | None = None,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
@@ -1565,7 +1566,8 @@ def student_page(
     is still there to land on, and says so, which an ordinary visit to a day
     with no plan has no need of. Today's saved plan is unfolded on every visit,
     so finding her next step takes no remembered action. The household day is
-    read once, here, and everything on the page is about that day: the heading,
+    read once, here, unless the caller read it as ``today`` to check what the address
+    says, and everything on the page is about that day: the heading,
     the week, the planning window, which plan is today's, its notice, and the
     marks beside its rows. The record is read once too, and all of those are
     about that one reading. A card's problem is said at the top too, with a link
@@ -1583,7 +1585,7 @@ def student_page(
     """
     viewer = viewer_of(request)
     card = as_read_by(card, viewer)
-    today = state.clock.today()
+    today = state.clock.today() if today is None else today
     # The record is read once for the page, with today's plan's assignments
     # named to it: the week, the planning window, the plan's notice and
     # marks, and whether the plan still fits all come out of that reading.
@@ -1809,15 +1811,16 @@ def due_this_week(
     and offers the same address again. ``earlier`` and ``earlier_said`` name what a choice in
     Earlier homework to check just did, said beside that item only when this process signed
     it for today and that item and today's choices still agree; a word not in the set says
-    nothing.
+    nothing. The household day is read once, for that check and the page alike.
     """
     try:
         was_refreshed = refreshed == "1"
         plan_asked = show_plan == "1"
         card = card_shown(saved, same, undone, change, show)
         marker = marker_from(asked, asked_again)
+        today = state.clock.today()
         signed = (
-            receipt_word(state.result_key, state.clock.today(), earlier, earlier_said)
+            receipt_word(state.result_key, today, earlier, earlier_said)
             if earlier and earlier_said
             else None
         )
@@ -1843,6 +1846,7 @@ def due_this_week(
                 turning_in=receipt_asked(hand_in_said, about, hand_in_event),
                 help_marker=marker,
                 earlier_note=chose,
+                today=today,
             )
         try:
             chosen = date.fromisoformat(week.strip())
@@ -1872,6 +1876,7 @@ def due_this_week(
             plan_asked=plan_asked,
             help_marker=marker,
             earlier_note=chose,
+            today=today,
         )
     except sqlite3.Error as error:
         return week_unreadable(
@@ -3164,9 +3169,10 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
     """Include earlier homework in today's plan, or take it out.
 
     A parent is answered 403 before the form is read, and nothing is written. Her form is
-    read whole, each field once. The choice is for the household's day now, and the form
-    carries the day its page was made for, signed: a form no page made is refused, 422, and
-    one made on another day is refused, 409, since its choices were that day's. Including
+    read whole, each field once. The choice is for the household's day once the decision
+    lock is held, and the form carries the day its page was made for, signed: a form no page
+    made is refused, 422, and one made on another day is refused, 409, since its choices were
+    that day's, even when the day turned while the press waited for the lock. Including
     work that is not on the earlier list now, reported Done or redated, is refused, 409.
     The same choice twice writes nothing and says so. Where the item was shown, above the
     fold or in it, only places it there again. Every refusal comes back on the week
@@ -3180,7 +3186,6 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
     given = fields.get("week", "").strip()
     week = week_named(given)
     place = fields.get("place", "")
-    today = state.clock.today()
 
     def refused(problem: str, code: int) -> Response:
         note = EarlierNote(
@@ -3215,11 +3220,12 @@ async def choose_earlier_work(request: Request, assignment_id: str, state: State
     made_for = day_made_for(state.result_key, fields["made_with"], assignment_id, choice)
     if made_for is None:
         return refused(CHOICE_BAD_FORM, status.HTTP_422_UNPROCESSABLE_CONTENT)
-    if made_for != today:
-        return refused(CHOICE_FROM_ANOTHER_DAY, status.HTTP_409_CONFLICT)
     include = choice == "include"
     try:
         async with state.decision_lock:
+            today = state.clock.today()
+            if made_for != today:
+                return refused(CHOICE_FROM_ANOTHER_DAY, status.HTTP_409_CONFLICT)
             if include:
                 found = read_everything(state.project_state, state.project_state)
                 if assignment_id not in {item.assignment_id for item in found.assignments}:
