@@ -17,15 +17,16 @@
   {% set today_said = view.today.strftime("%A, %B") ~ " " ~ view.today.day %}
   {% set shown = view.earlier|rejectattr("folded")|list %}
   {% set folded = view.earlier|selectattr("folded")|list %}
+  {% set unread = view.earlier|selectattr("update", "equalto", "unavailable")|list %}
   <section class="panel assigned earlier-work" id="earlier-work" tabindex="-1" aria-labelledby="earlier-work-heading">
     <h2 id="earlier-work-heading">Earlier homework to check</h2>
     {% if earlier_note and earlier_note.problem and earlier_note.assignment_id not in earlier_listed %}
       <p class="problem" role="alert" id="earlier-problem" tabindex="-1" autofocus>{{ earlier_note.problem }}</p>
     {% endif %}
     {% if for_her %}
-      <p class="note">Homework due before today with no Done update. If it's finished, mark it Done from its Details. Choose any you want in today's plan for {{ today_said }}; the plan fits in what it can and puts off the rest with a reason.</p>
+      <p class="note">Homework due before today with no Done update{% if unread %}, or whose updates can't be read right now{% endif %}. If it's finished, mark it Done from its Details. Choose any you want in today's plan for {{ today_said }}; the plan fits in what it can and puts off the rest with a reason.</p>
     {% else %}
-      <p class="note">Homework due before today with no Done update from her. She chooses which to include in her plan for {{ today_said }}.</p>
+      <p class="note">Homework due before today with no Done update from her{% if unread %}, or whose updates can't be read right now{% endif %}. She chooses which to include in her plan for {{ today_said }}.</p>
     {% endif %}
     {% if shown %}
       <ul>

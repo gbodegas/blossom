@@ -507,13 +507,15 @@ def earlier_to_check(
 ) -> list[Assignment]:
     """Work she has not reported done that today's planning window leaves out and that every
     date puts before today, most recently due first. Undated work is always in the window,
-    so it is never here; nothing she has not reported is read as anything but unreported."""
+    so it is never here, and neither is work with a date claim that can't be read, which
+    could put it anywhere; nothing she has not reported is read as anything but unreported."""
     if noticed is None:
         noticed = noticings_of(everything)
     found = [
         item
         for item in everything.assignments
         if needs_homework(everything, item.assignment_id)
+        and item.assignment_id not in everything.claims_unavailable
         and not in_week(item, noticed[item.assignment_id], today)
         and due_before(noticed[item.assignment_id], today)
     ]

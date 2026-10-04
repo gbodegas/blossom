@@ -617,11 +617,13 @@ class EarlierWorkView(BaseModel):
     ``due_date`` is the record's date and ``earliest`` the earliest date anyone gives;
     ``dates_differ`` says they are not one date. ``chosen`` is her choice for today's plan
     and ``chosen_yesterday`` hers for the day before, which a new day does not carry.
-    ``in_plan`` is where today's plan put it once chosen: ``scheduled``, ``put_off`` with
-    ``put_off_reason``, ``missing`` when the plan was made without it, or ``None`` with no
-    plan or no choice. ``update`` is her standing update, ``not_yet`` or ``none`` when she
-    has said nothing, which is no word on whether the work is finished. ``folded`` puts it
-    in the fold under the shown part.
+    ``in_plan`` is where today's plan put it: ``scheduled``, ``put_off`` with
+    ``put_off_reason``, ``unknown`` when only the plan's text can be read, ``missing`` when
+    she chose it after the plan was made, or ``None`` with no plan or none made with it. Work
+    she took out of today's choices keeps that place until she plans again. ``update`` is
+    her standing update, ``not_yet``, ``unavailable`` when her updates can't be read, or
+    ``none`` when she has said nothing, which is no word on whether the work is finished.
+    ``folded`` puts it in the fold under the shown part.
     """
 
     model_config = ConfigDict(extra="forbid")

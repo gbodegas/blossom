@@ -804,10 +804,47 @@ def test_the_planner_is_told_a_date_passed_only_when_the_checks_hold_it_to_a_lat
     later = checked(deferring("assignment-canal-essay", "assignment-algebra-set"))
 
     assert (None if told is None else told.group(1)) == passed
+    assert ("next_date=" in line) == (told is not None)
     assert ('catch_up="due before today"' in line) == chosen
     assert (told is not None) == ("assignment-canal-essay" in tonight.past_due and not chosen)
     assert tonight.passed == worked_on
     assert later.passed == put_off
+
+
+AUG_25 = date(2026, 8, 25)
+
+
+@pytest.mark.parametrize(
+    ("due", "school", "verdict", "next_date"),
+    [
+        (AUG_25, (AUG_17, PLAN_DATE, AUG_25), Verdict.UNDECIDABLE, PLAN_DATE),
+        (AUG_25, (AUG_17, AUG_20, AUG_25), Verdict.UNDECIDABLE, AUG_20),
+        (AUG_18, (AUG_21,), Verdict.CONTRADICTED, AUG_21),
+        (None, (AUG_17, AUG_18, AUG_20), Verdict.CONTRADICTED, AUG_20),
+        (PLAN_DATE, (AUG_18,), Verdict.CONTRADICTED, PLAN_DATE),
+        (AUG_21, (AUG_18, AUG_25), Verdict.CONTRADICTED, AUG_21),
+    ],
+)
+def test_work_told_a_date_passed_is_told_the_next_date_the_checks_hold_it_to(
+    due: date | None, school: tuple[date, ...], verdict: Verdict, next_date: date
+) -> None:
+    essay = ESSAY.model_copy(update={"due_date": due})
+    noticings = [noticed(due, *school, verdict=verdict)]
+
+    line = told_about_the_essay(essay, noticings, [])
+    told = re.search(r'next_date="([^"]*)"', line)
+    later = check_plan(
+        deferring("assignment-canal-essay", "assignment-algebra-set"),
+        due_in_window=[essay, PROBLEM_SET],
+        zone=ZONE,
+        requested_evening=PLAN_DATE,
+        noticings=noticings,
+    )
+
+    assert "date_passed=" in line
+    assert told is not None
+    assert told.group(1) == next_date.isoformat()
+    assert later.passed == (next_date > PLAN_DATE)
 
 
 @pytest.mark.parametrize("verdict", [Verdict.UNDECIDABLE, Verdict.CONFIRMED])

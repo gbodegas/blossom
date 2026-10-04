@@ -79,8 +79,8 @@ Rules for the plan:
   with a reason. Say plainly that it was due earlier, without blame.
 - An assignment marked date_passed has a date from the record or a source
   that is before the plan date. That date has passed and can't be met. Plan
-  so that the next date still to come would be met, and say once that a date
-  given for it has passed and needs checking.
+  so that its next_date, the next date still to come, would be met, and say
+  once that a date given for it has passed and needs checking.
 - An assignment of kind TASK is a form to sign or a book to cover: minutes,
   not a sitting. Give it a short block or put it off with a reason; never
   stretch it to fill time.
@@ -205,7 +205,8 @@ def assignments_block(
     Her note and a parent's are put under their own names. Earlier work she chose is
     marked as catch-up work, due before today. Other work given a date before
     ``plan_date`` and another on or after it carries the earliest date as
-    ``date_passed``, as the plan checks hold it to the next date still to come.
+    ``date_passed`` and the next date still to come as ``next_date``, the date the plan
+    checks hold it to.
     """
     lines = []
     said_by_her = student_reports or {}
@@ -228,6 +229,7 @@ def assignments_block(
             attributes["catch_up"] = "due before today"
         elif plan_date is not None and dates and min(dates) < plan_date <= max(dates):
             attributes["date_passed"] = min(dates).isoformat()
+            attributes["next_date"] = min(day for day in dates if day >= plan_date).isoformat()
         teachers = list(applying.get(item.assignment_id, ()))
         for name, words in zip(teacher_names(len(teachers)), teachers, strict=True):
             attributes[name] = words

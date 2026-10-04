@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from blossom.agent.compose import CATCH_UP, CATCH_UP_PUT_OFF
 from blossom.app import create_app
+from blossom.assignment_status import statuses_for
 from blossom.noticing import PLANNING_DIGEST, canonical_active_input, planning_digest, read_week
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel
@@ -44,6 +45,8 @@ from blossom.stores.catch_up import ChoiceMade, ChoiceStood
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from tests.support import (
     HER_PAGE,
+    HERS,
+    NOT_UTF8,
     PAGE_HEADERS,
     SAME_ORIGIN,
     THEIRS,
@@ -64,6 +67,7 @@ from tests.support import (
     scripted_graphs,
     signed_in,
     signed_in_household,
+    spoil,
     state_of,
     store_of,
     week_card,
@@ -192,7 +196,7 @@ def test_work_due_yesterday_is_listed_and_planned_only_once_she_includes_it() ->
     assert "Include in today's plan" in item_of(before, OCT_2.assignment_id)
     assert planned_before == [OCT_3.assignment_id]
     assert landed.endswith(f"#earlier-{OCT_2.assignment_id}")
-    assert "Included in today's plan." in words(item_of(after, OCT_2.assignment_id))
+    assert "Added to your choices for today." in words(item_of(after, OCT_2.assignment_id))
     assert "Chosen for today" in item_of(after, OCT_2.assignment_id)
     assert "Remove from today's plan" in item_of(after, OCT_2.assignment_id)
     assert planned_after == [OCT_3.assignment_id, OCT_2.assignment_id]
@@ -386,7 +390,9 @@ def test_the_same_press_twice_keeps_one_choice_and_says_so() -> None:
 
     assert first.headers["location"].count("earlier_said=included") == 1
     assert "earlier_said=already_included" in again.headers["location"]
-    assert "This was already in today's plan." in words(item_of(landed, OCT_2.assignment_id))
+    assert "This was already in your choices for today." in words(
+        item_of(landed, OCT_2.assignment_id)
+    )
     assert rows == [(TODAY.isoformat(), OCT_2.assignment_id)]
 
 
@@ -629,10 +635,10 @@ def test_a_press_in_the_fold_lands_on_its_item_with_the_fold_open() -> None:
     assert landed.endswith("#earlier-ago-30")
     assert "ago-30" in folded_ids(after)
     assert the_fold(after).endswith(" open>")
-    assert "Included in today's plan." in words(item_of(after, "ago-30"))
+    assert "Added to your choices for today." in words(item_of(after, "ago-30"))
     assert "ago-30" in shown_ids(later)
     assert "ago-30" in shown_ids(after_removing)
-    assert "Removed from today's plan." in words(item_of(after_removing, "ago-30"))
+    assert "Removed from your choices for today." in words(item_of(after_removing, "ago-30"))
 
 
 def test_a_refused_press_in_the_fold_is_said_there_with_the_fold_open() -> None:
@@ -726,7 +732,7 @@ def test_a_parent_reads_the_fold_and_the_labels_with_no_control(tmp_path: pathli
     assert "<summary>More earlier homework (1)</summary>" in listed
     assert '<span class="pill">No update yet</span>' in item_of(shown, "ago-11")
     assert "<form" not in listed
-    assert "Included in today's plan." not in words(listed)
+    assert "Added to your choices for today." not in words(listed)
 
 
 def test_her_place_holds_through_presses_until_her_next_visit() -> None:
@@ -743,7 +749,7 @@ def test_her_place_holds_through_presses_until_her_next_visit() -> None:
     assert "earlier_place=fold" in answer.headers["location"]
     assert "ago-30" in folded_ids(removed)
     assert the_fold(removed).endswith(" open>")
-    assert "Removed from today's plan." in words(item_of(removed, "ago-30"))
+    assert "Removed from your choices for today." in words(item_of(removed, "ago-30"))
     assert "earlier_place=fold" in chosen_again
     assert "earlier_place=list" in from_the_list
     assert "ago-02" in shown_ids(listed)
@@ -824,10 +830,10 @@ def test_a_plan_waiting_from_before_catch_up_work_reads_as_changed_once() -> Non
 # ------------------------------------------------------------------ what a press says
 
 SAID = (
-    "Included in today's plan.",
-    "Removed from today's plan.",
-    "This was already in today's plan.",
-    "This was already out of today's plan.",
+    "Added to your choices for today.",
+    "Removed from your choices for today.",
+    "This was already in your choices for today.",
+    "This was already out of your choices for today.",
 )
 
 
@@ -870,9 +876,11 @@ def test_a_press_says_what_it_did_only_while_its_choice_still_holds() -> None:
         choose(client, OCT_2.assignment_id)
         removal_again = client.get(removed, headers=PAGE_HEADERS).text
 
-    assert receipts(right_after, OCT_2.assignment_id) == ["Included in today's plan."]
-    assert receipts(after_removal, OCT_2.assignment_id) == ["Removed from today's plan."]
-    assert receipts(removed_twice, OCT_2.assignment_id) == ["This was already out of today's plan."]
+    assert receipts(right_after, OCT_2.assignment_id) == ["Added to your choices for today."]
+    assert receipts(after_removal, OCT_2.assignment_id) == ["Removed from your choices for today."]
+    assert receipts(removed_twice, OCT_2.assignment_id) == [
+        "This was already out of your choices for today."
+    ]
     assert receipts(inclusion_again, OCT_2.assignment_id) == []
     assert receipts(removal_again, OCT_2.assignment_id) == []
 
@@ -907,7 +915,7 @@ def test_a_receipt_changed_in_any_way_says_nothing(change: str) -> None:
 
     assert word == "included"
     assert receipts(shown, about) == []
-    assert receipts(genuine, OCT_2.assignment_id) == ["Included in today's plan."]
+    assert receipts(genuine, OCT_2.assignment_id) == ["Added to your choices for today."]
 
 
 def test_a_receipt_from_another_day_says_nothing() -> None:
@@ -936,7 +944,8 @@ class TurnsAfterOneRead(SetClock):
 
 @pytest.mark.parametrize("week", [None, "2026-09-21"])
 @pytest.mark.parametrize(
-    ("presses", "said"), [(1, "Included in today's plan."), (2, "Removed from today's plan.")]
+    ("presses", "said"),
+    [(1, "Added to your choices for today."), (2, "Removed from your choices for today.")],
 )
 def test_a_receipt_and_the_page_it_is_on_are_about_one_day(
     presses: int, said: str, week: str | None
@@ -967,7 +976,7 @@ def test_a_press_on_work_with_any_id_says_what_it_did(assignment_id: str) -> Non
         shown = client.get(landed, headers=PAGE_HEADERS).text
         rows = kept_rows(client)
 
-    assert receipts(shown, assignment_id) == ["Included in today's plan."]
+    assert receipts(shown, assignment_id) == ["Added to your choices for today."]
     assert rows == [(TODAY.isoformat(), assignment_id)]
 
 
@@ -994,11 +1003,11 @@ def test_her_not_yet_on_earlier_work_offers_include_and_lands_back_on_the_card()
     assert "week=" not in answer.headers["location"]
     chosen = words(card_for(after, OCT_2.assignment_id))
     assert "Saved as Not yet. This was due before today. You chose it for today's plan." in chosen
-    assert "Included in today's plan." in chosen
+    assert "Added to your choices for today." in chosen
     assert f'id="earlier-card-{OCT_2.assignment_id}"' in card_for(after, OCT_2.assignment_id)
     assert "Include in today's plan" not in card_for(after, OCT_2.assignment_id)
     assert "Still unfinished" not in chosen
-    assert "Included in today's plan." not in words(item_of(after, OCT_2.assignment_id))
+    assert "Added to your choices for today." not in words(item_of(after, OCT_2.assignment_id))
     assert "Chosen for today" in item_of(after, OCT_2.assignment_id)
     assert rows == [(TODAY.isoformat(), OCT_2.assignment_id)]
 
@@ -1053,5 +1062,313 @@ def test_an_include_keeps_the_cards_this_visit_keeps_in_place(where: str) -> Non
     assert f"a:{place_key(OCT_3.assignment_id)}" in fields["in_place"].split("|")
     assert "landing=" in answer.headers["location"]
     assert REPORTED_DONE not in landed
-    assert "Included in today's plan." in words(landed)
+    assert "Added to your choices for today." in words(landed)
     assert REPORTED_DONE in fresh
+
+
+# ------------------------------------------------------------------ what today's plan still holds
+
+
+def decided(client: TestClient, decision: str) -> None:
+    """Approve today's waiting plan through the family's form, or leave it waiting."""
+    if decision == "waiting":
+        return
+    saved = state_of(client).drafts.latest_for(TODAY)
+    assert saved is not None
+    answer = client.post(
+        f"/parent/actions/decide/{saved.draft_id}",
+        data={"decision": decision},
+        headers=PAGE_HEADERS,
+    )
+    assert answer.status_code == 303, answer.text
+
+
+@pytest.mark.parametrize("decision", ["waiting", "approve"])
+def test_removing_work_todays_plan_schedules_says_the_plan_still_has_it_until_she_plans_again(
+    decision: str,
+) -> None:
+    with household(OCT_2, OCT_3, plans=[two_tonight(), only_tonight()]) as client:
+        choose(client, OCT_2.assignment_id)
+        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        decided(client, decision)
+        published = state_of(client).drafts.latest_for(TODAY)
+        shown = page(client)
+        action = earlier_action(OCT_2.assignment_id)
+        fields = form_fields(shown, action)
+        first = client.post(action, data=fields, headers=PAGE_HEADERS)
+        again = client.post(action, data=fields, headers=PAGE_HEADERS)
+        removed = client.get(first.headers["location"], headers=PAGE_HEADERS).text
+        removed_twice = client.get(again.headers["location"], headers=PAGE_HEADERS).text
+        assert published is not None
+        kept = state_of(client).drafts.get(published.draft_id)
+        replanned = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        fresh = page(client)
+        latest = state_of(client).drafts.latest_for(TODAY)
+        due_now = next(
+            item for item in store_of(client).all_assignments() if item == OCT_2
+        ).due_date
+        status = statuses_for(store_of(client), [OCT_2.assignment_id])[OCT_2.assignment_id]
+        planned = planned_ids(client)
+        rows = kept_rows(client)
+
+    assert fields["choice"] == "remove"
+    for landed, said in [
+        (removed, "Removed from your choices for today."),
+        (removed_twice, "This was already out of your choices for today."),
+    ]:
+        listed = words(item_of(landed, OCT_2.assignment_id))
+        assert said in listed
+        assert "Today's plan still includes it. Plan again to leave it out." in listed
+        assert "Removed from today's plan" not in listed
+        assert "Chosen for today" not in listed
+    assert kept is not None
+    assert (kept.body, kept.status) == (published.body, published.status)
+    assert "Fractions practice" in kept.body
+    assert replanned.status_code == 303, replanned.text
+    assert latest is not None
+    assert latest.draft_id != published.draft_id
+    assert "Fractions practice" not in latest.body
+    assert "Today's plan" not in words(item_of(fresh, OCT_2.assignment_id))
+    assert planned == [OCT_3.assignment_id]
+    assert due_now == date(2026, 10, 2)
+    assert status.status is None
+    assert rows == []
+
+
+def test_removing_work_todays_plan_puts_off_keeps_the_reason_and_says_the_next_plan_leaves_it() -> (
+    None
+):
+    with household(OCT_2, OCT_3, plans=[one_put_off()]) as client:
+        choose(client, OCT_2.assignment_id)
+        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        removed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
+
+    listed = words(item_of(removed, OCT_2.assignment_id))
+    assert (
+        "Today's plan puts it off: It doesn't fit tonight. Your next plan leaves it out." in listed
+    )
+    assert "choose it again tomorrow" not in listed
+
+
+@pytest.mark.parametrize("snapshot", [None, "not a snapshot"], ids=["absent", "unreadable"])
+def test_a_plan_whose_rows_cannot_be_read_names_no_place_for_earlier_work(
+    snapshot: str | None,
+) -> None:
+    with household(OCT_2, OCT_3, plans=[one_put_off()]) as client:
+        choose(client, OCT_2.assignment_id)
+        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        drafts = state_of(client).drafts
+        saved = drafts.latest_for(TODAY)
+        assert saved is not None
+        drafts._connection.execute(
+            "UPDATE drafts SET plan_snapshot = ? WHERE draft_id = ?", (snapshot, saved.draft_id)
+        )
+        drafts._connection.commit()
+        chosen = page(client)
+        removed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
+
+    listed = words(item_of(chosen, OCT_2.assignment_id))
+    assert "Today's plan was made with it; the plan says where it goes." in listed
+    assert "Today's plan includes it." not in listed
+    assert "puts it off" not in listed
+    taken_out = words(item_of(removed, OCT_2.assignment_id))
+    assert "Today's plan was made with it. Plan again to leave it out." in taken_out
+
+
+@pytest.mark.parametrize(
+    ("planned", "readable", "said"),
+    [
+        (two_tonight, True, "Today's plan still includes it; her next plan leaves it out."),
+        (
+            one_put_off,
+            True,
+            "Today's plan puts it off: It doesn't fit tonight. Her next plan leaves it out.",
+        ),
+        (two_tonight, False, "Today's plan was made with it; her next plan leaves it out."),
+    ],
+    ids=["scheduled", "put off", "text only"],
+)
+def test_a_parent_reads_what_todays_plan_still_holds_and_updates_that_cannot_be_read(
+    tmp_path: pathlib.Path, planned: Callable[[], DailyPlan], readable: bool, said: str
+) -> None:
+    settings = dataclasses.replace(signed_in_household(tmp_path), today=TODAY, fixture_path=None)
+    app = create_app(settings)
+    app.dependency_overrides[plan_graphs] = scripted_graphs(
+        lambda: [planned()], lambda: [accepting()] * 3
+    )
+    with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
+        store = store_of(client)
+        put_on_record(store, (OCT_2, OCT_3, BOTH_PAST))
+        store.report_status(
+            BOTH_PAST.assignment_id, "not_yet", None, expected_head=None, now=NOON, today=TODAY
+        )
+        spoil(store, "student_reports", "status", "finished", BOTH_PAST.assignment_id)
+        signed_in(client, HERS)
+        choose(client, OCT_2.assignment_id)
+        made = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        if not readable:
+            drafts = state_of(client).drafts
+            drafts._connection.execute("UPDATE drafts SET plan_snapshot = NULL")
+            drafts._connection.commit()
+        choose(client, OCT_2.assignment_id)
+        signed_in(client, THEIRS)
+        shown = page(client)
+
+    assert made.status_code == 303, made.text
+    listed = words(item_of(shown, OCT_2.assignment_id))
+    assert said in listed
+    assert "Plan again" not in listed
+    assert "Your next plan" not in listed
+    unread = words(item_of(shown, BOTH_PAST.assignment_id))
+    assert "Her updates on this assignment can't be read right now." in unread
+    assert "No update yet" not in unread
+    intro = "Homework due before today with no Done update from her, or whose updates can't be read"
+    assert intro in words(section(shown))
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [("status", "finished"), ("note", NOT_UTF8)],
+    ids=["a status that is neither", "text that is not UTF-8"],
+)
+def test_earlier_work_whose_updates_cannot_be_read_says_so_and_stays_on_the_list(
+    column: str, value: str
+) -> None:
+    with household(OCT_2, BOTH_PAST, OCT_3) as client:
+        store = store_of(client)
+        store.report_status(
+            OCT_2.assignment_id,
+            "not_yet",
+            "starting soon",
+            expected_head=None,
+            now=NOON,
+            today=TODAY,
+        )
+        healthy = page(client)
+        spoil(store, "student_reports", column, value, OCT_2.assignment_id)
+        shown = page(client)
+        choose(client, OCT_2.assignment_id)
+        planned = planned_ids(client)
+
+    unread = item_of(shown, OCT_2.assignment_id)
+    assert "Your updates on this assignment can't be read right now." in words(unread)
+    assert "No update yet" not in unread
+    assert "Not yet" not in unread
+    assert '<span class="pill">No update yet</span>' in item_of(shown, BOTH_PAST.assignment_id)
+    assert "or whose updates can't be read right now" in words(section(shown))
+    assert "can't be read" not in words(section(healthy))
+    assert OCT_2.assignment_id in planned
+
+
+def unreadable_claim(store: ProjectStateStore, assignment_id: str) -> None:
+    """One more date claim about the assignment, which then cannot be read."""
+    store.record_claims(assignment_id, [record(SourceChannel.LMS, "2026-10-06")])
+    with store._lock, store._connection:
+        store._connection.execute(
+            "UPDATE date_claims SET active = 7 WHERE rowid = "
+            "(SELECT MAX(rowid) FROM date_claims WHERE assignment_id = ?)",
+            (assignment_id,),
+        )
+
+
+def test_earlier_work_with_a_date_claim_that_cannot_be_read_is_not_listed_chosen_or_planned() -> (
+    None
+):
+    """A claim that can't be read could put the work anywhere, so the readable dates alone
+    never make it earlier work."""
+    with household(OCT_2, BOTH_PAST, OCT_3) as client:
+        store = store_of(client)
+        store.choose_catch_up(OCT_2.assignment_id, TODAY, include=True)
+        before = page(client)
+        unreadable_claim(store, OCT_2.assignment_id)
+        shown = page(client)
+        planned = planned_ids(client)
+        store.choose_catch_up(OCT_2.assignment_id, TODAY, include=False)
+        made_with = earlier_made_with(
+            state_of(client).result_key, TODAY, OCT_2.assignment_id, "include"
+        )
+        fields = {"choice": "include", "made_with": made_with, "week": "", "place": "list"}
+        answer = client.post(earlier_action(OCT_2.assignment_id), data=fields, headers=PAGE_HEADERS)
+        rows = kept_rows(client)
+
+    assert f'id="earlier-{OCT_2.assignment_id}"' in section(before)
+    assert f'id="earlier-{OCT_2.assignment_id}"' not in section(shown)
+    assert f'id="earlier-{BOTH_PAST.assignment_id}"' in section(shown)
+    assert planned == [OCT_3.assignment_id]
+    assert answer.status_code == 409
+    assert NOT_EARLIER_NOW in words(answer.text)
+    assert rows == []
+
+
+def test_old_work_todays_plan_still_holds_shows_above_the_fold_after_she_takes_it_out() -> None:
+    old, older = due_days_ago(30, 31)
+    plan = DailyPlan(plan_date=TODAY, blocks=[plan_block(old.assignment_id, "16:30", "17:00")])
+    with household(old, older, plans=[plan]) as client:
+        choose(client, old.assignment_id)
+        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        choose(client, old.assignment_id)
+        fresh = page(client)
+
+    assert shown_ids(fresh) == [old.assignment_id]
+    assert folded_ids(fresh) == [older.assignment_id]
+    listed = words(item_of(fresh, old.assignment_id))
+    assert "Today's plan still includes it. Plan again to leave it out." in listed
+
+
+def test_work_chosen_yesterday_that_todays_plan_still_holds_is_not_offered_again() -> None:
+    with household(OCT_2, OCT_3, plans=[two_tonight()]) as client:
+        store_of(client).choose_catch_up(OCT_2.assignment_id, days_ago(1), include=True)
+        choose(client, OCT_2.assignment_id)
+        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        removed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
+
+    listed = words(item_of(removed, OCT_2.assignment_id))
+    assert "You chose this for yesterday's plan." in listed
+    assert "Choose it again to include it today." not in listed
+    assert "Today's plan still includes it. Plan again to leave it out." in listed
+
+
+def test_including_after_a_plan_was_made_says_it_was_added_to_her_choices() -> None:
+    with household(OCT_2, OCT_3, plans=[only_tonight()]) as client:
+        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        landed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
+
+    listed = words(item_of(landed, OCT_2.assignment_id))
+    assert "Added to your choices for today." in listed
+    assert "Today's plan was made before you chose it. Plan again to include it." in listed
+    assert "Included in today's plan" not in listed
+
+
+@pytest.mark.parametrize(
+    ("reason", "said"),
+    [
+        ("not enough time tonight", ": not enough time tonight."),
+        ("Too long for tonight!", ": Too long for tonight!"),
+        ("Could it wait?", ": Could it wait?"),
+        ("It can wait (due Monday)", ": It can wait (due Monday)."),
+        ('She said "it can wait."', ': She said "it can wait."'),
+        ("It can wait\u2026", ": It can wait\u2026"),
+        ("\u4eca\u591c\u306f\u7121\u7406\u3002", ": \u4eca\u591c\u306f\u7121\u7406\u3002"),
+        ("\u200b", "."),
+    ],
+)
+def test_a_reason_the_plan_gives_ends_its_sentence_before_the_next_one(
+    reason: str, said: str
+) -> None:
+    put_off = DailyPlan(
+        plan_date=TODAY,
+        blocks=[plan_block(OCT_3.assignment_id, "16:30", "17:00")],
+        deferred=[Deferral(assignment_id=OCT_2.assignment_id, reason=reason)],
+    )
+    with household(OCT_2, OCT_3, plans=[put_off]) as client:
+        choose(client, OCT_2.assignment_id)
+        client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        chosen = page(client)
+        removed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
+
+    assert f"Today's plan puts it off{said} It stays on this list" in words(
+        item_of(chosen, OCT_2.assignment_id)
+    )
+    assert f"Today's plan puts it off{said} Your next plan leaves it out." in words(
+        item_of(removed, OCT_2.assignment_id)
+    )

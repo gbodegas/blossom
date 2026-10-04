@@ -154,8 +154,9 @@ class PlanVerification(BaseModel):
     source, so a plan built on the record alone cannot pass by trusting it."""
     past_due: tuple[str, ...] = ()
     """Assignments whose deadline passed before the evening asked for: earlier work she
-    chose, or work a source dates before the evening. A flag, not a failure: the date
-    stays as given, and the plan says the work was due earlier."""
+    chose, or work the record or a source dates before the evening while another date is
+    still to come. A flag, not a failure: the date stays as given, and the plan says the
+    work was due earlier."""
     plain: dict[PlanCheck, tuple[str, ...]] = {}
     """The same findings as a parent reads them on the family page: each assignment named
     by its course and title as the run read them, and never by an id the plan made up."""

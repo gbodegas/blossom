@@ -271,10 +271,10 @@ EARLIER_DAYS: Final = 14
 EARLIER_FIELDS: Final = frozenset({"choice", "made_with", "week", "place"})
 EARLIER_CHOICES: Final = ("include", "remove")
 EARLIER_SAID: Final = {
-    "included": "Included in today's plan.",
-    "removed": "Removed from today's plan.",
-    "already_included": "This was already in today's plan.",
-    "already_removed": "This was already out of today's plan.",
+    "included": "Added to your choices for today.",
+    "removed": "Removed from your choices for today.",
+    "already_included": "This was already in your choices for today.",
+    "already_removed": "This was already out of your choices for today.",
 }
 """What a choice in Earlier homework to check did, by the word its address carries."""
 EARLIER_IN: Final = frozenset({EARLIER_SAID["included"], EARLIER_SAID["already_included"]})
@@ -282,6 +282,11 @@ EARLIER_IN: Final = frozenset({EARLIER_SAID["included"], EARLIER_SAID["already_i
 EARLIER_PLACES: Final = ("list", "fold", "card")
 """Where an item was shown when she pressed it: above the fold, in it, or on its card in the
 week, beside her Not yet."""
+SENTENCE_ENDS: Final = ".!?\u2026\u3002\uff01\uff1f\u061f"
+"""Marks a reason may already end its sentence with: the stops, ellipsis, and the full-width
+and Arabic forms."""
+CLOSING_MARKS: Final = "\"')]\u201d\u2019\u00bb"
+"""Quotes and brackets that may follow a sentence's last mark."""
 CHOICE_NOT_SAVED: Final = "Your choice was not saved"
 NOT_HERS_TO_CHOOSE: Final = "Sign in as the student to choose work for today's plan."
 CHOICE_FROM_ANOTHER_DAY: Final = (
@@ -1370,12 +1375,18 @@ def earlier_views(
                 dates_differ=len(given) > 1,
                 chosen=item.assignment_id in chosen,
                 chosen_yesterday=item.assignment_id in before,
-                update="not_yet"
-                if standing is not None and standing.status == "not_yet"
-                else "none",
+                update=earlier_update(standing),
             )
         )
     return fold_earlier(views, today)
+
+
+def earlier_update(standing: AssignmentStatus | None) -> str:
+    """Her standing update on earlier work: ``not_yet``, ``unavailable`` when her updates
+    can't be read, or ``none`` when she has said nothing."""
+    if standing is not None and standing.updates_unavailable:
+        return "unavailable"
+    return "not_yet" if standing is not None and standing.status == "not_yet" else "none"
 
 
 def fold_earlier(earlier: list[EarlierWorkView], today: date) -> list[EarlierWorkView]:
@@ -1417,30 +1428,44 @@ def kept_in_place(
     ]
 
 
+def as_sentence(reason: str) -> str:
+    """A reason from a plan, ended once so the next sentence doesn't run into it, or nothing
+    when it shows no words at all."""
+    if not any(char.isprintable() and not char.isspace() for char in reason):
+        return ""
+    last = reason.rstrip().rstrip(CLOSING_MARKS)[-1:]
+    return reason if last and last in SENTENCE_ENDS else f"{reason}."
+
+
 def in_todays_plan(
     earlier: list[EarlierWorkView], record: DraftRecord | None, reading: PlanReading | None
 ) -> list[EarlierWorkView]:
-    """Where today's plan put each piece of earlier work she chose: worked on, put off with
-    its reason, or not in it, when the plan was made before she chose it."""
+    """Where today's plan put each piece of earlier work it was made with: worked on, put off
+    with its reason, or somewhere its rows can't say when only its text can be read. Work she
+    chose after the plan was made is not in it. A saved plan never changes, so work she took
+    out of today's choices keeps its place there, shown above the fold, until she plans
+    again."""
     if record is None:
         return earlier
     named = set(record.plan_assignment_ids or ())
     put_off = (
         {row.work.assignment_id: row.reason for row in reading.deferrals}
         if reading is not None and reading.structured
-        else {}
+        else None
     )
     shown = []
     for item in earlier:
-        if not item.chosen:
-            shown.append(item)
-        elif item.assignment_id not in named:
-            shown.append(item.model_copy(update={"in_plan": "missing"}))
+        if item.assignment_id not in named:
+            shown.append(item.model_copy(update={"in_plan": "missing"}) if item.chosen else item)
+            continue
+        if put_off is None:
+            placed = {"in_plan": "unknown"}
         elif item.assignment_id in put_off:
-            reason = put_off[item.assignment_id]
-            shown.append(item.model_copy(update={"in_plan": "put_off", "put_off_reason": reason}))
+            reason = as_sentence(put_off[item.assignment_id])
+            placed = {"in_plan": "put_off", "put_off_reason": reason}
         else:
-            shown.append(item.model_copy(update={"in_plan": "scheduled"}))
+            placed = {"in_plan": "scheduled"}
+        shown.append(item.model_copy(update={**placed, "folded": False}))
     return shown
 
 
