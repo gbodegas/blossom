@@ -130,7 +130,8 @@ class RunBudget:
         still waiting then is canceled, one that held the event loop past it has
         its answer set aside, busy or not, and the run has timed out. A busy service
         is asked again at most ``MODEL_RETRIES`` times, after a pause cut to what
-        is left; the last busy answer is raised when retries are spent.
+        is left; the last busy answer is raised when retries are spent. A
+        ``TimeoutError`` the request raises itself is raised as it is.
         """
         self.waiting_on = (stage, round_number)
         attempt = 0
@@ -141,11 +142,14 @@ class RunBudget:
             self.model_calls += 1
             if attempt:
                 self.retries += 1
+            limit = asyncio.timeout(left)
             try:
-                async with asyncio.timeout(left):
+                async with limit:
                     answer = await call()
             except TimeoutError as error:
-                raise RunTimedOut from error
+                if limit.expired():
+                    raise RunTimedOut from error
+                raise
             except ServiceBusy:
                 # A busy answer that came back after the limit times the run out instead.
                 if attempt == MODEL_RETRIES and self.elapsed() <= self.seconds:

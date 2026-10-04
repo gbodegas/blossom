@@ -41,7 +41,7 @@ from blossom.anthropic_client import (
 )
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.noticing import read_week
-from blossom.stores.drafts import INTERRUPTED, OVERTAKEN
+from blossom.stores.drafts import INTERRUPTED, OVERTAKEN, OutOfTime
 from blossom.views import PastDueView, PlanRunView
 
 logger = logging.getLogger(__name__)
@@ -463,8 +463,9 @@ async def run_plan(
     finally:
         state.decision_lock.release()
     try:
+        limit = asyncio.timeout(budget.remaining())
         try:
-            async with asyncio.timeout(budget.remaining()):
+            async with limit:
                 result = await graph.ainvoke(
                     PlanState(plan_date=plan_date, rounds=0),
                     config=run_config(thread_id, callbacks=[state.tracer]),
@@ -474,7 +475,12 @@ async def run_plan(
         except ModelUnavailable as error:
             await abandon(thread_id, state)
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-        except TimeoutError:
+        except TimeoutError as error:
+            if not limit.expired() and not isinstance(error, RunTimedOut):
+                # A store's or a request's own TimeoutError is a failure like any other,
+                # not the run's time running out.
+                await abandon(thread_id, state)
+                raise
             outcome = TIMED_OUT
             return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
         except ServiceFailed:
@@ -518,7 +524,9 @@ async def run_plan(
                         ),
                         budget,
                     )
-                    displaced = state.drafts.publish(draft_id_for(thread_id))
+                    displaced = state.drafts.publish(
+                        draft_id_for(thread_id), within=budget.remaining
+                    )
                     for thread in [
                         *(thread for _, thread in finished),
                         *(d.thread_id for d in displaced),
@@ -526,7 +534,7 @@ async def run_plan(
                         await tidy_thread(thread, state)
             finally:
                 state.decision_lock.release()
-        except RunTimedOut:
+        except (RunTimedOut, OutOfTime):
             # The time ran out before the draft was published, so it never is. The
             # reviews already recorded stand, and the sweep clears their threads.
             outcome = TIMED_OUT

@@ -2015,6 +2015,61 @@ def test_a_service_that_refuses_the_request_is_not_asked_again() -> None:
     assert planner.calls == 1
 
 
+@pytest.mark.parametrize("spent", [0.0, 5.0, 9.999, 10.5])
+def test_a_requests_own_timeout_error_is_raised_as_it_is(spent: float) -> None:
+    """A ``TimeoutError`` the request raises itself is its own failure, not the run's limit
+    running out, whatever time it took; it is never asked again."""
+    clock = FakeTime()
+    budget = clock.budget(10.0)
+
+    async def request() -> str:
+        clock.now += spent
+        msg = "the client timed out"
+        raise TimeoutError(msg)
+
+    with pytest.raises(TimeoutError, match="the client timed out") as raised:
+        asyncio.run(budget.ask(request, stage="plan", round_number=1))
+
+    assert not isinstance(raised.value, RunTimedOut)
+    assert (budget.model_calls, budget.retries) == (1, 0)
+
+
+@pytest.mark.parametrize("error", [TimeoutError, ValueError])
+@pytest.mark.parametrize("asked", ["plan", "critique"])
+def test_a_timeout_error_from_a_request_with_time_left_fails_the_run_like_any_other(
+    asked: str, error: type[Exception]
+) -> None:
+    """The planner's or the critic's request raises its own ``TimeoutError`` with the run's
+    time left: the run fails as it does for any other error, and isn't kept as out of time."""
+    clock = FakeTime()
+    failing = (1, error("the client failed"))
+    planner: Spending[DailyPlan] = Spending(
+        clock, failing if asked == "plan" else (1, ok(fixture_week_plan()))
+    )
+    critic: Spending[CriticVerdict] = Spending(clock, failing)
+    state = a_household()
+    try:
+        with pytest.raises(error, match="the client failed") as raised:
+            asyncio.run(
+                run_plan(
+                    plan_graph_for(state, planner=planner, critic=critic),
+                    PLAN_DATE,
+                    state,
+                    budget=clock.budget(),
+                )
+            )
+        ended = [run.outcome for run in state.drafts.runs_without_a_draft()]
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert type(raised.value) is error
+    assert ended == []
+    assert latest is None
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()
+
+
 def an_answer_after(budget: RunBudget, spend: Callable[[], None]) -> str:
     """Ask once through ``budget`` with a request that spends time by ``spend``, never
     yielding to the event loop, and then answers."""

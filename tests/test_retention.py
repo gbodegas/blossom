@@ -10,6 +10,7 @@ both rules to whatever a crash left behind.
 import asyncio
 import pathlib
 import sqlite3
+import threading
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from time import monotonic
@@ -1013,7 +1014,9 @@ def test_a_publication_that_fails_is_a_failed_run(monkeypatch: pytest.MonkeyPatc
     state = application()
     try:
 
-        def refusing(draft_id: str) -> list[DraftRecord]:
+        def refusing(
+            draft_id: str, *, within: Callable[[], float] | None = None
+        ) -> list[DraftRecord]:
             msg = "database or disk is full"
             raise RuntimeError(msg)
 
@@ -1213,7 +1216,9 @@ def test_a_draft_that_cannot_be_taken_back_still_loses_its_thread(
     state = application()
     try:
 
-        def refusing_publish(draft_id: str) -> list[Displaced]:
+        def refusing_publish(
+            draft_id: str, *, within: Callable[[], float] | None = None
+        ) -> list[Displaced]:
             msg = "database or disk is full"
             raise RuntimeError(msg)
 
@@ -1802,7 +1807,9 @@ def test_a_timeout_error_that_is_not_the_runs_limit_is_a_failed_publication(
     state = application(saver=saver)
     try:
 
-        def timing_out(draft_id: str) -> list[DraftRecord]:
+        def timing_out(
+            draft_id: str, *, within: Callable[[], float] | None = None
+        ) -> list[DraftRecord]:
             msg = "the store timed out"
             raise TimeoutError(msg)
 
@@ -1828,6 +1835,173 @@ def test_a_timeout_error_that_is_not_the_runs_limit_is_a_failed_publication(
     assert threads == {first}
     assert state.in_flight == set()
     assert not state.decision_lock.locked()
+
+
+class FailsToSave(InMemorySaver):
+    """A saver whose reads or writes, as ``failing`` says, raise ``error`` once it is set.
+    Every read first waits ``delay`` seconds."""
+
+    def __init__(self, failing: str) -> None:
+        super().__init__()
+        self.failing = failing
+        self.error: Exception | None = None
+        self.delay = 0.0
+
+    async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
+        if self.error is not None and self.failing == "read":
+            raise self.error
+        await asyncio.sleep(self.delay)
+        return await super().aget_tuple(config)
+
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        if self.error is not None and self.failing == "write":
+            raise self.error
+        return await super().aput(config, checkpoint, metadata, new_versions)
+
+
+@pytest.mark.parametrize("error", [TimeoutError, ValueError])
+@pytest.mark.parametrize("failing", ["read", "write"])
+def test_a_timeout_error_from_saved_state_with_time_left_fails_the_run_like_any_other(
+    failing: str, error: type[Exception]
+) -> None:
+    """The run's saved state raises its own ``TimeoutError`` while the run has time left.
+    The run fails as it does for any other error, and isn't kept as out of time."""
+    saver = FailsToSave(failing)
+    state = application(saver=saver)
+    try:
+
+        async def scenario() -> tuple[str, Exception, set[str]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            saver.error = error("the store failed")
+            with pytest.raises(error, match="the store failed") as raised:
+                await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            saver.error = None
+            return first.thread_id, raised.value, await thread_ids(state)
+
+        first, failure, threads = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+        ended = [run.outcome for run in state.drafts.runs_without_a_draft()]
+    finally:
+        state.close()
+
+    assert type(failure) is error
+    assert latest is not None
+    assert latest.thread_id == first
+    assert ended == []
+    assert threads == {first}
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()
+
+
+def test_saved_state_slower_than_the_runs_time_times_the_run_out() -> None:
+    """The run's first read of its saved state takes longer than the whole run may. The
+    run's own limit ends it, and it is kept as timed out, not as a failure."""
+    saver = FailsToSave("read")
+    state = application(saver=saver)
+    try:
+
+        async def scenario() -> tuple[str, PlanRunView, list[RunRecord]]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            saver.delay = 0.6
+            late = await run_plan(
+                graph_for(state, fixture_week_plan()),
+                PLAN_DATE,
+                state,
+                budget=RunBudget(seconds=0.2),
+            )
+            saver.delay = 0.0
+            return first.thread_id, late, state.drafts.runs_without_a_draft()
+
+        first, late, ended = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        state.close()
+
+    assert late.outcome == "timed_out"
+    assert [(run.thread_id, run.outcome) for run in ended] == [(late.thread_id, "timed_out")]
+    assert latest is not None
+    assert latest.thread_id == first
+    assert state.in_flight == set()
+    assert not state.decision_lock.locked()
+
+
+@pytest.mark.parametrize(("seconds", "outcome"), [(2.0, "timed_out"), (5.0, "accepted")])
+def test_a_publication_waiting_on_the_drafts_file_ends_at_the_runs_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, seconds: float, outcome: str
+) -> None:
+    """Another connection holds the drafts file's write lock for 2.3 seconds from just before
+    the run publishes. With 2 seconds to run, the publication gives up at the limit: today's
+    plan stays, the run is kept as timed out, and the next press publishes. With 5 seconds
+    the run waits for the file and publishes."""
+    path = tmp_path / "blossom.sqlite3"
+    state = application(
+        BLOSSOM_DATABASE_PATH=str(path),
+        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
+        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
+    )
+    other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    publish = state.drafts.publish
+    releases: list[threading.Timer] = []
+    gave_up: list[float] = []
+
+    def contended(draft_id: str, *, within: Callable[[], float] | None = None) -> list[Displaced]:
+        if not releases:
+            other.execute("BEGIN EXCLUSIVE")
+            releases.append(threading.Timer(2.3, lambda: other.execute("ROLLBACK")))
+            releases[0].start()
+        try:
+            return publish(draft_id, within=within)
+        finally:
+            gave_up.append(monotonic())
+
+    try:
+
+        async def scenario() -> tuple[
+            str, PlanRunView, float, DraftRecord | None, list[RunRecord], PlanRunView
+        ]:
+            first = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            monkeypatch.setattr(state.drafts, "publish", contended)
+            started = monotonic()
+            late = await run_plan(
+                graph_for(state, fixture_week_plan()),
+                PLAN_DATE,
+                state,
+                budget=RunBudget(seconds=seconds),
+            )
+            releases[0].join()
+            kept = state.drafts.latest_for(PLAN_DATE)
+            ended = state.drafts.runs_without_a_draft()
+            again = await run_plan(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            return first.thread_id, late, gave_up[0] - started, kept, ended, again
+
+        first, late, publishing, kept, ended, again = asyncio.run(scenario())
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        other.close()
+        state.close()
+
+    assert late.outcome == outcome
+    assert kept is not None
+    assert again.outcome == "accepted"
+    assert latest is not None
+    assert latest.thread_id == again.thread_id
+    if outcome == "timed_out":
+        assert publishing < 2.3
+        assert kept.thread_id == first
+        assert (late.draft_id, late.waiting) == (None, False)
+        assert [(run.thread_id, run.outcome) for run in ended] == [(late.thread_id, "timed_out")]
+        assert ended[0].timing is not None
+        assert ended[0].timing.category == "timeout"
+    else:
+        assert publishing > 2.3
+        assert kept.thread_id == late.thread_id
+        assert ended == []
 
 
 def test_a_publication_read_is_cut_off_at_the_runs_limit() -> None:

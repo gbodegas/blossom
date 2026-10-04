@@ -10,8 +10,10 @@ still there after the file is closed and reopened.
 
 import pathlib
 import sqlite3
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -26,6 +28,7 @@ from blossom.stores.drafts import (
     DraftsStore,
     IncompatibleReplay,
     Outcome,
+    OutOfTime,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
 from tests.support import FIXTURE_TIMEZONE, fixture_clock
@@ -846,6 +849,96 @@ def test_publishing_takes_the_place_of_the_published_draft_waiting_for_the_eveni
     assert closed.reason == SUPERSEDED_REASON
     assert closed.decided_at == fixture_clock().now()
     assert again == []
+
+
+def one_published_and_one_waiting(store: DraftsStore) -> None:
+    first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
+    second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
+    save_and_publish(store, first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+    store.record_waiting(second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+
+
+def seconds_left(*readings: float) -> Callable[[], float]:
+    """The time left on each reading in turn, the last one from then on."""
+    left = list(readings)
+    return lambda: left.pop(0) if len(left) > 1 else left[0]
+
+
+@pytest.mark.parametrize(
+    "readings",
+    [(0.0,), (-1.0,), (1.0, 0.0), (1.0, 1.0, 0.0), (1.0, 1.0, -0.001)],
+)
+def test_a_publication_with_no_time_left_by_its_commit_changes_nothing(
+    readings: tuple[float, ...],
+) -> None:
+    """Out of time when it starts, once it holds the store, or when it would commit, the
+    draft isn't published and the plan it would take the place of stays."""
+    store = store_in_memory()
+    try:
+        one_published_and_one_waiting(store)
+        with pytest.raises(OutOfTime):
+            store.publish("draft:b", within=seconds_left(*readings))
+        latest = store.latest_for(PLAN_DATE)
+        kept = store.get("draft:a")
+        again = store.publish("draft:b", within=seconds_left(0.001))
+    finally:
+        store.close()
+
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+    assert kept is not None
+    assert kept.decision is None
+    assert [record.draft_id for record in again] == ["draft:a"]
+
+
+def test_a_publication_waits_for_the_file_only_as_long_as_it_has(tmp_path: pathlib.Path) -> None:
+    """Another connection holds the file's write lock. The publication gives up when its
+    time is spent, long before the file's own wait would, and a later write still waits
+    the file's own time, so the limit was this publication's alone."""
+    path = tmp_path / "blossom.sqlite3"
+    store = DraftsStore.open(path, fixture_clock())
+    other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    try:
+        one_published_and_one_waiting(store)
+        other.execute("BEGIN EXCLUSIVE")
+        started = monotonic()
+        with pytest.raises(OutOfTime):
+            store.publish("draft:b", within=lambda: 0.3 - (monotonic() - started))
+        waited = monotonic() - started
+        release = threading.Timer(0.5, lambda: other.execute("ROLLBACK"))
+        release.start()
+        displaced = store.publish("draft:b")
+        release.join()
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        other.close()
+        store.close()
+
+    assert 0.25 < waited < 1.0
+    assert [record.draft_id for record in displaced] == ["draft:a"]
+    assert latest is not None
+    assert latest.draft_id == "draft:b"
+
+
+def test_a_publication_waits_for_the_store_only_as_long_as_it_has() -> None:
+    store = store_in_memory()
+    try:
+        one_published_and_one_waiting(store)
+        store._lock.acquire()
+        started = monotonic()
+        try:
+            with pytest.raises(OutOfTime):
+                store.publish("draft:b", within=lambda: 0.2 - (monotonic() - started))
+            waited = monotonic() - started
+        finally:
+            store._lock.release()
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert 0.15 < waited < 1.0
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
 
 
 def test_the_current_plan_is_the_last_published_whatever_order_the_drafts_were_saved_in() -> None:

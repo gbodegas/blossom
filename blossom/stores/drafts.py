@@ -27,7 +27,8 @@ permission was given, and nothing else.
 import json
 import sqlite3
 import threading
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -47,6 +48,10 @@ Outcome = Literal["accepted", "unsettled"]
 SUPERSEDED_REASON: Final = "a later plan for the evening took its place"
 """The reason recorded on a waiting draft when a newer one for the same evening
 is published, from whichever page. System-recorded, like an expiry: no person said it."""
+
+WRITER_POLL_SECONDS: Final = 0.01
+"""How long a publication with a time limit waits before asking a busy file for its
+writer again."""
 
 INTERRUPTED: Final = "interrupted"
 """The outcome recorded on a run that saved its draft and then failed before the
@@ -75,6 +80,11 @@ class IncompatibleReplay(RuntimeError):
     """A save that would change a record it may not change: a different composition for a
     draft already on the pages, or one that would drop the snapshot a saved draft has.
     Nothing is written, and the draft stands as it was."""
+
+
+class OutOfTime(TimeoutError):
+    """A publication whose time ran out before it could commit. Nothing is written, and
+    the published drafts stand as they were."""
 
 
 class ReviewSnapshot(NamedTuple):
@@ -525,7 +535,9 @@ class DraftsStore:
             )
             self._write_run(thread_id, plan_date, outcome, steps)
 
-    def publish(self, draft_id: str) -> list[Displaced]:
+    def publish(
+        self, draft_id: str, *, within: Callable[[], float] | None = None
+    ) -> list[Displaced]:
         """Put a draft on the pages, once its run has paused with it, and return what it displaced.
 
         The draft takes the next place in the published order and, in the same
@@ -542,45 +554,81 @@ class DraftsStore:
         is returned was read inside the transaction, so nothing can fail after
         the commit and leave a caller thinking a committed publication did not
         happen.
+
+        ``within`` reads the seconds a run has left. Waits for this store and for the
+        file's writer are cut to it, and a publication with none left when it would
+        commit is rolled back and raised as ``OutOfTime``.
         """
+        if within is None:
+            with self._lock, self._connection:
+                return self._published(draft_id)
+        left = within()
+        if left <= 0 or not self._lock.acquire(timeout=left):
+            raise OutOfTime
+        try:
+            (waits,) = self._connection.execute("PRAGMA busy_timeout").fetchone()
+            # SQLite's own wait for a busy writer can run well past a short limit, so the
+            # writer is asked for here, again and again, until it is free or time is up.
+            self._connection.execute("PRAGMA busy_timeout=0")
+            try:
+                while True:
+                    if within() <= 0:
+                        raise OutOfTime
+                    try:
+                        with self._writing():
+                            displaced = self._published(draft_id)
+                            if within() <= 0:
+                                raise OutOfTime
+                    except sqlite3.OperationalError as error:
+                        if error.sqlite_errorcode != sqlite3.SQLITE_BUSY:
+                            raise
+                        time.sleep(WRITER_POLL_SECONDS)
+                    else:
+                        return displaced
+            finally:
+                self._connection.execute(f"PRAGMA busy_timeout={int(waits)}")
+        finally:
+            self._lock.release()
+
+    def _published(self, draft_id: str) -> list[Displaced]:
+        """The writes of ``publish``, inside the caller's transaction."""
         stamp = self._clock.now().isoformat()
-        with self._lock, self._connection:
-            row = self._connection.execute(
-                "SELECT plan_date, published FROM drafts WHERE draft_id=?", (draft_id,)
-            ).fetchone()
-            if row is None:
-                msg = f"no draft {draft_id!r} to publish"
-                raise KeyError(msg)
-            if row["published"]:
-                return []
-            self._connection.execute(
+        row = self._connection.execute(
+            "SELECT plan_date, published FROM drafts WHERE draft_id=?", (draft_id,)
+        ).fetchone()
+        if row is None:
+            msg = f"no draft {draft_id!r} to publish"
+            raise KeyError(msg)
+        if row["published"]:
+            return []
+        self._connection.execute(
+            """
+            UPDATE drafts
+            SET published=1,
+                published_order=(SELECT COALESCE(MAX(published_order), 0) + 1 FROM drafts)
+            WHERE draft_id=?
+            """,
+            (draft_id,),
+        )
+        displaced = [
+            Displaced(str(found["draft_id"]), str(found["thread_id"]))
+            for found in self._connection.execute(
                 """
-                UPDATE drafts
-                SET published=1,
-                    published_order=(SELECT COALESCE(MAX(published_order), 0) + 1 FROM drafts)
-                WHERE draft_id=?
-                """,
-                (draft_id,),
-            )
-            displaced = [
-                Displaced(str(found["draft_id"]), str(found["thread_id"]))
-                for found in self._connection.execute(
-                    """
-                    SELECT draft_id, thread_id FROM drafts
-                    WHERE plan_date=? AND published=1 AND decision IS NULL AND draft_id<>?
-                    ORDER BY published_order
-                    """,
-                    (str(row["plan_date"]), draft_id),
-                ).fetchall()
-            ]
-            self._connection.execute(
-                """
-                UPDATE drafts
-                SET decision='superseded', reason=?, decided_at=?, superseded_by=?
+                SELECT draft_id, thread_id FROM drafts
                 WHERE plan_date=? AND published=1 AND decision IS NULL AND draft_id<>?
+                ORDER BY published_order
                 """,
-                (SUPERSEDED_REASON, stamp, draft_id, str(row["plan_date"]), draft_id),
-            )
+                (str(row["plan_date"]), draft_id),
+            ).fetchall()
+        ]
+        self._connection.execute(
+            """
+            UPDATE drafts
+            SET decision='superseded', reason=?, decided_at=?, superseded_by=?
+            WHERE plan_date=? AND published=1 AND decision IS NULL AND draft_id<>?
+            """,
+            (SUPERSEDED_REASON, stamp, draft_id, str(row["plan_date"]), draft_id),
+        )
         return displaced
 
     def withdraw(self, draft_id: str, *, outcome: str = INTERRUPTED) -> bool:
