@@ -71,6 +71,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.datastructures import URL
 
 from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, statuses_for
@@ -1392,6 +1393,12 @@ def place_key(assignment_id: str) -> str:
     return hashlib.sha256(assignment_id.encode()).hexdigest()[:IN_PLACE_KEY]
 
 
+def carried(in_place: InPlace | None) -> str | None:
+    """The cards an address to her week carries for the page to keep in place, or ``None``
+    when it keeps none."""
+    return None if in_place is None else in_place.said() or None
+
+
 def leave_in_place[Answered: Response](response: Answered, kept: InPlace) -> Answered:
     """Leave the cards a press keeps in place for the one page that answers it; with none
     kept, nothing is left."""
@@ -1732,7 +1739,8 @@ def due_this_week(
     in ``in_place``, which is answered with the same address without it and the cookie. The
     page reads the cookie and clears it, so a refresh, a return, or Back to an address asks
     for the week grouped by its updates. When the record cannot be read, the page that says
-    so leaves the cards again for the next try.
+    so leaves the cards again, and its Try again carries them in ``in_place``, so a try made
+    after the cookie is gone still finds them where they were.
     """
     if in_place is not None:
         return leave_in_place(
@@ -1754,13 +1762,20 @@ def due_this_week(
             marker=marker_from(asked, asked_again),
         )
     except sqlite3.Error as error:
-        unreadable = week_unreadable(
-            request, error, again=asked_address(WEEK_PAGE, request.scope["query_string"])
-        )
-        return leave_in_place(unreadable, kept)
+        again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
+        return leave_in_place(week_unreadable(request, error, again=again), kept)
     if left is not None:
         page.delete_cookie(IN_PLACE_COOKIE, path=WEEK_PAGE, httponly=True, samesite="lax")
     return page
+
+
+def carrying(query: bytes, kept: InPlace) -> bytes:
+    """A query as a request sent it with the cards a visit keeps in place added, so an
+    address made from it finds them where they were after the cookie is gone."""
+    if not kept.cards:
+        return query
+    added = URL().include_query_params(**{IN_PLACE: kept.said()}).query.encode()
+    return query + b"&" + added if query else added
 
 
 def once_more(request: Request) -> str:
@@ -2006,7 +2021,12 @@ class ReturnLink:
 
 
 def way_back(
-    state: ApplicationState, back: ReturnTo, assignment_id: str, *, today: date
+    state: ApplicationState,
+    back: ReturnTo,
+    assignment_id: str,
+    *,
+    today: date,
+    in_place: InPlace | None = None,
 ) -> ReturnLink:
     """The link an assignment's details offer back to where their reader came from.
 
@@ -2017,11 +2037,13 @@ def way_back(
     there either way. Today itself, with a word, when no plan is left as the
     link is written. The family page at this assignment's row, or at the plan
     that was being read when it is still on the pages; a plan that is not sends
-    the reader to the family page and nothing more.
+    the reader to the family page and nothing more. A link to her week carries the cards
+    ``in_place`` names.
     """
     if back.target == "week":
         return ReturnLink(
-            week_href(back.week, assignment_id, show=assignment_id), "Back to the week"
+            week_href(back.week, assignment_id, show=assignment_id, in_place=carried(in_place)),
+            "Back to the week",
         )
     if back.target == "to_turn_in":
         return ReturnLink(address(TO_TURN_IN_PAGE, fragment=TO_TURN_IN), "Back to To turn in")
@@ -2053,10 +2075,12 @@ def gone_page(
     card: CardState | None = None,
     hand_in: HandInCard | None = None,
     today: date | None = None,
+    in_place: InPlace | None = None,
 ) -> HTMLResponse:
     """The small page for an assignment that is not on record: said plainly, 404, with a
     safe way back and, when a form brought her here, what she chose and wrote, so it can
-    be copied. No form, and nothing is put back on record.
+    be copied. No form, and nothing is put back on record. A way back to her week carries
+    the cards ``in_place`` names.
 
     The explanation takes the focus when a form's press brought her here,
     whatever the form carried, and never on a look by link, whatever the
@@ -2064,7 +2088,11 @@ def gone_page(
     way back is made from the address alone and nothing more is read."""
     try:
         link = way_back(
-            state, back, assignment_id, today=state.clock.today() if today is None else today
+            state,
+            back,
+            assignment_id,
+            today=state.clock.today() if today is None else today,
+            in_place=in_place,
         )
     except sqlite3.Error as error:
         logger.warning("a way back could not be read: %s", type(error).__name__)
@@ -2387,18 +2415,23 @@ def answered(origin: Origin, said: str, assignment_id: str, kept: InPlace) -> Re
     return moved if origin.detail else leave_in_place(moved, kept)
 
 
-def plain_ways_back(origin: Origin, assignment_id: str) -> list[ReturnLink]:
+def plain_ways_back(
+    origin: Origin, assignment_id: str, in_place: InPlace | None = None
+) -> list[ReturnLink]:
     """The ways back a failure page offers, made from checked values and nothing else.
 
     No store is read, since this is the page for when the record cannot be:
     a form from the details gets the assignment's details again, with the
     way back they carried, and the page that way back names; a card gets
-    its week with the card in view.
+    its week with the card in view and the cards ``in_place`` names.
     """
     if not origin.detail:
         return [
             ReturnLink(
-                week_href(origin.week, assignment_id, show=assignment_id), "Back to the week"
+                week_href(
+                    origin.week, assignment_id, show=assignment_id, in_place=carried(in_place)
+                ),
+                "Back to the week",
             )
         ]
     details = ReturnLink(
@@ -2504,10 +2537,10 @@ def week_not_shown(request: Request, heading: str, problem: str, *, fragment: st
 
 
 def card_not_shown(
-    request: Request, origin: Origin, assignment_id: str, card: CardState
+    request: Request, origin: Origin, assignment_id: str, card: CardState, in_place: InPlace
 ) -> NotShown:
     """What a refused update says when the page its form came from can't be read: the
-    details, or her week."""
+    details, or her week with the cards ``in_place`` names."""
     said = card.problem or ""
     if origin.detail:
         line = ASSIGNMENT_NOT_SHOWN
@@ -2517,7 +2550,7 @@ def card_not_shown(
         UPDATE_NOT_SAVED,
         WITHOUT_THE_PAGE.get(said, said),
         line,
-        plain_ways_back(origin, assignment_id),
+        plain_ways_back(origin, assignment_id, in_place),
         card=card,
     )
 
@@ -2603,7 +2636,7 @@ def could_not(
             "student_update_recovery.html",
             {
                 "card": card,
-                "ways_back": plain_ways_back(origin, assignment_id),
+                "ways_back": plain_ways_back(origin, assignment_id, in_place),
                 "sample": state.settings.sample,
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -2677,7 +2710,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
             lambda: result_page(
                 request, state, assignment_id, origin, card=card, in_place=kept, status_code=code
             ),
-            card_not_shown(request, origin, assignment_id, card),
+            card_not_shown(request, origin, assignment_id, card, kept),
             code,
             kept,
         )
@@ -2711,6 +2744,7 @@ async def report_from_the_page(request: Request, assignment_id: str, state: Stat
             origin.back if origin.detail else ReturnTo("week", origin.week),
             assignment_id,
             card=CardState(assignment_id, status=chosen, note=note),
+            in_place=kept,
         )
         return leave_in_place(gone, kept)
     except UnknownReport:
@@ -2771,7 +2805,7 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
             lambda: result_page(
                 request, state, assignment_id, origin, card=card, in_place=kept, status_code=code
             ),
-            card_not_shown(request, origin, assignment_id, card),
+            card_not_shown(request, origin, assignment_id, card, kept),
             code,
             kept,
         )
@@ -2806,7 +2840,11 @@ async def undo_report_from_the_page(request: Request, assignment_id: str, state:
                 status_code=status.HTTP_404_NOT_FOUND,
             ),
             card_not_shown(
-                request, origin, assignment_id, CardState(assignment_id, problem=NOT_ON_RECORD)
+                request,
+                origin,
+                assignment_id,
+                CardState(assignment_id, problem=NOT_ON_RECORD),
+                kept,
             ),
             status.HTTP_404_NOT_FOUND,
             kept,
