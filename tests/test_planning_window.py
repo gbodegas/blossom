@@ -45,6 +45,7 @@ from tests.support import (
     record,
     report,
     reported,
+    rules_named,
     scripted_graphs,
     signed_in,
     signed_in_household,
@@ -417,6 +418,36 @@ def test_earlier_work_is_said_to_be_left_out_of_todays_plan_with_her_way_to_help
     assert f"{BEFORE} {HER_HELP_FROM_ELSEWHERE}" in card_for(last_week, LAST_WEEK)
     assert 'id="ask-for-help"' not in last_week
     assert f"{BEFORE} {HER_HELP_FROM_ELSEWHERE}" in details
+
+
+def effect_line(piece: str) -> str:
+    """The line of her update that says what it means for today's plan."""
+    start = piece.index('<div class="update">')
+    start = piece.index('<p class="effect">', start)
+    return piece[start : piece.index("</p>", start)]
+
+
+@pytest.mark.parametrize("signed", [False, True])
+def test_her_way_to_help_from_earlier_work_keeps_its_press_area_inside_its_own_line(
+    signed: bool, tmp_path: pathlib.Path
+) -> None:
+    """Ask for help ends the line just above Change and Undo, so its line grows to hold it."""
+    with saturday_household(tmp_path) if signed else on_day(SATURDAY) as client:
+        saturday_work(store_of(client))
+        if signed:
+            signed_in(client, HERS)
+        this_week = client.get(report(client, OCTOBER_2, "not_yet", week=THIS_WEEK)).text
+        last_week = client.get(report(client, LAST_WEEK, "not_yet", week="2026-09-21")).text
+        details = client.get(f"/student/assignments/{OCTOBER_2}", headers=PAGE_HEADERS).text
+
+    assert HER_HELP in effect_line(card_for(this_week, OCTOBER_2))
+    assert HER_HELP_FROM_ELSEWHERE in effect_line(card_for(last_week, LAST_WEEK))
+    assert HER_HELP_FROM_ELSEWHERE in effect_line(details)
+    declared = [
+        {line.strip() for line in rule.split("\n") if line.strip()}
+        for rule in rules_named(".update .effect a")
+    ]
+    assert declared == [{"display: inline-block;", "padding: 0.8rem 0;", "margin: 0;"}]
 
 
 @pytest.mark.parametrize(("assignment", "week"), [(OCTOBER_2, THIS_WEEK), (OCTOBER_10, NEXT_WEEK)])

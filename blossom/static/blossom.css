@@ -1734,6 +1734,15 @@ main.wide {
   margin: 0.35rem 0;
 }
 
+/* Ask for help ends the line about earlier work, just above Change and Undo. It keeps
+   its 44 pixels to press inside its own line, which grows to hold it, so it never
+   reaches into the buttons and never splits across two lines. */
+.update .effect a {
+  display: inline-block;
+  padding: 0.8rem 0;
+  margin: 0;
+}
+
 /* Her homework notes: her own words, shown whole and wrapped however long they are. */
 .homework-note,
 .homework-notes {
