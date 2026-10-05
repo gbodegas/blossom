@@ -120,6 +120,11 @@ order:
     + "\n".join(f"- {criterion}: {question}" for criterion, question in CRITERIA.items())
     + """
 
+Work marked catch_up is earlier work she explicitly chose for this plan date.
+The mark shows that she chose it, and nothing more: not that the work is
+finished or turned in, not why she chose it, and not that its due date
+changed. A date_passed mark alone does not show that she chose the work.
+
 Work marked catch_up or date_passed was due before the plan date; that is not
 a fault of the plan, which can at best do it tonight or put it off with a
 reason.

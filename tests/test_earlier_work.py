@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from blossom.agent.compose import CATCH_UP, CATCH_UP_PUT_OFF
 from blossom.app import create_app
 from blossom.assignment_status import statuses_for
+from blossom.heuristic_relevance import CRITERIA, CriticVerdict
 from blossom.noticing import PLANNING_DIGEST, canonical_active_input, planning_digest, read_week
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel
@@ -1528,6 +1529,50 @@ def test_earlier_work_and_a_passed_date_still_held_to_a_later_one_are_planned_wi
     assert ended == []
     assert saved is not None
     assert saved.outcome == "accepted"
+
+
+CHOOSING = re.compile(r"\b(?:choos|chose|choic|select)\w*", re.IGNORECASE)
+"""Words that say she chose or selected work."""
+
+
+def test_the_critic_is_told_chosen_work_is_her_choice_and_nothing_more() -> None:
+    """The critic reads catch_up as earlier work she chose for the plan date, a choice and
+    nothing more. Work with no mark and work whose date passed are never presented as chosen.
+    Every criterion is still asked, in order."""
+    critics: list[Scripted[CriticVerdict]] = []
+    with household(OCT_2, OCT_3, PAST_AND_AHEAD) as client:
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: [tonight_with_the_lab_put_off(OCT_2)], lambda: [accepting()], critics=critics
+        )
+        choose(client, OCT_2.assignment_id)
+        made = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+
+    assert made.status_code == 303, made.text
+    assert [critic.calls for critic in critics] == [1]
+    system, human = (str(message.content) for message in critics[0].briefs[0])
+    lines = human.splitlines()
+    chosen, unmarked, passed = (
+        next(line for line in lines if f'id="{item.assignment_id}"' in line)
+        for item in (OCT_2, OCT_3, PAST_AND_AHEAD)
+    )
+    assert [line for line in lines if "catch_up=" in line] == [chosen]
+    assert 'catch_up="due before today"' in chosen
+    assert "catch_up=" not in unmarked
+    assert "date_passed=" not in unmarked
+    assert 'date_passed="2026-10-01"' in passed
+    assert "catch_up=" not in passed
+    assert CHOOSING.search(human) is None
+    criteria = [system.find(f"- {name}: {question}") for name, question in CRITERIA.items()]
+    assert -1 not in criteria
+    assert criteria == sorted(criteria)
+    prose = " ".join(system.split())
+    assert "was due before the plan date; that is not a fault of the plan" in prose
+    assert [part for part in re.split(r"(?<=[.?])\s+", prose) if CHOOSING.search(part)] == [
+        "Work marked catch_up is earlier work she explicitly chose for this plan date.",
+        "The mark shows that she chose it, and nothing more: not that the work is finished or "
+        "turned in, not why she chose it, and not that its due date changed.",
+        "A date_passed mark alone does not show that she chose the work.",
+    ]
 
 
 def test_undated_work_whose_only_school_date_passed_ends_the_press_before_any_model() -> None:
