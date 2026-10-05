@@ -10,6 +10,7 @@ that, with scripted models so nothing is ever sent.
 import asyncio
 import pathlib
 import re
+import sqlite3
 import threading
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
@@ -29,9 +30,11 @@ from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.noticing import read_week
+from blossom.plan_reading import Reader
 from blossom.plan_text import present_plan
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceChannel
+from blossom.routes import runs as run_routes
 from blossom.routes import student as student_routes
 from blossom.routes.runs import (
     NOTHING_TO_SCHEDULE,
@@ -314,7 +317,9 @@ def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() ->
 
 
 def test_a_failure_on_the_way_is_said_on_the_page_and_the_plan_stays() -> None:
-    """A planner that raises is not a refusal; the page still says so and keeps its plan."""
+    """A planner that raises is not a refusal: the run ends interrupted, both answers say
+    Blossom couldn't finish a reliable plan and that her updates are saved, with the status
+    of that outcome, and the page keeps its plan."""
     app = create_app(
         fixture_settings(
             BLOSSOM_TODAY=PLAN_DATE.isoformat(), ANTHROPIC_API_KEY="not-a-key-and-never-sent"
@@ -327,15 +332,58 @@ def test_a_failure_on_the_way_is_said_on_the_page_and_the_plan_stays() -> None:
         client.post("/student/actions/plan")
         app.dependency_overrides[plan_graphs] = scripted_graphs(list, lambda: [accepting()])
         response = client.post("/student/actions/plan")
+        over_json = client.post("/student/plans")
         today = client.get("/student/plans/today").json()
+        ended = state_of(client).drafts.latest_run()
 
-    assert response.status_code == 500
+    assert response.status_code == 409
     assert (
-        "Blossom could not make a plan: something went wrong on the way. "
-        "The plan already here, if any, is unchanged."
-    ) in response.text
+        "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are "
+        "saved." in the_line(response.text)
+    )
+    assert "went wrong" not in response.text
+    assert TRY_AGAIN in response.text
     assert "Plan for Wednesday, August 19, 2026" in response.text
+    assert over_json.status_code == 409
+    assert over_json.json()["detail"] == (
+        "Blossom couldn't finish a reliable plan this time. Your homework updates are saved."
+    )
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", "interrupted")
     assert today["decision"] is None
+
+
+def test_a_held_review_that_cannot_be_read_is_said_as_a_plan_not_finished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run whose held reviews can't be read before its settle ends interrupted, publishes
+    nothing, and both of her answers say Blossom couldn't finish a reliable plan, with the
+    saved sentence, never a bare error."""
+
+    async def unreadable(*args: object, **kwargs: object) -> object:
+        msg = "the saved review could not be read"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(run_routes, "finish_held_reviews", unreadable)
+    with browser() as client:
+        page = client.post("/student/actions/plan")
+        over_json = client.post("/student/plans")
+        state = state_of(client)
+        ended = state.drafts.latest_run()
+        latest = state.drafts.latest_for(PLAN_DATE)
+
+    assert page.status_code == 409
+    assert (
+        "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are "
+        "saved." in the_line(page.text)
+    )
+    assert over_json.status_code == 409
+    assert over_json.json()["detail"] == (
+        "Blossom couldn't finish a reliable plan this time. Your homework updates are saved."
+    )
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", "interrupted")
+    assert latest is None
 
 
 def test_planning_again_replaces_the_plan_on_both_pages() -> None:
@@ -1035,8 +1083,21 @@ PRESS_ANSWERS: dict[str, tuple[Callable[[], Exception], int, str, str | None]] =
     "not saved": (
         NotSaved,
         503,
+        "Blossom made a plan but couldn&#39;t save it. Try again in a moment. {Your} homework "
+        "updates are saved.",
+        None,
+    ),
+    "not saved, her plan kept": (
+        lambda: NotSaved(kept=True),
+        503,
         "Blossom made a plan but couldn&#39;t save it, so {your} current plan hasn&#39;t "
         "changed. Try again in a moment. {Your} homework updates are saved.",
+        None,
+    ),
+    "failed on the way": (
+        lambda: RuntimeError("a node failed on the way"),
+        409,
+        "Blossom couldn&#39;t finish a reliable plan this time. {Your} homework updates are saved.",
         None,
     ),
     "unconfirmed": (
@@ -1062,9 +1123,10 @@ def test_each_answer_to_a_press_says_her_updates_are_saved_in_the_readers_words(
     answer: str, reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A press refused while a run is being finished, a plan made but not saved, one whose
-    saving couldn't be confirmed, and a run that couldn't start are each said on her week
-    with the status the JSON route answers, in the reader's words. The first links to
-    where that run stands, and an unconfirmed one offers to check again."""
+    saving couldn't be confirmed, a run that couldn't start, and one that failed on the way
+    are each said on her week with the status the JSON route answers, in the reader's words.
+    The first links to where that run stands, and an unconfirmed one offers to check again.
+    Her plan is said unchanged only when that is known."""
     error, code, said, link = PRESS_ANSWERS[answer]
 
     async def refused(*args: object, **kwargs: object) -> object:
@@ -1089,6 +1151,157 @@ def test_each_answer_to_a_press_says_her_updates_are_saved_in_the_readers_words(
     else:
         assert link in line
     assert ("Your " in line or "your " in line) is not parent
+    assert ("hasn&#39;t changed" in line) is (answer == "not saved, her plan kept")
+    assert "went wrong" not in line
+
+
+JSON_ANSWERS: dict[str, tuple[Callable[[], Exception], int, str]] = {
+    "not saved": (
+        NotSaved,
+        503,
+        "Blossom made a plan but couldn't save it. Try again in a moment. {Your} homework "
+        "updates are saved.",
+    ),
+    "not saved, her plan kept": (
+        lambda: NotSaved(kept=True),
+        503,
+        "Blossom made a plan but couldn't save it, so {your} current plan hasn't changed. "
+        "Try again in a moment. {Your} homework updates are saved.",
+    ),
+    "could not start": (
+        CouldNotStart,
+        503,
+        "Blossom couldn't start a plan this time. Try again in a moment. {Your} homework "
+        "updates are saved.",
+    ),
+    "failed on the way": (
+        lambda: RuntimeError("a node failed on the way"),
+        409,
+        "Blossom couldn't finish a reliable plan this time. {Your} homework updates are saved.",
+    ),
+}
+
+
+@pytest.mark.parametrize("answer", JSON_ANSWERS)
+@pytest.mark.parametrize("reader", ["her", "a parent"])
+def test_each_json_answer_to_a_press_says_her_updates_are_saved_in_the_readers_words(
+    answer: str, reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Her JSON route answers a plan not saved and a run that couldn't start with a 503, and
+    a run that failed on the way as one Blossom couldn't finish, 409: each says her updates
+    are saved in the words of whoever is signed in, never a bare error."""
+    error, code, said = JSON_ANSWERS[answer]
+
+    async def refused(*args: object, **kwargs: object) -> object:
+        raise error()
+
+    monkeypatch.setattr(student_routes, "make_plan", refused)
+    parent = reader == "a parent"
+    client = client_for(signed_in_household(tmp_path)) if parent else browser()
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
+    with client:
+        if parent:
+            signed_in(client, THEIRS)
+        response = client.post("/student/plans")
+
+    detail = response.json()["detail"]
+    assert response.status_code == code
+    assert detail.startswith(
+        said.format(Your="Her" if parent else "Your", your="her" if parent else "your")
+    )
+    assert ("Your " in detail or "your " in detail) is not parent
+
+
+@pytest.mark.parametrize("route", ["/student/plans", "/student/actions/plan"])
+@pytest.mark.parametrize("reader", ["her", "a parent"])
+def test_a_week_that_cannot_be_read_before_a_press_is_a_plan_that_could_not_start(
+    route: str, reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press whose read of the week fails before any run is admitted couldn't start: her
+    JSON route and her page answer 503 with the try-again sentence and her updates saved,
+    in the reader's words, and no run is written."""
+
+    def unreadable(*args: object, **kwargs: object) -> object:
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    monkeypatch.setattr(run_routes, "read_week", unreadable)
+    parent = reader == "a parent"
+    client = client_for(signed_in_household(tmp_path)) if parent else browser()
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
+    with client:
+        if parent:
+            signed_in(client, THEIRS)
+        response = client.post(route)
+        newest = state_of(client).drafts.latest_run()
+
+    said = (
+        "Blossom couldn't start a plan this time. Try again in a moment. "
+        f"{'Her' if parent else 'Your'} homework updates are saved."
+    )
+    assert response.status_code == 503
+    if route == "/student/plans":
+        assert response.json()["detail"] == said
+    else:
+        line = the_line(response.text)
+        assert str(escape(said)) in line
+        assert ("Your " in line or "your " in line) is not parent
+    assert newest is None
+
+
+def test_the_plan_button_keeps_its_label_when_the_answer_is_unconfirmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An answer whose plan may have been published offers to check again, never to try
+    again: the plan button keeps its own label. A refusal while a run is being finished
+    still offers Try again."""
+    answers: dict[str, Callable[[], Exception]] = {
+        "unconfirmed": lambda: Unconfirmed(UNSURE, PLAN_DATE),
+        "already planning": lambda: AlreadyPlanning(STILL_RUNNING),
+    }
+    pages: dict[str, str] = {}
+    for name, error in answers.items():
+
+        async def refused(
+            *args: object, raising: Callable[[], Exception] = error, **kwargs: object
+        ) -> object:
+            raise raising()
+
+        monkeypatch.setattr(student_routes, "make_plan", refused)
+        with browser() as client:
+            pages[name] = client.post("/student/actions/plan").text
+
+    plan_today = '<button type="submit" class="primary" aria-describedby="plan-scope">Plan today'
+    assert plan_today in pages["unconfirmed"]
+    assert TRY_AGAIN not in pages["unconfirmed"]
+    assert run_link(UNSURE, AGAIN) in the_line(pages["unconfirmed"])
+    assert TRY_AGAIN in pages["already planning"]
+
+
+def test_the_status_of_a_run_whose_record_cannot_be_read_is_unconfirmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Asking where a run stands when reading its record fails, not only when the read
+    doesn't finish in time, answers 503 unconfirmed on both routes, never a bare error."""
+
+    def failing(
+        self: DraftsStore, run_id: str, wait: float = 5.0, *, reconcile: bool = True
+    ) -> None:
+        msg = "database is locked"
+        raise sqlite3.OperationalError(msg)
+
+    monkeypatch.setattr(DraftsStore, "run_status", failing)
+    with browser() as client:
+        hers = client.get(f"/student/plans/runs/{UNSURE}")
+        family = client.get(f"/parent/plans/runs/{UNSURE}")
+
+    for answer in (hers, family):
+        assert answer.status_code == 503
+        assert answer.json()["detail"] == "Blossom couldn't confirm that the new plan was saved."
 
 
 def test_her_plan_is_answered_by_its_run_when_reading_it_back_does_not_finish(
@@ -1101,15 +1314,15 @@ def test_her_plan_is_answered_by_its_run_when_reading_it_back_does_not_finish(
     release = threading.Event()
     off_the_loop: list[bool] = []
 
-    def slow(state: ApplicationState, record: DraftRecord) -> object:
+    def slow(state: ApplicationState, record: DraftRecord, reader: Reader = "student") -> object:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             off_the_loop.append(True)
         else:
             off_the_loop.append(False)
-        release.wait(5)
-        return reading(state, record)
+        assert release.wait(5)
+        return reading(state, record, reader)
 
     monkeypatch.setattr(student_routes, "plan_view", slow)
     monkeypatch.setattr(student_routes, "STORE_WAIT_SECONDS", 0.2)
@@ -1136,10 +1349,10 @@ def test_her_plan_is_answered_by_its_run_when_reading_it_back_does_not_finish(
 
 
 def test_a_run_asked_for_by_its_id_is_said_on_her_week(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``?run=`` says where that run stands: being made, with Check; ended, with why and,
-    while no newer plan was published for its evening, that her plan hasn't changed;
-    nothing more for a run whose plan was published or one never made; and that it
-    couldn't be confirmed, with Check again, when the record can't be read in time."""
+    """``?run=`` says where that run stands: still being finished, with Check; ended, with
+    why, and never that her plan hasn't changed while the evening has none; nothing more for
+    a run whose plan was published or one never made; and that it couldn't be confirmed,
+    with Check again, when the record can't be read in time."""
     first = f"plan:{PLAN_DATE.isoformat()}:first"
     newer = f"plan:{PLAN_DATE.isoformat()}:newer"
 
@@ -1172,13 +1385,12 @@ def test_a_run_asked_for_by_its_id_is_said_on_her_week(monkeypatch: pytest.Monke
     line = run_line(running)
     assert line is not None
     assert 'class="note" role="status"' in line
-    assert "A plan for Wednesday, August 19 is being made." in line
+    assert "The plan request for Wednesday, August 19 is still being finished." in line
     assert run_link(first, ON_IT) in line
     line = run_line(ended)
     assert line is not None
-    assert (
-        f"{timed_out} Your current plan hasn&#39;t changed. Your homework updates are saved."
-    ) in line
+    assert f"{timed_out} Your homework updates are saved." in line
+    assert "hasn&#39;t changed" not in line
     assert "?run=" not in line
     line = run_line(ended_before_it)
     assert line is not None
@@ -1221,24 +1433,26 @@ def test_a_parent_reading_her_week_is_told_where_a_run_stands_in_her_words(
     assert admitted is None
     line = run_line(running)
     assert line is not None
-    assert "A plan for Wednesday, August 19 is being made." in line
+    assert "The plan request for Wednesday, August 19 is still being finished." in line
     assert refused.status_code == 409
     assert refused.json()["detail"]["message"].endswith("Her homework updates are saved.")
     line = run_line(ended)
     assert line is not None
     assert (
-        "Planning took too long, so Blossom stopped. Her current plan hasn&#39;t changed. "
-        "Her homework updates are saved. Family review shows what happened."
+        "Planning took too long, so Blossom stopped. Her homework updates are saved. "
+        "Family review shows what happened."
     ) in line
+    assert "hasn&#39;t changed" not in line
     assert "Your" not in line
     assert "your" not in line
     assert run_line(found) == line
 
 
 def test_her_week_says_on_load_what_became_of_the_last_plan_request() -> None:
-    """With no run named, her week reads the household's newest run: one being made is said
-    with Check, one past its deadline as being finished, never as timed out before the
-    record says so; one for today that ended with no newer plan is said with why. A run for
+    """With no run named, her week reads the household's newest run: one within its deadline
+    is said as still being finished, with Check, and one past it as Blossom finishing the
+    last plan request, never as timed out before the record says so; one for today that
+    ended with no newer plan is said with why, without a plan to call unchanged. A run for
     another evening, and a run whose plan was published, add nothing."""
     clock = FakeTime()
     asked = f"plan:{PLAN_DATE.isoformat()}:asked"
@@ -1277,7 +1491,7 @@ def test_her_week_says_on_load_what_became_of_the_last_plan_request() -> None:
     assert admitted is None
     line = run_line(being_made)
     assert line is not None
-    assert "A plan for Wednesday, August 19 is being made." in line
+    assert "The plan request for Wednesday, August 19 is still being finished." in line
     assert run_link(asked, ON_IT) in line
     line = run_line(finishing)
     assert line is not None
@@ -1288,10 +1502,8 @@ def test_her_week_says_on_load_what_became_of_the_last_plan_request() -> None:
     assert (reconciled.status, reconciled.reason) == ("ended", "timed_out")
     line = run_line(after)
     assert line is not None
-    assert (
-        "Planning took too long, so Blossom stopped. Your current plan hasn&#39;t changed. "
-        "Your homework updates are saved."
-    ) in line
+    assert "Planning took too long, so Blossom stopped. Your homework updates are saved." in line
+    assert "hasn&#39;t changed" not in line
     assert "?run=" not in line
     assert run_line(another_evening) is None
     assert run_line(published) is None
@@ -1333,8 +1545,7 @@ def test_a_date_problem_found_on_load_is_said_as_one_and_names_its_evening() -> 
     assert line is not None
     assert (
         "Blossom can&#39;t make today&#39;s plan: some work has a due date that already "
-        "passed, so no plan can finish it on time. Your current plan hasn&#39;t changed. "
-        "Your homework updates are saved."
+        "passed, so no plan can finish it on time. Your homework updates are saved."
     ) in line
     assert "reliable" not in line
     line = run_line(unreliable)
@@ -1348,3 +1559,93 @@ def test_a_date_problem_found_on_load_is_said_as_one_and_names_its_evening() -> 
         "that evening, so no plan can finish it on time."
     ) in line
     assert "today" not in line
+
+
+def test_her_plan_is_said_unchanged_only_when_her_evening_has_one() -> None:
+    """A run for today that ended while her evening had a plan, and still has it, says her
+    current plan hasn't changed, on load and asked for by its id."""
+    clock = FakeTime()
+    first = f"plan:{PLAN_DATE.isoformat()}:first"
+    later = f"plan:{PLAN_DATE.isoformat()}:later"
+    with browser(clock=clock) as client:
+        state = state_of(client)
+        settled_run(
+            state.drafts,
+            draft(f"draft:{first}", "Plan for Wednesday"),
+            thread_id=first,
+            plan_date=PLAN_DATE,
+            now=clock,
+        )
+        admitted = state.drafts.admit_run(
+            later, plan_date=PLAN_DATE, deadline_mono=clock() + RUN_DEADLINE_SECONDS
+        )
+        state.drafts.end_run(later, reason="timed_out")
+        on_load = client.get(PAGE).text
+        asked = client.get(f"{PAGE}?run={later}").text
+
+    assert admitted is None
+    for page in (on_load, asked):
+        line = run_line(page)
+        assert line is not None
+        assert (
+            "Planning took too long, so Blossom stopped. Your current plan hasn&#39;t changed. "
+            "Your homework updates are saved."
+        ) in line
+        assert "A plan is ready." in page
+
+
+def test_a_run_asked_for_that_adds_nothing_falls_back_to_the_newest_run() -> None:
+    """``?run=`` naming a run whose plan was published, or one never made, says what the page
+    says on load, so a newer run still being finished shows with its own Check."""
+    clock = FakeTime()
+    first = f"plan:{PLAN_DATE.isoformat()}:first"
+    newer = f"plan:{PLAN_DATE.isoformat()}:newer"
+    with browser(clock=clock) as client:
+        state = state_of(client)
+        settled_run(
+            state.drafts,
+            draft(f"draft:{first}", "Plan for Wednesday"),
+            thread_id=first,
+            plan_date=PLAN_DATE,
+            now=clock,
+        )
+        admitted = state.drafts.admit_run(
+            newer, plan_date=PLAN_DATE, deadline_mono=clock() + RUN_DEADLINE_SECONDS
+        )
+        published = client.get(f"{PAGE}?run={first}").text
+        never = client.get(f"{PAGE}?run=plan:2026-08-19:never").text
+
+    assert admitted is None
+    for page in (published, never):
+        line = run_line(page)
+        assert line is not None
+        assert "The plan request for Wednesday, August 19 is still being finished." in line
+        assert run_link(newer, ON_IT) in line
+        assert run_link(first, ON_IT) not in line
+
+
+def test_a_parent_making_her_plan_reads_it_in_her_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Her JSON 201 reads the plan for whoever is signed in: a parent gets her plan as the
+    family reads it, and she gets it as hers."""
+    reading = student_routes.plan_view
+    readers: list[str] = []
+
+    def watched(state: ApplicationState, record: DraftRecord, reader: Reader = "student") -> object:
+        readers.append(reader)
+        return reading(state, record, reader)
+
+    monkeypatch.setattr(student_routes, "plan_view", watched)
+    client = client_for(signed_in_household(tmp_path))
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
+    with client:
+        signed_in(client, THEIRS)
+        theirs = client.post("/student/plans")
+    with browser() as client:
+        hers = client.post("/student/plans")
+
+    assert (theirs.status_code, hers.status_code) == (201, 201)
+    assert readers == ["family", "student"]

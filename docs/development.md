@@ -55,23 +55,28 @@ With the app running as the README describes:
   update, or Undo gets 403 on her week before the form is read. There is no
   JSON route for it.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
-  to `/student/plans` makes one. The POST answers 201 with her plan as
-  `GET /student/plans/today` shows it, or, when that reading doesn't finish
-  in time after the plan is published, 201 with
-  `{"run_id", "plan_date", "status": "published"}`; 202 with
+  to `/student/plans` makes one. The POST answers 201 with her plan in the
+  shape `GET /student/plans/today` gives, worded for whoever is signed in,
+  or, when that reading doesn't finish in time after the plan is published,
+  201 with `{"run_id", "plan_date", "status": "published"}`; 202 with
   `{"run_id", "plan_date", "status": "unconfirmed"}` when the plan's saving
   couldn't be confirmed in time; 409 with a sentence when there is nothing to
-  plan or the run ended without a plan, and 409 with
+  plan or the run ended without a plan, a run interrupted on the way
+  included, and 409 with
   `{"detail": {"message", "run_id", "plan_date", "seconds_left"}}` while the
   household's run is still running; and 503 when no model key is set, when
-  the run couldn't start, or when the plan was made but couldn't be saved.
+  the run couldn't start, or when the plan was made but couldn't be saved,
+  the last two saying her homework updates are saved in the words of whoever
+  is signed in.
   `GET /student/plans/runs/{run_id}` says where a run stands,
   `{"run_id", "plan_date", "status": "running" | "published" | "ended", "reason", "draft_id"}`,
   after ending any run past its deadline: 404 for an unknown run, and 503
-  when the record can't be read in time. The family's `POST /parent/plans`
-  and `GET /parent/plans/runs/{run_id}` answer the same way, its 201 being
-  the run's record (`PlanRunView`), its 409 message saying "Her homework
-  updates are saved.", and 422 for an evening that has passed or is past the
+  when the record can't be read in time or the read fails. The family's
+  `POST /parent/plans` and `GET /parent/plans/runs/{run_id}` answer the same
+  way, its 201 being the run's record (`PlanRunView`), which is also its
+  answer to a run it admitted that ended without a plan, one interrupted on
+  the way included, its 409 and 503 messages saying "Her homework updates
+  are saved.", and 422 for an evening that has passed or is past the
   calendar.
 - <http://127.0.0.1:8000/student/homework-notes> is her homework notes, with
   the ones she put away under `/archived`, the ones in homework under

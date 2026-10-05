@@ -60,9 +60,9 @@
     </p>
     {#
       Where the last plan request stands, when the address names its run or it is
-      still being made: a run still running links to Check, and one that ended
-      for today with no newer plan says why. A plan that was published adds
-      nothing here; it is shown.
+      still being finished: a run still running links to "Check on it.", and one
+      that ended for today with no newer plan says why. A plan that was published
+      adds nothing here; it is shown.
     #}
     {% if run_notice %}
       <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run">{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}</p>
@@ -170,7 +170,7 @@
               data-pending-later="Still working. The planner reads your week and writes the plan, which can take up to about a minute and a half"
               data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
           {% if in_place_said %}<input type="hidden" name="in_place" value="{{ in_place_said }}">{% endif %}
-          <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure %}Try again{% else %}{{ plan_label }}{% endif %}</button>
+          <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure and not plan_failure.unconfirmed %}Try again{% else %}{{ plan_label }}{% endif %}</button>
         </form>
       {% endif %}
       {#

@@ -16,20 +16,23 @@ date, an undecided draft is closed as expired and its thread cleared. Nobody
 decided, and the record says so rather than pretending someone did.
 
 The sweep at startup applies both rules to whatever a crash left behind,
-after the runs a stopped process left running are ended. It never publishes
-and never deletes a draft: only a run's own settlement puts a plan on the
-pages, and a published plan stays on her page even when its thread is gone. A
-waiting draft whose thread holds a review that never landed in the table,
-because recording it failed, has that review recorded, since a review that
-reached the thread is never lost and never expired away. Runs past their
-deadline are ended. Then any thread that neither a waiting draft nor a run
-still running refers to is cleared, which covers runs that ended without their
-thread being removed.
+after the runs a stopped process left running are ended. It never publishes,
+and never deletes a published or decided draft: only a run's own settlement
+puts a plan on the pages, and a published plan stays published, and on her
+page for its own evening, even when its thread is gone. A waiting draft whose
+thread holds a review that never landed in the table, because recording it
+failed, has that review recorded, since a review that reached the thread is
+never lost and never expired away. Runs past their deadline are ended. Then
+any thread that neither a waiting draft nor a run still running refers to is
+cleared, which covers runs that ended without their thread being removed.
 
 The same sweep runs on a schedule while the process is up, when runs may be
 running. The threads are listed before the runs still running are read, so a
 run admitted in between is either missed by the listing or kept by the read.
-Every call on the drafts store runs on a worker thread.
+The runs still running are read before the waiting drafts, and a settle moves
+a thread from the one to the other, never back, so a run settled between the
+two reads is kept by one of them. Every call on the drafts store runs on a
+worker thread.
 """
 
 import asyncio
@@ -207,12 +210,12 @@ async def sweep_saved_state(
     """Finish held reviews, end runs out of time, close what waited too long, clear the rest.
 
     The saved threads are listed first. Reviews a thread holds that the table
-    never recorded are then finished, so no plan published afterwards takes the
+    never recorded are then finished, so no plan published afterward takes the
     place of a draft a parent had in fact reviewed, and runs still running past
     their deadline are ended. A waiting draft past its retention closes as
-    expired. Last, the waiting drafts and the runs still running are read, and
-    every listed thread neither refers to is cleared. Nothing is published, and
-    no draft is deleted.
+    expired. Last, the runs still running and then the waiting drafts are read,
+    and every listed thread neither refers to is cleared. Nothing is published,
+    and no published or decided draft is deleted.
     """
     listed: set[str] = set()
     async for item in checkpointer.alist(None):
@@ -236,10 +239,11 @@ async def sweep_saved_state(
             )
             expired.append(record.draft_id)
 
+    # A settle moves a thread from the runs still running to the waiting drafts,
+    # never back, so reading in this order finds a thread settled in between.
+    running = await asyncio.to_thread(drafts.running_threads)
     waiting = await asyncio.to_thread(drafts.waiting)
-    keep = {record.thread_id for record in waiting} | await asyncio.to_thread(
-        drafts.running_threads
-    )
+    keep = running | {record.thread_id for record in waiting}
     cleared: list[str] = []
     for thread_id in sorted(thread_id for thread_id in listed if thread_id not in keep):
         await checkpointer.adelete_thread(thread_id)

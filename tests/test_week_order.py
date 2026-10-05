@@ -1227,8 +1227,8 @@ PLAN_REFUSED: Final = {
     ),
     "a failure on the way": (
         scripted_graphs(list, lambda: [accepting()]),
-        500,
-        "Blossom could not make a plan: something went wrong on the way.",
+        409,
+        "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are saved.",
     ),
 }
 

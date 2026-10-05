@@ -92,10 +92,10 @@ class RunTimedOut(TimeoutError):
 class RunBudget:
     """One run's time, read from a monotonic clock, and what the run spent of it.
 
-    Made when the request arrives, so every request and every retry draws on the same
-    limit and nothing starts the clock again. ``seconds`` is never more than
-    ``RUN_DEADLINE_SECONDS``. ``clock`` and ``sleep`` are the process's own unless a
-    test gives others.
+    Made at handler entry, after the form body is read, so every request and every
+    retry draws on the same limit and nothing starts the clock again. ``seconds`` is
+    never more than ``RUN_DEADLINE_SECONDS``. ``clock`` and ``sleep`` are the
+    process's own unless a test gives others.
     """
 
     seconds: float = RUN_DEADLINE_SECONDS

@@ -108,22 +108,24 @@ from blossom.routes.runs import (
     RunNotice,
     Unconfirmed,
     already_planning,
-    asked_run,
-    latest_run_notice,
+    ended_without_a_plan,
     make_plan,
     not_saved,
     refuse_an_empty_run,
     require_model,
     require_work,
     run_check,
+    run_notice,
     run_status_view,
     saved_sentence,
+    thread_for,
     tidy_later,
     tidy_thread,
 )
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
 from blossom.stores.drafts import (
+    INTERRUPTED,
     STORE_WAIT_SECONDS,
     AlreadyDecided,
     DraftRecord,
@@ -270,10 +272,9 @@ CHECK_CONFIRMATIONS: Final[dict[str, str]] = {
 }
 """What the address says happened to a row's check, and the sentence the row shows for it:
 the server chooses which, the address only carries the choice."""
-PLAN_FAILED: Final = (
-    "The plan could not be made: something went wrong on the way. "
-    "What is waiting below is unchanged."
-)
+PLAN_INTERRUPTED: Final = ended_without_a_plan(INTERRUPTED, parent=True)
+"""What the family's plan form says of a run that failed on the way: a plan Blossom couldn't
+finish, as the record keeps it, in a parent's words."""
 FAMILY_NOT_SHOWN: Final = "Family review can't be shown right now."
 """The line the family page's stand-in adds after a refusal's own words when the family
 page can't be read."""
@@ -295,7 +296,9 @@ WITHOUT_THE_PAGE: Final[dict[str, str]] = {
     CHECK_NOTE_TOO_LONG: (
         f"Nothing was written, because the note is longer than {CHECK_NOTE_MAX_LENGTH} characters."
     ),
-    PLAN_FAILED: "The plan could not be made: something went wrong on the way.",
+    PLAN_INTERRUPTED: (
+        "Blossom couldn't finish a reliable plan this time. Her homework updates are saved."
+    ),
 }
 """Each refusal written for the family page, as it reads where that page is not shown. Any
 other refusal reads the same in both places."""
@@ -506,9 +509,11 @@ async def start_plan(
     the question and the run's reading, and such a run made no plan. Any other
     run that ended without a plan is answered 201 with its record, since the
     page lists those, a run that ended on a date problem before any model was
-    asked included. A press while the household's run is still running is a
-    409 naming it, in a parent's words, and a plan whose saving couldn't be
-    confirmed in time is a 202 with its run's id.
+    asked, or one that failed on the way, included. A press while the
+    household's run is still running is a 409 naming it, in a parent's words; a
+    plan whose saving couldn't be confirmed in time is a 202 with its run's id;
+    and a plan not saved or a run that couldn't start is a 503 that says her
+    updates are saved.
     """
     budget = graphs.budget()
     evening = request.plan_date or state.clock.today()
@@ -516,15 +521,41 @@ async def start_plan(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=passed(evening))
     if evening > date.max - CALENDAR_MARGIN:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=beyond(evening))
-    await require_work(state, evening, budget)
-    require_model(graphs)
+    could_not_start = f"{COULD_NOT_START} {saved_sentence(parent=True)}"
     try:
-        made = await make_plan(graphs.build(), evening, state, budget=budget)
+        await require_work(state, evening, budget)
+    except CouldNotStart as error:
+        raise HTTPException(error.status_code, detail=could_not_start) from None
+    require_model(graphs)
+    graph = graphs.build()
+    run_id = thread_for(evening)
+    try:
+        made = await make_plan(graph, evening, state, budget=budget, run_id=run_id)
     except AlreadyPlanning as error:
         raise AlreadyPlanning(error.run, parent=True) from None
+    except NotSaved as error:
+        raise HTTPException(
+            error.status_code, detail=not_saved(parent=True, kept=error.kept)
+        ) from None
+    except CouldNotStart as error:
+        raise HTTPException(error.status_code, detail=could_not_start) from None
     except Unconfirmed as unconfirmed:
         return JSONResponse(
             unconfirmed.view().model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        # The run was admitted and has been ended interrupted: its record, like any run
+        # that ended without a plan.
+        logger.exception("the plan for %s failed on the way", evening)
+        return PlanRunView(
+            thread_id=run_id,
+            plan_date=evening,
+            outcome=INTERRUPTED,
+            draft_id=None,
+            waiting=False,
+            steps=list(budget.steps),
         )
     refuse_an_empty_run(made.view)
     return made.view
@@ -1263,9 +1294,7 @@ def review(
             if said
             else (CheckState(focus) if focus else None),
             open_plan=plan,
-            run_notice=asked_run(state, run, FAMILY_PAGE, parent=True)
-            if run is not None
-            else latest_run_notice(state, FAMILY_PAGE, parent=True, today=None),
+            run_notice=run_notice(state, run, FAMILY_PAGE, parent=True, today=None),
         )
     except sqlite3.Error as error:
         return review_unreadable(
@@ -1333,8 +1362,9 @@ async def plan_from_the_page(
     """The plan form. A blank date means today; a bad one is said, not guessed at.
 
     A run that fails on the way for any reason other than a refusal is said on
-    the page too, with the queue below unchanged; the run has already taken
-    back what it left, and the failure goes to the process log. An evening that
+    the page too, as a plan Blossom couldn't finish, with the queue below
+    unchanged; the run has already taken back what it left, and the failure
+    goes to the process log. An evening that
     has passed is refused before anything runs, since a plan for it could
     reach no page of hers, and so is one past the edge of the calendar, whose
     week cannot be read: the same two refusals the JSON route makes. When the
@@ -1378,7 +1408,7 @@ async def plan_from_the_page(
             run_check(FAMILY_PAGE, error.run.run_id, CHECK_ON_THAT_REQUEST),
         )
     except NotSaved as error:
-        return await not_made(not_saved(parent=True), error.status_code)
+        return await not_made(not_saved(parent=True, kept=error.kept), error.status_code)
     except CouldNotStart as error:
         return await not_made(f"{COULD_NOT_START} {saved_sentence(parent=True)}", error.status_code)
     except Unconfirmed as unconfirmed:
@@ -1391,7 +1421,7 @@ async def plan_from_the_page(
         return await not_made(str(error.detail), error.status_code)
     except Exception:
         logger.exception("the plan for %s failed on the way", evening)
-        return await not_made(PLAN_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return await not_made(PLAN_INTERRUPTED, status.HTTP_409_CONFLICT)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
 

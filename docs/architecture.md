@@ -539,7 +539,9 @@ earlier plans, each reviewed, expired, or superseded by a later one. Its two
 form actions call the functions the JSON routes call and redirect back to the
 page, so there is one way to start a run and one way to review whichever door
 it comes through, and a failure renders the page with the same status and
-reason the API would have answered. The decision field admits exactly the two
+reason the API would have answered. A run interrupted on the way differs: the
+page says it with 409, and the API answers 201 with the run's record, as for
+any run that ended without a plan. The decision field admits exactly the two
 button values, and the reason is capped at `REASON_MAX_LENGTH`, five hundred
 characters, on the form and on the JSON request alike, so a longer one is
 refused at the boundary rather than stored. The two buttons read "Looks good"
@@ -864,10 +866,9 @@ in all, held by a `RunBudget` that starts at the handler's entry, once the form
 body is read, travels in the graph's context, carries the run's steps, and is
 never saved: each planner and reviewer request gets only what is left of it, a
 busy service is asked again at most `MODEL_RETRIES` times inside it, and no
-request starts once it is spent. What the ninety seconds promise is this. No
-model attempt, retry, or authorization to publish happens after them. Every
-planning wait the code controls, reading the week, admission, the graph, the
-decision lock, held reviews, and the settle, is capped by what is left, and
+request starts once it is spent. The ninety seconds promise this, under the
+supported operating assumptions. No model attempt, retry, or authorization to
+publish happens after them. Every planning wait the code controls is capped by what is left, and
 then by `SETTLE_GRACE_SECONDS`, one second, for the settle's commit, so the
 answer is decided by the deadline plus one second: published, a named failure,
 not saved, or unconfirmed with its run ID. Housekeeping, such as clearing a
@@ -912,12 +913,14 @@ result never replaces a newer plan. A commit authorized in time may land after
 the deadline, within the grace, and it stands. Every request ends in one of
 these: published; timed out; a service failure; a plan that couldn't be used,
 because it never passed the checks or the model's answer was cut off, refused,
-or unparseable, or a run interrupted on the way; not saved, when the store
+or unparseable; a run interrupted on the way,
+an error the route sees included; not saved, when the store
 refused the publication before it began or a read-back found the run still
 running; unconfirmed, when the outcome couldn't be read back before the
 deadline or the settle didn't finish within the grace, answered with the run
-ID; already planning, the 409 above; or couldn't start, a 503 when the week
-couldn't be read or the run admitted in time, with no row written. Only
+ID; already planning, the 409 above; or couldn't start, a 503 when the week's
+read failed or didn't finish, or the run couldn't be admitted in time, with no
+row written. Only
 `StoreBusy` and `WriterBusy`, which the store raises before any transaction
 begins, confirm a refusal; any other failure of the settle is read back by run
 ID before the deadline, never after it. The record keeps the reason that
@@ -925,23 +928,47 @@ committed, and the answer names what the route observed; when the two differ,
 both say no plan was published, and the record is authoritative for the
 reason.
 
+A run interrupted on the way, an error the route sees included, is never a bare
+500: her week and the family page say "Blossom couldn't finish a reliable plan
+this time." with 409, her JSON route answers 409 with the same words, and the
+family's answers 201 with the record of a run it admitted, outcome `interrupted`
+and no draft, like any run that ended without a plan. Not saved reads "Blossom
+made a plan but couldn't save it. Try again in a moment." and says the current
+plan hasn't changed only when the read-back found the run still running with the
+evening's plan in place. Couldn't start reads "Blossom couldn't start a plan
+this time. Try again in a moment." on every plan route, a failed read of the
+week before any run is admitted included. An unconfirmed answer links "Check again."
+and invites no other press, so her plan button keeps its own label; it reads
+"Try again" only after an answer that does. On both pages each of these answers
+adds that her homework updates are saved, "Your homework updates are saved." to
+her and "Her homework updates are saved." to a parent, who after an interrupted
+run also reads "Family review shows what happened." Her JSON route's 503s for
+not saved and couldn't start carry the same sentence in the words of whoever is
+signed in, and the family route's in a parent's words.
+
 The run ID is how a run is found again. `GET /student/plans/runs/{run_id}` and
 `GET /parent/plans/runs/{run_id}` read where it stands, after ending any run
-past its deadline. Her week and the family page take `?run=<run id>` and say
-the run's outcome, with the link "Check on it." while it runs and "Check
-again." when its outcome couldn't be confirmed; a press refused while a run is
-being finished links "Check on that request." to it. On load, both pages read
-the household's newest run and say "A plan for {evening} is being made."
-within its deadline, or "Blossom is finishing the last plan request." past it,
-each with "Check on it.", so an answer that never arrived, or a second tab,
-shows the run in progress rather than a plan whose Plan again would be refused.
-Her week also says the outcome of a run for today's evening that ended with no
-newer plan published: the outcome sentence, and that the current plan hasn't
-changed. A date problem is said as one, since planning again can't fix it:
-some work has a due date that already passed, so no plan can finish it on
-time; a run for another evening, asked for by its ID, names that evening
-instead of today's plan. The family page shows only the running cases, since
-it lists ended runs below.
+past its deadline, and answer 503, unconfirmed, when the record can't be read
+in time or the read fails. Her week and the family page take `?run=<run id>`
+and say the run's outcome, with the link "Check on it." while it runs and
+"Check again." when its outcome couldn't be confirmed; for a run that
+published, was overtaken by a newer plan, or is unknown, the page says what it
+says on load, so a newer run still running shows. A press refused while a run
+is being finished links "Check on that request." to it. On load, both pages
+read the household's newest run and say "The plan request for {evening} is
+still being finished." within its deadline, or "Blossom is finishing the last
+plan request." past it, each with "Check on it.", so an answer that never
+arrived, or a second tab, shows the run in progress rather than a plan whose
+Plan again would be refused. Both sentences hold even when nothing is working
+behind the run's row, as after an admission the route gave up on. Her week also
+says the outcome of a run for today's evening that ended with no newer plan
+published: the outcome sentence and, when the evening has a plan, that her
+current plan hasn't changed, which an ended run asked for by `?run=` says only
+when its evening still has the plan it had. A date problem is said as one,
+since planning again can't fix it: some work has a due date that already
+passed, so no plan can finish it on time; a run for another evening, asked for
+by its ID, names that evening instead of today's plan. The family page shows
+only the running cases, since it lists ended runs below.
 
 The prompts in `blossom/agent/prompts.py` put the data first and the request
 last, and everything copied from another system sits inside a labeled block
@@ -1813,10 +1840,11 @@ open settles the run record, at every open and to the same result the second
 time: a run without a status becomes `published` when its draft is published
 and `ended` otherwise, `interrupted` when it stopped with a draft it never
 published; an unpublished draft nobody decided about is deleted unless its run
-is running, since a missing mark never makes a draft publishable; and a
-`withheld_drafts` table left in the file is dropped. Published drafts,
+is running or published, since a missing mark never makes a draft publishable;
+and a `withheld_drafts` table left in the file is dropped. Published drafts,
 decisions, and steps are untouched, and a run whose status disagrees with
-whether its draft is published is logged by its thread and left as it is.
+whether its draft is published is logged by its thread at every open and kept
+as it is, its draft included.
 
 At startup, before anything is served, every run the record still holds as
 `running` belongs to a process that stopped, and its deadline was read on that
@@ -1824,16 +1852,20 @@ process's clock, so `end_interrupted_runs` ends each one `interrupted` and
 deletes its draft. A failure there stops the start, as a failed sweep does,
 since such a row would refuse every press until long after its evening. Then a
 sweep applies the rules to whatever the last process left behind, and the same
-sweep runs every hour the process is up, under the decision lock, so a draft's
-fortnight ends when it ends rather than at the next restart. The sweep never
-publishes a draft and never deletes a published one. It records any review a
-waiting draft's thread holds that the table never got, ends runs past their
-deadline as `timed_out`, closes the drafts that waited past
+sweep runs every hour the process is up, under the decision lock, so a draft
+expires once its two weeks are up rather than at the next restart. The sweep
+never publishes a draft and never deletes a published or decided one. It
+records any review a waiting draft's thread holds that the table never got,
+ends runs past their deadline as `timed_out`, deleting each one's unpublished,
+undecided draft as any ending does, closes the drafts that waited past
 `PAUSED_RETENTION_DAYS` as expired, and clears every thread that neither a
 waiting draft nor a running run refers to, which covers finished runs whose
 thread was never removed and runs a stopped process left behind. The threads
 are listed before the running runs are read, so a run admitted in between is
-either missed by the listing or kept by the read. A published waiting draft
+either missed by the listing or kept by the read. The running runs are read
+before the waiting drafts, so a plan that settles between the two reads is kept
+by one of them. A published plan stays published, and on her page for its
+evening, even when its thread is gone. A published waiting draft
 whose thread is missing, or was written by another graph version, is kept
 until a newer plan supersedes it or it expires, and a decision on it answers
 409 with the sentence the family page shows in place of its buttons. A review

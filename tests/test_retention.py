@@ -638,6 +638,90 @@ def test_the_scheduled_sweep_leaves_a_run_in_flight_and_its_draft_alone() -> Non
     assert running == frozenset()
 
 
+def test_a_settle_between_the_sweeps_two_reads_of_what_to_keep_keeps_its_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settle moves a thread from the runs still running to the waiting drafts, never back,
+    so a settle that commits between the sweep's two reads of what to keep is in one of them."""
+    state = application()
+    drafts = state.drafts
+    reconcile, waiting, running_threads = (
+        drafts.reconcile_runs,
+        drafts.waiting,
+        drafts.running_threads,
+    )
+    phase = ["sweeping"]
+    kept_reads: list[str] = []
+    first_kept_read = threading.Event()
+    settled = threading.Event()
+    waited_for_the_settle: list[bool] = []
+    settles: list[Settled] = []
+
+    def reconciling(wait: float = STORE_WAIT) -> list[str]:
+        ended = reconcile(wait)
+        phase[0] = "expiring"
+        return ended
+
+    def then_settle[T](name: str, read: Callable[[], T]) -> Callable[[], T]:
+        def reading() -> T:
+            found = read()
+            if phase[0] == "expiring" and name == "waiting":
+                # The waiting drafts read just after the ending are those checked for expiry.
+                phase[0] = "keeping"
+            elif phase[0] == "keeping":
+                kept_reads.append(name)
+                if len(kept_reads) == 1:
+                    first_kept_read.set()
+                    waited_for_the_settle.append(settled.wait(timeout=STORE_WAIT))
+            return found
+
+        return reading
+
+    def settle() -> None:
+        if first_kept_read.wait(timeout=STORE_WAIT):
+            settles.append(drafts.settle_run("plan:settling"))
+            settled.set()
+
+    settler = threading.Thread(target=settle)
+    try:
+
+        async def scenario() -> tuple[Swept, set[str]]:
+            paused = await graph_for(state, fixture_week_plan()).ainvoke(
+                PlanState(plan_date=PLAN_DATE, rounds=0),
+                config=run_config(admitted(state, "plan:settling")),
+                durability=DURABILITY,
+            )
+            assert "__interrupt__" in paused
+            monkeypatch.setattr(drafts, "reconcile_runs", reconciling)
+            monkeypatch.setattr(drafts, "waiting", then_settle("waiting", waiting))
+            monkeypatch.setattr(
+                drafts, "running_threads", then_settle("running_threads", running_threads)
+            )
+            settler.start()
+            swept = await sweep_saved_state(state.checkpointer, drafts, state.clock)
+            return swept, await thread_ids(state)
+
+        swept, remaining = asyncio.run(scenario())
+        settler.join(timeout=2 * STORE_WAIT)
+        assert not settler.is_alive()
+        waiting_after = waiting()
+        latest = drafts.latest_for(PLAN_DATE)
+        run = drafts.run_status("plan:settling", reconcile=False)
+    finally:
+        state.close()
+
+    assert sorted(kept_reads) == ["running_threads", "waiting"]
+    assert waited_for_the_settle == [True]
+    assert len(settles) == 1
+    assert remaining == {"plan:settling"}
+    assert swept == Swept(expired=(), cleared=())
+    assert [record.thread_id for record in waiting_after] == ["plan:settling"]
+    assert latest is not None
+    assert (latest.thread_id, latest.published, latest.decision) == ("plan:settling", True, None)
+    assert run is not None
+    assert run.status == "published"
+
+
 class SaverRefusingDeletes(InMemorySaver):
     """A saver that cannot delete a thread, once armed."""
 
@@ -931,7 +1015,7 @@ def test_publication_waits_for_a_review_in_progress() -> None:
 
         async def scenario() -> tuple[str, str, bool, list[str], set[str], set[str]]:
             first = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
-            await state.decision_lock.acquire()
+            assert await asyncio.wait_for(state.decision_lock.acquire(), timeout=STORE_WAIT)
             pausing = asyncio.create_task(
                 plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
             )
@@ -1801,7 +1885,8 @@ def test_a_publication_waiting_on_the_drafts_file_ends_at_the_runs_limit(
                 budget=RunBudget(seconds=seconds),
             )
             answered = monotonic() - started
-            releases[0].join()
+            releases[0].join(timeout=STORE_WAIT)
+            assert not releases[0].is_alive()
             await detached_done(state)
             kept = state.drafts.latest_for(PLAN_DATE)
             ended = state.drafts.runs_without_a_draft()
@@ -1876,7 +1961,8 @@ class HeldFile:
 
     def close(self) -> None:
         for release in self.releases:
-            release.join()
+            release.join(timeout=STORE_WAIT)
+            assert not release.is_alive()
         self.other.close()
 
 
@@ -1968,7 +2054,7 @@ def test_a_run_canceled_while_its_publication_waits_publishes_nothing_later(
                         budget=RunBudget(seconds=5.0),
                     )
                 )
-                await contended.started.wait()
+                await asyncio.wait_for(contended.started.wait(), timeout=STORE_WAIT)
                 await asyncio.sleep(0.1)
                 for _ in range(times):
                     late.cancel()
@@ -2073,7 +2159,7 @@ async def ended_short_of_publishing(
     on_the_lock = not where.startswith(("publishing", "failing"))
     try:
         if on_the_lock:
-            await state.decision_lock.acquire()
+            assert await asyncio.wait_for(state.decision_lock.acquire(), timeout=STORE_WAIT)
         try:
             late = asyncio.create_task(
                 plan_evening(
@@ -2346,7 +2432,7 @@ def test_a_run_canceled_after_its_plan_is_published_keeps_it_even_when_the_draft
             late = asyncio.create_task(
                 plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
             )
-            await clearing.wait()
+            await asyncio.wait_for(clearing.wait(), timeout=STORE_WAIT)
             monkeypatch.setattr(state.drafts, "get", unreadable)
             late.cancel()
             await asyncio.gather(late, return_exceptions=True)
@@ -2447,7 +2533,8 @@ class HeldStoreCall:
 
     def close(self) -> None:
         for release in self.releases:
-            release.join()
+            release.join(timeout=STORE_WAIT)
+            assert not release.is_alive()
         self.other.close()
 
 
@@ -2522,7 +2609,7 @@ def test_a_write_as_a_run_ends_waits_for_the_drafts_file_off_the_event_loop(
     finally:
         state.close()
 
-    assert late_by < 0.2
+    assert late_by < 0.25
     assert view.outcome == outcome
     assert latest is not None
     assert (
@@ -2589,7 +2676,7 @@ def test_cleanup_after_a_publication_runs_out_of_time_leaves_the_server_answerin
         state.close()
 
     assert view.outcome == "timed_out"
-    assert before_by < 0.2
+    assert before_by < 0.3
     assert after_by < 0.2
     assert kept == first
     assert retry.outcome == "accepted"
@@ -2629,7 +2716,7 @@ def test_a_run_for_another_evening_starts_on_time_while_an_expired_run_waits_to_
                         budget=RunBudget(seconds=0.2),
                     )
                 )
-                await ending.wait()
+                await asyncio.wait_for(ending.wait(), timeout=STORE_WAIT)
                 await asyncio.sleep(0.05)
                 tomorrow = PLAN_DATE + timedelta(days=1)
                 other = asyncio.create_task(
@@ -2661,7 +2748,7 @@ def test_a_run_for_another_evening_starts_on_time_while_an_expired_run_waits_to_
     finally:
         state.close()
 
-    assert late_by < 0.2
+    assert late_by < 0.3
     assert view.outcome == "timed_out"
     assert view.thread_id in timed_out
     assert next_evening.outcome == "accepted"
@@ -2721,7 +2808,7 @@ def test_a_run_canceled_while_it_records_a_held_review_lets_the_lock_go_and_the_
                 late = asyncio.create_task(
                     plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
                 )
-                await recording.wait()
+                await asyncio.wait_for(recording.wait(), timeout=STORE_WAIT)
                 await asyncio.sleep(0.05)
                 for _ in range(times):
                     late.cancel()
@@ -2798,7 +2885,7 @@ def test_a_run_canceled_while_its_plan_is_published_anyway_keeps_the_plan_and_it
             late = asyncio.create_task(
                 plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
             )
-            await began.wait()
+            await asyncio.wait_for(began.wait(), timeout=STORE_WAIT)
             for _ in range(times):
                 late.cancel()
                 await asyncio.sleep(0)

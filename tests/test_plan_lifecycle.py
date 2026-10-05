@@ -401,45 +401,56 @@ def test_an_error_from_the_settle_after_the_deadline_is_unconfirmed_without_a_lo
 def test_a_run_left_running_by_a_stopped_process_ends_at_startup_and_is_never_published(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A run that saved its draft and stopped before its settle is ended
-    interrupted at the next start, its draft deleted; the sweep publishes nothing."""
-    state = application(tmp_path)
-    try:
-        assert (
-            state.drafts.admit_run(
-                "plan:2026-08-19:stopped", plan_date=PLAN_DATE, deadline_mono=time.monotonic() + 90
-            )
-            is None
-        )
-        graph = plan_graph_for(state, planner=Scripted(ok(fixture_week_plan())), critic=critic())
-        # The graph composes and saves its draft for the admitted run, as a run does
-        # before the process stops.
-        asyncio.run(
-            graph.ainvoke(
-                PlanState(plan_date=PLAN_DATE, rounds=0),
-                config=run_config("plan:2026-08-19:stopped"),
-                durability=DURABILITY,
-                context=RunBudget(),
-            )
-        )
-        assert [record.draft_id for record in state.drafts.unpublished()] == [
-            "draft:plan:2026-08-19:stopped"
-        ]
-    finally:
-        state.close()
+    """A run that saved its draft and stopped before its settle is ended interrupted at the
+    next start, its draft deleted, and then its thread cleared by the start's sweep, which
+    keeps the thread of a run still running; the sweep publishes nothing."""
+    settings = household_settings(tmp_path)
+    run_id = "plan:2026-08-19:stopped"
 
-    settings = fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **files_in(tmp_path))
+    async def stopped_before_the_settle() -> None:
+        async with open_checkpointer(settings.checkpoint_path) as checkpointer:
+            state = build_application_state(settings, checkpointer)
+            try:
+                # Its deadline is still ahead on this clock, so only the start's ending of
+                # stopped runs ends it.
+                blocking = state.drafts.admit_run(
+                    run_id, plan_date=PLAN_DATE, deadline_mono=time.monotonic() + 90
+                )
+                assert blocking is None
+                graph = plan_graph_for(
+                    state, planner=Scripted(ok(fixture_week_plan())), critic=critic()
+                )
+                # The graph composes and saves its draft for the admitted run, as a run does
+                # before the process stops.
+                await graph.ainvoke(
+                    PlanState(plan_date=PLAN_DATE, rounds=0),
+                    config=run_config(run_id),
+                    durability=DURABILITY,
+                    context=RunBudget(),
+                )
+                assert [record.draft_id for record in state.drafts.unpublished()] == [
+                    f"draft:{run_id}"
+                ]
+            finally:
+                state.close()
+
+    asyncio.run(stopped_before_the_settle())
+    before = asyncio.run(saved_threads(settings, run_id))
+
     with TestClient(create_app(settings)) as client:
         restarted = state_of(client)
-        ended = restarted.drafts.run_status("plan:2026-08-19:stopped")
+        ended = restarted.drafts.run_status(run_id)
         unpublished = restarted.drafts.unpublished()
         latest = restarted.drafts.latest_for(PLAN_DATE)
+    after = asyncio.run(saved_threads(settings, run_id))
 
+    assert before[run_id] is not None
     assert ended is not None
     assert ended.status == "ended"
     assert ended.reason == "interrupted"
     assert unpublished == []
     assert latest is None
+    assert after[run_id] is None
 
 
 def test_a_run_that_ends_before_the_gate_is_answered_with_the_reason_its_record_committed(
@@ -777,12 +788,12 @@ def test_a_run_whose_time_runs_out_waiting_for_the_decision_lock_is_never_settle
         calls = settles_then(state, lambda: None)
 
         async def scenario() -> tuple[PlanMade, RunState, bool]:
-            await state.decision_lock.acquire()
+            assert await asyncio.wait_for(state.decision_lock.acquire(), timeout=5)
             try:
                 request = asyncio.ensure_future(
                     make_plan(accepted_graph(state), PLAN_DATE, state, budget=fake.budget())
                 )
-                await waiting.wait()
+                await asyncio.wait_for(waiting.wait(), timeout=5)
                 served = not request.done()
                 fake.advance(RUN_DEADLINE_SECONDS + 0.5)
                 made = await request
@@ -827,7 +838,7 @@ def test_a_run_whose_time_runs_out_reading_a_held_review_is_never_settled(
             async def slow(config: Any) -> Any:  # noqa: ANN401
                 if config["configurable"]["thread_id"] == first.view.thread_id:
                     reading.set()
-                    await held.wait()
+                    await asyncio.wait_for(held.wait(), timeout=5)
                 return await original(config)
 
             state.checkpointer.aget_tuple = slow  # type: ignore[method-assign]
@@ -835,7 +846,7 @@ def test_a_run_whose_time_runs_out_reading_a_held_review_is_never_settled(
             request = asyncio.ensure_future(
                 make_plan(accepted_graph(state), PLAN_DATE, state, budget=fake.budget())
             )
-            await reading.wait()
+            await asyncio.wait_for(reading.wait(), timeout=5)
             fake.advance(RUN_DEADLINE_SECONDS + 0.5)
             made = await request
             held.set()
@@ -866,10 +877,10 @@ def test_a_press_while_the_run_waits_to_publish_is_refused_naming_it(
     try:
 
         async def scenario() -> tuple[AlreadyPlanning, PlanMade, int, int]:
-            await state.decision_lock.acquire()
+            assert await asyncio.wait_for(state.decision_lock.acquire(), timeout=5)
             try:
                 first = asyncio.ensure_future(make_plan(accepted_graph(state), PLAN_DATE, state))
-                await waiting.wait()
+                await asyncio.wait_for(waiting.wait(), timeout=5)
                 rows = rows_of(tmp_path)
                 second = plan_graph_for(state, planner=Scripted(), critic=Scripted())
                 with pytest.raises(AlreadyPlanning) as refused:
@@ -914,12 +925,12 @@ def test_a_run_canceled_before_its_settle_is_never_published_by_the_sweep_or_a_r
             released.set()
             first = await until(lambda: ended_run_of(state, running.run_id))
 
-            await state.decision_lock.acquire()
+            assert await asyncio.wait_for(state.decision_lock.acquire(), timeout=5)
             try:
                 publishing = asyncio.ensure_future(
                     make_plan(accepted_graph(state), PLAN_DATE, state)
                 )
-                await waiting.wait()
+                await asyncio.wait_for(waiting.wait(), timeout=5)
                 publishing.cancel()
                 await asyncio.sleep(0)
                 publishing.cancel()
@@ -3039,11 +3050,15 @@ HOLD_SECONDS: Final = 0.7
 DUE_AFTER_SECONDS: Final = 0.05
 """When the loop callback that measures the loop is due, after the hold begins."""
 
-ON_TIME_SECONDS: Final = 0.05
+ON_TIME_SECONDS: Final = 0.15
 """How late that callback may run: far below the hold, so a loop held for it fails."""
 
-TIMER_SLACK_SECONDS: Final = 0.1
+TIMER_SLACK_SECONDS: Final = 0.3
 """Room past a wait's cap for the loop's timer to fire and the answer to be read."""
+
+LONG_HOLD_SECONDS: Final = 2 * HOLD_SECONDS
+"""A hold for an answer due inside its wait: longer than the wait and the slack together,
+so an answer that waited out the hold fails."""
 
 
 class FileHeld:
@@ -3098,7 +3113,7 @@ def test_a_press_behind_another_connections_writer_waits_off_the_event_loop(
             made_in = time.monotonic() - began
             await settled_down(state)
             refused_late: list[float] = []
-            holds.append(FileHeld(path, HOLD_SECONDS))
+            holds.append(FileHeld(path, LONG_HOLD_SECONDS))
             a_callback_due(loop, refused_late)
             began = time.monotonic()
             with pytest.raises(CouldNotStart):
@@ -3282,7 +3297,7 @@ def holding_then_waiting(path: str, holds: list[FileHeld], late: list[float]) ->
     callback, and then never answers."""
 
     async def ask(messages: Sequence[BaseMessage]) -> ModelAnswer[DailyPlan]:
-        holds.append(FileHeld(path, HOLD_SECONDS))
+        holds.append(FileHeld(path, LONG_HOLD_SECONDS))
         a_callback_due(asyncio.get_running_loop(), late)
         await asyncio.Event().wait()
         msg = "unreachable"
@@ -3348,25 +3363,25 @@ def test_the_check_for_work_waits_for_the_held_record_off_the_event_loop(
     readers: list[threading.Thread] = []
     holds: list[FileHeld] = []
 
-    def hold() -> None:
+    def hold(seconds: float) -> None:
         if held_by == "a page's reading":
-            readers.append(read_held(state, HOLD_SECONDS))
+            readers.append(read_held(state, seconds))
         else:
-            holds.append(FileHeld(path, HOLD_SECONDS, kind="EXCLUSIVE"))
+            holds.append(FileHeld(path, seconds, kind="EXCLUSIVE"))
 
     try:
 
         async def scenario() -> tuple[float, list[float], float, list[float]]:
             loop = asyncio.get_running_loop()
             passed_late: list[float] = []
-            hold()
+            hold(HOLD_SECONDS)
             a_callback_due(loop, passed_late)
             began = time.monotonic()
             await require_work(state, PLAN_DATE, RunBudget(10))
             passed_in = time.monotonic() - began
             await asyncio.to_thread(time.sleep, 0.05)
             refused_late: list[float] = []
-            hold()
+            hold(LONG_HOLD_SECONDS)
             a_callback_due(loop, refused_late)
             began = time.monotonic()
             with pytest.raises(CouldNotStart):

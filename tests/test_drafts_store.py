@@ -2091,3 +2091,66 @@ def test_a_run_whose_status_disagrees_with_its_draft_is_reported_and_left_alone(
     assert "t-ended" in caplog.text
     assert "t-pub" in caplog.text
     assert {table: dump(path, table) for table in ("drafts", "runs")} == before
+
+
+def test_a_published_run_whose_draft_is_unpublished_keeps_both_rows_at_every_open(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The open that reports a published run with an unpublished, undecided draft keeps
+    that draft, so every open names rows that are still there to look into."""
+    store, path = file_store(tmp_path)
+    try:
+        save_and_publish(store, draft(), thread_id="t-pub", plan_date=PLAN_DATE, outcome="accepted")
+    finally:
+        store.close()
+    with sqlite3.connect(path) as editing:
+        editing.execute("UPDATE drafts SET published=0, published_order=NULL")
+    editing.close()
+    before = {table: dump(path, table) for table in ("drafts", "runs")}
+
+    reported: list[bool] = []
+    kept: list[bool] = []
+    for _ in range(3):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="blossom.stores.drafts"):
+            DraftsStore.open(path, fixture_clock()).close()
+        reported.append("t-pub" in caplog.text)
+        kept.append({table: dump(path, table) for table in ("drafts", "runs")} == before)
+
+    assert [row[0] for row in before["runs"]] == ["t-pub"]
+    assert [row[0] for row in before["drafts"]] == [draft().draft_id]
+    assert reported == [True, True, True]
+    assert kept == [True, True, True]
+
+
+def test_a_runs_state_says_whether_its_evening_has_a_published_plan() -> None:
+    store = store_in_memory()
+    try:
+        admitted(store, "plan:x")
+        running = store.run_status("plan:x")
+        newest = store.latest_run()
+        store.record_waiting(draft(), thread_id="plan:x", plan_date=PLAN_DATE, outcome="accepted")
+        store.settle_run("plan:x")
+        published = store.run_status("plan:x")
+        ended_run(store, thread_id="plan:y", plan_date=PLAN_DATE, outcome="checks_failed")
+        later = store.latest_run()
+        ended_run(
+            store,
+            thread_id="plan:z",
+            plan_date=PLAN_DATE + timedelta(days=1),
+            outcome="checks_failed",
+        )
+        other_evening = store.run_status("plan:z")
+    finally:
+        store.close()
+
+    assert running is not None
+    assert (running.status, running.has_plan) == ("running", False)
+    assert newest is not None
+    assert (newest.run_id, newest.has_plan) == ("plan:x", False)
+    assert published is not None
+    assert (published.status, published.has_plan) == ("published", True)
+    assert later is not None
+    assert (later.run_id, later.status, later.has_plan) == ("plan:y", "ended", True)
+    assert other_evening is not None
+    assert (other_evening.status, other_evening.has_plan) == ("ended", False)

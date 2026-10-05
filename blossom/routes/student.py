@@ -154,14 +154,13 @@ from blossom.routes.runs import (
     RunNotice,
     Unconfirmed,
     already_planning,
-    asked_run,
     ended_without_a_plan,
-    latest_run_notice,
     make_plan,
     not_saved,
     require_model,
     require_work,
     run_check,
+    run_notice,
     run_status_view,
     saved_sentence,
 )
@@ -169,7 +168,7 @@ from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
 from blossom.stores.catch_up import ChoiceMade, ChoiceNotSaved, NotOnRecord
-from blossom.stores.drafts import OVERTAKEN, STORE_WAIT_SECONDS, DraftRecord
+from blossom.stores.drafts import INTERRUPTED, OVERTAKEN, STORE_WAIT_SECONDS, DraftRecord
 from blossom.stores.help_requests import (
     HELP_RECENT_DAYS,
     NOTE_MAX_LENGTH,
@@ -384,17 +383,15 @@ safe."""
 @dataclass(frozen=True)
 class PlanFailure:
     """A plan press that ended without a plan, for the line that says so: each assignment the
-    run named for a date that already passed, by its title and the address of its dates, and
-    the link to where a run named by the answer stands."""
+    run named for a date that already passed, by its title and the address of its dates, the
+    link to where a run named by the answer stands, and whether its outcome is unconfirmed,
+    which the plan button doesn't answer with Try again."""
 
     checks: tuple[tuple[str, str], ...] = ()
     run: RunCheck | None = None
+    unconfirmed: bool = False
 
 
-PLAN_FAILED: Final = (
-    "Blossom could not make a plan: something went wrong on the way. "
-    "The plan already here, if any, is unchanged."
-)
 UPDATE_NOT_SAVED: Final = "Update not saved"
 REQUEST_NOT_SENT: Final = "Request not sent"
 REQUEST_NOT_TAKEN_BACK: Final = "Request not taken back"
@@ -421,7 +418,6 @@ WITHOUT_THE_PAGE: Final[dict[str, str]] = {
     ),
     CANNOT_UNDO: "Your update has changed, so it cannot be undone from that page.",
     ALREADY_UNDONE: "That update was already undone.",
-    PLAN_FAILED: "Blossom could not make a plan: something went wrong on the way.",
 }
 """Each refusal written for a page, as it reads where that page is not shown: a sentence that
 points at the page goes, and a rule about a field says what was not saved and why. Any other
@@ -1026,9 +1022,12 @@ def read_a_plan(
     return PlanRead(view=view, reading=reading)
 
 
-def plan_view(state: ApplicationState, record: DraftRecord) -> StudentPlanView:
-    """Her projection of a draft: the plan, a parent's review if any, and whether it still fits."""
-    return read_a_plan(state, record, current=False, today=state.clock.today()).view
+def plan_view(
+    state: ApplicationState, record: DraftRecord, reader: Reader = "student"
+) -> StudentPlanView:
+    """Her projection of a draft: the plan, a parent's review if any, and whether it still fits,
+    in the words of ``reader``."""
+    return read_a_plan(state, record, reader=reader, current=False, today=state.clock.today()).view
 
 
 def todays_plan_read(
@@ -1069,29 +1068,46 @@ async def make_todays_plan(
 ) -> StudentPlanView | JSONResponse:
     """Ask for today's plan. It is hers as soon as it is made; a parent's review comes after.
 
-    A run that ends without a plan, because the checks never passed or the
-    model did not answer, is a 409 saying why in the reader's words, and her
-    page keeps whatever plan it had. An evening with nothing left to plan is a
-    409 too, before any run is written or a model asked for, and so is a press
-    while the household's run is still running, naming it. A plan whose saving
-    couldn't be confirmed in time is a 202 with its run's id, to check at
-    ``plans/runs/{run_id}``. The plan answered is the record its publication
-    returned, read for her on a worker thread; when that reading doesn't finish
-    in time, the plan stands published and the 201 names its run instead.
+    A run that ends without a plan, because the checks never passed, the
+    model did not answer, or it failed on the way, is a 409 saying why in the
+    reader's words, and her page keeps whatever plan it had. An evening with
+    nothing left to plan is a 409 too, before any run is written or a model
+    asked for, and so is a press while the household's run is still running,
+    naming it. A plan whose saving couldn't be confirmed in time is a 202 with
+    its run's id, to check at ``plans/runs/{run_id}``; a plan not saved and a
+    run that couldn't start are 503s that say her updates are saved, in the
+    reader's words. The plan answered is the record its publication returned,
+    read for the reader on a worker thread; when that reading doesn't finish in
+    time, the plan stands published and the 201 names its run instead.
     """
     budget = graphs.budget()
     today = state.clock.today()
     parent = parent_reads(request)
-    await require_work(state, today, budget)
-    require_model(graphs)
     try:
+        await require_work(state, today, budget)
+        require_model(graphs)
         made = await make_plan(graphs.build(), today, state, budget=budget)
     except AlreadyPlanning as error:
         raise AlreadyPlanning(error.run, parent=parent) from None
+    except NotSaved as error:
+        raise HTTPException(
+            error.status_code, detail=not_saved(parent=parent, kept=error.kept)
+        ) from None
+    except CouldNotStart as error:
+        raise HTTPException(
+            error.status_code, detail=f"{COULD_NOT_START} {saved_sentence(parent=parent)}"
+        ) from None
     except Unconfirmed as unconfirmed:
         return JSONResponse(
             unconfirmed.view().model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
         )
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception("today's plan failed on the way")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail=ended_without_a_plan(INTERRUPTED, parent=parent)
+        ) from error
     if made.record is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -1100,8 +1116,9 @@ async def make_todays_plan(
             ),
         )
     record = made.record
+    reader: Reader = "family" if parent else "student"
     try:
-        return await bounded(partial(plan_view, state, record), STORE_WAIT_SECONDS)
+        return await bounded(partial(plan_view, state, record, reader), STORE_WAIT_SECONDS)
     except Exception as error:
         if not isinstance(error, Unfinished):
             logger.warning("the plan of run %s could not be read: %s", record.thread_id, error)
@@ -2204,9 +2221,7 @@ def due_this_week(
             marker=marker_from(asked, asked_again),
             earlier_note=chose,
             today=today,
-            run_notice=asked_run(state, run, PAGE, parent=parent)
-            if run is not None
-            else latest_run_notice(state, PAGE, parent=parent, today=today),
+            run_notice=run_notice(state, run, PAGE, parent=parent, today=today),
         )
     except sqlite3.Error as error:
         again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
@@ -3370,9 +3385,9 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     with the status the JSON route would have answered, and whatever plan the
     page already had stays. So is a run that failed on the way, for any other
     reason: the run has already taken back what it left by then, the failure
-    goes to the process log, and the page says something went wrong rather
-    than answering with a bare error. When her week can't be read either, the
-    page that reads no store says so, with the same status.
+    goes to the process log, and the page says Blossom couldn't finish a
+    reliable plan, as the JSON route does. When her week can't be read either,
+    the page that reads no store says so, with the same status.
 
     A press stays in the visit: the cards the visit keeps in place, which the form carries,
     stay where they were on the page that answers it, a plan made or not. A form that is
@@ -3421,7 +3436,9 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
             PlanFailure(run=run_check(PAGE, error.run.run_id, CHECK_ON_THAT_REQUEST)),
         )
     except NotSaved as error:
-        return await not_made(not_saved(parent=parent), error.status_code, PlanFailure())
+        return await not_made(
+            not_saved(parent=parent, kept=error.kept), error.status_code, PlanFailure()
+        )
     except CouldNotStart as error:
         return await not_made(
             f"{COULD_NOT_START} {saved_sentence(parent=parent)}", error.status_code, PlanFailure()
@@ -3430,13 +3447,17 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return await not_made(
             f"{UNCONFIRMED} {saved_sentence(parent=parent)}",
             status.HTTP_202_ACCEPTED,
-            PlanFailure(run=run_check(PAGE, unconfirmed.run_id, CHECK_AGAIN)),
+            PlanFailure(run=run_check(PAGE, unconfirmed.run_id, CHECK_AGAIN), unconfirmed=True),
         )
     except HTTPException as error:
         return await not_made(f"Blossom could not make a plan: {error.detail}", error.status_code)
     except Exception:
         logger.exception("today's plan failed on the way")
-        return await not_made(PLAN_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR, PlanFailure())
+        return await not_made(
+            ended_without_a_plan(INTERRUPTED, parent=parent),
+            status.HTTP_409_CONFLICT,
+            PlanFailure(),
+        )
     run = made.view
     if run.outcome == OVERTAKEN:
         # A newer plan for today reached the page while this one was being made; that

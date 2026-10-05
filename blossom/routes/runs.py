@@ -6,8 +6,8 @@ She plans from her page; a parent may start an evening's plan for her from
 theirs. Both doors lead here, so there is one way a run is admitted, one way it
 is built, and one way it settles.
 
-A run has ``RUN_DEADLINE_SECONDS`` in all, from the moment its request arrives.
-The record decides what became of it: a run is admitted as ``running``, one per
+A run has ``RUN_DEADLINE_SECONDS`` in all, from handler entry, after the form body is
+read. The record decides what became of it: a run is admitted as ``running``, one per
 household, and only ``settle_run`` publishes its plan, while it is still running,
 before its deadline and with the evening's plan the one it expected. Every other
 ending is ``end_run``. The answer says what the request saw: the plan, why there
@@ -80,8 +80,9 @@ class PlanGraphs:
     builder rather than a graph, and the handler calls it after consulting the
     table. ``may_start`` is whether a run can be started at all, which needs a
     model; resuming a paused thread does not. ``budget`` makes each run's time
-    limit as its request arrives. A test substitutes the whole object, scripted
-    models, permission, and clock together, over the real stores.
+    limit at handler entry, after the form body is read. A test substitutes the
+    whole object, scripted models, permission, and clock together, over the real
+    stores.
     """
 
     build: PlanGraphBuilder
@@ -110,12 +111,13 @@ NOTHING_TO_SCHEDULE: Final = "Nothing to schedule from the work in this planning
 still to do: nothing has been planned, no run has been written, and no model asked."""
 
 COULD_NOT_START: Final = "Blossom couldn't start a plan this time. Try again in a moment."
-"""What a planning route answers, 503, when the record couldn't be read or the run
-admitted in time. No run was recorded and no model asked."""
+"""What a planning route answers, 503, when the week couldn't be read or the run
+couldn't be admitted in time. No run was recorded and no model asked."""
 
 
 class CouldNotStart(HTTPException):
-    """The week couldn't be read, or the run admitted, within the wait. Nothing was recorded."""
+    """The week couldn't be read, or the run couldn't be admitted within the wait. Nothing
+    was recorded."""
 
     def __init__(self) -> None:
         super().__init__(status.HTTP_503_SERVICE_UNAVAILABLE, detail=COULD_NOT_START)
@@ -126,16 +128,18 @@ async def require_work(state: ApplicationState, plan_date: date, budget: RunBudg
     written and before the model is asked for.
 
     The window is read as the graph reads it, on a worker thread, inside the run's time
-    and at most ``STORE_WAIT_SECONDS``; a read that doesn't finish is ``CouldNotStart``.
-    The graph reads it again when it runs, since a report of hers can land in between,
-    and ends the same way.
+    and at most ``STORE_WAIT_SECONDS``; a read that fails or doesn't finish is
+    ``CouldNotStart``. The graph reads it again when it runs, since a report of hers can
+    land in between, and ends the same way.
     """
     wait = min(budget.remaining(), STORE_WAIT_SECONDS)
     try:
         active = await bounded(
             lambda: read_week(state.project_state, state.project_state, plan_date).active(), wait
         )
-    except Unfinished as error:
+    except Exception as error:
+        if not isinstance(error, Unfinished):
+            logger.exception("the week for %s could not be read", plan_date)
         raise CouldNotStart from error
     if not active:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=NOTHING_TO_SCHEDULE)
@@ -294,28 +298,26 @@ class AlreadyPlanning(HTTPException):
         self.run = run
 
 
-NOT_SAVED: Final = (
-    "Blossom made a plan but couldn't save it, so the current plan hasn't changed. "
-    "Try again in a moment."
-)
-"""What a request answers when the store refused the plan's publication before it began,
-or was found not to have published it: nothing on any page changed."""
-
-
-def not_saved(*, parent: bool) -> str:
-    """The same, as her page says it, to her or to a parent reading it."""
-    plan = "her current plan" if parent else "your current plan"
-    return (
-        f"Blossom made a plan but couldn't save it, so {plan} hasn't changed. "
-        f"Try again in a moment. {saved_sentence(parent=parent)}"
-    )
+def not_saved(*, parent: bool, kept: bool = False) -> str:
+    """What a request answers when the store refused the plan's publication before it began,
+    or was found not to have published it, to her or to a parent reading her page. ``kept``
+    adds that her plan hasn't changed, when the evening is known to have one."""
+    made = "Blossom made a plan but couldn't save it"
+    if kept:
+        plan = "her current plan" if parent else "your current plan"
+        made = f"{made}, so {plan} hasn't changed"
+    return f"{made}. Try again in a moment. {saved_sentence(parent=parent)}"
 
 
 class NotSaved(HTTPException):
-    """The run's plan was confirmed not published, and the run is being ended: 503."""
+    """The run's plan was confirmed not published, and the run is being ended: 503. ``kept``
+    when the evening's plan is known to be the one it had."""
 
-    def __init__(self) -> None:
-        super().__init__(status.HTTP_503_SERVICE_UNAVAILABLE, detail=NOT_SAVED)
+    def __init__(self, *, kept: bool = False) -> None:
+        super().__init__(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail=not_saved(parent=False, kept=kept)
+        )
+        self.kept = kept
 
 
 UNCONFIRMED: Final = "Blossom couldn't confirm that the new plan was saved."
@@ -355,10 +357,10 @@ class RunNotice:
 
 
 def being_made(run: RunState, page: str) -> RunNotice:
-    """A running run as a page says it: being made before its deadline, being finished
-    after it, either way with a link to check on it."""
+    """A running run as a page says it, before its deadline and after it, either way with a
+    link to check on it. Neither says what is behind the row, which may be nothing."""
     said = (
-        f"A plan for {evening_named(run.plan_date)} is being made."
+        f"The plan request for {evening_named(run.plan_date)} is still being finished."
         if run.seconds_left > 0
         else FINISHING
     )
@@ -366,15 +368,15 @@ def being_made(run: RunState, page: str) -> RunNotice:
 
 
 def ended_notice(run: RunState, *, parent: bool, today: date) -> RunNotice | None:
-    """An ended run as a page says it: why, and whether her plan is the one she had. A run
-    overtaken by a newer plan adds nothing, since that plan is shown."""
+    """An ended run as a page says it: why, and, when the evening has a plan, that it is the
+    one she had. A run overtaken by a newer plan adds nothing, since that plan is shown."""
     if run.reason == OVERTAKEN:
         return None
     return RunNotice(
         ended_without_a_plan(
             run.reason,
             parent=parent,
-            unchanged=run.plan_unchanged,
+            unchanged=run.plan_unchanged and run.has_plan,
             evening=None if run.plan_date == today else run.plan_date,
         )
     )
@@ -397,6 +399,17 @@ def asked_run(state: ApplicationState, run_id: str, page: str, *, parent: bool) 
     if run.status == "running":
         return being_made(run, page)
     return ended_notice(run, parent=parent, today=state.clock.today())
+
+
+def run_notice(
+    state: ApplicationState, run_id: str | None, page: str, *, parent: bool, today: date | None
+) -> RunNotice | None:
+    """What a page says about a planning run: the one ``?run=`` names or, when it names none
+    or that run adds nothing, what the page says on load, so a newer run still shows."""
+    asked = None if run_id is None else asked_run(state, run_id, page, parent=parent)
+    if asked is not None:
+        return asked
+    return latest_run_notice(state, page, parent=parent, today=today)
 
 
 def latest_run_notice(
@@ -717,8 +730,9 @@ class Planning:
         tidy_later(self.run_id, self.state)
         return self.ended_view(TIMED_OUT, steps)
 
-    def not_saved(self) -> NotSaved:
-        """End a run whose plan was confirmed not published, without a wait, and say so."""
+    def not_saved(self, *, kept: bool = False) -> NotSaved:
+        """End a run whose plan was confirmed not published, without a wait, and say so;
+        ``kept`` when the evening's plan is known to be the one it had."""
         in_the_background(
             self.state,
             partial(
@@ -731,7 +745,7 @@ class Planning:
         )
         tidy_later(self.run_id, self.state)
         self.keep_timing(INTERRUPTED)
-        return NotSaved()
+        return NotSaved(kept=kept)
 
     def unconfirmed(self) -> Unconfirmed:
         """Say the plan's saving couldn't be confirmed, and note it with the run's time."""
@@ -869,7 +883,8 @@ class Planning:
                 detach(self.state, error.work, f"reading back run {self.run_id}")
             raise self.unconfirmed() from error
         if found is None or found.status == "running":
-            raise self.not_saved()
+            kept = found is not None and found.plan_unchanged and found.has_plan
+            raise self.not_saved(kept=kept)
         return self.as_settled(found, view.steps)
 
     async def run(self, graph: CompiledPlanGraph) -> PlanMade:
@@ -920,10 +935,12 @@ async def make_plan(
     state: ApplicationState,
     *,
     budget: RunBudget | None = None,
+    run_id: str | None = None,
 ) -> PlanMade:
     """Admit a run for one evening, run the graph, and settle it, inside ``budget``.
 
-    ``budget`` started when the request arrived; without one, the run's time starts now.
+    ``budget`` starts at handler entry, after the form body is read; without one, the run's
+    time starts now. ``run_id`` names the run, a new thread for the evening unless given.
     The household has one running
     run at a time: a press while one runs is ``AlreadyPlanning``, naming it, and
     an admission that can't be made in time is ``CouldNotStart``. The graph runs
@@ -941,7 +958,7 @@ async def make_plan(
     commits first is what the record keeps.
     """
     budget = RunBudget(clock=state.monotonic) if budget is None else budget
-    run_id = thread_for(plan_date)
+    run_id = thread_for(plan_date) if run_id is None else run_id
     await admit(state, run_id, plan_date, budget)
     planning = Planning(state, run_id, plan_date, budget)
     try:
@@ -971,12 +988,12 @@ async def make_plan(
 
 async def run_status_view(state: ApplicationState, run_id: str) -> RunStatusView:
     """Where one run stands, after ending any run past its deadline: 404 for an unknown
-    run, and 503 when the record can't be read in time."""
+    run, and 503 when the record can't be read in time or the read fails."""
     try:
         found = await bounded(
             partial(state.drafts.run_status, run_id, STORE_WAIT_SECONDS), STORE_WAIT_SECONDS
         )
-    except (Unfinished, StoreBusy, WriterBusy) as error:
+    except (Unfinished, StoreBusy, WriterBusy, sqlite3.Error) as error:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=UNCONFIRMED) from error
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no run {run_id!r}")

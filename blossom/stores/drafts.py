@@ -126,6 +126,8 @@ class RunState(NamedTuple):
     admitted."""
     draft: "DraftRecord | None" = None
     """The plan a published run put on the pages, when it was read with the run."""
+    has_plan: bool = False
+    """Whether the evening has a published plan as the run is read."""
 
 
 class Settled(NamedTuple):
@@ -383,13 +385,14 @@ class DraftsStore:
         self._connection.commit()
 
     def _settle_runs_without_a_status(self) -> None:
-        """Give every run without a status one, and delete the drafts no running run owns.
+        """Give each run without a status one; delete drafts no running or published run owns.
 
         Runs in the open transaction, at every open, and changes nothing the second
         time. A run whose draft is published is ``published``; any other is ``ended``,
         and one that stopped with a draft it never published ended ``interrupted``. An
-        unpublished draft nobody decided about is deleted unless its run is running: a
-        missing mark never makes a draft publishable. A decided draft is never deleted.
+        unpublished draft nobody decided about is deleted unless its run is running or
+        published: a missing mark never makes a draft publishable, and a published run's
+        draft stays for the check that reports it. A decided draft is never deleted.
         """
         self._connection.execute(
             """
@@ -412,6 +415,7 @@ class DraftsStore:
             DELETE FROM drafts
             WHERE published=0 AND decision IS NULL
               AND thread_id NOT IN (SELECT thread_id FROM runs WHERE status='running')
+              AND thread_id NOT IN (SELECT thread_id FROM runs WHERE status='published')
             """
         )
         self._connection.execute("DROP TABLE IF EXISTS withheld_drafts")
@@ -980,6 +984,7 @@ class DraftsStore:
             seconds_left=left,
             plan_unchanged=bool(row["plan_unchanged"]),
             draft=found,
+            has_plan=bool(row["has_plan"]),
         )
 
     def _last_published(self, plan_date: str) -> int:
@@ -1399,7 +1404,11 @@ RUN_STATE = """
            runs.base_order IS (
                SELECT COALESCE(MAX(drafts.published_order), 0) FROM drafts
                WHERE drafts.plan_date = runs.plan_date AND drafts.published = 1
-           ) AS plan_unchanged
+           ) AS plan_unchanged,
+           EXISTS (
+               SELECT 1 FROM drafts
+               WHERE drafts.plan_date = runs.plan_date AND drafts.published = 1
+           ) AS has_plan
     FROM runs
 """
 """Every read of a run's state starts here."""
