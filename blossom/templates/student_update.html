@@ -62,8 +62,8 @@
     however long the page is. The link is ordinary navigation; nothing goes
     back on its own. A Done she has just made is met here too, on the one
     page that answers the save: a few words in the same line, said with it
-    once, and a small petal that opens beside them and holds still when
-    reduced motion is asked for.
+    once, and a small petal beside them that opens when the page's script
+    runs and holds still otherwise, or when reduced motion is asked for.
   #}
   {% if here and card.said %}
     <p class="note update-result" role="status" id="{{ result_anchor(key) }}" tabindex="-1">{% if card.well_done and assignment.update_status == "done" %}<span class="well-done"><span class="petal" aria-hidden="true"></span>{{ card.well_done }}</span> {% endif %}{{ card.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>

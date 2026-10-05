@@ -8,6 +8,7 @@ undo restores, who may make an update, what it means for the plan, and what
 the family page makes of her word beside the school's.
 """
 
+import hashlib
 import json
 import pathlib
 import re
@@ -108,6 +109,7 @@ from tests.support import (
     signed_in_household,
     state_of,
     store_of,
+    style_rules,
     week_card,
     whole_form,
 )
@@ -485,6 +487,80 @@ def test_a_parent_who_opens_the_page_her_new_done_landed_on_sees_no_petal(
     assert UPDATE_SAVED not in card
     assert WELL_DONE not in as_parent.text
     assert 'class="petal"' not in as_parent.text
+
+
+MOTION: Final = [
+    (".dots i", None, "animation", "pulse 1.2s ease-in-out infinite", False),
+    (".dots i:nth-child(2)", None, "animation-delay", "0.2s", False),
+    (".dots i:nth-child(3)", None, "animation-delay", "0.4s", False),
+    (".dots i", "(prefers-reduced-motion: reduce)", "animation", "none", False),
+    (
+        ".update-result .fresh .petal",
+        "(prefers-reduced-motion: no-preference)",
+        "animation",
+        "bloom 0.8s ease-out",
+        False,
+    ),
+    (".update-result .seen .petal", None, "animation", "none", False),
+]
+"""Every animation the stylesheet declares, prefixed or not, and every declaration on the
+classes and attributes the script sets, in source order: the petal opens only once the script
+has marked it fresh, and a later showing holds it still."""
+
+SET_BY_THE_SCRIPT: Final = re.compile(
+    r"(?<![\w-])(fresh|seen)(?![\w-])|\[\s*class\s*[~|^$*]?=|\[\s*aria-hidden", re.IGNORECASE
+)
+
+SCRIPT: Final = "f88eafb0e4b0918664251c734e65d3e0eee6b0a321007e340d8691eb0106af5b"
+"""The SHA-256 of blossom.js as checked in a browser: any line of it can reach the petal."""
+
+LIFECYCLE: Final = (
+    """  function retire() {
+    Array.prototype.forEach.call(document.querySelectorAll(".well-done"), function (met) {
+      met.classList.add("seen");
+      met.setAttribute("aria-hidden", "true");
+    });
+  }""",
+    "  var shownAgain = Boolean(arrival) && "
+    '(arrival.type === "back_forward" || arrival.type === "reload");',
+    """  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) {
+      Array.prototype.forEach.call(forms, reset);
+      retire();
+    }
+  });""",
+    """  if (!shownAgain) {
+    Array.prototype.forEach.call(document.querySelectorAll(".well-done"), function (met) {
+      met.classList.add("fresh");
+    });
+  }""",
+)
+"""How the script retires a petal shown again, in order, and the one place it lets a petal
+open: a first arrival, after it listens for a restoration."""
+
+
+def test_the_petal_opens_only_where_the_script_can_hold_it_still_later() -> None:
+    """Without scripts, or with them blocked, a page restored from the browser's cache would
+    resume an animation nothing can retire, so the server sends a still petal and only the
+    script, after it listens for a restoration, marks it to open."""
+    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
+    moving = [
+        (rule.selectors, rule.media, name, value, important)
+        for rule in style_rules(css)
+        for name, value, important in rule.declarations
+        if "animation" in name or SET_BY_THE_SCRIPT.search(rule.selectors)
+    ]
+    script = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.js").read_text(encoding="utf-8")
+
+    assert "\\" not in css, "an escape in the stylesheet; check a new Done in a browser"
+    assert moving == MOTION, "the rules that move the petal changed; check a new Done in a browser"
+    assert [script.count(block) for block in LIFECYCLE] == [1, 1, 1, 1]
+    places = [script.index(block) for block in LIFECYCLE]
+    assert places == sorted(places)
+    assert hashlib.sha256(script.encode()).hexdigest() == SCRIPT, (
+        "blossom.js changed; check a new Done and a cached Back in a browser with scripts on, "
+        "off and blocked, then pin its new hash"
+    )
 
 
 @pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])

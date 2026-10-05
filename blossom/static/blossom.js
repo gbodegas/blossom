@@ -24,7 +24,8 @@
   from a copy it kept, or fetched again by Back, Forward or a refresh. A new
   Done the page met her with was seen when it first arrived, so it is retired
   where it stands: the petal holds still, its words are left out of what a
-  reader hears, nothing moves and the focus stays. A page fetched again lands
+  reader hears, nothing moves and the focus stays. The petal opens on its
+  first arrival only once this file has marked it. A page fetched again lands
   on the place its address names, as a link there does, instead of an offset
   kept from the page before her week regrouped.
 */
@@ -156,6 +157,14 @@
       retire();
     }
   });
+
+  /* The petal opens only now that a restoration can retire it; where this file
+     can't run, the stylesheet keeps it still. */
+  if (!shownAgain) {
+    Array.prototype.forEach.call(document.querySelectorAll(".well-done"), function (met) {
+      met.classList.add("fresh");
+    });
+  }
 
   var review = document.querySelector("form.review-form");
   if (review) {

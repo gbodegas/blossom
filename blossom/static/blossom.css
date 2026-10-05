@@ -1791,8 +1791,9 @@ main.wide {
 
 /* A Done she has just saved is met in its result line with a few words and a small petal
    beside them, which opens once on the page that answers the save. Only the petal turns
-   and fades in, inside the room it already has, so nothing around it moves; with reduced
-   motion asked for it is simply there. */
+   and fades in, inside the room it already has, so nothing around it moves. It opens only
+   once blossom.js marks it fresh, since only that script can hold it still when the page
+   is shown again; without it, or with reduced motion asked for, the petal is simply there. */
 .update-result .well-done {
   font-weight: 600;
 }
@@ -1807,7 +1808,6 @@ main.wide {
   background: var(--pink);
   vertical-align: -0.05em;
   transform: rotate(45deg);
-  animation: bloom 0.8s ease-out;
 }
 
 @keyframes bloom {
@@ -1822,15 +1822,15 @@ main.wide {
   }
 }
 
+@media (prefers-reduced-motion: no-preference) {
+  .update-result .fresh .petal {
+    animation: bloom 0.8s ease-out;
+  }
+}
+
 /* Shown again, from the browser's cache or a copy it kept, the petal holds still. */
 .update-result .seen .petal {
   animation: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .update-result .petal {
-    animation: none;
-  }
 }
 
 .update .effect {
