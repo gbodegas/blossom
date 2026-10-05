@@ -15,12 +15,14 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import date
 from html import unescape
+from time import monotonic
 from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.types import Receive, Scope, Send
 
+from blossom.agent.runs import RUN_DEADLINE_SECONDS
 from blossom.app import create_app
 from blossom.drafts import DraftStatus
 from blossom.plan_reading import anchor_for, read_plan
@@ -336,20 +338,24 @@ def later_plan(
 def stored_plan(client: TestClient, evening: date) -> DraftRecord:
     """An approved plan for a later evening, saved and published through the drafts store as
     a paused run leaves it."""
-    drafts = state_of(client).drafts
+    state = state_of(client)
+    drafts = state.drafts
     made = composed_plan(
         two_sittings().model_copy(update={"plan_date": evening}),
         draft_id=f"draft:plan:{evening}:stored",
     )
+    thread_id = f"thread-{evening}-stored"
+    deadline = state.monotonic() + RUN_DEADLINE_SECONDS
+    assert drafts.admit_run(thread_id, plan_date=evening, deadline_mono=deadline) is None
     drafts.record_waiting(
         made.draft,
-        thread_id=f"thread-{evening}-stored",
+        thread_id=thread_id,
         plan_date=evening,
         outcome="accepted",
         plan_assignment_ids=made.snapshot.assignment_ids,
         plan_snapshot=made.snapshot,
     )
-    drafts.publish(made.draft.draft_id)
+    assert drafts.settle_run(thread_id).run.status == "published"
     drafts.record_decision(
         made.draft.draft_id,
         status=DraftStatus.APPROVED_FOR_MANUAL_SEND,
@@ -695,10 +701,13 @@ def test_a_plan_shown_as_saved_says_once_that_dates_cannot_be_read_and_a_text_pl
 ):
     made = composed_plan()
     store = drafts_in_memory()
+    thread_id = "plan:2026-08-19:unread"
     try:
+        deadline = monotonic() + RUN_DEADLINE_SECONDS
+        assert store.admit_run(thread_id, plan_date=PLAN_DATE, deadline_mono=deadline) is None
         store.record_waiting(
             made.draft,
-            thread_id="plan:2026-08-19:unread",
+            thread_id=thread_id,
             plan_date=PLAN_DATE,
             outcome="unsettled",
             plan_assignment_ids=made.snapshot.assignment_ids,

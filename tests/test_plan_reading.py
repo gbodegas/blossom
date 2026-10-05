@@ -9,8 +9,10 @@ read back, then handed to the presenter with what a view would hand it.
 
 import json
 from datetime import date
+from time import monotonic
 
 from blossom.agent.compose import Composition
+from blossom.agent.runs import RUN_DEADLINE_SECONDS
 from blossom.plan_reading import DoneMark, anchor_for, read_plan
 from blossom.plans import DailyPlan
 from blossom.routes.navigation import details_href, segment
@@ -32,10 +34,13 @@ def saved(made: Composition, **columns: str | None) -> DraftRecord:
     """The record of a composition as the drafts table keeps it, with any column a test
     wants to read differently written over afterward."""
     store = drafts_in_memory()
+    thread_id = "plan:2026-08-19:abc12345"
     try:
+        deadline = monotonic() + RUN_DEADLINE_SECONDS
+        assert store.admit_run(thread_id, plan_date=PLAN_DATE, deadline_mono=deadline) is None
         store.record_waiting(
             made.draft,
-            thread_id="plan:2026-08-19:abc12345",
+            thread_id=thread_id,
             plan_date=PLAN_DATE,
             outcome="unsettled",
             plan_assignment_ids=made.snapshot.assignment_ids,

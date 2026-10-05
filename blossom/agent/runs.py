@@ -33,6 +33,9 @@ configuration here and then omits it.
 A run also has a time limit, ``RUN_DEADLINE_SECONDS``, held by a ``RunBudget``
 that travels in the graph's context: every planner and reviewer request, and
 every retry, gets only what is left of it, and the run is timed node by node.
+The budget also keeps each step the run takes, so a run cut off is recorded
+without reading its saved state. ``bounded`` waits a limited time for a call on a
+worker thread, so no wait on the drafts file holds the event loop.
 """
 
 import asyncio
@@ -40,13 +43,13 @@ import contextlib
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Any, Final
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Durability, StateSnapshot
 
-from blossom.agent.steps import RunTiming, StageTime
+from blossom.agent.steps import RunTiming, StageTime, StepRecord
 from blossom.anthropic_client import ServiceBusy
 
 GRAPH_VERSION: Final = 1
@@ -89,9 +92,10 @@ class RunTimedOut(TimeoutError):
 class RunBudget:
     """One run's time, read from a monotonic clock, and what the run spent of it.
 
-    Made when the run starts, so every request and every retry draws on the same
-    limit and nothing starts the clock again. ``clock`` and ``sleep`` are the
-    process's own unless a test gives others.
+    Made when the request arrives, so every request and every retry draws on the same
+    limit and nothing starts the clock again. ``seconds`` is never more than
+    ``RUN_DEADLINE_SECONDS``. ``clock`` and ``sleep`` are the process's own unless a
+    test gives others.
     """
 
     seconds: float = RUN_DEADLINE_SECONDS
@@ -99,6 +103,8 @@ class RunBudget:
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     started: float = field(init=False)
     stages: list[StageTime] = field(default_factory=list)
+    steps: list[StepRecord] = field(default_factory=list)
+    """Each step the run recorded, in order, as its nodes ended."""
     model_calls: int = 0
     retries: int = 0
     outputs: list[int] = field(default_factory=list)
@@ -107,6 +113,7 @@ class RunBudget:
     _lap: float = field(init=False)
 
     def __post_init__(self) -> None:
+        self.seconds = min(self.seconds, RUN_DEADLINE_SECONDS)
         self.started = self._lap = self.clock()
 
     def elapsed(self) -> float:
@@ -165,7 +172,15 @@ class RunBudget:
             await self.sleep(min(RETRY_PAUSE_SECONDS * 2**attempt, self.remaining()))
             attempt += 1
 
-    def timing(self, category: str | None) -> RunTiming:
+    def timing(
+        self,
+        category: str | None,
+        *,
+        generation_seconds: float | None = None,
+        settle_seconds: float | None = None,
+        response_seconds: float | None = None,
+        unconfirmed: bool = False,
+    ) -> RunTiming:
         """The run's record of time and requests, as it stands now."""
         return RunTiming(
             seconds=round(self.elapsed(), 3),
@@ -175,6 +190,10 @@ class RunBudget:
             output_tokens=sum(self.outputs) if self.outputs else None,
             largest_output_tokens=max(self.outputs) if self.outputs else None,
             category=category,
+            generation_seconds=generation_seconds,
+            settle_seconds=settle_seconds,
+            response_seconds=response_seconds,
+            unconfirmed=unconfirmed,
         )
 
 
@@ -193,6 +212,42 @@ async def to_the_end[T](work: Awaitable[T]) -> T:
         with contextlib.suppress(BaseException):
             task.exception()
         raise
+
+
+class Unfinished(TimeoutError):
+    """A call on a worker thread that had not returned when its wait ended.
+
+    ``work`` is the call, which may still be running and may still change the store.
+    """
+
+    def __init__(self, work: "asyncio.Future[Any]") -> None:
+        super().__init__("the call had not returned when its wait ended")
+        self.work = work
+
+
+def _settled_quietly(work: "asyncio.Future[Any]") -> None:
+    """Read how an abandoned call ended, so its failure is not reported as unhandled."""
+    with contextlib.suppress(BaseException):
+        work.exception()
+
+
+async def bounded[T](call: Callable[[], T], wait: float) -> T:
+    """What ``call`` returns, run on a worker thread and waited on for ``wait`` seconds.
+
+    When the wait ends first, or the caller is canceled, the call goes on running and
+    ``Unfinished`` carries it; a thread can't be stopped, so nothing claims it was.
+    """
+    loop = asyncio.get_running_loop()
+    work = loop.run_in_executor(None, call)
+    try:
+        done, _ = await asyncio.wait({work}, timeout=max(0.0, wait))
+    except BaseException:
+        work.add_done_callback(_settled_quietly)
+        raise
+    if work not in done:
+        work.add_done_callback(_settled_quietly)
+        raise Unfinished(work)
+    return work.result()
 
 
 class StaleGraphVersion(RuntimeError):

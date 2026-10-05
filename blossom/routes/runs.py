@@ -3,24 +3,32 @@
 """Running the plan graph for one evening, from either page.
 
 She plans from her page; a parent may start an evening's plan for her from
-theirs. Both doors lead here, so there is one way a run starts, one way it is
-built, and one place its saved state is cleared when it ends without a pause.
+theirs. Both doors lead here, so there is one way a run is admitted, one way it
+is built, and one way it settles.
 
-A run has ``RUN_DEADLINE_SECONDS`` in all. One that runs out of time, or meets a
-service that fails, ends with nothing published, its record kept with the steps
-it took, and the page says which. Every run's time is kept with its record.
+A run has ``RUN_DEADLINE_SECONDS`` in all, from the moment its request arrives.
+The record decides what became of it: a run is admitted as ``running``, one per
+household, and only ``settle_run`` publishes its plan, while it is still running,
+before its deadline and with the evening's plan the one it expected. Every other
+ending is ``end_run``. The answer says what the request saw: the plan, why there
+is none, that the plan couldn't be saved, or that its saving couldn't be
+confirmed, with the run's id to check later. Every wait has a limit, and work the
+request stops waiting for goes on detached without deciding anything.
 """
 
 import asyncio
 import contextlib
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from functools import partial
 from typing import Annotated, Any, Final
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException, status
+from starlette.datastructures import URL
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
 from blossom.agent.retention import clear_thread, finish_held_reviews
@@ -29,11 +37,11 @@ from blossom.agent.runs import (
     RUN_DEADLINE_SECONDS,
     RunBudget,
     RunTimedOut,
-    draft_id_for,
+    Unfinished,
+    bounded,
     run_config,
-    to_the_end,
 )
-from blossom.agent.steps import DATE_PROBLEM, StepRecord, describe_failure
+from blossom.agent.steps import DATE_PROBLEM, RunTiming, StepRecord, describe_failure
 from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
 from blossom.anthropic_client import (
     MISSING_KEY,
@@ -43,8 +51,18 @@ from blossom.anthropic_client import (
 )
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.noticing import read_week
-from blossom.stores.drafts import INTERRUPTED, OVERTAKEN, Displaced, OutOfTime
-from blossom.views import PastDueView, PlanRunView
+from blossom.stores.drafts import (
+    INTERRUPTED,
+    OVERTAKEN,
+    SETTLE_GRACE_SECONDS,
+    STORE_WAIT_SECONDS,
+    DraftRecord,
+    RunEnded,
+    RunState,
+    StoreBusy,
+    WriterBusy,
+)
+from blossom.views import PastDueView, PlanRunView, RunStatusView, UnconfirmedRunView
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +80,7 @@ class PlanGraphs:
     builder rather than a graph, and the handler calls it after consulting the
     table. ``may_start`` is whether a run can be started at all, which needs a
     model; resuming a paused thread does not. ``budget`` makes each run's time
-    limit as the run starts. A test substitutes the whole object, scripted
+    limit as its request arrives. A test substitutes the whole object, scripted
     models, permission, and clock together, over the real stores.
     """
 
@@ -72,9 +90,12 @@ class PlanGraphs:
 
 
 def plan_graphs(state: State) -> PlanGraphs:
-    """The application's graphs: built from the seam, allowed to start when there is a key."""
+    """The application's graphs: built from the seam, allowed to start when there is a key,
+    each run timed on the application's own monotonic clock."""
     return PlanGraphs(
-        build=lambda: plan_graph_for(state), may_start=model_configured(state.settings)
+        build=lambda: plan_graph_for(state),
+        may_start=model_configured(state.settings),
+        budget=lambda: RunBudget(clock=state.monotonic),
     )
 
 
@@ -88,24 +109,36 @@ NOTHING_TO_SCHEDULE: Final = "Nothing to schedule from the work in this planning
 """What every planning route answers, 409, for an evening whose window holds no work
 still to do: nothing has been planned, no run has been written, and no model asked."""
 
+COULD_NOT_START: Final = "Blossom couldn't start a plan this time. Try again in a moment."
+"""What a planning route answers, 503, when the record couldn't be read or the run
+admitted in time. No run was recorded and no model asked."""
 
-def require_work(state: ApplicationState, plan_date: date) -> None:
+
+class CouldNotStart(HTTPException):
+    """The week couldn't be read, or the run admitted, within the wait. Nothing was recorded."""
+
+    def __init__(self) -> None:
+        super().__init__(status.HTTP_503_SERVICE_UNAVAILABLE, detail=COULD_NOT_START)
+
+
+async def require_work(state: ApplicationState, plan_date: date, budget: RunBudget) -> None:
     """Refuse to start a run for an evening with nothing left to plan, before any thread is
     written and before the model is asked for.
 
-    The window is read as the graph reads it. The graph reads it again when it
-    runs, since a report of hers can land in between, and ends the same way.
+    The window is read as the graph reads it, on a worker thread, inside the run's time
+    and at most ``STORE_WAIT_SECONDS``; a read that doesn't finish is ``CouldNotStart``.
+    The graph reads it again when it runs, since a report of hers can land in between,
+    and ends the same way.
     """
-    if not read_week(state.project_state, state.project_state, plan_date).active():
+    wait = min(budget.remaining(), STORE_WAIT_SECONDS)
+    try:
+        active = await bounded(
+            lambda: read_week(state.project_state, state.project_state, plan_date).active(), wait
+        )
+    except Unfinished as error:
+        raise CouldNotStart from error
+    if not active:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=NOTHING_TO_SCHEDULE)
-
-
-def no_plan_made(outcome: str) -> str:
-    """Why a run that ended without a plan is answered 409: the one outcome with a sentence
-    of its own, or the outcome named."""
-    if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
-        return NOTHING_TO_SCHEDULE
-    return f"no plan was made: the run ended with {outcome}"
 
 
 def refuse_an_empty_run(run: PlanRunView) -> None:
@@ -155,16 +188,31 @@ def due_on(day: date) -> str:
     return f"{day:%B} {day.day}"
 
 
+def saved_sentence(*, parent: bool) -> str:
+    """That her updates are kept, to her or to a parent reading her page."""
+    return "Her homework updates are saved." if parent else "Your homework updates are saved."
+
+
+def plan_unchanged(*, parent: bool) -> str:
+    """That the plan she has is the one she had, to her or to a parent."""
+    return "Her current plan hasn't changed." if parent else "Your current plan hasn't changed."
+
+
 def ended_without_a_plan(
-    outcome: str, *, parent: bool, past_due: Sequence[PastDueView] = ()
+    outcome: str,
+    *,
+    parent: bool,
+    past_due: Sequence[PastDueView] = (),
+    unchanged: bool = False,
+    evening: date | None = None,
 ) -> str:
     """The same, as her page says it: what went wrong in plain words, that her updates are
     kept, and, to a parent reading her page, where the run's record is. The run's own name
     for how it ended is never shown, and work is named only when the record shows its date
-    has passed."""
+    has passed. ``unchanged`` adds that her plan is the one she had; ``evening`` is the run's
+    evening when it is not today's, which a date problem names."""
     if outcome == NOTHING_TO_SCHEDULE_OUTCOME:
         return NOTHING_TO_SCHEDULE
-    saved = "Her homework updates are saved." if parent else "Your homework updates are saved."
     category = failure_category(outcome)
     if category == DATE_PROBLEM and past_due:
         named = [f"{work.title} ({work.course}, due {due_on(work.due_date)})" for work in past_due]
@@ -174,6 +222,16 @@ def ended_without_a_plan(
             f"Blossom can't make today's plan: {listed} {has} that already passed, so no "
             f"plan can finish {it} on time."
         )
+    elif category == DATE_PROBLEM and evening is None:
+        what = (
+            "Blossom can't make today's plan: some work has a due date that already passed, "
+            "so no plan can finish it on time."
+        )
+    elif category == DATE_PROBLEM and evening is not None:
+        what = (
+            f"Blossom can't make the plan for {evening_named(evening)}: some work is due "
+            "before that evening, so no plan can finish it on time."
+        )
     elif category == TIMEOUT:
         what = "Planning took too long, so Blossom stopped."
     elif category == SERVICE:
@@ -181,7 +239,8 @@ def ended_without_a_plan(
     else:
         what = "Blossom couldn't finish a reliable plan this time."
     then = "Family review shows what happened." if parent else ""
-    return " ".join(part for part in (what, saved, then) if part)
+    kept = plan_unchanged(parent=parent) if unchanged else ""
+    return " ".join(part for part in (what, kept, saved_sentence(parent=parent), then) if part)
 
 
 Graphs = Annotated[PlanGraphs, Depends(plan_graphs)]
@@ -192,32 +251,193 @@ def evening_prefix(plan_date: date) -> str:
     return f"plan:{plan_date.isoformat()}:"
 
 
-def has_a_run_in_flight(state: ApplicationState, plan_date: date) -> bool:
-    """Whether a run for the evening is in flight in this process."""
-    return any(thread.startswith(evening_prefix(plan_date)) for thread in state.in_flight)
-
-
 def thread_for(plan_date: date) -> str:
-    """A new thread for one evening. The date is for a person reading the table."""
+    """A new thread for one evening, which is also its run's id. The date is for a person
+    reading the table."""
     return f"{evening_prefix(plan_date)}{uuid4().hex[:8]}"
 
 
-ALREADY_PLANNING: Final = "A plan for this evening is already being made."
-"""What a press answers, 409, while a run for the same evening is in flight: no run is
-started and no model is asked."""
+def evening_named(day: date) -> str:
+    """``Tuesday, October 6``: an evening as a sentence names it."""
+    return f"{day:%A}, {day:%B} {day.day}"
+
+
+def seconds_to_wait(run: RunState) -> int:
+    """Whole seconds until a running run's deadline and its settle grace have passed."""
+    return max(1, int(-(-(run.seconds_left + SETTLE_GRACE_SECONDS) // 1)))
+
+
+def already_planning(run: RunState, *, parent: bool) -> str:
+    """What a press answers while the household's one run is still running: whose evening
+    it is for, how long to wait, and that her updates are kept."""
+    return (
+        f"The last plan request, for {evening_named(run.plan_date)}, is still being "
+        f"finished. Try again in about {seconds_to_wait(run)} seconds. "
+        f"{saved_sentence(parent=parent)}"
+    )
 
 
 class AlreadyPlanning(HTTPException):
-    """A run for the evening is in flight in this process, so another is not started."""
+    """The household has a run still running, so another is not started: 409, naming it,
+    in her words or, with ``parent``, in a parent's."""
+
+    def __init__(self, run: RunState, *, parent: bool = False) -> None:
+        super().__init__(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "message": already_planning(run, parent=parent),
+                "run_id": run.run_id,
+                "plan_date": run.plan_date.isoformat(),
+                "seconds_left": seconds_to_wait(run),
+            },
+        )
+        self.run = run
+
+
+NOT_SAVED: Final = (
+    "Blossom made a plan but couldn't save it, so the current plan hasn't changed. "
+    "Try again in a moment."
+)
+"""What a request answers when the store refused the plan's publication before it began,
+or was found not to have published it: nothing on any page changed."""
+
+
+def not_saved(*, parent: bool) -> str:
+    """The same, as her page says it, to her or to a parent reading it."""
+    plan = "her current plan" if parent else "your current plan"
+    return (
+        f"Blossom made a plan but couldn't save it, so {plan} hasn't changed. "
+        f"Try again in a moment. {saved_sentence(parent=parent)}"
+    )
+
+
+class NotSaved(HTTPException):
+    """The run's plan was confirmed not published, and the run is being ended: 503."""
 
     def __init__(self) -> None:
-        super().__init__(status.HTTP_409_CONFLICT, detail=ALREADY_PLANNING)
+        super().__init__(status.HTTP_503_SERVICE_UNAVAILABLE, detail=NOT_SAVED)
 
 
-def already_planning(*, parent: bool) -> str:
-    """The same, as her page says it, to her or to a parent reading it."""
-    saved = "Her homework updates are saved." if parent else "Your homework updates are saved."
-    return f"A plan for today is already being made. {saved}"
+UNCONFIRMED: Final = "Blossom couldn't confirm that the new plan was saved."
+FINISHING: Final = "Blossom is finishing the last plan request."
+"""What a page says about a run still running past its deadline: a settle it authorized in
+time may still commit, so nothing is said to have timed out until the record says so."""
+
+
+CHECK_ON_THAT_REQUEST: Final = "Check on that request."
+CHECK_ON_IT: Final = "Check on it."
+CHECK_AGAIN: Final = "Check again."
+"""The words of the link that asks a page where a run stands, each a sentence of its own
+after the line it ends: on a refusal naming the run, on a run being made or finished, and on
+an outcome that couldn't be confirmed."""
+
+
+@dataclass(frozen=True)
+class RunCheck:
+    """The link that asks a page again where a run stands, and its words."""
+
+    href: str
+    label: str
+
+
+def run_check(page: str, run_id: str, label: str) -> RunCheck:
+    """The link to ``page`` naming ``run_id``, for the page to say where that run stands."""
+    return RunCheck(str(URL(page).include_query_params(run=run_id)), label)
+
+
+@dataclass(frozen=True)
+class RunNotice:
+    """What a page says about a planning run, and its link to check again, if any."""
+
+    said: str
+    check: RunCheck | None = None
+    running: bool = False
+
+
+def being_made(run: RunState, page: str) -> RunNotice:
+    """A running run as a page says it: being made before its deadline, being finished
+    after it, either way with a link to check on it."""
+    said = (
+        f"A plan for {evening_named(run.plan_date)} is being made."
+        if run.seconds_left > 0
+        else FINISHING
+    )
+    return RunNotice(said, run_check(page, run.run_id, CHECK_ON_IT), running=True)
+
+
+def ended_notice(run: RunState, *, parent: bool, today: date) -> RunNotice | None:
+    """An ended run as a page says it: why, and whether her plan is the one she had. A run
+    overtaken by a newer plan adds nothing, since that plan is shown."""
+    if run.reason == OVERTAKEN:
+        return None
+    return RunNotice(
+        ended_without_a_plan(
+            run.reason,
+            parent=parent,
+            unchanged=run.plan_unchanged,
+            evening=None if run.plan_date == today else run.plan_date,
+        )
+    )
+
+
+def asked_run(state: ApplicationState, run_id: str, page: str, *, parent: bool) -> RunNotice | None:
+    """Where the run a page's ``?run=`` names stands, after ending any run past its deadline,
+    for a page read on a worker thread. A published run, or one never made, adds nothing; a
+    record that can't be read in time is said as unconfirmed, with a link to check again."""
+    try:
+        run = state.drafts.run_status(run_id, STORE_WAIT_SECONDS)
+    except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        logger.warning("run %s could not be read for a page: %s", run_id, type(error).__name__)
+        return RunNotice(
+            f"{UNCONFIRMED} {saved_sentence(parent=parent)}",
+            run_check(page, run_id, CHECK_AGAIN),
+        )
+    if run is None or run.status == "published":
+        return None
+    if run.status == "running":
+        return being_made(run, page)
+    return ended_notice(run, parent=parent, today=state.clock.today())
+
+
+def latest_run_notice(
+    state: ApplicationState, page: str, *, parent: bool, today: date | None
+) -> RunNotice | None:
+    """What a page says on load about the household's newest run, read without ending
+    anything: a run still running, with a link to check on it. With ``today``, a run for
+    that evening that
+    ended with no newer plan published is said too. A record that can't be read adds
+    nothing to the page."""
+    try:
+        run = state.drafts.latest_run()
+    except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        logger.warning("the latest run could not be read for a page: %s", type(error).__name__)
+        return None
+    if run is None:
+        return None
+    if run.status == "running":
+        return being_made(run, page)
+    if (
+        run.status == "ended"
+        and run.plan_date == today
+        and run.plan_unchanged
+        and run.reason != NOTHING_TO_SCHEDULE_OUTCOME
+    ):
+        return ended_notice(run, parent=parent, today=today)
+    return None
+
+
+class Unconfirmed(Exception):
+    """Whether the run's plan was published couldn't be confirmed in time. Its run id is
+    where to look later."""
+
+    def __init__(self, run_id: str, plan_date: date) -> None:
+        super().__init__(UNCONFIRMED)
+        self.run_id = run_id
+        self.plan_date = plan_date
+
+    def view(self) -> UnconfirmedRunView:
+        """The 202 answer: the run to check, its evening, and that it is unconfirmed."""
+        return UnconfirmedRunView(run_id=self.run_id, plan_date=self.plan_date)
 
 
 def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRunView:
@@ -244,163 +464,60 @@ def run_view(thread_id: str, plan_date: date, result: dict[str, Any]) -> PlanRun
     )
 
 
-async def off_the_loop[**P, T](call: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """What ``call`` returns, run on a worker thread so the server goes on answering while it
-    waits for the drafts file, and seen to its end like ``to_the_end``."""
-    return await to_the_end(asyncio.to_thread(call, *args, **kwargs))
+@dataclass(frozen=True)
+class PlanMade:
+    """How a planning request ended: the run as the parent reads it, and the record
+    ``settle_run`` returned when its plan was published."""
+
+    view: PlanRunView
+    record: DraftRecord | None = None
 
 
-async def abandon(thread_id: str, state: ApplicationState) -> bool:
-    """Take back what a failed run left behind: its draft first, then its thread. True when
-    a draft was taken back.
-
-    The draft comes first because the pages read the drafts file, and because
-    the saved-state store is the likelier of the two to be what failed: a
-    checkpoint that could not be written is followed by a delete on the same
-    file. Each is attempted whatever became of the other: a draft that cannot
-    be taken back now is logged, withheld and its thread cleared all the same, so
-    the sweep takes it back rather than publish it, after a restart too; a thread
-    that cannot be cleared now is left to the sweep. The failure that ended the
-    run is the one the caller sees, not the failure to tidy.
-    """
-    taken = False
-    try:
-        taken = await off_the_loop(state.drafts.withdraw, draft_id_for(thread_id))
-    except Exception:
-        logger.exception(
-            "the draft of the failed run %s not taken back; the sweep takes it", thread_id
-        )
-        await withhold(thread_id, state)
-    await tidy_thread(thread_id, state)
-    return taken
+def hold(state: ApplicationState, work: "asyncio.Future[Any]") -> None:
+    """Keep a reference to ``work`` while it runs, and drop it when it ends."""
+    state.detached.add(work)
+    work.add_done_callback(state.detached.discard)
 
 
-async def taken_back_unless_published(thread_id: str, state: ApplicationState) -> bool:
-    """Take back what a canceled run left behind once its publication stopped short, its draft
-    and then its thread: True when its draft was taken back. The store checks publication
-    again as it takes the draft back, and a draft it finds published keeps its thread. A
-    draft that can't be taken back is withheld and loses its thread all the same, so the
-    sweep takes the draft back rather than publish it, after a restart too."""
-    try:
-        taken = await off_the_loop(
-            state.drafts.withdraw, draft_id_for(thread_id), unless_published=True
-        )
-    except Exception:
-        logger.exception(
-            "the draft of the canceled run %s not taken back; the sweep takes it", thread_id
-        )
-        await withhold(thread_id, state)
-        await tidy_thread(thread_id, state)
-        return False
-    if taken:
-        await tidy_thread(thread_id, state)
-    return taken
+def detach(state: ApplicationState, work: "asyncio.Future[Any]", what: str) -> None:
+    """Go on without waiting for ``work``: it is held until it ends, and how it ended is
+    read and logged as ``what``. A run that had already ended is its timeout, not an error."""
+    hold(state, work)
+
+    def ended(done: "asyncio.Future[Any]") -> None:
+        # Work stopped by a cancel has no outcome to read.
+        error: BaseException | None = None
+        with contextlib.suppress(BaseException):
+            error = done.exception()
+        if isinstance(error, RunEnded):
+            logger.info("%s: the run had already ended (%s)", what, error)
+        elif error is not None:
+            logger.error("%s failed", what, exc_info=error)
+
+    work.add_done_callback(ended)
 
 
-async def withhold(thread_id: str, state: ApplicationState) -> None:
-    """Mark the draft of a run that couldn't take it back so no sweep publishes it, or log
-    why not. The store leaves a draft that was published or decided as it is."""
-    try:
-        await off_the_loop(state.drafts.withhold, draft_id_for(thread_id))
-    except Exception:
-        logger.exception("the draft of the run %s not withheld either", thread_id)
+def in_the_background(state: ApplicationState, call: Callable[[], Any], what: str) -> None:
+    """Start ``call`` on a worker thread and go on without waiting for it."""
+    detach(state, asyncio.get_running_loop().run_in_executor(None, call), what)
 
 
 async def tidy_thread(thread_id: str, state: ApplicationState) -> None:
     """Clear a thread nothing will resume, or log why not and leave it to the sweep.
 
     Tidying is never what a caller hears about: a run that paused or ended has
-    its outcome, and the sweep clears every thread no waiting draft refers to
-    within the hour.
+    its outcome, and the sweep clears every thread no waiting draft or running run
+    refers to within the hour.
     """
     try:
-        await to_the_end(clear_thread(state.checkpointer, thread_id))
+        await clear_thread(state.checkpointer, thread_id)
     except Exception:
         logger.exception("saved state of thread %s not cleared; the sweep clears it", thread_id)
 
 
-EXPECT_AN_ANSWER: Final = "an answer inside the run's time"
-WAITED_FOR: Final = {"plan": "plan", "critique": "verdict"}
-
-
-async def steps_so_far(graph: CompiledPlanGraph, thread_id: str) -> list[StepRecord]:
-    """The steps a run saved before it stopped, read from its thread; none when unreadable."""
-    try:
-        snapshot = await graph.aget_state(run_config(thread_id))
-    except Exception:
-        logger.exception("the steps of run %s could not be read", thread_id)
-        return []
-    return list(snapshot.values.get("steps", []))
-
-
-async def kept_as(
-    thread_id: str,
-    plan_date: date,
-    state: ApplicationState,
-    outcome: str,
-    steps: list[StepRecord],
-) -> None:
-    """Take back what the run left behind, then keep its record under ``outcome``."""
-    await abandon(thread_id, state)
-    try:
-        await off_the_loop(
-            state.drafts.record_run,
-            thread_id=thread_id,
-            plan_date=plan_date,
-            outcome=outcome,
-            steps=steps,
-        )
-    except Exception:
-        logger.exception("the record of run %s could not be kept", thread_id)
-
-
-async def ended_on_the_way(
-    graph: CompiledPlanGraph,
-    thread_id: str,
-    plan_date: date,
-    state: ApplicationState,
-    budget: RunBudget,
-    outcome: str,
-) -> PlanRunView:
-    """Keep the record of a run that ran out of time or met a failing service, and end it.
-
-    The steps it saved are kept, with one more for the request it was waiting on,
-    and the run is recorded under ``outcome``. Whatever it left behind is taken
-    back first, so nothing it made reaches a page: the plan already there, and
-    her updates, are as they were. A canceled request sees both through.
-    """
-    steps = await steps_so_far(graph, thread_id)
-    node, round_number = budget.waiting_on or ("time_limit", 0)
-    budget.lap(node, round_number)
-    found = (
-        describe_failure(outcome, WAITED_FOR[node])
-        if node in WAITED_FOR
-        else f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out."
-    )
-    steps.append(
-        StepRecord(
-            node=node,
-            round=round_number,
-            expected=EXPECT_AN_ANSWER,
-            found=found,
-            recorded_at=state.clock.now(),
-        )
-    )
-    await to_the_end(kept_as(thread_id, plan_date, state, outcome, steps))
-    return PlanRunView(
-        thread_id=thread_id,
-        plan_date=plan_date,
-        outcome=outcome,
-        draft_id=None,
-        waiting=False,
-        steps=steps,
-    )
-
-
-async def last_published(state: ApplicationState, plan_date: date, budget: RunBudget) -> int:
-    """The evening's last publication, read on a worker thread inside the run's time, so the
-    server goes on answering while the read waits for the drafts file."""
-    return await read_in_time(asyncio.to_thread(state.drafts.newest_published, plan_date), budget)
+def tidy_later(thread_id: str, state: ApplicationState) -> None:
+    """Clear a thread without waiting for it."""
+    detach(state, asyncio.ensure_future(tidy_thread(thread_id, state)), f"tidying {thread_id}")
 
 
 async def hold_in_time(lock: asyncio.Lock, budget: RunBudget) -> bool:
@@ -440,264 +557,433 @@ async def read_in_time[T](reading: Awaitable[T], budget: RunBudget) -> T:
     return read
 
 
-@dataclass
-class Publication:
-    """How far a run's publication went: whether it began, and whether the worker that
-    published saw the draft reach the pages."""
+EXPECT_AN_ANSWER: Final = "an answer inside the run's time"
+WAITED_FOR: Final = {"plan": "plan", "critique": "verdict"}
 
-    began: bool = False
-    published: bool = False
+ADMISSION_ALLOWANCE_SECONDS: Final = 0.25
+"""How far past its store wait an admission is waited for: room for the statement the
+file's busy handler is in when the wait ends."""
 
 
-async def publish_in_time(
-    state: ApplicationState, draft_id: str, budget: RunBudget, publication: Publication
-) -> list[Displaced]:
-    """Publish ``draft_id`` with the run's time left, on a worker thread, so the server goes
-    on answering while the publication waits for the drafts file.
+async def admit(state: ApplicationState, run_id: str, plan_date: date, budget: RunBudget) -> None:
+    """Record the run as the household's one running run, or refuse the press.
 
-    A caller that stops waiting, as when its request is canceled, ends the publication's
-    time and waits for it to stop, so nothing is published after the run has let go of
-    the decision lock. ``publication`` says how it ended, canceled or not.
+    The deadline is the end of the request's budget, on the store's clock. A run
+    still running is ``AlreadyPlanning``; an admission that doesn't finish in time,
+    or fails, is ``CouldNotStart``, and leaves no row.
     """
-    publication.began = True
-    stopped = False
-
-    def within() -> float:
-        return 0.0 if stopped else budget.remaining()
-
-    work = asyncio.ensure_future(asyncio.to_thread(state.drafts.publish, draft_id, within=within))
+    wait = min(budget.remaining(), STORE_WAIT_SECONDS)
+    admission = partial(
+        state.drafts.admit_run,
+        run_id,
+        plan_date=plan_date,
+        deadline_mono=state.monotonic() + budget.remaining(),
+        wait=wait,
+    )
     try:
-        displaced = await asyncio.shield(work)
+        blocking = await bounded(admission, wait + ADMISSION_ALLOWANCE_SECONDS)
+    except Exception as error:
+        if not isinstance(error, Unfinished | StoreBusy | WriterBusy):
+            logger.exception("run %s could not be admitted", run_id)
+        raise CouldNotStart from error
     except BaseException:
-        stopped = True
-        while not work.done():
-            with contextlib.suppress(BaseException):
-                await asyncio.wait([work])
-        # How the worker ended, often out of time as asked, is read so it isn't
-        # reported as an error nobody handled, and kept for the cleanup that follows.
-        publication.published = work.exception() is None
+        # A cancel. The insert may still land after it; ending it now leaves at most a
+        # row with no graph behind it, which ends at its own deadline.
+        in_the_background(
+            state,
+            partial(state.drafts.end_run, run_id, reason=INTERRUPTED),
+            f"ending the canceled run {run_id}",
+        )
         raise
-    publication.published = True
-    return displaced
+    if blocking is not None:
+        raise AlreadyPlanning(blocking)
 
 
-async def keep_timing(
-    state: ApplicationState, thread_id: str, budget: RunBudget, outcome: str | None
-) -> None:
-    """Keep the run's time with its record, off the event loop. Never a reason for the run to
-    fail."""
-    timing = budget.timing(None if outcome is None else failure_category(outcome))
-    try:
-        await off_the_loop(state.drafts.record_timing, thread_id, timing)
-    except Exception:
-        logger.exception("the time of run %s could not be kept", thread_id)
+@dataclass
+class Planning:
+    """One admitted run, from its graph to its answer."""
+
+    state: ApplicationState
+    run_id: str
+    plan_date: date
+    budget: RunBudget
+    generation_seconds: float | None = None
+    settle_seconds: float | None = None
+
+    def timing(self, outcome: str | None, *, unconfirmed: bool = False) -> RunTiming:
+        """The run's time as it stands, for the terminal write or the final one."""
+        return self.budget.timing(
+            None if outcome is None else failure_category(outcome),
+            generation_seconds=self.generation_seconds,
+            settle_seconds=self.settle_seconds,
+            response_seconds=round(self.budget.elapsed(), 3),
+            unconfirmed=unconfirmed,
+        )
+
+    def keep_timing(self, outcome: str | None, *, unconfirmed: bool = False) -> None:
+        """Complete the run's time with its answer's, without waiting. Never changes status."""
+        in_the_background(
+            self.state,
+            partial(
+                self.state.drafts.record_timing,
+                self.run_id,
+                self.timing(outcome, unconfirmed=unconfirmed),
+            ),
+            f"keeping the time of run {self.run_id}",
+        )
+
+    def terminal_step(self, outcome: str) -> StepRecord:
+        """The step a run cut off by its time or its service ends with."""
+        node, round_number = self.budget.waiting_on or ("time_limit", 0)
+        self.budget.lap(node, round_number)
+        found = (
+            describe_failure(outcome, WAITED_FOR[node])
+            if node in WAITED_FOR
+            else f"The run's {RUN_DEADLINE_SECONDS:g} seconds ran out."
+        )
+        return StepRecord(
+            node=node,
+            round=round_number,
+            expected=EXPECT_AN_ANSWER,
+            found=found,
+            recorded_at=self.state.clock.now(),
+        )
+
+    async def end(self, reason: str, terminal: StepRecord | None = None) -> None:
+        """End the run without a plan. Before its deadline the ending is waited for, so an
+        immediate press is admitted; at or after it, it goes on without a wait."""
+        ending = partial(
+            self.state.drafts.end_run,
+            self.run_id,
+            reason=reason,
+            steps=list(self.budget.steps),
+            terminal=terminal,
+            timing=self.timing(reason),
+        )
+        left = self.budget.remaining()
+        if left <= 0:
+            in_the_background(self.state, ending, f"ending run {self.run_id}")
+            return
+        try:
+            await bounded(ending, min(STORE_WAIT_SECONDS, left + SETTLE_GRACE_SECONDS))
+        except Unfinished as unfinished:
+            detach(self.state, unfinished.work, f"ending run {self.run_id}")
+            logger.warning("run %s not seen ended in time; its deadline ends it", self.run_id)
+        except Exception:
+            logger.exception("run %s could not be ended; its deadline ends it", self.run_id)
+
+    def ended_view(
+        self, reason: str, steps: Sequence[StepRecord], past_due: Sequence[PastDueView] = ()
+    ) -> PlanMade:
+        """The answer for a run that ended without a plan, under ``reason``."""
+        self.keep_timing(reason)
+        return PlanMade(
+            PlanRunView(
+                thread_id=self.run_id,
+                plan_date=self.plan_date,
+                outcome=reason,
+                draft_id=None,
+                waiting=False,
+                steps=list(steps),
+                past_due=list(past_due),
+            )
+        )
+
+    async def cut_off(self, outcome: str) -> PlanMade:
+        """End a run its time or its service cut off, with the step it ended on."""
+        terminal = self.terminal_step(outcome)
+        steps = [*self.budget.steps, terminal]
+        await self.end(outcome, terminal)
+        tidy_later(self.run_id, self.state)
+        return self.ended_view(outcome, steps)
+
+    def timed_out(self) -> PlanMade:
+        """Answer at once for a run whose time ran out before it settled; the ending goes on
+        without a wait, since no settlement was asked for and none can publish now."""
+        terminal = self.terminal_step(TIMED_OUT)
+        steps = [*self.budget.steps, terminal]
+        in_the_background(
+            self.state,
+            partial(
+                self.state.drafts.end_run,
+                self.run_id,
+                reason=TIMED_OUT,
+                steps=list(self.budget.steps),
+                terminal=terminal,
+                timing=self.timing(TIMED_OUT),
+            ),
+            f"ending run {self.run_id}",
+        )
+        tidy_later(self.run_id, self.state)
+        return self.ended_view(TIMED_OUT, steps)
+
+    def not_saved(self) -> NotSaved:
+        """End a run whose plan was confirmed not published, without a wait, and say so."""
+        in_the_background(
+            self.state,
+            partial(
+                self.state.drafts.end_run,
+                self.run_id,
+                reason=INTERRUPTED,
+                timing=self.timing(INTERRUPTED),
+            ),
+            f"ending run {self.run_id}",
+        )
+        tidy_later(self.run_id, self.state)
+        self.keep_timing(INTERRUPTED)
+        return NotSaved()
+
+    def unconfirmed(self) -> Unconfirmed:
+        """Say the plan's saving couldn't be confirmed, and note it with the run's time."""
+        self.keep_timing(None, unconfirmed=True)
+        return Unconfirmed(self.run_id, self.plan_date)
+
+    def as_settled(self, run: RunState, steps: Sequence[StepRecord]) -> PlanMade:
+        """The answer for a run the record shows settled: its plan, or why there is none."""
+        if run.status == "published" and run.draft is not None:
+            self.keep_timing(None)
+            return PlanMade(
+                PlanRunView(
+                    thread_id=self.run_id,
+                    plan_date=self.plan_date,
+                    outcome=run.draft.outcome,
+                    draft_id=run.draft.draft_id,
+                    waiting=True,
+                    steps=list(steps),
+                ),
+                run.draft,
+            )
+        tidy_later(self.run_id, self.state)
+        return self.ended_view(run.reason, steps)
+
+    async def generate(self, graph: CompiledPlanGraph) -> dict[str, Any] | None:
+        """The graph's result, or ``None`` when the run's time ran out first.
+
+        The graph runs as a task of its own, waited on with what is left. At the
+        deadline, or when the request is canceled, the task is canceled and left to
+        unwind on its own: its saved-state writes are not waited for.
+        """
+        started = self.budget.elapsed()
+        task = asyncio.ensure_future(
+            graph.ainvoke(
+                PlanState(plan_date=self.plan_date, rounds=0),
+                config=run_config(self.run_id, callbacks=[self.state.tracer]),
+                durability=DURABILITY,
+                context=self.budget,
+            )
+        )
+        hold(self.state, task)
+        done: set[asyncio.Future[Any]]
+        try:
+            done, _ = await asyncio.wait({task}, timeout=self.budget.remaining())
+        except BaseException:
+            # The request was canceled: so is the graph, left to unwind on its own.
+            task.cancel()
+            detach(self.state, task, f"the plan graph of run {self.run_id}")
+            raise
+        finally:
+            self.generation_seconds = round(self.budget.elapsed() - started, 3)
+        if task not in done:
+            task.cancel()
+            detach(self.state, task, f"the plan graph of run {self.run_id}")
+            return None
+        return dict(task.result())
+
+    async def publish(self, view: PlanRunView) -> PlanMade:
+        """Settle a run that paused with its draft: held reviews first, then ``settle_run``,
+        under the decision lock, each inside the run's time, the commit inside its grace."""
+        started = self.budget.elapsed()
+        if not await hold_in_time(self.state.decision_lock, self.budget):
+            return self.timed_out()
+        try:
+            try:
+                finished = await read_in_time(
+                    finish_held_reviews(
+                        self.state.checkpointer,
+                        self.state.drafts,
+                        plan_date=self.plan_date,
+                        to_the_end_of_each=False,
+                    ),
+                    self.budget,
+                )
+            except BaseException:
+                self.state.decision_lock.release()
+                raise
+        except RunTimedOut:
+            return self.timed_out()
+        except Exception:
+            # A held review that can't be read is a failure like any other: the run ends
+            # interrupted before the answer, so the next press is admitted. The decision
+            # lock is already free, so no decision waits on that ending.
+            await self.end(INTERRUPTED)
+            tidy_later(self.run_id, self.state)
+            self.keep_timing(INTERRUPTED)
+            raise
+        try:
+            for _, thread in finished:
+                tidy_later(thread, self.state)
+            left = self.budget.remaining()
+            if left <= 0:
+                return self.timed_out()
+            settling = partial(
+                self.state.drafts.settle_run,
+                self.run_id,
+                timing=self.timing(None),
+                wait=min(left, STORE_WAIT_SECONDS),
+            )
+            try:
+                settled = await bounded(settling, left + SETTLE_GRACE_SECONDS)
+            except (StoreBusy, WriterBusy):
+                # Refused before anything began. When the wait was all the time left,
+                # the time ran out waiting for the store.
+                if left <= STORE_WAIT_SECONDS:
+                    return self.timed_out()
+                raise self.not_saved() from None
+            except Exception as error:
+                if isinstance(error, Unfinished):
+                    detach(self.state, error.work, f"settling run {self.run_id}")
+                else:
+                    logger.warning("settling run %s ended in %s", self.run_id, type(error).__name__)
+                return await self.read_back(view)
+            finally:
+                self.settle_seconds = round(self.budget.elapsed() - started, 3)
+        finally:
+            self.state.decision_lock.release()
+        for displaced in settled.displaced:
+            tidy_later(displaced.thread_id, self.state)
+        return self.as_settled(settled.run, view.steps)
+
+    async def read_back(self, view: PlanRunView) -> PlanMade:
+        """What became of a settle that ended in an error: read before the deadline only.
+
+        Past the deadline nothing is looked up, and the answer is unconfirmed.
+        """
+        left = self.budget.remaining()
+        if left <= 0:
+            raise self.unconfirmed()
+        reading = partial(self.state.drafts.run_status, self.run_id, left, reconcile=False)
+        try:
+            found = await bounded(reading, left)
+        except Exception as error:
+            if isinstance(error, Unfinished):
+                detach(self.state, error.work, f"reading back run {self.run_id}")
+            raise self.unconfirmed() from error
+        if found is None or found.status == "running":
+            raise self.not_saved()
+        return self.as_settled(found, view.steps)
+
+    async def run(self, graph: CompiledPlanGraph) -> PlanMade:
+        """From the graph to the answer, for a run already admitted."""
+        try:
+            result = await self.generate(graph)
+        except RunEnded as error:
+            if error.run is None:
+                raise
+            tidy_later(self.run_id, self.state)
+            return self.ended_view(error.run.reason, self.budget.steps)
+        except ModelUnavailable as error:
+            await self.end(INTERRUPTED)
+            tidy_later(self.run_id, self.state)
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+        except RunTimedOut:
+            return await self.cut_off(TIMED_OUT)
+        except ServiceFailed:
+            return await self.cut_off(SERVICE_FAILED)
+        except Exception:
+            # A store's or a request's own TimeoutError is a failure like any other.
+            await self.end(INTERRUPTED)
+            tidy_later(self.run_id, self.state)
+            self.keep_timing(INTERRUPTED)
+            raise
+        if result is None:
+            return self.timed_out()
+        committed = result.get("committed")
+        if committed is not None:
+            # The record's own reason, as it committed, never one worked out here.
+            tidy_later(self.run_id, self.state)
+            ended = run_view(self.run_id, self.plan_date, {**result, "outcome": ""})
+            return self.ended_view(str(committed["reason"]), ended.steps, ended.past_due)
+        view = run_view(self.run_id, self.plan_date, result)
+        if not view.waiting:
+            await self.end(INTERRUPTED)
+            tidy_later(self.run_id, self.state)
+            return self.ended_view(INTERRUPTED, view.steps)
+        made = await self.publish(view)
+        if made.record is not None:
+            return PlanMade(made.view.model_copy(update={"past_due": view.past_due}), made.record)
+        return made
 
 
-async def run_plan(
+async def make_plan(
     graph: CompiledPlanGraph,
     plan_date: date,
     state: ApplicationState,
     *,
     budget: RunBudget | None = None,
-) -> PlanRunView:
-    """Run the graph for one evening on a fresh thread, to the gate or to the reason it stopped.
+) -> PlanMade:
+    """Admit a run for one evening, run the graph, and settle it, inside ``budget``.
 
-    The thread is in ``state.in_flight`` from start to pause or end, joined
-    under the decision lock, so the scheduled sweep, which takes back drafts
-    whose run died between saving them and pausing, does not mistake a run
-    still between the two for one and never counts threads while a run is
-    joining.
+    ``budget`` started when the request arrived; without one, the run's time starts now.
+    The household has one running
+    run at a time: a press while one runs is ``AlreadyPlanning``, naming it, and
+    an admission that can't be made in time is ``CouldNotStart``. The graph runs
+    as its own task; a run that stops before the gate is ended by its last node,
+    and the answer gives the reason the record committed. A run that pauses with
+    its draft is settled by ``settle_run`` alone, which publishes only while the
+    run is running, before its deadline and with the evening's plan unchanged.
 
-    A run that stops before the gate has nothing left to resume, and its
-    record is already in the drafts file, so its saved state is cleared here;
-    so is the state of a run that raised, since a raise never pauses at the
-    gate and the first node had already been saved. A run paused at the gate
-    keeps its state until a review or its expiry.
-
-    A run that pauses with a draft publishes it, under the decision lock: any
-    review a waiting draft's thread holds that the table never got is recorded
-    first, then the draft reaches the pages, takes the place of any published
-    draft still waiting for the evening, and the threads of those are cleared,
-    since no review can reach them. The lock means a review in progress lands or is
-    refused before its thread goes, and nothing the pages show is ever a draft
-    whose run might still fail. A publication that fails is a failed run: the
-    draft is taken back and the thread cleared before the failure reaches the
-    page, so what the page then says, that nothing changed, stays true.
-
-    A run can fail between saving its draft and pausing with it, since the
-    save is a transaction of its own and the checkpoint after it is another.
-    The draft, never published, is taken back: its row goes and the run is
-    kept as interrupted. It displaced nothing, so the plan on her page and the
-    parent's queue are what they were before the run, and the run itself
-    appears among the runs that ended without a plan.
-
-    One run per evening is in flight at a time: a press for an evening that
-    has one is refused with ``AlreadyPlanning`` before any thread is written or
-    model asked. The run has ``budget``, made as it starts, and no more: each model request
-    gets what is left of it, and the whole run is cut off when it is spent, waits
-    for the decision lock included, to start and to publish, and the reads of
-    held reviews before publishing. A
-    run cut off, or whose service failed, publishes nothing and is recorded,
-    with its steps, as timed out or as a service failure. A late result never
-    replaces a newer plan either: the evening's last publication is noted as
-    the run joins the runs in flight, and a run that pauses after another
-    plan for the evening was published is taken back as overtaken. Every run's
-    time is kept with its record as it ends. A request canceled before its plan is
-    published takes back its draft and thread before it lets the evening go.
+    The answer follows the record. A settle refused before it began is
+    ``NotSaved``; any other failure is read back by the run's id before the
+    deadline, and past it, or when the reading doesn't finish, the answer is
+    ``Unconfirmed``. A canceled request cancels its graph without waiting for it to
+    unwind, ends the run ``interrupted`` within the settle grace, and goes on
+    canceling: whichever of that ending and a settlement already asked for
+    commits first is what the record keeps.
     """
-    thread_id = thread_for(plan_date)
-    budget = RunBudget() if budget is None else budget
-    # The outcome the run's time is kept under; a run that raises is interrupted.
-    outcome: str | None = INTERRUPTED
-    # How far the run's own publication went, the only way its draft reaches the pages.
-    publication = Publication()
-    if not await hold_in_time(state.decision_lock, budget):
-        # Out of time before it could start: a press while the evening has a run in
-        # flight is still refused, and any other is kept as timed out.
-        if has_a_run_in_flight(state, plan_date):
-            raise AlreadyPlanning
-        view = await ended_on_the_way(graph, thread_id, plan_date, state, budget, TIMED_OUT)
-        await keep_timing(state, thread_id, budget, TIMED_OUT)
-        return view
-    newest: int | None = None
+    budget = RunBudget(clock=state.monotonic) if budget is None else budget
+    run_id = thread_for(plan_date)
+    await admit(state, run_id, plan_date, budget)
+    planning = Planning(state, run_id, plan_date, budget)
     try:
-        # Checked and joined under one hold of the lock, so two presses for one evening
-        # cannot both find it free. The run joins before its read, so a press that gives
-        # up waiting for the lock meanwhile is refused, and a read that fails or runs out
-        # of time leaves nothing in flight to refuse the next press.
-        if has_a_run_in_flight(state, plan_date):
-            raise AlreadyPlanning
-        state.in_flight.add(thread_id)
-        try:
-            newest = await last_published(state, plan_date, budget)
-        except BaseException as error:
-            state.in_flight.discard(thread_id)
-            if not isinstance(error, RunTimedOut):
-                raise
-    finally:
-        state.decision_lock.release()
-    if newest is None:
-        # Out of time while it read the evening's last publication.
-        view = await ended_on_the_way(graph, thread_id, plan_date, state, budget, TIMED_OUT)
-        await keep_timing(state, thread_id, budget, TIMED_OUT)
-        return view
-    try:
-        limit = asyncio.timeout(budget.remaining())
-        try:
-            async with limit:
-                result = await graph.ainvoke(
-                    PlanState(plan_date=plan_date, rounds=0),
-                    config=run_config(thread_id, callbacks=[state.tracer]),
-                    durability=DURABILITY,
-                    context=budget,
-                )
-        except ModelUnavailable as error:
-            await abandon(thread_id, state)
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-        except TimeoutError as error:
-            if not limit.expired() and not isinstance(error, RunTimedOut):
-                # A store's or a request's own TimeoutError is a failure like any other,
-                # not the run's time running out.
-                await abandon(thread_id, state)
-                raise
-            outcome = TIMED_OUT
-            return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
-        except ServiceFailed:
-            outcome = SERVICE_FAILED
-            return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
-        except Exception:
-            await abandon(thread_id, state)
-            raise
-        if budget.elapsed() > budget.seconds:
-            # Work that held the event loop past the limit kept it from firing, so the run
-            # is cut off now, whatever the graph ended with.
-            outcome = TIMED_OUT
-            return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
-        view = run_view(thread_id, plan_date, dict(result))
-        outcome = view.outcome
-        if not view.waiting:
-            await tidy_thread(thread_id, state)
-            return view
-        if not await hold_in_time(state.decision_lock, budget):
-            # The time ran out before the draft could be published, so it never is.
-            outcome = TIMED_OUT
-            return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
-        try:
-            try:
-                if await last_published(state, plan_date, budget) != newest:
-                    # A plan for the evening was published while this one was
-                    # being made, from another press or the other page. That
-                    # plan stays; this one is taken back and never shown.
-                    await off_the_loop(
-                        state.drafts.withdraw, draft_id_for(thread_id), outcome=OVERTAKEN
-                    )
-                    outcome = OVERTAKEN
-                    view = view.model_copy(
-                        update={"outcome": OVERTAKEN, "draft_id": None, "waiting": False}
-                    )
-                else:
-                    # A review a waiting draft's thread holds, that the table
-                    # never got, is recorded before this plan takes the draft's
-                    # place, so the review is never superseded away with the thread.
-                    # Reading the threads spends the run's time too, and the plan
-                    # is published only with time left.
-                    finished = await read_in_time(
-                        finish_held_reviews(
-                            state.checkpointer,
-                            state.drafts,
-                            plan_date=plan_date,
-                            in_flight=state.in_flight,
-                        ),
-                        budget,
-                    )
-                    displaced = await publish_in_time(
-                        state, draft_id_for(thread_id), budget, publication
-                    )
-                    for thread in [
-                        *(thread for _, thread in finished),
-                        *(d.thread_id for d in displaced),
-                    ]:
-                        await tidy_thread(thread, state)
-            finally:
-                state.decision_lock.release()
-        except (RunTimedOut, OutOfTime):
-            # The time ran out before the draft was published, so it never is. The
-            # reviews already recorded stand, and the sweep clears their threads.
-            outcome = TIMED_OUT
-            return await ended_on_the_way(graph, thread_id, plan_date, state, budget, outcome)
-        except Exception:
-            # The run paused but its draft could not be published. Left as it
-            # is, the sweep would publish it later, after the page had said
-            # the request changed nothing; so the run is treated as failed
-            # here and now, its draft taken back and its thread cleared.
-            outcome = INTERRUPTED
-            await abandon(thread_id, state)
-            raise
-        if outcome == OVERTAKEN:
-            await tidy_thread(thread_id, state)
-        return view
+        return await planning.run(graph)
     except BaseException as error:
         if isinstance(error, Exception):
             raise
-        # A request canceled before its plan is published leaves a draft and a paused thread
-        # that the sweep would publish once the run is out of flight, so both are taken back
-        # first, even when the request is canceled again meanwhile. A plan its publication put
-        # on the pages stays, with the thread a review resumes.
-        if publication.published:
-            raise
-        state.canceled.add(thread_id)
-        cleanup = asyncio.ensure_future(
-            taken_back_unless_published(thread_id, state)
-            if publication.began
-            else abandon(thread_id, state)
+        ending = partial(
+            state.drafts.end_run,
+            run_id,
+            reason=INTERRUPTED,
+            timing=planning.timing(INTERRUPTED),
+            wait=SETTLE_GRACE_SECONDS,
         )
         try:
-            await to_the_end(cleanup)
-        finally:
-            with contextlib.suppress(BaseException):
-                if cleanup.result():
-                    outcome = INTERRUPTED
+            ended = await bounded(ending, SETTLE_GRACE_SECONDS)
+        except Unfinished as unfinished:
+            detach(state, unfinished.work, f"ending the canceled run {run_id}")
+        except Exception:
+            logger.exception("the canceled run %s could not be ended", run_id)
+        else:
+            # A plan its settle published keeps the thread a review resumes.
+            if ended is not None and ended.status == "ended":
+                tidy_later(run_id, state)
         raise
-    finally:
-        state.in_flight.discard(thread_id)
-        await keep_timing(state, thread_id, budget, outcome)
+
+
+async def run_status_view(state: ApplicationState, run_id: str) -> RunStatusView:
+    """Where one run stands, after ending any run past its deadline: 404 for an unknown
+    run, and 503 when the record can't be read in time."""
+    try:
+        found = await bounded(
+            partial(state.drafts.run_status, run_id, STORE_WAIT_SECONDS), STORE_WAIT_SECONDS
+        )
+    except (Unfinished, StoreBusy, WriterBusy) as error:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=UNCONFIRMED) from error
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no run {run_id!r}")
+    return RunStatusView(
+        run_id=found.run_id,
+        plan_date=found.plan_date,
+        status=found.status,
+        reason=None if found.status == "running" else found.reason,
+        draft_id=None if found.draft is None else found.draft.draft_id,
+    )

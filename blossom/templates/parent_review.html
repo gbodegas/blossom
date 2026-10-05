@@ -37,10 +37,18 @@
   <p class="lead-action"><a href="#add-assignments">Add assignments</a></p>
 
   {% if problem %}
-    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% endif %}</p>
+    <p class="problem" role="alert" id="problem">{{ problem }}{% if problem_check %} <a href="{{ problem_check.href }}">{{ problem_check.label }}</a>{% endif %}{% if problem_field %} <a href="#{% if problem_field == "text" %}paste-text{% else %}entry-{{ problem_field }}{% endif %}">Go to the field.</a>{% elif problem_target %} <a href="#update-{{ problem_target }}">Go to the row.</a>{% endif %}</p>
   {% endif %}
   {% if refreshed_at %}
     <p class="note" role="status">Refreshed at {{ refreshed_at|clock }}.</p>
+  {% endif %}
+  {#
+    Where a planning run stands: the one the address names, or the household's
+    run while it is still being made or finished. Runs that ended without a plan
+    are listed below, under their own heading.
+  #}
+  {% if run_notice %}
+    <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run">{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}</p>
   {% endif %}
   {% if added is not none %}
     <p class="note" role="status">
@@ -431,6 +439,14 @@
         {% set evening = draft.plan_date.strftime("%A, %B") ~ " " ~ draft.plan_date.day %}
         {% set which = (", " ~ loop.index ~ " of " ~ loop.length) if loop.length > 1 else "" %}
         <p class="review-heading">Parent review</p>
+        {#
+          A plan whose saved review step no review could resume, missing or written
+          by another version, says why in place of the two buttons; a decision
+          pressed on it from an older page is refused with the same words.
+        #}
+        {% if draft.draft_id in unresumable %}
+          <p class="note">{{ unresumable[draft.draft_id] }}</p>
+        {% else %}
         <form method="post" action="/parent/actions/decide/{{ draft.draft_id }}" class="decision">
           <label>Reason (optional)
             <input type="text" name="reason" maxlength="{{ reason_max_length }}" placeholder="A sentence she would recognize">
@@ -455,6 +471,7 @@
             Nothing leaves here on its own.
           </p>
         </form>
+        {% endif %}
       </article>
     {% endfor %}
   </section>

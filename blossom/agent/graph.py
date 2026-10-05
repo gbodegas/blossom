@@ -46,12 +46,14 @@ Three nodes write to the drafts file, and each performs that one side effect
 in a form that running twice leaves unchanged. ``compose`` saves the draft,
 unpublished, keyed by an id derived from the thread, with the run's record in
 the same transaction, before the gate can pause on it, so the record survives
-whatever happens next; the route publishes the draft, and so puts it on the
+whatever happens next; the route settles the run, and so puts the draft on the
 pages, once the run has paused. ``record_decision``, after the gate, saves
 what the person decided.
-``record_run`` saves the record of a run that ended before the gate and has no
-draft to carry it. The file is the record across threads; saved state is the
-record within one.
+``record_run`` ends the record of a run that ended before the gate and has no
+draft to carry it. Both ``record_run`` and a ``compose`` refused because its
+run already ended put what the record committed in ``committed``, so the route
+answers with the record's reason. The file is the record across threads; saved
+state is the record within one.
 """
 
 import operator
@@ -112,7 +114,7 @@ from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence, classify_confidence
 from blossom.settings import DEFAULT_EVENING_MINUTES, DEFAULT_TOO_MUCH_MINUTES, Settings
 from blossom.sources import DateClaims
-from blossom.stores.drafts import DraftsStore
+from blossom.stores.drafts import DraftsStore, RunEnded, RunState
 from blossom.stores.project_state import Assignment, ProjectStateStore, StudentReport
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
@@ -210,6 +212,20 @@ type Ask[T: BaseModel] = Callable[[Sequence[BaseMessage]], Awaitable[ModelAnswer
 two, and a test substitutes both."""
 
 
+class Committed(TypedDict):
+    """What the record committed for a run as it ended: its status and its reason."""
+
+    status: str
+    reason: str
+
+
+def committed(run: RunState | None) -> dict[str, Any]:
+    """The state update that carries what the record committed for ``run``, if anything."""
+    if run is None:
+        return {}
+    return {"committed": Committed(status=run.status, reason=run.reason)}
+
+
 class PlanState(TypedDict):
     """Everything a run of the plan graph saves.
 
@@ -262,6 +278,9 @@ class PlanState(TypedDict):
     draft: NotRequired[Draft]
     decision: NotRequired[Decision]
     reason: NotRequired[str | None]
+    committed: NotRequired[Committed]
+    """What the record committed when the run ended without a plan: by ``record_run``,
+    or by a ``compose`` refused because the run had already ended."""
 
 
 type CompiledPlanGraph = CompiledStateGraph[PlanState, Any, PlanState, PlanState]
@@ -296,11 +315,13 @@ def build_plan_graph(
     ) -> StepRecord:
         """One line of the run's record, stamped by the household's clock, with the node's
         time noted in the run's budget when it has one."""
-        if budget is not None:
-            budget.lap(node, round_number)
-        return StepRecord(
+        record = StepRecord(
             node=node, round=round_number, expected=expected, found=found, recorded_at=clock.now()
         )
+        if budget is not None:
+            budget.lap(node, round_number)
+            budget.steps.append(record)
+        return record
 
     def evening(state: PlanState) -> dict[str, Any]:
         """The arguments both briefs share, read from state."""
@@ -580,7 +601,9 @@ def build_plan_graph(
         same draft and the same row. Saving happens here, before the gate,
         because the gate must do nothing before it pauses and the record must
         survive whatever happens next; the draft reaches the pages only when
-        the route publishes it, once the run has paused.
+        the route settles the run, once it has paused. A run that already ended,
+        out of time or ended by its route, saves nothing; what its record committed
+        goes to ``committed`` and the run ends here instead of pausing.
         """
         thread_id = str(config["configurable"]["thread_id"])
         outcome = state["outcome"]
@@ -600,34 +623,36 @@ def build_plan_graph(
         if outcome not in REACHED_THE_GATE:
             msg = f"compose reached with outcome {outcome!r}, which produces no draft"
             raise RuntimeError(msg)
-        drafts.record_waiting(
-            composed.draft,
-            thread_id=thread_id,
-            plan_date=state["plan_date"],
-            outcome=cast(Literal["accepted", "unsettled"], outcome),
-            steps=state.get("steps", []),
-            too_much=state.get("too_much", False),
-            inputs_digest=state.get("inputs_digest"),
-            plan_assignment_ids=composed.snapshot.assignment_ids,
-            plan_snapshot=composed.snapshot,
-        )
+        try:
+            drafts.record_waiting(
+                composed.draft,
+                thread_id=thread_id,
+                plan_date=state["plan_date"],
+                outcome=cast(Literal["accepted", "unsettled"], outcome),
+                steps=state.get("steps", []),
+                too_much=state.get("too_much", False),
+                inputs_digest=state.get("inputs_digest"),
+                plan_assignment_ids=composed.snapshot.assignment_ids,
+                plan_snapshot=composed.snapshot,
+            )
+        except RunEnded as ended:
+            if ended.run is None:
+                raise
+            return committed(ended.run)
         return {"draft": composed.draft}
 
     def record_run(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
-        """Save the record of a run that ended before the gate. Writes nothing to state.
+        """End the record of a run that ended before the gate, and return what it committed.
 
         A run that reaches the gate has its record saved with its draft, in
-        ``compose``; this node is the same save for a run with no draft to
-        attach it to, so the parent's page can say why nothing came of it.
+        ``compose``; this node ends the run with its steps, so the parent's page
+        can say why nothing came of it. Past the run's deadline the record says
+        ``timed_out`` whatever the run ended with, and ``committed`` says what it says.
         """
         thread_id = str(config["configurable"]["thread_id"])
-        drafts.record_run(
-            thread_id=thread_id,
-            plan_date=state["plan_date"],
-            outcome=state["outcome"],
-            steps=state.get("steps", []),
+        return committed(
+            drafts.end_run(thread_id, reason=state["outcome"], steps=state.get("steps", []))
         )
-        return {}
 
     def gate(state: PlanState) -> dict[str, Any]:
         """The approval gate, unchanged; the state's gate keys match its own."""
@@ -656,6 +681,9 @@ def build_plan_graph(
         if state["verification"].passed:
             return "critique"
         return "record_run" if "outcome" in state else "plan"
+
+    def after_compose(state: PlanState) -> str:
+        return END if "committed" in state else "require_human_approval"
 
     def after_critique(state: PlanState) -> str:
         outcome = state.get("outcome")
@@ -696,7 +724,11 @@ def build_plan_graph(
         after_critique,
         {"compose": "compose", "plan": "plan", "record_run": "record_run"},
     )
-    graph.add_edge("compose", "require_human_approval")
+    graph.add_conditional_edges(
+        "compose",
+        after_compose,
+        {"require_human_approval": "require_human_approval", END: END},
+    )
     graph.add_edge("require_human_approval", "record_decision")
     graph.add_edge("record_decision", END)
     graph.add_edge("record_run", END)

@@ -724,10 +724,11 @@ def test_a_signal_gone_after_a_smaller_plan_reads_the_same_to_everyone(
         if gone == "taken back":
             signals.withdraw(hers)
         else:
-            signals._connection.execute(
-                "UPDATE workload_signals SET evening = '2026-08-18' WHERE signal_id = ?",
-                (hers,),
-            )
+            with signals._connection:
+                signals._connection.execute(
+                    "UPDATE workload_signals SET evening = '2026-08-18' WHERE signal_id = ?",
+                    (hers,),
+                )
         page = her_week_as(client, reader)
 
     assert f"<strong>Plan again.</strong> {SIGNAL_ENDED}</p>" in page

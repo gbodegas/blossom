@@ -7,12 +7,16 @@ it. These tests hold her page, her JSON routes, and the parent's review to
 that, with scripted models so nothing is ever sent.
 """
 
+import asyncio
 import pathlib
 import re
+import threading
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from time import monotonic
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
@@ -28,14 +32,19 @@ from blossom.noticing import read_week
 from blossom.plan_text import present_plan
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceChannel
+from blossom.routes import student as student_routes
 from blossom.routes.runs import (
     NOTHING_TO_SCHEDULE,
+    AlreadyPlanning,
+    CouldNotStart,
+    NotSaved,
+    Unconfirmed,
     already_planning,
     ended_without_a_plan,
     plan_graphs,
 )
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE
-from blossom.stores.drafts import DraftsStore
+from blossom.stores.drafts import DraftRecord, DraftsStore, RunState, StoreBusy
 from blossom.stores.project_state import Assignment
 from blossom.views import PastDueView
 from tests.support import (
@@ -48,8 +57,10 @@ from tests.support import (
     Scripted,
     Spending,
     accepting,
+    changed_by_hand,
     client_for,
     drafts_in_memory,
+    ended_run,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
@@ -59,6 +70,7 @@ from tests.support import (
     record,
     report,
     scripted_graphs,
+    settled_run,
     signed_in,
     signed_in_household,
     state_of,
@@ -91,10 +103,14 @@ def browser(
     key: bool = True,
     plan: Callable[[], DailyPlan] = fixture_week_plan,
     critic: Callable[[], CriticVerdict] = accepting,
+    clock: Callable[[], float] = monotonic,
 ) -> TestClient:
-    """Her page with scripted models. ``key`` false is a household without an API key."""
+    """Her page with scripted models. ``key`` false is a household without an API key;
+    ``clock`` is the monotonic clock its runs are timed on."""
     environ = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"} if key else {}
-    app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **environ))
+    app = create_app(
+        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **environ), monotonic=clock
+    )
     if key:
         app.dependency_overrides[plan_graphs] = scripted_graphs(
             lambda: [plan()], lambda: [critic()]
@@ -126,10 +142,8 @@ def test_the_latest_plan_for_an_evening_is_read_whatever_was_said_about_it() -> 
     store: DraftsStore = drafts_in_memory()
     first = draft("draft:plan:a", "First plan")
     second = draft("draft:plan:b", "Second plan", hour=23)
-    store.record_waiting(first, thread_id="plan:a", plan_date=PLAN_DATE, outcome="accepted")
-    store.publish(first.draft_id)
-    store.record_waiting(second, thread_id="plan:b", plan_date=PLAN_DATE, outcome="accepted")
-    store.publish(second.draft_id)
+    settled_run(store, first, thread_id="plan:a", plan_date=PLAN_DATE)
+    settled_run(store, second, thread_id="plan:b", plan_date=PLAN_DATE)
     store.record_decision(
         "draft:plan:b",
         status=first.status,
@@ -245,7 +259,8 @@ def test_why_there_is_no_plan_is_said_in_plain_words_to_whoever_reads_it() -> No
         "that already passed, so no plan can finish it on time. Your homework updates are saved."
     )
     assert ended_without_a_plan("date_problem", parent=False) == (
-        f"{invalid} Your homework updates are saved."
+        "Blossom can't make today's plan: some work has a due date that already passed, so no "
+        "plan can finish it on time. Your homework updates are saved."
     ), "nothing is named that the record does not show"
     for outcome in ("checks_failed", "timed_out", "service_failed", "date_problem"):
         assert "fits this evening" not in ended_without_a_plan(outcome, parent=False)
@@ -293,6 +308,9 @@ def test_a_run_that_ends_without_a_plan_is_said_and_the_page_keeps_its_plan() ->
     assert "checks_failed" not in response.text
     assert "No plan for today yet." in response.text
     assert over_json.status_code == 409
+    assert over_json.json()["detail"] == (
+        "Blossom couldn't finish a reliable plan this time. Your homework updates are saved."
+    )
 
 
 def test_a_failure_on_the_way_is_said_on_the_page_and_the_plan_stays() -> None:
@@ -462,8 +480,7 @@ def test_todays_saved_plan_is_unfolded_on_every_visit_and_help_is_one_link_away(
         refreshed = client.get(PAGE, params={"refreshed": "1"}).text
         body = client.get("/student/plans/today").json()["body"]
         state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
-        state.drafts._connection.execute("UPDATE drafts SET plan_snapshot=NULL")
-        state.drafts._connection.commit()
+        changed_by_hand(state.drafts, "UPDATE drafts SET plan_snapshot=NULL")
         as_text = client.get(PAGE).text
 
     assert '<details class="plan"' not in before
@@ -928,27 +945,406 @@ def test_one_press_is_one_run() -> None:
 
 def test_a_press_while_a_plan_for_today_is_being_made_starts_nothing() -> None:
     """The run in flight is the one plan for today being made: a second press starts no run,
-    asks no model, and says so in the failure line, with the way to her homework."""
+    asks no model, and says in the failure line which evening is still being finished and
+    how long to wait, with the way to her homework."""
     planners: list[Scripted[DailyPlan]] = []
-    with browser() as client:
+    clock = FakeTime()
+    inflight = f"plan:{PLAN_DATE.isoformat()}:inflight"
+    with browser(clock=clock) as client:
         state = state_of(client)
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
             lambda: [fixture_week_plan()], lambda: [accepting()], planners=planners
         )
-        state.in_flight.add(f"plan:{PLAN_DATE.isoformat()}:inflight")
+        blocked = state.drafts.admit_run(
+            inflight, plan_date=PLAN_DATE, deadline_mono=state.monotonic() + RUN_DEADLINE_SECONDS
+        )
         page = ended_page(client)
         over_json = client.post("/student/plans")
         runs = state.drafts.runs_without_a_draft()
+        running = state.drafts.running_threads()
         latest = state.drafts.latest_for(PLAN_DATE)
+        blocking = state.drafts.latest_run()
 
+    finishing = (
+        "The last plan request, for Wednesday, August 19, is still being finished. "
+        "Try again in about 91 seconds."
+    )
     line = the_line(page)
-    assert "A plan for today is already being made. Your homework updates are saved." in line
+    assert blocked is None
+    assert f"{finishing} Your homework updates are saved." in line
     assert '<a href="#title-assignment-science-fair-proposal">See homework.</a>' in line
     assert all(planner.calls == 0 for planner in planners)
     assert runs == []
+    assert running == {inflight}
     assert latest is None
     assert over_json.status_code == 409
-    assert over_json.json()["detail"] == "A plan for this evening is already being made."
-    assert already_planning(parent=True) == (
-        "A plan for today is already being made. Her homework updates are saved."
+    assert over_json.json()["detail"] == {
+        "message": f"{finishing} Your homework updates are saved.",
+        "run_id": inflight,
+        "plan_date": PLAN_DATE.isoformat(),
+        "seconds_left": 91,
+    }
+    assert blocking is not None
+    assert blocking.run_id == inflight
+    assert already_planning(blocking, parent=True) == (
+        f"{finishing} Her homework updates are saved."
     )
+    assert run_link(inflight, ON_THAT_REQUEST) in line
+
+
+# ------------------------------------------------------- where a plan request stands
+
+
+ON_THAT_REQUEST = "Check on that request."
+ON_IT = "Check on it."
+AGAIN = "Check again."
+
+
+def run_link(run_id: str, label: str) -> str:
+    """The link her week gives to check a run again, as the page writes it."""
+    return f'<a href="{PAGE}?run={run_id.replace(":", "%3A")}">{label}</a>'
+
+
+def run_line(page: str) -> str | None:
+    """The line her week gives a planning run, or ``None`` when it gives none."""
+    marker = page.find('id="plan-run"')
+    if marker < 0:
+        return None
+    start = page.rindex("<p", 0, marker)
+    return page[start : page.index("</p>", start) + 4]
+
+
+UNSURE = f"plan:{PLAN_DATE.isoformat()}:unsure"
+INFLIGHT = f"plan:{PLAN_DATE.isoformat()}:inflight"
+STILL_RUNNING = RunState(
+    run_id=INFLIGHT,
+    plan_date=PLAN_DATE,
+    status="running",
+    reason="running",
+    seconds_left=40.0,
+    plan_unchanged=True,
+)
+PRESS_ANSWERS: dict[str, tuple[Callable[[], Exception], int, str, str | None]] = {
+    "already planning": (
+        lambda: AlreadyPlanning(STILL_RUNNING),
+        409,
+        "The last plan request, for Wednesday, August 19, is still being finished. Try again "
+        "in about 41 seconds. {Your} homework updates are saved.",
+        run_link(INFLIGHT, ON_THAT_REQUEST),
+    ),
+    "not saved": (
+        NotSaved,
+        503,
+        "Blossom made a plan but couldn&#39;t save it, so {your} current plan hasn&#39;t "
+        "changed. Try again in a moment. {Your} homework updates are saved.",
+        None,
+    ),
+    "unconfirmed": (
+        lambda: Unconfirmed(UNSURE, PLAN_DATE),
+        202,
+        "Blossom couldn&#39;t confirm that the new plan was saved. {Your} homework updates are "
+        "saved.",
+        run_link(UNSURE, AGAIN),
+    ),
+    "could not start": (
+        CouldNotStart,
+        503,
+        "Blossom couldn&#39;t start a plan this time. Try again in a moment. {Your} homework "
+        "updates are saved.",
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize("answer", PRESS_ANSWERS)
+@pytest.mark.parametrize("reader", ["her", "a parent"])
+def test_each_answer_to_a_press_says_her_updates_are_saved_in_the_readers_words(
+    answer: str, reader: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A press refused while a run is being finished, a plan made but not saved, one whose
+    saving couldn't be confirmed, and a run that couldn't start are each said on her week
+    with the status the JSON route answers, in the reader's words. The first links to
+    where that run stands, and an unconfirmed one offers to check again."""
+    error, code, said, link = PRESS_ANSWERS[answer]
+
+    async def refused(*args: object, **kwargs: object) -> object:
+        raise error()
+
+    monkeypatch.setattr(student_routes, "make_plan", refused)
+    parent = reader == "a parent"
+    client = client_for(signed_in_household(tmp_path)) if parent else browser()
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
+    with client:
+        if parent:
+            signed_in(client, THEIRS)
+        response = client.post("/student/actions/plan")
+
+    line = the_line(response.text)
+    assert response.status_code == code
+    assert said.format(Your="Her" if parent else "Your", your="her" if parent else "your") in line
+    if link is None:
+        assert "?run=" not in line
+    else:
+        assert link in line
+    assert ("Your " in line or "your " in line) is not parent
+
+
+def test_her_plan_is_answered_by_its_run_when_reading_it_back_does_not_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Her JSON answer reads the published plan on a worker thread. When that reading
+    doesn't finish within its wait, the plan stands published and the answer is still 201,
+    with the run, its evening, and that it was published."""
+    reading = student_routes.plan_view
+    release = threading.Event()
+    off_the_loop: list[bool] = []
+
+    def slow(state: ApplicationState, record: DraftRecord) -> object:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            off_the_loop.append(True)
+        else:
+            off_the_loop.append(False)
+        release.wait(5)
+        return reading(state, record)
+
+    monkeypatch.setattr(student_routes, "plan_view", slow)
+    monkeypatch.setattr(student_routes, "STORE_WAIT_SECONDS", 0.2)
+    with browser() as client:
+        try:
+            answer = client.post("/student/plans")
+        finally:
+            release.set()
+        state = state_of(client)
+        run = state.drafts.latest_run()
+        latest = state.drafts.latest_for(PLAN_DATE)
+
+    assert run is not None
+    assert answer.status_code == 201
+    assert answer.json() == {
+        "run_id": run.run_id,
+        "plan_date": PLAN_DATE.isoformat(),
+        "status": "published",
+    }
+    assert run.status == "published"
+    assert latest is not None
+    assert latest.thread_id == run.run_id
+    assert off_the_loop == [True]
+
+
+def test_a_run_asked_for_by_its_id_is_said_on_her_week(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``?run=`` says where that run stands: being made, with Check; ended, with why and,
+    while no newer plan was published for its evening, that her plan hasn't changed;
+    nothing more for a run whose plan was published or one never made; and that it
+    couldn't be confirmed, with Check again, when the record can't be read in time."""
+    first = f"plan:{PLAN_DATE.isoformat()}:first"
+    newer = f"plan:{PLAN_DATE.isoformat()}:newer"
+
+    def busy(self: DraftsStore, run_id: str, wait: float = 5.0, *, reconcile: bool = True) -> None:
+        raise StoreBusy
+
+    with browser() as client:
+        state = state_of(client)
+        admitted = state.drafts.admit_run(
+            first, plan_date=PLAN_DATE, deadline_mono=state.monotonic() + RUN_DEADLINE_SECONDS
+        )
+        running = client.get(f"{PAGE}?run={first}").text
+        state.drafts.end_run(first, reason="timed_out")
+        ended = client.get(f"{PAGE}?run={first}").text
+        settled_run(
+            state.drafts,
+            draft(f"draft:{newer}", "Plan for Wednesday"),
+            thread_id=newer,
+            plan_date=PLAN_DATE,
+        )
+        published = client.get(f"{PAGE}?run={newer}").text
+        ended_before_it = client.get(f"{PAGE}?run={first}").text
+        never = client.get(f"{PAGE}?run=plan:2026-08-19:never").text
+        with monkeypatch.context() as patched:
+            patched.setattr(DraftsStore, "run_status", busy)
+            unsure = client.get(f"{PAGE}?run={first}")
+
+    timed_out = "Planning took too long, so Blossom stopped."
+    assert admitted is None
+    line = run_line(running)
+    assert line is not None
+    assert 'class="note" role="status"' in line
+    assert "A plan for Wednesday, August 19 is being made." in line
+    assert run_link(first, ON_IT) in line
+    line = run_line(ended)
+    assert line is not None
+    assert (
+        f"{timed_out} Your current plan hasn&#39;t changed. Your homework updates are saved."
+    ) in line
+    assert "?run=" not in line
+    line = run_line(ended_before_it)
+    assert line is not None
+    assert f"{timed_out} Your homework updates are saved." in line
+    assert run_line(published) is None
+    assert "A plan is ready." in published
+    assert run_line(never) is None
+    assert unsure.status_code == 200
+    line = run_line(unsure.text)
+    assert line is not None
+    assert (
+        "Blossom couldn&#39;t confirm that the new plan was saved. Your homework updates are saved."
+    ) in line
+    assert run_link(first, AGAIN) in line
+
+
+def test_a_parent_reading_her_week_is_told_where_a_run_stands_in_her_words(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A parent signed in reads her week: a run being made is said the same way, her JSON
+    route's refusal while it runs says her updates are saved, and a run that ended is said
+    with her plan and her updates, and where its record is."""
+    asked = f"plan:{PLAN_DATE.isoformat()}:asked"
+    client = client_for(signed_in_household(tmp_path))
+    client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+        lambda: [fixture_week_plan()], lambda: [accepting()]
+    )
+    with client:
+        signed_in(client, THEIRS)
+        state = state_of(client)
+        admitted = state.drafts.admit_run(
+            asked, plan_date=PLAN_DATE, deadline_mono=state.monotonic() + RUN_DEADLINE_SECONDS
+        )
+        running = client.get(f"{PAGE}?run={asked}").text
+        refused = client.post("/student/plans")
+        state.drafts.end_run(asked, reason="timed_out")
+        ended = client.get(f"{PAGE}?run={asked}").text
+        found = client.get(PAGE).text
+
+    assert admitted is None
+    line = run_line(running)
+    assert line is not None
+    assert "A plan for Wednesday, August 19 is being made." in line
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["message"].endswith("Her homework updates are saved.")
+    line = run_line(ended)
+    assert line is not None
+    assert (
+        "Planning took too long, so Blossom stopped. Her current plan hasn&#39;t changed. "
+        "Her homework updates are saved. Family review shows what happened."
+    ) in line
+    assert "Your" not in line
+    assert "your" not in line
+    assert run_line(found) == line
+
+
+def test_her_week_says_on_load_what_became_of_the_last_plan_request() -> None:
+    """With no run named, her week reads the household's newest run: one being made is said
+    with Check, one past its deadline as being finished, never as timed out before the
+    record says so; one for today that ended with no newer plan is said with why. A run for
+    another evening, and a run whose plan was published, add nothing."""
+    clock = FakeTime()
+    asked = f"plan:{PLAN_DATE.isoformat()}:asked"
+    tomorrow = PLAN_DATE + timedelta(days=1)
+    family = f"plan:{tomorrow.isoformat()}:family"
+    newer = f"plan:{PLAN_DATE.isoformat()}:newer"
+    with browser(clock=clock) as client:
+        state = state_of(client)
+        quiet = client.get(PAGE).text
+        admitted = state.drafts.admit_run(
+            asked, plan_date=PLAN_DATE, deadline_mono=clock() + RUN_DEADLINE_SECONDS
+        )
+        being_made = client.get(PAGE).text
+        clock.advance(RUN_DEADLINE_SECONDS + 1)
+        finishing = client.get(PAGE).text
+        reconciled = state.drafts.run_status(asked)
+        after = client.get(PAGE).text
+        ended_run(
+            state.drafts,
+            thread_id=family,
+            plan_date=tomorrow,
+            outcome="service_failed",
+            now=clock,
+        )
+        another_evening = client.get(PAGE).text
+        settled_run(
+            state.drafts,
+            draft(f"draft:{newer}", "Plan for Wednesday"),
+            thread_id=newer,
+            plan_date=PLAN_DATE,
+            now=clock,
+        )
+        published = client.get(PAGE).text
+
+    assert run_line(quiet) is None
+    assert admitted is None
+    line = run_line(being_made)
+    assert line is not None
+    assert "A plan for Wednesday, August 19 is being made." in line
+    assert run_link(asked, ON_IT) in line
+    line = run_line(finishing)
+    assert line is not None
+    assert "Blossom is finishing the last plan request." in line
+    assert run_link(asked, ON_IT) in line
+    assert "took too long" not in finishing
+    assert reconciled is not None
+    assert (reconciled.status, reconciled.reason) == ("ended", "timed_out")
+    line = run_line(after)
+    assert line is not None
+    assert (
+        "Planning took too long, so Blossom stopped. Your current plan hasn&#39;t changed. "
+        "Your homework updates are saved."
+    ) in line
+    assert "?run=" not in line
+    assert run_line(another_evening) is None
+    assert run_line(published) is None
+    assert "A plan is ready." in published
+
+
+def test_a_date_problem_found_on_load_is_said_as_one_and_names_its_evening() -> None:
+    """A run for today that ended on a date problem is said on load as one: work whose due
+    date passed, which no plan can finish on time, never as a plan that wasn't reliable;
+    another way of ending keeps its own words. Asked for by its id, another evening's date
+    problem names that evening, never today's plan."""
+    clock = FakeTime()
+    tomorrow = PLAN_DATE + timedelta(days=1)
+    later = f"plan:{tomorrow.isoformat()}:later"
+    with browser(clock=clock) as client:
+        state = state_of(client)
+        ended_run(
+            state.drafts,
+            thread_id=f"plan:{PLAN_DATE.isoformat()}:dated",
+            plan_date=PLAN_DATE,
+            outcome="date_problem",
+            now=clock,
+        )
+        date_problem = client.get(PAGE).text
+        ended_run(
+            state.drafts,
+            thread_id=f"plan:{PLAN_DATE.isoformat()}:checked",
+            plan_date=PLAN_DATE,
+            outcome="checks_failed",
+            now=clock,
+        )
+        unreliable = client.get(PAGE).text
+        ended_run(
+            state.drafts, thread_id=later, plan_date=tomorrow, outcome="date_problem", now=clock
+        )
+        another_evening = client.get(f"{PAGE}?run={later}").text
+
+    line = run_line(date_problem)
+    assert line is not None
+    assert (
+        "Blossom can&#39;t make today&#39;s plan: some work has a due date that already "
+        "passed, so no plan can finish it on time. Your current plan hasn&#39;t changed. "
+        "Your homework updates are saved."
+    ) in line
+    assert "reliable" not in line
+    line = run_line(unreliable)
+    assert line is not None
+    assert "Blossom couldn&#39;t finish a reliable plan this time." in line
+    assert "due date" not in line
+    line = run_line(another_evening)
+    assert line is not None
+    assert (
+        "Blossom can&#39;t make the plan for Thursday, August 20: some work is due before "
+        "that evening, so no plan can finish it on time."
+    ) in line
+    assert "today" not in line

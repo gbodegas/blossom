@@ -12,6 +12,7 @@ import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date, time, timedelta
+from time import monotonic
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -19,16 +20,18 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from blossom.agent.graph import CompiledPlanGraph, PlanState
-from blossom.agent.runs import DURABILITY, run_config
+from blossom.agent.graph import Ask, CompiledPlanGraph, PlanState
+from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, run_config
 from blossom.app import create_app
 from blossom.clock import FrozenClock, spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState
+from blossom.heuristic_relevance import CriticVerdict
 from blossom.plan_checks import PlanCheck
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.routes.runs import plan_graphs
 from blossom.routes.student import templates
-from blossom.settings import DEFAULT_EVENING_MINUTES
+from blossom.settings import DEFAULT_EVENING_MINUTES, DEFAULT_TOO_MUCH_MINUTES
+from blossom.stores.drafts import DraftsStore
 from blossom.stores.workload_signals import (
     DETAIL_MAX_LENGTH,
     SIGNAL_RETENTION_DAYS,
@@ -42,6 +45,7 @@ from tests.support import (
     SAME_ORIGIN,
     Scripted,
     accepting,
+    drafts_in_memory,
     fixture_clock,
     fixture_settings,
     good_plan,
@@ -62,7 +66,36 @@ def store_in_memory(clock: FrozenClock | None = None) -> WorkloadSignalsStore:
     )
 
 
-def run(graph: CompiledPlanGraph, thread: str = "plan:signaled") -> dict[str, Any]:
+def graph_and_store(
+    planner: Ask[DailyPlan],
+    critic: Ask[CriticVerdict],
+    *,
+    signals: WorkloadSignalsStore | None = None,
+    evening_minutes: int = DEFAULT_EVENING_MINUTES,
+    too_much_minutes: int = DEFAULT_TOO_MUCH_MINUTES,
+) -> tuple[CompiledPlanGraph, DraftsStore]:
+    """The graph over in-memory stores, and the drafts store its run is admitted to."""
+    drafts = drafts_in_memory()
+    graph = graph_with(
+        planner,
+        critic,
+        drafts=drafts,
+        signals=signals,
+        evening_minutes=evening_minutes,
+        too_much_minutes=too_much_minutes,
+    )
+    return graph, drafts
+
+
+def run(
+    graph: CompiledPlanGraph, drafts: DraftsStore, thread: str = "plan:signaled"
+) -> dict[str, Any]:
+    """Admit one run on ``thread`` and drive it to its pause or its end."""
+    blocking = drafts.admit_run(
+        thread, plan_date=PLAN_DATE, deadline_mono=monotonic() + RUN_DEADLINE_SECONDS
+    )
+    assert blocking is None
+
     async def go() -> dict[str, Any]:
         return dict(
             await graph.ainvoke(
@@ -102,7 +135,7 @@ def test_both_budgets_are_the_households_numbers() -> None:
     critic = Scripted(ok(accepting()), ok(accepting()))
 
     signaled = run(
-        graph_with(
+        *graph_and_store(
             Scripted(ok(good_plan())),
             critic,
             signals=signals,
@@ -111,7 +144,9 @@ def test_both_budgets_are_the_households_numbers() -> None:
         )
     )
     usual = run(
-        graph_with(Scripted(ok(good_plan())), critic, evening_minutes=200, too_much_minutes=100),
+        *graph_and_store(
+            Scripted(ok(good_plan())), critic, evening_minutes=200, too_much_minutes=100
+        ),
         thread="plan:usual",
     )
 
@@ -196,7 +231,7 @@ def test_a_signal_cuts_the_budget_before_the_planner_is_asked() -> None:
     signals.record(PLAN_DATE)
     planner = Scripted(ok(good_plan()))
 
-    result = run(graph_with(planner, Scripted(ok(accepting())), signals=signals))
+    result = run(*graph_and_store(planner, Scripted(ok(accepting())), signals=signals))
 
     brief = human_text(planner.briefs[0])
     assert result["too_much"] is True
@@ -212,7 +247,7 @@ def test_a_signal_cuts_the_budget_before_the_planner_is_asked() -> None:
 def test_without_a_signal_the_evening_is_the_usual_length() -> None:
     planner = Scripted(ok(good_plan()))
 
-    result = run(graph_with(planner, Scripted(ok(accepting()))))
+    result = run(*graph_and_store(planner, Scripted(ok(accepting()))))
 
     assert result["too_much"] is False
     assert result["budget_minutes"] == DEFAULT_EVENING_MINUTES
@@ -224,7 +259,7 @@ def test_a_plan_that_fits_the_usual_evening_fails_the_reduced_one() -> None:
     signals.record(PLAN_DATE)
     planner = Scripted(*[ok(long_plan())] * 3)
 
-    result = run(graph_with(planner, Scripted(), signals=signals))
+    result = run(*graph_and_store(planner, Scripted(), signals=signals))
 
     assert result["outcome"] == "checks_failed"
     assert result["verification"].failed_checks == (PlanCheck.WITHIN_TIME_BUDGET,)
@@ -232,7 +267,7 @@ def test_a_plan_that_fits_the_usual_evening_fails_the_reduced_one() -> None:
 
 
 def test_the_same_plan_passes_when_she_has_not_signaled() -> None:
-    result = run(graph_with(Scripted(ok(long_plan())), Scripted(ok(accepting()))))
+    result = run(*graph_and_store(Scripted(ok(long_plan())), Scripted(ok(accepting()))))
 
     assert result["outcome"] == "accepted"
 
@@ -242,7 +277,7 @@ def test_the_critic_and_the_draft_are_told() -> None:
     signals.record(PLAN_DATE)
     critic = Scripted(ok(accepting()))
 
-    result = run(graph_with(Scripted(ok(good_plan())), critic, signals=signals))
+    result = run(*graph_and_store(Scripted(ok(good_plan())), critic, signals=signals))
 
     assert "<too_much>" in human_text(critic.briefs[0])
     body = result["__interrupt__"][0].value["body"]
@@ -253,7 +288,9 @@ def test_a_signal_about_another_evening_changes_nothing_tonight() -> None:
     signals = signals_in_memory()
     signals.record(PLAN_DATE - timedelta(days=1))
 
-    result = run(graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())), signals=signals))
+    result = run(
+        *graph_and_store(Scripted(ok(good_plan())), Scripted(ok(accepting())), signals=signals)
+    )
 
     assert result["too_much"] is False
     assert result["budget_minutes"] == DEFAULT_EVENING_MINUTES

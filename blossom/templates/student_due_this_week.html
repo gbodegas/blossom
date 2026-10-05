@@ -39,7 +39,7 @@
   {% set work_left = (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
   {% set see_homework_href = "#" ~ title_anchor(work_left[0].assignment_id) if work_left else "#homework" %}
   {% if problem %}
-    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}{% if plan_failure %}{% for title, href in plan_failure.checks %} <a href="{{ href }}">Check the dates for {{ title }}.</a>{% endfor %} <a href="{{ see_homework_href }}">See homework.</a>{% endif %}</p>
+    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}{% if plan_failure %}{% if plan_failure.run %} <a href="{{ plan_failure.run.href }}">{{ plan_failure.run.label }}</a>{% endif %}{% for title, href in plan_failure.checks %} <a href="{{ href }}">Check the dates for {{ title }}.</a>{% endfor %} <a href="{{ see_homework_href }}">See homework.</a>{% endif %}</p>
   {% endif %}
 
   {% if view.week.current %}
@@ -58,6 +58,15 @@
         No plan for today yet.
       {% endif %}
     </p>
+    {#
+      Where the last plan request stands, when the address names its run or it is
+      still being made: a run still running links to Check, and one that ended
+      for today with no newer plan says why. A plan that was published adds
+      nothing here; it is shown.
+    #}
+    {% if run_notice %}
+      <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run">{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}</p>
+    {% endif %}
     {% if view.nothing_to_plan %}
       <p class="note" role="status">Nothing to schedule from the work in this planning window.</p>
     {% endif %}

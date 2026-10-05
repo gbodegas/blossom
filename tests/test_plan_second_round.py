@@ -37,6 +37,7 @@ from tests.support import (
     SetClock,
     browser,
     card_for,
+    changed_by_hand,
     composed_plan,
     plan_on,
     planned,
@@ -159,11 +160,11 @@ def test_a_snapshot_no_page_can_send_falls_back_to_the_saved_text_on_both_pages(
         bad = planned(client)
         drafts = state_of(client).drafts
         assert bad.plan_snapshot is not None
-        drafts._connection.execute(
+        changed_by_hand(
+            drafts,
             "UPDATE drafts SET plan_snapshot=? WHERE draft_id=?",
             (spoiled(json.loads(bad.plan_snapshot), field, f"saved{lone}words"), bad.draft_id),
         )
-        drafts._connection.commit()
         report(client, ESSAY_ID, "done")
         before = (drafts.get(good.draft_id), drafts.get(bad.draft_id))
         with caplog.at_level(logging.WARNING, logger="blossom.plan_snapshot"):

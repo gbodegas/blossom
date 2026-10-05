@@ -15,11 +15,13 @@ import logging
 import pathlib
 import sqlite3
 from datetime import UTC, date, datetime, time
+from time import monotonic
 
 import pytest
 from pydantic import ValidationError
 
 from blossom.agent.compose import Composition, MissingPlanMetadata, compose, compose_draft
+from blossom.agent.runs import RUN_DEADLINE_SECONDS
 from blossom.agent.steps import StepRecord
 from blossom.drafts import Draft, DraftStatus
 from blossom.plan_checks import check_plan
@@ -32,7 +34,7 @@ from blossom.plan_snapshot import (
 )
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceConfidence
-from blossom.stores.drafts import DraftsStore, IncoherentBundle, IncompatibleReplay
+from blossom.stores.drafts import DraftsStore, IncoherentBundle, IncompatibleReplay, RunEnded
 from tests.support import (
     ESSAY,
     NAMESAKE_ESSAY,
@@ -47,6 +49,7 @@ from tests.support import (
     drafts_in_memory,
     fixture_clock,
     plan_block,
+    settled_run,
     two_sittings,
 )
 
@@ -226,9 +229,18 @@ def test_a_snapshot_that_does_not_agree_with_itself_is_not_one() -> None:
 # ------------------------------------------------------------- written whole, or not at all
 
 
+THREAD = "plan:2026-08-19:abc12345"
+
+
+def admitted(store: DraftsStore) -> None:
+    """Admit the run the saves below belong to, as planning does before it composes."""
+    deadline = monotonic() + RUN_DEADLINE_SECONDS
+    assert store.admit_run(THREAD, plan_date=PLAN_DATE, deadline_mono=deadline) is None
+
+
 def save(store: DraftsStore, made: Composition, **over: object) -> None:
     given: dict[str, object] = {
-        "thread_id": "plan:2026-08-19:abc12345",
+        "thread_id": THREAD,
         "plan_date": PLAN_DATE,
         "outcome": "unsettled",
         "too_much": True,
@@ -245,8 +257,9 @@ def test_a_bundle_is_saved_together_and_read_back_after_a_restart(tmp_path: path
     made = composed_plan()
     store = DraftsStore.open(path, fixture_clock())
     try:
+        admitted(store)
         save(store, made)
-        store.publish(made.draft.draft_id)
+        assert store.settle_run(THREAD).run.status == "published"
     finally:
         store.close()
     again = DraftsStore.open(path, fixture_clock())
@@ -302,12 +315,9 @@ def test_a_save_that_fails_leaves_no_part_of_the_bundle_and_displaces_nothing(
     made = composed_plan()
     reader: sqlite3.Connection | None = None
     try:
-        store.record_waiting(
-            earlier, thread_id="t-earlier", plan_date=PLAN_DATE, outcome="accepted"
-        )
-        store.publish(earlier.draft_id)
+        settled_run(store, earlier, thread_id="t-earlier", plan_date=PLAN_DATE, outcome="accepted")
+        admitted(store)
         if fault == "commit":
-            store._connection.execute("PRAGMA busy_timeout = 25")
             reader = sqlite3.connect(path)
             reader.execute("BEGIN")
             reader.execute("SELECT COUNT(*) FROM drafts").fetchone()
@@ -319,11 +329,8 @@ def test_a_save_that_fails_leaves_no_part_of_the_bundle_and_displaces_nothing(
             )
             store._connection.commit()
         with pytest.raises(sqlite3.Error):
-            save(
-                store,
-                made,
-                steps=[_step("compose")],
-            )
+            # A short store wait: the commit behind the reader is refused in a quarter second.
+            save(store, made, steps=[_step("compose")], wait=0.25)
         left_open = store._connection.in_transaction
         if reader is not None:
             reader.rollback()
@@ -359,8 +366,8 @@ def _step(node: str) -> StepRecord:
 def test_a_replay_takes_the_whole_bundle_before_publication_and_nothing_after() -> None:
     """Before its run has paused a draft saved again is replaced whole, snapshot with text,
     and keeps the time it was first made; a save that would drop the snapshot it has, or
-    that names another thread, is refused. Once published, the same composition changes
-    nothing, a decision and its steps included, and a different one is refused."""
+    that names a thread with no run in progress, is refused. Once published, its run has
+    settled, so any save is refused and changes nothing, a decision and its steps included."""
     first = composed_plan()
     revised_plan = DailyPlan(
         plan_date=PLAN_DATE,
@@ -375,19 +382,20 @@ def test_a_replay_takes_the_whole_bundle_before_publication_and_nothing_after() 
     later = second.draft.model_copy(update={"created_at": CREATED.replace(hour=23)})
     store = drafts_in_memory()
     try:
+        admitted(store)
         save(store, first)
         with pytest.raises(IncompatibleReplay, match="drop the snapshot"):
             store.record_waiting(
                 first.draft,
-                thread_id="plan:2026-08-19:abc12345",
+                thread_id=THREAD,
                 plan_date=PLAN_DATE,
                 outcome="unsettled",
             )
-        with pytest.raises(IncompatibleReplay, match="another thread"):
+        with pytest.raises(RunEnded):
             save(store, first, thread_id="plan:2026-08-19:another")
         save(store, Composition(draft=later, snapshot=second.snapshot))
         replaced = store.get(first.draft.draft_id)
-        store.publish(first.draft.draft_id)
+        assert store.settle_run(THREAD).run.status == "published"
         store.record_decision(
             first.draft.draft_id,
             status=DraftStatus.APPROVED_FOR_MANUAL_SEND,
@@ -395,11 +403,12 @@ def test_a_replay_takes_the_whole_bundle_before_publication_and_nothing_after() 
             reason="looks right",
         )
         decided = store.get(first.draft.draft_id)
-        save(store, Composition(draft=later, snapshot=second.snapshot), steps=[_step("x")])
+        with pytest.raises(RunEnded):
+            save(store, Composition(draft=later, snapshot=second.snapshot), steps=[_step("x")])
         the_same = store.get(first.draft.draft_id)
-        with pytest.raises(IncompatibleReplay, match="on the pages"):
+        with pytest.raises(RunEnded):
             save(store, first)
-        with pytest.raises(IncompatibleReplay, match="on the pages"):
+        with pytest.raises(RunEnded):
             save(store, second, inputs_digest="digest-2")
         after = store.get(first.draft.draft_id)
     finally:
@@ -452,6 +461,7 @@ def test_a_file_from_before_gains_the_column_twice_over_and_keeps_its_drafts(
             ]
             kept = store.get("draft:old")
             if store.get(made.draft.draft_id) is None:
+                admitted(store)
                 save(store, made)
             new = store.get(made.draft.draft_id)
         finally:

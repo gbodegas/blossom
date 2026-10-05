@@ -58,6 +58,7 @@ from tests.support import (
     SetClock,
     accepting,
     card_for,
+    changed_by_hand,
     client_for,
     due,
     fixture_clock,
@@ -816,10 +817,9 @@ def test_a_plan_waiting_from_before_catch_up_work_reads_as_changed_once() -> Non
         before = uuid.uuid5(INSTRUCTIONS_SHAPE, shape).hex
         fresh = client.get("/parent", headers=PAGE_HEADERS).text
         drafts = state_of(client).drafts
-        drafts._connection.execute(
-            "UPDATE drafts SET inputs_digest=? WHERE draft_id=?", (before, made.draft_id)
+        changed_by_hand(
+            drafts, "UPDATE drafts SET inputs_digest=? WHERE draft_id=?", (before, made.draft_id)
         )
-        drafts._connection.commit()
         behind = client.get("/parent", headers=PAGE_HEADERS).text
         client.post("/student/actions/plan", headers=PAGE_HEADERS)
         again = client.get("/parent", headers=PAGE_HEADERS).text
@@ -1263,10 +1263,11 @@ def test_a_plan_whose_rows_cannot_be_read_names_no_place_for_earlier_work(
         drafts = state_of(client).drafts
         saved = drafts.latest_for(TODAY)
         assert saved is not None
-        drafts._connection.execute(
-            "UPDATE drafts SET plan_snapshot = ? WHERE draft_id = ?", (snapshot, saved.draft_id)
+        changed_by_hand(
+            drafts,
+            "UPDATE drafts SET plan_snapshot = ? WHERE draft_id = ?",
+            (snapshot, saved.draft_id),
         )
-        drafts._connection.commit()
         chosen = page(client)
         removed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
 
@@ -1311,8 +1312,7 @@ def test_a_parent_reads_what_todays_plan_still_holds_and_updates_that_cannot_be_
         made = client.post("/student/actions/plan", headers=PAGE_HEADERS)
         if not readable:
             drafts = state_of(client).drafts
-            drafts._connection.execute("UPDATE drafts SET plan_snapshot = NULL")
-            drafts._connection.commit()
+            changed_by_hand(drafts, "UPDATE drafts SET plan_snapshot = NULL")
         choose(client, OCT_2.assignment_id)
         signed_in(client, THEIRS)
         shown = page(client)

@@ -37,7 +37,8 @@ With the app running as the README describes:
   parent's review under it once there is one; then the school week, Monday
   to Sunday, every assignment saying where its due date came from, and the
   work assigned that week and due after it. `?week=` with any date shows the
-  week that holds it. Each card takes her update, Done or Not yet with an
+  week that holds it, and `?run=<run id>` says how that planning run stands.
+  Each card takes her update, Done or Not yet with an
   optional note, through a form alone, and offers to change or undo it; work
   she has reported done folds under the active cards, and a card she saves
   stays where it was until her next visit. There is no JSON route for her
@@ -54,7 +55,24 @@ With the app running as the README describes:
   update, or Undo gets 403 on her week before the form is read. There is no
   JSON route for it.
 - <http://127.0.0.1:8000/student/plans/today> is today's plan as JSON; a POST
-  to `/student/plans` makes one.
+  to `/student/plans` makes one. The POST answers 201 with her plan as
+  `GET /student/plans/today` shows it, or, when that reading doesn't finish
+  in time after the plan is published, 201 with
+  `{"run_id", "plan_date", "status": "published"}`; 202 with
+  `{"run_id", "plan_date", "status": "unconfirmed"}` when the plan's saving
+  couldn't be confirmed in time; 409 with a sentence when there is nothing to
+  plan or the run ended without a plan, and 409 with
+  `{"detail": {"message", "run_id", "plan_date", "seconds_left"}}` while the
+  household's run is still running; and 503 when no model key is set, when
+  the run couldn't start, or when the plan was made but couldn't be saved.
+  `GET /student/plans/runs/{run_id}` says where a run stands,
+  `{"run_id", "plan_date", "status": "running" | "published" | "ended", "reason", "draft_id"}`,
+  after ending any run past its deadline: 404 for an unknown run, and 503
+  when the record can't be read in time. The family's `POST /parent/plans`
+  and `GET /parent/plans/runs/{run_id}` answer the same way, its 201 being
+  the run's record (`PlanRunView`), its 409 message saying "Her homework
+  updates are saved.", and 422 for an evening that has passed or is past the
+  calendar.
 - <http://127.0.0.1:8000/student/homework-notes> is her homework notes, with
   the ones she put away under `/archived`, the ones in homework under
   `/added`, the form for a new one under `/new`, and each note on a page of
@@ -89,7 +107,8 @@ With the app running as the README describes:
   change. A parent can also start an evening's plan for her there. A run that
   ended without a plan is listed with its steps too, under "Plans that
   couldn't be made", which opens by itself when the latest run of an evening
-  still ahead made no plan. Planning needs an API
+  still ahead made no plan, and `?run=<run id>` says how one run stands.
+  Planning needs an API
   key; reading and reviewing do not, so without one either page says a plan
   cannot start and everything else works. Where her Done stands beside a
   school report of Missing, the page offers Mark checked, with a note for

@@ -14,6 +14,7 @@ import pathlib
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
@@ -167,8 +168,10 @@ def test_a_startup_that_fails_late_closes_what_it_opened(
     opened: list[DraftsStore] = []
     real_open = DraftsStore.open
 
-    def remembering_open(path: pathlib.Path, clock: Clock) -> DraftsStore:
-        store = real_open(path, clock)
+    def remembering_open(
+        path: pathlib.Path, clock: Clock, monotonic: Callable[[], float] = time.monotonic
+    ) -> DraftsStore:
+        store = real_open(path, clock, monotonic)
         opened.append(store)
         return store
 
@@ -191,8 +194,10 @@ def test_a_startup_whose_sweep_fails_still_closes_the_stores(
     opened: list[DraftsStore] = []
     real_open = DraftsStore.open
 
-    def remembering_open(path: pathlib.Path, clock: Clock) -> DraftsStore:
-        store = real_open(path, clock)
+    def remembering_open(
+        path: pathlib.Path, clock: Clock, monotonic: Callable[[], float] = time.monotonic
+    ) -> DraftsStore:
+        store = real_open(path, clock, monotonic)
         opened.append(store)
         return store
 

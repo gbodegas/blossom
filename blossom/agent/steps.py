@@ -69,6 +69,14 @@ class RunTiming(BaseModel):
     output_tokens: int | None = None
     largest_output_tokens: int | None = None
     category: str | None = None
+    generation_seconds: float | None = None
+    """Seconds the plan graph ran, until its result or the deadline."""
+    settle_seconds: float | None = None
+    """Seconds settling took: the wait for the lock, held reviews and the transaction."""
+    response_seconds: float | None = None
+    """Seconds from the start of the run until its answer was decided."""
+    unconfirmed: bool = False
+    """Whether the answer could not confirm that the plan was saved."""
 
 
 EXPECT_RECORD_HOLDS = "the record's due dates hold against the school's sources"

@@ -1692,7 +1692,12 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     )
     assert f"readonly>{escape(TYPED)}</textarea>" in main
     assert took < 9
-    ran = [line for line in seen if line.strip().upper() not in ("ROLLBACK", "BEGIN DEFERRED")]
+    ran = [
+        line
+        for line in seen
+        if line.strip().upper() not in ("ROLLBACK", "BEGIN DEFERRED")
+        and not line.strip().upper().startswith("PRAGMA BUSY_TIMEOUT=")
+    ]
     assert len(ran) == 1
     assert "drafts" in ran[0]
     assert after == before

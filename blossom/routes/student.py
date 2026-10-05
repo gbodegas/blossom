@@ -59,6 +59,7 @@ from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
+from functools import partial
 from typing import Annotated, Any, ClassVar, Final, Literal, cast
 
 from fastapi import (
@@ -71,11 +72,12 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import URL
 
+from blossom.agent.runs import Unfinished, bounded
 from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
 from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, statuses_for
@@ -140,20 +142,34 @@ from blossom.routes.navigation import (
     week_href,
 )
 from blossom.routes.runs import (
+    CHECK_AGAIN,
+    CHECK_ON_THAT_REQUEST,
+    COULD_NOT_START,
+    UNCONFIRMED,
     AlreadyPlanning,
+    CouldNotStart,
     Graphs,
+    NotSaved,
+    RunCheck,
+    RunNotice,
+    Unconfirmed,
     already_planning,
+    asked_run,
     ended_without_a_plan,
-    no_plan_made,
+    latest_run_notice,
+    make_plan,
+    not_saved,
     require_model,
     require_work,
-    run_plan,
+    run_check,
+    run_status_view,
+    saved_sentence,
 )
 from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
 from blossom.stores.catch_up import ChoiceMade, ChoiceNotSaved, NotOnRecord
-from blossom.stores.drafts import OVERTAKEN, DraftRecord
+from blossom.stores.drafts import OVERTAKEN, STORE_WAIT_SECONDS, DraftRecord
 from blossom.stores.help_requests import (
     HELP_RECENT_DAYS,
     NOTE_MAX_LENGTH,
@@ -206,10 +222,13 @@ from blossom.views import (
     HelpNoteView,
     HelpRequestView,
     NamedAssignmentView,
+    PublishedRunView,
+    RunStatusView,
     SchoolStatementView,
     StudentAssignmentView,
     StudentDueThisWeekView,
     StudentPlanView,
+    UnconfirmedRunView,
     UpdateHistoryRowView,
     WeekView,
     WorkloadSignalView,
@@ -365,9 +384,11 @@ safe."""
 @dataclass(frozen=True)
 class PlanFailure:
     """A plan press that ended without a plan, for the line that says so: each assignment the
-    run named for a date that already passed, by its title and the address of its dates."""
+    run named for a date that already passed, by its title and the address of its dates, and
+    the link to where a run named by the answer stands."""
 
     checks: tuple[tuple[str, str], ...] = ()
+    run: RunCheck | None = None
 
 
 PLAN_FAILED: Final = (
@@ -1037,25 +1058,61 @@ def plan_for_today(state: State) -> StudentPlanView:
     return plan
 
 
-@router.post("/plans", response_model=StudentPlanView, status_code=status.HTTP_201_CREATED)
-async def make_todays_plan(state: State, graphs: Graphs) -> StudentPlanView:
+@router.post(
+    "/plans",
+    response_model=StudentPlanView,
+    status_code=status.HTTP_201_CREATED,
+    responses={status.HTTP_202_ACCEPTED: {"model": UnconfirmedRunView}},
+)
+async def make_todays_plan(
+    request: Request, state: State, graphs: Graphs
+) -> StudentPlanView | JSONResponse:
     """Ask for today's plan. It is hers as soon as it is made; a parent's review comes after.
 
     A run that ends without a plan, because the checks never passed or the
-    model did not answer, is a 409 naming the outcome, and her page keeps
-    whatever plan it had. An evening with nothing left to plan is a 409 too,
-    before any run is written or a model asked for.
+    model did not answer, is a 409 saying why in the reader's words, and her
+    page keeps whatever plan it had. An evening with nothing left to plan is a
+    409 too, before any run is written or a model asked for, and so is a press
+    while the household's run is still running, naming it. A plan whose saving
+    couldn't be confirmed in time is a 202 with its run's id, to check at
+    ``plans/runs/{run_id}``. The plan answered is the record its publication
+    returned, read for her on a worker thread; when that reading doesn't finish
+    in time, the plan stands published and the 201 names its run instead.
     """
-    require_work(state, state.clock.today())
+    budget = graphs.budget()
+    today = state.clock.today()
+    parent = parent_reads(request)
+    await require_work(state, today, budget)
     require_model(graphs)
-    run = await run_plan(graphs.build(), state.clock.today(), state, budget=graphs.budget())
-    if run.draft_id is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, detail=no_plan_made(run.outcome))
-    record = state.drafts.get(run.draft_id)
-    if record is None:
-        msg = f"the run made {run.draft_id!r} but the table has no such draft"
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
-    return plan_view(state, record)
+    try:
+        made = await make_plan(graphs.build(), today, state, budget=budget)
+    except AlreadyPlanning as error:
+        raise AlreadyPlanning(error.run, parent=parent) from None
+    except Unconfirmed as unconfirmed:
+        return JSONResponse(
+            unconfirmed.view().model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
+        )
+    if made.record is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=ended_without_a_plan(
+                made.view.outcome, parent=parent, past_due=made.view.past_due
+            ),
+        )
+    record = made.record
+    try:
+        return await bounded(partial(plan_view, state, record), STORE_WAIT_SECONDS)
+    except Exception as error:
+        if not isinstance(error, Unfinished):
+            logger.warning("the plan of run %s could not be read: %s", record.thread_id, error)
+        published = PublishedRunView(run_id=record.thread_id, plan_date=record.plan_date)
+        return JSONResponse(published.model_dump(mode="json"), status_code=status.HTTP_201_CREATED)
+
+
+@router.get("/plans/runs/{run_id}", response_model=RunStatusView)
+async def plan_run(run_id: str, state: State) -> RunStatusView:
+    """Where one planning run stands, after ending any run past its deadline."""
+    return await run_status_view(state, run_id)
 
 
 def source_label(
@@ -1804,6 +1861,7 @@ def student_page(
     in_place: InPlace | None = None,
     status_code: int = status.HTTP_200_OK,
     today: date | None = None,
+    run_notice: RunNotice | None = None,
 ) -> HTMLResponse:
     """Render her page. ``problem`` is what an action could not do, said once at the top.
 
@@ -1942,6 +2000,7 @@ def student_page(
             "problem_target": card.assignment_id if card is not None and about_a_card else None,
             "pressed": pressed,
             "plan_failure": plan_failure,
+            "run_notice": run_notice,
             "in_place_said": kept.said(),
             "plan_reading": None if todays is None else todays.reading,
             "plan_asked": plan_asked,
@@ -2068,6 +2127,9 @@ def due_this_week(
         str | None,
         Query(description="the cards Change or Keep it as it is keeps in place; read once"),
     ] = None,
+    run: Annotated[
+        str | None, Query(description="a planning run to say where it stands; changes nothing")
+    ] = None,
 ) -> Response:
     """Render her week and today's plan.
 
@@ -2129,6 +2191,7 @@ def due_this_week(
             if earlier and not earlier_said
             else None
         )
+        parent = parent_reads(request)
         page = week_page(
             request,
             state,
@@ -2141,6 +2204,9 @@ def due_this_week(
             marker=marker_from(asked, asked_again),
             earlier_note=chose,
             today=today,
+            run_notice=asked_run(state, run, PAGE, parent=parent)
+            if run is not None
+            else latest_run_notice(state, PAGE, parent=parent, today=today),
         )
     except sqlite3.Error as error:
         again = asked_address(WEEK_PAGE, carrying(request.scope["query_string"], kept))
@@ -2198,10 +2264,12 @@ def week_page(
     marker: HelpMarker | None,
     earlier_note: "EarlierNote | None" = None,
     today: date | None = None,
+    run_notice: RunNotice | None = None,
 ) -> HTMLResponse:
-    """Her week as an address asks for it, with the cards a visit keeps in place and what a
-    choice in Earlier homework to check did, for the household day ``today`` the caller read.
-    A record that cannot be read raises ``sqlite3.Error``."""
+    """Her week as an address asks for it, with the cards a visit keeps in place, what a
+    choice in Earlier homework to check did, and what today's panel says about a planning
+    run, for the household day ``today`` the caller read. A record that cannot be read
+    raises ``sqlite3.Error``."""
     if week is None:
         return student_page(
             request,
@@ -2214,6 +2282,7 @@ def week_page(
             in_place=in_place,
             earlier_note=earlier_note,
             today=today,
+            run_notice=run_notice,
         )
     try:
         chosen = date.fromisoformat(week.strip())
@@ -2249,6 +2318,7 @@ def week_page(
         in_place=in_place,
         earlier_note=earlier_note,
         today=today,
+        run_notice=run_notice,
     )
 
 
@@ -3309,45 +3379,72 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     not whole keeps none, and plans all the same.
     """
     fields, whole = await fields_of(request, PLAN_FIELDS, may_be_absent=PLAN_FIELDS)
+    budget = graphs.budget()
     kept = InPlace.read(fields.get(IN_PLACE)) if whole else InPlace()
+    parent = parent_reads(request)
 
-    def not_made(problem: str, code: int, failure: PlanFailure | None = None) -> HTMLResponse:
-        return shown_once(
-            request,
-            state,
-            lambda: student_page(
+    async def not_made(problem: str, code: int, failure: PlanFailure | None = None) -> HTMLResponse:
+        # Her page is read on a worker thread, for at most the store's wait; past it,
+        # the page that reads no store says the same.
+        fallback = week_not_shown(request, PLAN_NOT_MADE, problem)
+
+        def page() -> HTMLResponse:
+            return shown_once(
                 request,
                 state,
-                problem=problem,
-                pressed=True,
-                plan_failure=failure,
-                in_place=kept,
-                status_code=code,
-            ),
-            week_not_shown(request, PLAN_NOT_MADE, problem),
-            code,
-        )
+                lambda: student_page(
+                    request,
+                    state,
+                    problem=problem,
+                    pressed=True,
+                    plan_failure=failure,
+                    in_place=kept,
+                    status_code=code,
+                ),
+                fallback,
+                code,
+            )
+
+        try:
+            return await bounded(page, STORE_WAIT_SECONDS)
+        except Unfinished:
+            return not_shown(request, state, fallback, code)
 
     try:
-        require_work(state, state.clock.today())
+        await require_work(state, state.clock.today(), budget)
         require_model(graphs)
-        run = await run_plan(graphs.build(), state.clock.today(), state, budget=graphs.budget())
+        made = await make_plan(graphs.build(), state.clock.today(), state, budget=budget)
     except AlreadyPlanning as error:
-        return not_made(
-            already_planning(parent=parent_reads(request)), error.status_code, PlanFailure()
+        return await not_made(
+            already_planning(error.run, parent=parent),
+            error.status_code,
+            PlanFailure(run=run_check(PAGE, error.run.run_id, CHECK_ON_THAT_REQUEST)),
+        )
+    except NotSaved as error:
+        return await not_made(not_saved(parent=parent), error.status_code, PlanFailure())
+    except CouldNotStart as error:
+        return await not_made(
+            f"{COULD_NOT_START} {saved_sentence(parent=parent)}", error.status_code, PlanFailure()
+        )
+    except Unconfirmed as unconfirmed:
+        return await not_made(
+            f"{UNCONFIRMED} {saved_sentence(parent=parent)}",
+            status.HTTP_202_ACCEPTED,
+            PlanFailure(run=run_check(PAGE, unconfirmed.run_id, CHECK_AGAIN)),
         )
     except HTTPException as error:
-        return not_made(f"Blossom could not make a plan: {error.detail}", error.status_code)
+        return await not_made(f"Blossom could not make a plan: {error.detail}", error.status_code)
     except Exception:
         logger.exception("today's plan failed on the way")
-        return not_made(PLAN_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR, PlanFailure())
+        return await not_made(PLAN_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR, PlanFailure())
+    run = made.view
     if run.outcome == OVERTAKEN:
         # A newer plan for today reached the page while this one was being made; that
         # plan is the one shown.
         return sent_in_place(f"{PAGE}?show_plan=1", kept)
     if run.draft_id is None:
-        return not_made(
-            ended_without_a_plan(run.outcome, parent=parent_reads(request), past_due=run.past_due),
+        return await not_made(
+            ended_without_a_plan(run.outcome, parent=parent, past_due=run.past_due),
             status.HTTP_409_CONFLICT,
             None
             if run.outcome == NOTHING_TO_SCHEDULE_OUTCOME

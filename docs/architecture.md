@@ -529,8 +529,9 @@ exclusive lock on a file beside the drafts file and another beside the
 saved-state file, after each path has passed the guard the stores apply, each named for the file as it really is so two spellings of
 one file claim one lock, and holds them while it runs, so a second process
 over either file is refused with a sentence naming the lock, and the decision
-lock, the set of runs in flight, and the sweep cover everything that happens
-to those files.
+lock, the sweep, and the `running` rows of the `runs` table, which admission
+and the sweep's list of threads to keep both read, cover everything that
+happens to those files.
 
 The page at `/parent` is the same three things as forms: a date to plan for
 her, the drafts waiting for review with their text and two buttons, and the
@@ -545,7 +546,19 @@ refused at the boundary rather than stored. The two buttons read "Looks good"
 and "Ask for a change", and each carries an accessible name with the draft's
 evening, and its position when several wait, so the controls can be told apart
 without reading around them. Without a key the page still reads and says why
-a plan cannot start.
+a plan cannot start. A waiting plan whose saved review step can't be resumed,
+because its thread is missing or was written by another graph version, says
+in place of Looks good and Ask for a change: "This plan can't be approved or
+refused here, because Blossom can't finish its saved review step." For today's
+evening it adds "It stays on her page until a new plan replaces it, and closes
+as expired two weeks after its evening."; for any other evening, only "It
+closes as expired two weeks after its evening." The page's check fails open:
+it hides the buttons only when its read positively finds no thread, or a
+thread from another graph version, and on any other result, an error, or a
+timeout the buttons stay, because the decision route's 409, which uses the
+same words, is the authority. A decision on a draft already superseded is refused with 409 too,
+and its saved thread is cleared in the background, since nothing can resume
+it; a thread that can't be cleared then is left to the sweep.
 
 Under each draft the page shows how the plan was made: the run's step records,
 one per node, each saying what the node expected and what it found. A run that
@@ -815,7 +828,8 @@ cannot see its last plan writes a new one and moves what no finding was
 about. `compose` renders the plan, the doubtful due dates, and the
 reviewer's notes as the text she reads, and saves it to the drafts table
 under an id derived from the thread, as the record; the route publishes it
-once the run has paused, and from that moment the plan is on her page. `require_human_approval` is the gate from `blossom/agent/gates.py`,
+with `settle_run` once the run has paused, and from that moment the plan is on
+her page. `require_human_approval` is the gate from `blossom/agent/gates.py`,
 unchanged in mechanism and narrowed in meaning: it pauses the thread for a
 parent's review, which she does not wait for. Ordinary planning is hers, so
 the review is shown under the plan on her page, looks good or a change asked
@@ -845,28 +859,89 @@ naming which, and no draft. The stop reason is read before the parsed value,
 because a plan cut off after two of its three blocks is valid JSON and a wrong
 plan.
 
-A run is bounded in time as well. It has `RUN_DEADLINE_SECONDS` in all, held by a
-`RunBudget` that travels in the graph's context and is never saved: each planner
-and reviewer request gets only what is left of it, a busy service is asked again
-at most `MODEL_RETRIES` times inside it, and no request starts once it is spent.
-A run that runs out of time, or whose service fails, publishes nothing and is
-recorded as `timed_out` or `service_failed` with the steps it took. An answer
-that comes back after the limit is set aside, even from a request that held the
-event loop. Waiting for the decision lock, to start or to publish, spends the
-same time, and so does reading held reviews before publishing, so a draft is
-never published after it. Work the deadline check holds to a day before the
-evening, by its own rule, ends a run at `retrieve` as `date_problem`, before any
-model is asked, since no plan could pass the check over it: work with no date
-still to come that she did not choose, such as undated work whose only school
-date has passed. Chosen earlier work and work a later date still holds for are
-planned. One run
-per evening is in flight at a time: a press while one is working is refused with
-`AlreadyPlanning`, checked and joined under the decision lock, so it starts no run
-and asks no model. A run that pauses after another plan for its evening was
-published, as the sweep publishes a recovered one, is taken back as `overtaken`,
-so a late result never replaces a newer plan. Each run's time, node
-by node, its requests and retries, and the size of its answers are kept with its
-record.
+A run is bounded in time as well. It has `RUN_DEADLINE_SECONDS`, ninety seconds,
+in all, held by a `RunBudget` that starts at the handler's entry, once the form
+body is read, travels in the graph's context, carries the run's steps, and is
+never saved: each planner and reviewer request gets only what is left of it, a
+busy service is asked again at most `MODEL_RETRIES` times inside it, and no
+request starts once it is spent. What the ninety seconds promise is this. No
+model attempt, retry, or authorization to publish happens after them. Every
+planning wait the code controls, reading the week, admission, the graph, the
+decision lock, held reviews, and the settle, is capped by what is left, and
+then by `SETTLE_GRACE_SECONDS`, one second, for the settle's commit, so the
+answer is decided by the deadline plus one second: published, a named failure,
+not saved, or unconfirmed with its run ID. Housekeeping, such as clearing a
+thread or completing the run's timing, is detached and adds no wait. And a
+late result never publishes. What they don't promise: that threads, LangGraph's
+unwinding of a canceled graph, or disk writes stop at ninety seconds; that a
+commit authorized in time lands before them; any bound on rendering the answer
+page; an answer on time while application code holds the event loop past the
+deadline, which comes when the loop is free and still never publishes late;
+behavior when storage or the operating system stalls; or the sixty-second
+target for a plan, which is measured, not enforced. A run that runs out of
+time, or whose service fails, publishes nothing and is recorded as `timed_out`
+or `service_failed` with the steps it took. Work the deadline check holds to a
+day before the evening, by its own rule, ends a run at `retrieve` as
+`date_problem`, before any model is asked, since no plan could pass the check
+over it: work with no date still to come that she did not choose, such as
+undated work whose only school date has passed. Chosen earlier work and work a
+later date still holds for are planned. Each run's time, node by node, its
+requests and retries, the size of its answers, and how long generating,
+settling, and answering took are kept with its record, with a mark when its
+answer was unconfirmed.
+
+A run's record is its row in the `runs` table, keyed by its thread ID, which is
+also its run ID: a status of `running`, `published`, or `ended`, its deadline on
+the process's one monotonic clock, and `base_order`, the evening's last place in
+the published order when the run was admitted, which is the plan it expects to
+replace. The household has at most one `running` run. `admit_run` records it in
+one transaction that first ends any run past its deadline, and a press while
+one runs is refused with 409, naming that run's ID, its evening, and the seconds
+left, its deadline plus the grace rounded up, so it starts no run and asks no
+model. A parent's run for another evening holds the household's one slot too.
+A run that has published or ended never blocks a new one, and a `running` row
+blocks at most until its deadline.
+
+`settle_run` is the only publication. It is one `BEGIN IMMEDIATE` transaction
+that checks, inside it, that the run is still running, that its deadline is
+still ahead, that the evening's last published place still equals the
+`base_order` read at admission, and that its draft exists, unpublished and
+undecided. A run that fails a check ends `timed_out`, `overtaken`, or
+`interrupted` in the same transaction and its draft is deleted, so a late
+result never replaces a newer plan. A commit authorized in time may land after
+the deadline, within the grace, and it stands. Every request ends in one of
+these: published; timed out; a service failure; a plan that couldn't be used,
+because it never passed the checks or the model's answer was cut off, refused,
+or unparseable, or a run interrupted on the way; not saved, when the store
+refused the publication before it began or a read-back found the run still
+running; unconfirmed, when the outcome couldn't be read back before the
+deadline or the settle didn't finish within the grace, answered with the run
+ID; already planning, the 409 above; or couldn't start, a 503 when the week
+couldn't be read or the run admitted in time, with no row written. Only
+`StoreBusy` and `WriterBusy`, which the store raises before any transaction
+begins, confirm a refusal; any other failure of the settle is read back by run
+ID before the deadline, never after it. The record keeps the reason that
+committed, and the answer names what the route observed; when the two differ,
+both say no plan was published, and the record is authoritative for the
+reason.
+
+The run ID is how a run is found again. `GET /student/plans/runs/{run_id}` and
+`GET /parent/plans/runs/{run_id}` read where it stands, after ending any run
+past its deadline. Her week and the family page take `?run=<run id>` and say
+the run's outcome, with the link "Check on it." while it runs and "Check
+again." when its outcome couldn't be confirmed; a press refused while a run is
+being finished links "Check on that request." to it. On load, both pages read
+the household's newest run and say "A plan for {evening} is being made."
+within its deadline, or "Blossom is finishing the last plan request." past it,
+each with "Check on it.", so an answer that never arrived, or a second tab,
+shows the run in progress rather than a plan whose Plan again would be refused.
+Her week also says the outcome of a run for today's evening that ended with no
+newer plan published: the outcome sentence, and that the current plan hasn't
+changed. A date problem is said as one, since planning again can't fix it:
+some work has a due date that already passed, so no plan can finish it on
+time; a run for another evening, asked for by its ID, names that evening
+instead of today's plan. The family page shows only the running cases, since
+it lists ended runs below.
 
 The prompts in `blossom/agent/prompts.py` put the data first and the request
 last, and everything copied from another system sits inside a labeled block
@@ -1689,56 +1764,89 @@ over is closed as superseded, so at most one draft waits per evening and the
 plan on her page is the one a review can land on; those are the two decision
 values the system records itself, and a thread is cleared with each.
 
-A draft is saved when it is composed and published when its run pauses, and
-the two are different acts. The save is the record: it survives whatever
-happens next, and a node replayed after a crash saves its text again and
-changes nothing else. Publication, done by the route under the decision lock
-once the run has paused, is what puts the draft on the pages: it takes the
-next place in the published order, closes any published draft still waiting
-for the evening as superseded by it, and clears their threads, since no review
-can reach them. So nothing either page shows is a draft whose run might still
-fail, a review in progress lands or is refused before its thread goes, and
-which plan is current follows the order runs paused in, whatever order their
-drafts were composed or saved in. A run that fails between saving and pausing
-takes its draft back: the row goes and the run is kept with its steps as
-interrupted. It displaced nothing, so the pages are what they were before the
-run, and the run itself is listed among those that ended without a plan. A
-publication that fails is treated the same way, before the failure reaches
-the page, and each half of taking back is attempted whatever became of the
-other. Before a plan is published, any review a waiting draft's thread holds
-that the table never got is recorded, so a review that reached the thread is
-never superseded away with it. A run joins the set of runs in flight under the decision lock, so
-it starts either before a sweep or after one and a sweep never counts threads
-while a run is joining. The
-draft is taken back first and the thread cleared second, because the
-saved-state store is the likelier of the two to be what failed; a thread that
-cannot be cleared is left to the sweep. Opening a drafts file restores two
-invariants whatever version wrote it: every published draft has its place in
-the published order, and one draft waits per evening, the rest closed as
-superseded by the evening's latest, so a file from before these rules, or one
-a dying process left half opened, is brought into line and the startup sweep
-clears the threads of what was closed. At startup a sweep applies the rules to
-whatever the last process left behind: a draft saved but never published is
-published if its thread paused at the gate, which the interrupt left on the
-saved state shows, several in the order their checkpoints say they paused,
-and taken back if the thread is missing, never reached the draft, or holds it
-without having paused; a published draft no thread can review is taken back
-too,
-the drafts that waited too long are expired, and every thread that no waiting
-draft refers to is cleared, which covers finished runs whose thread was never
-removed and runs that never finished. The same sweep runs every hour the
-process is up, under the decision lock, so a draft's fortnight ends when it
-ends rather than at the next restart; it is told which threads the process is
-running at that moment and leaves those runs and their drafts alone. A review
+A draft is saved when it is composed and published when its run settles, and
+the two are different acts. The save is the record: it is written only while
+the run is running and within its deadline, a run past its deadline is
+recorded `timed_out` instead, and a node replayed after a crash saves its text
+again and changes nothing else. Publication is `settle_run` alone, called once
+by the route that admitted the run, under the decision lock, after any review
+a waiting draft's thread holds that the table never got is recorded, so a
+review that reached the thread is never superseded away with it. In one
+transaction it puts the draft on the pages, takes the next place in the
+published order, closes any published draft still waiting for the evening as
+superseded by it, and records the run `published`; the route then clears the
+closed drafts' threads, since no review can reach them. So nothing either page
+shows is a draft whose run might still fail, a review in progress lands or is
+refused before its thread goes, and which plan is current follows the order
+runs settled in. A run that ends without a plan is ended by `end_run`, which
+deletes its unpublished, undecided draft in the same transaction that records
+the ending, and the run is kept with its steps and the step it ended on. It
+displaced nothing, so the pages are what they were before the run, and the run
+itself is listed among those that ended without a plan.
+
+Every call on the drafts store holds it through one session that waits at most
+`STORE_WAIT_SECONDS`, five seconds, unless its caller gives it less: the
+store's lock is taken with that timeout, and the file's busy timeout is set to
+what is left before `BEGIN` and again before `COMMIT`, so the lock, the writer,
+and the commit share one cap and no call inherits another's. Two errors say
+that nothing was begun, both raised before any transaction starts: `StoreBusy`,
+when another caller held the store for the whole wait, and `WriterBusy`, when
+another connection held the file's writer. A busy wait overruns its cap on
+Windows, because SQLite's busy handler counts its nominal sleeps and Windows
+rounds each sleep up to its 15.6 ms tick: a 300 ms cap gave up after about
+0.83 s, and a 2,000 ms cap after about 3.25 s. The route's own wait, `bounded`,
+which runs the call on a worker thread, still ends on time, so every answer
+comes by the deadline plus one second, and nothing publishes late, because the
+deadline is checked inside the transaction once the writer is held. Two weaker
+results follow. Under writer contention near the deadline, a settle's outcome
+can be unconfirmed rather than timed out. And an admission the route gave up
+on, answered as couldn't start, can still insert its row, which then ends at
+its own deadline; until then a press gets the 409, which says truthfully that
+the last request is still being finished.
+
+Opening a drafts file restores two invariants whatever version wrote it: every
+published draft has its place in the published order, and one draft waits per
+evening, the rest closed as superseded by the evening's latest, so a file from
+before these rules, or one a dying process left half opened, is brought into
+line and the startup sweep clears the threads of what was closed. The same
+open settles the run record, at every open and to the same result the second
+time: a run without a status becomes `published` when its draft is published
+and `ended` otherwise, `interrupted` when it stopped with a draft it never
+published; an unpublished draft nobody decided about is deleted unless its run
+is running, since a missing mark never makes a draft publishable; and a
+`withheld_drafts` table left in the file is dropped. Published drafts,
+decisions, and steps are untouched, and a run whose status disagrees with
+whether its draft is published is logged by its thread and left as it is.
+
+At startup, before anything is served, every run the record still holds as
+`running` belongs to a process that stopped, and its deadline was read on that
+process's clock, so `end_interrupted_runs` ends each one `interrupted` and
+deletes its draft. A failure there stops the start, as a failed sweep does,
+since such a row would refuse every press until long after its evening. Then a
+sweep applies the rules to whatever the last process left behind, and the same
+sweep runs every hour the process is up, under the decision lock, so a draft's
+fortnight ends when it ends rather than at the next restart. The sweep never
+publishes a draft and never deletes a published one. It records any review a
+waiting draft's thread holds that the table never got, ends runs past their
+deadline as `timed_out`, closes the drafts that waited past
+`PAUSED_RETENTION_DAYS` as expired, and clears every thread that neither a
+waiting draft nor a running run refers to, which covers finished runs whose
+thread was never removed and runs a stopped process left behind. The threads
+are listed before the running runs are read, so a run admitted in between is
+either missed by the listing or kept by the read. A published waiting draft
+whose thread is missing, or was written by another graph version, is kept
+until a newer plan supersedes it or it expires, and a decision on it answers
+409 with the sentence the family page shows in place of its buttons. A review
 that reaches a thread and then fails to land in the table leaves the thread
-past the gate with the decision it holds; the next review of that draft, or
-the next sweep, finishes the record with that decision rather than taking a
-new one, whatever the request or the evening's signal says by then, and a
-request that disagrees is told what stood. Such a draft is never expired away.
-Tidying a thread after a run or a review has its outcome is never what a
-caller hears about: a thread that cannot be cleared is left to the sweep.
-The saver's only pruning primitive deletes a thread whole, and
-that is the only granularity the rule needs.
+past the gate with the decision it holds; the next
+review of that draft, the next run for its evening, or the next sweep finishes
+the record with that decision rather than taking a new one, whatever the
+request or the evening's signal says by then, and a request that disagrees is
+told what stood. Such a draft is never expired away. Tidying a thread after a
+run or a review has its outcome is never what a caller hears about: a thread
+that cannot be cleared is left to the sweep. The saver's only pruning
+primitive deletes a thread whole, and that is the only granularity the rule
+needs.
 
 **Not built:** the student's ability to see and delete what a thread holds.
 

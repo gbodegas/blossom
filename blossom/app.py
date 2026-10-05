@@ -12,6 +12,7 @@ module has no side effects.
 """
 
 import logging
+import time
 from collections.abc import Callable
 from typing import Final
 
@@ -106,7 +107,9 @@ def unreadable_form(sample: bool) -> Callable[[Request, Exception], HTMLResponse
     return answer
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, monotonic: Callable[[], float] = time.monotonic
+) -> FastAPI:
     """Build the application without starting it.
 
     ``settings`` lets a test point the app at a different fixture set without
@@ -114,10 +117,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     Construction changes nothing outside the returned object. Opening stores
     and forcing hosted tracing off both happen in the lifespan, which
     ``uvicorn`` runs at startup and ``TestClient`` runs only as a context
-    manager, so tests use ``with TestClient(app) as client:``.
+    manager, so tests use ``with TestClient(app) as client:``. ``monotonic`` is
+    the clock runs are timed on, which a test may move by hand.
     """
     resolved = get_settings() if settings is None else settings
-    app = FastAPI(title="Blossom", lifespan=create_lifespan(resolved))
+    app = FastAPI(title="Blossom", lifespan=create_lifespan(resolved, monotonic))
     app.mount("/static", StaticFiles(directory=resolved.static_path), name="static")
     app.include_router(household.router)
     app.include_router(student.router)

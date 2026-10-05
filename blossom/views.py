@@ -15,6 +15,7 @@ call for that policy layer.
 
 from collections.abc import Mapping, Sequence
 from datetime import date
+from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
@@ -763,6 +764,42 @@ class PlanRunView(BaseModel):
     """What each node expected and found, in order, so the run explains itself."""
     past_due: list[PastDueView] = []
     """The work due before the evening that ended the run before any model was asked."""
+
+
+class UnconfirmedRunView(BaseModel):
+    """A planning request whose plan couldn't be confirmed saved in time: the run to check."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    plan_date: date
+    status: Literal["unconfirmed"] = "unconfirmed"
+
+
+class PublishedRunView(BaseModel):
+    """A planning request whose plan was published, answered by its run when her reading of
+    the plan doesn't finish in time: the plan stands, and ``GET /student/plans/today`` reads it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    plan_date: date
+    status: Literal["published"] = "published"
+
+
+class RunStatusView(BaseModel):
+    """Where one planning run stands in the record: running, published with its draft, or
+    ended with its reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    plan_date: date
+    status: Literal["running", "published", "ended"]
+    reason: str | None = None
+    """Why a run ended, or the outcome of a published one; ``None`` while it runs."""
+    draft_id: str | None = None
+    """The plan a published run put on the pages."""
 
 
 class StageView(BaseModel):

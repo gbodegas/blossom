@@ -45,6 +45,7 @@ script can have with no guard anywhere.
 
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -223,8 +224,10 @@ class StateGuard:
             self.refuse(safe)
             return safe
 
-        def create_lifespan(settings: Settings) -> Lifespan:
-            starts = lifespan_for(settings)
+        def create_lifespan(
+            settings: Settings, monotonic: Callable[[], float] = time.monotonic
+        ) -> Lifespan:
+            starts = lifespan_for(settings, monotonic)
 
             @asynccontextmanager
             async def lifespan(app: FastAPI) -> AsyncIterator[None]:

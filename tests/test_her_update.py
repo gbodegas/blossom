@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.agent.graph import plan_graph_for
+from blossom.agent.runs import RunBudget
 from blossom.app import create_app
 from blossom.assignment_status import statuses_for
 from blossom.dependencies import ApplicationState, get_application_state
@@ -93,6 +94,7 @@ from tests.support import (
     as_served,
     browser,
     card_for,
+    changed_by_hand,
     client_for,
     fixture_clock,
     fixture_settings,
@@ -1463,8 +1465,7 @@ def test_a_plan_that_speaks_about_work_she_has_since_finished_says_so_on_both_pa
         over_json = client.get("/student/plans/today").json()
         draft_id = client.get("/parent/approvals").json()["waiting"][0]["draft_id"]
         state = state_of(client)
-        state.drafts._connection.execute("UPDATE drafts SET plan_assignment_ids=NULL")
-        state.drafts._connection.commit()
+        changed_by_hand(state.drafts, "UPDATE drafts SET plan_assignment_ids=NULL")
         legacy = client.get(PAGE, headers=PAGE_HEADERS).text
         legacy_family = client.get("/parent", headers=PAGE_HEADERS).text
 
@@ -1680,6 +1681,10 @@ def test_a_done_saved_while_a_model_is_asked_leaves_the_plan_stale_and_named(dur
     assert after.waiting
 
 
+async def work_is_left(state: ApplicationState, plan_date: date, budget: RunBudget) -> None:
+    """Answer the route's question as if work were left, so only the run reads the week."""
+
+
 def test_work_finished_between_the_routes_question_and_the_runs_reading_ends_the_run_plainly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1712,12 +1717,12 @@ def test_work_finished_between_the_routes_question_and_the_runs_reading_ends_the
         for item in state.project_state.all_assignments():
             report(client, item.assignment_id, "done")
         asked_before = sum(planner.calls for planner in planners)
-        monkeypatch.setattr(student_routes, "require_work", lambda *_: None)
+        monkeypatch.setattr(student_routes, "require_work", work_is_left)
         late = client.post("/student/plans")
         asked_after = sum(planner.calls for planner in planners)
         ended = state.drafts.runs_without_a_draft()
         still = state.drafts.latest_for(PLAN_DATE)
-        in_flight = set(state.in_flight)
+        in_flight = set(state.drafts.running_threads())
     with TestClient(create_app(settings), headers=SAME_ORIGIN) as again:
         family = again.get("/parent", headers=PAGE_HEADERS).text
 
@@ -2399,8 +2404,7 @@ def test_a_plan_from_before_ids_and_a_smaller_evening_ask_for_nothing_either() -
     with browser(key=True) as client:
         assert client.post("/student/actions/plan").status_code == 303
         state = state_of(client)
-        state.drafts._connection.execute("UPDATE drafts SET plan_assignment_ids=NULL")
-        state.drafts._connection.commit()
+        changed_by_hand(state.drafts, "UPDATE drafts SET plan_assignment_ids=NULL")
         assert client.post("/student/actions/too-much").status_code == 303
         finish_everything(client)
         page = client.get(PAGE, headers=PAGE_HEADERS).text
@@ -2545,7 +2549,7 @@ def test_the_familys_planning_routes_refuse_a_run_that_found_nothing_left_to_pla
         client.app.dependency_overrides[plan_graphs] = override  # type: ignore[attr-defined]
         state = state_of(client)
         finish_everything(client)
-        monkeypatch.setattr(parent_routes, "require_work", lambda *_: None)
+        monkeypatch.setattr(parent_routes, "require_work", work_is_left)
         over_json = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
         from_the_form = client.post(
             "/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()}
@@ -2589,10 +2593,9 @@ def test_two_assignments_with_one_title_are_told_apart_in_the_notice_by_their_id
             if item.title == "Poster"
         )
         assert client.post("/student/actions/plan").status_code == 303
-        state.drafts._connection.execute(
-            "UPDATE drafts SET plan_assignment_ids=?", (json.dumps(posters),)
+        changed_by_hand(
+            state.drafts, "UPDATE drafts SET plan_assignment_ids=?", (json.dumps(posters),)
         )
-        state.drafts._connection.commit()
         for poster in posters:
             report(client, poster, "done", week="2026-09-07")
         hers = client.get(PAGE, headers=PAGE_HEADERS).text
