@@ -1141,7 +1141,7 @@ def test_current_facts_add_no_statement_at_any_size(page: str, tmp_path: pathlib
         assert sum("FROM date_claims" in statement for statement in on_record) == 1
         costs.append((len(on_record), len(on_drafts)))
 
-    assert costs == [(10, 1 if page == HER_PAGE else 2)] * 3
+    assert costs == [(11, 1 if page == HER_PAGE else 2)] * 3
 
 
 @pytest.mark.parametrize("page", [HER_PAGE, "/parent"])

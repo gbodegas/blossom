@@ -42,7 +42,7 @@ from blossom.routes.inbox import (
 )
 from blossom.settings import Settings
 from blossom.stores.project_state import Assignment, AssignmentKind, UnreadableClaim
-from tests.support import SAME_ORIGIN, fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings, outside_earlier_work
 
 PAGE = {"Accept": "text/html"}
 HERS = "quiet mornings and loud music"
@@ -195,7 +195,7 @@ def test_a_paste_is_reviewed_week_by_week_and_saved_only_when_asked(
     assert "Reported status:" not in article_for(hers, "Book Covers")
     assert "Entered by a parent." not in hers
     assert "Binder, labeled dividers and lined paper check" in hers
-    assert "Summer Reading - Log" not in hers
+    assert "Summer Reading - Log" not in outside_earlier_work(hers)
     assert again.count('<span class="pill">Already saved</span>') == 3
     assert "0 new, 0 updates, 3 already saved." in again
     assert "Everything here is saved already; there is nothing to save." in again

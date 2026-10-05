@@ -610,6 +610,38 @@ class WeekView(BaseModel):
     following: date
 
 
+class EarlierWorkView(BaseModel):
+    """One piece of earlier homework to check: due before today by every date given, not
+    reported done, and outside today's planning window, with her choice for today.
+
+    ``due_date`` is the record's date and ``earliest`` the earliest date anyone gives;
+    ``dates_differ`` says they are not one date. ``chosen`` is her choice for today's plan
+    and ``chosen_yesterday`` hers for the day before, which a new day does not carry.
+    ``in_plan`` is where today's plan put it: ``scheduled``, ``put_off`` with
+    ``put_off_reason``, ``unknown`` when only the plan's text can be read, ``missing`` when
+    she chose it after the plan was made, or ``None`` with no plan or none made with it. Work
+    she took out of today's choices keeps that place until she plans again. ``update`` is
+    her standing update, ``not_yet``, ``unavailable`` when her updates can't be read, or
+    ``none`` when she has said nothing, which is no word on whether the work is finished.
+    ``folded`` puts it in the fold under the shown part.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignment_id: str
+    title: str
+    course: str
+    due_date: date | None
+    earliest: date
+    dates_differ: bool = False
+    chosen: bool = False
+    chosen_yesterday: bool = False
+    in_plan: str | None = None
+    put_off_reason: str | None = None
+    update: str = "none"
+    folded: bool = False
+
+
 class StudentDueThisWeekView(BaseModel):
     """Her week. Every assignment in the window appears, nothing is filtered out.
 
@@ -665,6 +697,9 @@ class StudentDueThisWeekView(BaseModel):
     """The assignment a save, an undo, or a link named, when it is on record and outside the
     week shown, its dates having changed: shown apart, so the result and anything she
     typed are never lost to a week the card has left."""
+    earlier: list[EarlierWorkView] = []
+    """Earlier homework to check and her choices for today's plan, the same on every week
+    shown: they are about today, never the week a page shows."""
 
 
 class ParentCheckpointAssignmentView(BaseModel):

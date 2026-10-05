@@ -35,7 +35,13 @@ from blossom.stores.project_state import (
 )
 from blossom.stores.reflections import Reflection, ReflectionSubject
 from blossom.stores.support_rules import SupportRule
-from tests.support import FIXTURE_TIMEZONE, NAIVE_INSTANTS, SAME_ORIGIN, fixture_settings
+from tests.support import (
+    FIXTURE_TIMEZONE,
+    NAIVE_INSTANTS,
+    SAME_ORIGIN,
+    fixture_settings,
+    outside_earlier_work,
+)
 
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
 
@@ -279,7 +285,7 @@ def test_pinning_the_clock_changes_what_the_student_page_shows() -> None:
         response = client.get("/student/due-this-week")
 
     assert response.status_code == 200
-    assert "Canal Era comparison essay" not in response.text
+    assert "Canal Era comparison essay" not in outside_earlier_work(response.text)
 
 
 def test_the_application_refuses_to_start_without_a_zone(

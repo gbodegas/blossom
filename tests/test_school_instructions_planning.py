@@ -199,9 +199,11 @@ def test_only_a_change_in_what_applies_changes_the_fingerprint() -> None:
     assert canonical_active_input(week_with())[0]["school_instructions"] == []
 
 
-def test_the_fingerprint_has_a_namespace_of_its_own_for_this_shape() -> None:
-    assert uuid.UUID("6f1ef033-6648-4683-b6e9-1dd419f420b5") == PLANNING_DIGEST
-    assert PLANNING_DIGEST != SHAPE_BEFORE
+def test_the_fingerprint_has_left_the_namespace_of_this_shape() -> None:
+    """The shape that carries the instructions that apply had a namespace of its own; the
+    fingerprint is drawn from another now, so a plan fingerprinted under it reads as changed
+    once and is asked for again."""
+    assert PLANNING_DIGEST not in (uuid.UUID("6f1ef033-6648-4683-b6e9-1dd419f420b5"), SHAPE_BEFORE)
 
 
 def test_a_change_in_what_applies_makes_a_waiting_plan_behind_and_asks_no_model() -> None:

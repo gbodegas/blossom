@@ -1537,16 +1537,36 @@ shows names today's planning window by its days, from `planning_window` in
 `blossom/noticing.py`: under Today's controls on this week, and under the link
 back to this week on another, which has no Today panel. Beside the plan
 button the same line first says what a plan is made from: unfinished homework
-due in the next 7 days and homework without a due date. The last day carries
-its year, and the first its own when the window reaches into a new year. A Not
+due in the next 7 days, homework without a due date, and earlier work she chose
+for today. The last day carries its year, and the first its own when the
+window reaches into a new year. A Not
 yet and a note added to homework say whether the work can be in today's plan
 by the planner's own rule, so undated work is in and a source's date inside
 the window counts. A Not yet outside it says where every date given puts it,
-from `PlanningWindow.outside`: due before today, with a link to Help since
-earlier work is not planned; due after the window's last day; or dates on both
-sides, which names the disagreement and chooses no date. When a claim cannot
-be read as a date, it could put the work anywhere, so the line names the
-window's days instead.
+from `PlanningWindow.outside`: due before today; due after the window's last
+day; or dates on both sides, which names the disagreement and chooses no date.
+Work due before today that is under Earlier homework to check gets an "Include
+in today's plan" button on its card, and its Details link to that list. Once
+she chooses it, the line says so. Choosing it lets a plan consider it, but
+doesn't promise it a block. When a claim cannot be read as a date, it could put
+the work anywhere, so the line names the window's days instead. Work with a
+date claim that can't be read isn't listed as earlier work, for the same reason.
+
+Work she has not reported done that every date puts before today is listed
+under Earlier homework to check on every week shown, each with "Include in
+today's plan" and her update, "Not yet" or "No update yet": no Done report is no
+word that the work is unfinished. Up to ten due in the fourteen days before
+today show, newest first, with anything chosen for today or yesterday; the
+rest wait in a fold, "More earlier homework (N)", which only shows them. A choice is hers, for the household's day, kept in
+`catch_up_choices` and nothing else; the next day starts with none and marks
+yesterday's. `planning_week` adds the work she chose to the window as catch-up
+work, so the run, the plan's fingerprint, and the pages read the same input.
+Taking work out of today's choices leaves a saved plan as it is, so the list
+says where today's plan still has it until she plans again.
+The planner is told it was due before today, and the checks let it be planned
+tonight or put off with its date kept. Work the record or a source dates before
+the evening while another date is still to come is held to that next date and
+flagged, and the planner is told both dates.
 
 **Not built:** a calendar policy. Nothing yet knows about no-school days,
 bedtimes, or a term calendar. Durations that cross a daylight-saving night

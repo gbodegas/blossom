@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from blossom.assignment_status import AssignmentStatus, statuses_for
-from blossom.noticing import Everything, planning_digest, read_everything, week_from
+from blossom.noticing import Everything, planning_digest, planning_week, read_everything, week_from
 from blossom.stores.drafts import DraftRecord
 from blossom.stores.project_state import ProjectStateStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
@@ -62,7 +62,7 @@ def staleness(
         everything = read_everything(project_state, project_state)
     if everything is None:
         return None
-    if planning_digest(week_from(everything, record.plan_date)) != record.inputs_digest:
+    if planning_digest(planning_week(everything, record.plan_date)) != record.inputs_digest:
         return Staleness.ASSIGNMENTS_CHANGED
     return None
 

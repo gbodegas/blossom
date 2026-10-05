@@ -22,7 +22,7 @@ leaves the agent, called directly rather than through a tool loop. A model
 never chooses to call it; the graph calls it once, after the checks.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -51,6 +51,14 @@ NOTHING_TONIGHT = "Nothing is scheduled tonight."
 WAITING = "Not in this evening's plan:"
 REVIEW = "The reviewer's notes:"
 UNSETTLED = "The reviewer did not settle on this plan. Its notes are at the end."
+CATCH_UP = (
+    "Earlier work you chose is part of this plan. It was due before today, and its due "
+    "date stays as recorded."
+)
+CATCH_UP_PUT_OFF = (
+    "Earlier work you chose that this plan puts off stays under Earlier homework to check "
+    "on your week, so you can choose it again."
+)
 
 JUDGMENT_WORDS = {
     Judgment.PASSES: "passes",
@@ -125,6 +133,8 @@ def wording(
     confidence: Mapping[str, SourceConfidence],
     too_much: bool,
     budget_minutes: int | None,
+    catch_up: Collection[str] = (),
+    put_off: Collection[str] = (),
 ) -> Wording:
     """Word everything said around the plan, once.
 
@@ -136,7 +146,8 @@ def wording(
     comparator could not read: lack of corroboration alone does not call for a
     word with the school. How far a date can be trusted stays on her page
     beside the item. ``doubt_of`` is that rule, and a page reads it again
-    against the record as it stands.
+    against the record as it stands. Earlier work she chose, ``catch_up``, is said to be
+    due before today, and what of it the plan puts off, ``put_off``, to stay on her list.
     """
     noticed_by_id = {item.assignment_id: item for item in noticings}
     intro: list[str] = []
@@ -146,6 +157,11 @@ def wording(
         )
     if not settled:
         intro.append(UNSETTLED)
+    chosen = {item.assignment_id for item in assignments} & set(catch_up)
+    if chosen:
+        intro.append(CATCH_UP)
+    if chosen & set(put_off):
+        intro.append(CATCH_UP_PUT_OFF)
 
     def clarification(item: Assignment) -> str | None:
         """Why this item's date needs a word with someone, or ``None`` when it does not."""
@@ -228,6 +244,7 @@ def compose(
     confidence: Mapping[str, SourceConfidence] | None = None,
     too_much: bool = False,
     budget_minutes: int | None = None,
+    catch_up: Collection[str] = (),
 ) -> Composition:
     """The draft she reads and the snapshot saved beside it, from one set of frozen inputs.
 
@@ -258,6 +275,8 @@ def compose(
         confidence=confidence or {},
         too_much=too_much,
         budget_minutes=budget_minutes,
+        catch_up=catch_up,
+        put_off=plan.deferred_ids,
     )
     snapshot = PlanSnapshot(
         version=SNAPSHOT_VERSION,
@@ -285,6 +304,7 @@ def compose_draft(
     confidence: Mapping[str, SourceConfidence] | None = None,
     too_much: bool = False,
     budget_minutes: int | None = None,
+    catch_up: Collection[str] = (),
 ) -> Draft:
     """The text alone, for a caller with no snapshot to save: the same wording and the same
     text as ``compose``, and an assignment nothing was read about is named by its id."""
@@ -296,6 +316,8 @@ def compose_draft(
         confidence=confidence or {},
         too_much=too_much,
         budget_minutes=budget_minutes,
+        catch_up=catch_up,
+        put_off=plan.deferred_ids,
     )
     read = {item.assignment_id: as_saved(item) for item in assignments}
     return create_draft({"body": body_of(plan, read, said)}).model_copy(
