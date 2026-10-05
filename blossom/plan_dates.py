@@ -21,9 +21,9 @@ from blossom.noticing import (
     Noticing,
     noticings_of,
     planning_digest,
+    planning_week,
     read_date,
     reconcile_dates,
-    week_from,
 )
 from blossom.reconciliation import SourceConfidence, SourceRecord, classify_confidence
 from blossom.stores.project_state import Assignment
@@ -174,7 +174,7 @@ class DatesNow:
         is stale."""
         if inputs_digest is None:
             return True
-        week = week_from(self.everything, plan_date, noticed=self.noticed)
+        week = planning_week(self.everything, plan_date, noticed=self.noticed)
         return planning_digest(week) != inputs_digest
 
 

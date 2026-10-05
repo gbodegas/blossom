@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""One reading of the record costs at most seven reads, however much it holds, and is one
+"""One reading of the record costs at most eight reads, however much it holds, and is one
 snapshot.
 
 The snapshot cases use two connections to one file, as the application's
@@ -89,8 +89,9 @@ def test_a_reading_costs_the_same_statements_whatever_the_record_holds(
     assert len(everything.assignments) == count
     assert seen[0] == "BEGIN DEFERRED"
     assert seen[-1] == "COMMIT"
-    assert len(seen) == 9, seen
+    assert len(seen) == 10, seen
     assert sum("FROM hand_in_events" in statement for statement in seen) == 1
+    assert sum("FROM catch_up_choices" in statement for statement in seen) == 1
     assert sum("FROM date_claims" in statement for statement in seen) == 1
     assert sum("FROM school_instructions" in statement for statement in seen) == 1
 
@@ -148,7 +149,7 @@ def test_a_page_costs_the_same_statements_whatever_the_record_holds(page: str) -
         assert sum("FROM school_instructions" in statement for statement in seen) == 1
         costs.append(len(seen))
 
-    assert costs == [10, 10, 10]
+    assert costs == [11, 11, 11]
 
 
 def test_the_reading_is_made_of_plain_lists_and_holds_nothing_open(

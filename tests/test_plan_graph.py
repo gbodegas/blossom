@@ -50,8 +50,8 @@ from blossom.heuristic_relevance import (
     CriticVerdict,
     Judgment,
 )
-from blossom.noticing import Verdict, planning_digest, read_week
-from blossom.plan_checks import ONLY_WHAT_IS_LISTED, PlanCheck, check_plan
+from blossom.noticing import Noticing, Verdict, planning_digest, read_week
+from blossom.plan_checks import ONLY_WHAT_IS_LISTED, PlanCheck, check_plan, past_deadlines
 from blossom.plan_snapshot import read_snapshot
 from blossom.plans import DailyPlan, Deferral
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
@@ -945,30 +945,51 @@ def test_a_contradicted_record_reaches_the_planner_the_critic_and_the_draft() ->
     assert "worth checking with the school" not in body
 
 
-def test_work_the_school_dates_before_the_evening_ends_the_run_before_any_model_is_asked() -> None:
-    """The record says the essay is due after the evening and the portal says before it. The
-    deadline check holds a plan to the earlier day, so every plan fails it, scheduled or put
-    off; the run ends at its first node as a date problem naming the essay and its day, with
-    its record kept and no model asked. The check itself still holds a plan to that day."""
+def test_a_school_date_already_passed_is_said_to_the_planner_and_planned_tonight() -> None:
+    """A source's date before the evening can't be met by any plan. The work is held to
+    the record's date still to come, the planner is told the date passed, and the plan
+    tonight is checked and kept with the date as given."""
+    planner = Scripted(ok(good_plan()))
+    critic = Scripted(ok(accepting()))
+
+    result = run(graph_with(planner, critic, source=SchoolSaysOtherwise("2026-08-18")))
+
+    assert result["outcome"] == "accepted"
+    assert result["verification"].past_due == ("assignment-canal-essay",)
+    assert 'date_passed="2026-08-18"' in human_text(planner.briefs[0])
+    assert 'date_passed="2026-08-18"' in human_text(critic.briefs[0])
+    assert result["assignments"][0].due_date == ESSAY.due_date
+
+
+@pytest.mark.parametrize("school", ["2026-08-18", "2026-08-17"])
+def test_undated_work_whose_only_school_date_passed_ends_the_run_before_any_model_is_asked(
+    school: str,
+) -> None:
+    """With no date still to come, there is no later date to plan for: the deadline check
+    stays strict and holds the work to the school's date, which every plan runs past,
+    scheduled or put off. The run ends at its first node as a date problem naming the work
+    and its day, with its record kept and no model asked; the work is not flagged as
+    planned past its date."""
+    undated = ESSAY.model_copy(update={"due_date": None})
     planner: Scripted[DailyPlan] = Scripted()
-    critic: Scripted[CriticVerdict] = Scripted()
     drafts = drafts_in_memory()
 
     result = run(
-        graph_with(planner, critic, drafts=drafts, source=SchoolSaysOtherwise("2026-08-18"))
+        graph_with(
+            planner,
+            Scripted(),
+            drafts=drafts,
+            assignments=(undated, PROBLEM_SET),
+            source=SchoolSaysOtherwise(school),
+        )
     )
 
     assert result["outcome"] == "date_problem"
-    assert result["past_due"] == {ESSAY.assignment_id: date(2026, 8, 18)}
-    assert (planner.calls, critic.calls) == (0, 0)
-    assert "draft" not in result
+    assert result["past_due"] == {ESSAY.assignment_id: date.fromisoformat(school)}
+    assert planner.calls == 0
     (ended,) = drafts.runs_without_a_draft()
     assert ended.outcome == "date_problem"
     assert [item.node for item in ended.steps] == ["retrieve"]
-    assert (
-        "World History \u00b7 Canal Era comparison essay is due 2026-08-18, before the evening "
-        "being planned, so no plan can keep every rule; no model was asked."
-    ) in ended.steps[0].found
     verification = check_plan(
         good_plan(),
         due_in_window=result["assignments"],
@@ -976,24 +997,51 @@ def test_work_the_school_dates_before_the_evening_ends_the_run_before_any_model_
         requested_evening=PLAN_DATE,
         noticings=result["noticings"],
     )
-    assert verification.findings[PlanCheck.BLOCKS_MEET_DEADLINES] == (
-        "assignment-canal-essay is due 2026-08-18 by the earliest date the record or a "
-        "source gives and is scheduled 2026-08-19, after it",
-    )
+    assert PlanCheck.BLOCKS_MEET_DEADLINES in verification.failed_checks
+    assert verification.past_due == ()
 
 
-def test_work_the_record_dates_before_the_evening_is_a_date_problem_too() -> None:
-    """No source is needed: a record date already passed, for work still in the window
-    because a source puts it there, is named the same way."""
-    planner: Scripted[DailyPlan] = Scripted()
+def test_work_held_to_a_later_date_or_chosen_never_ends_a_run_as_a_date_problem() -> None:
+    """The preflight reads the deadline check's own rule: work a later date still holds for
+    is held to it, and earlier work she chose has no day to run past, so neither is named,
+    while work no date still holds for is."""
     late = ESSAY.model_copy(update={"due_date": date(2026, 8, 17)})
-    school = SchoolSaysOtherwise("2026-08-20")
+    undated = PROBLEM_SET.model_copy(update={"due_date": None})
+    noticings = [
+        Noticing(
+            assignment_id=late.assignment_id,
+            expected=late.due_date,
+            observed=("LMS: 2026-08-20",),
+            observed_dates=(date(2026, 8, 20),),
+            verdict=Verdict.CONTRADICTED,
+        ),
+        Noticing(
+            assignment_id=undated.assignment_id,
+            expected=None,
+            observed=("LMS: 2026-08-18",),
+            observed_dates=(date(2026, 8, 18),),
+            verdict=Verdict.CONTRADICTED,
+        ),
+    ]
 
-    result = run(graph_with(planner, Scripted(), assignments=(late, PROBLEM_SET), source=school))
+    held = past_deadlines([late, undated], noticings, PLAN_DATE)
+    chosen = past_deadlines([late, undated], noticings, PLAN_DATE, [undated.assignment_id])
 
-    assert result["outcome"] == "date_problem"
-    assert result["past_due"] == {ESSAY.assignment_id: date(2026, 8, 17)}
-    assert planner.calls == 0
+    assert held == {undated.assignment_id: date(2026, 8, 18)}
+    assert chosen == {}
+
+
+def test_a_block_after_the_school_date_still_to_come_fails_the_checks() -> None:
+    late = good_plan().model_copy(update={"plan_date": date(2026, 8, 21)})
+    planner = Scripted(*[ok(late)] * (MAX_REVISIONS + 1))
+
+    result = run(graph_with(planner, Scripted(), source=SchoolSaysOtherwise("2026-08-20")))
+
+    assert result["outcome"] == "checks_failed"
+    assert (
+        "assignment-canal-essay is due 2026-08-20 by the earliest date the record or a "
+        "source gives and is scheduled 2026-08-21, after it"
+    ) in result["feedback"]
 
 
 def test_an_item_the_record_puts_next_month_is_in_the_week_when_a_source_puts_it_here() -> None:

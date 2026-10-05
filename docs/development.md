@@ -179,7 +179,10 @@ Three files under `.local/` outlive a restart:
   or waits for a parent's review. A fifth, `intake_decisions`, keeps each
   answer about which homework a school row is about: the answer, the row's
   class, title, and due date, where it landed, and the homework the card
-  listed. A file from before any of them gains the tables on the first start.
+  listed. A sixth, `catch_up_choices`, keeps the earlier homework she
+  chose for a day's plan, one row of the day and the assignment each, and
+  nothing else. A file from before any of them gains the tables on the
+  first start.
   It also holds the drafts, the decisions about them, and the
   record of every run, one line per node saying what it expected and found.
   A draft is its text and, in a nullable `plan_snapshot` column, the plan as
@@ -251,7 +254,7 @@ variable left in the shell still names whatever it named.
 Copy `.env.example` to `.env` if there is no `.env` yet, put an Anthropic API
 key in `ANTHROPIC_API_KEY`, start the app with `.env` loaded, by the README's
 launch block or `--env-file .env` with uv, and use "Plan today" on her page
-or "Plan it" on the parent's page. The model is `claude-opus-5`, at high
+or "Plan it" on the parent's page. The model is `claude-opus-5-5`, at high
 effort for the planner and medium for the critic, with each answer capped at
 16,000 tokens.
 The endpoint is fixed in code, so no shell variable can change where a prompt

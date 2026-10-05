@@ -239,10 +239,10 @@ THIS_WEEK = "2026-09-28"
 NEXT_WEEK = "2026-10-05"
 SATURDAY_WINDOW = "Today's planning window is October 3 to October 9, 2026."
 SCOPE = (
-    "Makes a plan for today using unfinished homework due in the next 7 days and homework "
-    "without a due date."
+    "Makes a plan for today using unfinished homework due in the next 7 days, homework "
+    "without a due date, and earlier work chosen for today."
 )
-BEFORE = "Saved as Not yet. This was due before today. Earlier work isn't included in today's plan."
+BEFORE = "Saved as Not yet. This was due before today."
 AFTER = "Saved as Not yet. This is due after October 9, so it isn't included in today's plan yet."
 AFTER_WITH_YEAR = (
     "Saved as Not yet. This is due after October 9, 2026, so it isn't included in today's plan yet."
@@ -267,8 +267,16 @@ EVERY_EFFECT = (
     ASTRIDE_WITH_YEAR,
     SATURDAY_OUTSIDE,
 )
-HER_HELP = '<a href="#ask-for-help">Ask for help</a>'
-HER_HELP_FROM_ELSEWHERE = '<a href="/student/due-this-week#ask-for-help">Ask for help</a>'
+INCLUDE_HERE = "Include in today's plan</button>"
+
+
+def include_there(assignment: str) -> str:
+    """The details' way to her choice for today, at the item in Earlier homework to check."""
+    return (
+        f'<a href="/student/due-this-week?earlier={assignment}#earlier-{assignment}">'
+        "Include it in today's plan</a> from Earlier homework to check."
+    )
+
 
 OCTOBER_2 = "assignment-due-october-2"
 OCTOBER_3 = "assignment-due-october-3"
@@ -410,17 +418,22 @@ def test_on_a_saturday_a_not_yet_says_where_its_dates_put_it(
     assert effects(details) == [on_the_details]
 
 
-def test_earlier_work_is_said_to_be_left_out_of_todays_plan_with_her_way_to_help() -> None:
+def test_earlier_work_offers_her_include_in_todays_plan_after_her_not_yet() -> None:
     with on_saturday() as client:
         this_week = client.get(report(client, OCTOBER_2, "not_yet", week=THIS_WEEK)).text
         last_week = client.get(report(client, LAST_WEEK, "not_yet", week="2026-09-21")).text
         details = client.get(f"/student/assignments/{OCTOBER_2}", headers=PAGE_HEADERS).text
 
-    assert f"{BEFORE} {HER_HELP}" in card_for(this_week, OCTOBER_2)
-    assert 'id="ask-for-help"' in this_week
-    assert f"{BEFORE} {HER_HELP_FROM_ELSEWHERE}" in card_for(last_week, LAST_WEEK)
-    assert 'id="ask-for-help"' not in last_week
-    assert f"{BEFORE} {HER_HELP_FROM_ELSEWHERE}" in details
+    for card, assignment in (
+        (card_for(this_week, OCTOBER_2), OCTOBER_2),
+        (card_for(last_week, LAST_WEEK), LAST_WEEK),
+    ):
+        after = card[card.index(BEFORE) :]
+        assert after.index("</p>") < after.index(INCLUDE_HERE)
+        assert f'action="/student/actions/assignments/{assignment}/earlier-work"' in after
+        assert '<input type="hidden" name="place" value="card">' in after
+    assert f"{BEFORE} {include_there(OCTOBER_2)}" in " ".join(details.split())
+    assert "Earlier work isn't included" not in this_week + last_week + details
 
 
 def effect_line(piece: str) -> str:
@@ -431,21 +444,20 @@ def effect_line(piece: str) -> str:
 
 
 @pytest.mark.parametrize("signed", [False, True])
-def test_her_way_to_help_from_earlier_work_keeps_its_press_area_inside_its_own_line(
+def test_her_way_to_include_from_the_details_keeps_its_press_area_inside_its_own_line(
     signed: bool, tmp_path: pathlib.Path
 ) -> None:
-    """Ask for help ends the line just above Change and Undo, so its line grows to hold it."""
+    """The details' link to Include ends the line just above Change and Undo, so its line
+    grows to hold it; on her week the Include button follows the line."""
     with saturday_household(tmp_path) if signed else on_day(SATURDAY) as client:
         saturday_work(store_of(client))
         if signed:
             signed_in(client, HERS)
         this_week = client.get(report(client, OCTOBER_2, "not_yet", week=THIS_WEEK)).text
-        last_week = client.get(report(client, LAST_WEEK, "not_yet", week="2026-09-21")).text
         details = client.get(f"/student/assignments/{OCTOBER_2}", headers=PAGE_HEADERS).text
 
-    assert HER_HELP in effect_line(card_for(this_week, OCTOBER_2))
-    assert HER_HELP_FROM_ELSEWHERE in effect_line(card_for(last_week, LAST_WEEK))
-    assert HER_HELP_FROM_ELSEWHERE in effect_line(details)
+    assert include_there(OCTOBER_2) in " ".join(effect_line(details).split())
+    assert "<a" not in effect_line(card_for(this_week, OCTOBER_2))
     declared = [
         {line.strip() for line in rule.split("\n") if line.strip()}
         for rule in rules_named(".update .effect a")
@@ -537,10 +549,6 @@ def test_browsing_another_week_keeps_todays_window_and_what_each_card_says(week:
 
 
 def test_a_plan_asked_for_after_browsing_another_week_reads_todays_window() -> None:
-    """Circle problems is in today's window by its portal date, October 5, while its record
-    says October 2, which has passed: no plan can keep to it, so the press names it and asks
-    no model. Once the record takes the portal's date, the planner is asked about today's
-    window and nothing else."""
     planners: list[Scripted[DailyPlan]] = []
     with on_saturday(ANTHROPIC_API_KEY=KEY) as client:
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
@@ -548,19 +556,11 @@ def test_a_plan_asked_for_after_browsing_another_week_reads_todays_window() -> N
         )
         client.get(HER_PAGE, params={"week": "2026-10-12"}, headers=PAGE_HEADERS)
         today = today_panel(client.get(HER_PAGE, headers=PAGE_HEADERS).text)
-        named = client.post("/student/actions/plan", headers=PAGE_HEADERS)
-        store_of(client).upsert_assignments(
-            [due(IN_BY_A_SOURCE, "Circle problems", date(2026, 10, 5))]
-        )
         client.post("/student/actions/plan", headers=PAGE_HEADERS)
 
     form = today[today.index('action="/student/actions/plan"') :]
     assert "<input" not in form[: form.index("</form>")]
-    assert named.status_code == 409
-    assert "Circle problems" in named.text
-    assert "has a due date that already passed" in named.text
-    assert planners[0].calls == 0
-    listed = work_listed(planners[1].briefs[0])
+    listed = work_listed(planners[0].briefs[0])
     for planned in (OCTOBER_3, OCTOBER_9, SYLLABUS, IN_BY_A_SOURCE):
         assert planned in listed
     for left_out in (OCTOBER_2, OCTOBER_10, LAST_WEEK, EARLIER_BY_EVERY_DATE, DATES_ASTRIDE):

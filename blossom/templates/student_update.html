@@ -103,16 +103,41 @@
       What a Not yet means for today's plan, by every date given for the work: in
       the window, all before today, all after the window, or on both sides of it,
       which names the doubt and chooses no date. With a claim that cannot be read
-      as a date, the window alone is named. Earlier work offers her Help.
+      as a date, the window alone is named. Earlier work says whether she chose it
+      for today's plan; when she hasn't, her week's card offers "Include in today's
+      plan" through the same press as Earlier homework to check, and the details
+      link to it there. A parent reads the line and meets no control.
     #}
+    {% set earlier_item = earlier_by_id.get(assignment.assignment_id) if earlier_by_id is defined else none %}
+    {% set earlier_now = earlier_item.chosen if earlier_item else (earlier_chosen is defined and earlier_chosen) %}
     <p class="effect">
       {% if assignment.update_status == "done" %}This is out of work to plan. {% if ctx.viewer == "parent" %}Her{% else %}Your{% endif %} school record is separate.
       {% elif assignment.in_planning_window %}Still unfinished. It can be included in today's plan.
-      {% elif assignment.outside_window == "before" %}Saved as Not yet. This was due before today. Earlier work isn't included in today's plan.{% if ctx.viewer != "parent" %} <a href="{{ help_href }}">Ask for help</a>{% endif %}
+      {% elif assignment.outside_window == "before" %}Saved as Not yet. This was due before today.
+        {%- if earlier_now %} {% if ctx.viewer == "parent" %}She{% else %}You{% endif %} chose it for today's plan.
+        {%- elif ctx.viewer != "parent" and not earlier_item and earlier_link is defined %} <a href="{{ earlier_link }}">Include it in today's plan</a> from Earlier homework to check.{% endif %}
       {% elif assignment.outside_window == "after" %}Saved as Not yet. This is due after {{ day(planning_window_end) }}, so it isn't included in today's plan yet.
       {% elif assignment.outside_window == "astride" %}Saved as Not yet. Its dates disagree: one is before today and another is after {{ day(planning_window_end) }}, so it isn't included in today's plan.
       {% else %}Saved as Not yet. It is outside today's planning window ({{ planning_window }}).{% endif %}
     </p>
+    {% if earlier_item and assignment.update_status != "done" and assignment.outside_window == "before" %}
+      {% set card_note = earlier_note if earlier_note and earlier_note.on_card and earlier_note.assignment_id == assignment.assignment_id else none %}
+      {% if card_note and card_note.said %}
+        <p class="note update-result" role="status" id="{{ earlier_card_anchor(assignment.assignment_id) }}" tabindex="-1">{{ card_note.said }}</p>
+      {% elif card_note and card_note.problem %}
+        <p class="problem" role="alert" id="{{ earlier_card_anchor(assignment.assignment_id) }}" tabindex="-1" autofocus>{{ card_note.problem }}</p>
+      {% endif %}
+      {% if ctx.viewer != "parent" and not earlier_item.chosen %}
+        <form method="post" action="{{ earlier_action(assignment.assignment_id) }}" class="action">
+          <input type="hidden" name="choice" value="include">
+          <input type="hidden" name="made_with" value="{{ earlier_made_with[assignment.assignment_id] }}">
+          <input type="hidden" name="week" value="{{ "" if view.week.current else view.week.start.isoformat() }}">
+          <input type="hidden" name="place" value="card">
+          {% for name, value in ctx.post_fields if name == "in_place" %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+          <button type="submit" class="secondary" aria-label="Include in today's plan: {{ assignment.title }}, {{ assignment.course }}">Include in today's plan</button>
+        </form>
+      {% endif %}
+    {% endif %}
     {% if assignment.checked_on %}
       <p class="checked-line">A parent marked this checked with {% if ctx.viewer == "parent" %}her{% else %}you{% endif %} on {{ day(assignment.checked_on) }}.{% if assignment.check_note %} The note with it: <q>{{ assignment.check_note }}</q>{% endif %}</p>
     {% elif assignment.checks_unavailable %}

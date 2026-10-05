@@ -778,6 +778,15 @@ def hidden(html: str, name: str) -> str:
     return match.group(1)
 
 
+def outside_earlier_work(page: str) -> str:
+    """Her page without its Earlier homework to check section, which lists work due before
+    today on every week shown: the week shown and everything else."""
+    start = page.find('<section class="panel assigned earlier-work"')
+    if start < 0:
+        return page
+    return page[:start] + page[page.index("</section>", start) + len("</section>") :]
+
+
 def main_of(page: str) -> str:
     """The page's main part, where every fact and control of the page is."""
     return page.split('<main id="main">', 1)[1].split("</main>", 1)[0]

@@ -757,12 +757,13 @@ MAP_QUIZ = Assignment(
     assignment_id="assignment-map-quiz",
     course="Geography",
     title="Map quiz",
-    due_date=date(2026, 8, 18),
+    due_date=None,
     dependencies=[],
     reported_submission_status="not_started",
 )
-"""Work the record dates the day before the evening, kept in the window by a portal date
-after it: no plan for the evening can schedule it or put it off in time."""
+"""Work with no date on record, so always in the window, whose only date, the portal's, is
+the day before the evening: no date is still to come, so no plan for the evening can
+schedule it or put it off in time."""
 
 
 TRY_AGAIN = '<button type="submit" class="primary" aria-describedby="plan-scope">Try again</button>'
@@ -848,7 +849,7 @@ def test_work_dated_before_today_is_named_with_a_link_to_its_dates_and_no_model_
         state = state_of(client)
         state.project_state.upsert_assignments([MAP_QUIZ])
         state.project_state.record_claims(
-            MAP_QUIZ.assignment_id, [record(SourceChannel.LMS, "2026-08-20")]
+            MAP_QUIZ.assignment_id, [record(SourceChannel.LMS, "2026-08-18")]
         )
         client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
             list, list, planners=planners
@@ -866,7 +867,7 @@ def test_work_dated_before_today_is_named_with_a_link_to_its_dates_and_no_model_
         '<a href="/student/assignments/assignment-map-quiz?return_to=week#evidence">'
         "Check the dates for Map quiz.</a>"
     ) in line
-    assert '<a href="#title-assignment-map-quiz">See homework.</a>' in line
+    assert '<a href="#title-assignment-science-fair-proposal">See homework.</a>' in line
     assert TRY_AGAIN in page
     assert planners[-1].calls == 0
     assert [run.outcome for run in ended] == ["date_problem"]

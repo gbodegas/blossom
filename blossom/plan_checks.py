@@ -21,7 +21,7 @@ is why it is a state of its own rather than a kind of yes.
 """
 
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import date
 from enum import StrEnum
 from zoneinfo import ZoneInfo
@@ -74,7 +74,10 @@ class PlanCheck(StrEnum):
 
     BLOCKS_MEET_DEADLINES = "BLOCKS_MEET_DEADLINES"
     """No block is scheduled after the day its assignment is due, and nothing
-    due by the plan date is put off, since putting it off moves it past the day."""
+    due by the plan date is put off, since putting it off moves it past the day.
+    A date that passed before the evening asked for can't be met by any plan:
+    such work is held to the next date anyone gives that is still to come, and
+    to none when every date has passed."""
 
     BLOCKS_DO_NOT_OVERLAP = "BLOCKS_DO_NOT_OVERLAP"
     """She is in one place at a time."""
@@ -149,6 +152,11 @@ class PlanVerification(BaseModel):
     """Assignments whose due date on record no source supports. The deadline
     check measures these against the earliest date anyone gives, record or
     source, so a plan built on the record alone cannot pass by trusting it."""
+    past_due: tuple[str, ...] = ()
+    """Assignments whose deadline passed before the evening asked for: earlier work she
+    chose, or work the record or a source dates before the evening while another date is
+    still to come. A flag, not a failure: the date stays as given, and the plan says the
+    work was due earlier."""
     plain: dict[PlanCheck, tuple[str, ...]] = {}
     """The same findings as a parent reads them on the family page: each assignment named
     by its course and title as the run read them, and never by an id the plan made up."""
@@ -201,29 +209,66 @@ class PlanVerification(BaseModel):
         return self.as_findings() if self.model_feedback is None else self.model_feedback
 
 
-def deadline_for(assignment: Assignment, noticed: Noticing | None) -> tuple[date | None, str]:
-    """The day the work must be done by, as the deadline check reads it, and where that day
-    comes from: the record's date, or the earliest date anyone gives when the sources
-    contradict the record."""
+def given_dates(assignment: Assignment, noticed: Noticing | None) -> list[date]:
+    """Every date the record or a source gives for the work."""
+    given = [assignment.due_date, *(() if noticed is None else noticed.observed_dates)]
+    return [day for day in given if day is not None]
+
+
+def still_to_come(assignment: Assignment, noticed: Noticing | None, evening: date) -> date | None:
+    """The earliest date the record or a source gives that ``evening`` has not passed, or
+    ``None`` when every date has."""
+    ahead = [day for day in given_dates(assignment, noticed) if day >= evening]
+    return min(ahead) if ahead else None
+
+
+def missed(
+    assignment: Assignment, noticed: Noticing | None, evening: date, *, chosen: bool
+) -> bool:
+    """Whether any date the record or a source gives passed before ``evening``, whichever
+    date the record is held to, and the work is still plannable: catch-up work she chose,
+    or work another date still holds for."""
+    if all(day >= evening for day in given_dates(assignment, noticed)):
+        return False
+    return chosen or still_to_come(assignment, noticed, evening) is not None
+
+
+def deadline_for(
+    assignment: Assignment, noticed: Noticing | None, evening: date, *, chosen: bool
+) -> tuple[date | None, str]:
+    """The day a plan for ``evening`` is held to, and where that day comes from: the record's
+    date, or the earliest date anyone gives when the sources contradict the record; once
+    that has passed, the next date still to come, and none for catch-up work every date
+    has passed for."""
+    if missed(assignment, noticed, evening, chosen=chosen):
+        ahead = still_to_come(assignment, noticed, evening)
+        return (None, "") if ahead is None else (ahead, " by the next date still to come")
     if noticed is None or not noticed.contradicted:
         return assignment.due_date, ""
     return noticed.earliest_date, " by the earliest date the record or a source gives"
 
 
 def past_deadlines(
-    due_in_window: Sequence[Assignment], noticings: Sequence[Noticing], evening: date
+    due_in_window: Sequence[Assignment],
+    noticings: Sequence[Noticing],
+    evening: date,
+    catch_up: Collection[str] = (),
 ) -> dict[str, date]:
-    """The window's work due before ``evening``, as the deadline check reads it, with that day.
+    """The work a plan for ``evening`` is held to a day before it, by the rule the deadline
+    check uses, with that day.
 
-    Every plan for the evening has to schedule or put off each of these, and either
-    one runs past the day, so no plan can pass the checks while any is in the window.
+    Every plan has to schedule or put off each of these, and either one runs past the
+    day, so no plan can pass the checks while any is among the work to plan. Work she
+    chose and work another date still holds for are never here.
     """
     noticed = {item.assignment_id: item for item in noticings}
+    chosen = set(catch_up)
     found: dict[str, date] = {}
     for assignment in due_in_window:
-        deadline, _ = deadline_for(assignment, noticed.get(assignment.assignment_id))
+        name = assignment.assignment_id
+        deadline, _ = deadline_for(assignment, noticed.get(name), evening, chosen=name in chosen)
         if deadline is not None and deadline < evening:
-            found[assignment.assignment_id] = deadline
+            found[name] = deadline
     return found
 
 
@@ -238,6 +283,7 @@ def check_plan(
     daily_minutes: int = DEFAULT_EVENING_MINUTES,
     reported_done: Sequence[str] = (),
     names: Mapping[str, str] | None = None,
+    catch_up: Collection[str] = (),
 ) -> PlanVerification:
     """Run every tier-one check over ``plan`` and report what failed and why.
 
@@ -249,7 +295,10 @@ def check_plan(
     optional because a plan can be checked before reconciliation has run, and
     an absent label is simply not flagged. ``noticings`` are the record's due
     dates set against the sources; where the sources contradict the record,
-    the deadline is the earliest date either gives. ``reported_done`` names
+    the deadline is the earliest date either gives. A deadline that passed before
+    ``requested_evening`` is flagged and not failed for ``catch_up``, the earlier work she
+    chose, and for work another date still holds for, which is held to the next date still
+    to come; any other is failed as ever. ``reported_done`` names
     the work in the window she has reported done, which the plan was given
     nothing about and must say nothing about. ``names`` is how a parent reads each
     assignment the run read, finished work included; without it, the window's work is
@@ -258,6 +307,8 @@ def check_plan(
     known = {assignment.assignment_id: assignment for assignment in due_in_window}
     called = homework_names(due_in_window) if names is None else names
     done = set(reported_done)
+    noticed_by_id = {item.assignment_id: item for item in noticings}
+    chosen = set(catch_up)
     contradicted = {item.assignment_id: item for item in noticings if item.contradicted}
     noted: dict[PlanCheck, list[tuple[str, frozenset[str]]]] = {
         check: [] for check in ORDERED_PLAN_CHECKS
@@ -327,14 +378,21 @@ def check_plan(
                 said=f"the plan puts off {reads_as(name)} {count} times",
             )
 
-    def deadline_of(assignment: Assignment) -> tuple[date | None, str]:
-        return deadline_for(assignment, contradicted.get(assignment.assignment_id))
+    def deadline_now(assignment: Assignment) -> tuple[date | None, str]:
+        name = assignment.assignment_id
+        return deadline_for(
+            assignment, noticed_by_id.get(name), requested_evening, chosen=name in chosen
+        )
+
+    def was_missed(assignment: Assignment) -> bool:
+        name = assignment.assignment_id
+        return missed(assignment, noticed_by_id.get(name), requested_evening, chosen=name in chosen)
 
     for block in plan.blocks:
         assignment = known.get(block.assignment_id)
         if assignment is None:
             continue
-        deadline, basis = deadline_of(assignment)
+        deadline, basis = deadline_now(assignment)
         # An undated assignment has no deadline to run past; it is flagged below.
         if deadline is not None and plan.plan_date > deadline:
             found(
@@ -350,7 +408,7 @@ def check_plan(
         assignment = known.get(deferral.assignment_id)
         if assignment is None:
             continue
-        deadline, basis = deadline_of(assignment)
+        deadline, basis = deadline_now(assignment)
         # Put off means another day at the earliest, so due today is already too late.
         if deadline is not None and plan.plan_date >= deadline:
             found(
@@ -414,4 +472,5 @@ def check_plan(
             sorted(item.assignment_id for item in due_in_window if item.due_date is None)
         ),
         contradicted=tuple(sorted(name for name in contradicted if name in known)),
+        past_due=tuple(sorted(item.assignment_id for item in due_in_window if was_missed(item))),
     )
