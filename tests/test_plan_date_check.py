@@ -13,6 +13,7 @@ import json
 import pathlib
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
+from time import monotonic
 from typing import Annotated, Any
 
 import pytest
@@ -30,7 +31,7 @@ from blossom.agent.graph import (
     PlanState,
     plan_graph_for,
 )
-from blossom.agent.runs import DURABILITY, GRAPH_VERSION, run_config
+from blossom.agent.runs import DURABILITY, GRAPH_VERSION, RUN_DEADLINE_SECONDS, run_config
 from blossom.dependencies import ApplicationState, get_application_state
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.noticing import planning_digest, read_week
@@ -83,10 +84,22 @@ def wrong_evening(returned: date, asked: date = PLAN_DATE) -> str:
     return f"the plan is for {returned}, not the evening asked for, {asked}: make it for {asked}"
 
 
+def admitted(drafts: DraftsStore, thread: str, evening: date = PLAN_DATE) -> None:
+    """Admit the household's one run on ``thread`` for ``evening``, as a route does first."""
+    blocking = drafts.admit_run(
+        thread, plan_date=evening, deadline_mono=monotonic() + RUN_DEADLINE_SECONDS
+    )
+    assert blocking is None
+
+
 def run_for(
-    graph: CompiledPlanGraph, evening: date = PLAN_DATE, thread: str = "plan:dated"
+    graph: CompiledPlanGraph,
+    drafts: DraftsStore,
+    evening: date = PLAN_DATE,
+    thread: str = "plan:dated",
 ) -> dict[str, Any]:
-    """Drive one run for ``evening`` to its pause or its end."""
+    """Admit one run for ``evening`` and drive it to its pause or its end."""
+    admitted(drafts, thread, evening)
 
     async def go() -> dict[str, Any]:
         result = await graph.ainvoke(
@@ -153,7 +166,7 @@ def test_a_wrong_evening_is_sent_back_once_and_the_corrected_plan_is_published()
     planner = Scripted(ok(dated(good_plan(), PLAN_DATE - DAY)), ok(good_plan()))
     critic = Scripted(ok(accepting()))
 
-    result = run_for(graph_with(planner, critic, drafts=drafts))
+    result = run_for(graph_with(planner, critic, drafts=drafts), drafts)
 
     record = drafts.get(result["draft"].draft_id)
     assert (planner.calls, critic.calls) == (2, 1)
@@ -197,7 +210,7 @@ def test_a_plan_dated_at_the_edge_of_the_calendar_is_sent_back_like_any_other(ed
     planner = Scripted(ok(dated(late, edge)), ok(good_plan()))
     critic = Scripted(ok(accepting()))
 
-    result = run_for(graph_with(planner, critic, drafts=drafts))
+    result = run_for(graph_with(planner, critic, drafts=drafts), drafts)
 
     assert wrong.failed_checks[0] is PlanCheck.PLAN_DATE_MATCHES_REQUEST
     assert PlanCheck.WITHIN_TIME_BUDGET not in wrong.failed_checks
@@ -220,7 +233,7 @@ def test_a_planner_that_never_names_the_evening_asked_for_ends_as_checks_failed(
     planner = Scripted(*[ok(dated(good_plan(), PLAN_DATE + DAY))] * (MAX_REVISIONS + 1))
     critic: Scripted[CriticVerdict] = Scripted()
 
-    result = run_for(graph_with(planner, critic, drafts=drafts))
+    result = run_for(graph_with(planner, critic, drafts=drafts), drafts)
 
     assert result["outcome"] == "checks_failed"
     assert (planner.calls, critic.calls) == (MAX_REVISIONS + 1, 0)
@@ -237,9 +250,10 @@ def test_a_planner_that_never_names_the_evening_asked_for_ends_as_checks_failed(
 
 def test_the_wrong_evening_every_time_leaves_the_plan_already_there_alone() -> None:
     """Through her page: today's plan is made and waits. She plans again and every answer is
-    dated tomorrow. Her page says the run ended with its checks failed, 409, never that
-    something went wrong on the way; the earlier plan is still today's, still waiting, not
-    displaced; the run is on record without a draft; and nothing is left in flight."""
+    dated tomorrow. Her page says Blossom couldn't finish a reliable plan, 409, never that
+    the evening is too full or that something went wrong on the way; the earlier plan is
+    still today's, still waiting, not displaced; the run is on record without a draft; and
+    nothing is left in flight."""
     with browser(key=True) as client:
         assert client.post("/student/actions/plan").status_code == 303
         state = state_of(client)
@@ -257,14 +271,15 @@ def test_the_wrong_evening_every_time_leaves_the_plan_already_there_alone() -> N
         again = client.post("/student/actions/plan", headers=PAGE_HEADERS)
         latest = state.drafts.latest_for(PLAN_DATE)
         ended = state.drafts.runs_without_a_draft()
-        in_flight = set(state.in_flight)
+        in_flight = set(state.drafts.running_threads())
         family = client.get("/parent", headers=PAGE_HEADERS).text
 
     assert again.status_code == 409
     assert (
-        "Blossom couldn&#39;t make a plan that fits this evening. You can try again, or "
-        "ask a parent to look at what went wrong." in again.text
+        "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are "
+        "saved." in again.text
     )
+    assert "fits this evening" not in again.text
     assert "something went wrong on the way" not in again.text
     assert planners[-1].calls == MAX_REVISIONS + 1
     assert latest is not None
@@ -331,7 +346,7 @@ def test_a_day_that_turns_while_the_planner_is_asked_does_not_move_the_evening()
     planner = AnswersAfterMidnight(clock, dated(good_plan(), PLAN_DATE + DAY), good_plan())
     critic = Scripted(ok(accepting()))
 
-    result = run_for(graph_with(planner, critic, drafts=drafts, clock=clock))
+    result = run_for(graph_with(planner, critic, drafts=drafts, clock=clock), drafts)
 
     record = drafts.get(result["draft"].draft_id)
     assert clock.today() == PLAN_DATE + DAY
@@ -434,10 +449,11 @@ def test_a_run_paused_before_the_check_existed_resumes_and_keeps_its_own_record(
                     checkpointer=saver,
                     drafts=drafts,
                 )
+                admitted(drafts, "plan:2026-08-19:before")
                 result = await graph.ainvoke(
                     PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
                 )
-                drafts.publish(result["draft"].draft_id)
+                drafts.settle_run("plan:2026-08-19:before")
                 return dict(result)
         finally:
             drafts.close()

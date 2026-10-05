@@ -11,11 +11,13 @@ and read back as words.
 import re
 from collections.abc import Sequence
 from datetime import date
+from time import monotonic
 from typing import cast
 
 import pytest
 
 from blossom.agent.compose import compose, wording
+from blossom.agent.runs import RUN_DEADLINE_SECONDS
 from blossom.assignment_status import AssignmentStatus
 from blossom.noticing import (
     Everything,
@@ -138,10 +140,13 @@ def saved_plan(
         confidence={ESSAY_ID: classify_confidence(reconcile_dates(list(claims)))},
     )
     store = drafts_in_memory()
+    thread_id = "plan:2026-08-19:dates"
     try:
+        deadline = monotonic() + RUN_DEADLINE_SECONDS
+        assert store.admit_run(thread_id, plan_date=PLAN_DATE, deadline_mono=deadline) is None
         store.record_waiting(
             made.draft,
-            thread_id="plan:2026-08-19:dates",
+            thread_id=thread_id,
             plan_date=PLAN_DATE,
             outcome="accepted",
             inputs_digest=digest,

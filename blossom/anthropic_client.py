@@ -53,8 +53,12 @@ integration would send its fallback of 4,096, since it has no profile for this
 model; the model itself allows up to 128,000."""
 
 TIMEOUT_SECONDS: Final = 120.0
-"""Per request. The web app awaits these calls, so a hung request must fail
-inside the time a page is willing to wait."""
+"""Per request, a backstop. A plan run holds each request to what is left of its own
+time limit, which is shorter."""
+
+BUSY_STATUSES: Final = frozenset({408, 409, 429})
+"""Answers that say the service is busy rather than that the request is wrong; any
+status from 500 up says the same."""
 
 Effort = Literal["low", "medium", "high"]
 """The effort levels a role may ask for. The two above ``high`` are for work
@@ -63,6 +67,32 @@ harder than planning one student's week."""
 
 class ModelUnavailable(RuntimeError):
     """Raised when settings carry no API key. Nothing calls a model without one."""
+
+
+class ServiceFailed(RuntimeError):
+    """A model call the service refused or never answered."""
+
+
+class ServiceBusy(ServiceFailed):
+    """A model call the service could not take just now, which may work if asked again."""
+
+
+def service_failure(error: Exception) -> ServiceFailed | None:
+    """What ``error`` from a model call says about the service: busy, failed, or nothing.
+
+    A connection that failed or timed out, and a busy or failing status, are worth
+    asking again; any other refusal from the service is not. ``None`` for an error
+    the service did not raise.
+    """
+    if isinstance(error, anthropic.APIConnectionError):
+        return ServiceBusy(str(error))
+    if isinstance(error, anthropic.APIStatusError):
+        if error.status_code in BUSY_STATUSES or error.status_code >= 500:
+            return ServiceBusy(str(error))
+        return ServiceFailed(str(error))
+    if isinstance(error, anthropic.APIError):
+        return ServiceFailed(str(error))
+    return None
 
 
 MISSING_KEY: Final = "no model can be constructed: ANTHROPIC_API_KEY is not set"
@@ -115,6 +145,8 @@ def chat_model(settings: Settings, *, effort: Effort) -> ChatAnthropic:
     # ``model``, ``max_tokens_to_sample`` for ``max_tokens``); the alias is what
     # the type checker accepts, so the alias is what is written here. It also
     # reads the stop-sequence field as required, so its absence is spelled out.
+    # The client never retries on its own: a plan run asks again itself, inside its
+    # time limit, so a retry never starts a fresh wait.
     return PinnedChatAnthropic(
         model_name=MODEL,
         api_key=SecretStr(key),
@@ -122,7 +154,7 @@ def chat_model(settings: Settings, *, effort: Effort) -> ChatAnthropic:
         anthropic_proxy=None,
         max_tokens_to_sample=MAX_TOKENS,
         timeout=TIMEOUT_SECONDS,
-        max_retries=2,
+        max_retries=0,
         stop=None,
         effort=effort,
         thinking={"type": "adaptive"},

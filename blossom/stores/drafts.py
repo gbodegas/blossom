@@ -25,9 +25,11 @@ permission was given, and nothing else.
 """
 
 import json
+import logging
 import sqlite3
 import threading
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -35,22 +37,45 @@ from typing import Final, Literal, NamedTuple, cast
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from blossom.agent.steps import StepRecord
+from blossom.agent.runs import RUN_DEADLINE_SECONDS
+from blossom.agent.steps import RunTiming, StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.plan_snapshot import PlanSnapshot
 from blossom.stores.paths import refuse_unsafe_path
 
+logger = logging.getLogger(__name__)
+
 Outcome = Literal["accepted", "unsettled"]
 """The two run outcomes that produce a draft. The others end without one."""
+
+RunStatus = Literal["running", "published", "ended"]
+"""Where a run stands: still working, settled with its plan on the pages, or ended without one."""
 
 SUPERSEDED_REASON: Final = "a later plan for the evening took its place"
 """The reason recorded on a waiting draft when a newer one for the same evening
 is published, from whichever page. System-recorded, like an expiry: no person said it."""
 
+STORE_WAIT_SECONDS: Final = 5.0
+"""The longest one call waits for the store, the file's writer and its commit together,
+unless its caller gives it less."""
+
+SETTLE_GRACE_SECONDS: Final = 1.0
+"""How long past its run's deadline a publication authorized in time may wait to commit."""
+
+RUNNING: Final = "running"
+"""The outcome a run holds from admission until its draft is composed. Never shown."""
+
+TIMED_OUT: Final = "timed_out"
+"""The reason recorded on a run whose deadline passed before it settled."""
+
 INTERRUPTED: Final = "interrupted"
-"""The outcome recorded on a run that saved its draft and then failed before the
-draft could wait for review. The draft is taken back; the run keeps its steps."""
+"""The reason recorded on a run cut off before it settled: canceled, stopped by a
+restart, or left without a draft it could publish. Its draft is deleted; its steps stay."""
+
+OVERTAKEN: Final = "overtaken"
+"""The reason recorded on a run whose evening gained a newer plan while it worked. Its
+draft is deleted, so a late result never replaces a newer plan; its steps stay."""
 
 
 class Displaced(NamedTuple):
@@ -58,6 +83,18 @@ class Displaced(NamedTuple):
 
     draft_id: str
     thread_id: str
+
+
+class StoreBusy(TimeoutError):
+    """The store stayed in use by another caller for the whole wait. Nothing was begun."""
+
+
+class WriterBusy(TimeoutError):
+    """Another connection held the file's writer for the whole wait. Nothing was begun."""
+
+
+class NotPublished(RuntimeError):
+    """A decision about a draft that is not on the pages. Nothing is written."""
 
 
 class IncoherentBundle(ValueError):
@@ -70,6 +107,46 @@ class IncompatibleReplay(RuntimeError):
     """A save that would change a record it may not change: a different composition for a
     draft already on the pages, or one that would drop the snapshot a saved draft has.
     Nothing is written, and the draft stands as it was."""
+
+
+class RunState(NamedTuple):
+    """Where one run stands in the record, read in one transaction."""
+
+    run_id: str
+    plan_date: date
+    status: RunStatus
+    reason: str
+    """The run's outcome: ``running`` until its draft is composed, then ``accepted`` or
+    ``unsettled``; for an ended run, why it ended."""
+    seconds_left: float
+    """Seconds before a running run's deadline on the store's monotonic clock; 0 once it
+    has passed, and for a run that is not running."""
+    plan_unchanged: bool
+    """Whether the evening's last publication is still the one in force when the run was
+    admitted."""
+    draft: "DraftRecord | None" = None
+    """The plan a published run put on the pages, when it was read with the run."""
+    has_plan: bool = False
+    """Whether the evening has a published plan as the run is read."""
+
+
+class Settled(NamedTuple):
+    """What ``settle_run`` committed: the run as it stands, and what its plan displaced."""
+
+    run: RunState
+    displaced: list[Displaced]
+
+
+class RunEnded(RuntimeError):
+    """A write for a run that is not running. Nothing of it is written.
+
+    Carries the run as it stands, or ``None`` for a run the store never admitted.
+    """
+
+    def __init__(self, run_id: str, run: RunState | None) -> None:
+        standing = "never admitted" if run is None else run.status
+        super().__init__(f"run {run_id!r} is {standing}")
+        self.run = run
 
 
 class ReviewSnapshot(NamedTuple):
@@ -129,10 +206,10 @@ class DraftRecord(BaseModel):
     made for other work.
     ``None`` for a draft from before plans carried one."""
     published: bool = False
-    """Whether the run that made this draft has paused with it. A draft is saved
-    the moment it is composed, as the record, and published once its run has
-    paused, which is when it reaches the pages and takes the place of the
-    plan before it. Until then it is nobody's plan."""
+    """Whether the run that made this draft settled with it. A draft is saved the
+    moment it is composed, as the record, and published when its run settles, which
+    is when it reaches the pages and takes the place of the plan before it. Until
+    then it is nobody's plan."""
     plan_assignment_ids: list[str] | None = None
     """Every assignment the plan speaks about, worked on or put off, each once, so a page
     can say which of them she has since reported done. ``None`` for a draft from before
@@ -162,6 +239,8 @@ class RunRecord(BaseModel):
     newest: bool = False
     """Whether no later run of the same evening, with a draft or without, was saved; read
     only for runs that ended without a draft."""
+    timing: RunTiming | None = None
+    """How long the run took and what it asked for; ``None`` for a run that kept no time."""
 
 
 class DraftsStore:
@@ -179,12 +258,19 @@ class DraftsStore:
         "removed, since it was never anyone's plan; its run stays."
     )
 
-    def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        clock: Clock,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._connection = connection
         # Rows are read by column name, so a query never spells the column list
         # and the order of columns in the table is not a contract.
         self._connection.row_factory = sqlite3.Row
         self._clock = clock
+        # Run deadlines are instants on this clock, the one the process's run budgets read.
+        self._monotonic = monotonic
         self._lock = threading.Lock()
         # One transaction for the whole of opening: the tables, any column an
         # older file lacks, and the two invariants below commit together or not
@@ -266,10 +352,21 @@ class DraftsStore:
                 thread_id TEXT PRIMARY KEY,
                 plan_date TEXT NOT NULL,
                 outcome TEXT NOT NULL,
-                recorded_at TEXT NOT NULL
+                recorded_at TEXT NOT NULL,
+                timing TEXT
             )
             """
         )
+        run_columns = {
+            str(row["name"]) for row in self._connection.execute("PRAGMA table_info(runs)")
+        }
+        if "timing" not in run_columns:
+            # A file from before runs were timed: its runs keep no time.
+            self._connection.execute("ALTER TABLE runs ADD COLUMN timing TEXT")
+        for column, kind in RUN_LIFECYCLE_COLUMNS:
+            if column not in run_columns:
+                self._connection.execute(f"ALTER TABLE runs ADD COLUMN {column} {kind}")
+        self._settle_runs_without_a_status()
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS steps (
@@ -284,7 +381,69 @@ class DraftsStore:
             )
             """
         )
+        self._report_publication_mismatches()
         self._connection.commit()
+
+    def _settle_runs_without_a_status(self) -> None:
+        """Give each run without a status one; delete drafts no running or published run owns.
+
+        Runs in the open transaction, at every open, and changes nothing the second
+        time. A run whose draft is published is ``published``; any other is ``ended``,
+        and one that stopped with a draft it never published ended ``interrupted``. An
+        unpublished draft nobody decided about is deleted unless its run is running or
+        published: a missing mark never makes a draft publishable, and a published run's
+        draft stays for the check that reports it. A decided draft is never deleted.
+        """
+        self._connection.execute(
+            """
+            UPDATE runs SET status='published'
+            WHERE status IS NULL
+              AND thread_id IN (SELECT thread_id FROM drafts WHERE published=1)
+            """
+        )
+        self._connection.execute(
+            """
+            UPDATE runs
+            SET status='ended',
+                outcome=CASE WHEN outcome IN ('accepted', 'unsettled') THEN ? ELSE outcome END
+            WHERE status IS NULL
+            """,
+            (INTERRUPTED,),
+        )
+        self._connection.execute(
+            """
+            DELETE FROM drafts
+            WHERE published=0 AND decision IS NULL
+              AND thread_id NOT IN (SELECT thread_id FROM runs WHERE status='running')
+              AND thread_id NOT IN (SELECT thread_id FROM runs WHERE status='published')
+            """
+        )
+        self._connection.execute("DROP TABLE IF EXISTS withheld_drafts")
+
+    def _report_publication_mismatches(self) -> None:
+        """Log any run whose status disagrees with whether its draft is published.
+
+        A published run has a published draft, and a published draft with a run has a
+        published run. A disagreement is logged with its threads and changes nothing.
+        """
+        rows = self._connection.execute(
+            """
+            SELECT runs.thread_id FROM runs
+            WHERE runs.status='published' AND NOT EXISTS (
+                SELECT 1 FROM drafts
+                WHERE drafts.thread_id=runs.thread_id AND drafts.published=1
+            )
+            UNION
+            SELECT drafts.thread_id FROM drafts JOIN runs ON runs.thread_id=drafts.thread_id
+            WHERE drafts.published=1 AND runs.status<>'published'
+            ORDER BY 1
+            """
+        ).fetchall()
+        if rows:
+            logger.warning(
+                "runs and published drafts disagree for threads: %s",
+                ", ".join(str(row["thread_id"]) for row in rows),
+            )
 
     def _number_in_order_made(self) -> None:
         """Give every published draft lacking a place in the published order one, after the rest.
@@ -346,36 +505,66 @@ class DraftsStore:
         )
 
     @classmethod
-    def open(cls, path: Path, clock: Clock) -> "DraftsStore":
+    def open(
+        cls, path: Path, clock: Clock, monotonic: Callable[[], float] = time.monotonic
+    ) -> "DraftsStore":
         """Open the drafts file, refusing the places the saved-state store refuses."""
         safe = refuse_unsafe_path(path)
         safe.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(safe, check_same_thread=False)
         connection.execute("PRAGMA secure_delete=ON")
-        return cls(connection, clock)
+        return cls(connection, clock, monotonic)
 
-    def close(self) -> None:
-        """Close the underlying connection."""
-        with self._lock:
+    def close(self, wait: float = STORE_WAIT_SECONDS) -> None:
+        """Close the underlying connection once no other call holds the store."""
+        if not self._lock.acquire(timeout=max(0.0, wait)):
+            raise StoreBusy
+        try:
             self._connection.close()
+        finally:
+            self._lock.release()
 
     @contextmanager
-    def _writing(self) -> Iterator[None]:
-        """One transaction that reserves the writer first, for a write that depends on a read.
+    def _session(
+        self, wait: float = STORE_WAIT_SECONDS, *, write: bool = False
+    ) -> Iterator["_Session"]:
+        """One call's hold on the store: the store, writer and commit waits share ``wait``.
 
-        The writer is reserved with ``BEGIN IMMEDIATE`` before the read, so no
-        other connection can write between the comparison and the write that
-        follows from it. The commit is inside the scope that rolls back: a
-        commit the file refuses leaves nothing open and nothing that could
-        land with a later write.
+        The file's busy timeout is set to what is left before the first statement and again
+        before the commit, so no call inherits another's. ``StoreBusy`` and ``WriterBusy``
+        are raised before any transaction begins. A write reserves the writer with
+        ``BEGIN IMMEDIATE`` before it reads, and commits inside the scope that rolls back,
+        so a commit the file refuses leaves nothing open.
         """
-        self._connection.execute("BEGIN IMMEDIATE")
+        ends = time.monotonic() + max(0.0, wait)
+        if not self._lock.acquire(timeout=max(0.0, wait)):
+            raise StoreBusy
         try:
-            yield
-            self._connection.commit()
-        except BaseException:
-            self._connection.rollback()
-            raise
+            session = _Session(ends)
+            self._wait_until(ends)
+            if not write:
+                yield session
+                return
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as error:
+                if error.sqlite_errorcode == sqlite3.SQLITE_BUSY:
+                    raise WriterBusy from error
+                raise
+            try:
+                yield session
+                self._wait_until(session.commit_ends)
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+        finally:
+            self._lock.release()
+
+    def _wait_until(self, ends: float) -> None:
+        """Let the file's busy handler wait until ``ends``, an instant on ``time.monotonic``."""
+        milliseconds = max(0, int((ends - time.monotonic()) * 1000))
+        self._connection.execute(f"PRAGMA busy_timeout={milliseconds}")
 
     def record_waiting(
         self,
@@ -389,8 +578,13 @@ class DraftsStore:
         inputs_digest: str | None = None,
         plan_assignment_ids: Sequence[str] | None = None,
         plan_snapshot: PlanSnapshot | None = None,
+        wait: float = STORE_WAIT_SECONDS,
     ) -> None:
         """Save a draft the moment it exists, before the gate pauses on it, as the record.
+
+        Only a running run saves. Past its deadline the run is recorded ``timed_out``
+        with ``steps`` first, and the save is refused with ``RunEnded``; a run that is
+        not running is refused the same way, and nothing of the draft is written.
 
         What is saved is one bundle: the text, the snapshot of the plan as
         data, the assignments the plan speaks about, the fingerprint of what
@@ -406,21 +600,15 @@ class DraftsStore:
         first ``created_at`` and leaves one row. Before its run has paused,
         the whole bundle takes the place of the one before, never part of
         it; a save that would drop the snapshot the draft has, or that names
-        another thread or evening, is ``IncompatibleReplay``. Once the draft
-        is on the pages its bundle is the record: the same composition again
-        changes nothing, not the status, the decision, its reason, its place
-        in the published order, nor the steps its run recorded since, and a
-        different one is refused, ``IncompatibleReplay``, because a plan
-        already shown or reviewed is not written over. What is compared is
-        the composition, the text, the snapshot, the assignments, the
-        fingerprint, the thread, the evening, the outcome, and whether the
-        evening was kept short, never a decision made since or the time a
-        replay constructed.
+        another thread or evening, is ``IncompatibleReplay``. A draft on the
+        pages belongs to a run that has settled, so a save for it is
+        ``RunEnded`` and changes nothing, not the status, the decision, its
+        reason, its place in the published order, nor the steps its run
+        recorded since: a plan already shown or reviewed is not written over.
 
         Saving is not publishing. The draft reaches no page and displaces no
-        plan until ``publish`` says its run has paused with it, so a run that
-        fails between saving and pausing has shown nobody anything and taken
-        nothing away.
+        plan until ``settle_run`` publishes it, so a run that ends between
+        saving and settling has shown nobody anything and taken nothing away.
         """
         names = None if plan_assignment_ids is None else list(plan_assignment_ids)
         if plan_snapshot is not None:
@@ -447,239 +635,503 @@ class DraftsStore:
             None if names is None else json.dumps(names),
             None if plan_snapshot is None else plan_snapshot.model_dump_json(),
         )
-        with self._lock, self._writing():
+        refused = False
+        with self._session(wait, write=True):
+            run = self._run_state(thread_id)
+            if run is None or run.status != "running":
+                refused = True
+            elif run.seconds_left <= 0:
+                self._replace_steps(thread_id, steps)
+                self._end(thread_id, TIMED_OUT)
+                run = self._run_state(thread_id)
+                refused = True
+            else:
+                self._save_bundle(draft, composed, steps)
+        if refused:
+            raise RunEnded(thread_id, run)
+
+    def _save_bundle(
+        self,
+        draft: Draft,
+        composed: tuple[str, str, str, str, int, str | None, str | None, str | None],
+        steps: Sequence[StepRecord],
+    ) -> None:
+        """The writes of ``record_waiting`` for a running run, inside the caller's transaction."""
+        row = self._connection.execute(
+            """
+            SELECT thread_id, plan_date, outcome, body, too_much, inputs_digest,
+                   plan_assignment_ids, plan_snapshot, published
+            FROM drafts WHERE draft_id=?
+            """,
+            (draft.draft_id,),
+        ).fetchone()
+        if row is not None:
+            standing = (
+                str(row["thread_id"]),
+                str(row["plan_date"]),
+                str(row["outcome"]),
+                str(row["body"]),
+                int(row["too_much"]),
+                None if row["inputs_digest"] is None else str(row["inputs_digest"]),
+                None if row["plan_assignment_ids"] is None else str(row["plan_assignment_ids"]),
+                None if row["plan_snapshot"] is None else str(row["plan_snapshot"]),
+            )
+            if row["published"]:
+                if standing == composed:
+                    return
+                msg = (
+                    f"draft {draft.draft_id!r} is on the pages; a different composition "
+                    "cannot take its place"
+                )
+                raise IncompatibleReplay(msg)
+            if standing[:2] != composed[:2]:
+                msg = f"draft {draft.draft_id!r} was saved for another thread or evening"
+                raise IncompatibleReplay(msg)
+            if standing[7] is not None and composed[7] is None:
+                msg = f"a save of draft {draft.draft_id!r} would drop the snapshot it has"
+                raise IncompatibleReplay(msg)
+        self._connection.execute(
+            """
+            INSERT INTO drafts (
+                draft_id, thread_id, plan_date, status, outcome, body, created_at,
+                too_much, inputs_digest, plan_assignment_ids, plan_snapshot
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(draft_id) DO UPDATE SET
+                status=excluded.status,
+                outcome=excluded.outcome,
+                body=excluded.body,
+                too_much=excluded.too_much,
+                inputs_digest=excluded.inputs_digest,
+                plan_assignment_ids=excluded.plan_assignment_ids,
+                plan_snapshot=excluded.plan_snapshot
+            """,
+            (
+                draft.draft_id,
+                composed[0],
+                composed[1],
+                draft.status.value,
+                composed[2],
+                composed[3],
+                draft.created_at.isoformat(),
+                composed[4],
+                composed[5],
+                composed[6],
+                composed[7],
+            ),
+        )
+        self._connection.execute(
+            "UPDATE runs SET outcome=? WHERE thread_id=? AND status='running'",
+            (composed[2], composed[0]),
+        )
+        self._replace_steps(composed[0], steps)
+
+    def admit_run(
+        self,
+        run_id: str,
+        *,
+        plan_date: date,
+        deadline_mono: float,
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> RunState | None:
+        """Admit a run for the household, or return the run still running that blocks it.
+
+        One transaction: runs past their deadline are ended first, then a running run,
+        if one remains, is returned and nothing is written. Otherwise this run is
+        recorded ``running`` with its deadline, an instant on the store's monotonic
+        clock, and the evening's last place in the published order, the plan it
+        expects to replace.
+        """
+        with self._session(wait, write=True):
+            self._reconciled()
             row = self._connection.execute(
-                """
-                SELECT thread_id, plan_date, outcome, body, too_much, inputs_digest,
-                       plan_assignment_ids, plan_snapshot, published
-                FROM drafts WHERE draft_id=?
-                """,
-                (draft.draft_id,),
+                RUN_STATE + "WHERE runs.status='running' ORDER BY runs.recorded_at, runs.rowid"
             ).fetchone()
             if row is not None:
-                standing = (
-                    str(row["thread_id"]),
-                    str(row["plan_date"]),
-                    str(row["outcome"]),
-                    str(row["body"]),
-                    int(row["too_much"]),
-                    None if row["inputs_digest"] is None else str(row["inputs_digest"]),
-                    None if row["plan_assignment_ids"] is None else str(row["plan_assignment_ids"]),
-                    None if row["plan_snapshot"] is None else str(row["plan_snapshot"]),
-                )
-                if row["published"]:
-                    if standing == composed:
-                        return
-                    msg = (
-                        f"draft {draft.draft_id!r} is on the pages; a different composition "
-                        "cannot take its place"
-                    )
-                    raise IncompatibleReplay(msg)
-                if standing[:2] != composed[:2]:
-                    msg = f"draft {draft.draft_id!r} was saved for another thread or evening"
-                    raise IncompatibleReplay(msg)
-                if standing[7] is not None and composed[7] is None:
-                    msg = f"a save of draft {draft.draft_id!r} would drop the snapshot it has"
-                    raise IncompatibleReplay(msg)
+                return self._state_from(row)
             self._connection.execute(
                 """
-                INSERT INTO drafts (
-                    draft_id, thread_id, plan_date, status, outcome, body, created_at,
-                    too_much, inputs_digest, plan_assignment_ids, plan_snapshot
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(draft_id) DO UPDATE SET
-                    status=excluded.status,
-                    outcome=excluded.outcome,
-                    body=excluded.body,
-                    too_much=excluded.too_much,
-                    inputs_digest=excluded.inputs_digest,
-                    plan_assignment_ids=excluded.plan_assignment_ids,
-                    plan_snapshot=excluded.plan_snapshot
+                INSERT INTO runs (
+                    thread_id, plan_date, outcome, recorded_at, status, deadline_mono, base_order
+                ) VALUES (?, ?, ?, ?, 'running', ?, ?)
                 """,
                 (
-                    draft.draft_id,
-                    composed[0],
-                    composed[1],
-                    draft.status.value,
-                    composed[2],
-                    composed[3],
-                    draft.created_at.isoformat(),
-                    composed[4],
-                    composed[5],
-                    composed[6],
-                    composed[7],
+                    run_id,
+                    plan_date.isoformat(),
+                    RUNNING,
+                    self._clock.now().isoformat(),
+                    deadline_mono,
+                    self._last_published(plan_date.isoformat()),
                 ),
             )
-            self._write_run(thread_id, plan_date, outcome, steps)
+        return None
 
-    def publish(self, draft_id: str) -> list[Displaced]:
-        """Put a draft on the pages, once its run has paused with it, and return what it displaced.
+    def settle_run(
+        self,
+        run_id: str,
+        *,
+        timing: RunTiming | None = None,
+        wait: float = STORE_WAIT_SECONDS,
+        grace: float = SETTLE_GRACE_SECONDS,
+    ) -> Settled:
+        """Publish a running run's draft, or end the run, in one transaction.
 
-        The draft takes the next place in the published order and, in the same
-        transaction, closes every published draft still waiting for its evening
-        as superseded by it. So at most one draft waits per evening, and which
-        one follows the order runs paused in, whatever order their drafts were
-        composed or saved in. A draft already published, as a replayed node or
-        a repeated call leaves, keeps its place and displaces nothing more. The
-        caller clears the threads of what was displaced, since no review can
-        reach them from then on; it holds the decision lock while doing both, so
-        a review in progress lands or is refused before its thread goes, and it
-        records first any review a waiting draft's thread holds that the table
-        never got, so no such review is superseded away. What
-        is returned was read inside the transaction, so nothing can fail after
-        the commit and leave a caller thinking a committed publication did not
-        happen.
+        ``wait`` bounds the waits for the store and the writer. Once the writer is
+        held, the run must still be running, its deadline still ahead, the evening's
+        last publication the one it was admitted against, and its draft saved,
+        unpublished and undecided. Then the draft takes the next place in the
+        published order and closes every published draft still waiting for its
+        evening as superseded by it. Otherwise the run ends ``timed_out``,
+        ``overtaken`` or ``interrupted`` and its draft is deleted. A run that is
+        not running is returned as it stands, so a repeated call changes nothing.
+
+        The commit waits until the deadline plus ``grace``, at most
+        ``STORE_WAIT_SECONDS``. What is returned was read inside the transaction,
+        and nothing runs after the commit.
         """
-        stamp = self._clock.now().isoformat()
-        with self._lock, self._connection:
+        displaced: list[Displaced] = []
+        with self._session(wait, write=True) as session:
             row = self._connection.execute(
-                "SELECT plan_date, published FROM drafts WHERE draft_id=?", (draft_id,)
+                "SELECT plan_date, status, deadline_mono, base_order FROM runs WHERE thread_id=?",
+                (run_id,),
             ).fetchone()
             if row is None:
-                msg = f"no draft {draft_id!r} to publish"
+                msg = f"no run {run_id!r} to settle"
                 raise KeyError(msg)
-            if row["published"]:
-                return []
-            self._connection.execute(
+            now = self._monotonic()
+            if row["deadline_mono"] is not None:
+                commit_wait = min(STORE_WAIT_SECONDS, float(row["deadline_mono"]) + grace - now)
+                session.commit_ends = time.monotonic() + max(0.0, commit_wait)
+            if row["status"] == "running":
+                candidate = self._connection.execute(
+                    "SELECT draft_id, published, decision FROM drafts WHERE thread_id=?",
+                    (run_id,),
+                ).fetchone()
+                if row["deadline_mono"] is None or float(row["deadline_mono"]) <= now:
+                    self._end(run_id, TIMED_OUT, timing)
+                elif row["base_order"] != self._last_published(str(row["plan_date"])):
+                    self._end(run_id, OVERTAKEN, timing)
+                elif (
+                    candidate is None or candidate["published"] or candidate["decision"] is not None
+                ):
+                    self._end(run_id, INTERRUPTED, timing)
+                else:
+                    displaced = self._published(str(candidate["draft_id"]))
+                    self._connection.execute(
+                        """
+                        UPDATE runs SET status='published', ended_at=?, timing=COALESCE(?, timing)
+                        WHERE thread_id=? AND status='running'
+                        """,
+                        (
+                            self._clock.now().isoformat(),
+                            None if timing is None else timing.model_dump_json(),
+                            run_id,
+                        ),
+                    )
+            settled = self._run_state(run_id, with_draft=True)
+        return Settled(cast(RunState, settled), displaced)
+
+    def _published(self, draft_id: str) -> list[Displaced]:
+        """The writes of a publication, inside the caller's transaction."""
+        stamp = self._clock.now().isoformat()
+        row = self._connection.execute(
+            "SELECT plan_date, published FROM drafts WHERE draft_id=?", (draft_id,)
+        ).fetchone()
+        if row is None:
+            msg = f"no draft {draft_id!r} to publish"
+            raise KeyError(msg)
+        if row["published"]:
+            return []
+        self._connection.execute(
+            """
+            UPDATE drafts
+            SET published=1,
+                published_order=(SELECT COALESCE(MAX(published_order), 0) + 1 FROM drafts)
+            WHERE draft_id=?
+            """,
+            (draft_id,),
+        )
+        displaced = [
+            Displaced(str(found["draft_id"]), str(found["thread_id"]))
+            for found in self._connection.execute(
                 """
-                UPDATE drafts
-                SET published=1,
-                    published_order=(SELECT COALESCE(MAX(published_order), 0) + 1 FROM drafts)
-                WHERE draft_id=?
-                """,
-                (draft_id,),
-            )
-            displaced = [
-                Displaced(str(found["draft_id"]), str(found["thread_id"]))
-                for found in self._connection.execute(
-                    """
-                    SELECT draft_id, thread_id FROM drafts
-                    WHERE plan_date=? AND published=1 AND decision IS NULL AND draft_id<>?
-                    ORDER BY published_order
-                    """,
-                    (str(row["plan_date"]), draft_id),
-                ).fetchall()
-            ]
-            self._connection.execute(
-                """
-                UPDATE drafts
-                SET decision='superseded', reason=?, decided_at=?, superseded_by=?
+                SELECT draft_id, thread_id FROM drafts
                 WHERE plan_date=? AND published=1 AND decision IS NULL AND draft_id<>?
+                ORDER BY published_order
                 """,
-                (SUPERSEDED_REASON, stamp, draft_id, str(row["plan_date"]), draft_id),
-            )
+                (str(row["plan_date"]), draft_id),
+            ).fetchall()
+        ]
+        self._connection.execute(
+            """
+            UPDATE drafts
+            SET decision='superseded', reason=?, decided_at=?, superseded_by=?
+            WHERE plan_date=? AND published=1 AND decision IS NULL AND draft_id<>?
+            """,
+            (SUPERSEDED_REASON, stamp, draft_id, str(row["plan_date"]), draft_id),
+        )
         return displaced
 
-    def withdraw(self, draft_id: str) -> bool:
-        """Take back a waiting draft nobody can review, whose run failed or died before its pause.
+    def end_run(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+        steps: Sequence[StepRecord] = (),
+        terminal: StepRecord | None = None,
+        timing: RunTiming | None = None,
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> RunState | None:
+        """End a running run without a plan, and return the run as it stands.
 
-        Such a draft was never anyone's plan, so its row goes and its run is
-        kept with its steps under the outcome ``interrupted``, so the account
-        of what happened survives while the plan does not. An unpublished
-        draft displaced nothing, so nothing is given back. A published draft
-        without a thread that could review it, which only a file from before
-        publication can hold, goes the same way, and the evening's plans are
-        brought back into line. False when there is no such draft, and a draft
-        a person decided, or the system closed, is left alone.
+        Past the deadline the run ends ``timed_out``, whatever ``reason`` says. Its
+        unpublished, undecided draft is deleted in the same transaction. Steps saved
+        with its draft are kept and ``terminal`` is added after them; a run that saved
+        none keeps ``steps`` and then ``terminal``. A run that is not running is
+        returned unchanged, and ``None`` is returned for a run the store never admitted.
         """
-        with self._lock, self._connection:
-            row = self._connection.execute(
-                "SELECT thread_id, decision, plan_date FROM drafts WHERE draft_id=?", (draft_id,)
+        with self._session(wait, write=True):
+            run = self._run_state(run_id)
+            if run is None or run.status != "running":
+                return run
+            (stored,) = self._connection.execute(
+                "SELECT COUNT(*) FROM steps WHERE thread_id=?", (run_id,)
             ).fetchone()
-            if row is None or row["decision"] is not None:
-                return False
-            self._connection.execute("DELETE FROM drafts WHERE draft_id=?", (draft_id,))
-            self._connection.execute(
-                "UPDATE runs SET outcome=? WHERE thread_id=?", (INTERRUPTED, str(row["thread_id"]))
+            self._end(run_id, TIMED_OUT if run.seconds_left <= 0 else reason, timing)
+            ending = [] if terminal is None else [terminal]
+            if stored:
+                self._add_steps(run_id, ending)
+            else:
+                self._replace_steps(run_id, [*steps, *ending])
+            return self._run_state(run_id)
+
+    def reconcile_runs(self, wait: float = STORE_WAIT_SECONDS) -> list[str]:
+        """End every running run whose deadline passed, or could not be this process's.
+
+        Returns the ids of the runs ended, each with its draft deleted.
+        """
+        with self._session(wait, write=True):
+            return self._reconciled()
+
+    def end_interrupted_runs(self, wait: float = STORE_WAIT_SECONDS) -> list[str]:
+        """End every running run ``interrupted``, for a process starting before it serves.
+
+        A run still running in the file belongs to a process that stopped. Returns the
+        ids of the runs ended, each with its draft deleted.
+        """
+        with self._session(wait, write=True):
+            ended = [
+                str(row["thread_id"])
+                for row in self._connection.execute(
+                    "SELECT thread_id FROM runs WHERE status='running' ORDER BY rowid"
+                ).fetchall()
+            ]
+            for run_id in ended:
+                self._end(run_id, INTERRUPTED)
+        return ended
+
+    def run_status(
+        self, run_id: str, wait: float = STORE_WAIT_SECONDS, *, reconcile: bool = True
+    ) -> RunState | None:
+        """Where one run stands, after ending any run whose deadline passed.
+
+        With ``reconcile`` off it is a plain read that ends and writes nothing. A
+        published run is read with its draft. ``None`` for a run the store never admitted.
+        """
+        with self._session(wait, write=reconcile):
+            if reconcile:
+                self._reconciled()
+            return self._run_state(run_id, with_draft=True)
+
+    def latest_run(self) -> RunState | None:
+        """The household's newest run as it stands, without ending anything; ``None`` for none."""
+        with self._session():
+            row = self._connection.execute(
+                RUN_STATE + "ORDER BY runs.recorded_at DESC, runs.rowid DESC"
+            ).fetchone()
+            return None if row is None else self._state_from(row)
+
+    def running_threads(self) -> frozenset[str]:
+        """The threads of the runs still running, whatever their deadlines."""
+        with self._session():
+            rows = self._connection.execute(
+                "SELECT thread_id FROM runs WHERE status='running'"
+            ).fetchall()
+        return frozenset(str(row["thread_id"]) for row in rows)
+
+    def _run_state(self, run_id: str, *, with_draft: bool = False) -> RunState | None:
+        """One run as it stands, read by a caller holding the store."""
+        row = self._connection.execute(RUN_STATE + "WHERE runs.thread_id=?", (run_id,)).fetchone()
+        return None if row is None else self._state_from(row, with_draft=with_draft)
+
+    def _state_from(self, row: sqlite3.Row, *, with_draft: bool = False) -> RunState:
+        """A run's state from a row of ``RUN_STATE``, read by a caller holding the store."""
+        status = cast(RunStatus, str(row["status"]))
+        deadline = row["deadline_mono"]
+        left = 0.0
+        if status == "running" and deadline is not None:
+            left = max(0.0, float(deadline) - self._monotonic())
+        found = None
+        if with_draft and status == "published":
+            drafts = self._read_drafts(
+                DRAFTS_WITH_STEPS + "WHERE drafts.thread_id=? ORDER BY steps.position",
+                (str(row["thread_id"]),),
             )
-            self._keep_one_waiting_per_evening(str(row["plan_date"]))
-        return True
+            found = drafts[0] if drafts else None
+        return RunState(
+            run_id=str(row["thread_id"]),
+            plan_date=date.fromisoformat(str(row["plan_date"])),
+            status=status,
+            reason=str(row["outcome"]),
+            seconds_left=left,
+            plan_unchanged=bool(row["plan_unchanged"]),
+            draft=found,
+            has_plan=bool(row["has_plan"]),
+        )
+
+    def _last_published(self, plan_date: str) -> int:
+        """The evening's last place in the published order, or 0, inside the caller's hold."""
+        (newest,) = self._connection.execute(
+            "SELECT COALESCE(MAX(published_order), 0) FROM drafts "
+            "WHERE plan_date=? AND published=1",
+            (plan_date,),
+        ).fetchone()
+        return int(newest)
+
+    def _end(self, run_id: str, reason: str, timing: RunTiming | None = None) -> None:
+        """End a running run with ``reason`` and delete its undecided, unpublished draft.
+
+        Inside the caller's transaction. A run that is not running is left as it is.
+        """
+        self._connection.execute(
+            """
+            UPDATE runs SET status='ended', outcome=?, ended_at=?, timing=COALESCE(?, timing)
+            WHERE thread_id=? AND status='running'
+            """,
+            (
+                reason,
+                self._clock.now().isoformat(),
+                None if timing is None else timing.model_dump_json(),
+                run_id,
+            ),
+        )
+        self._connection.execute(
+            "DELETE FROM drafts WHERE thread_id=? AND published=0 AND decision IS NULL",
+            (run_id,),
+        )
+
+    def _reconciled(self) -> list[str]:
+        """End the running runs past their deadline, and those no deadline of this process allows.
+
+        Inside the caller's transaction. A deadline more than ``RUN_DEADLINE_SECONDS``
+        ahead was set on another process's clock, so that run ends ``interrupted``; one
+        that has passed ends ``timed_out``. Returns the ids of the runs ended.
+        """
+        now = self._monotonic()
+        rows = self._connection.execute(
+            """
+            SELECT thread_id, deadline_mono FROM runs
+            WHERE status='running'
+              AND (deadline_mono IS NULL OR deadline_mono <= ? OR deadline_mono > ?)
+            ORDER BY rowid
+            """,
+            (now, now + RUN_DEADLINE_SECONDS),
+        ).fetchall()
+        for row in rows:
+            deadline = row["deadline_mono"]
+            passed = deadline is not None and float(deadline) <= now
+            self._end(str(row["thread_id"]), TIMED_OUT if passed else INTERRUPTED)
+        return [str(row["thread_id"]) for row in rows]
 
     def record_decision(
-        self, draft_id: str, *, status: DraftStatus, decision: Decision, reason: str | None
+        self,
+        draft_id: str,
+        *,
+        status: DraftStatus,
+        decision: Decision,
+        reason: str | None,
+        wait: float = STORE_WAIT_SECONDS,
     ) -> DraftRecord:
-        """Save what a person decided about a waiting draft, once.
+        """Save what a person decided about a waiting published draft, once.
 
         The update applies while no decision is recorded, or when the same
         decision is recorded again, which is what a node that runs twice does;
         the first time stamp is kept on a repeat. A different decision for a
         draft that has one is refused with ``AlreadyDecided``, so two people
         deciding at once cannot overwrite each other: the row is the referee,
-        and the second is told what stood. The time is the store's clock, not
-        the caller's, so every decision is stamped the same way.
+        and the second is told what stood. A draft that is not on the pages is
+        refused with ``NotPublished``. The time is the store's clock, not the
+        caller's, so every decision is stamped the same way.
         """
         stamp = self._clock.now().isoformat()
-        with self._lock:
+        with self._session(wait, write=True):
+            row = self._connection.execute(
+                "SELECT published FROM drafts WHERE draft_id=?", (draft_id,)
+            ).fetchone()
+            if row is None:
+                msg = f"no draft {draft_id!r} to decide about"
+                raise KeyError(msg)
+            if not row["published"]:
+                msg = f"draft {draft_id!r} is not on the pages"
+                raise NotPublished(msg)
             updated = self._connection.execute(
                 """
                 UPDATE drafts
                 SET status=?, decision=?, reason=?, decided_at=COALESCE(decided_at, ?)
-                WHERE draft_id=?
+                WHERE draft_id=? AND published=1
                   AND (decision IS NULL OR (decision = ? AND reason IS ?))
                 """,
                 (status.value, decision, reason, stamp, draft_id, decision, reason),
             ).rowcount
-            self._connection.commit()
-        record = self.get(draft_id)
-        if record is None:
-            msg = f"no draft {draft_id!r} to decide about"
-            raise KeyError(msg)
+            (record,) = self._read_drafts(ONE_DRAFT, (draft_id,))
         if updated == 0:
             raise AlreadyDecided(record)
         return record
 
-    def record_run(
-        self, *, thread_id: str, plan_date: date, outcome: str, steps: Sequence[StepRecord]
+    def record_timing(
+        self, thread_id: str, timing: RunTiming, wait: float = STORE_WAIT_SECONDS
     ) -> None:
-        """Save how a run went: where it ended and every step on the way.
+        """Keep how long a saved run took and what it asked for. Its status is never touched.
 
-        For a run that ended before the gate and so has no draft to carry its
-        record; a run with a draft saves both together in ``record_waiting``.
-        Saving the same thread again replaces its steps and keeps the first
-        time stamp, so a node that runs twice leaves one account dated once.
-        The whole replacement is one transaction: a failure part way through
-        rolls it back and the earlier account stands.
+        A thread never saved has no row, and nothing is written for it.
         """
-        with self._lock, self._connection:
-            self._write_run(thread_id, plan_date, outcome, steps)
-
-    def _write_run(
-        self, thread_id: str, plan_date: date, outcome: str, steps: Sequence[StepRecord]
-    ) -> None:
-        """The run row and its steps, inside a transaction the caller holds open."""
-        stamp = self._clock.now().isoformat()
-        rows = [
-            (
-                thread_id,
-                position,
-                item.node,
-                item.round,
-                item.expected,
-                item.found,
-                item.recorded_at.isoformat(),
+        with self._session(wait, write=True):
+            self._connection.execute(
+                "UPDATE runs SET timing=? WHERE thread_id=?",
+                (timing.model_dump_json(), thread_id),
             )
-            for position, item in enumerate(steps)
-        ]
-        self._connection.execute(
-            """
-            INSERT INTO runs (thread_id, plan_date, outcome, recorded_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(thread_id) DO UPDATE SET outcome=excluded.outcome
-            """,
-            (thread_id, plan_date.isoformat(), outcome, stamp),
-        )
+
+    def _replace_steps(self, thread_id: str, steps: Sequence[StepRecord]) -> None:
+        """A run's steps, replacing any it had, inside a transaction the caller holds open."""
         self._connection.execute("DELETE FROM steps WHERE thread_id=?", (thread_id,))
+        self._add_steps(thread_id, steps)
+
+    def _add_steps(self, thread_id: str, steps: Sequence[StepRecord]) -> None:
+        """Steps added after those a run has, inside a transaction the caller holds open."""
+        (after,) = self._connection.execute(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM steps WHERE thread_id=?", (thread_id,)
+        ).fetchone()
         self._connection.executemany(
             """
             INSERT INTO steps (thread_id, position, node, round, expected, found, recorded_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            rows,
+            [
+                (
+                    thread_id,
+                    position,
+                    item.node,
+                    item.round,
+                    item.expected,
+                    item.found,
+                    item.recorded_at.isoformat(),
+                )
+                for position, item in enumerate(steps, start=int(after))
+            ],
         )
 
     def steps_for(self, thread_id: str) -> list[StepRecord]:
         """The steps of one run, in the order they happened; empty for a thread never saved."""
-        with self._lock:
+        with self._session():
             rows = self._connection.execute(
                 "SELECT * FROM steps WHERE thread_id=? ORDER BY position", (thread_id,)
             ).fetchall()
@@ -694,16 +1146,25 @@ class DraftsStore:
         cannot pair one run's outcome with another's steps. Newest is read in
         the same query, against every run of the evening, with a draft or
         without. Two saved at one instant are told apart by the order they were
-        first saved, which saving a run again keeps, both for the listing and
-        for which is newest.
+        admitted, both for the listing and for which is newest.
+
+        A run still running within its deadline is in neither the listing nor the
+        comparison, so a run in progress neither shows as ended nor makes another
+        old. One past its deadline has no draft that could still publish, and is
+        listed ``timed_out``.
         """
-        with self._lock:
+        with self._session():
+            now = self._monotonic()
             rows = self._connection.execute(
                 """
-                SELECT runs.thread_id, runs.plan_date, runs.outcome, runs.recorded_at,
+                SELECT runs.thread_id, runs.plan_date,
+                       CASE WHEN runs.status = 'running' THEN ? ELSE runs.outcome END
+                           AS outcome,
+                       runs.recorded_at, runs.timing,
                        NOT EXISTS (
                            SELECT 1 FROM runs AS later
                            WHERE later.plan_date = runs.plan_date
+                             AND NOT (later.status = 'running' AND later.deadline_mono > ?)
                              AND (later.recorded_at > runs.recorded_at
                                   OR (later.recorded_at = runs.recorded_at
                                       AND later.rowid > runs.rowid))
@@ -712,8 +1173,10 @@ class DraftsStore:
                        steps.recorded_at AS step_recorded_at
                 FROM runs LEFT JOIN steps ON steps.thread_id = runs.thread_id
                 WHERE runs.thread_id NOT IN (SELECT thread_id FROM drafts)
+                  AND NOT (runs.status = 'running' AND runs.deadline_mono > ?)
                 ORDER BY runs.recorded_at DESC, runs.rowid DESC, steps.position
-                """
+                """,
+                (TIMED_OUT, now, now),
             ).fetchall()
         grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
         for row in rows:
@@ -728,6 +1191,9 @@ class DraftsStore:
                 recorded_at=datetime.fromisoformat(str(row["recorded_at"])),
                 steps=steps,
                 newest=bool(row["newest"]),
+                timing=None
+                if row["timing"] is None
+                else RunTiming.model_validate_json(str(row["timing"])),
             )
             for thread_id, (row, steps) in grouped.items()
         ]
@@ -742,10 +1208,9 @@ class DraftsStore:
         return self._drafts(WAITING_DRAFTS, ())
 
     def unpublished(self) -> list[DraftRecord]:
-        """Every draft saved by a run that has not paused with it, oldest first.
+        """Every undecided draft saved by a run that has not settled, oldest first.
 
-        Each belongs to a run in flight, or to one that died between saving
-        and pausing; the sweep tells the two apart and publishes or takes back.
+        Each belongs to the run in progress: a run that ends deletes its draft.
         """
         return self._drafts(UNPUBLISHED_DRAFTS, ())
 
@@ -766,7 +1231,7 @@ class DraftsStore:
         reading or wholly after it, so a page built from it agrees with
         itself, which separate reads one after another cannot promise.
         """
-        with self._lock:
+        with self._session():
             rows = self._connection.execute(EVERY_DRAFT).fetchall()
         grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
         for row in rows:
@@ -806,7 +1271,7 @@ class DraftsStore:
         about it, since the plan is hers from the moment it is made. Latest is
         by the published order, the order supersession follows, never by a
         clock, and an unpublished draft is not in the running: its run has not
-        paused, and may yet fail. A superseded draft is never the latest, since
+        settled, and may yet end without a plan. A superseded draft is never the latest, since
         another took its place.
         """
         found = self._drafts(LATEST_FOR_EVENING, (plan_date.isoformat(),))
@@ -814,8 +1279,12 @@ class DraftsStore:
 
     def _drafts(self, query: str, parameters: tuple[str, ...]) -> list[DraftRecord]:
         """Drafts and their steps from one query, so each record is one snapshot."""
-        with self._lock:
-            rows = self._connection.execute(query, parameters).fetchall()
+        with self._session():
+            return self._read_drafts(query, parameters)
+
+    def _read_drafts(self, query: str, parameters: tuple[str, ...]) -> list[DraftRecord]:
+        """``_drafts`` for a caller already holding the store."""
+        rows = self._connection.execute(query, parameters).fetchall()
         grouped: dict[str, tuple[sqlite3.Row, list[StepRecord]]] = {}
         for row in rows:
             _, steps = grouped.setdefault(str(row["draft_id"]), (row, []))
@@ -921,3 +1390,34 @@ def record_from(row: sqlite3.Row, steps: list[StepRecord]) -> DraftRecord:
         else [str(name) for name in json.loads(str(row["plan_assignment_ids"]))],
         plan_snapshot=None if row["plan_snapshot"] is None else str(row["plan_snapshot"]),
     )
+
+
+RUN_LIFECYCLE_COLUMNS: Final = (
+    ("status", "TEXT"),
+    ("deadline_mono", "REAL"),
+    ("base_order", "INTEGER"),
+    ("ended_at", "TEXT"),
+)
+"""The columns that carry a run's lifecycle, added on open to a file whose runs lack them."""
+
+RUN_STATE = """
+    SELECT runs.thread_id, runs.plan_date, runs.status, runs.outcome, runs.deadline_mono,
+           runs.base_order IS (
+               SELECT COALESCE(MAX(drafts.published_order), 0) FROM drafts
+               WHERE drafts.plan_date = runs.plan_date AND drafts.published = 1
+           ) AS plan_unchanged,
+           EXISTS (
+               SELECT 1 FROM drafts
+               WHERE drafts.plan_date = runs.plan_date AND drafts.published = 1
+           ) AS has_plan
+    FROM runs
+"""
+"""Every read of a run's state starts here."""
+
+
+class _Session:
+    """When one call's waits end, on ``time.monotonic``: its own, and its commit's."""
+
+    def __init__(self, ends: float) -> None:
+        self.ends = ends
+        self.commit_ends = ends

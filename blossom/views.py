@@ -15,10 +15,18 @@ call for that policy layer.
 
 from collections.abc import Mapping, Sequence
 from datetime import date
+from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from blossom.agent.steps import StepRecord, describe_last_check, describe_outcome
+from blossom.agent.steps import (
+    StepRecord,
+    describe_last_check,
+    describe_outcome,
+    describe_timing,
+    seconds_said,
+    step_label,
+)
 from blossom.assignment_status import HistoryRow
 from blossom.captures import Capture
 from blossom.drafts import Decision, DraftStatus
@@ -726,6 +734,17 @@ class ParentCheckpointView(BaseModel):
     assignments: list[ParentCheckpointAssignmentView]
 
 
+class PastDueView(BaseModel):
+    """One assignment due before the evening a run was asked to plan, as the run read it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    assignment_id: str
+    title: str
+    course: str
+    due_date: date
+
+
 class PlanRunView(BaseModel):
     """How a run of the plan graph ended, for the parent who started it.
 
@@ -743,6 +762,80 @@ class PlanRunView(BaseModel):
     waiting: bool
     steps: list[StepRecord] = []
     """What each node expected and found, in order, so the run explains itself."""
+    past_due: list[PastDueView] = []
+    """The work due before the evening that ended the run before any model was asked."""
+
+
+class UnconfirmedRunView(BaseModel):
+    """A planning request whose plan couldn't be confirmed saved in time: the run to check."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    plan_date: date
+    status: Literal["unconfirmed"] = "unconfirmed"
+
+
+class PublishedRunView(BaseModel):
+    """A planning request whose plan was published, answered by its run when her reading of
+    the plan doesn't finish in time: the plan stands, and ``GET /student/plans/today`` reads it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    plan_date: date
+    status: Literal["published"] = "published"
+
+
+class RunStatusView(BaseModel):
+    """Where one planning run stands in the record: running, published with its draft, or
+    ended with its reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    plan_date: date
+    status: Literal["running", "published", "ended"]
+    reason: str | None = None
+    """Why a run ended, or the outcome of a published one; ``None`` while it runs."""
+    draft_id: str | None = None
+    """The plan a published run put on the pages."""
+
+
+class ProblemView(BaseModel):
+    """Why a request did not do what it asked: the words an error sends as its ``detail``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: str
+
+
+class AlreadyPlanningView(BaseModel):
+    """The household's run still running that refused a press, and how long to wait for it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    run_id: str
+    plan_date: date
+    seconds_left: int
+
+
+class PlanConflictView(BaseModel):
+    """Why a press made no plan, 409: a sentence, or the run still running that refused it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: str | AlreadyPlanningView
+
+
+class StageView(BaseModel):
+    """How long one step of a run took, as a parent reads it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: str
+    seconds: str
 
 
 class RunView(BaseModel):
@@ -764,10 +857,15 @@ class RunView(BaseModel):
     recorded_at: AwareDatetime
     newest: bool
     steps: list[StepRecord]
+    timing: str | None = None
+    """How long the run took and what it asked for, in one sentence, when it kept time."""
+    stages: list[StageView] = []
+    """How long each step took, in order, when the run kept time."""
 
     @classmethod
     def from_record(cls, record: RunRecord) -> "RunView":
         """The parent's projection of a run row. The thread id stays out of it."""
+        timing = record.timing
         return cls(
             plan_date=record.plan_date,
             heading=no_plan_title(record.plan_date),
@@ -777,6 +875,15 @@ class RunView(BaseModel):
             recorded_at=record.recorded_at,
             newest=record.newest,
             steps=record.steps,
+            timing=None if timing is None else describe_timing(timing),
+            stages=[]
+            if timing is None
+            else [
+                StageView(
+                    label=step_label(stage.node, stage.round), seconds=seconds_said(stage.seconds)
+                )
+                for stage in timing.stages
+            ],
         )
 
 

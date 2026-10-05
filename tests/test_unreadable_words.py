@@ -734,7 +734,7 @@ def planned(read: Read) -> Callable[..., Coroutine[object, object, NoReturn]]:
 
 def her_plan(client: TestClient, patch: pytest.MonkeyPatch, read: Read) -> Callable[[], object]:
     updated(client)
-    patch.setattr(student_routes, "run_plan", planned(read))
+    patch.setattr(student_routes, "make_plan", planned(read))
     return lambda: client.post("/student/actions/plan", headers=PAGE_HEADERS)
 
 
@@ -743,7 +743,7 @@ def the_familys_plan(
 ) -> Callable[[], object]:
     updated(client)
     sent = whole_form(client.get("/parent", headers=PAGE_HEADERS).text, "/parent/actions/plan")
-    patch.setattr(parent_routes, "run_plan", planned(read))
+    patch.setattr(parent_routes, "make_plan", planned(read))
     return lambda: client.post("/parent/actions/plan", data=sent, headers=PAGE_HEADERS)
 
 

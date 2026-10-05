@@ -16,15 +16,17 @@ This is a plain module rather than `conftest.py`: importing from a conftest
 makes the same file reachable under two module names, which mypy rejects.
 """
 
+import asyncio
 import dataclasses
 import pathlib
 import re
 import sqlite3
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import unescape
 from html.parser import HTMLParser
+from time import monotonic
 from typing import Annotated, Any, Protocol
 from urllib.parse import parse_qs, unquote, urlsplit
 from zoneinfo import ZoneInfo
@@ -48,6 +50,8 @@ from blossom.agent.graph import (
     build_plan_graph,
     plan_graph_for,
 )
+from blossom.agent.runs import RUN_DEADLINE_SECONDS, RunBudget
+from blossom.agent.steps import StepRecord
 from blossom.app import create_app
 from blossom.assignment_status import AssignmentStatus, statuses_for
 from blossom.candidates import candidate_readings, reader, readings_for, row_reader
@@ -63,6 +67,7 @@ from blossom.captures import (
 )
 from blossom.clock import Clock, FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
+from blossom.drafts import Draft
 from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdict, Judgment
 from blossom.intake import PASTE_DAY, identity
 from blossom.noticing import Noticing, Verdict
@@ -71,7 +76,7 @@ from blossom.plan_reading import anchor_for
 from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel, SourceConfidence, SourceRecord
 from blossom.routes.navigation import assignment_anchor, details_href
-from blossom.routes.runs import PlanGraphs, plan_graphs
+from blossom.routes.runs import PlanGraphs, make_plan, plan_graphs
 from blossom.settings import (
     ANTHROPIC_API_KEY_VARIABLE,
     DEFAULT_EVENING_MINUTES,
@@ -81,7 +86,7 @@ from blossom.settings import (
     TIMEZONE_VARIABLE,
     Settings,
 )
-from blossom.stores.drafts import DraftRecord, DraftsStore
+from blossom.stores.drafts import DraftRecord, DraftsStore, Outcome, RunState, Settled
 from blossom.stores.project_state import (
     Assignment,
     AssignmentKind,
@@ -94,6 +99,7 @@ from blossom.stores.project_state import (
 from blossom.stores.reflections import Reflection, ReflectionsStore, ReflectionSubject
 from blossom.stores.support_rules import SupportRule, SupportRulesStore
 from blossom.stores.workload_signals import WorkloadSignalsStore
+from blossom.views import PlanRunView
 from tests.state_guard import require_protection
 
 FIXTURE_TIMEZONE = "America/New_York"
@@ -392,6 +398,85 @@ def drafts_in_memory() -> DraftsStore:
     return DraftsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
 
 
+def changed_by_hand(drafts: DraftsStore, sql: str, parameters: Sequence[object] = ()) -> None:
+    """Run one write straight on the drafts file's connection and commit it, holding the
+    store's own lock, so it never interleaves with a call the store makes on another thread."""
+    with drafts._lock:
+        drafts._connection.execute(sql, parameters)
+        drafts._connection.commit()
+
+
+def settled_run(
+    drafts: DraftsStore,
+    draft: Draft,
+    *,
+    thread_id: str,
+    plan_date: date,
+    outcome: Outcome = "accepted",
+    steps: Sequence[StepRecord] = (),
+    too_much: bool = False,
+    inputs_digest: str | None = None,
+    plan_assignment_ids: Sequence[str] | None = None,
+    now: Callable[[], float] = monotonic,
+) -> Settled:
+    """Admit a run, save its draft and settle it, as a run that ends well does.
+
+    ``now`` is the store's monotonic clock, from which the run's deadline is set.
+    """
+    blocking = drafts.admit_run(
+        thread_id, plan_date=plan_date, deadline_mono=now() + RUN_DEADLINE_SECONDS
+    )
+    if blocking is not None:
+        msg = f"run {blocking.run_id!r} is still running"
+        raise AssertionError(msg)
+    drafts.record_waiting(
+        draft,
+        thread_id=thread_id,
+        plan_date=plan_date,
+        outcome=outcome,
+        steps=steps,
+        too_much=too_much,
+        inputs_digest=inputs_digest,
+        plan_assignment_ids=plan_assignment_ids,
+    )
+    return drafts.settle_run(thread_id)
+
+
+def ended_run(
+    drafts: DraftsStore,
+    *,
+    thread_id: str,
+    plan_date: date,
+    outcome: str,
+    steps: Sequence[StepRecord] = (),
+    now: Callable[[], float] = monotonic,
+) -> RunState:
+    """Admit a run and end it without a plan, as a run that stops before the gate does."""
+    blocking = drafts.admit_run(
+        thread_id, plan_date=plan_date, deadline_mono=now() + RUN_DEADLINE_SECONDS
+    )
+    if blocking is not None:
+        msg = f"run {blocking.run_id!r} is still running"
+        raise AssertionError(msg)
+    ended = drafts.end_run(thread_id, reason=outcome, steps=steps)
+    if ended is None:
+        msg = f"run {thread_id!r} was not admitted"
+        raise AssertionError(msg)
+    return ended
+
+
+async def plan_evening(
+    graph: CompiledPlanGraph,
+    plan_date: date,
+    state: ApplicationState,
+    *,
+    budget: RunBudget | None = None,
+) -> PlanRunView:
+    """Plan one evening through ``make_plan``, as a planning route does, and answer with
+    the run as the parent reads it."""
+    return (await make_plan(graph, plan_date, state, budget=budget)).view
+
+
 def signals_in_memory() -> WorkloadSignalsStore:
     return WorkloadSignalsStore(
         sqlite3.connect(":memory:", check_same_thread=False), fixture_clock()
@@ -492,6 +577,111 @@ def scripted_graphs(
         return PlanGraphs(build=build, may_start=True)
 
     return override
+
+
+def model_graphs(
+    planner: Callable[[], Ask[DailyPlan]],
+    critic: Callable[[], Ask[CriticVerdict]],
+    *,
+    budget: Callable[[], RunBudget] = RunBudget,
+) -> Callable[..., PlanGraphs]:
+    """The graphs dependency over the app's own stores, with the model callables and the run
+    budget each build is given: for a model that is slow, busy, or answers badly."""
+
+    def override(
+        state: Annotated[ApplicationState, Depends(get_application_state)],
+    ) -> PlanGraphs:
+        return PlanGraphs(
+            build=lambda: plan_graph_for(state, planner=planner(), critic=critic()),
+            may_start=True,
+            budget=budget,
+        )
+
+    return override
+
+
+class FakeTime:
+    """A monotonic clock a test moves by hand, and a sleep that moves it instead of waiting.
+
+    ``run`` drives a coroutine on an event loop whose ``time()`` reads this clock, so
+    ``asyncio.timeout``, ``asyncio.wait(timeout=)`` and ``call_later`` expire when the
+    test moves the clock, never by waiting.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    def __call__(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+    def advance(self, seconds: float) -> None:
+        """Move the clock on, from any thread, and wake the loop that reads it."""
+        self.now += seconds
+        loop = self.loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(lambda: None)
+
+    def budget(self, seconds: float = RUN_DEADLINE_SECONDS) -> RunBudget:
+        """A run's time limit read from this clock."""
+        return RunBudget(seconds=seconds, clock=self, sleep=self.sleep)
+
+    def run[T](self, main: Coroutine[Any, Any, T]) -> T:
+        """What ``main`` returns, run on an event loop whose ``time()`` reads this clock."""
+
+        def made() -> asyncio.AbstractEventLoop:
+            loop = asyncio.new_event_loop()
+            loop.time = self  # type: ignore[method-assign]
+            self.loop = loop
+            return loop
+
+        try:
+            with asyncio.Runner(loop_factory=made) as runner:
+                return runner.run(main)
+        finally:
+            self.loop = None
+
+
+type Turn[T: BaseModel] = tuple[float, ModelAnswer[T] | Exception | None]
+"""Seconds a request takes on a ``FakeTime``, then its answer, the error it raises, or
+``None`` for a request that never answers."""
+
+
+class Spending[T: BaseModel]:
+    """A model callable whose requests each take some seconds of a ``FakeTime``.
+
+    The clock moves on as the request is made, and then the turn's answer is returned or
+    its error raised; a turn with no answer waits until the run's own limit ends it. Like
+    ``Scripted``, it keeps every brief and raises when its turns run out.
+    """
+
+    def __init__(self, time: FakeTime, *turns: Turn[T]) -> None:
+        self.time = time
+        self.turns = list(turns)
+        self.briefs: list[list[BaseMessage]] = []
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> ModelAnswer[T]:
+        self.briefs.append(list(messages))
+        if not self.turns:
+            msg = f"the script ran out after {len(self.briefs) - 1} calls"
+            raise AssertionError(msg)
+        seconds, answer = self.turns.pop(0)
+        self.time.now += seconds
+        if answer is None:
+            await asyncio.Event().wait()
+            msg = "a request that never answers answered"
+            raise AssertionError(msg)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    @property
+    def calls(self) -> int:
+        """How many requests the run made."""
+        return len(self.briefs)
 
 
 def work_listed(brief: Sequence[BaseMessage]) -> str:

@@ -58,6 +58,7 @@ from tests.support import (
     SetClock,
     accepting,
     card_for,
+    changed_by_hand,
     client_for,
     due,
     fixture_clock,
@@ -816,10 +817,9 @@ def test_a_plan_waiting_from_before_catch_up_work_reads_as_changed_once() -> Non
         before = uuid.uuid5(INSTRUCTIONS_SHAPE, shape).hex
         fresh = client.get("/parent", headers=PAGE_HEADERS).text
         drafts = state_of(client).drafts
-        drafts._connection.execute(
-            "UPDATE drafts SET inputs_digest=? WHERE draft_id=?", (before, made.draft_id)
+        changed_by_hand(
+            drafts, "UPDATE drafts SET inputs_digest=? WHERE draft_id=?", (before, made.draft_id)
         )
-        drafts._connection.commit()
         behind = client.get("/parent", headers=PAGE_HEADERS).text
         client.post("/student/actions/plan", headers=PAGE_HEADERS)
         again = client.get("/parent", headers=PAGE_HEADERS).text
@@ -1263,10 +1263,11 @@ def test_a_plan_whose_rows_cannot_be_read_names_no_place_for_earlier_work(
         drafts = state_of(client).drafts
         saved = drafts.latest_for(TODAY)
         assert saved is not None
-        drafts._connection.execute(
-            "UPDATE drafts SET plan_snapshot = ? WHERE draft_id = ?", (snapshot, saved.draft_id)
+        changed_by_hand(
+            drafts,
+            "UPDATE drafts SET plan_snapshot = ? WHERE draft_id = ?",
+            (snapshot, saved.draft_id),
         )
-        drafts._connection.commit()
         chosen = page(client)
         removed = client.get(choose(client, OCT_2.assignment_id), headers=PAGE_HEADERS).text
 
@@ -1311,8 +1312,7 @@ def test_a_parent_reads_what_todays_plan_still_holds_and_updates_that_cannot_be_
         made = client.post("/student/actions/plan", headers=PAGE_HEADERS)
         if not readable:
             drafts = state_of(client).drafts
-            drafts._connection.execute("UPDATE drafts SET plan_snapshot = NULL")
-            drafts._connection.commit()
+            changed_by_hand(drafts, "UPDATE drafts SET plan_snapshot = NULL")
         choose(client, OCT_2.assignment_id)
         signed_in(client, THEIRS)
         shown = page(client)
@@ -1475,3 +1475,81 @@ def test_a_reason_the_plan_gives_ends_its_sentence_before_the_next_one(
     assert f"Today's plan puts it off{said} Your next plan leaves it out." in words(
         item_of(removed, OCT_2.assignment_id)
     )
+
+
+# ------------------------------------------------------------------ dates no plan can keep to
+
+
+ONLY_PAST = UNDATED.model_copy(update={"assignment_id": "undated-only-past", "title": "Atlas page"})
+"""Nothing on record for its date; the school portal says October 1, which has passed."""
+
+
+def tonight_with_the_lab_put_off(*catch_up: Assignment) -> DailyPlan:
+    return DailyPlan(
+        plan_date=TODAY,
+        blocks=[
+            plan_block(OCT_3.assignment_id, "16:30", "17:00"),
+            *(
+                plan_block(item.assignment_id, "17:15", "17:45", "it was due earlier")
+                for item in catch_up
+            ),
+        ],
+        deferred=[Deferral(assignment_id=PAST_AND_AHEAD.assignment_id, reason="Due Monday.")],
+    )
+
+
+def test_earlier_work_and_a_passed_date_still_held_to_a_later_one_are_planned_with_the_model() -> (
+    None
+):
+    """On October 3, before she chooses it, the October 2 work stays out of what the planner
+    is given; once chosen it is planned as catch-up work. The lab whose portal date passed is
+    held to its record date, October 5, and the planner is told its date passed. Each press
+    asks the model and neither run ends as a date problem."""
+    briefs: list[Scripted[DailyPlan]] = []
+    plans = iter([[tonight_with_the_lab_put_off()], [tonight_with_the_lab_put_off(OCT_2)]])
+    with household(OCT_2, OCT_3, PAST_AND_AHEAD, briefs=briefs) as client:
+        client.app.dependency_overrides[plan_graphs] = scripted_graphs(  # type: ignore[attr-defined]
+            lambda: next(plans), lambda: [accepting()] * 3, planners=briefs
+        )
+        before = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        choose(client, OCT_2.assignment_id)
+        after = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        ended = state_of(client).drafts.runs_without_a_draft()
+        saved = state_of(client).drafts.latest_for(TODAY)
+
+    assert (before.status_code, after.status_code) == (303, 303)
+    assert [planner.calls for planner in briefs] == [1, 1]
+    first, second = (human_text(planner.briefs[0]) for planner in briefs)
+    assert f'id="{OCT_2.assignment_id}"' not in first
+    assert f'id="{OCT_2.assignment_id}"' in second
+    assert 'catch_up="due before today"' in second
+    for brief in (first, second):
+        assert 'date_passed="2026-10-01"' in brief
+    assert ended == []
+    assert saved is not None
+    assert saved.outcome == "accepted"
+
+
+def test_undated_work_whose_only_school_date_passed_ends_the_press_before_any_model() -> None:
+    """With no date on record, the work is always in today's window and never earlier work
+    to choose; its only date, the portal's October 1, has passed and no date is still to
+    come, so every plan would fail the deadline check over it. The press names it and its
+    day, links to its dates, and asks no model."""
+    briefs: list[Scripted[DailyPlan]] = []
+    with household(OCT_3, ONLY_PAST, briefs=briefs) as client:
+        store_of(client).record_claims(
+            ONLY_PAST.assignment_id, [record(SourceChannel.LMS, "2026-10-01")]
+        )
+        shown = page(client)
+        answer = client.post("/student/actions/plan", headers=PAGE_HEADERS)
+        ended = state_of(client).drafts.runs_without_a_draft()
+
+    assert section(shown) == "" or ONLY_PAST.assignment_id not in section(shown)
+    assert answer.status_code == 409
+    assert (
+        "Blossom can&#39;t make today&#39;s plan: Atlas page (Art, due October 1) has a due "
+        "date that already passed, so no plan can finish it on time."
+    ) in answer.text
+    assert "Check the dates for Atlas page." in answer.text
+    assert [planner.calls for planner in briefs] == [0]
+    assert [run.outcome for run in ended] == ["date_problem"]

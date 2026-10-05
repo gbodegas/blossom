@@ -29,14 +29,28 @@ configuration, because the framework takes it as a separate argument and
 defaults to ``async`` when it is left out. A scan in
 ``tests/test_architecture_constraints.py`` refuses a run that builds a
 configuration here and then omits it.
+
+A run also has a time limit, ``RUN_DEADLINE_SECONDS``, held by a ``RunBudget``
+that travels in the graph's context: every planner and reviewer request, and
+every retry, gets only what is left of it, and the run is timed node by node.
+The budget also keeps each step the run takes, so a run cut off is recorded
+without reading its saved state. ``bounded`` waits a limited time for a call on a
+worker thread, so no wait on the drafts file holds the event loop.
 """
 
-from collections.abc import Sequence
-from typing import Final
+import asyncio
+import contextlib
+import time
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Final
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Durability, StateSnapshot
+
+from blossom.agent.steps import RunTiming, StageTime, StepRecord
+from blossom.anthropic_client import ServiceBusy
 
 GRAPH_VERSION: Final = 1
 """Bumped whenever a change would mislead a thread paused under the old graph."""
@@ -54,6 +68,187 @@ DURABILITY: Final[Durability] = "sync"
 
 Passed to ``ainvoke`` beside the configuration; the framework defaults to
 ``async``, which lets a crash lose the step that recorded a decision."""
+
+
+RUN_DEADLINE_SECONDS: Final = 90.0
+"""The most one run may take, every planning attempt, review, and retry included. A
+ceiling, not a target: an ordinary run should finish well inside it."""
+
+MODEL_RETRIES: Final = 2
+"""How many times one request is sent again when the service is busy, inside the limit."""
+
+RETRY_PAUSE_SECONDS: Final = 0.5
+"""The wait before the first retry; each later one waits twice as long, never past the limit."""
+
+
+class RunTimedOut(TimeoutError):
+    """The run's time ran out while it waited for a model, or before it could ask one."""
+
+    def __init__(self) -> None:
+        super().__init__(f"the run's {RUN_DEADLINE_SECONDS:g} seconds ran out")
+
+
+@dataclass
+class RunBudget:
+    """One run's time, read from a monotonic clock, and what the run spent of it.
+
+    Made at handler entry, after the form body is read, so every request and every
+    retry draws on the same limit and nothing starts the clock again. ``seconds`` is
+    never more than ``RUN_DEADLINE_SECONDS``. ``clock`` and ``sleep`` are the
+    process's own unless a test gives others.
+    """
+
+    seconds: float = RUN_DEADLINE_SECONDS
+    clock: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    started: float = field(init=False)
+    stages: list[StageTime] = field(default_factory=list)
+    steps: list[StepRecord] = field(default_factory=list)
+    """Each step the run recorded, in order, as its nodes ended."""
+    model_calls: int = 0
+    retries: int = 0
+    outputs: list[int] = field(default_factory=list)
+    waiting_on: tuple[str, int] | None = None
+    """The node and round of the request in progress, kept when one ends the run."""
+    _lap: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.seconds = min(self.seconds, RUN_DEADLINE_SECONDS)
+        self.started = self._lap = self.clock()
+
+    def elapsed(self) -> float:
+        """Seconds since the run started."""
+        return self.clock() - self.started
+
+    def remaining(self) -> float:
+        """Seconds left before the limit, never below nothing."""
+        return max(0.0, self.seconds - self.elapsed())
+
+    def lap(self, node: str, round_number: int) -> None:
+        """Note that ``node`` ended now, timed from the end of the node before it."""
+        now = self.clock()
+        seconds = round(now - self._lap, 3)
+        self.stages.append(StageTime(node=node, round=round_number, seconds=seconds))
+        self._lap = now
+
+    async def ask[T](self, call: Callable[[], Awaitable[T]], *, stage: str, round_number: int) -> T:
+        """Make one request within what is left, asking again while the service is busy.
+
+        No request starts once the limit is reached, and none runs past it: one
+        still waiting then is canceled, one that held the event loop past it has
+        its answer set aside, busy or not, and the run has timed out. A busy service
+        is asked again at most ``MODEL_RETRIES`` times, after a pause cut to what
+        is left; the last busy answer is raised when retries are spent with time
+        left, and one at the limit times the run out. A ``TimeoutError`` the request
+        raises itself is raised as it is.
+        """
+        self.waiting_on = (stage, round_number)
+        attempt = 0
+        while True:
+            left = self.remaining()
+            if left <= 0:
+                raise RunTimedOut
+            self.model_calls += 1
+            if attempt:
+                self.retries += 1
+            limit = asyncio.timeout(left)
+            try:
+                async with limit:
+                    answer = await call()
+            except TimeoutError as error:
+                if limit.expired():
+                    raise RunTimedOut from error
+                raise
+            except ServiceBusy:
+                # A busy answer with no time left to ask again times the run out instead.
+                if attempt == MODEL_RETRIES and self.remaining() > 0:
+                    raise
+            else:
+                # The timeout can only cancel a request at an await, so an answer that
+                # came back after the limit is checked here.
+                if self.elapsed() > self.seconds:
+                    raise RunTimedOut
+                self.waiting_on = None
+                return answer
+            await self.sleep(min(RETRY_PAUSE_SECONDS * 2**attempt, self.remaining()))
+            attempt += 1
+
+    def timing(
+        self,
+        category: str | None,
+        *,
+        generation_seconds: float | None = None,
+        settle_seconds: float | None = None,
+        response_seconds: float | None = None,
+        unconfirmed: bool = False,
+    ) -> RunTiming:
+        """The run's record of time and requests, as it stands now."""
+        return RunTiming(
+            seconds=round(self.elapsed(), 3),
+            stages=self.stages,
+            model_calls=self.model_calls,
+            retries=self.retries,
+            output_tokens=sum(self.outputs) if self.outputs else None,
+            largest_output_tokens=max(self.outputs) if self.outputs else None,
+            category=category,
+            generation_seconds=generation_seconds,
+            settle_seconds=settle_seconds,
+            response_seconds=response_seconds,
+            unconfirmed=unconfirmed,
+        )
+
+
+async def to_the_end[T](work: Awaitable[T]) -> T:
+    """What ``work`` returns, with the work seen to its end even when the caller is canceled
+    meanwhile: the cancel goes on once the work has stopped, so cleanup keeps its order
+    and is done before a run lets go of its evening."""
+    task = asyncio.ensure_future(work)
+    try:
+        return await asyncio.shield(task)
+    except BaseException:
+        while not task.done():
+            with contextlib.suppress(BaseException):
+                await asyncio.wait([task])
+        # Read so a failure that came with a cancel isn't reported as unhandled.
+        with contextlib.suppress(BaseException):
+            task.exception()
+        raise
+
+
+class Unfinished(TimeoutError):
+    """A call on a worker thread that had not returned when its wait ended.
+
+    ``work`` is the call, which may still be running and may still change the store.
+    """
+
+    def __init__(self, work: "asyncio.Future[Any]") -> None:
+        super().__init__("the call had not returned when its wait ended")
+        self.work = work
+
+
+def _settled_quietly(work: "asyncio.Future[Any]") -> None:
+    """Read how an abandoned call ended, so its failure is not reported as unhandled."""
+    with contextlib.suppress(BaseException):
+        work.exception()
+
+
+async def bounded[T](call: Callable[[], T], wait: float) -> T:
+    """What ``call`` returns, run on a worker thread and waited on for ``wait`` seconds.
+
+    When the wait ends first, or the caller is canceled, the call goes on running and
+    ``Unfinished`` carries it; a thread can't be stopped, so nothing claims it was.
+    """
+    loop = asyncio.get_running_loop()
+    work = loop.run_in_executor(None, call)
+    try:
+        done, _ = await asyncio.wait({work}, timeout=max(0.0, wait))
+    except BaseException:
+        work.add_done_callback(_settled_quietly)
+        raise
+    if work not in done:
+        work.add_done_callback(_settled_quietly)
+        raise Unfinished(work)
+    return work.result()
 
 
 class StaleGraphVersion(RuntimeError):

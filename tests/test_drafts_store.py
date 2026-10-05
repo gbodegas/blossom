@@ -8,27 +8,38 @@ again is one row, a decision is stamped by the store's clock, and the rows are
 still there after the file is closed and reopened.
 """
 
+import logging
 import pathlib
 import sqlite3
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from blossom.agent.steps import StepRecord
+from blossom.agent.runs import RUN_DEADLINE_SECONDS
+from blossom.agent.steps import RunTiming, StageTime, StepRecord
 from blossom.clock import Clock
 from blossom.drafts import Draft, DraftStatus
 from blossom.stores.drafts import (
     INTERRUPTED,
+    OVERTAKEN,
     SUPERSEDED_REASON,
+    TIMED_OUT,
     AlreadyDecided,
     DraftsStore,
     IncompatibleReplay,
+    NotPublished,
     Outcome,
+    RunEnded,
+    StoreBusy,
+    WriterBusy,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
-from tests.support import FIXTURE_TIMEZONE, fixture_clock
+from tests.support import FIXTURE_TIMEZONE, FakeTime, ended_run, fixture_clock, settled_run
 
 PLAN_DATE = date(2026, 8, 19)
 CREATED = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
@@ -45,8 +56,9 @@ def save_and_publish(
     too_much: bool = False,
     plan_assignment_ids: Sequence[str] | None = None,
 ) -> None:
-    """Save a draft and publish it at once, as a run that pauses without incident does."""
-    store.record_waiting(
+    """Admit a run, save its draft and settle it, as a run that ends well does."""
+    settled_run(
+        store,
         draft,
         thread_id=thread_id,
         plan_date=plan_date,
@@ -55,7 +67,19 @@ def save_and_publish(
         too_much=too_much,
         plan_assignment_ids=plan_assignment_ids,
     )
-    store.publish(draft.draft_id)
+
+
+def admitted(
+    store: DraftsStore,
+    thread_id: str,
+    plan_date: date = PLAN_DATE,
+    *,
+    now: Callable[[], float] = monotonic,
+    seconds: float = RUN_DEADLINE_SECONDS,
+) -> None:
+    """Admit a run whose deadline is ``seconds`` ahead on ``now``, the store's own clock."""
+    blocking = store.admit_run(thread_id, plan_date=plan_date, deadline_mono=now() + seconds)
+    assert blocking is None
 
 
 def store_in_memory() -> DraftsStore:
@@ -91,18 +115,20 @@ def test_a_saved_draft_is_waiting_until_somebody_decides() -> None:
 
 
 def test_saving_the_same_draft_again_leaves_one_row_with_the_first_created_at() -> None:
-    """A node that runs twice before its run pauses, as a crashed node does, must not queue
+    """A node that runs twice before its run settles, as a crashed node does, must not queue
     twice: the later composition takes the place of the earlier one, whole, and the draft
     keeps the time it was first made."""
     store = store_in_memory()
     try:
+        admitted(store, "t")
         store.record_waiting(
             draft("first rendering"), thread_id="t", plan_date=PLAN_DATE, outcome="accepted"
         )
         later = draft("second rendering").model_copy(
             update={"created_at": CREATED.replace(hour=23)}
         )
-        save_and_publish(store, later, thread_id="t", plan_date=PLAN_DATE, outcome="unsettled")
+        store.record_waiting(later, thread_id="t", plan_date=PLAN_DATE, outcome="unsettled")
+        store.settle_run("t")
         waiting = store.waiting()
     finally:
         store.close()
@@ -261,12 +287,13 @@ def test_a_decided_draft_is_not_taken_back() -> None:
         store.record_decision(
             draft().draft_id, status=DraftStatus.DRAFT, decision="rejected", reason="no"
         )
-        taken_back = store.withdraw(draft().draft_id)
+        ended = store.end_run("t", reason=INTERRUPTED)
         kept = store.get(draft().draft_id)
     finally:
         store.close()
 
-    assert taken_back is False
+    assert ended is not None
+    assert ended.status == "published"
     assert kept is not None
     assert kept.decision == "rejected"
 
@@ -316,8 +343,12 @@ def test_a_runs_record_is_saved_with_its_steps_and_read_back_in_order() -> None:
     store = store_in_memory()
     steps = [step("retrieve", 0), step("plan", 1), step("verify", 1, "1 of 7 checks failed")]
 
-    store.record_run(
-        thread_id="plan:2026-08-19:x", plan_date=PLAN_DATE, outcome="checks_failed", steps=steps
+    ended_run(
+        store,
+        thread_id="plan:2026-08-19:x",
+        plan_date=PLAN_DATE,
+        outcome="checks_failed",
+        steps=steps,
     )
 
     assert store.steps_for("plan:2026-08-19:x") == steps
@@ -330,32 +361,44 @@ def test_a_runs_record_is_saved_with_its_steps_and_read_back_in_order() -> None:
     assert runs[0].recorded_at == fixture_clock().now()
 
 
-def test_saving_a_run_again_replaces_its_steps_and_keeps_its_first_time() -> None:
+def test_ending_a_run_again_changes_nothing_and_keeps_its_first_account() -> None:
+    """A run ends once: a second ending, from a late worker or a repeated call, is told how
+    the run ended and leaves its reason, its steps and its time as they were."""
     store = ticking_store()
-    store.record_run(
-        thread_id="plan:x", plan_date=PLAN_DATE, outcome="model_refused", steps=[step("plan", 1)]
+    ended_run(
+        store,
+        thread_id="plan:x",
+        plan_date=PLAN_DATE,
+        outcome="model_refused",
+        steps=[step("plan", 1)],
     )
     first_time = store.runs_without_a_draft()[0].recorded_at
 
-    store.record_run(
-        thread_id="plan:x",
-        plan_date=PLAN_DATE,
-        outcome="checks_failed",
-        steps=[step("retrieve", 0), step("plan", 1)],
+    again = store.end_run(
+        "plan:x", reason="checks_failed", steps=[step("retrieve", 0), step("plan", 1)]
     )
 
     saved = store.runs_without_a_draft()
-    assert [item.node for item in store.steps_for("plan:x")] == ["retrieve", "plan"]
-    assert [(run.outcome, run.recorded_at) for run in saved] == [("checks_failed", first_time)]
+    assert again is not None
+    assert (again.status, again.reason) == ("ended", "model_refused")
+    assert [item.node for item in store.steps_for("plan:x")] == ["plan"]
+    assert [(run.outcome, run.recorded_at) for run in saved] == [("model_refused", first_time)]
 
 
 def test_a_run_that_left_a_draft_is_not_among_those_that_ended_without_one() -> None:
     store = store_in_memory()
-    save_and_publish(store, draft(), thread_id="plan:y", plan_date=PLAN_DATE, outcome="accepted")
-    store.record_run(
-        thread_id="plan:y", plan_date=PLAN_DATE, outcome="accepted", steps=[step("critique", 1)]
+    save_and_publish(
+        store,
+        draft(),
+        thread_id="plan:y",
+        plan_date=PLAN_DATE,
+        outcome="accepted",
+        steps=[step("critique", 1)],
     )
+    ended = store.end_run("plan:y", reason="accepted", steps=[step("plan", 1)])
 
+    assert ended is not None
+    assert ended.status == "published"
     assert store.runs_without_a_draft() == []
     assert [item.node for item in store.steps_for("plan:y")] == ["critique"]
 
@@ -366,20 +409,18 @@ def test_a_thread_never_saved_has_no_steps() -> None:
 
 def test_runs_that_ended_are_most_recent_first() -> None:
     store = ticking_store()
-    store.record_run(thread_id="plan:first", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
-    store.record_run(
-        thread_id="plan:second", plan_date=PLAN_DATE, outcome="model_refused", steps=[]
-    )
+    ended_run(store, thread_id="plan:first", plan_date=PLAN_DATE, outcome="checks_failed")
+    ended_run(store, thread_id="plan:second", plan_date=PLAN_DATE, outcome="model_refused")
 
     assert [run.thread_id for run in store.runs_without_a_draft()] == ["plan:second", "plan:first"]
 
 
 def test_runs_saved_at_one_instant_are_listed_most_recent_first_by_the_order_saved() -> None:
     """Thread ids are random, so two runs stamped alike are listed by the order they were
-    saved, the same order that says which one is newest."""
+    admitted, the same order that says which one is newest."""
     store = store_in_memory()
-    store.record_run(thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
-    store.record_run(thread_id="plan:z", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
+    ended_run(store, thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed")
+    ended_run(store, thread_id="plan:z", plan_date=PLAN_DATE, outcome="checks_failed")
 
     runs = store.runs_without_a_draft()
 
@@ -395,11 +436,11 @@ def test_a_run_that_ended_knows_whether_it_is_the_newest_for_its_evening() -> No
     store = ticking_store()
     tomorrow = PLAN_DATE + timedelta(days=1)
     yesterday = PLAN_DATE - timedelta(days=1)
-    store.record_run(thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
-    store.record_run(thread_id="plan:b", plan_date=PLAN_DATE, outcome="model_refused", steps=[])
-    store.record_run(thread_id="plan:c", plan_date=tomorrow, outcome="checks_failed", steps=[])
+    ended_run(store, thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed")
+    ended_run(store, thread_id="plan:b", plan_date=PLAN_DATE, outcome="model_refused")
+    ended_run(store, thread_id="plan:c", plan_date=tomorrow, outcome="checks_failed")
     save_and_publish(store, draft(), thread_id="plan:d", plan_date=tomorrow, outcome="accepted")
-    store.record_run(thread_id="plan:e", plan_date=yesterday, outcome="checks_failed", steps=[])
+    ended_run(store, thread_id="plan:e", plan_date=yesterday, outcome="checks_failed")
 
     newest = {run.thread_id: run.newest for run in store.runs_without_a_draft()}
 
@@ -408,11 +449,11 @@ def test_a_run_that_ended_knows_whether_it_is_the_newest_for_its_evening() -> No
 
 def test_two_runs_of_an_evening_saved_at_one_instant_leave_the_later_saved_newest() -> None:
     """Thread ids are random, so the order they sort in says nothing about which run came
-    last; the order the runs were saved does, and saving one again keeps its place."""
+    last; the order the runs were admitted does, and ending one again keeps its place."""
     store = store_in_memory()
-    store.record_run(thread_id="plan:z", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
-    store.record_run(thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
-    store.record_run(thread_id="plan:z", plan_date=PLAN_DATE, outcome="model_refused", steps=[])
+    ended_run(store, thread_id="plan:z", plan_date=PLAN_DATE, outcome="checks_failed")
+    ended_run(store, thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed")
+    store.end_run("plan:z", reason="model_refused")
 
     newest = {run.thread_id: run.newest for run in store.runs_without_a_draft()}
 
@@ -435,13 +476,16 @@ def test_a_draft_and_the_record_of_its_run_are_saved_together() -> None:
     assert store.runs_without_a_draft() == []
 
 
-def test_a_replacement_that_fails_part_way_leaves_the_earlier_account_standing() -> None:
-    """The failure lands inside the transaction, after the run row is rewritten
-    and the old steps are deleted, where a missing rollback would show."""
+def test_an_ending_that_fails_part_way_leaves_the_run_as_it_was() -> None:
+    """The failure lands inside the transaction, after the run is marked ended, where a
+    missing rollback would show: the run is still running, its draft and its steps stand."""
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     store = DraftsStore(connection, fixture_clock())
     first = [step("retrieve", 0), step("plan", 1)]
-    store.record_run(thread_id="plan:x", plan_date=PLAN_DATE, outcome="model_refused", steps=first)
+    admitted(store, "plan:x")
+    store.record_waiting(
+        draft(), thread_id="plan:x", plan_date=PLAN_DATE, outcome="accepted", steps=first
+    )
     connection.execute(
         """
         CREATE TRIGGER refuse_a_third_step BEFORE INSERT ON steps
@@ -450,18 +494,19 @@ def test_a_replacement_that_fails_part_way_leaves_the_earlier_account_standing()
     )
 
     with pytest.raises(sqlite3.DatabaseError, match="no third step"):
-        store.record_run(
-            thread_id="plan:x",
-            plan_date=PLAN_DATE,
-            outcome="checks_failed",
-            steps=[step("retrieve", 0), step("plan", 1), step("verify", 1)],
-        )
+        store.end_run("plan:x", reason="service_failed", terminal=step("verify", 1))
 
+    standing = store.run_status("plan:x")
+    assert standing is not None
+    assert standing.status == "running"
     assert store.steps_for("plan:x") == first
-    assert [run.outcome for run in store.runs_without_a_draft()] == ["model_refused"]
+    assert [record.draft_id for record in store.unpublished()] == [draft().draft_id]
     connection.execute("DROP TRIGGER refuse_a_third_step")
-    store.record_run(thread_id="plan:y", plan_date=PLAN_DATE, outcome="checks_failed", steps=[])
-    assert {run.thread_id for run in store.runs_without_a_draft()} == {"plan:x", "plan:y"}
+    ended = store.end_run("plan:x", reason="service_failed", terminal=step("verify", 1))
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", "service_failed")
+    assert [item.node for item in store.steps_for("plan:x")] == ["retrieve", "plan", "verify"]
+    assert store.unpublished() == []
 
 
 def test_the_retention_policy_covers_the_runs_and_their_steps() -> None:
@@ -475,7 +520,7 @@ def test_the_retention_policy_covers_the_runs_and_their_steps() -> None:
 
 def test_a_run_with_no_steps_is_listed_with_an_empty_record() -> None:
     store = store_in_memory()
-    store.record_run(thread_id="plan:bare", plan_date=PLAN_DATE, outcome="model_refused", steps=[])
+    ended_run(store, thread_id="plan:bare", plan_date=PLAN_DATE, outcome="model_refused")
 
     assert [(run.thread_id, run.steps) for run in store.runs_without_a_draft()] == [
         ("plan:bare", [])
@@ -484,10 +529,15 @@ def test_a_run_with_no_steps_is_listed_with_an_empty_record() -> None:
 
 def test_each_listed_run_carries_only_its_own_steps() -> None:
     store = ticking_store()
-    store.record_run(
-        thread_id="plan:one", plan_date=PLAN_DATE, outcome="checks_failed", steps=[step("plan", 1)]
+    ended_run(
+        store,
+        thread_id="plan:one",
+        plan_date=PLAN_DATE,
+        outcome="checks_failed",
+        steps=[step("plan", 1)],
     )
-    store.record_run(
+    ended_run(
+        store,
         thread_id="plan:two",
         plan_date=PLAN_DATE,
         outcome="model_refused",
@@ -582,9 +632,6 @@ def test_an_older_file_with_two_drafts_waiting_for_one_evening_keeps_the_latest(
     assert middle.decision == "superseded"
     assert latest is not None
     assert latest.draft_id == "draft:late"
-    assert store.withdraw("draft:late") is True
-    assert [record.draft_id for record in store.waiting()] == ["draft:other"]
-    assert store.latest_for(PLAN_DATE) is None
 
 
 def test_a_file_from_the_previous_version_is_brought_into_line_behind_a_reviewed_draft() -> None:
@@ -750,17 +797,64 @@ def test_a_file_written_before_drafts_carried_the_signal_gains_the_column() -> N
     assert displaced.decision == "superseded"
 
 
+def test_a_runs_time_is_kept_with_its_record() -> None:
+    timing = RunTiming(
+        seconds=41.25,
+        stages=[StageTime(node="retrieve", round=0, seconds=0.01)],
+        model_calls=3,
+        retries=1,
+        output_tokens=2400,
+        largest_output_tokens=1800,
+        category="invalid_output",
+        generation_seconds=40.5,
+        settle_seconds=0.25,
+        response_seconds=41.0,
+        unconfirmed=True,
+    )
+    store = DraftsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
+    ended_run(store, thread_id="plan:a", plan_date=PLAN_DATE, outcome="checks_failed")
+    store.record_timing("plan:a", timing)
+    store.record_timing("plan:never-saved", timing)
+
+    (ended,) = store.runs_without_a_draft()
+
+    assert ended.timing == timing
+
+
+def test_a_file_written_before_runs_kept_time_gains_the_column() -> None:
+    """Its runs keep no time; a run saved after the upgrade does."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.execute(
+        "CREATE TABLE runs (thread_id TEXT PRIMARY KEY, plan_date TEXT NOT NULL, "
+        "outcome TEXT NOT NULL, recorded_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO runs VALUES ('plan:old', '2026-08-19', 'checks_failed', "
+        "'2026-08-19T22:00:00+00:00')"
+    )
+    connection.commit()
+
+    store = DraftsStore(connection, fixture_clock())
+    ended_run(store, thread_id="plan:new", plan_date=PLAN_DATE, outcome="timed_out")
+    store.record_timing("plan:new", RunTiming(seconds=90.0, category="timeout"))
+    timed = {run.thread_id: run.timing for run in store.runs_without_a_draft()}
+
+    assert timed["plan:old"] is None
+    assert timed["plan:new"] == RunTiming(seconds=90.0, category="timeout")
+
+
 # ---------------------------------------------------------------- publication
 
 
-def test_a_saved_draft_reaches_no_page_until_its_run_pauses_and_publishes_it() -> None:
+def test_a_saved_draft_reaches_no_page_until_its_run_settles_and_publishes_it() -> None:
     """Saving is the record; publishing is what the pages read."""
     store = store_in_memory()
     try:
+        admitted(store, "t")
         store.record_waiting(draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted")
         before = (store.waiting(), store.latest_for(PLAN_DATE), store.unpublished())
         saved = store.get(draft().draft_id)
-        displaced = store.publish(draft().draft_id)
+        settled = store.settle_run("t")
         after = (store.waiting(), store.latest_for(PLAN_DATE), store.unpublished())
     finally:
         store.close()
@@ -770,7 +864,8 @@ def test_a_saved_draft_reaches_no_page_until_its_run_pauses_and_publishes_it() -
     assert [record.draft_id for record in before[2]] == [draft().draft_id]
     assert saved is not None
     assert saved.published is False
-    assert displaced == []
+    assert settled.displaced == []
+    assert settled.run.status == "published"
     assert [record.draft_id for record in after[0]] == [draft().draft_id]
     assert after[1] is not None
     assert after[1].published is True
@@ -783,19 +878,20 @@ def test_publishing_takes_the_place_of_the_published_draft_waiting_for_the_eveni
         first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
         second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
         save_and_publish(store, first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+        admitted(store, "tb")
         store.record_waiting(second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
         still_first = store.latest_for(PLAN_DATE)
-        displaced = store.publish("draft:b")
+        settled = store.settle_run("tb")
         waiting = [record.draft_id for record in store.waiting()]
         latest = store.latest_for(PLAN_DATE)
         closed = store.get("draft:a")
-        again = store.publish("draft:b")
+        again = store.settle_run("tb")
     finally:
         store.close()
 
     assert still_first is not None
     assert still_first.draft_id == "draft:a"
-    assert [record.draft_id for record in displaced] == ["draft:a"]
+    assert [record.draft_id for record in settled.displaced] == ["draft:a"]
     assert waiting == ["draft:b"]
     assert latest is not None
     assert latest.draft_id == "draft:b"
@@ -803,19 +899,57 @@ def test_publishing_takes_the_place_of_the_published_draft_waiting_for_the_eveni
     assert closed.decision == "superseded"
     assert closed.reason == SUPERSEDED_REASON
     assert closed.decided_at == fixture_clock().now()
-    assert again == []
+    assert again.displaced == []
+    assert again.run.status == "published"
+    assert again.run.draft == settled.run.draft
 
 
-def test_the_current_plan_is_the_last_published_whatever_order_the_drafts_were_saved_in() -> None:
-    """Two runs can save in one order and pause in the other."""
+def one_published_and_one_waiting(store: DraftsStore) -> None:
+    first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
+    second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
+    save_and_publish(store, first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+    admitted(store, "tb")
+    store.record_waiting(second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+
+
+def test_a_settle_waits_for_the_store_only_as_long_as_it_was_given() -> None:
+    """Another caller holds the store. The settle gives up at its wait with ``StoreBusy``,
+    before any transaction begins, and the run can still settle once the store is free."""
     store = store_in_memory()
     try:
-        saved_first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
-        saved_second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
-        store.record_waiting(saved_first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
-        store.record_waiting(saved_second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
-        store.publish("draft:b")
-        store.publish("draft:a")
+        one_published_and_one_waiting(store)
+        store._lock.acquire()
+        started = monotonic()
+        try:
+            with pytest.raises(StoreBusy):
+                store.settle_run("tb", wait=0.2)
+            waited = monotonic() - started
+        finally:
+            store._lock.release()
+        latest = store.latest_for(PLAN_DATE)
+        standing = store.run_status("tb")
+        settled = store.settle_run("tb")
+    finally:
+        store.close()
+
+    assert 0.15 < waited < 1.0
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+    assert standing is not None
+    assert standing.status == "running"
+    assert settled.run.status == "published"
+
+
+def test_the_current_plan_is_the_last_published_whatever_times_the_drafts_carry() -> None:
+    """The draft made later can settle first; the order of publication decides."""
+    store = store_in_memory()
+    try:
+        made_first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
+        made_second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
+        save_and_publish(
+            store, made_second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted"
+        )
+        save_and_publish(store, made_first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
         waiting = [record.draft_id for record in store.waiting()]
         latest = store.latest_for(PLAN_DATE)
     finally:
@@ -826,10 +960,9 @@ def test_the_current_plan_is_the_last_published_whatever_order_the_drafts_were_s
     assert latest.draft_id == "draft:a"
 
 
-def test_a_replayed_save_of_a_published_draft_keeps_its_place_and_displaces_nothing() -> None:
-    """The same composition saved again for a draft on the pages changes nothing, made at a
-    later moment or not: not its decision, its place, nor the steps recorded since. A
-    different composition is refused, and the draft reads as it did."""
+def test_a_replayed_save_of_a_published_draft_is_refused_and_changes_nothing() -> None:
+    """A save for a run that settled, made at a later moment or with another composition,
+    is refused: not its decision, its place, nor its steps change."""
     store = store_in_memory()
     try:
         first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
@@ -844,31 +977,22 @@ def test_a_replayed_save_of_a_published_draft_keeps_its_place_and_displaces_noth
         )
         save_and_publish(store, second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
         before = store.get("draft:a")
-        store.record_waiting(
+        for replay in (
             first.model_copy(update={"created_at": CREATED.replace(hour=23)}),
-            thread_id="ta",
-            plan_date=PLAN_DATE,
-            outcome="accepted",
-        )
-        the_same = store.get("draft:a")
-        with pytest.raises(IncompatibleReplay, match="on the pages"):
-            store.record_waiting(
-                first.model_copy(update={"body": "a, again"}),
-                thread_id="ta",
-                plan_date=PLAN_DATE,
-                outcome="accepted",
-            )
-        with pytest.raises(IncompatibleReplay, match="on the pages"):
-            store.record_waiting(
-                first, thread_id="ta", plan_date=PLAN_DATE, outcome="unsettled", too_much=True
-            )
+            first.model_copy(update={"body": "a, again"}),
+        ):
+            with pytest.raises(RunEnded, match="published") as refused:
+                store.record_waiting(
+                    replay, thread_id="ta", plan_date=PLAN_DATE, outcome="unsettled", too_much=True
+                )
+            assert refused.value.run is not None
+            assert refused.value.run.status == "published"
         replayed = store.get("draft:a")
         waiting = [record.draft_id for record in store.waiting()]
     finally:
         store.close()
 
     assert before is not None
-    assert the_same == before
     assert replayed == before
     assert replayed.published is True
     assert replayed.decision == "superseded"
@@ -877,25 +1001,44 @@ def test_a_replayed_save_of_a_published_draft_keeps_its_place_and_displaces_noth
     assert waiting == ["draft:b"]
 
 
-def test_a_draft_taken_back_before_publication_leaves_the_plan_before_it_untouched() -> None:
+def test_a_draft_saved_for_another_thread_or_evening_is_refused() -> None:
+    store = store_in_memory()
+    try:
+        admitted(store, "ta")
+        store.record_waiting(draft(), thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+        with pytest.raises(IncompatibleReplay, match="another thread or evening"):
+            store.record_waiting(
+                draft(), thread_id="ta", plan_date=PLAN_DATE + timedelta(days=1), outcome="accepted"
+            )
+        kept = store.get(draft().draft_id)
+    finally:
+        store.close()
+
+    assert kept is not None
+    assert kept.plan_date == PLAN_DATE
+
+
+def test_a_run_ended_before_publication_leaves_the_plan_before_it_untouched() -> None:
     store = store_in_memory()
     try:
         first = Draft(draft_id="draft:a", body="a", created_at=CREATED)
         second = Draft(draft_id="draft:b", body="b", created_at=CREATED.replace(hour=23))
         save_and_publish(store, first, thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+        admitted(store, "tb")
         store.record_waiting(
             second, thread_id="tb", plan_date=PLAN_DATE, outcome="accepted", steps=[step("plan", 1)]
         )
-        taken_back = store.withdraw("draft:b")
-        again = store.withdraw("draft:b")
+        ended = store.end_run("tb", reason=INTERRUPTED)
+        again = store.end_run("tb", reason="service_failed")
         waiting = [record.draft_id for record in store.waiting()]
         gone = store.get("draft:b")
         runs = store.runs_without_a_draft()
     finally:
         store.close()
 
-    assert taken_back is True
-    assert again is False
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", INTERRUPTED)
+    assert again == ended
     assert waiting == ["draft:a"]
     assert gone is None
     assert [(run.thread_id, run.outcome, len(run.steps)) for run in runs] == [
@@ -906,7 +1049,8 @@ def test_a_draft_taken_back_before_publication_leaves_the_plan_before_it_untouch
 def test_what_a_publication_displaced_is_read_before_the_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Nothing after the commit can fail and make a committed publication look failed."""
+    """Nothing after the commit can fail and make a committed publication look failed: the
+    published record and what it displaced come from inside the transaction."""
     store = store_in_memory()
     try:
         save_and_publish(
@@ -916,6 +1060,7 @@ def test_what_a_publication_displaced_is_read_before_the_commit(
             plan_date=PLAN_DATE,
             outcome="accepted",
         )
+        admitted(store, "tb")
         store.record_waiting(
             Draft(draft_id="draft:b", body="b", created_at=CREATED),
             thread_id="tb",
@@ -923,26 +1068,30 @@ def test_what_a_publication_displaced_is_read_before_the_commit(
             outcome="accepted",
         )
 
-        def broken(draft_id: str) -> None:
+        def broken(*_: object, **__: object) -> None:
             msg = "no reads after the commit"
             raise AssertionError(msg)
 
-        monkeypatch.setattr(store, "get", broken)
-        displaced = store.publish("draft:b")
+        for name in ("get", "latest_for", "run_status", "latest_run", "_drafts"):
+            monkeypatch.setattr(store, name, broken)
+        settled = store.settle_run("tb")
         monkeypatch.undo()
         waiting = [record.draft_id for record in store.waiting()]
     finally:
         store.close()
 
-    assert [(item.draft_id, item.thread_id) for item in displaced] == [("draft:a", "ta")]
+    assert [(item.draft_id, item.thread_id) for item in settled.displaced] == [("draft:a", "ta")]
+    assert settled.run.draft is not None
+    assert settled.run.draft.draft_id == "draft:b"
+    assert settled.run.draft.published is True
     assert waiting == ["draft:b"]
 
 
-def test_publishing_an_unknown_draft_is_an_error() -> None:
+def test_settling_an_unknown_run_is_an_error() -> None:
     store = store_in_memory()
     try:
-        with pytest.raises(KeyError, match="draft:nobody"):
-            store.publish("draft:nobody")
+        with pytest.raises(KeyError, match="plan:nobody"):
+            store.settle_run("plan:nobody")
     finally:
         store.close()
 
@@ -1173,6 +1322,7 @@ def test_the_plans_in_force_move_with_the_household_day() -> None:
         plan(store, "draft:today", PLAN_DATE)
         plan(store, "draft:tomorrow", tomorrow, decision="approved")
         plan(store, "draft:tomorrow-again", tomorrow)
+        admitted(store, "t-saved-only", tomorrow)
         store.record_waiting(
             Draft(draft_id="draft:saved-only", body="s", created_at=CREATED),
             thread_id="t-saved-only",
@@ -1190,3 +1340,825 @@ def test_the_plans_in_force_move_with_the_household_day() -> None:
     assert "draft:today" not in next_day.operative
     assert "draft:saved-only" not in today.operative | next_day.operative
     assert next_day.current_id == "draft:tomorrow-again"
+
+
+# ---------------------------------------------------------------- the run's lifecycle
+
+
+class Traced:
+    """The statements a connection runs, in order, and an action to take as one starts."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.statements: list[str] = []
+        self.on: dict[str, Callable[[], None]] = {}
+        connection.set_trace_callback(self._saw)
+
+    def _saw(self, statement: str) -> None:
+        self.statements.append(statement)
+        action = self.on.get(statement)
+        if action is not None:
+            action()
+
+
+def traced_store(clock: Callable[[], float] = monotonic) -> tuple[DraftsStore, Traced]:
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    return DraftsStore(connection, fixture_clock(), clock), Traced(connection)
+
+
+def faked_store(fake: FakeTime) -> DraftsStore:
+    return DraftsStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock(), fake)
+
+
+def running_rows(store: DraftsStore) -> list[str]:
+    return [
+        str(row[0])
+        for row in store._connection.execute(
+            "SELECT thread_id FROM runs WHERE status='running' ORDER BY rowid"
+        )
+    ]
+
+
+def test_a_second_run_is_refused_while_one_is_running_and_told_which() -> None:
+    """One run per household: a run for another evening blocks today's too, and the refusal
+    names the run, its evening and its time left, with no second row written."""
+    fake = FakeTime()
+    store = faked_store(fake)
+    tomorrow = PLAN_DATE + timedelta(days=1)
+    try:
+        admitted(store, "plan:parent", tomorrow, now=fake)
+        fake.now += 50
+        blocking = store.admit_run("plan:hers", plan_date=PLAN_DATE, deadline_mono=fake() + 90)
+        rows = store._connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+    finally:
+        store.close()
+
+    assert blocking is not None
+    assert (blocking.run_id, blocking.plan_date, blocking.status) == (
+        "plan:parent",
+        tomorrow,
+        "running",
+    )
+    assert blocking.seconds_left == pytest.approx(40)
+    assert rows == 1
+
+
+def test_a_run_past_its_deadline_is_ended_by_the_next_admission_and_by_a_status_read() -> None:
+    fake = FakeTime()
+    store = faked_store(fake)
+    try:
+        admitted(store, "plan:old", now=fake, seconds=10)
+        store.record_waiting(draft(), thread_id="plan:old", plan_date=PLAN_DATE, outcome="accepted")
+        fake.now += 10
+        before = store.latest_run()
+        admitted(store, "plan:new", now=fake)
+        old = store.run_status("plan:old")
+        candidate = store.get(draft().draft_id)
+        fake.now += 90
+        new = store.run_status("plan:new")
+    finally:
+        store.close()
+
+    assert before is not None
+    assert (before.status, before.seconds_left) == ("running", 0.0)
+    assert old is not None
+    assert (old.status, old.reason) == ("ended", TIMED_OUT)
+    assert candidate is None
+    assert new is not None
+    assert (new.status, new.reason) == ("ended", TIMED_OUT)
+
+
+def test_a_deadline_no_run_of_this_process_could_have_is_ended_as_interrupted() -> None:
+    fake = FakeTime()
+    store = faked_store(fake)
+    try:
+        admitted(store, "plan:before-a-restart", now=fake, seconds=RUN_DEADLINE_SECONDS + 1)
+        admitted(store, "plan:new", now=fake)
+        earlier = store.run_status("plan:before-a-restart")
+        running = running_rows(store)
+    finally:
+        store.close()
+
+    assert earlier is not None
+    assert (earlier.status, earlier.reason) == ("ended", INTERRUPTED)
+    assert running == ["plan:new"]
+
+
+def test_a_start_ends_every_running_run_and_leaves_the_published_plan() -> None:
+    store = store_in_memory()
+    try:
+        save_and_publish(
+            store,
+            Draft(draft_id="draft:a", body="a", created_at=CREATED),
+            thread_id="ta",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        admitted(store, "tb")
+        store.record_waiting(draft(), thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+        ended = store.end_interrupted_runs()
+        again = store.end_interrupted_runs()
+        state = store.run_status("tb")
+        latest = store.latest_for(PLAN_DATE)
+    finally:
+        store.close()
+
+    assert ended == ["tb"]
+    assert again == []
+    assert state is not None
+    assert (state.status, state.reason) == ("ended", INTERRUPTED)
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+
+
+def test_a_late_save_for_an_ended_run_writes_nothing_and_the_next_run_publishes() -> None:
+    """The old run timed out and a new one was admitted; the old run's compose, released
+    late, is refused, leaving no draft and the old run's outcome and steps as they were."""
+    fake = FakeTime()
+    store = faked_store(fake)
+    try:
+        admitted(store, "plan:old", now=fake, seconds=10)
+        fake.now += 11
+        admitted(store, "plan:new", now=fake)
+        with pytest.raises(RunEnded, match="ended") as refused:
+            store.record_waiting(
+                draft(),
+                thread_id="plan:old",
+                plan_date=PLAN_DATE,
+                outcome="accepted",
+                steps=[step("plan", 1)],
+            )
+        orphan = store.get(draft().draft_id)
+        steps = store.steps_for("plan:old")
+        store.record_waiting(
+            Draft(draft_id="draft:new", body="new", created_at=CREATED),
+            thread_id="plan:new",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        settled = store.settle_run("plan:new")
+    finally:
+        store.close()
+
+    assert refused.value.run is not None
+    assert (refused.value.run.status, refused.value.run.reason) == ("ended", TIMED_OUT)
+    assert orphan is None
+    assert steps == []
+    assert settled.run.status == "published"
+
+
+def test_a_save_past_the_deadline_records_the_timeout_first_and_is_refused() -> None:
+    """The run ends ``timed_out`` with the steps the save was given, and no draft is saved."""
+    fake = FakeTime()
+    store = faked_store(fake)
+    steps = [step("retrieve", 0), step("plan", 1), step("verify", 1)]
+    try:
+        admitted(store, "plan:x", now=fake, seconds=10)
+        fake.now += 10
+        with pytest.raises(RunEnded) as refused:
+            store.record_waiting(
+                draft(), thread_id="plan:x", plan_date=PLAN_DATE, outcome="accepted", steps=steps
+            )
+        state = store.latest_run()
+        saved = store.get(draft().draft_id)
+        kept = store.steps_for("plan:x")
+        listed = store.runs_without_a_draft()
+    finally:
+        store.close()
+
+    assert refused.value.run is not None
+    assert refused.value.run.status == "ended"
+    assert state is not None
+    assert (state.status, state.reason) == ("ended", TIMED_OUT)
+    assert saved is None
+    assert kept == steps
+    assert [(run.thread_id, run.outcome, run.steps) for run in listed] == [
+        ("plan:x", TIMED_OUT, steps)
+    ]
+
+
+def test_a_save_for_a_run_never_admitted_is_refused() -> None:
+    store = store_in_memory()
+    try:
+        with pytest.raises(RunEnded, match="never admitted"):
+            store.record_waiting(
+                draft(), thread_id="plan:x", plan_date=PLAN_DATE, outcome="accepted"
+            )
+        saved = store.get(draft().draft_id)
+    finally:
+        store.close()
+
+    assert saved is None
+
+
+def test_an_ending_past_the_deadline_is_a_timeout_whatever_reason_it_gives() -> None:
+    fake = FakeTime()
+    store = faked_store(fake)
+    try:
+        admitted(store, "plan:late", now=fake, seconds=10)
+        admitted_steps = [step("retrieve", 0), step("verify", 1, "1 of 7 checks failed")]
+        fake.now += 10.5
+        late = store.end_run("plan:late", reason="checks_failed", steps=admitted_steps)
+        admitted(store, "plan:early", now=fake, seconds=10)
+        early = store.end_run("plan:early", reason="checks_failed")
+        steps = store.steps_for("plan:late")
+    finally:
+        store.close()
+
+    assert late is not None
+    assert (late.status, late.reason) == ("ended", TIMED_OUT)
+    assert early is not None
+    assert (early.status, early.reason) == ("ended", "checks_failed")
+    assert steps == admitted_steps
+
+
+def test_an_ending_keeps_the_steps_saved_with_the_draft_and_adds_the_last() -> None:
+    store = store_in_memory()
+    try:
+        admitted(store, "plan:x")
+        store.record_waiting(
+            draft(),
+            thread_id="plan:x",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+            steps=[step("retrieve", 0), step("critique", 1)],
+        )
+        ended = store.end_run(
+            "plan:x",
+            reason="service_failed",
+            steps=[step("budget", 0)],
+            terminal=step("gate", 1, "the service failed"),
+        )
+        steps = [item.node for item in store.steps_for("plan:x")]
+        gone = store.get(draft().draft_id)
+    finally:
+        store.close()
+
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", "service_failed")
+    assert steps == ["retrieve", "critique", "gate"]
+    assert gone is None
+
+
+def test_an_ending_after_publication_is_told_and_changes_nothing() -> None:
+    store = store_in_memory()
+    try:
+        save_and_publish(store, draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted")
+        ended = store.end_run("t", reason=INTERRUPTED)
+        latest = store.latest_for(PLAN_DATE)
+        unknown = store.end_run("plan:never", reason=INTERRUPTED)
+    finally:
+        store.close()
+
+    assert ended is not None
+    assert ended.status == "published"
+    assert latest is not None
+    assert latest.draft_id == draft().draft_id
+    assert unknown is None
+
+
+def test_a_decision_about_an_unpublished_draft_is_refused() -> None:
+    store = store_in_memory()
+    try:
+        admitted(store, "t")
+        store.record_waiting(draft(), thread_id="t", plan_date=PLAN_DATE, outcome="accepted")
+        with pytest.raises(NotPublished):
+            store.record_decision(
+                draft().draft_id, status=DraftStatus.DRAFT, decision="rejected", reason="no"
+            )
+        undecided = store.get(draft().draft_id)
+        store.settle_run("t")
+        decided = store.record_decision(
+            draft().draft_id, status=DraftStatus.DRAFT, decision="rejected", reason="no"
+        )
+    finally:
+        store.close()
+
+    assert undecided is not None
+    assert undecided.decision is None
+    assert decided.decision == "rejected"
+
+
+def test_each_call_sets_its_wait_before_it_begins_and_before_it_commits_and_nothing_after() -> None:
+    """A settle whose deadline is 0.2 seconds off waits for its commit until the deadline and
+    the grace, at most; the statement before the commit sets that wait, and the commit is
+    the last statement the settle runs."""
+    fake = FakeTime()
+    store, traced = traced_store(fake)
+    try:
+        save_and_publish_on(store, fake)
+        admitted(store, "tb", now=fake, seconds=0.2)
+        store.record_waiting(
+            Draft(draft_id="draft:b", body="b", created_at=CREATED),
+            thread_id="tb",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        traced.statements.clear()
+        settled = store.settle_run("tb", wait=2.0)
+        statements = list(traced.statements)
+    finally:
+        store.close()
+
+    assert settled.run.status == "published"
+    assert statements[1] == "BEGIN IMMEDIATE"
+    assert statements[-1] == "COMMIT"
+    begin_wait = int(statements[0].removeprefix("PRAGMA busy_timeout="))
+    commit_wait = int(statements[-2].removeprefix("PRAGMA busy_timeout="))
+    assert 1500 < begin_wait <= 2000
+    assert 1000 < commit_wait <= 1200
+
+
+def save_and_publish_on(store: DraftsStore, fake: FakeTime) -> None:
+    settled_run(
+        store,
+        Draft(draft_id="draft:a", body="a", created_at=CREATED),
+        thread_id="ta",
+        plan_date=PLAN_DATE,
+        now=fake,
+    )
+
+
+def test_a_deadline_passing_while_the_settle_waits_for_the_writer_refuses_it() -> None:
+    """The deadline is read once the writer is held: time that passes while the settle
+    waits for it counts, and the run ends ``timed_out`` with the plan before it in place."""
+    fake = FakeTime()
+    store, traced = traced_store(fake)
+    try:
+        save_and_publish_on(store, fake)
+        admitted(store, "tb", now=fake)
+        store.record_waiting(
+            Draft(draft_id="draft:b", body="b", created_at=CREATED),
+            thread_id="tb",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+
+        def late() -> None:
+            fake.now += RUN_DEADLINE_SECONDS
+
+        traced.on["BEGIN IMMEDIATE"] = late
+        settled = store.settle_run("tb")
+        traced.on.clear()
+        latest = store.latest_for(PLAN_DATE)
+        candidate = store.get("draft:b")
+    finally:
+        store.close()
+
+    assert (settled.run.status, settled.run.reason) == ("ended", TIMED_OUT)
+    assert settled.displaced == []
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+    assert candidate is None
+
+
+def test_a_run_whose_evening_gained_a_newer_plan_is_overtaken() -> None:
+    store = store_in_memory()
+    try:
+        save_and_publish(
+            store,
+            Draft(draft_id="draft:a", body="a", created_at=CREATED),
+            thread_id="ta",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        admitted(store, "tb")
+        store.record_waiting(draft(), thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+        store._connection.execute(
+            """
+            INSERT INTO drafts (draft_id, thread_id, plan_date, status, outcome, body, created_at,
+                                published, published_order)
+            VALUES ('draft:other', 'tother', '2026-08-19', 'DRAFT', 'accepted', 'other', ?, 1, 9)
+            """,
+            (CREATED.isoformat(),),
+        )
+        store._connection.commit()
+        settled = store.settle_run("tb")
+        latest = store.latest_for(PLAN_DATE)
+        candidate = store.get(draft().draft_id)
+    finally:
+        store.close()
+
+    assert (settled.run.status, settled.run.reason) == ("ended", OVERTAKEN)
+    assert latest is not None
+    assert latest.draft_id == "draft:other"
+    assert candidate is None
+
+
+def test_runs_in_progress_are_not_listed_as_ended_until_their_deadline_passes() -> None:
+    """A run still within its deadline neither shows as ended nor makes an earlier one old;
+    past its deadline it has no draft that could publish, and shows as timed out."""
+    fake = FakeTime()
+    store = faked_store(fake)
+    try:
+        ended_run(store, thread_id="plan:x", plan_date=PLAN_DATE, outcome="checks_failed", now=fake)
+        admitted(store, "plan:y", now=fake, seconds=10)
+        during = [(run.thread_id, run.outcome, run.newest) for run in store.runs_without_a_draft()]
+        fake.now += 10
+        after = [(run.thread_id, run.outcome, run.newest) for run in store.runs_without_a_draft()]
+    finally:
+        store.close()
+
+    assert during == [("plan:x", "checks_failed", True)]
+    assert after == [("plan:y", TIMED_OUT, True), ("plan:x", "checks_failed", False)]
+
+
+def test_the_newest_run_says_whether_the_plan_it_meant_to_replace_still_stands() -> None:
+    store = store_in_memory()
+    try:
+        nothing = store.latest_run()
+        ended_run(store, thread_id="plan:x", plan_date=PLAN_DATE, outcome="checks_failed")
+        unchanged = store.latest_run()
+        settled = settled_run(store, draft(), thread_id="plan:y", plan_date=PLAN_DATE)
+        latest = store.latest_run()
+        earlier = store.run_status("plan:x")
+    finally:
+        store.close()
+
+    assert nothing is None
+    assert unchanged is not None
+    assert (unchanged.run_id, unchanged.status, unchanged.plan_unchanged) == (
+        "plan:x",
+        "ended",
+        True,
+    )
+    assert latest is not None
+    assert (latest.run_id, latest.status) == ("plan:y", "published")
+    assert settled.run.draft is not None
+    assert earlier is not None
+    assert earlier.plan_unchanged is False
+
+
+# ---------------------------------------------------------------- real files and threads
+
+
+@contextmanager
+def held(path: pathlib.Path, begin: str, seconds: float) -> Iterator[threading.Timer]:
+    """Another connection holds the file from ``begin`` until a timer lets go after ``seconds``."""
+    other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    other.execute(begin)
+    if begin == "BEGIN":
+        other.execute("SELECT COUNT(*) FROM drafts").fetchone()
+    release = threading.Timer(seconds, lambda: other.execute("ROLLBACK"))
+    release.start()
+    try:
+        yield release
+    finally:
+        release.join(timeout=10)
+        other.close()
+
+
+def file_store(tmp_path: pathlib.Path) -> tuple[DraftsStore, pathlib.Path]:
+    path = tmp_path / "state" / "blossom.sqlite3"
+    return DraftsStore.open(path, fixture_clock()), path
+
+
+def test_a_settle_waits_for_the_writer_only_as_long_as_it_was_given(tmp_path: pathlib.Path) -> None:
+    """Another connection holds the writer for 0.7 seconds. A settle given 0.3 is refused
+    with ``WriterBusy`` before anything begins; one given the full wait publishes after."""
+    store, path = file_store(tmp_path)
+    try:
+        one_published_and_one_waiting(store)
+        with held(path, "BEGIN IMMEDIATE", 0.7):
+            started = monotonic()
+            with pytest.raises(WriterBusy):
+                store.settle_run("tb", wait=0.3)
+            refused_after = monotonic() - started
+            standing = store.latest_run()
+            settled = store.settle_run("tb")
+            published_after = monotonic() - started
+    finally:
+        store.close()
+
+    assert 0.25 < refused_after < 0.7
+    assert standing is not None
+    assert standing.status == "running"
+    assert settled.run.status == "published"
+    assert 0.6 < published_after < 5.0
+
+
+def test_a_commit_held_behind_a_reading_waits_until_the_deadline_and_the_grace(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A reading on another connection holds the file through the settle's commit. With its
+    deadline 0.3 seconds off and no grace, the commit fails then and rolls back: the run is
+    still running and the plan before it stands, and the next status read ends it."""
+    store, path = file_store(tmp_path)
+    try:
+        save_and_publish(
+            store,
+            Draft(draft_id="draft:a", body="a", created_at=CREATED),
+            thread_id="ta",
+            plan_date=PLAN_DATE,
+            outcome="accepted",
+        )
+        admitted(store, "tb", seconds=0.3)
+        store.record_waiting(draft(), thread_id="tb", plan_date=PLAN_DATE, outcome="accepted")
+        with held(path, "BEGIN", 1.2):
+            started = monotonic()
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                store.settle_run("tb", grace=0.0)
+            failed_after = monotonic() - started
+        standing = store.latest_run()
+        latest = store.latest_for(PLAN_DATE)
+        reconciled = store.run_status("tb")
+    finally:
+        store.close()
+
+    assert 0.15 < failed_after < 1.0
+    assert standing is not None
+    assert standing.status == "running"
+    assert latest is not None
+    assert latest.draft_id == "draft:a"
+    assert reconciled is not None
+    assert (reconciled.status, reconciled.reason) == ("ended", TIMED_OUT)
+
+
+def test_a_commit_held_behind_a_reading_lands_once_the_reading_ends(
+    tmp_path: pathlib.Path,
+) -> None:
+    store, path = file_store(tmp_path)
+    try:
+        one_published_and_one_waiting(store)
+        with held(path, "BEGIN", 0.4):
+            started = monotonic()
+            settled = store.settle_run("tb")
+            landed_after = monotonic() - started
+    finally:
+        store.close()
+
+    assert settled.run.status == "published"
+    assert 0.3 < landed_after < 5.0
+
+
+def test_a_page_read_after_a_short_settle_waits_its_own_time(tmp_path: pathlib.Path) -> None:
+    """The settle's commit wait was 0.2 seconds; a page read after it still waits the store's
+    own time for a file another connection holds for 0.6 seconds."""
+    store, path = file_store(tmp_path)
+    try:
+        admitted(store, "ta", seconds=0.2)
+        store.record_waiting(draft(), thread_id="ta", plan_date=PLAN_DATE, outcome="accepted")
+        store.settle_run("ta", grace=0.0)
+        with held(path, "BEGIN EXCLUSIVE", 0.6):
+            started = monotonic()
+            latest = store.latest_for(PLAN_DATE)
+            read_after = monotonic() - started
+    finally:
+        store.close()
+
+    assert latest is not None
+    assert latest.draft_id == draft().draft_id
+    assert 0.4 < read_after < 5.0
+
+
+def test_a_press_during_the_settles_commit_is_admitted_once_the_plan_is_published(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The second admission waits for the store while the first run commits, then finds no
+    running run and expects the plan just published; two runs never run at once."""
+    path = tmp_path / "state" / "blossom.sqlite3"
+    path.parent.mkdir(parents=True)
+    connection = sqlite3.connect(path, check_same_thread=False)
+    store = DraftsStore(connection, fixture_clock())
+    traced = Traced(connection)
+    committing = threading.Event()
+    results: dict[str, object] = {}
+    try:
+        admitted(store, "plan:first")
+        store.record_waiting(
+            draft(), thread_id="plan:first", plan_date=PLAN_DATE, outcome="accepted"
+        )
+        traced.on["COMMIT"] = committing.set
+
+        def settling() -> None:
+            results["settled"] = store.settle_run("plan:first")
+
+        def pressing() -> None:
+            results["admitted"] = store.admit_run(
+                "plan:second", plan_date=PLAN_DATE, deadline_mono=monotonic() + 90
+            )
+
+        with held(path, "BEGIN", 0.4):
+            first = threading.Thread(target=settling)
+            first.start()
+            assert committing.wait(timeout=5)
+            traced.on.clear()
+            second = threading.Thread(target=pressing)
+            second.start()
+            first.join(timeout=10)
+            second.join(timeout=10)
+        base = connection.execute(
+            "SELECT base_order FROM runs WHERE thread_id='plan:second'"
+        ).fetchone()[0]
+        running = running_rows(store)
+        published = store.get(draft().draft_id)
+    finally:
+        store.close()
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert results["admitted"] is None
+    assert published is not None
+    assert published.published is True
+    assert base == connection_order(path, draft().draft_id)
+    assert running == ["plan:second"]
+
+
+def connection_order(path: pathlib.Path, draft_id: str) -> int:
+    with sqlite3.connect(path) as reading:
+        (order,) = reading.execute(
+            "SELECT published_order FROM drafts WHERE draft_id=?", (draft_id,)
+        ).fetchone()
+    reading.close()
+    return int(order)
+
+
+# ---------------------------------------------------------- files from before runs had a status
+
+
+def dump(path: pathlib.Path, table: str) -> list[tuple[object, ...]]:
+    with sqlite3.connect(path) as reading:
+        rows = reading.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()  # noqa: S608
+    reading.close()
+    return rows
+
+
+def legacy_file(path: pathlib.Path) -> None:
+    """A file whose runs have no status, holding a paused unpublished
+    draft, a withheld one, a draft with no run, a decided unpublished one, published and
+    decided drafts, and steps."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as legacy:
+        legacy.executescript(
+            """
+            CREATE TABLE drafts (
+                draft_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE,
+                plan_date TEXT NOT NULL, status TEXT NOT NULL, outcome TEXT NOT NULL,
+                body TEXT NOT NULL, created_at TEXT NOT NULL, decided_at TEXT, decision TEXT,
+                reason TEXT, too_much INTEGER NOT NULL DEFAULT 0, superseded_by TEXT,
+                published INTEGER NOT NULL DEFAULT 0, published_order INTEGER,
+                plan_assignment_ids TEXT, plan_snapshot TEXT, inputs_digest TEXT
+            );
+            CREATE TABLE runs (
+                thread_id TEXT PRIMARY KEY, plan_date TEXT NOT NULL, outcome TEXT NOT NULL,
+                recorded_at TEXT NOT NULL, timing TEXT
+            );
+            CREATE TABLE withheld_drafts (draft_id TEXT PRIMARY KEY);
+            CREATE TABLE steps (
+                thread_id TEXT NOT NULL, position INTEGER NOT NULL, node TEXT NOT NULL,
+                round INTEGER NOT NULL, expected TEXT NOT NULL, found TEXT NOT NULL,
+                recorded_at TEXT NOT NULL, PRIMARY KEY (thread_id, position)
+            );
+            INSERT INTO runs (thread_id, plan_date, outcome, recorded_at) VALUES
+                ('r-pub', '2026-08-19', 'accepted', '2026-08-19T20:00:00+00:00'),
+                ('r-paused', '2026-08-19', 'accepted', '2026-08-19T20:10:00+00:00'),
+                ('r-withheld', '2026-08-19', 'unsettled', '2026-08-19T20:20:00+00:00'),
+                ('r-none', '2026-08-19', 'checks_failed', '2026-08-19T20:30:00+00:00'),
+                ('r-decided', '2026-08-19', 'accepted', '2026-08-19T20:40:00+00:00'),
+                ('r-approved', '2026-08-20', 'accepted', '2026-08-19T20:50:00+00:00');
+            INSERT INTO drafts (draft_id, thread_id, plan_date, status, outcome, body,
+                                created_at, decided_at, decision, reason, published,
+                                published_order) VALUES
+                ('d-pub', 'r-pub', '2026-08-19', 'DRAFT', 'accepted', 'pub',
+                 '2026-08-19T20:00:00+00:00', NULL, NULL, NULL, 1, 1),
+                ('d-paused', 'r-paused', '2026-08-19', 'DRAFT', 'accepted', 'paused',
+                 '2026-08-19T20:10:00+00:00', NULL, NULL, NULL, 0, NULL),
+                ('d-withheld', 'r-withheld', '2026-08-19', 'DRAFT', 'unsettled', 'withheld',
+                 '2026-08-19T20:20:00+00:00', NULL, NULL, NULL, 0, NULL),
+                ('d-orphan', 't-orphan', '2026-08-19', 'DRAFT', 'accepted', 'orphan',
+                 '2026-08-19T20:25:00+00:00', NULL, NULL, NULL, 0, NULL),
+                ('d-decided', 'r-decided', '2026-08-19', 'DRAFT', 'accepted', 'decided',
+                 '2026-08-19T20:40:00+00:00', '2026-08-19T21:00:00+00:00', 'rejected', 'no',
+                 0, NULL),
+                ('d-approved', 'r-approved', '2026-08-20', 'APPROVED_FOR_MANUAL_SEND',
+                 'accepted', 'approved', '2026-08-19T20:50:00+00:00',
+                 '2026-08-19T21:10:00+00:00', 'approved', NULL, 1, 2);
+            INSERT INTO withheld_drafts VALUES ('d-withheld');
+            INSERT INTO steps VALUES
+                ('r-pub', 0, 'plan', 1, 'e', 'f', '2026-08-19T20:00:00+00:00'),
+                ('r-paused', 0, 'plan', 1, 'e', 'f', '2026-08-19T20:10:00+00:00');
+            """
+        )
+    legacy.close()
+
+
+def test_a_file_from_before_runs_had_a_status_is_settled_once_and_publishes_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "state" / "blossom.sqlite3"
+    legacy_file(path)
+    kept_before = [
+        row for row in dump(path, "drafts") if row[0] in ("d-pub", "d-decided", "d-approved")
+    ]
+    steps_before = dump(path, "steps")
+
+    DraftsStore.open(path, fixture_clock()).close()
+    after = {table: dump(path, table) for table in ("drafts", "runs", "steps")}
+    for _ in range(2):
+        DraftsStore.open(path, fixture_clock()).close()
+    again = {table: dump(path, table) for table in ("drafts", "runs", "steps")}
+    with sqlite3.connect(path) as reading:
+        tables = {row[0] for row in reading.execute("SELECT name FROM sqlite_master")}
+        statuses = dict(
+            reading.execute("SELECT thread_id, status || ':' || outcome FROM runs").fetchall()
+        )
+    reading.close()
+
+    assert statuses == {
+        "r-pub": "published:accepted",
+        "r-paused": "ended:interrupted",
+        "r-withheld": "ended:interrupted",
+        "r-none": "ended:checks_failed",
+        "r-decided": "ended:interrupted",
+        "r-approved": "published:accepted",
+    }
+    assert [row[0] for row in after["drafts"]] == ["d-approved", "d-decided", "d-pub"]
+    assert [row[:17] for row in after["drafts"]] == sorted(kept_before)
+    assert after["steps"] == steps_before
+    assert "withheld_drafts" not in tables
+    assert again == after
+
+
+def test_a_run_whose_status_disagrees_with_its_draft_is_reported_and_left_alone(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store, path = file_store(tmp_path)
+    try:
+        save_and_publish(store, draft(), thread_id="t-pub", plan_date=PLAN_DATE, outcome="accepted")
+        ended_run(store, thread_id="t-ended", plan_date=PLAN_DATE, outcome="checks_failed")
+    finally:
+        store.close()
+    with sqlite3.connect(path) as editing:
+        editing.execute("UPDATE runs SET status='published' WHERE thread_id='t-ended'")
+        editing.execute("UPDATE runs SET status='ended' WHERE thread_id='t-pub'")
+    editing.close()
+    before = {table: dump(path, table) for table in ("drafts", "runs")}
+
+    with caplog.at_level(logging.WARNING, logger="blossom.stores.drafts"):
+        DraftsStore.open(path, fixture_clock()).close()
+
+    assert "t-ended" in caplog.text
+    assert "t-pub" in caplog.text
+    assert {table: dump(path, table) for table in ("drafts", "runs")} == before
+
+
+def test_a_published_run_whose_draft_is_unpublished_keeps_both_rows_at_every_open(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The open that reports a published run with an unpublished, undecided draft keeps
+    that draft, so every open names rows that are still there to look into."""
+    store, path = file_store(tmp_path)
+    try:
+        save_and_publish(store, draft(), thread_id="t-pub", plan_date=PLAN_DATE, outcome="accepted")
+    finally:
+        store.close()
+    with sqlite3.connect(path) as editing:
+        editing.execute("UPDATE drafts SET published=0, published_order=NULL")
+    editing.close()
+    before = {table: dump(path, table) for table in ("drafts", "runs")}
+
+    reported: list[bool] = []
+    kept: list[bool] = []
+    for _ in range(3):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="blossom.stores.drafts"):
+            DraftsStore.open(path, fixture_clock()).close()
+        reported.append("t-pub" in caplog.text)
+        kept.append({table: dump(path, table) for table in ("drafts", "runs")} == before)
+
+    assert [row[0] for row in before["runs"]] == ["t-pub"]
+    assert [row[0] for row in before["drafts"]] == [draft().draft_id]
+    assert reported == [True, True, True]
+    assert kept == [True, True, True]
+
+
+def test_a_runs_state_says_whether_its_evening_has_a_published_plan() -> None:
+    store = store_in_memory()
+    try:
+        admitted(store, "plan:x")
+        running = store.run_status("plan:x")
+        newest = store.latest_run()
+        store.record_waiting(draft(), thread_id="plan:x", plan_date=PLAN_DATE, outcome="accepted")
+        store.settle_run("plan:x")
+        published = store.run_status("plan:x")
+        ended_run(store, thread_id="plan:y", plan_date=PLAN_DATE, outcome="checks_failed")
+        later = store.latest_run()
+        ended_run(
+            store,
+            thread_id="plan:z",
+            plan_date=PLAN_DATE + timedelta(days=1),
+            outcome="checks_failed",
+        )
+        other_evening = store.run_status("plan:z")
+    finally:
+        store.close()
+
+    assert running is not None
+    assert (running.status, running.has_plan) == ("running", False)
+    assert newest is not None
+    assert (newest.run_id, newest.has_plan) == ("plan:x", False)
+    assert published is not None
+    assert (published.status, published.has_plan) == ("published", True)
+    assert later is not None
+    assert (later.run_id, later.status, later.has_plan) == ("plan:y", "ended", True)
+    assert other_evening is not None
+    assert (other_evening.status, other_evening.has_plan) == ("ended", False)

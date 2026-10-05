@@ -17,6 +17,8 @@ import pathlib
 import re
 from collections.abc import Iterator
 
+import anthropic
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from langchain_anthropic import ChatAnthropic
@@ -35,7 +37,10 @@ from blossom.anthropic_client import (
     TIMEOUT_SECONDS,
     Effort,
     ModelUnavailable,
+    ServiceBusy,
+    ServiceFailed,
     chat_model,
+    service_failure,
 )
 from blossom.app import create_app
 from blossom.settings import (
@@ -192,8 +197,8 @@ def test_the_client_carries_no_provider_side_tools_and_pins_its_limits() -> None
     assert model.reasoning_effort == "medium"
     assert model.max_tokens == MAX_TOKENS
     assert model.default_request_timeout == TIMEOUT_SECONDS
-    assert model.max_retries == 2
-    assert model._client.max_retries == 2
+    assert model.max_retries == 0, "a plan run asks again itself, inside its time limit"
+    assert model._client.max_retries == 0
     assert model._client.timeout == TIMEOUT_SECONDS
 
 
@@ -331,3 +336,32 @@ def test_construction_leaves_the_environment_alone_until_startup(
     assert os.environ["LANGSMITH_TRACING"] == "true"
     with TestClient(app, headers=SAME_ORIGIN):
         assert os.environ["LANGSMITH_TRACING"] == "false"
+
+
+def status_error(code: int) -> anthropic.APIStatusError:
+    request = httpx.Request("POST", f"{ENDPOINT}/v1/messages")
+    return anthropic.APIStatusError(
+        "refused", response=httpx.Response(code, request=request), body=None
+    )
+
+
+@pytest.mark.parametrize("code", [408, 409, 429, 500, 529])
+def test_a_busy_or_failing_status_is_worth_asking_again(code: int) -> None:
+    assert isinstance(service_failure(status_error(code)), ServiceBusy)
+
+
+def test_a_connection_that_failed_or_timed_out_is_worth_asking_again() -> None:
+    request = httpx.Request("POST", f"{ENDPOINT}/v1/messages")
+    assert isinstance(service_failure(anthropic.APIConnectionError(request=request)), ServiceBusy)
+    assert isinstance(service_failure(anthropic.APITimeoutError(request=request)), ServiceBusy)
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404, 422])
+def test_a_refused_request_is_a_failure_not_asked_again(code: int) -> None:
+    failure = service_failure(status_error(code))
+    assert isinstance(failure, ServiceFailed)
+    assert not isinstance(failure, ServiceBusy)
+
+
+def test_an_error_the_service_did_not_raise_is_not_the_services() -> None:
+    assert service_failure(ValueError("a fault in the caller")) is None

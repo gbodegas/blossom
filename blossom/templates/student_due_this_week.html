@@ -29,10 +29,17 @@
     may be far below, and a browser that leaves the focus at the top still
     shows what went wrong. A problem no card on the page can hold is said here
     alone, as the alert, and after a press it takes the focus. A visit by
-    address asks for no focus.
+    address asks for no focus. A plan press that ended without a plan links on
+    to her homework, and to the dates of any assignment it names; the plan
+    button below offers to try again. Its See homework goes where the plan's
+    place sends it: the title of the first card or row still to do in the week
+    shown, or the week's homework heading when none is, so the page never offers
+    two.
   #}
+  {% set work_left = (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
+  {% set see_homework_href = "#" ~ title_anchor(work_left[0].assignment_id) if work_left else "#homework" %}
   {% if problem %}
-    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}</p>
+    <p class="problem week-problem"{% if not problem_target %} role="alert"{% if pressed %} tabindex="-1" autofocus{% endif %}{% endif %}>{{ problem }}{% if problem_target %} <a href="#{{ title_anchor(problem_target) }}">Go to the assignment.</a>{% endif %}{% if plan_failure %}{% if plan_failure.run %} <a href="{{ plan_failure.run.href }}">{{ plan_failure.run.label }}</a>{% endif %}{% for title, href in plan_failure.checks %} <a href="{{ href }}">Check the dates for {{ title }}.</a>{% endfor %} <a href="{{ see_homework_href }}">See homework.</a>{% endif %}</p>
   {% endif %}
 
   {% if view.week.current %}
@@ -51,6 +58,15 @@
         No plan for today yet.
       {% endif %}
     </p>
+    {#
+      Where the last plan request stands, when the address names its run or it is
+      still being finished: a run still running links to "Check on it.", and one
+      that ended for today with no newer plan says why. A plan that was published
+      adds nothing here; it is shown.
+    #}
+    {% if run_notice %}
+      <p class="{% if run_notice.running %}note{% else %}confidence disagree{% endif %}" role="status" id="plan-run">{{ run_notice.said }}{% if run_notice.check %} <a href="{{ run_notice.check.href }}">{{ run_notice.check.label }}</a>{% endif %}</p>
+    {% endif %}
     {% if view.nothing_to_plan %}
       <p class="note" role="status">Nothing to schedule from the work in this planning window.</p>
     {% endif %}
@@ -151,9 +167,10 @@
       {% if view.can_plan and not view.nothing_to_plan %}
         <form method="post" action="/student/actions/plan" class="action"
               data-pending="Making your plan"
-              data-pending-later="Still working. The planner reads your week and writes the plan, which takes a minute or two"
+              data-pending-later="Still working. The planner reads your week and writes the plan, which can take up to about a minute and a half"
               data-pending-much-later="Still working. A plan sometimes needs a second try before its checks pass">
-          <button type="submit" class="primary">{{ plan_label }}</button>
+          {% if in_place_said %}<input type="hidden" name="in_place" value="{{ in_place_said }}">{% endif %}
+          <button type="submit" class="primary" aria-describedby="plan-scope">{% if plan_failure and plan_failure.try_again %}Try again{% else %}{{ plan_label }}{% endif %}</button>
         </form>
       {% endif %}
       {#
@@ -181,9 +198,10 @@
     </div>
     {#
       Where the plan button is, what a plan is made from is said beside it, before
-      the window's days, in words that suit either reader.
+      the window's days, in words that suit either reader, and the button names this
+      line as its description.
     #}
-    <p class="note planning-window">{% if view.can_plan and not view.nothing_to_plan %}Makes a plan for today using unfinished homework due in the next 7 days, homework without a due date, and earlier work chosen for today. {% endif %}Today's planning window is {{ planning_window }}.</p>
+    <p class="note planning-window"{% if view.can_plan and not view.nothing_to_plan %} id="plan-scope"{% endif %}>{% if view.can_plan and not view.nothing_to_plan %}Makes a plan for today using unfinished homework due in the next 7 days, homework without a due date, and earlier work chosen for today. {% endif %}Today's planning window is {{ planning_window }}.</p>
     {#
       The places that hold what is left to do beside the plan, under the
       controls and never in the masthead. Each link goes to a page of its
@@ -258,9 +276,8 @@
       {% if plan_asked %}
         <p class="note" id="{{ todays_plan_id }}" tabindex="-1" role="status">{{ no_plan_now }}</p>
       {% endif %}
-      {% set work_left = (view.assignments + view.assigned_this_week)|rejectattr("update_status", "equalto", "done")|list %}
       {% if work_left %}
-        <p><a class="to-help" href="#{{ title_anchor(work_left[0].assignment_id) }}">See homework</a></p>
+        <p><a class="to-help" href="{{ see_homework_href }}">See homework</a></p>
       {% endif %}
     {% endif %}
   </section>
@@ -569,7 +586,7 @@
       #}
       {% if parent %}
       <p id="what-is-shared">
-        Planning takes a minute or two. It sends her week, the household's rules, the
+        Planning can take up to about a minute and a half. It sends her week, the household's rules, the
         planner's notes about its past plans, her updates of Not yet on that work with any
         note she wrote, and, when she has said today is too much, that she said so, to the
         model provider; when the first plan needs another try, the plan it made and what was
@@ -582,7 +599,7 @@
       </p>
       {% else %}
       <p id="what-is-shared">
-        Planning takes a minute or two. It sends your week, the household's rules, the
+        Planning can take up to about a minute and a half. It sends your week, the household's rules, the
         planner's notes about its past plans, your updates of Not yet on that work with any
         note you wrote, and, when you have said today is too much, that you said so, to the
         model provider; when the first plan needs another try, the plan it made and what was

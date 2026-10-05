@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
 from blossom.agent.graph import CompiledPlanGraph, PlanState, plan_graph_for
-from blossom.agent.runs import DURABILITY, run_config
+from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, run_config
 from blossom.app import create_app
 from blossom.dependencies import build_application_state
 from blossom.drafts import DraftStatus
@@ -294,9 +294,16 @@ def test_two_decisions_at_once_leave_one_winner_and_tell_the_other() -> None:
 
         async def scenario() -> tuple[str, list[object]]:
             config = run_config("plan:2026-08-19:race")
+            blocking = state.drafts.admit_run(
+                "plan:2026-08-19:race",
+                plan_date=PLAN_DATE,
+                deadline_mono=state.monotonic() + RUN_DEADLINE_SECONDS,
+            )
+            assert blocking is None
             paused = await build().ainvoke(
                 PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
             )
+            state.drafts.settle_run("plan:2026-08-19:race")
             draft_id = str(paused["draft"].draft_id)
             approve = decide_draft(
                 state, build, draft_id, DecisionRequest(approved=True, reason="first")

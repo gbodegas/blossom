@@ -25,6 +25,17 @@ refusal, or a body the schema cannot parse each ends the graph with an outcome
 naming which, and no draft, because guessing at a truncated plan would be
 worse than having none.
 
+So can the record, before any model is asked. Work the deadline check would hold
+to a day before the evening, by its own rule, cannot be scheduled or put off in
+time, so no plan could pass the checks, and the run ends at its first node naming
+that work. Earlier work she chose and work a later date still holds for are
+planned.
+
+A run started from a page carries a ``RunBudget`` in the graph's context: each
+request to a model gets only what is left of the run's time, a busy service is
+asked again inside it, and each node's time is noted as it ends. A run invoked
+without one, as a test may, has no limit.
+
 Saved state holds the evening, the plan, what was found about it, the draft,
 and one ``StepRecord`` per node run, saying what the node expected and found.
 The stores and the two model callables are closed over by the node functions
@@ -35,12 +46,14 @@ Three nodes write to the drafts file, and each performs that one side effect
 in a form that running twice leaves unchanged. ``compose`` saves the draft,
 unpublished, keyed by an id derived from the thread, with the run's record in
 the same transaction, before the gate can pause on it, so the record survives
-whatever happens next; the route publishes the draft, and so puts it on the
+whatever happens next; the route settles the run, and so puts the draft on the
 pages, once the run has paused. ``record_decision``, after the gate, saves
 what the person decided.
-``record_run`` saves the record of a run that ended before the gate and has no
-draft to carry it. The file is the record across threads; saved state is the
-record within one.
+``record_run`` ends the record of a run that ended before the gate and has no
+draft to carry it. Both ``record_run`` and a ``compose`` refused because its
+run already ended put what the record committed in ``committed``, so the route
+answers with the record's reason. The file is the record across threads; saved
+state is the record within one.
 """
 
 import operator
@@ -54,13 +67,15 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from pydantic import BaseModel
 
 from blossom.agent.compose import compose as compose_plan
 from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.prompts import critic_brief, planner_brief
-from blossom.agent.runs import draft_id_for
+from blossom.agent.runs import RunBudget, draft_id_for
 from blossom.agent.steps import (
+    DATE_PROBLEM,
     EXPECT_A_KEPT_PLAN,
     EXPECT_ACCEPTANCE,
     EXPECT_ALL_CHECKS,
@@ -69,6 +84,7 @@ from blossom.agent.steps import (
     NOTHING_TO_SCHEDULE,
     StepRecord,
     describe_failure,
+    describe_past_due,
     describe_plan,
     describe_verdict,
     describe_verification,
@@ -81,6 +97,7 @@ from blossom.anthropic_client import (
     ModelUnavailable,
     chat_model,
     model_configured,
+    service_failure,
 )
 from blossom.clock import Clock
 from blossom.dependencies import ApplicationState
@@ -91,12 +108,13 @@ from blossom.plan_checks import (
     PlanVerification,
     check_plan,
     homework_names,
+    past_deadlines,
 )
 from blossom.plans import DailyPlan
 from blossom.reconciliation import SourceConfidence, classify_confidence
 from blossom.settings import DEFAULT_EVENING_MINUTES, DEFAULT_TOO_MUCH_MINUTES, Settings
 from blossom.sources import DateClaims
-from blossom.stores.drafts import DraftsStore
+from blossom.stores.drafts import DraftsStore, RunEnded, RunState
 from blossom.stores.project_state import Assignment, ProjectStateStore, StudentReport
 from blossom.stores.reflections import ReflectionsStore
 from blossom.stores.support_rules import SupportRulesStore
@@ -128,6 +146,7 @@ Outcome = Literal[
     "model_refused",
     "model_unparseable",
     "nothing_to_schedule",
+    "date_problem",
 ]
 """Why the run stopped. The first two reached the gate; the rest did not.
 
@@ -139,7 +158,9 @@ going to the gate in its place. ``checks_failed`` means no plan within the
 bound passed tier one, so nothing was proposed. The
 three ``model_`` outcomes name how the model ended the run itself.
 ``nothing_to_schedule`` means the window held no work still to do when the run
-read it, so it ended at its first node with no model asked."""
+read it, so it ended at its first node with no model asked. ``date_problem`` means
+the window held work due before the evening, which no plan can keep to, so it
+ended there too."""
 
 REACHED_THE_GATE: Final[frozenset[str]] = frozenset({"accepted", "unsettled"})
 
@@ -151,11 +172,13 @@ class ModelAnswer[T: BaseModel]:
     ``stop_reason`` is the provider's word for how the response ended. It is
     read before ``parsed`` because a truncated response can still parse: a plan
     cut off after two of three blocks is valid JSON and a wrong plan.
+    ``output_tokens`` is the answer's size as the provider counted it, when it did.
     """
 
     parsed: T | None
     stop_reason: str | None
     parsing_error: str | None
+    output_tokens: int | None = None
 
     @classmethod
     def from_structured(cls, answer: Mapping[str, Any]) -> "ModelAnswer[T]":
@@ -164,11 +187,13 @@ class ModelAnswer[T: BaseModel]:
         stop_reason = (
             raw.response_metadata.get("stop_reason") if isinstance(raw, AIMessage) else None
         )
+        usage = raw.usage_metadata if isinstance(raw, AIMessage) else None
         error = answer.get("parsing_error")
         return cls(
             parsed=answer.get("parsed"),
             stop_reason=str(stop_reason) if stop_reason is not None else None,
             parsing_error=str(error) if error is not None else None,
+            output_tokens=None if usage is None else usage.get("output_tokens"),
         )
 
     def failure(self) -> Outcome | None:
@@ -185,6 +210,20 @@ class ModelAnswer[T: BaseModel]:
 type Ask[T: BaseModel] = Callable[[Sequence[BaseMessage]], Awaitable[ModelAnswer[T]]]
 """One structured model call: messages in, a typed answer out. The graph holds
 two, and a test substitutes both."""
+
+
+class Committed(TypedDict):
+    """What the record committed for a run as it ended: its status and its reason."""
+
+    status: str
+    reason: str
+
+
+def committed(run: RunState | None) -> dict[str, Any]:
+    """The state update that carries what the record committed for ``run``, if anything."""
+    if run is None:
+        return {}
+    return {"committed": Committed(status=run.status, reason=run.reason)}
 
 
 class PlanState(TypedDict):
@@ -233,9 +272,15 @@ class PlanState(TypedDict):
     kept_verification: NotRequired[PlanVerification]
     """What tier one found about ``kept_plan``."""
     outcome: NotRequired[Outcome]
+    past_due: NotRequired[dict[str, date]]
+    """The window's work due before the evening, with the day each was due, when the run
+    ended for it."""
     draft: NotRequired[Draft]
     decision: NotRequired[Decision]
     reason: NotRequired[str | None]
+    committed: NotRequired[Committed]
+    """What the record committed when the run ended without a plan: by ``record_run``,
+    or by a ``compose`` refused because the run had already ended."""
 
 
 type CompiledPlanGraph = CompiledStateGraph[PlanState, Any, PlanState, PlanState]
@@ -265,11 +310,18 @@ def build_plan_graph(
     """
     zone = clock.zone
 
-    def step(node: str, round_number: int, expected: str, found: str) -> StepRecord:
-        """One line of the run's record, stamped by the household's clock."""
-        return StepRecord(
+    def step(
+        node: str, round_number: int, expected: str, found: str, budget: RunBudget | None
+    ) -> StepRecord:
+        """One line of the run's record, stamped by the household's clock, with the node's
+        time noted in the run's budget when it has one."""
+        record = StepRecord(
             node=node, round=round_number, expected=expected, found=found, recorded_at=clock.now()
         )
+        if budget is not None:
+            budget.lap(node, round_number)
+            budget.steps.append(record)
+        return record
 
     def evening(state: PlanState) -> dict[str, Any]:
         """The arguments both briefs share, read from state."""
@@ -322,7 +374,22 @@ def build_plan_graph(
             "inputs_digest": planning_digest(week),
         }
 
-    def retrieve(state: PlanState) -> dict[str, Any]:
+    async def asked[T: BaseModel](
+        ask: Ask[T],
+        messages: Sequence[BaseMessage],
+        budget: RunBudget | None,
+        node: str,
+        round_number: int,
+    ) -> ModelAnswer[T]:
+        """One model request, inside what is left of the run's time when it has a limit."""
+        if budget is None:
+            return await ask(messages)
+        answer = await budget.ask(lambda: ask(messages), stage=node, round_number=round_number)
+        if answer.output_tokens is not None:
+            budget.outputs.append(answer.output_tokens)
+        return answer
+
+    def retrieve(state: PlanState, runtime: Runtime[RunBudget]) -> dict[str, Any]:
         """Read the week from the stores. Whole corpora, no index: they are small.
 
         The week is the one the student's page shows, read the same way: each
@@ -353,7 +420,10 @@ def build_plan_graph(
         paid for on its account. The draft reads as stale on both pages the
         moment it is published, its notice names work she reports as done, and
         approving it is refused until a new plan is asked for. Nothing left to
-        do ends a run only here, before any model is asked.
+        do ends a run only here, before any model is asked. Work the deadline
+        check would hold to a day before the evening, by its own rule, ends a
+        run here too, named with its day, since every plan would fail over it;
+        earlier work she chose, and work a later date still holds for, never do.
         """
         read = reading(read_week(project_state, source, state["plan_date"]))
         rules = [rule.instruction for rule in support_rules.list_all()]
@@ -370,11 +440,24 @@ def build_plan_graph(
             too_much=too_much,
             done=len(read["done_ids"]),
         )
+        run_budget = runtime.context
         if not read["assignments"]:
             return {
                 "done_ids": read["done_ids"],
                 "outcome": NOTHING_TO_SCHEDULE,
-                "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found)],
+                "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found, run_budget)],
+            }
+        past_due = past_deadlines(
+            read["assignments"], read["noticings"], state["plan_date"], read["catch_up"]
+        )
+        if past_due:
+            names = [read["names"].get(name, name) for name in past_due]
+            found = f"{found} {describe_past_due(names, list(past_due.values()))}"
+            return {
+                **read,
+                "outcome": DATE_PROBLEM,
+                "past_due": past_due,
+                "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found, run_budget)],
             }
         return {
             **read,
@@ -382,10 +465,10 @@ def build_plan_graph(
             "budget_minutes": budget,
             "support_rules": rules,
             "reflections": notes,
-            "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found)],
+            "steps": [step("retrieve", 0, EXPECT_RECORD_HOLDS, found, run_budget)],
         }
 
-    async def plan(state: PlanState) -> dict[str, Any]:
+    async def plan(state: PlanState, runtime: Runtime[RunBudget]) -> dict[str, Any]:
         """Ask the planner. Counts the round whether or not a plan comes back."""
         round_number = state["rounds"] + 1
         feedback = state.get("feedback", [])
@@ -398,7 +481,8 @@ def build_plan_graph(
         expected = expect_plan(
             round_number, len(feedback), state.get("budget_minutes", evening_minutes)
         )
-        answer = await planner(messages)
+        run_budget = runtime.context
+        answer = await asked(planner, messages, run_budget, "plan", round_number)
         failure = answer.failure()
         if failure is not None or answer.parsed is None:
             outcome: Outcome = failure or "model_unparseable"
@@ -406,16 +490,16 @@ def build_plan_graph(
             return {
                 "rounds": 1,
                 "outcome": outcome,
-                "steps": [step("plan", round_number, expected, found)],
+                "steps": [step("plan", round_number, expected, found, run_budget)],
             }
         found = describe_plan(answer.parsed, zone, evening=state["plan_date"])
         return {
             "rounds": 1,
             "plan": answer.parsed,
-            "steps": [step("plan", round_number, expected, found)],
+            "steps": [step("plan", round_number, expected, found, run_budget)],
         }
 
-    def verify(state: PlanState) -> dict[str, Any]:
+    def verify(state: PlanState, runtime: Runtime[RunBudget]) -> dict[str, Any]:
         """Tier one, against the reading both models were given. A failing plan becomes
         feedback, or the end when rounds are spent.
 
@@ -445,8 +529,13 @@ def build_plan_graph(
             names=state.get("names"),
             catch_up=state.get("catch_up", []),
         )
+        run_budget = runtime.context
         record = step(
-            "verify", state["rounds"], EXPECT_ALL_CHECKS, describe_verification(verification)
+            "verify",
+            state["rounds"],
+            EXPECT_ALL_CHECKS,
+            describe_verification(verification),
+            run_budget,
         )
         if verification.passed:
             return {"verification": verification, "feedback": [], "steps": [record]}
@@ -459,7 +548,7 @@ def build_plan_graph(
             return update
         if "kept_plan" not in state:
             return update | {"outcome": "checks_failed"}
-        kept = step("rescue", state["rounds"], EXPECT_A_KEPT_PLAN, KEPT_FOR_REVIEW)
+        kept = step("rescue", state["rounds"], EXPECT_A_KEPT_PLAN, KEPT_FOR_REVIEW, run_budget)
         return {
             "plan": state["kept_plan"],
             "verification": state["kept_verification"],
@@ -467,20 +556,23 @@ def build_plan_graph(
             "steps": [record, kept],
         }
 
-    async def critique(state: PlanState) -> dict[str, Any]:
+    async def critique(state: PlanState, runtime: Runtime[RunBudget]) -> dict[str, Any]:
         """Tier two. Fault sends the plan back; doubt or spent rounds send it forward."""
         messages = critic_brief(
             **evening(state), plan=state["plan"], verification=state["verification"]
         )
-        answer = await critic(messages)
+        run_budget = runtime.context
+        answer = await asked(critic, messages, run_budget, "critique", state["rounds"])
         failure = answer.failure()
         verdict = answer.parsed
         if failure is not None or verdict is None:
             outcome: Outcome = failure or "model_unparseable"
             found = describe_failure(outcome, "verdict")
-            record = step("critique", state["rounds"], EXPECT_ACCEPTANCE, found)
+            record = step("critique", state["rounds"], EXPECT_ACCEPTANCE, found, run_budget)
             return {"outcome": outcome, "steps": [record]}
-        record = step("critique", state["rounds"], EXPECT_ACCEPTANCE, describe_verdict(verdict))
+        record = step(
+            "critique", state["rounds"], EXPECT_ACCEPTANCE, describe_verdict(verdict), run_budget
+        )
         if verdict.accepted:
             return {"verdict": verdict, "outcome": "accepted", "steps": [record]}
         if verdict.failed and state["rounds"] <= MAX_REVISIONS:
@@ -509,7 +601,9 @@ def build_plan_graph(
         same draft and the same row. Saving happens here, before the gate,
         because the gate must do nothing before it pauses and the record must
         survive whatever happens next; the draft reaches the pages only when
-        the route publishes it, once the run has paused.
+        the route settles the run, once it has paused. A run that already ended,
+        out of time or ended by its route, saves nothing; what its record committed
+        goes to ``committed`` and the run ends here instead of pausing.
         """
         thread_id = str(config["configurable"]["thread_id"])
         outcome = state["outcome"]
@@ -529,34 +623,36 @@ def build_plan_graph(
         if outcome not in REACHED_THE_GATE:
             msg = f"compose reached with outcome {outcome!r}, which produces no draft"
             raise RuntimeError(msg)
-        drafts.record_waiting(
-            composed.draft,
-            thread_id=thread_id,
-            plan_date=state["plan_date"],
-            outcome=cast(Literal["accepted", "unsettled"], outcome),
-            steps=state.get("steps", []),
-            too_much=state.get("too_much", False),
-            inputs_digest=state.get("inputs_digest"),
-            plan_assignment_ids=composed.snapshot.assignment_ids,
-            plan_snapshot=composed.snapshot,
-        )
+        try:
+            drafts.record_waiting(
+                composed.draft,
+                thread_id=thread_id,
+                plan_date=state["plan_date"],
+                outcome=cast(Literal["accepted", "unsettled"], outcome),
+                steps=state.get("steps", []),
+                too_much=state.get("too_much", False),
+                inputs_digest=state.get("inputs_digest"),
+                plan_assignment_ids=composed.snapshot.assignment_ids,
+                plan_snapshot=composed.snapshot,
+            )
+        except RunEnded as ended:
+            if ended.run is None:
+                raise
+            return committed(ended.run)
         return {"draft": composed.draft}
 
     def record_run(state: PlanState, config: RunnableConfig) -> dict[str, Any]:
-        """Save the record of a run that ended before the gate. Writes nothing to state.
+        """End the record of a run that ended before the gate, and return what it committed.
 
         A run that reaches the gate has its record saved with its draft, in
-        ``compose``; this node is the same save for a run with no draft to
-        attach it to, so the parent's page can say why nothing came of it.
+        ``compose``; this node ends the run with its steps, so the parent's page
+        can say why nothing came of it. Past the run's deadline the record says
+        ``timed_out`` whatever the run ended with, and ``committed`` says what it says.
         """
         thread_id = str(config["configurable"]["thread_id"])
-        drafts.record_run(
-            thread_id=thread_id,
-            plan_date=state["plan_date"],
-            outcome=state["outcome"],
-            steps=state.get("steps", []),
+        return committed(
+            drafts.end_run(thread_id, reason=state["outcome"], steps=state.get("steps", []))
         )
-        return {}
 
     def gate(state: PlanState) -> dict[str, Any]:
         """The approval gate, unchanged; the state's gate keys match its own."""
@@ -586,13 +682,18 @@ def build_plan_graph(
             return "critique"
         return "record_run" if "outcome" in state else "plan"
 
+    def after_compose(state: PlanState) -> str:
+        return END if "committed" in state else "require_human_approval"
+
     def after_critique(state: PlanState) -> str:
         outcome = state.get("outcome")
         if outcome is None:
             return "plan"
         return "compose" if outcome in REACHED_THE_GATE else "record_run"
 
-    graph: StateGraph[PlanState, Any, PlanState, PlanState] = StateGraph(PlanState)
+    graph: StateGraph[PlanState, Any, PlanState, PlanState] = StateGraph(
+        PlanState, context_schema=RunBudget
+    )
     graph.add_node("retrieve", retrieve)
     graph.add_node("plan", plan)
     graph.add_node("verify", verify)
@@ -623,7 +724,11 @@ def build_plan_graph(
         after_critique,
         {"compose": "compose", "plan": "plan", "record_run": "record_run"},
     )
-    graph.add_edge("compose", "require_human_approval")
+    graph.add_conditional_edges(
+        "compose",
+        after_compose,
+        {"require_human_approval": "require_human_approval", END: END},
+    )
     graph.add_edge("require_human_approval", "record_decision")
     graph.add_edge("record_decision", END)
     graph.add_edge("record_run", END)
@@ -637,14 +742,21 @@ def structured[T: BaseModel](settings: Settings, schema: type[T], *, effort: Eff
     rather than routing it through a tool call, so a plan never arrives as a
     tool invocation and the tool boundary has nothing to inspect here.
     ``include_raw`` keeps the message the answer came in, which is where the
-    stop reason lives.
+    stop reason lives. An error from the service is raised as the seam reads it,
+    busy or failed, so a run can tell a service at fault from a fault of its own.
     """
     chain = chat_model(settings, effort=effort).with_structured_output(
         schema, method="json_schema", include_raw=True
     )
 
     async def ask(messages: Sequence[BaseMessage]) -> ModelAnswer[T]:
-        answer = await chain.ainvoke(list(messages))
+        try:
+            answer = await chain.ainvoke(list(messages))
+        except Exception as error:
+            failure = service_failure(error)
+            if failure is None:
+                raise
+            raise failure from error
         return ModelAnswer.from_structured(cast(Mapping[str, Any], answer))
 
     return ask

@@ -34,6 +34,7 @@ from tests.support import (
     SAME_ORIGIN,
     accepting,
     browser,
+    changed_by_hand,
     finding,
     fixture_settings,
     fixture_week_plan,
@@ -455,12 +456,11 @@ def test_a_plan_without_a_usable_snapshot_reads_as_its_saved_text_and_keeps_its_
     with browser(key=True) as client:
         walkthrough(client)
         broken = planned(client)
-        store = state_of(client).drafts
-        store._connection.execute(
+        changed_by_hand(
+            state_of(client).drafts,
             f"UPDATE drafts SET {column}=? WHERE draft_id=?",  # noqa: S608
             (value, broken.draft_id),
         )
-        store._connection.commit()
         report(client, ESSAY_ID, "done")
         hers = client.get(HER_PAGE, headers=PAGE_HEADERS)
         family = client.get("/parent", headers=PAGE_HEADERS)
@@ -490,10 +490,9 @@ def test_a_plan_paused_from_before_snapshots_is_decided_as_it_was_and_stays_text
         walkthrough(client)
         record = planned(client)
         drafts = state_of(client).drafts
-        drafts._connection.execute(
-            "UPDATE drafts SET plan_snapshot=NULL WHERE draft_id=?", (record.draft_id,)
+        changed_by_hand(
+            drafts, "UPDATE drafts SET plan_snapshot=NULL WHERE draft_id=?", (record.draft_id,)
         )
-        drafts._connection.commit()
         decided = client.post(
             f"/parent/actions/decide/{record.draft_id}", data={"decision": "approve"}
         )

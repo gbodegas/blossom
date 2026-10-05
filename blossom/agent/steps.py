@@ -41,6 +41,44 @@ class StepRecord(BaseModel):
     recorded_at: AwareDatetime
 
 
+class StageTime(BaseModel):
+    """How long one node of a run took, from the end of the node before it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    node: str
+    round: int
+    seconds: float
+
+
+class RunTiming(BaseModel):
+    """How long a run took and what it asked for, kept with the run's record.
+
+    ``model_calls`` counts every request sent, each retry included, and ``retries``
+    the retries alone. Output is counted in the tokens the service reported, which a
+    stand-in model does not report. ``category`` names how a run without a plan
+    failed, and is ``None`` for a run that made one or had nothing to plan.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    seconds: float
+    stages: list[StageTime] = []
+    model_calls: int = 0
+    retries: int = 0
+    output_tokens: int | None = None
+    largest_output_tokens: int | None = None
+    category: str | None = None
+    generation_seconds: float | None = None
+    """Seconds the plan graph ran, until its result or the deadline."""
+    settle_seconds: float | None = None
+    """Seconds settling took: the wait for the lock, held reviews and the transaction."""
+    response_seconds: float | None = None
+    """Seconds from the start of the run until its answer was decided."""
+    unconfirmed: bool = False
+    """Whether the answer could not confirm that the plan was saved."""
+
+
 EXPECT_RECORD_HOLDS = "the record's due dates hold against the school's sources"
 EXPECT_ALL_CHECKS = "every tier-one check passes"
 EXPECT_ACCEPTANCE = "the reviewer passes every criterion"
@@ -55,6 +93,8 @@ FAILURES = {
     "model_truncated": "the answer was cut off",
     "model_refused": "the model declined to answer",
     "model_unparseable": "the answer couldn't be read",
+    "timed_out": "the run's time ran out while it waited",
+    "service_failed": "the planning service failed or didn't answer",
 }
 
 WHAT_CAME_BACK = {"plan": "plan", "verdict": "review"}
@@ -77,10 +117,28 @@ OUTCOMES = {
         "The run stopped before its plan could wait for review, so the plan was set aside."
     ),
     "nothing_to_schedule": "The run ended because nothing was left to schedule.",
+    "date_problem": (
+        "A due date on record comes before the evening being planned, so no plan could keep "
+        "every rule. No model was asked. Check the dates named in the steps."
+    ),
+    "timed_out": (
+        "Planning took longer than the time a run is allowed, so it stopped with no plan to review."
+    ),
+    "service_failed": (
+        "The planning service failed or didn't answer, so there's no plan to review. "
+        "Planning again may work."
+    ),
+    "overtaken": (
+        "A newer plan for the evening was made while this run was working, so this one was "
+        "set aside."
+    ),
 }
 NOTHING_TO_SCHEDULE: Final = "nothing_to_schedule"
 """The outcome of a run whose window held no work still to plan when it was read: it
 ends before any model is asked, with a record and no draft."""
+DATE_PROBLEM: Final = "date_problem"
+"""The outcome of a run whose window held work due before the evening it plans, which no
+plan can schedule or put off in time: it ends before any model is asked, with a record."""
 
 CRITERION_NAMES: Final = {
     Criterion.ORDER: "the order",
@@ -96,7 +154,10 @@ LABELS: Final = {
     "verify": "Rules check",
     "critique": "Reviewer",
     "rescue": "Plan kept for review",
+    "time_limit": "Time limit",
 }
+SECONDS_SAID: Final = 10
+"""Below this many seconds a time is said to the tenth of a second."""
 ORDINALS: Final = {1: "First", 2: "Second", 3: "Third", 4: "Fourth", 5: "Fifth"}
 
 
@@ -221,6 +282,42 @@ def describe_verdict(verdict: CriticVerdict) -> str:
     if verdict.missing:
         clauses.append("didn't consider " + named(verdict.missing))
     return f"The reviewer {joined(clauses)}."
+
+
+def seconds_said(seconds: float) -> str:
+    """``0.4 seconds``, ``1.0 second``, ``12 seconds``: a time as a parent reads it."""
+    amount = f"{seconds:.1f}" if seconds < SECONDS_SAID else f"{round(seconds)}"
+    return f"{amount} second" if amount in ("1", "1.0") else f"{amount} seconds"
+
+
+def describe_timing(timing: RunTiming) -> str:
+    """The run's time and requests in one sentence, for the family page."""
+    parts = [
+        f"Took {seconds_said(timing.seconds)} in all",
+        count(timing.model_calls, "model request"),
+    ]
+    if timing.retries:
+        parts[-1] += f" ({timing.retries} {'retry' if timing.retries == 1 else 'retries'})"
+    if timing.output_tokens is not None:
+        parts.append(tokens_said(timing.output_tokens))
+    if timing.largest_output_tokens is not None:
+        parts.append(f"the longest answer {tokens_said(timing.largest_output_tokens)}")
+    return joined(parts) + "."
+
+
+def tokens_said(number: int) -> str:
+    """``1 output token``, ``2,400 output tokens``."""
+    return f"{number:,} output token" if number == 1 else f"{number:,} output tokens"
+
+
+def describe_past_due(names: Sequence[str], due: Sequence[date]) -> str:
+    """Why a run ended before any model was asked: work due before the evening it plans,
+    which a parent may set days ahead, so the date hasn't always passed."""
+    said = [f"{name} is due {day}" for name, day in zip(names, due, strict=True)]
+    return (
+        f"{joined(said)}, before the evening being planned, so no plan can keep every rule; "
+        "no model was asked."
+    )
 
 
 def describe_outcome(outcome: str) -> str:

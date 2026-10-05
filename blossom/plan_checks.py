@@ -209,6 +209,69 @@ class PlanVerification(BaseModel):
         return self.as_findings() if self.model_feedback is None else self.model_feedback
 
 
+def given_dates(assignment: Assignment, noticed: Noticing | None) -> list[date]:
+    """Every date the record or a source gives for the work."""
+    given = [assignment.due_date, *(() if noticed is None else noticed.observed_dates)]
+    return [day for day in given if day is not None]
+
+
+def still_to_come(assignment: Assignment, noticed: Noticing | None, evening: date) -> date | None:
+    """The earliest date the record or a source gives that ``evening`` has not passed, or
+    ``None`` when every date has."""
+    ahead = [day for day in given_dates(assignment, noticed) if day >= evening]
+    return min(ahead) if ahead else None
+
+
+def missed(
+    assignment: Assignment, noticed: Noticing | None, evening: date, *, chosen: bool
+) -> bool:
+    """Whether any date the record or a source gives passed before ``evening``, whichever
+    date the record is held to, and the work is still plannable: catch-up work she chose,
+    or work another date still holds for."""
+    if all(day >= evening for day in given_dates(assignment, noticed)):
+        return False
+    return chosen or still_to_come(assignment, noticed, evening) is not None
+
+
+def deadline_for(
+    assignment: Assignment, noticed: Noticing | None, evening: date, *, chosen: bool
+) -> tuple[date | None, str]:
+    """The day a plan for ``evening`` is held to, and where that day comes from: the record's
+    date, or the earliest date anyone gives when the sources contradict the record; once
+    that has passed, the next date still to come, and none for catch-up work every date
+    has passed for."""
+    if missed(assignment, noticed, evening, chosen=chosen):
+        ahead = still_to_come(assignment, noticed, evening)
+        return (None, "") if ahead is None else (ahead, " by the next date still to come")
+    if noticed is None or not noticed.contradicted:
+        return assignment.due_date, ""
+    return noticed.earliest_date, " by the earliest date the record or a source gives"
+
+
+def past_deadlines(
+    due_in_window: Sequence[Assignment],
+    noticings: Sequence[Noticing],
+    evening: date,
+    catch_up: Collection[str] = (),
+) -> dict[str, date]:
+    """The work a plan for ``evening`` is held to a day before it, by the rule the deadline
+    check uses, with that day.
+
+    Every plan has to schedule or put off each of these, and either one runs past the
+    day, so no plan can pass the checks while any is among the work to plan. Work she
+    chose and work another date still holds for are never here.
+    """
+    noticed = {item.assignment_id: item for item in noticings}
+    chosen = set(catch_up)
+    found: dict[str, date] = {}
+    for assignment in due_in_window:
+        name = assignment.assignment_id
+        deadline, _ = deadline_for(assignment, noticed.get(name), evening, chosen=name in chosen)
+        if deadline is not None and deadline < evening:
+            found[name] = deadline
+    return found
+
+
 def check_plan(
     plan: DailyPlan,
     *,
@@ -315,40 +378,15 @@ def check_plan(
                 said=f"the plan puts off {reads_as(name)} {count} times",
             )
 
-    def deadline_of(assignment: Assignment) -> tuple[date | None, str]:
-        """The day the work must be done by, and where that day comes from."""
-        noticed = contradicted.get(assignment.assignment_id)
-        if noticed is None:
-            return assignment.due_date, ""
-        return noticed.earliest_date, " by the earliest date the record or a source gives"
-
-    def given_dates(assignment: Assignment) -> list[date]:
-        """Every date the record or a source gives for the work."""
-        noticed = noticed_by_id.get(assignment.assignment_id)
-        given = [assignment.due_date, *(() if noticed is None else noticed.observed_dates)]
-        return [day for day in given if day is not None]
-
-    def still_to_come(assignment: Assignment) -> date | None:
-        """The earliest date the record or a source gives that the evening asked for has
-        not passed, or ``None`` when every date has."""
-        ahead = [day for day in given_dates(assignment) if day >= requested_evening]
-        return min(ahead) if ahead else None
-
-    def missed(assignment: Assignment) -> bool:
-        """Whether any date the record or a source gives passed before the evening asked for,
-        whichever date the record is held to, and the work is still plannable: catch-up
-        work she chose, or work another date still holds for."""
-        if all(day >= requested_evening for day in given_dates(assignment)):
-            return False
-        return assignment.assignment_id in chosen or still_to_come(assignment) is not None
-
     def deadline_now(assignment: Assignment) -> tuple[date | None, str]:
-        """The day a plan is held to: the deadline, or, once it has passed, the next date
-        still to come, and none for catch-up work every date has passed for."""
-        if not missed(assignment):
-            return deadline_of(assignment)
-        ahead = still_to_come(assignment)
-        return (None, "") if ahead is None else (ahead, " by the next date still to come")
+        name = assignment.assignment_id
+        return deadline_for(
+            assignment, noticed_by_id.get(name), requested_evening, chosen=name in chosen
+        )
+
+    def was_missed(assignment: Assignment) -> bool:
+        name = assignment.assignment_id
+        return missed(assignment, noticed_by_id.get(name), requested_evening, chosen=name in chosen)
 
     for block in plan.blocks:
         assignment = known.get(block.assignment_id)
@@ -434,5 +472,5 @@ def check_plan(
             sorted(item.assignment_id for item in due_in_window if item.due_date is None)
         ),
         contradicted=tuple(sorted(name for name in contradicted if name in known)),
-        past_due=tuple(sorted(item.assignment_id for item in due_in_window if missed(item))),
+        past_due=tuple(sorted(item.assignment_id for item in due_in_window if was_missed(item))),
     )

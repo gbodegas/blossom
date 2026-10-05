@@ -22,10 +22,11 @@ project state need not be.
 import asyncio
 import logging
 import secrets
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Final, cast
+from typing import Any, Final, cast
 
 from fastapi import FastAPI, Request
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -91,25 +92,22 @@ class ApplicationState:
     help_requests: HelpRequestsStore
     """Her requests for help and what a parent did with each, in the drafts file,
     kept until resolved and for two weeks after."""
-    in_flight: set[str] = field(default_factory=set)
-    """The threads of runs this process is running right now, from the moment a
-    run starts to the moment it pauses or ends. The scheduled sweep leaves them
-    alone: a run between saving its draft and pausing with it looks, from the
-    tables, like a run that died there, and only the process running it can
-    tell the difference, which is why one process serves a household and says
-    so by claiming its files at startup. A run joins the set under the decision
-    lock, so it starts either before a sweep or after one, never during its
-    count of threads. Empty at startup, when nothing is in flight."""
+    monotonic: Callable[[], float] = time.monotonic
+    """The process's one monotonic clock: every run's time limit and the drafts
+    store's deadline checks read it, so a test that moves it moves both."""
+    detached: set["asyncio.Future[Any]"] = field(default_factory=set)
+    """Work a request stopped waiting for, such as a plan graph still unwinding, held
+    only so it is not lost before it ends. Nothing reads it to decide anything; each
+    piece leaves the set as it ends."""
     decision_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held while a decision is checked against the table and carried into the
     paused thread, so two decisions about one draft cannot both pass the check.
-    Also held while her signal is recorded or taken back, while a run starts
-    and while it publishes its draft, and while the scheduled sweep runs, since
-    a decision is checked against the evening as signaled and that must not
-    change before the decision lands, and a sweep must see every run that is in
-    flight. One lock for all of it: each section is short and none of them is
-    frequent. It serializes within this process, and one process serves a
-    household, held to that by the claim on its files taken at startup; the
+    Also held while her signal is recorded or taken back, while a run publishes
+    its draft, and while the scheduled sweep runs, since a decision is checked
+    against the evening as signaled and that must not change before the
+    decision lands. One lock for all of it: each section is short and none of
+    them is frequent. It serializes within this process, and one process serves
+    a household, held to that by the claim on its files taken at startup; the
     table's own refusal of a second, different decision stands as a backstop
     all the same."""
     attempts: SignInAttempts = field(default_factory=SignInAttempts)
@@ -129,7 +127,9 @@ class ApplicationState:
 
 
 def build_application_state(
-    settings: Settings, checkpointer: BaseCheckpointSaver[str]
+    settings: Settings,
+    checkpointer: BaseCheckpointSaver[str],
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> ApplicationState:
     """Open the stores, and seed the record from a fixture when one is named and it is empty.
 
@@ -138,7 +138,8 @@ def build_application_state(
     and neither is a queue that forgets its contents. The planner's rules and
     notes are read from the fixture at every start, and are empty without
     one. The checkpointer is passed in because it must be opened inside a
-    running event loop, which only the lifespan has.
+    running event loop, which only the lifespan has. ``monotonic`` is the clock
+    every run's time limit is read from, the drafts store's included.
     """
     clock = clock_from(settings.today, settings.timezone_key)
     fixture = None if settings.fixture_path is None else FixtureSource(settings.fixture_path)
@@ -170,7 +171,7 @@ def build_application_state(
                 support_rules.add_rule(rule)
             for note in fixture.reflections():
                 reflections.write(note)
-        drafts = DraftsStore.open(settings.database_path, clock)
+        drafts = DraftsStore.open(settings.database_path, clock, monotonic=monotonic)
         opened.append(drafts)
         # Retention runs on the real clock even when the household clock is
         # pinned for the fixtures: a pinned clock would stamp every trace with
@@ -207,6 +208,7 @@ def build_application_state(
         tracer=LocalRunTracer(traces),
         workload_signals=signals,
         help_requests=help_requests,
+        monotonic=monotonic,
     )
 
 
@@ -215,15 +217,15 @@ async def sweep_aged(state: ApplicationState) -> None:
 
     The saved-state sweep records decisions, so it runs under the decision
     lock like any other decision. The other two delete rows nothing reads any
-    more, since both stores already leave aged rows out of every read.
+    more, since both stores already leave aged rows out of every read. Each
+    store waits for its file on a worker thread, so a held file never holds
+    the server.
     """
     async with state.decision_lock:
-        await sweep_saved_state(
-            state.checkpointer, state.drafts, state.clock, in_flight=state.in_flight
-        )
-    state.traces.sweep()
-    state.workload_signals.sweep()
-    state.help_requests.sweep()
+        await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+    await asyncio.to_thread(state.traces.sweep)
+    await asyncio.to_thread(state.workload_signals.sweep)
+    await asyncio.to_thread(state.help_requests.sweep)
 
 
 async def repeat(interval: float, tick: Callable[[], Awaitable[None]]) -> None:
@@ -240,8 +242,11 @@ async def repeat(interval: float, tick: Callable[[], Awaitable[None]]) -> None:
             logger.exception("a scheduled sweep failed; the next one runs in %s seconds", interval)
 
 
-def create_lifespan(settings: Settings) -> Lifespan:
-    """Build the lifespan handler that owns application state for one process."""
+def create_lifespan(
+    settings: Settings, monotonic: Callable[[], float] = time.monotonic
+) -> Lifespan:
+    """Build the lifespan handler that owns application state for one process, its runs
+    timed on ``monotonic``."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -259,12 +264,18 @@ def create_lifespan(settings: Settings) -> Lifespan:
         claim = claim_household(settings.database_path, settings.checkpoint_path)
         try:
             async with open_checkpointer(settings.checkpoint_path) as checkpointer:
-                state = build_application_state(settings, checkpointer)
+                state = build_application_state(settings, checkpointer, monotonic)
                 sweeper: asyncio.Task[None] | None = None
                 try:
+                    # A run the record holds as running belongs to a process that
+                    # stopped, and its deadline was read on that process's clock: it
+                    # ends interrupted before anything is served. A failure here stops
+                    # the start, as a failed sweep does, since such a row would refuse
+                    # every press until long after its evening.
+                    await asyncio.to_thread(state.drafts.end_interrupted_runs)
                     # Whatever the last process left behind: finished threads never
-                    # cleared, runs that never finished, drafts that waited too long.
-                    # Inside the block, so a sweep that fails still closes the stores.
+                    # cleared, drafts that waited too long. Inside the block, so a
+                    # sweep that fails still closes the stores.
                     await sweep_saved_state(checkpointer, state.drafts, state.clock)
                     setattr(app.state, STATE_ATTRIBUTE, state)
                     if settings.household_sign_in:

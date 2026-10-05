@@ -29,7 +29,6 @@ from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInState
 from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.routes import hand_in as hand_in_routes
 from blossom.routes import parent as parent_routes
-from blossom.routes import runs as run_routes
 from blossom.routes import student as student_routes
 from blossom.routes.navigation import details_href, week_href
 from tests.support import (
@@ -891,7 +890,7 @@ def test_her_plan_that_failed_on_the_way_is_said_without_her_week_when_it_cannot
 ) -> None:
     with browser(key=True) as client:
         walkthrough(client)
-        monkeypatch.setattr(run_routes, "read_week", refusing(sqlite3.OperationalError))
+        monkeypatch.setattr(student_routes, "make_plan", refusing(sqlite3.OperationalError))
         readable = client.post("/student/actions/plan", headers=PAGE_HEADERS)
         before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
@@ -902,18 +901,21 @@ def test_her_plan_that_failed_on_the_way_is_said_without_her_week_when_it_cannot
         monkeypatch.undo()
         after = every_row(database_of(client))
 
-    assert readable.status_code == 500
+    assert readable.status_code == 409
     assert (
-        "Blossom could not make a plan: something went wrong on the way. The plan already "
-        "here, if any, is unchanged."
+        "Blossom couldn&#39;t finish a reliable plan this time. Your homework updates are saved."
     ) in readable.text
+    assert "went wrong" not in readable.text
     main = store_free_page(
         answer,
-        status=500,
+        status=409,
         heading="Plan not made",
-        alert=f"Blossom could not make a plan: something went wrong on the way. {YOUR_WEEK}",
+        alert=(
+            "Blossom couldn't finish a reliable plan this time. Your homework updates are "
+            f"saved. {YOUR_WEEK}"
+        ),
     )
-    assert "already here" not in main
+    assert "went wrong" not in main
     assert ways_back_of(main) == [(HER_PAGE, "Back to my week")]
     assert after_the_failure(seen) == []
     assert after == before
@@ -949,7 +951,7 @@ def test_a_family_plan_that_failed_on_the_way_is_said_without_family_review(
 ) -> None:
     with browser(key=True) as client:
         walkthrough(client)
-        monkeypatch.setattr(run_routes, "read_week", refusing(sqlite3.OperationalError))
+        monkeypatch.setattr(parent_routes, "make_plan", refusing(sqlite3.OperationalError))
         before = every_row(database_of(client))
         with Statements(state_of(client)) as seen:
             monkeypatch.setattr(
@@ -963,11 +965,14 @@ def test_a_family_plan_that_failed_on_the_way_is_said_without_family_review(
 
     main = store_free_page(
         answer,
-        status=500,
+        status=409,
         heading="Family review",
-        alert=f"The plan could not be made: something went wrong on the way. {FAMILY}",
+        alert=(
+            "Blossom couldn't finish a reliable plan this time. Her homework updates are "
+            f"saved. {FAMILY}"
+        ),
     )
-    assert "waiting below" not in main
+    assert "Family review shows what happened" not in main
     assert after_the_failure(seen) == []
     assert after == before
 
@@ -1692,7 +1697,12 @@ def test_her_save_with_nothing_chosen_while_the_file_is_held_waits_once_and_keep
     )
     assert f"readonly>{escape(TYPED)}</textarea>" in main
     assert took < 9
-    ran = [line for line in seen if line.strip().upper() not in ("ROLLBACK", "BEGIN DEFERRED")]
+    ran = [
+        line
+        for line in seen
+        if line.strip().upper() not in ("ROLLBACK", "BEGIN DEFERRED")
+        and not line.strip().upper().startswith("PRAGMA BUSY_TIMEOUT=")
+    ]
     assert len(ran) == 1
     assert "drafts" in ran[0]
     assert after == before

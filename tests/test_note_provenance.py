@@ -34,6 +34,7 @@ from tests.support import (
     Scripted,
     accepting,
     browser,
+    changed_by_hand,
     fixture_week_plan,
     scripted_graphs,
     state_of,
@@ -204,11 +205,11 @@ def test_a_plan_that_was_waiting_under_the_shape_before_reads_as_changed_and_ask
             client.get("/parent").text,
         ]
         week = week_from(read_everything(state.project_state, state.project_state), PLAN_DATE)
-        state.drafts._connection.execute(
+        changed_by_hand(
+            state.drafts,
             "UPDATE drafts SET inputs_digest = ? WHERE draft_id = ?",
             (as_fingerprinted_before(week), waiting.draft_id),
         )
-        state.drafts._connection.commit()
         asked_before = sum(len(planner.briefs) for planner in planners)
         behind = [
             client.get(HER_PAGE, params={"week": FIXTURE_WEEK}).text,

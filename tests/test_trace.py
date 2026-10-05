@@ -11,6 +11,7 @@ import json
 import logging
 import pathlib
 import sqlite3
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -30,13 +31,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from blossom.agent.graph import ModelAnswer, PlanState
-from blossom.agent.runs import DURABILITY, run_config
+from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, run_config
 from blossom.agent.trace import LocalRunTracer, Redactor, as_json, traced, unredacted
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, build_application_state
 from blossom.routes.runs import plan_graphs
 from blossom.settings import TRACE_PATH_VARIABLE
+from blossom.stores.drafts import DraftsStore
 from blossom.stores.paths import UnsafeCheckpointPath
 from blossom.stores.project_state import Assignment
 from blossom.stores.traces import TRACE_RETENTION_DAYS, TracedRun, TraceStore
@@ -47,6 +49,7 @@ from tests.support import (
     SAME_ORIGIN,
     Scripted,
     accepting,
+    drafts_in_memory,
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
@@ -57,6 +60,17 @@ from tests.support import (
 )
 
 ZONE = ZoneInfo(FIXTURE_TIMEZONE)
+
+
+def admitted(thread: str, drafts: DraftsStore | None = None) -> DraftsStore:
+    """A drafts store with ``thread`` admitted as its running run, as a planning route admits
+    a run before its graph runs; the deadline is on ``time.monotonic``, the store's clock."""
+    store = drafts_in_memory() if drafts is None else drafts
+    blocking = store.admit_run(
+        thread, plan_date=PLAN_DATE, deadline_mono=time.monotonic() + RUN_DEADLINE_SECONDS
+    )
+    assert blocking is None
+    return store
 
 
 def traced_run(
@@ -71,7 +85,12 @@ def traced_run(
         sqlite3.connect(":memory:", check_same_thread=False), fixture_clock()
     )
     tracer = LocalRunTracer(store, redact=redact)
-    graph = graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())), **(graph_kwargs or {}))
+    graph = graph_with(
+        Scripted(ok(good_plan())),
+        Scripted(ok(accepting())),
+        drafts=admitted(thread),
+        **(graph_kwargs or {}),
+    )
 
     async def go() -> dict[str, Any]:
         return dict(
@@ -124,13 +143,15 @@ def test_the_redaction_hook_sees_every_input_output_and_error() -> None:
 def test_a_resumed_thread_adds_a_second_tree_to_the_same_thread() -> None:
     store = TraceStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
     tracer = LocalRunTracer(store)
-    graph = graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())))
+    drafts = admitted("plan:resumed")
+    graph = graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())), drafts=drafts)
     config = run_config("plan:resumed", callbacks=[tracer])
 
     async def go() -> None:
         await graph.ainvoke(
             PlanState(plan_date=PLAN_DATE, rounds=0), config=config, durability=DURABILITY
         )
+        drafts.settle_run("plan:resumed")
         resume: Command[Any] = Command(resume={"approved": True, "reason": None})
         await graph.ainvoke(resume, config=config, durability=DURABILITY)
 
@@ -313,7 +334,9 @@ class ThroughAModel:
 def test_a_model_call_inside_a_node_is_a_run_beneath_that_node() -> None:
     store = TraceStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
     tracer = LocalRunTracer(store)
-    graph = graph_with(ThroughAModel(good_plan()), ThroughAModel(accepting()))
+    graph = graph_with(
+        ThroughAModel(good_plan()), ThroughAModel(accepting()), drafts=admitted("plan:modeled")
+    )
 
     async def go() -> None:
         await graph.ainvoke(
@@ -339,7 +362,9 @@ def test_what_each_model_call_cost_stays_in_the_trace() -> None:
     plan_cost = UsageMetadata(input_tokens=1234, output_tokens=567, total_tokens=1801)
     verdict_cost = UsageMetadata(input_tokens=890, output_tokens=12, total_tokens=902)
     graph = graph_with(
-        ThroughAModel(good_plan(), plan_cost), ThroughAModel(accepting(), verdict_cost)
+        ThroughAModel(good_plan(), plan_cost),
+        ThroughAModel(accepting(), verdict_cost),
+        drafts=admitted("plan:costed"),
     )
 
     async def go() -> None:
@@ -365,17 +390,22 @@ def test_a_persisted_tree_is_forgotten_by_the_tracer_without_a_word_of_complaint
     """Both maps end empty, and the framework logs no failed callback on the way."""
     store = TraceStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
     tracer = LocalRunTracer(store)
+    drafts = drafts_in_memory()
     graph = graph_with(
-        Scripted(ok(good_plan()), ok(good_plan())), Scripted(ok(accepting()), ok(accepting()))
+        Scripted(ok(good_plan()), ok(good_plan())),
+        Scripted(ok(accepting()), ok(accepting())),
+        drafts=drafts,
     )
 
     async def go() -> None:
         for thread in ("plan:one", "plan:two"):
+            admitted(thread, drafts)
             await graph.ainvoke(
                 PlanState(plan_date=PLAN_DATE, rounds=0),
                 config=run_config(thread, callbacks=[tracer]),
                 durability=DURABILITY,
             )
+            drafts.settle_run(thread)
 
     with caplog.at_level(logging.WARNING, logger="langchain_core.callbacks.manager"):
         asyncio.run(go())
@@ -411,7 +441,9 @@ def test_traces_are_stamped_by_the_real_clock_even_when_the_household_clock_is_p
     settings = fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat())
     state = build_application_state(settings, InMemorySaver())
     try:
-        graph = graph_with(Scripted(ok(good_plan())), Scripted(ok(accepting())))
+        graph = graph_with(
+            Scripted(ok(good_plan())), Scripted(ok(accepting())), drafts=admitted("plan:pinned")
+        )
 
         async def go() -> None:
             await graph.ainvoke(
@@ -444,17 +476,22 @@ def test_a_store_that_cannot_take_the_tree_leaves_the_tracer_empty_all_the_same(
 ) -> None:
     store = RefusingStore(sqlite3.connect(":memory:", check_same_thread=False), fixture_clock())
     tracer = LocalRunTracer(store)
+    drafts = drafts_in_memory()
     graph = graph_with(
-        Scripted(ok(good_plan()), ok(good_plan())), Scripted(ok(accepting()), ok(accepting()))
+        Scripted(ok(good_plan()), ok(good_plan())),
+        Scripted(ok(accepting()), ok(accepting())),
+        drafts=drafts,
     )
 
     async def go() -> None:
         for thread in ("plan:one", "plan:two"):
+            admitted(thread, drafts)
             await graph.ainvoke(
                 PlanState(plan_date=PLAN_DATE, rounds=0),
                 config=run_config(thread, callbacks=[tracer]),
                 durability=DURABILITY,
             )
+            drafts.settle_run(thread)
 
     with caplog.at_level(logging.ERROR, logger="blossom.agent.trace"):
         asyncio.run(go())

@@ -356,7 +356,10 @@ def test_plan_today_says_what_a_plan_is_made_from_beside_it(
     today = today_panel(page)
 
     assert page.count(SCOPE) == 1
-    assert f'<p class="note planning-window">{SCOPE} {SATURDAY_WINDOW}</p>' in today
+    assert f'<p class="note planning-window" id="plan-scope">{SCOPE} {SATURDAY_WINDOW}</p>' in today
+    assert (
+        '<button type="submit" class="primary" aria-describedby="plan-scope">Plan today</button>'
+    ) in today
     assert today.index(">Plan today</button>") < today.index(SCOPE)
     assert today.index(SCOPE) < today.index('class="support-links"')
 

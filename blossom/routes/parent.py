@@ -52,14 +52,23 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from blossom.agent.runs import DURABILITY, StaleGraphVersion, ensure_current_version, run_config
+from blossom.agent.retention import unresumable_threads
+from blossom.agent.runs import (
+    DURABILITY,
+    StaleGraphVersion,
+    Unfinished,
+    bounded,
+    ensure_current_version,
+    run_config,
+)
 from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, basis_parts, statuses_for
 from blossom.captures import what_remains
@@ -86,17 +95,45 @@ from blossom.routes.navigation import (
     segment,
 )
 from blossom.routes.runs import (
+    CHECK_AGAIN,
+    CHECK_ON_THAT_REQUEST,
+    COULD_NOT_START,
+    PLAN_ANSWERS,
+    RUN_STATUS_ANSWERS,
+    UNCONFIRMED,
+    AlreadyPlanning,
+    CouldNotStart,
     Graphs,
+    NotSaved,
     PlanGraphBuilder,
+    RunCheck,
+    RunNotice,
+    Unconfirmed,
+    already_planning,
+    ended_without_a_plan,
+    graph_for_a_run,
+    make_plan,
+    not_saved,
     refuse_an_empty_run,
     require_model,
     require_work,
-    run_plan,
+    run_check,
+    run_notice,
+    run_status_view,
+    saved_sentence,
+    thread_for,
+    tidy_later,
     tidy_thread,
 )
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
-from blossom.stores.drafts import AlreadyDecided, DraftRecord
+from blossom.stores.drafts import (
+    INTERRUPTED,
+    STORE_WAIT_SECONDS,
+    AlreadyDecided,
+    DraftRecord,
+    NotPublished,
+)
 from blossom.stores.help_requests import NOTE_MAX_LENGTH, HelpRequest, RequestClosed
 from blossom.stores.project_state import (
     CHECKED,
@@ -127,6 +164,7 @@ from blossom.views import (
     ParentCheckpointAssignmentView,
     ParentCheckpointView,
     PlanRunView,
+    RunStatusView,
     RunView,
     SchoolStatementView,
     SchoolWordsView,
@@ -236,10 +274,9 @@ CHECK_CONFIRMATIONS: Final[dict[str, str]] = {
 }
 """What the address says happened to a row's check, and the sentence the row shows for it:
 the server chooses which, the address only carries the choice."""
-PLAN_FAILED: Final = (
-    "The plan could not be made: something went wrong on the way. "
-    "What is waiting below is unchanged."
-)
+PLAN_INTERRUPTED: Final = ended_without_a_plan(INTERRUPTED, parent=True)
+"""What the family's plan form says of a run that failed on the way: a plan Blossom couldn't
+finish, as the record keeps it, in a parent's words."""
 FAMILY_NOT_SHOWN: Final = "Family review can't be shown right now."
 """The line the family page's stand-in adds after a refusal's own words when the family
 page can't be read."""
@@ -261,7 +298,9 @@ WITHOUT_THE_PAGE: Final[dict[str, str]] = {
     CHECK_NOTE_TOO_LONG: (
         f"Nothing was written, because the note is longer than {CHECK_NOTE_MAX_LENGTH} characters."
     ),
-    PLAN_FAILED: "The plan could not be made: something went wrong on the way.",
+    PLAN_INTERRUPTED: (
+        "Blossom couldn't finish a reliable plan this time. Her homework updates are saved."
+    ),
 }
 """Each refusal written for the family page, as it reads where that page is not shown. Any
 other refusal reads the same in both places."""
@@ -455,31 +494,80 @@ def beyond(evening: date) -> str:
     )
 
 
-@router.post("/plans", response_model=PlanRunView, status_code=status.HTTP_201_CREATED)
-async def start_plan(request: PlanRequest, state: State, graphs: Graphs) -> PlanRunView:
+@router.post(
+    "/plans",
+    response_model=PlanRunView,
+    status_code=status.HTTP_201_CREATED,
+    responses=PLAN_ANSWERS,
+)
+async def start_plan(
+    request: PlanRequest, state: State, graphs: Graphs
+) -> PlanRunView | JSONResponse:
     """Run the plan graph for one evening, up to the gate or to the reason it stopped.
 
     An evening that has passed, or one past the edge of the calendar, is
     refused with 422 before anything runs, and so is an evening with nothing
     left to plan, before and after the run: a report of hers can land between
-    the question and the run's reading, and such a run made no plan. A run
-    that reached a model and ended without a plan is answered with its
-    record, since the page lists those.
+    the question and the run's reading, and such a run made no plan. Any other
+    run that ended without a plan is answered 201 with its record, since the
+    page lists those, a run that ended on a date problem before any model was
+    asked, or one that failed on the way, included. A press while the
+    household's run is still running is a 409 naming it, in a parent's words; a
+    plan whose saving couldn't be confirmed in time is a 202 with its run's id;
+    and a plan not saved or a run that couldn't start is a 503 that says her
+    updates are saved.
     """
+    budget = graphs.budget()
     evening = request.plan_date or state.clock.today()
     if evening < state.clock.today():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=passed(evening))
     if evening > date.max - CALENDAR_MARGIN:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=beyond(evening))
-    require_work(state, evening)
+    could_not_start = f"{COULD_NOT_START} {saved_sentence(parent=True)}"
+    try:
+        await require_work(state, evening, budget)
+    except CouldNotStart as error:
+        raise HTTPException(error.status_code, detail=could_not_start) from None
     require_model(graphs)
-    run = await run_plan(
-        graphs.build(),
-        evening,
-        state,
-    )
-    refuse_an_empty_run(run)
-    return run
+    run_id = thread_for(evening)
+    try:
+        made = await make_plan(
+            graph_for_a_run(graphs), evening, state, budget=budget, run_id=run_id
+        )
+    except AlreadyPlanning as error:
+        raise AlreadyPlanning(error.run, parent=True) from None
+    except NotSaved as error:
+        raise HTTPException(
+            error.status_code, detail=not_saved(parent=True, kept=error.kept)
+        ) from None
+    except CouldNotStart as error:
+        raise HTTPException(error.status_code, detail=could_not_start) from None
+    except Unconfirmed as unconfirmed:
+        return JSONResponse(
+            unconfirmed.view().model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        # The run was admitted and has been ended interrupted: its record, like any run
+        # that ended without a plan.
+        logger.exception("the plan for %s failed on the way", evening)
+        return PlanRunView(
+            thread_id=run_id,
+            plan_date=evening,
+            outcome=INTERRUPTED,
+            draft_id=None,
+            waiting=False,
+            steps=list(budget.steps),
+        )
+    refuse_an_empty_run(made.view)
+    return made.view
+
+
+@router.get("/plans/runs/{run_id}", response_model=RunStatusView, responses=RUN_STATUS_ANSWERS)
+async def plan_run(run_id: str, state: State) -> RunStatusView:
+    """Where one planning run stands, after ending any run past its deadline."""
+    return await run_status_view(state, run_id)
 
 
 @router.get("/approvals", response_model=ApprovalQueueView)
@@ -508,18 +596,47 @@ async def decide(
     return await decide_draft(state, graphs.build, draft_id, request)
 
 
+def unresumable(plan_date: date, today: date) -> str:
+    """What a decision on a published plan answers, 409, when its saved review step is
+    missing or was written by another version of the graph, so nothing can resume it: why,
+    and what becomes of the plan, which stays on her page only for today's evening."""
+    then = (
+        "It stays on her page until a new plan replaces it, and closes as expired two weeks "
+        "after its evening."
+        if plan_date == today
+        else "It closes as expired two weeks after its evening."
+    )
+    return (
+        "This plan can't be approved or refused here, because Blossom can't finish its saved "
+        f"review step. {then}"
+    )
+
+
+RECORD_TOO_SLOW: Final = "The record couldn't be read in time. Try again in a moment."
+
+
+async def read_for_the_decision[T](call: Callable[[], T]) -> T:
+    """What ``call`` returns, read on a worker thread for at most the store's wait, so the
+    server goes on answering while the decision lock is held; 503 past it."""
+    try:
+        return await bounded(call, STORE_WAIT_SECONDS)
+    except Unfinished as error:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=RECORD_TOO_SLOW) from error
+
+
 async def decide_draft(
     state: ApplicationState, build: PlanGraphBuilder, draft_id: str, request: DecisionRequest
 ) -> DecisionView:
     """The decision, from the table check to the resumed thread, under one lock.
 
-    The table is read first, so an unknown or already decided draft is refused
-    without a graph and therefore without a key. The graph is built only after
-    that, and asked whether the thread is still waiting at the gate and was
-    written by this version, since the table can say a draft waits while the
-    thread has moved on. The lock spans the whole sequence: two requests about
-    one draft cannot both see it waiting, and the table's own refusal covers a
-    second process.
+    The table is read first, so an unknown, already decided or unpublished draft
+    is refused without a graph and therefore without a key. The graph is built
+    only after that, and asked whether the thread is still waiting at the gate
+    and was written by this version, since the table can say a draft waits while
+    the thread has moved on; one that can't be resumed is refused with
+    ``unresumable``'s words. The lock spans the whole sequence: two requests about one
+    draft cannot both see it waiting, and the table's own refusal covers a
+    second process. Every read of the record runs on a worker thread.
 
     A thread past the gate with its record unwritten is a review that reached
     the thread and then failed to land in the table. It is finished with the
@@ -529,20 +646,28 @@ async def decide_draft(
     with what stood is told so.
     """
     async with state.decision_lock:
-        record = state.drafts.get(draft_id)
+        record = await read_for_the_decision(partial(state.drafts.get, draft_id))
         if record is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no draft {draft_id!r}")
         if not record.waiting:
+            if record.decision == "superseded":
+                # Nothing can resume a superseded draft's thread, and a settle this process
+                # stopped waiting for may have left it; it goes without a wait.
+                tidy_later(record.thread_id, state)
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 detail=f"draft {draft_id!r} was already {record.decision}",
+            )
+        if not record.published:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} is not on the pages"
             )
         graph = build()
         config = run_config(record.thread_id, callbacks=[state.tracer])
         snapshot = await graph.aget_state(config)
         resume: Command[Any] | None
         if snapshot.next == ("require_human_approval",):
-            stale = stale_reason(state, record)
+            stale = await read_for_the_decision(partial(stale_reason, state, record))
             if request.approved and stale is not None:
                 raise HTTPException(status.HTTP_409_CONFLICT, detail=stale)
             resume = Command(resume={"approved": request.approved, "reason": request.reason})
@@ -550,24 +675,28 @@ async def decide_draft(
             resume = None
         else:
             raise HTTPException(
-                status.HTTP_409_CONFLICT, detail=f"draft {draft_id!r} is not waiting at the gate"
+                status.HTTP_409_CONFLICT,
+                detail=unresumable(record.plan_date, state.clock.today()),
             )
         try:
             ensure_current_version(snapshot)
         except StaleGraphVersion as error:
-            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail=unresumable(record.plan_date, state.clock.today()),
+            ) from error
         try:
             await graph.ainvoke(resume, config=config, durability=DURABILITY)
-        except AlreadyDecided as error:
+        except (AlreadyDecided, NotPublished) as error:
             # The review reached the thread, so the gate is passed and the
             # thread cannot pause again, and the table refused because the
             # draft was closed meanwhile: a later plan published from another
-            # process, since publication in this one waits for the lock this
-            # review holds. Nothing can resume the thread, so it goes, and a
-            # thread that cannot be cleared now is left to the sweep.
+            # process, or from a settle this process stopped waiting for. Nothing
+            # can resume the thread, so it goes, and a thread that cannot be
+            # cleared now is left to the sweep.
             await tidy_thread(record.thread_id, state)
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
-        decided = state.drafts.get(draft_id)
+        decided = await read_for_the_decision(partial(state.drafts.get, draft_id))
         # The decision is in the table; the loop is over and its state is cleared.
         await tidy_thread(record.thread_id, state)
     if decided is None or decided.waiting:
@@ -732,6 +861,8 @@ def review_page(
     entry_open: bool = False,
     check: CheckState | None = None,
     open_plan: str | None = None,
+    problem_check: RunCheck | None = None,
+    run_notice: RunNotice | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     """Render the queue, the decisions, the forms to plan an evening and to add assignments,
@@ -746,6 +877,9 @@ def review_page(
     or a problem with one; a row's problem is said at the top too, with a
     link to the row, so it is met on a page that opens at its top.
     ``open_plan`` is a plan a link came back to, whose folds are opened.
+    ``problem_check`` links the problem to the run it names, and ``run_notice`` is what
+    the page says about a planning run. A waiting plan no review could resume says so in
+    place of its two buttons, as the decision itself refuses it.
 
     The household day is read once, and today's working plan with it: the
     last draft published for today that no later one displaced. That one
@@ -800,6 +934,9 @@ def review_page(
         for record in shown
     }
     waiting = [plans[record.draft_id].view for record in records.waiting]
+    stuck = unresumable_threads(
+        state.checkpointer, [record.thread_id for record in records.waiting], STORE_WAIT_SECONDS
+    )
     every_decided = [plans[record.draft_id].view for record in records.decided]
     todays = next((view for view in every_decided if view.draft_id == records.current_id), None)
     decided = [view for view in every_decided if view is not todays]
@@ -816,6 +953,13 @@ def review_page(
             "open_plan": open_plan if open_plan in plans else None,
             "readings": {name: found.reading for name, found in plans.items()},
             "ended": ended,
+            "unresumable": {
+                record.draft_id: unresumable(record.plan_date, today)
+                for record in records.waiting
+                if record.thread_id in stuck
+            },
+            "problem_check": problem_check,
+            "run_notice": run_notice,
             # Open when the latest run of an evening still ahead made no plan, so the
             # parent sees why without looking for it.
             "ended_open": any(run.newest and run.plan_date >= today for run in ended),
@@ -1122,9 +1266,14 @@ def review(
     plan: Annotated[
         str | None, Query(description="the plan whose folds to open; changes nothing")
     ] = None,
+    run: Annotated[
+        str | None, Query(description="a planning run to say where it stands; changes nothing")
+    ] = None,
 ) -> HTMLResponse:
     """The parent's page: what she asked for, what is waiting, and the folds below. When the
-    record cannot be read, a page that says so and offers the same address again."""
+    record cannot be read, a page that says so and offers the same address again. A run the
+    address names is said where it stands; otherwise a run still running is said, since the
+    plans that couldn't be made are listed below."""
     said = [
         (CHECK_CONFIRMATIONS[name], value)
         for name, value in (
@@ -1148,6 +1297,7 @@ def review(
             if said
             else (CheckState(focus) if focus else None),
             open_plan=plan,
+            run_notice=run_notice(state, run, FAMILY_PAGE, parent=True, today=None),
         )
     except sqlite3.Error as error:
         return review_unreadable(
@@ -1215,46 +1365,66 @@ async def plan_from_the_page(
     """The plan form. A blank date means today; a bad one is said, not guessed at.
 
     A run that fails on the way for any reason other than a refusal is said on
-    the page too, with the queue below unchanged; the run has already taken
-    back what it left, and the failure goes to the process log. An evening that
+    the page too, as a plan Blossom couldn't finish, with the queue below
+    unchanged; the run has already taken back what it left, and the failure
+    goes to the process log. An evening that
     has passed is refused before anything runs, since a plan for it could
     reach no page of hers, and so is one past the edge of the calendar, whose
     week cannot be read: the same two refusals the JSON route makes. When the
     family page can't be read either, its stand-in says so, with the same status.
     """
+    budget = graphs.budget()
+
+    async def not_made(problem: str, code: int, check: RunCheck | None = None) -> HTMLResponse:
+        # The family page is read on a worker thread, for at most the store's wait; past
+        # it, its stand-in that reads no store says the same.
+        try:
+            return await bounded(
+                lambda: refused_on_the_page(request, state, problem, code, check=check),
+                STORE_WAIT_SECONDS,
+            )
+        except Unfinished:
+            return family_not_shown(
+                request, state, WITHOUT_THE_PAGE.get(problem, problem), code, line=FAMILY_NOT_SHOWN
+            )
+
     try:
         evening = date.fromisoformat(plan_date) if plan_date.strip() else state.clock.today()
     except ValueError:
-        return refused_on_the_page(
-            request,
-            state,
+        return await not_made(
             f"{plan_date!r} is not a date. Use the form YYYY-MM-DD.",
             status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     if evening < state.clock.today():
-        return refused_on_the_page(
-            request, state, passed(evening), status.HTTP_422_UNPROCESSABLE_CONTENT
-        )
+        return await not_made(passed(evening), status.HTTP_422_UNPROCESSABLE_CONTENT)
     if evening > date.max - CALENDAR_MARGIN:
-        return refused_on_the_page(
-            request, state, beyond(evening), status.HTTP_422_UNPROCESSABLE_CONTENT
-        )
+        return await not_made(beyond(evening), status.HTTP_422_UNPROCESSABLE_CONTENT)
     try:
-        require_work(state, evening)
+        await require_work(state, evening, budget)
         require_model(graphs)
-        run = await run_plan(
-            graphs.build(),
-            evening,
-            state,
+        made = await make_plan(graph_for_a_run(graphs), evening, state, budget=budget)
+        refuse_an_empty_run(made.view)
+    except AlreadyPlanning as error:
+        return await not_made(
+            already_planning(error.run, parent=True),
+            error.status_code,
+            run_check(FAMILY_PAGE, error.run.run_id, CHECK_ON_THAT_REQUEST),
         )
-        refuse_an_empty_run(run)
+    except NotSaved as error:
+        return await not_made(not_saved(parent=True, kept=error.kept), error.status_code)
+    except CouldNotStart as error:
+        return await not_made(f"{COULD_NOT_START} {saved_sentence(parent=True)}", error.status_code)
+    except Unconfirmed as unconfirmed:
+        return await not_made(
+            f"{UNCONFIRMED} {saved_sentence(parent=True)}",
+            status.HTTP_202_ACCEPTED,
+            run_check(FAMILY_PAGE, unconfirmed.run_id, CHECK_AGAIN),
+        )
     except HTTPException as error:
-        return refused_on_the_page(request, state, str(error.detail), error.status_code)
+        return await not_made(str(error.detail), error.status_code)
     except Exception:
         logger.exception("the plan for %s failed on the way", evening)
-        return refused_on_the_page(
-            request, state, PLAN_FAILED, status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        return await not_made(PLAN_INTERRUPTED, status.HTTP_409_CONFLICT)
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -1401,13 +1571,17 @@ def refused_on_the_page(
     problem: str,
     status_code: int,
     kept: FamilyKept | None = None,
+    *,
+    check: RunCheck | None = None,
 ) -> HTMLResponse:
     """A form action the family page refused, said at its top with the status the JSON route
-    would answer, tried once."""
+    would answer, and ``check`` the link to the run it names, tried once."""
     return reviewed_once(
         request,
         state,
-        lambda: review_page(request, state, problem=problem, status_code=status_code),
+        lambda: review_page(
+            request, state, problem=problem, problem_check=check, status_code=status_code
+        ),
         problem,
         status_code,
         kept,

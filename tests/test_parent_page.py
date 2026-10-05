@@ -8,6 +8,7 @@ through the route's builder dependency, over the real stores.
 """
 
 import re
+import sqlite3
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
@@ -17,8 +18,9 @@ import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from blossom.agent.graph import plan_graph_for
-from blossom.agent.steps import StepRecord
+from blossom.agent.graph import CompiledPlanGraph, plan_graph_for
+from blossom.agent.runs import GRAPH_VERSION
+from blossom.agent.steps import StepRecord, describe_past_due
 from blossom.app import create_app
 from blossom.clock import spoken_time
 from blossom.dependencies import STATE_ATTRIBUTE, ApplicationState, get_application_state
@@ -27,19 +29,26 @@ from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdi
 from blossom.intake import identity
 from blossom.noticing import read_week
 from blossom.plans import DailyPlan, Deferral, PlanBlock
+from blossom.reconciliation import SourceChannel
+from blossom.routes import parent as parent_routes
+from blossom.routes import runs as runs_module
 from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
+from blossom.stores.drafts import RunState
 from blossom.stores.project_state import Assignment, Saved, Undone
 from tests import support
 from tests.support import (
     FIXTURE_TIMEZONE,
     SAME_ORIGIN,
     Scripted,
+    ended_run,
     fixture_settings,
     forgetful_fixture_plan,
     ok,
+    record,
+    settled_run,
     state_of,
     store_of,
 )
@@ -399,19 +408,22 @@ def test_each_decision_button_says_which_draft_it_decides() -> None:
     assert "This plan is for Thursday, August 20. It reaches her page on that day" in two_waiting
 
 
-def test_a_past_evening_is_refused_by_the_form_and_a_past_draft_says_it_is_not_on_her_page() -> (
-    None
-):
+def test_a_past_evening_is_refused_by_the_form_and_a_past_draft_says_it_is_not_on_her_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The past plan is settled without a graph, so its review step is taken as one a review
+    can resume, as a run paused at the gate leaves it."""
+    monkeypatch.setattr(parent_routes, "unresumable_threads", lambda *args: frozenset())
     with browser() as client:
         refused = client.post("/parent/actions/plan", data={"plan_date": "2026-08-18"})
         state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
-        state.drafts.record_waiting(
+        settled_run(
+            state.drafts,
             Draft(draft_id="draft:plan:past", body="Plan for Tuesday", created_at=CREATED),
             thread_id="plan:past",
             plan_date=PLAN_DATE - timedelta(days=1),
             outcome="accepted",
         )
-        state.drafts.publish("draft:plan:past")
         page = client.get("/parent").text
 
     assert refused.status_code == 422
@@ -419,18 +431,78 @@ def test_a_past_evening_is_refused_by_the_form_and_a_past_draft_says_it_is_not_o
     assert "This plan was for Tuesday, August 18, which has passed. It is not on her page" in page
 
 
-def test_a_waiting_draft_for_a_past_evening_is_never_told_to_plan_again() -> None:
-    """A reduced plan left unreviewed past its signal's week: no fresh plan could put it right."""
+def test_a_date_problem_for_a_later_evening_is_said_against_that_evening() -> None:
+    """Planning the day after tomorrow, work due tomorrow comes before the evening but
+    hasn't passed, and the family page doesn't say it has."""
+    evening = PLAN_DATE + timedelta(days=2)
+    found = describe_past_due(
+        ["World History \u00b7 Canal Era comparison essay"], [PLAN_DATE + timedelta(days=1)]
+    )
     with browser() as client:
         state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
-        state.drafts.record_waiting(
+        ended_run(
+            state.drafts,
+            thread_id=f"plan:{evening.isoformat()}:later",
+            plan_date=evening,
+            outcome="date_problem",
+            steps=[
+                StepRecord(node="retrieve", round=0, expected="", found=found, recorded_at=CREATED)
+            ],
+        )
+        page = client.get("/parent").text
+
+    assert "No plan for Friday, August 21, 2026" in page
+    assert "A due date on record comes before the evening being planned" in page
+    assert "is due 2026-08-20, before the evening being planned" in page
+    assert "already passed" not in page
+    assert "before this evening" not in page
+
+
+def test_a_family_press_that_ends_on_a_date_problem_keeps_the_plan_buttons_words() -> None:
+    """Work whose only date is the day before the evening: the press returns to the family
+    page, which says the date problem, and its plan button keeps its own words, since
+    planning again can't fix a date."""
+    quiz = Assignment(
+        assignment_id="assignment-map-quiz",
+        course="Geography",
+        title="Map quiz",
+        due_date=None,
+        dependencies=[],
+        reported_submission_status="not_started",
+    )
+    with browser() as client:
+        state = state_of(client)
+        state.project_state.upsert_assignments([quiz])
+        state.project_state.record_claims(
+            quiz.assignment_id, [record(SourceChannel.LMS, "2026-08-18")]
+        )
+        posted = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        page = client.get("/parent").text
+        ended = state.drafts.runs_without_a_draft()
+
+    assert posted.status_code == 303
+    assert [run.outcome for run in ended] == ["date_problem"]
+    assert "A due date on record comes before the evening being planned" in page
+    assert '<button type="submit" class="primary">Plan it</button>' in page
+    assert "Try again" not in page
+
+
+def test_a_waiting_draft_for_a_past_evening_is_never_told_to_plan_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reduced plan left unreviewed past its signal's week: no fresh plan could put it right.
+    It is settled without a graph, so its review step is taken as one a review can resume."""
+    monkeypatch.setattr(parent_routes, "unresumable_threads", lambda *args: frozenset())
+    with browser() as client:
+        state: ApplicationState = getattr(client.app.state, STATE_ATTRIBUTE)  # type: ignore[attr-defined]
+        settled_run(
+            state.drafts,
             Draft(draft_id="draft:plan:past", body="Plan for Tuesday", created_at=CREATED),
             thread_id="plan:past",
             plan_date=PLAN_DATE - timedelta(days=1),
             outcome="accepted",
             too_much=True,
         )
-        state.drafts.publish("draft:plan:past")
         record = client.get("/parent/approvals/draft:plan:past").json()
         page = client.get("/parent").text
 
@@ -460,7 +532,10 @@ def test_planning_again_retires_the_plan_before_it_on_the_page() -> None:
 
 
 def test_a_failure_on_the_way_is_said_on_the_page_and_the_queue_stays() -> None:
-    """A planner that raises is not a refusal; the page still says so and keeps its queue."""
+    """A planner that raises is not a refusal: the page says Blossom couldn't finish a
+    reliable plan and that her updates are saved, with that outcome's status, and keeps
+    its queue. The JSON route answers the run's record, ended interrupted, like any run
+    that ended without a plan, never a bare error."""
     app = create_app(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()))
     app.dependency_overrides[plan_graphs] = scripted_graphs()
     with TestClient(app, follow_redirects=False, headers=SAME_ORIGIN) as client:
@@ -468,14 +543,27 @@ def test_a_failure_on_the_way_is_said_on_the_page_and_the_queue_stays() -> None:
         app.dependency_overrides[plan_graphs] = scripted_graphs(plans=list)
         response = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
         queue = client.get("/parent/approvals").json()["waiting"]
+        over_json = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+        ended = state_of(client).drafts.latest_run()
 
-    assert response.status_code == 500
+    assert response.status_code == 409
     assert (
-        "The plan could not be made: something went wrong on the way. "
-        "What is waiting below is unchanged."
-    ) in response.text
+        "Blossom couldn&#39;t finish a reliable plan this time. Her homework updates are saved. "
+        "Family review shows what happened."
+    ) in problem_line(response.text)
+    assert "went wrong" not in response.text
     assert "<h1>Family review</h1>" in response.text
     assert [item["draft_id"] for item in queue] == [draft_id]
+    assert over_json.status_code == 201
+    assert ended is not None
+    assert (ended.status, ended.reason) == ("ended", "interrupted")
+    body = over_json.json()
+    assert (body["thread_id"], body["outcome"], body["draft_id"], body["waiting"]) == (
+        ended.run_id,
+        "interrupted",
+        None,
+        False,
+    )
 
 
 def test_a_waiting_draft_can_be_decided_from_the_page_without_a_key() -> None:
@@ -612,6 +700,11 @@ def test_a_run_that_ended_without_a_plan_is_on_the_page_with_its_steps() -> None
     for label in ("First plan", "Second plan", "Third plan"):
         assert f'<span class="step-node">{label}</span>' in page
     assert page.count('<span class="step-node">Rules check</span>') == 3
+    assert re.search(
+        r'<p class="note">Took [\d.]+ seconds? in all and 3 model requests\. By step: '
+        r"Read the week, [\d.]+ seconds?; First plan, [\d.]+ seconds?; Rules check, ",
+        page,
+    )
     assert "No plans need your review." in page
 
 
@@ -630,7 +723,8 @@ def test_a_run_a_later_run_of_its_evening_followed_is_kept_closed() -> None:
 
 def test_a_run_for_an_evening_already_past_is_kept_closed() -> None:
     with browser() as client:
-        state_of(client).drafts.record_run(
+        ended_run(
+            state_of(client).drafts,
             thread_id="plan:2026-08-18:old",
             plan_date=PLAN_DATE - timedelta(days=1),
             outcome="checks_failed",
@@ -651,7 +745,8 @@ def test_a_run_whose_last_check_is_blank_still_shows(blank: str) -> None:
         StepRecord(node="verify", round=1, expected="", found=blank, recorded_at=at),
     ]
     with browser() as client:
-        state_of(client).drafts.record_run(
+        ended_run(
+            state_of(client).drafts,
             thread_id="plan:2026-08-19:blank",
             plan_date=PLAN_DATE,
             outcome="checks_failed",
@@ -679,7 +774,8 @@ def test_a_run_recorded_in_earlier_words_reads_as_sentences() -> None:
         ),
     ]
     with browser() as client:
-        state_of(client).drafts.record_run(
+        ended_run(
+            state_of(client).drafts,
             thread_id="plan:2026-08-19:earlier",
             plan_date=PLAN_DATE,
             outcome="model_refused",
@@ -1085,3 +1181,407 @@ def test_long_homework_labels_in_a_runs_explanation_stay_whole_and_wrap(
             for cut in ("text-overflow", "overflow:", "overflow-x", "nowrap"):
                 assert cut not in rule
             assert "overflow-wrap" not in rule or "overflow-wrap: anywhere;" in rule
+
+
+# ------------------------------------------------------- where a plan request stands
+
+TOMORROW = PLAN_DATE + timedelta(days=1)
+FAMILY_RUN = f"plan:{TOMORROW.isoformat()}:family"
+UNSURE = f"plan:{PLAN_DATE.isoformat()}:unsure"
+CANT_RESUME = (
+    "This plan can&#39;t be approved or refused here, because Blossom can&#39;t finish its "
+    "saved review step."
+)
+UNRESUMABLE_TODAY = (
+    f"{CANT_RESUME} It stays on her page until a new plan replaces it, and closes as expired "
+    "two weeks after its evening."
+)
+UNRESUMABLE_ANOTHER_EVENING = f"{CANT_RESUME} It closes as expired two weeks after its evening."
+ON_THAT_REQUEST = "Check on that request."
+ON_IT = "Check on it."
+AGAIN = "Check again."
+
+
+def family_link(run_id: str, label: str) -> str:
+    """The link the family page gives to check a run again, as the page writes it."""
+    return f'<a href="/parent?run={run_id.replace(":", "%3A")}">{label}</a>'
+
+
+def run_line(page: str) -> str | None:
+    """The line the family page gives a planning run, or ``None`` when it gives none."""
+    marker = page.find('id="plan-run"')
+    if marker < 0:
+        return None
+    start = page.rindex("<p", 0, marker)
+    return page[start : page.index("</p>", start) + 4]
+
+
+def problem_line(page: str) -> str:
+    start = page.index('<p class="problem" role="alert" id="problem">')
+    return page[start : page.index("</p>", start) + 4]
+
+
+def clocked_browser(clock: support.FakeTime) -> TestClient:
+    """The family page as ``browser`` makes it, its runs timed on ``clock``."""
+    with_key = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"}
+    app = create_app(
+        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **with_key), monotonic=clock
+    )
+    app.dependency_overrides[plan_graphs] = scripted_graphs()
+    return TestClient(app, follow_redirects=False, headers=SAME_ORIGIN)
+
+
+def test_the_family_page_says_on_load_only_that_a_run_is_being_made_or_finished() -> None:
+    """On load the family page reads the household's newest run. One being made is said
+    with Check and is not among the plans that couldn't be made; past its deadline it is
+    being finished, and is listed as timed out. Once the record ends it, the list says so
+    and nothing more is said at the top."""
+    clock = support.FakeTime()
+    with clocked_browser(clock) as client:
+        state = state_of(client)
+        quiet = client.get("/parent").text
+        admitted = state.drafts.admit_run(
+            FAMILY_RUN, plan_date=TOMORROW, deadline_mono=clock() + 90
+        )
+        being_made = client.get("/parent").text
+        clock.advance(91)
+        finishing = client.get("/parent").text
+        state.drafts.run_status(FAMILY_RUN)
+        ended = client.get("/parent").text
+
+    assert run_line(quiet) is None
+    assert admitted is None
+    line = run_line(being_made)
+    assert line is not None
+    assert "The plan request for Thursday, August 20 is still being finished." in line
+    assert family_link(FAMILY_RUN, ON_IT) in line
+    assert "Plans that couldn't be made" not in being_made
+    line = run_line(finishing)
+    assert line is not None
+    assert "Blossom is finishing the last plan request." in line
+    assert family_link(FAMILY_RUN, ON_IT) in line
+    assert "Plans that couldn't be made" in finishing
+    assert run_line(ended) is None
+    assert "Plans that couldn't be made" in ended
+
+
+def test_a_run_asked_for_by_its_id_is_said_on_the_family_page() -> None:
+    """``?run=`` on the family page says where that run stands, in a parent's words."""
+    with browser() as client:
+        state = state_of(client)
+        admitted = state.drafts.admit_run(
+            FAMILY_RUN, plan_date=TOMORROW, deadline_mono=state.monotonic() + 90
+        )
+        running = client.get(f"/parent?run={FAMILY_RUN}").text
+        state.drafts.end_run(FAMILY_RUN, reason="service_failed")
+        ended = client.get(f"/parent?run={FAMILY_RUN}").text
+
+    assert admitted is None
+    line = run_line(running)
+    assert line is not None
+    assert "The plan request for Thursday, August 20 is still being finished." in line
+    assert family_link(FAMILY_RUN, ON_IT) in line
+    line = run_line(ended)
+    assert line is not None
+    assert (
+        "Blossom couldn&#39;t get a plan from the planning service this time. Her homework "
+        "updates are saved."
+    ) in line
+    assert "hasn&#39;t changed" not in line
+    assert "Your" not in line
+    assert "service_failed" not in line
+
+
+def test_a_run_asked_for_that_adds_nothing_falls_back_on_the_family_page() -> None:
+    """``?run=`` naming a run whose plan was published, or one never made, says what the
+    family page says on load, so a newer run still being finished shows with its Check."""
+    first = f"plan:{PLAN_DATE.isoformat()}:first"
+    with browser() as client:
+        state = state_of(client)
+        settled_run(
+            state.drafts,
+            Draft(draft_id=f"draft:{first}", body="Plan for Wednesday", created_at=CREATED),
+            thread_id=first,
+            plan_date=PLAN_DATE,
+        )
+        admitted = state.drafts.admit_run(
+            FAMILY_RUN, plan_date=TOMORROW, deadline_mono=state.monotonic() + 90
+        )
+        published = client.get(f"/parent?run={first}").text
+        never = client.get("/parent?run=plan:2026-08-19:never").text
+
+    assert admitted is None
+    for page in (published, never):
+        line = run_line(page)
+        assert line is not None
+        assert "The plan request for Thursday, August 20 is still being finished." in line
+        assert family_link(FAMILY_RUN, ON_IT) in line
+
+
+FAMILY_JSON_ANSWERS: dict[str, tuple[Callable[[], Exception], str]] = {
+    "not saved": (
+        runs_module.NotSaved,
+        "Blossom made a plan but couldn't save it. Try again in a moment. Her homework "
+        "updates are saved.",
+    ),
+    "not saved, her plan kept": (
+        lambda: runs_module.NotSaved(kept=True),
+        "Blossom made a plan but couldn't save it, so her current plan hasn't changed. "
+        "Try again in a moment. Her homework updates are saved.",
+    ),
+    "could not start": (
+        runs_module.CouldNotStart,
+        "Blossom couldn't start a plan this time. Try again in a moment. Her homework "
+        "updates are saved.",
+    ),
+}
+
+
+@pytest.mark.parametrize("answer", FAMILY_JSON_ANSWERS)
+def test_each_503_from_the_family_json_route_says_her_updates_are_saved(
+    answer: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan not saved and a run that couldn't start answer the family's JSON route with a
+    503 that says her updates are saved, in a parent's words."""
+    error, said = FAMILY_JSON_ANSWERS[answer]
+
+    async def refused(*args: object, **kwargs: object) -> object:
+        raise error()
+
+    monkeypatch.setattr(parent_routes, "make_plan", refused)
+    with browser() as client:
+        response = client.post("/parent/plans", json={"plan_date": PLAN_DATE.isoformat()})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == said
+
+
+FAMILY_ANSWERS: dict[str, tuple[Callable[[], Exception], int, str, str | None]] = {
+    "already planning": (
+        lambda: runs_module.AlreadyPlanning(
+            RunState(
+                run_id=FAMILY_RUN,
+                plan_date=TOMORROW,
+                status="running",
+                reason="running",
+                seconds_left=40.0,
+                plan_unchanged=True,
+            )
+        ),
+        409,
+        "The last plan request, for Thursday, August 20, is still being finished. Try again "
+        "in about 41 seconds. Her homework updates are saved.",
+        family_link(FAMILY_RUN, ON_THAT_REQUEST),
+    ),
+    "not saved": (
+        runs_module.NotSaved,
+        503,
+        "Blossom made a plan but couldn&#39;t save it. Try again in a moment. Her homework "
+        "updates are saved.",
+        None,
+    ),
+    "not saved, her plan kept": (
+        lambda: runs_module.NotSaved(kept=True),
+        503,
+        "Blossom made a plan but couldn&#39;t save it, so her current plan hasn&#39;t changed. "
+        "Try again in a moment. Her homework updates are saved.",
+        None,
+    ),
+    "failed on the way": (
+        lambda: RuntimeError("a node failed on the way"),
+        409,
+        "Blossom couldn&#39;t finish a reliable plan this time. Her homework updates are saved. "
+        "Family review shows what happened.",
+        None,
+    ),
+    "unconfirmed": (
+        lambda: runs_module.Unconfirmed(UNSURE, PLAN_DATE),
+        202,
+        "Blossom couldn&#39;t confirm that the new plan was saved. Her homework updates are saved.",
+        family_link(UNSURE, AGAIN),
+    ),
+    "could not start": (
+        runs_module.CouldNotStart,
+        503,
+        "Blossom couldn&#39;t start a plan this time. Try again in a moment. Her homework "
+        "updates are saved.",
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize("answer", FAMILY_ANSWERS)
+def test_each_answer_to_the_family_plan_form_says_her_updates_are_saved(
+    answer: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each way the family's plan form can end without a plan is said at the top of the
+    page with the JSON route's status, in a parent's words; a press refused while a run is
+    being finished links to it, and an unconfirmed one offers to check again."""
+    error, code, said, link = FAMILY_ANSWERS[answer]
+
+    async def refused(*args: object, **kwargs: object) -> object:
+        raise error()
+
+    monkeypatch.setattr(parent_routes, "make_plan", refused)
+    with browser() as client:
+        response = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+
+    line = problem_line(response.text)
+    assert response.status_code == code
+    assert said in line
+    if link is None:
+        assert "?run=" not in line
+    else:
+        assert link in line
+    assert "Your" not in line
+
+
+@pytest.mark.parametrize("route", ["/parent/plans", "/parent/actions/plan"])
+def test_a_week_that_cannot_be_read_before_a_family_press_is_a_plan_that_could_not_start(
+    route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A family press whose read of the week fails before any run is admitted couldn't
+    start: the JSON route and the plan form answer 503 with the try-again sentence and her
+    updates saved, in a parent's words, and no run is written."""
+
+    def unreadable(*args: object, **kwargs: object) -> object:
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    monkeypatch.setattr(runs_module, "read_week", unreadable)
+    evening = {"plan_date": PLAN_DATE.isoformat()}
+    with browser() as client:
+        if route == "/parent/plans":
+            response = client.post(route, json=evening)
+        else:
+            response = client.post(route, data=evening)
+        newest = state_of(client).drafts.latest_run()
+
+    said = (
+        "Blossom couldn't start a plan this time. Try again in a moment. Her homework "
+        "updates are saved."
+    )
+    assert response.status_code == 503
+    if route == "/parent/plans":
+        assert response.json()["detail"] == said
+    else:
+        line = problem_line(response.text)
+        assert said.replace("'", "&#39;") in line
+        assert "Your" not in line
+    assert newest is None
+
+
+@pytest.mark.parametrize("route", ["/parent/plans", "/parent/actions/plan"])
+def test_a_graph_that_cannot_be_built_before_a_family_press_is_a_plan_that_could_not_start(
+    route: str,
+) -> None:
+    """A family press whose plan graph fails to build, before any run is admitted, couldn't
+    start: the JSON route and the plan form answer 503 with the try-again sentence and her
+    updates saved, in a parent's words, and no run is written."""
+
+    def unbuildable() -> CompiledPlanGraph:
+        msg = "the plan graph could not be built"
+        raise RuntimeError(msg)
+
+    def graphs() -> PlanGraphs:
+        return PlanGraphs(build=unbuildable, may_start=True)
+
+    evening = {"plan_date": PLAN_DATE.isoformat()}
+    with browser() as client:
+        client.app.dependency_overrides[plan_graphs] = graphs  # type: ignore[attr-defined]
+        if route == "/parent/plans":
+            response = client.post(route, json=evening)
+        else:
+            response = client.post(route, data=evening)
+        newest = state_of(client).drafts.latest_run()
+
+    said = (
+        "Blossom couldn't start a plan this time. Try again in a moment. Her homework "
+        "updates are saved."
+    )
+    assert response.status_code == 503
+    if route == "/parent/plans":
+        assert response.json()["detail"] == said
+    else:
+        line = problem_line(response.text)
+        assert said.replace("'", "&#39;") in line
+        assert "Your" not in line
+    assert newest is None
+
+
+def test_a_waiting_plan_no_review_can_resume_says_why_in_place_of_its_buttons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A published waiting plan whose saved review step is missing, or was written by
+    another version of the graph, says on the family page why it can't be approved or
+    refused here, in place of its two buttons, and stays on her page; a decision pressed
+    on it anyway is refused with the same words. A plan whose step can be resumed keeps
+    its buttons, and so does one whose step couldn't be read."""
+    lost = "plan:2026-08-19:lost"
+    with browser() as client:
+        state = state_of(client)
+        settled_run(
+            state.drafts,
+            Draft(draft_id=f"draft:{lost}", body="Plan for Wednesday", created_at=CREATED),
+            thread_id=lost,
+            plan_date=PLAN_DATE,
+        )
+        missing = client.get("/parent").text
+        her_week = client.get("/student/due-this-week").text
+        pressed = client.post(f"/parent/actions/decide/draft:{lost}", data={"decision": "approve"})
+    with browser() as client:
+        state = state_of(client)
+        draft_id = waiting_draft_id(client)
+        resumable = client.get("/parent").text
+        with monkeypatch.context() as patched:
+            patched.setattr("blossom.agent.retention.GRAPH_VERSION", GRAPH_VERSION + 1)
+            another_version = client.get("/parent").text
+
+        async def unreadable(*args: object, **kwargs: object) -> object:
+            msg = "disk I/O error"
+            raise OSError(msg)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(state.checkpointer, "aget_tuple", unreadable)
+            unread = client.get("/parent").text
+
+    form = 'action="/parent/actions/decide/{}"'
+    assert UNRESUMABLE_TODAY in missing
+    assert form.format(f"draft:{lost}") not in missing
+    assert "A plan is ready." in her_week
+    assert pressed.status_code == 409
+    assert UNRESUMABLE_TODAY in pressed.text
+    assert CANT_RESUME not in resumable
+    assert form.format(draft_id) in resumable
+    assert UNRESUMABLE_TODAY in another_version
+    assert form.format(draft_id) not in another_version
+    assert CANT_RESUME not in unread
+    assert form.format(draft_id) in unread
+
+
+@pytest.mark.parametrize("days", [1, -1], ids=["tomorrow", "yesterday"])
+def test_a_plan_for_another_evening_no_review_can_resume_says_only_when_it_closes(
+    days: int,
+) -> None:
+    """A waiting plan for another evening is not on her page today, so in place of its
+    buttons the family page says only that it can't be approved or refused here and when
+    it closes; a decision pressed on it is refused with the same words."""
+    evening = PLAN_DATE + timedelta(days=days)
+    lost = f"plan:{evening.isoformat()}:lost"
+    with browser() as client:
+        state = state_of(client)
+        settled_run(
+            state.drafts,
+            Draft(draft_id=f"draft:{lost}", body="Plan for the evening", created_at=CREATED),
+            thread_id=lost,
+            plan_date=evening,
+        )
+        page = client.get("/parent").text
+        pressed = client.post(f"/parent/actions/decide/draft:{lost}", data={"decision": "approve"})
+
+    assert UNRESUMABLE_ANOTHER_EVENING in page
+    assert "It stays on her page" not in page
+    assert f'action="/parent/actions/decide/draft:{lost}"' not in page
+    assert pressed.status_code == 409
+    assert UNRESUMABLE_ANOTHER_EVENING in pressed.text
+    assert "It stays on her page" not in pressed.text

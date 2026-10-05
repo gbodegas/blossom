@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from blossom import plan_dates
 from blossom.agent.compose import compose
+from blossom.agent.runs import RUN_DEADLINE_SECONDS
 from blossom.app import create_app
 from blossom.candidates import readings_for, row_reader
 from blossom.captures import (
@@ -68,6 +69,7 @@ from tests.support import (
     ZONE,
     accepting,
     browser,
+    changed_by_hand,
     composed_plan,
     control_names,
     files_in,
@@ -722,11 +724,11 @@ def test_a_missing_or_older_fingerprint_is_never_read_as_unchanged(digest: str) 
             str(canonical_active_input(week)),
         ).hex
         drafts = state_of(client).drafts
-        drafts._connection.execute(
+        changed_by_hand(
+            drafts,
             "UPDATE drafts SET inputs_digest=? WHERE draft_id=?",
             (None if digest == "none" else older, made.draft_id),
         )
-        drafts._connection.commit()
         hers, family = pages(client)
 
     for page in (hers, family):
@@ -746,11 +748,11 @@ def test_a_recorded_date_change_is_its_own_sentence_even_beside_an_equal_fingerp
         made = planned(client)
         essay_is(client, A22, PLANNED_CUE)
         drafts = state_of(client).drafts
-        drafts._connection.execute(
+        changed_by_hand(
+            drafts,
             "UPDATE drafts SET inputs_digest=? WHERE draft_id=?",
             (fingerprint_now(client, PLAN_DATE), made.draft_id),
         )
-        drafts._connection.commit()
         hers, family = pages(client)
 
     for page in (hers, family):
@@ -790,11 +792,11 @@ def test_an_unparseable_value_beside_a_match_changes_only_what_the_page_says() -
         store = store_of(client)
         hashed = canonical_active_input(week_from(read_everything(store, store), PLAN_DATE))
         drafts = state_of(client).drafts
-        drafts._connection.execute(
+        changed_by_hand(
+            drafts,
             "UPDATE drafts SET inputs_digest=? WHERE draft_id=?",
             (fingerprint_now(client, PLAN_DATE), made.draft_id),
         )
-        drafts._connection.commit()
         damaged_claim(store, ESSAY_ID)
         hers, family = pages(client)
 
@@ -825,20 +827,24 @@ def plan_for(client: TestClient, namesake: str, evening: date) -> DraftRecord:
 def stored_plan(client: TestClient, evening: date, tag: str, decision: str | None) -> DraftRecord:
     """A plan for a later evening saved and published through the drafts store, as a paused
     run leaves it, then decided there, at one instant with every other plan made this way."""
-    drafts = state_of(client).drafts
+    state = state_of(client)
+    drafts = state.drafts
     made = composed_plan(
         two_sittings().model_copy(update={"plan_date": evening}),
         draft_id=f"draft:plan:{evening}:{tag}",
     )
+    thread_id = f"thread-{evening}-{tag}"
+    deadline = state.monotonic() + RUN_DEADLINE_SECONDS
+    assert drafts.admit_run(thread_id, plan_date=evening, deadline_mono=deadline) is None
     drafts.record_waiting(
         made.draft.model_copy(update={"created_at": SAME_MOMENT}),
-        thread_id=f"thread-{evening}-{tag}",
+        thread_id=thread_id,
         plan_date=evening,
         outcome="accepted",
         plan_assignment_ids=made.snapshot.assignment_ids,
         plan_snapshot=made.snapshot,
     )
-    drafts.publish(made.draft.draft_id)
+    assert drafts.settle_run(thread_id).run.status == "published"
     if decision is not None:
         drafts.record_decision(
             made.draft.draft_id,
@@ -992,10 +998,9 @@ def test_a_plan_composed_with_the_older_heading_keeps_its_words_and_takes_the_la
         drafts = state_of(client).drafts
         old_body = made.body.replace("Not in this evening's plan:", "Waiting for another day:")
         assert old_body != made.body
-        drafts._connection.execute(
-            "UPDATE drafts SET body=? WHERE draft_id=?", (old_body, made.draft_id)
+        changed_by_hand(
+            drafts, "UPDATE drafts SET body=? WHERE draft_id=?", (old_body, made.draft_id)
         )
-        drafts._connection.commit()
         unrelated_update(client)
         hers, family = pages(client)
 
@@ -1101,15 +1106,18 @@ def with_plans(client: TestClient, count: int) -> None:
             verdict=None,
             settled=True,
         )
+        thread_id = f"thread-{number:04d}"
+        deadline = state.monotonic() + RUN_DEADLINE_SECONDS
+        assert state.drafts.admit_run(thread_id, plan_date=evening, deadline_mono=deadline) is None
         state.drafts.record_waiting(
             made.draft.model_copy(update={"created_at": SAME_MOMENT}),
-            thread_id=f"thread-{number:04d}",
+            thread_id=thread_id,
             plan_date=evening,
             outcome="accepted",
             plan_assignment_ids=made.snapshot.assignment_ids,
             plan_snapshot=made.snapshot,
         )
-        state.drafts.publish(made.draft.draft_id)
+        assert state.drafts.settle_run(thread_id).run.status == "published"
         if number % 3 == 0:
             state.drafts.record_decision(
                 made.draft.draft_id,
@@ -1121,6 +1129,9 @@ def with_plans(client: TestClient, count: int) -> None:
 
 @pytest.mark.parametrize("page", [HER_PAGE, "/parent"])
 def test_current_facts_add_no_statement_at_any_size(page: str, tmp_path: pathlib.Path) -> None:
+    """The same statements at every size. Each call to the drafts store sets the file's busy
+    timeout before its one read: two calls on her page, today's plan and the household's
+    newest run, and three on the family page."""
     costs = []
     for count in (1, 20, 200):
         folder = tmp_path / str(count)
@@ -1139,9 +1150,10 @@ def test_current_facts_add_no_statement_at_any_size(page: str, tmp_path: pathlib
                 state.drafts._connection.set_trace_callback(None)
         assert shown.status_code == 200
         assert sum("FROM date_claims" in statement for statement in on_record) == 1
-        costs.append((len(on_record), len(on_drafts)))
+        costs.append((len(on_record), [statement.split()[0] for statement in on_drafts]))
 
-    assert costs == [(11, 1 if page == HER_PAGE else 2)] * 3
+    calls = 2 if page == HER_PAGE else 3
+    assert costs == [(11, ["PRAGMA", "SELECT"] * calls)] * 3
 
 
 @pytest.mark.parametrize("page", [HER_PAGE, "/parent"])

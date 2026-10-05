@@ -2,14 +2,18 @@
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """One process serves a household, and the process says so by holding its files.
 
-The drafts file and the saved-state file are shared state, and the rules that
-keep them consistent, the decision lock, the set of runs in flight, and the
-sweep, live in one process's memory. A second process over the same files
-would keep none of them: it could take back a draft whose run the first
-process is still running, or clear a thread the first is about to pause. So a
-process claims the household at startup by taking an exclusive lock on a file
-beside the drafts file, holds it for as long as it runs, and a second process
-is refused with a sentence naming the file, before it opens anything.
+The drafts file and the saved-state file are shared state, and what keeps them
+consistent lives in one process: the decision lock and the sweep are held in
+its memory, the work it detaches, such as a plan graph still unwinding or a
+run's ending, goes on in its own threads and event loop, and each run's
+deadline is an instant on its monotonic clock. A second process over the same
+files would share none of it: its start would end a run the first is still
+running as interrupted, its sweep could then clear that run's thread while the
+first still writes to it, and it would weigh the first's deadlines against its
+own clock. So a process claims the household at startup by taking an exclusive
+lock on a file beside the drafts file, holds it for as long as it runs, and a
+second process is refused with a sentence naming the file, before it opens
+anything.
 
 The lock is the operating system's, so a process that dies releases it, and
 nothing stale has to be cleaned up by hand. Both files that make up the

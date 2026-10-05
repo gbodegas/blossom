@@ -41,6 +41,7 @@ from tests.support import (
     SITTINGS_WINDOW,
     accepting,
     browser,
+    changed_by_hand,
     composed_plan,
     fixture_clock,
     fixture_week_plan,
@@ -48,6 +49,7 @@ from tests.support import (
     planned,
     report,
     scripted_graphs,
+    settled_run,
     state_of,
     two_sittings,
     walkthrough,
@@ -83,10 +85,13 @@ def test_the_family_page_shows_one_reading_of_its_drafts_whatever_lands_meanwhil
                 return
             landed.append(lands)
             if lands == "a publication":
-                drafts.record_waiting(
-                    later, thread_id="t-later", plan_date=date(2026, 8, 20), outcome="accepted"
+                settled_run(
+                    drafts,
+                    later,
+                    thread_id="t-later",
+                    plan_date=date(2026, 8, 20),
+                    outcome="accepted",
                 )
-                drafts.publish(later.draft_id)
             else:
                 drafts.record_decision(
                     first.draft_id,
@@ -140,7 +145,8 @@ def test_the_family_page_holds_while_a_second_connection_publishes_and_decides(
         try:
             together.wait(10)
             for n, draft_id in enumerate(ids):
-                other.record_waiting(
+                settled_run(
+                    other,
                     Draft(
                         draft_id=draft_id,
                         body=f"Plan {n}",
@@ -150,7 +156,6 @@ def test_the_family_page_holds_while_a_second_connection_publishes_and_decides(
                     plan_date=date(2026, 8, 20 + n % 3),
                     outcome="accepted",
                 )
-                other.publish(draft_id)
                 if n % 2:
                     other.record_decision(
                         draft_id,
@@ -314,11 +319,11 @@ def test_a_plan_cut_short_inside_its_snapshot_falls_back_to_the_saved_text() -> 
         saved = json.loads(record.plan_snapshot)
         assert saved["plan"]["blocks"] == []
         del saved["plan"]["blocks"]
-        drafts._connection.execute(
+        changed_by_hand(
+            drafts,
             "UPDATE drafts SET plan_snapshot=? WHERE draft_id=?",
             (json.dumps(saved), record.draft_id),
         )
-        drafts._connection.commit()
         before = drafts.get(record.draft_id)
         hers = client.get(HER_PAGE, headers=PAGE_HEADERS)
         family = client.get("/parent", headers=PAGE_HEADERS)
@@ -355,10 +360,11 @@ def test_a_snapshot_that_is_not_whole_falls_back_to_the_saved_text_on_both_pages
                 if fault == "every time aware" or index == 0:
                     block["starts_at"] += "+00:00"
                     block["ends_at"] += "+00:00"
-        drafts._connection.execute(
-            "UPDATE drafts SET plan_snapshot=? WHERE draft_id=?", (json.dumps(saved), bad.draft_id)
+        changed_by_hand(
+            drafts,
+            "UPDATE drafts SET plan_snapshot=? WHERE draft_id=?",
+            (json.dumps(saved), bad.draft_id),
         )
-        drafts._connection.commit()
         report(client, ESSAY_ID, "done")
         before = (drafts.get(good.draft_id), drafts.get(bad.draft_id))
         hers = client.get(HER_PAGE, headers=PAGE_HEADERS)
