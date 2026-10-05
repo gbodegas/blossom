@@ -10,8 +10,11 @@ client that ignores the environment, carries no provider-side tools, and
 refuses to exist without a key.
 """
 
+import ast
 import dataclasses
 import os
+import pathlib
+import re
 from collections.abc import Iterator
 
 import pytest
@@ -19,15 +22,18 @@ from fastapi.testclient import TestClient
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic._client_utils import _get_default_httpx_client
 from langchain_core.callbacks.manager import CallbackManager
+from langchain_core.messages import HumanMessage
 from langchain_core.tracers.context import tracing_v2_enabled
 from langsmith import utils as langsmith_utils
 from pydantic import SecretStr
 
+from blossom import anthropic_client
 from blossom.anthropic_client import (
     ENDPOINT,
     MAX_TOKENS,
     MODEL,
     TIMEOUT_SECONDS,
+    Effort,
     ModelUnavailable,
     chat_model,
 )
@@ -189,6 +195,62 @@ def test_the_client_carries_no_provider_side_tools_and_pins_its_limits() -> None
     assert model.max_retries == 2
     assert model._client.max_retries == 2
     assert model._client.timeout == TIMEOUT_SECONDS
+
+
+def test_the_guides_name_the_model_the_client_asks_for() -> None:
+    """The architecture notes and the developer guide name the model the code calls, and
+    no other."""
+    assert MODEL == "claude-opus-5-5"
+    root = pathlib.Path(__file__).parents[1]
+    for guide in ("docs/architecture.md", "docs/development.md"):
+        text = (root / guide).read_text(encoding="utf-8")
+        assert set(re.findall(r"`(claude-opus-[0-9-]+)`", text)) == {MODEL}, guide
+
+
+INTEGRATION_FALLBACK = 4_096
+"""What the pinned integration sends for a model it has no profile for."""
+
+
+@pytest.mark.parametrize("effort", ["high", "medium"], ids=["planner", "critic"])
+def test_each_role_sends_the_cap_rather_than_the_integration_fallback(effort: Effort) -> None:
+    model = chat_model(settings_with_key(), effort=effort)
+    payload = model._get_request_payload([HumanMessage("Plan the evening for Wren.")])
+    unpinned = ChatAnthropic(
+        model_name=MODEL, api_key=SecretStr("sk-test-value"), stop=None, timeout=None
+    )
+
+    assert payload["max_tokens"] == MAX_TOKENS == 16_000
+    assert unpinned.max_tokens == INTEGRATION_FALLBACK
+
+
+def cap_notes() -> dict[str, str]:
+    """The module's notes and the cap's own docstring, as the source holds them."""
+    tree = ast.parse(pathlib.Path(anthropic_client.__file__).read_text(encoding="utf-8"))
+    notes = {"module": ast.get_docstring(tree) or ""}
+    for statement, after in zip(tree.body, tree.body[1:], strict=False):
+        named = statement.target if isinstance(statement, ast.AnnAssign) else None
+        if isinstance(named, ast.Name) and named.id == "MAX_TOKENS":
+            assert isinstance(after, ast.Expr)
+            assert isinstance(after.value, ast.Constant)
+            notes["MAX_TOKENS"] = str(after.value.value)
+    return notes
+
+
+def where_model(where: str) -> str:
+    """How each note names the model it has no profile for."""
+    return f"``{MODEL}``" if where == "module" else "this model"
+
+
+@pytest.mark.parametrize("where", ["module", "MAX_TOKENS"])
+def test_the_notes_on_the_cap_name_the_fallback_and_the_model_maximum(where: str) -> None:
+    """Both notes give the fallback the pinned integration sends and the model's own limit."""
+    text = " ".join(cap_notes()[where].split())
+
+    assert f"no profile for {where_model(where)}" in text
+    assert f"fallback of {INTEGRATION_FALLBACK:,}" in text
+    assert re.search(r"\bmodel\b[^,;.]*\b128,000\b", text), text
+    assert "fallback of 128,000" not in text
+    assert re.search(r"\bmodel\b[^,;.]*\b4,096\b", text) is None, text
 
 
 def test_the_key_never_appears_in_the_client_repr() -> None:

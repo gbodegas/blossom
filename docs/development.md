@@ -254,7 +254,7 @@ variable left in the shell still names whatever it named.
 Copy `.env.example` to `.env` if there is no `.env` yet, put an Anthropic API
 key in `ANTHROPIC_API_KEY`, start the app with `.env` loaded, by the README's
 launch block or `--env-file .env` with uv, and use "Plan today" on her page
-or "Plan it" on the parent's page. The model is `claude-opus-5`, at high
+or "Plan it" on the parent's page. The model is `claude-opus-5-5`, at high
 effort for the planner and medium for the critic, with each answer capped at
 16,000 tokens.
 The endpoint is fixed in code, so no shell variable can change where a prompt

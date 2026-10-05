@@ -18,8 +18,10 @@ at. Here the key comes from ``Settings``, the endpoint is the public API, and
 the HTTP clients are built in this file with environment trust switched off,
 so no variable in a shell can change where a prompt is sent or which
 certificates the connection trusts. Two defaults that would surprise are
-pinned as well: the integration takes ``max_tokens`` from the model profile,
-which is 128,000 for ``claude-opus-5``, and sends requests with no timeout.
+pinned as well. The integration takes ``max_tokens`` from its model profile,
+and the pinned release has no profile for ``claude-opus-5-5``, so it would
+send its fallback of 4,096, well below the model's own limit of 128,000. It
+also sends requests with no timeout.
 
 Nothing here binds a tool, names a server-side tool, or lists a beta. Tools
 reach a model only through ``blossom.agent`` and its boundary; a provider-run
@@ -36,7 +38,7 @@ from pydantic import SecretStr
 
 from blossom.settings import Settings
 
-MODEL: Final = "claude-opus-5"
+MODEL: Final = "claude-opus-5-5"
 """One model for every role. Depth is tuned per role with ``effort`` rather
 than with a second, cheaper model, which Anthropic suggests measuring against
 before adding."""
@@ -46,8 +48,9 @@ ENDPOINT: Final = "https://api.anthropic.com"
 a prompt is sent."""
 
 MAX_TOKENS: Final = 16_000
-"""Room for a plan or a verdict with adaptive thinking, far below the profile
-default of 128,000 that would otherwise apply."""
+"""Room for a plan or a verdict with adaptive thinking. Left unset, the pinned
+integration would send its fallback of 4,096, since it has no profile for this
+model; the model itself allows up to 128,000."""
 
 TIMEOUT_SECONDS: Final = 120.0
 """Per request. The web app awaits these calls, so a hung request must fail
