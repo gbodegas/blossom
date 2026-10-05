@@ -29,6 +29,7 @@ from blossom.heuristic_relevance import Criterion, CriterionFinding, CriticVerdi
 from blossom.intake import identity
 from blossom.noticing import read_week
 from blossom.plans import DailyPlan, Deferral, PlanBlock
+from blossom.reconciliation import SourceChannel
 from blossom.routes import parent as parent_routes
 from blossom.routes import runs as runs_module
 from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
@@ -46,6 +47,7 @@ from tests.support import (
     fixture_settings,
     forgetful_fixture_plan,
     ok,
+    record,
     settled_run,
     state_of,
     store_of,
@@ -454,6 +456,35 @@ def test_a_date_problem_for_a_later_evening_is_said_against_that_evening() -> No
     assert "is due 2026-08-20, before the evening being planned" in page
     assert "already passed" not in page
     assert "before this evening" not in page
+
+
+def test_a_family_press_that_ends_on_a_date_problem_keeps_the_plan_buttons_words() -> None:
+    """Work whose only date is the day before the evening: the press returns to the family
+    page, which says the date problem, and its plan button keeps its own words, since
+    planning again can't fix a date."""
+    quiz = Assignment(
+        assignment_id="assignment-map-quiz",
+        course="Geography",
+        title="Map quiz",
+        due_date=None,
+        dependencies=[],
+        reported_submission_status="not_started",
+    )
+    with browser() as client:
+        state = state_of(client)
+        state.project_state.upsert_assignments([quiz])
+        state.project_state.record_claims(
+            quiz.assignment_id, [record(SourceChannel.LMS, "2026-08-18")]
+        )
+        posted = client.post("/parent/actions/plan", data={"plan_date": PLAN_DATE.isoformat()})
+        page = client.get("/parent").text
+        ended = state.drafts.runs_without_a_draft()
+
+    assert posted.status_code == 303
+    assert [run.outcome for run in ended] == ["date_problem"]
+    assert "A due date on record comes before the evening being planned" in page
+    assert '<button type="submit" class="primary">Plan it</button>' in page
+    assert "Try again" not in page
 
 
 def test_a_waiting_draft_for_a_past_evening_is_never_told_to_plan_again(

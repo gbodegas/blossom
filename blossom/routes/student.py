@@ -78,6 +78,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import URL
 
 from blossom.agent.runs import Unfinished, bounded
+from blossom.agent.steps import DATE_PROBLEM
 from blossom.agent.steps import NOTHING_TO_SCHEDULE as NOTHING_TO_SCHEDULE_OUTCOME
 from blossom.anthropic_client import model_configured
 from blossom.assignment_status import AssignmentStatus, statuses_for
@@ -168,7 +169,13 @@ from blossom.school_instructions import InstructionsStanding
 from blossom.settings import CALENDAR_MARGIN
 from blossom.stores.captures import NamedCaptures
 from blossom.stores.catch_up import ChoiceMade, ChoiceNotSaved, NotOnRecord
-from blossom.stores.drafts import INTERRUPTED, OVERTAKEN, STORE_WAIT_SECONDS, DraftRecord
+from blossom.stores.drafts import (
+    INTERRUPTED,
+    OVERTAKEN,
+    SETTLE_GRACE_SECONDS,
+    STORE_WAIT_SECONDS,
+    DraftRecord,
+)
 from blossom.stores.help_requests import (
     HELP_RECENT_DAYS,
     NOTE_MAX_LENGTH,
@@ -384,12 +391,13 @@ safe."""
 class PlanFailure:
     """A plan press that ended without a plan, for the line that says so: each assignment the
     run named for a date that already passed, by its title and the address of its dates, the
-    link to where a run named by the answer stands, and whether its outcome is unconfirmed,
-    which the plan button doesn't answer with Try again."""
+    link to where a run named by the answer stands, and whether another press may help, which
+    the plan button then offers as Try again: never after an unconfirmed outcome or a date
+    problem, which planning again can't fix."""
 
     checks: tuple[tuple[str, str], ...] = ()
     run: RunCheck | None = None
-    unconfirmed: bool = False
+    try_again: bool = True
 
 
 UPDATE_NOT_SAVED: Final = "Update not saved"
@@ -1077,8 +1085,9 @@ async def make_todays_plan(
     its run's id, to check at ``plans/runs/{run_id}``; a plan not saved and a
     run that couldn't start are 503s that say her updates are saved, in the
     reader's words. The plan answered is the record its publication returned,
-    read for the reader on a worker thread; when that reading doesn't finish in
-    time, the plan stands published and the 201 names its run instead.
+    read for the reader on a worker thread by the run's deadline and its settle
+    grace; when that reading doesn't finish in time, or no time is left, the plan
+    stands published and the 201 names its run instead.
     """
     budget = graphs.budget()
     today = state.clock.today()
@@ -1117,13 +1126,18 @@ async def make_todays_plan(
         )
     record = made.record
     reader: Reader = "family" if parent else "student"
-    try:
-        return await bounded(partial(plan_view, state, record, reader), STORE_WAIT_SECONDS)
-    except Exception as error:
-        if not isinstance(error, Unfinished):
-            logger.warning("the plan of run %s could not be read: %s", record.thread_id, error)
-        published = PublishedRunView(run_id=record.thread_id, plan_date=record.plan_date)
-        return JSONResponse(published.model_dump(mode="json"), status_code=status.HTTP_201_CREATED)
+    # The reading has what is left of the deadline and its grace, and at most the store's wait.
+    left = budget.seconds - budget.elapsed() + SETTLE_GRACE_SECONDS
+    if left > 0:
+        try:
+            return await bounded(
+                partial(plan_view, state, record, reader), min(left, STORE_WAIT_SECONDS)
+            )
+        except Exception as error:
+            if not isinstance(error, Unfinished):
+                logger.warning("the plan of run %s could not be read: %s", record.thread_id, error)
+    published = PublishedRunView(run_id=record.thread_id, plan_date=record.plan_date)
+    return JSONResponse(published.model_dump(mode="json"), status_code=status.HTTP_201_CREATED)
 
 
 @router.get("/plans/runs/{run_id}", response_model=RunStatusView)
@@ -1901,7 +1915,7 @@ def student_page(
     brought her here, and then that top line takes the focus; a visit by address
     asks for none. ``plan_failure`` is a plan press that ended without a plan: the
     top line then links to her homework, and to any assignment it names, and the plan
-    button offers to try again. ``help_form`` is her Ask for
+    button offers to try again when another press may help. ``help_form`` is her Ask for
     help form as a refusal shows it again, beside the form; ``help_marker`` is what the
     address says a help form did, checked against the page's one reading of her requests;
     and ``help_problem`` is what a press in the Help section could not do, said there. Each
@@ -3447,7 +3461,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
         return await not_made(
             f"{UNCONFIRMED} {saved_sentence(parent=parent)}",
             status.HTTP_202_ACCEPTED,
-            PlanFailure(run=run_check(PAGE, unconfirmed.run_id, CHECK_AGAIN), unconfirmed=True),
+            PlanFailure(run=run_check(PAGE, unconfirmed.run_id, CHECK_AGAIN), try_again=False),
         )
     except HTTPException as error:
         return await not_made(f"Blossom could not make a plan: {error.detail}", error.status_code)
@@ -3476,7 +3490,8 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
                         details_href(work.assignment_id, fragment=EVIDENCE, return_to="week"),
                     )
                     for work in run.past_due
-                )
+                ),
+                try_again=run.outcome != DATE_PROBLEM,
             ),
         )
     return sent_in_place(f"{PAGE}?show_plan=1", kept)

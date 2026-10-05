@@ -4,6 +4,7 @@
 answer keeps, publication only by ``settle_run``, and an answer that matches the record."""
 
 import asyncio
+import json
 import pathlib
 import sqlite3
 import threading
@@ -21,6 +22,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from langchain_core.messages import BaseMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from starlette.requests import Request
 
 from blossom.agent.graph import Ask, ModelAnswer, PlanState, plan_graph_for
 from blossom.agent.retention import SavedThread, reviewable, saved_thread, sweep_saved_state
@@ -43,6 +45,7 @@ from blossom.routes.runs import (
     AlreadyPlanning,
     CouldNotStart,
     NotSaved,
+    PlanGraphs,
     PlanMade,
     Unconfirmed,
     make_plan,
@@ -723,6 +726,92 @@ def test_a_publication_authorized_in_time_that_commits_inside_the_grace_is_repor
     assert timing.response_seconds is not None
     assert timing.response_seconds > RUN_DEADLINE_SECONDS
     assert not timing.unconfirmed
+
+
+def her_json_press() -> Request:
+    """Her ``POST /student/plans`` with the sign-in off, for her route called on a loop the
+    test drives."""
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "root_path": "",
+            "path": "/student/plans",
+            "query_string": b"",
+            "headers": [],
+        }
+    )
+
+
+@pytest.mark.parametrize("spent", ["while it is read", "before it is read"])
+def test_her_json_answer_to_a_plan_published_inside_the_grace_comes_by_the_graces_end(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, spent: str
+) -> None:
+    """The settle's commit starts half a second past the deadline, inside the grace. With her
+    plan's reading held, or the grace spent before it is read, her JSON route answers 201
+    naming the published run by the deadline plus the grace, and reads nothing once the
+    grace is spent."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    graces_end = fake.now + RUN_DEADLINE_SECONDS + SETTLE_GRACE_SECONDS
+    graphs = PlanGraphs(build=lambda: accepted_graph(state), may_start=True, budget=fake.budget)
+    reading = threading.Event()
+    release = threading.Event()
+    planned = make_plan
+
+    def held(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        reading.set()
+        assert release.wait(30)
+
+    async def then_spent(*args: Any, **kwargs: Any) -> PlanMade:  # noqa: ANN401
+        made = await planned(*args, **kwargs)
+        fake.advance(graces_end - fake.now)
+        return made
+
+    monkeypatch.setattr(student_routes, "plan_view", held)
+    if spent == "before it is read":
+        monkeypatch.setattr(student_routes, "make_plan", then_spent)
+    try:
+        calls = settles_then(state, lambda: fake.advance(RUN_DEADLINE_SECONDS + 0.5))
+
+        async def scenario() -> tuple[Any, float]:
+            pressed = asyncio.ensure_future(
+                student_routes.make_todays_plan(her_json_press(), state, graphs)
+            )
+            if spent == "while it is read":
+                assert await asyncio.to_thread(reading.wait, 5)
+                fake.advance(graces_end - fake.now)
+            ends = time.monotonic() + 3
+            while not pressed.done() and time.monotonic() < ends:
+                await asyncio.to_thread(time.sleep, 0.01)
+            answered_at = fake.now
+            release.set()
+            assert pressed.done(), "no answer by the deadline plus the grace"
+            await settled_down(state)
+            return pressed.result(), answered_at
+
+        answer, answered_at = fake.run(scenario())
+        run = state.drafts.latest_run()
+        latest = state.drafts.latest_for(PLAN_DATE)
+    finally:
+        release.set()
+        state.close()
+
+    assert calls == [1]
+    assert run is not None
+    assert run.status == "published"
+    assert latest is not None
+    assert latest.thread_id == run.run_id
+    assert answer.status_code == 201
+    assert json.loads(answer.body) == {
+        "run_id": run.run_id,
+        "plan_date": PLAN_DATE.isoformat(),
+        "status": "published",
+    }
+    assert answered_at <= graces_end
+    assert reading.is_set() == (spent == "while it is read")
 
 
 def test_a_publication_that_commits_past_the_grace_is_unconfirmed_then_found_published(

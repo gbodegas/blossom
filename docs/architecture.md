@@ -938,8 +938,10 @@ plan hasn't changed only when the read-back found the run still running with the
 evening's plan in place. Couldn't start reads "Blossom couldn't start a plan
 this time. Try again in a moment." on every plan route, a failed read of the
 week before any run is admitted included. An unconfirmed answer links "Check again."
-and invites no other press, so her plan button keeps its own label; it reads
-"Try again" only after an answer that does. On both pages each of these answers
+and invites no other press, and planning again can't fix a date problem, so after
+either her plan button keeps its own label; it reads "Try again" only after an
+answer that does invite another press, and the family page's button always reads
+"Plan it". On both pages each of these answers
 adds that her homework updates are saved, "Your homework updates are saved." to
 her and "Her homework updates are saved." to a parent, who after an interrupted
 run also reads "Family review shows what happened." Her JSON route's 503s for

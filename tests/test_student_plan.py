@@ -832,8 +832,8 @@ schedule it or put it off in time."""
 
 
 TRY_AGAIN = '<button type="submit" class="primary" aria-describedby="plan-scope">Try again</button>'
-"""The plan button after a press that made no plan, described by the line that says what a
-plan is made from."""
+"""The plan button after a press that made no plan and that another press may put right,
+described by the line that says what a plan is made from."""
 
 
 def answer(
@@ -909,6 +909,8 @@ def test_each_way_a_run_ends_without_a_plan_is_said_with_a_way_forward() -> None
 
 
 def test_work_dated_before_today_is_named_with_a_link_to_its_dates_and_no_model_is_asked() -> None:
+    """The work is named with a link to its dates, no model is asked, and the plan button
+    keeps its own words, since planning again can't fix a date."""
     planners: list[Scripted[DailyPlan]] = []
     with browser() as client:
         state = state_of(client)
@@ -933,7 +935,11 @@ def test_work_dated_before_today_is_named_with_a_link_to_its_dates_and_no_model_
         "Check the dates for Map quiz.</a>"
     ) in line
     assert '<a href="#title-assignment-science-fair-proposal">See homework.</a>' in line
-    assert TRY_AGAIN in page
+    assert TRY_AGAIN not in page
+    assert (
+        '<button type="submit" class="primary" aria-describedby="plan-scope">Plan today</button>'
+        in page
+    )
     assert planners[-1].calls == 0
     assert [run.outcome for run in ended] == ["date_problem"]
 
