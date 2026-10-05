@@ -18,7 +18,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from typing import Annotated, Final
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
 import pytest
 from fastapi import Depends, Response
@@ -90,8 +90,10 @@ from tests.support import (
     Scripted,
     a_row,
     accepting,
+    as_served,
     browser,
     card_for,
+    client_for,
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
@@ -99,6 +101,7 @@ from tests.support import (
     hidden,
     human_text,
     landing_in,
+    lands_on,
     main_of,
     ok,
     refusing,
@@ -511,7 +514,7 @@ SET_BY_THE_SCRIPT: Final = re.compile(
     r"(?<![\w-])(fresh|seen)(?![\w-])|\[\s*class\s*[~|^$*]?=|\[\s*aria-hidden", re.IGNORECASE
 )
 
-SCRIPT: Final = "f88eafb0e4b0918664251c734e65d3e0eee6b0a321007e340d8691eb0106af5b"
+SCRIPT: Final = "0d11bb7da668bb542c894726eb563da8d45f1a809e85189ea633d2191c853d48"
 """The SHA-256 of blossom.js as checked in a browser: any line of it can reach the petal."""
 
 LIFECYCLE: Final = (
@@ -561,6 +564,70 @@ def test_the_petal_opens_only_where_the_script_can_hold_it_still_later() -> None
         "blossom.js changed; check a new Done and a cached Back in a browser with scripts on, "
         "off and blocked, then pin its new hash"
     )
+
+
+PLACE_NAMED: Final = """  function placeNamed() {
+    var fragment = location.hash.slice(1);
+    if (!fragment) {
+      return null;
+    }
+    var named = document.getElementById(fragment);
+    if (named) {
+      return named;
+    }
+    var kept = fragment.replace(/%(?![0-9A-Fa-f]{2})/g, "%25");
+    try {
+      return document.getElementById(decodeURIComponent(kept));
+    } catch (error) {
+      return null;
+    }
+  }"""
+"""How the script finds the place a page fetched again lands on, as a browser does: the
+fragment as written, then with its escapes undone, keeping a percent sign that starts none."""
+
+
+@pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])
+@pytest.mark.parametrize("surface", ["week", "details"])
+@pytest.mark.parametrize(
+    "name",
+    ["unit/3 part?b#c", "unit%2F3", "half 50%", "ensayo-ñandú", "plain-essay"],
+    ids=["slash, space, ? and #", "an escape written out", "a percent sign", "not ASCII", "plain"],
+)
+def test_a_done_lands_on_its_result_by_the_fragment_as_written(
+    tmp_path: pathlib.Path, signed_in: bool, surface: str, name: str
+) -> None:
+    """The result line's id is the fragment as written, escapes and all, so a refresh or a
+    Back that fetches the page again finds it before trying the fragment decoded."""
+    action = student_routes.report_actions(name)[0]
+    device = client_for(signed_in_household(tmp_path)) if signed_in else browser()
+    with as_served(device) as client:
+        if signed_in:
+            client.post("/sign-in", data={"passphrase": HERS})
+        store_of(client).upsert_assignments(
+            [a_row(name, "Odd").model_copy(update={"due_date": PLAN_DATE})]
+        )
+        if surface == "week":
+            form = card_for(client.get(PAGE, headers=PAGE_HEADERS).text, name)
+        else:
+            opened = f"/student/assignments/{segment(name)}?return_to=week&week={WEEK}"
+            form = client.get(opened, headers=PAGE_HEADERS).text
+        answer = client.post(
+            action,
+            data={**form_fields(form, action), "status": "done", "note": ""},
+            headers=PAGE_HEADERS,
+        )
+        landed = redirected(client, answer).text
+    fragment = urlsplit(answer.headers["location"]).fragment
+    script = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.js").read_text(encoding="utf-8")
+
+    assert fragment == f"update-result-{segment(name)}"
+    assert lands_on(landed, answer.headers["location"]) == (
+        f'<p class="note update-result" role="status" id="{fragment}" tabindex="-1">'
+    )
+    if unquote(fragment) != fragment:
+        assert f'id="{unquote(fragment)}"' not in landed
+    assert script.count(PLACE_NAMED) == 1
+    assert script.index(PLACE_NAMED) < script.index("  var named = placeNamed();")
 
 
 @pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])

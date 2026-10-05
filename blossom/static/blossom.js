@@ -117,9 +117,20 @@
     ? performance.getEntriesByType("navigation")[0]
     : null;
   var shownAgain = Boolean(arrival) && (arrival.type === "back_forward" || arrival.type === "reload");
+  /* The element the address names, looked up as a browser does: the fragment as written,
+     then with its escapes undone, where a percent sign that starts no escape is kept. */
   function placeNamed() {
+    var fragment = location.hash.slice(1);
+    if (!fragment) {
+      return null;
+    }
+    var named = document.getElementById(fragment);
+    if (named) {
+      return named;
+    }
+    var kept = fragment.replace(/%(?![0-9A-Fa-f]{2})/g, "%25");
     try {
-      return location.hash ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
+      return document.getElementById(decodeURIComponent(kept));
     } catch (error) {
       return null;
     }
