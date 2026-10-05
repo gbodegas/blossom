@@ -35,6 +35,8 @@ from blossom.routes.student import (
     UPDATE_ALREADY_SAVED,
     UPDATE_SAVED,
     UPDATE_UNDONE,
+    WELL_DONE,
+    done_cookie,
     place_key,
 )
 from tests.support import (
@@ -54,10 +56,13 @@ from tests.support import (
     browser,
     form_fields,
     hidden,
+    landing_in,
     report,
+    reported,
     school_said,
     signed_in_household,
     state_of,
+    store_of,
     walkthrough,
 )
 
@@ -74,6 +79,8 @@ def save(client: TestClient, page: str, status: str | None, note: str = "", **ov
 
 
 DETAILS_ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
+MET = f'<span class="well-done"><span class="petal" aria-hidden="true"></span>{WELL_DONE}</span>'
+"""The petal and the words a new Done is met with, ahead of what the save did."""
 
 
 # ------------------------------------------------------------- the page
@@ -302,11 +309,12 @@ def test_she_saves_changes_and_undoes_on_the_details_and_comes_back_to_them() ->
     }
     assert saved.status_code == 303
     assert saved.headers["location"] == (
-        f"{DETAILS}?said=saved&return_to=today#update-result-{ESSAY_ID}"
+        f"{DETAILS}?said=saved&return_to=today&landing={landing_in(saved.headers['location'])}"
+        f"#update-result-{ESSAY_ID}"
     )
     assert (
         f'<p class="note update-result" role="status" id="update-result-{ESSAY_ID}" '
-        f'tabindex="-1">{UPDATE_SAVED} <a href="/student/due-this-week?show_plan=1'
+        f'tabindex="-1">{MET} {UPDATE_SAVED} <a href="/student/due-this-week?show_plan=1'
         '#todays-plan">Back to today&#39;s plan</a></p>'
     ) in after
     assert after.count("Back to today&#39;s plan</a>") == 2
@@ -332,6 +340,100 @@ def test_she_saves_changes_and_undoes_on_the_details_and_comes_back_to_them() ->
         ("undo", None),
     ]
     assert events[0].note == "Both parts.\nOn paper."
+
+
+def change_on_the_details(client: TestClient, page: str) -> str:
+    """The details with the update form open, as their Change button opens it."""
+    fields = form_fields(page, f"{DETAILS}#update-or-turn-in")
+    return client.get(DETAILS, params=fields, headers=PAGE_HEADERS).text
+
+
+def test_a_new_done_saved_on_the_details_is_met_once_and_nothing_else_is() -> None:
+    """A save on the details that makes the work Done over a Not yet comes back to a new
+    landing whose cookie, for the details alone, says so: that page meets the update with
+    the petal and its words in the result line, is kept by no cache, and clears the cookie.
+    A refresh of it, Not yet, a new note while Done, the same press again, an Undo back to
+    Done, a refused save and a save from a page that has moved on meet no petal."""
+    opening = f"{DETAILS}?return_to=week&week={FIXTURE_WEEK}"
+    with browser() as client:
+        first = client.get(opening, headers=PAGE_HEADERS).text
+        not_yet = save(client, first, "not_yet")
+        not_yet_page = client.get(not_yet.headers["location"], headers=PAGE_HEADERS).text
+        done = save(client, change_on_the_details(client, not_yet_page), "done")
+        landed = client.get(done.headers["location"], headers=PAGE_HEADERS)
+        again = client.get(done.headers["location"], headers=PAGE_HEADERS)
+        editor = change_on_the_details(client, landed.text)
+        noted = save(client, editor, "done", "Both parts.")
+        noted_page = client.get(noted.headers["location"], headers=PAGE_HEADERS).text
+        same = save(client, editor, "done", "Both parts.")
+        same_page = client.get(same.headers["location"], headers=PAGE_HEADERS).text
+        undo = client.post(
+            f"{DETAILS_ACTIONS}/undo-report",
+            data=form_fields(noted_page, f"{DETAILS_ACTIONS}/undo-report"),
+            headers=PAGE_HEADERS,
+        )
+        undone_page = client.get(undo.headers["location"], headers=PAGE_HEADERS).text
+        stale_editor = change_on_the_details(client, undone_page)
+        unchosen = save(client, stale_editor, None)
+        reported(store_of(client), "not_yet")
+        stale = save(client, stale_editor, "done", "Again.")
+
+    landing = landing_in(done.headers["location"])
+    assert "landing=" not in not_yet.headers["location"]
+    assert done.headers["location"] == (
+        f"{DETAILS}?said=saved&return_to=week&week={FIXTURE_WEEK}&landing={landing}"
+        f"#update-result-{ESSAY_ID}"
+    )
+    left = done.headers["set-cookie"]
+    assert left.startswith(f"{done_cookie(landing)}=n:{place_key(ESSAY_ID)};")
+    for part in ("HttpOnly", "Max-Age=60", "Path=/student/assignments", "SameSite=lax"):
+        assert part in left, part
+    assert (
+        f'<p class="note update-result" role="status" id="update-result-{ESSAY_ID}" '
+        f'tabindex="-1">{MET} {UPDATE_SAVED} '
+    ) in landed.text
+    assert landed.text.count('class="petal"') == 1
+    assert landed.headers["cache-control"] == "no-store"
+    assert landed.headers["set-cookie"].startswith(f'{done_cookie(landing)}=""; ')
+    assert "Path=/student/assignments" in landed.headers["set-cookie"]
+    assert UPDATE_SAVED in again.text
+    assert "cache-control" not in again.headers
+    assert "landing=" not in noted.headers["location"]
+    assert "said=same" in same.headers["location"]
+    assert UPDATE_ALREADY_SAVED in same_page
+    assert UPDATE_UNDONE in undone_page
+    assert "Your update: Done" in undone_page
+    assert unchosen.status_code == 422
+    assert stale.status_code == 409
+    for page in (not_yet_page, again.text, noted_page, same_page, undone_page):
+        assert WELL_DONE not in page
+        assert 'class="petal"' not in page
+    for answer in (unchosen, stale):
+        assert WELL_DONE not in answer.text
+        assert "set-cookie" not in answer.headers
+
+
+def test_a_parent_who_opens_the_details_her_new_done_landed_on_sees_no_petal(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A parent signed in on her device who opens the details address her new Done was
+    answered with, while its cookie still waits, reads what stands with no petal."""
+    settings = signed_in_household(tmp_path)
+    with TestClient(create_app(settings), follow_redirects=False, headers=SAME_ORIGIN) as client:
+        client.post("/sign-in", data={"passphrase": HERS})
+        first = client.get(f"{DETAILS}?return_to=week", headers=PAGE_HEADERS).text
+        done = save(client, first, "done")
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        theirs = client.get(done.headers["location"], headers=PAGE_HEADERS)
+
+    landing = landing_in(done.headers["location"])
+    assert theirs.status_code == 200
+    assert theirs.headers["set-cookie"].startswith(f'{done_cookie(landing)}=""; ')
+    assert "Student update: Done" in theirs.text
+    assert UPDATE_SAVED not in theirs.text
+    assert WELL_DONE not in theirs.text
+    assert 'class="petal"' not in theirs.text
 
 
 def test_a_refused_save_is_shown_on_the_details_with_what_she_typed() -> None:

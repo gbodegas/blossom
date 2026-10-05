@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Gerardo Bodegas Martinez
 /*
-  Two enhancements, and both pages work with this file absent.
+  Four enhancements, and every page works with this file absent.
 
   The first is for the forms that make a plan: say that a plan is being made,
   keep saying so as the minutes pass, and let one press be one request from
@@ -19,6 +19,15 @@
   its Save button is disabled, and a type changed on a card or a question
   answered hands the button back, as "Save changes"; the card's own line
   says what the changed type does.
+
+  The fourth is for a page shown again: by the browser's back/forward cache,
+  from a copy it kept, or fetched again by Back, Forward or a refresh. A new
+  Done the page met her with was seen when it first arrived, so it is retired
+  where it stands: the petal holds still, its words are left out of what a
+  reader hears, nothing moves and the focus stays. The petal opens on its
+  first arrival only once this file has marked it. A page fetched again lands
+  on the place its address names, as a link there does, instead of an offset
+  kept from the page before her week regrouped.
 */
 (function () {
   "use strict";
@@ -97,13 +106,76 @@
     });
   });
 
+  function retire() {
+    Array.prototype.forEach.call(document.querySelectorAll(".well-done"), function (met) {
+      met.classList.add("seen");
+      met.setAttribute("aria-hidden", "true");
+    });
+  }
+
+  var arrival = window.performance && performance.getEntriesByType
+    ? performance.getEntriesByType("navigation")[0]
+    : null;
+  var shownAgain = Boolean(arrival) && (arrival.type === "back_forward" || arrival.type === "reload");
+  /* The element the address names, looked up as a browser does: the fragment as written,
+     then with its escapes undone, where a percent sign that starts no escape is kept. */
+  function placeNamed() {
+    var fragment = location.hash.slice(1);
+    if (!fragment) {
+      return null;
+    }
+    var named = document.getElementById(fragment);
+    if (named) {
+      return named;
+    }
+    var kept = fragment.replace(/%(?![0-9A-Fa-f]{2})/g, "%25");
+    try {
+      return document.getElementById(decodeURIComponent(kept));
+    } catch (error) {
+      return null;
+    }
+  }
+
+  var named = placeNamed();
+  var landing = named && named.hasAttribute("tabindex") ? named : null;
+
+  function land() {
+    var fold = landing.closest("details");
+    if (fold) {
+      fold.open = true;
+    }
+    landing.scrollIntoView({block: "start"});
+    landing.focus({preventScroll: true});
+  }
+
+  if (landing && "scrollRestoration" in history) {
+    /* A return to this page lands on its place, not on an offset kept from before. */
+    history.scrollRestoration = "manual";
+  }
+  if (shownAgain) {
+    retire();
+    if (landing) {
+      land();
+      window.addEventListener("load", land);
+    }
+  }
+
   /* A page restored from the browser's cache comes back as it was left, busy
-     included; the controls are handed back. */
+     included; the controls are handed back, and a Done it met her with is retired. */
   window.addEventListener("pageshow", function (event) {
     if (event.persisted) {
       Array.prototype.forEach.call(forms, reset);
+      retire();
     }
   });
+
+  /* The petal opens only now that a restoration can retire it; where this file
+     can't run, the stylesheet keeps it still. */
+  if (!shownAgain) {
+    Array.prototype.forEach.call(document.querySelectorAll(".well-done"), function (met) {
+      met.classList.add("fresh");
+    });
+  }
 
   var review = document.querySelector("form.review-form");
   if (review) {
