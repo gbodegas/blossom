@@ -35,6 +35,7 @@ from blossom.routes.student import (
     UPDATE_ALREADY_SAVED,
     UPDATE_SAVED,
     UPDATE_UNDONE,
+    WELL_DONE,
 )
 from blossom.to_turn_in import BACK_ON_THE_LIST, TURNED_IN_FROM_THE_LIST
 from tests.support import (
@@ -262,8 +263,11 @@ def test_a_result_is_said_to_her_and_a_parent_reads_what_stands(
         assert landed == ""
         assert "update-result" not in page
         assert left.said not in words(page)
+        assert WELL_DONE not in words(page)
         assert left.theirs in words(page if left.about is None else card_for(page, left.about))
     else:
         assert landed.startswith('<p class="note update-result" role="status" id="'), landed
         start = page.index(landed)
-        assert words(page[start : page.index("</p>", start)]).startswith(left.said)
+        line = words(page[start : page.index("</p>", start)])
+        # A save that has just made the work Done is met with a few words ahead of the result.
+        assert line.removeprefix(f"{WELL_DONE} ").startswith(left.said)

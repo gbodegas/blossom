@@ -178,6 +178,149 @@ def test_normalizing_a_note_keeps_her_words_and_their_breaks() -> None:
     assert len(normalize_note("x" * NOTE_MAX_LENGTH) or "") == NOTE_MAX_LENGTH
 
 
+def test_a_save_carries_the_status_that_stood_before_it(tmp_path: pathlib.Path) -> None:
+    """Each appended report names what stood before it: nothing for her first, the earlier
+    report's status after a report, and what an undo restored after an undo, nothing when
+    the undo restored no report."""
+    store = a_store(tmp_path / "blossom.sqlite3")
+    try:
+        first = store.report_status(
+            PRACTICE, "not_yet", None, expected_head=None, now=NOW, today=TODAY
+        )
+        assert isinstance(first, Saved)
+        done = store.report_status(
+            PRACTICE, "done", None, expected_head=first.report.report_id, now=NOW, today=TODAY
+        )
+        assert isinstance(done, Saved)
+        noted = store.report_status(
+            PRACTICE,
+            "done",
+            "All of it.",
+            expected_head=done.report.report_id,
+            now=NOW,
+            today=TODAY,
+        )
+        assert isinstance(noted, Saved)
+        undone = store.undo_report(PRACTICE, noted.report.report_id, now=NOW, today=TODAY)
+        assert isinstance(undone, Undone)
+        after_undo = store.report_status(
+            PRACTICE, "not_yet", None, expected_head=undone.report.report_id, now=NOW, today=TODAY
+        )
+        assert isinstance(after_undo, Saved)
+        only = store.report_status(LOG, "done", None, expected_head=None, now=NOW, today=TODAY)
+        assert isinstance(only, Saved)
+        to_nothing = store.undo_report(LOG, only.report.report_id, now=NOW, today=TODAY)
+        assert isinstance(to_nothing, Undone)
+        over_nothing = store.report_status(
+            LOG, "done", None, expected_head=to_nothing.report.report_id, now=NOW, today=TODAY
+        )
+        assert isinstance(over_nothing, Saved)
+    finally:
+        store.close()
+
+    assert [item.before for item in (first, done, noted, after_undo)] == [
+        None,
+        "not_yet",
+        "done",
+        "done",
+    ]
+    assert (only.before, over_nothing.before) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("words", "outcome"), [(None, AlreadySaved), ("Other words.", Conflict)], ids=["same", "other"]
+)
+def test_two_done_saves_from_one_page_at_once_make_one_new_done(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    words: str | None,
+    outcome: type[AlreadySaved | Conflict],
+) -> None:
+    """Two devices press Done on the same blank card together. The first holds the writer
+    from before it reads what stands until it appends; the second waits for the writer, then
+    reads the Done the first wrote. One save is new, over nothing, and the other is already
+    saved, or refused when its words differ, so only one can be met as a new Done."""
+    path = tmp_path / "blossom.sqlite3"
+    first = a_store(path)
+    second = ProjectStateStore.open(path, fixture_clock())
+    read_the_head = threading.Event()
+    let_go = threading.Event()
+    whole_head = first._head_locked
+
+    def head_then_wait(assignment_id: str) -> StudentReport | None:
+        head = whole_head(assignment_id)
+        read_the_head.set()
+        assert let_go.wait(5)
+        return head
+
+    monkeypatch.setattr(first, "_head_locked", head_then_wait)
+    outcomes: dict[str, object] = {}
+
+    def press(name: str, store: ProjectStateStore, note: str | None) -> None:
+        outcomes[name] = store.report_status(
+            PRACTICE, "done", note, expected_head=None, now=NOW, today=TODAY
+        )
+
+    one = threading.Thread(target=press, args=("first", first, None))
+    other = threading.Thread(target=press, args=("second", second, words))
+    try:
+        one.start()
+        assert read_the_head.wait(5)
+        other.start()
+        other.join(0.3)
+        waited = other.is_alive()
+        let_go.set()
+        one.join(5)
+        other.join(10)
+        kept = first.student_reports(PRACTICE)
+    finally:
+        let_go.set()
+        first.close()
+        second.close()
+
+    assert waited
+    saved = outcomes["first"]
+    assert isinstance(saved, Saved)
+    assert saved.before is None
+    assert isinstance(outcomes["second"], outcome)
+    assert [item.status for item in kept] == ["done"]
+
+
+def test_done_saves_racing_from_one_page_find_one_new_done_each_time(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Released together, twenty times over, two connections each press Done on the same
+    blank card: every time exactly one save is new over nothing and the other is already
+    saved."""
+
+    def press(store: ProjectStateStore, ready: threading.Barrier, outcomes: list[object]) -> None:
+        ready.wait(timeout=10)
+        outcomes.append(
+            store.report_status(PRACTICE, "done", None, expected_head=None, now=NOW, today=TODAY)
+        )
+
+    for turn in range(20):
+        path = tmp_path / f"race-{turn}.sqlite3"
+        stores = [a_store(path), ProjectStateStore.open(path, fixture_clock())]
+        together = threading.Barrier(2)
+        outcomes: list[object] = []
+        threads = [
+            threading.Thread(target=press, args=(store, together, outcomes)) for store in stores
+        ]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(15)
+        finally:
+            for store in stores:
+                store.close()
+        new = [item for item in outcomes if isinstance(item, Saved)]
+        assert len(new) == 1, turn
+        assert new[0].before is None
+        assert sum(isinstance(item, AlreadySaved) for item in outcomes) == 1, turn
+
+
 def test_a_page_whose_head_has_moved_on_conflicts_and_writes_nothing(
     tmp_path: pathlib.Path,
 ) -> None:

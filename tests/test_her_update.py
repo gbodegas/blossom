@@ -8,15 +8,17 @@ undo restores, who may make an update, what it means for the plan, and what
 the family page makes of her word beside the school's.
 """
 
+import hashlib
 import json
 import pathlib
 import re
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from typing import Annotated, Final
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
 import pytest
 from fastapi import Depends, Response
@@ -58,7 +60,9 @@ from blossom.routes.student import (
     UPDATE_ALREADY_SAVED,
     UPDATE_SAVED,
     UPDATE_UNDONE,
+    WELL_DONE,
     InPlace,
+    done_cookie,
     landing_cookie,
     leave_in_place,
     place_key,
@@ -86,8 +90,10 @@ from tests.support import (
     Scripted,
     a_row,
     accepting,
+    as_served,
     browser,
     card_for,
+    client_for,
     fixture_clock,
     fixture_settings,
     fixture_week_plan,
@@ -96,6 +102,7 @@ from tests.support import (
     hidden,
     human_text,
     landing_in,
+    lands_on,
     main_of,
     ok,
     refusing,
@@ -107,6 +114,7 @@ from tests.support import (
     signed_in_household,
     state_of,
     store_of,
+    style_rules,
     week_card,
     whole_form,
 )
@@ -185,11 +193,31 @@ def her_device(tmp_path: pathlib.Path, signed_in: bool) -> Iterator[TestClient]:
         yield client
 
 
+PETAL: Final = '<span class="petal" aria-hidden="true"></span>'
+"""The small petal a new Done is met with: a shape alone, which a reader who hears the page
+is not given, since the words beside it say it."""
+
+
+def met_with(said: str, assignment_id: str) -> str:
+    """The result line of a save that has just made a card Done: the petal and the words ahead
+    of what the save did, in the one line that takes the focus and announces."""
+    return (
+        f'<p class="note update-result" role="status" id="update-result-{assignment_id}" '
+        f'tabindex="-1"><span class="well-done">{PETAL}{WELL_DONE}</span> {said}</p>'
+    )
+
+
+def change_form(page: str, assignment_id: str) -> dict[str, str]:
+    """The fields a card's Change button sends, as a browser sends them."""
+    return form_fields(card_for(page, assignment_id), f"{PAGE}#update-choice-{assignment_id}")
+
+
 def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit() -> None:
     """The card offers Done and Not yet as buttons, a note behind a fold, and the page says
-    once what Done means. Saved, the card says so where it was, shows the update with its day
-    and what it means, offers Change and Undo, and keeps its place among the active cards for
-    the rest of the visit. A refresh or a return folds it under the active cards with a count."""
+    once what Done means. Saved, the card says so where it was, with a petal for the new Done,
+    shows the update with its day and what it means, offers Change and Undo, and keeps its
+    place among the active cards for the rest of the visit. A refresh or a return folds it
+    under the active cards with a count."""
     with browser() as client:
         before = client.get(PAGE, headers=PAGE_HEADERS).text
         card = card_for(before, ESSAY)
@@ -220,16 +248,15 @@ def test_a_card_offers_her_update_and_a_done_stays_in_place_until_her_next_visit
         f"{PAGE}?week={WEEK}&saved={ESSAY}&landing={landing}#update-result-{ESSAY}"
     )
     cookie = left_for_the_page(answer)
-    assert cookie.startswith(f"{landing_cookie(landing)}=a:{place_key(ESSAY)};")
+    assert cookie.startswith(
+        f"{landing_cookie(landing)}=n:{place_key(ESSAY)}|a:{place_key(ESSAY)};"
+    )
     for part in ("HttpOnly", "Max-Age=60", f"Path={PAGE}", "SameSite=lax"):
         assert part in cookie, part
     assert placed(landed.text) == placed(before)
     assert FOLD not in main_of(landed.text)
     saved = card_for(landed.text, ESSAY)
-    assert (
-        f'<p class="note update-result" role="status" id="update-result-{ESSAY}" '
-        f'tabindex="-1">{UPDATE_SAVED}</p>'
-    ) in saved
+    assert met_with(UPDATE_SAVED, ESSAY) in saved
     assert '<span class="pill">Your update: Done</span>' in saved
     assert "Reported August 19" in saved
     assert "You wrote: <q>Turned in on paper.\nTwo pages.</q>" in saved
@@ -321,6 +348,290 @@ def test_a_cards_own_buttons_keep_the_cards_in_place_until_her_next_visit() -> N
     assert placed(returned)[1] == [ESSAY]
 
 
+def test_a_done_she_has_just_made_is_met_once_in_the_line_that_says_it_is_saved() -> None:
+    """A press that makes a card Done, its own button over no update or over a Not yet, or
+    the form Change opens, is met on the page that answers it with a petal and a few words in
+    the result line, which still takes the focus and is the one line that announces. The
+    words are in the markup and the petal is a shape beside them, so with motion reduced the
+    same line stands still. That page is kept by no cache, so a step through history asks
+    again, and a refresh of that address or a return shows no petal."""
+    with browser() as client:
+        reported(store_of(client), "not_yet", LOG)
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        answer = quick_press(client, before, ESSAY, "done")
+        arrived = redirected(client, answer)
+        landed = arrived.text
+        again = client.get(answer.headers["location"], headers=PAGE_HEADERS)
+        refreshed = again.text
+        returned = client.get(PAGE, headers=PAGE_HEADERS).text
+        not_yet = redirected(client, quick_press(client, returned, SYLLABUS, "not_yet")).text
+        then_done = redirected(client, quick_press(client, not_yet, SYLLABUS, "done")).text
+        change = client.get(PAGE, params=change_form(then_done, LOG), headers=PAGE_HEADERS)
+        opened = redirected(client, change).text
+        from_change = save(client, card_for(opened, LOG), "done", assignment_id=LOG)
+        changed = redirected(client, from_change).text
+
+    card = card_for(landed, ESSAY)
+    assert met_with(UPDATE_SAVED, ESSAY) in card
+    assert arrived.headers["cache-control"] == "no-store"
+    assert "cache-control" not in again.headers
+    assert card.count('role="status"') == 1
+    assert "aria-live" not in card
+    assert landed.count(PETAL) == 1
+    assert placed(landed) == placed(before)
+    assert '<span class="pill">Your update: Done</span>' in card
+    assert UPDATE_SAVED in card_for(refreshed, ESSAY)
+    for page in (refreshed, returned, not_yet):
+        assert WELL_DONE not in page
+        assert 'class="petal"' not in page
+    assert met_with(UPDATE_SAVED, SYLLABUS) in card_for(then_done, SYLLABUS)
+    assert "<legend>Your update<span" in card_for(opened, LOG)
+    assert met_with(UPDATE_SAVED, LOG) in card_for(changed, LOG)
+    for page in (then_done, changed):
+        assert page.count(PETAL) == 1
+
+
+def test_no_petal_meets_a_save_that_makes_no_new_done() -> None:
+    """Not yet, a new note on a card already Done, the same press sent twice, an Undo that
+    puts a Done back, a press refused for a missing choice, and a press from a page that has
+    moved on each say what they did, and none is met with the petal or its words."""
+    with browser() as client:
+        first = client.get(PAGE, headers=PAGE_HEADERS).text
+        not_yet = redirected(client, quick_press(client, first, SYLLABUS, "not_yet")).text
+        quick_press(client, first, ESSAY, "done")
+        again = redirected(client, quick_press(client, first, ESSAY, "done")).text
+        opened = client.get(PAGE, params=change_form(again, ESSAY), headers=PAGE_HEADERS)
+        noted = save(client, card_for(redirected(client, opened).text, ESSAY), "done", "All of it.")
+        noted_page = redirected(client, noted).text
+        reopened = client.get(PAGE, params=change_form(noted_page, ESSAY), headers=PAGE_HEADERS)
+        changed = save(client, card_for(redirected(client, reopened).text, ESSAY), "not_yet")
+        undo = form_fields(card_for(redirected(client, changed).text, ESSAY), UNDO_ESSAY)
+        undone = redirected(client, client.post(UNDO_ESSAY, data=undo, headers=PAGE_HEADERS)).text
+        to_choose = client.get(PAGE, params=change_form(undone, SYLLABUS), headers=PAGE_HEADERS)
+        unchosen = save(
+            client,
+            card_for(redirected(client, to_choose).text, SYLLABUS),
+            None,
+            assignment_id=SYLLABUS,
+        )
+        reported(store_of(client), "not_yet", LOG)
+        stale = quick_press(client, not_yet, LOG, "done")
+        history = state_of(client).project_state.student_reports(ESSAY)
+
+    assert UPDATE_SAVED in card_for(not_yet, SYLLABUS)
+    assert UPDATE_ALREADY_SAVED in card_for(again, ESSAY)
+    assert UPDATE_SAVED in card_for(noted_page, ESSAY)
+    assert "You wrote: <q>All of it.</q>" in card_for(noted_page, ESSAY)
+    assert UPDATE_UNDONE in card_for(undone, ESSAY)
+    assert '<span class="pill">Your update: Done</span>' in card_for(undone, ESSAY)
+    assert [(item.operation, item.status) for item in history] == [
+        ("report", "done"),
+        ("report", "done"),
+        ("report", "not_yet"),
+        ("undo", "done"),
+    ]
+    assert unchosen.status_code == 422
+    assert CHOOSE_ONE in card_for(unchosen.text, SYLLABUS)
+    assert stale.status_code == 409
+    assert SAVED_ELSEWHERE in card_for(stale.text, LOG)
+    for page in (not_yet, again, noted_page, undone, unchosen.text, stale.text):
+        assert WELL_DONE not in page
+        assert 'class="petal"' not in page
+
+
+def test_two_presses_of_one_done_at_once_meet_one_petal() -> None:
+    """The same Done form sent twice at the same moment, as two devices or a double press
+    send it: one press is saved as new and its landing meets the petal; the other is already
+    saved and its landing meets none."""
+    with browser() as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        together = threading.Barrier(2)
+        answers: list[Answer] = []
+
+        def press() -> None:
+            together.wait(timeout=10)
+            answers.append(quick_press(client, before, ESSAY, "done"))
+
+        presses = [threading.Thread(target=press) for _ in range(2)]
+        for thread in presses:
+            thread.start()
+        for thread in presses:
+            thread.join(30)
+        first, second = sorted(answers, key=lambda answer: "&same=" in answer.headers["location"])
+        new = redirected(client, first).text
+        repeat = redirected(client, second).text
+        history = state_of(client).project_state.student_reports(ESSAY)
+
+    assert f"&saved={ESSAY}&" in first.headers["location"]
+    assert f"&same={ESSAY}&" in second.headers["location"]
+    assert met_with(UPDATE_SAVED, ESSAY) in card_for(new, ESSAY)
+    assert UPDATE_ALREADY_SAVED in card_for(repeat, ESSAY)
+    assert WELL_DONE not in repeat
+    assert 'class="petal"' not in repeat
+    assert [item.status for item in history] == ["done"]
+
+
+def test_a_parent_who_opens_the_page_her_new_done_landed_on_sees_no_petal(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A parent signed in on her device who opens the address her new Done was answered with,
+    while the cookie it left still waits, reads what stands in the parent's words, with no
+    result line, no petal and no words for her."""
+    with her_device(tmp_path, signed_in=True) as client:
+        before = client.get(PAGE, headers=PAGE_HEADERS).text
+        answer = quick_press(client, before, ESSAY, "done")
+        client.post("/sign-out")
+        client.post("/sign-in", data={"passphrase": THEIRS})
+        as_parent = client.get(answer.headers["location"], headers=PAGE_HEADERS)
+
+    landing = landing_in(answer.headers["location"])
+    assert as_parent.status_code == 200
+    assert left_for_the_page(as_parent).startswith(f'{landing_cookie(landing)}=""; ')
+    card = card_for(as_parent.text, ESSAY)
+    assert '<span class="pill">Student update: Done</span>' in card
+    assert UPDATE_SAVED not in card
+    assert WELL_DONE not in as_parent.text
+    assert 'class="petal"' not in as_parent.text
+
+
+MOTION: Final = [
+    (".dots i", None, "animation", "pulse 1.2s ease-in-out infinite", False),
+    (".dots i:nth-child(2)", None, "animation-delay", "0.2s", False),
+    (".dots i:nth-child(3)", None, "animation-delay", "0.4s", False),
+    (".dots i", "(prefers-reduced-motion: reduce)", "animation", "none", False),
+    (
+        ".update-result .fresh .petal",
+        "(prefers-reduced-motion: no-preference)",
+        "animation",
+        "bloom 0.8s ease-out",
+        False,
+    ),
+    (".update-result .seen .petal", None, "animation", "none", False),
+]
+"""Every animation the stylesheet declares, prefixed or not, and every declaration on the
+classes and attributes the script sets, in source order: the petal opens only once the script
+has marked it fresh, and a later showing holds it still."""
+
+SET_BY_THE_SCRIPT: Final = re.compile(
+    r"(?<![\w-])(fresh|seen)(?![\w-])|\[\s*class\s*[~|^$*]?=|\[\s*aria-hidden", re.IGNORECASE
+)
+
+SCRIPT: Final = "0d11bb7da668bb542c894726eb563da8d45f1a809e85189ea633d2191c853d48"
+"""The SHA-256 of blossom.js as checked in a browser: any line of it can reach the petal."""
+
+LIFECYCLE: Final = (
+    """  function retire() {
+    Array.prototype.forEach.call(document.querySelectorAll(".well-done"), function (met) {
+      met.classList.add("seen");
+      met.setAttribute("aria-hidden", "true");
+    });
+  }""",
+    "  var shownAgain = Boolean(arrival) && "
+    '(arrival.type === "back_forward" || arrival.type === "reload");',
+    """  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) {
+      Array.prototype.forEach.call(forms, reset);
+      retire();
+    }
+  });""",
+    """  if (!shownAgain) {
+    Array.prototype.forEach.call(document.querySelectorAll(".well-done"), function (met) {
+      met.classList.add("fresh");
+    });
+  }""",
+)
+"""How the script retires a petal shown again, in order, and the one place it lets a petal
+open: a first arrival, after it listens for a restoration."""
+
+
+def test_the_petal_opens_only_where_the_script_can_hold_it_still_later() -> None:
+    """Without scripts, or with them blocked, a page restored from the browser's cache would
+    resume an animation nothing can retire, so the server sends a still petal and only the
+    script, after it listens for a restoration, marks it to open."""
+    css = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.css").read_text(encoding="utf-8")
+    moving = [
+        (rule.selectors, rule.media, name, value, important)
+        for rule in style_rules(css)
+        for name, value, important in rule.declarations
+        if "animation" in name or SET_BY_THE_SCRIPT.search(rule.selectors)
+    ]
+    script = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.js").read_text(encoding="utf-8")
+
+    assert "\\" not in css, "an escape in the stylesheet; check a new Done in a browser"
+    assert moving == MOTION, "the rules that move the petal changed; check a new Done in a browser"
+    assert [script.count(block) for block in LIFECYCLE] == [1, 1, 1, 1]
+    places = [script.index(block) for block in LIFECYCLE]
+    assert places == sorted(places)
+    assert hashlib.sha256(script.encode()).hexdigest() == SCRIPT, (
+        "blossom.js changed; check a new Done and a cached Back in a browser with scripts on, "
+        "off and blocked, then pin its new hash"
+    )
+
+
+PLACE_NAMED: Final = """  function placeNamed() {
+    var fragment = location.hash.slice(1);
+    if (!fragment) {
+      return null;
+    }
+    var named = document.getElementById(fragment);
+    if (named) {
+      return named;
+    }
+    var kept = fragment.replace(/%(?![0-9A-Fa-f]{2})/g, "%25");
+    try {
+      return document.getElementById(decodeURIComponent(kept));
+    } catch (error) {
+      return null;
+    }
+  }"""
+"""How the script finds the place a page fetched again lands on, as a browser does: the
+fragment as written, then with its escapes undone, keeping a percent sign that starts none."""
+
+
+@pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])
+@pytest.mark.parametrize("surface", ["week", "details"])
+@pytest.mark.parametrize(
+    "name",
+    ["unit/3 part?b#c", "unit%2F3", "half 50%", "ensayo-ñandú", "plain-essay"],
+    ids=["slash, space, ? and #", "an escape written out", "a percent sign", "not ASCII", "plain"],
+)
+def test_a_done_lands_on_its_result_by_the_fragment_as_written(
+    tmp_path: pathlib.Path, signed_in: bool, surface: str, name: str
+) -> None:
+    """The result line's id is the fragment as written, escapes and all, so a refresh or a
+    Back that fetches the page again finds it before trying the fragment decoded."""
+    action = student_routes.report_actions(name)[0]
+    device = client_for(signed_in_household(tmp_path)) if signed_in else browser()
+    with as_served(device) as client:
+        if signed_in:
+            client.post("/sign-in", data={"passphrase": HERS})
+        store_of(client).upsert_assignments(
+            [a_row(name, "Odd").model_copy(update={"due_date": PLAN_DATE})]
+        )
+        if surface == "week":
+            form = card_for(client.get(PAGE, headers=PAGE_HEADERS).text, name)
+        else:
+            opened = f"/student/assignments/{segment(name)}?return_to=week&week={WEEK}"
+            form = client.get(opened, headers=PAGE_HEADERS).text
+        answer = client.post(
+            action,
+            data={**form_fields(form, action), "status": "done", "note": ""},
+            headers=PAGE_HEADERS,
+        )
+        landed = redirected(client, answer).text
+    fragment = urlsplit(answer.headers["location"]).fragment
+    script = (REPOSITORY_ROOT / "blossom" / "static" / "blossom.js").read_text(encoding="utf-8")
+
+    assert fragment == f"update-result-{segment(name)}"
+    assert lands_on(landed, answer.headers["location"]) == (
+        f'<p class="note update-result" role="status" id="{fragment}" tabindex="-1">'
+    )
+    if unquote(fragment) != fragment:
+        assert f'id="{unquote(fragment)}"' not in landed
+    assert script.count(PLACE_NAMED) == 1
+    assert script.index(PLACE_NAMED) < script.index("  var named = placeNamed();")
+
+
 @pytest.mark.parametrize("signed_in", [False, True], ids=["sign-in off", "signed in"])
 def test_a_visit_from_another_tab_before_a_save_lands_leaves_its_cards_alone(
     tmp_path: pathlib.Path, signed_in: bool
@@ -363,10 +674,14 @@ def test_two_saves_before_either_lands_each_keep_their_own_card_in_place(
     assert landings[ESSAY] != landings[SYLLABUS]
     for name, other in ((ESSAY, SYLLABUS), (SYLLABUS, ESSAY)):
         cookie = landing_cookie(landings[name])
-        assert left_for_the_page(answers[name]).startswith(f"{cookie}=a:{place_key(name)};")
+        assert left_for_the_page(answers[name]).startswith(
+            f"{cookie}=n:{place_key(name)}|a:{place_key(name)};"
+        )
         active, done = placed(landed[name].text)
         assert name in active
         assert done == [other]
+        assert met_with(UPDATE_SAVED, name) in card_for(landed[name].text, name)
+        assert landed[name].text.count(PETAL) == 1
         assert left_for_the_page(landed[name]).startswith(f'{cookie}=""; ')
     assert sorted(placed(returned)[1]) == sorted([ESSAY, SYLLABUS])
 
@@ -850,8 +1165,9 @@ def test_a_press_whose_page_cannot_be_read_keeps_the_cards_in_place(
 
 
 def test_a_press_from_the_details_keeps_no_card_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The details are not her week: a press there leaves no cookie, whatever its form
-    names, when it saves and when its page can't be read."""
+    """The details are not her week: a press there leaves no in-place cookie, whatever its
+    form names, when it saves and when its page can't be read. A new Done there leaves the
+    details' own cookie, which holds its mark and no card."""
     action = student_routes.report_actions(ESSAY)[0]
     named = {"in_place": f"a:{place_key(QUIZ)}"}
     with browser() as client:
@@ -873,7 +1189,8 @@ def test_a_press_from_the_details_keeps_no_card_in_place(monkeypatch: pytest.Mon
     assert saved.status_code == 303
     for answer in (refused, not_undone, saved):
         assert IN_PLACE_COOKIE not in answer.headers.get("set-cookie", "")
-    assert "landing=" not in saved.headers["location"]
+    done_landing = done_cookie(landing_in(saved.headers["location"]))
+    assert saved.headers["set-cookie"].startswith(f"{done_landing}=n:{place_key(ESSAY)};")
     for answer in (refused, not_undone):
         assert "in_place=" not in answer.text
 

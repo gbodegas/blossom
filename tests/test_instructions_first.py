@@ -58,6 +58,7 @@ from tests.support import (
     client_for,
     form_fields,
     homework_from_a_note,
+    landing_in,
     planned,
     school_missing,
     signed_in,
@@ -960,7 +961,10 @@ def test_every_way_back_holds_through_change_keep_save_undo_and_a_conflict(origi
 
     back = "&".join(f"{name}={quote(value, safe='')}" for name, value in carried.items())
     assert saved.status_code == undone.status_code == again.status_code == 303
-    assert saved.headers["location"] == f"{DETAILS}?said=saved&{back}#update-result-{ESSAY_ID}"
+    landing = landing_in(saved.headers["location"])
+    assert saved.headers["location"] == (
+        f"{DETAILS}?said=saved&{back}&landing={landing}#update-result-{ESSAY_ID}"
+    )
     assert undone.headers["location"] == f"{DETAILS}?said=undone&{back}#update-result-{ESSAY_ID}"
     assert unescape(keep.group(1)) == f"{DETAILS}?{back}#update-or-turn-in"
     assert conflict.status_code == 409
