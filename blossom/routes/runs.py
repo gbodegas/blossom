@@ -599,7 +599,9 @@ async def admit(state: ApplicationState, run_id: str, plan_date: date, budget: R
 
     The deadline is the end of the request's budget, on the store's clock. A run
     still running is ``AlreadyPlanning``; an admission that doesn't finish in time,
-    or fails, is ``CouldNotStart``, and leaves no row.
+    or fails, is ``CouldNotStart``. One the route stopped waiting for can still insert
+    its row, since the file's busy wait can overrun its cap on Windows, and that row
+    refuses presses until its own deadline.
     """
     wait = min(budget.remaining(), STORE_WAIT_SECONDS)
     admission = partial(

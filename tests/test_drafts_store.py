@@ -1507,17 +1507,21 @@ def test_a_late_save_for_an_ended_run_writes_nothing_and_the_next_run_publishes(
 
 
 def test_a_save_past_the_deadline_records_the_timeout_first_and_is_refused() -> None:
+    """The run ends ``timed_out`` with the steps the save was given, and no draft is saved."""
     fake = FakeTime()
     store = faked_store(fake)
+    steps = [step("retrieve", 0), step("plan", 1), step("verify", 1)]
     try:
         admitted(store, "plan:x", now=fake, seconds=10)
         fake.now += 10
         with pytest.raises(RunEnded) as refused:
             store.record_waiting(
-                draft(), thread_id="plan:x", plan_date=PLAN_DATE, outcome="accepted"
+                draft(), thread_id="plan:x", plan_date=PLAN_DATE, outcome="accepted", steps=steps
             )
         state = store.latest_run()
         saved = store.get(draft().draft_id)
+        kept = store.steps_for("plan:x")
+        listed = store.runs_without_a_draft()
     finally:
         store.close()
 
@@ -1526,6 +1530,10 @@ def test_a_save_past_the_deadline_records_the_timeout_first_and_is_refused() -> 
     assert state is not None
     assert (state.status, state.reason) == ("ended", TIMED_OUT)
     assert saved is None
+    assert kept == steps
+    assert [(run.thread_id, run.outcome, run.steps) for run in listed] == [
+        ("plan:x", TIMED_OUT, steps)
+    ]
 
 
 def test_a_save_for_a_run_never_admitted_is_refused() -> None:

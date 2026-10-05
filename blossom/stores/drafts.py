@@ -583,8 +583,8 @@ class DraftsStore:
         """Save a draft the moment it exists, before the gate pauses on it, as the record.
 
         Only a running run saves. Past its deadline the run is recorded ``timed_out``
-        first, and the save is refused with ``RunEnded``; a run that is not running
-        is refused the same way, and nothing of the draft is written.
+        with ``steps`` first, and the save is refused with ``RunEnded``; a run that is
+        not running is refused the same way, and nothing of the draft is written.
 
         What is saved is one bundle: the text, the snapshot of the plan as
         data, the assignments the plan speaks about, the fingerprint of what
@@ -641,6 +641,7 @@ class DraftsStore:
             if run is None or run.status != "running":
                 refused = True
             elif run.seconds_left <= 0:
+                self._replace_steps(thread_id, steps)
                 self._end(thread_id, TIMED_OUT)
                 run = self._run_state(thread_id)
                 refused = True

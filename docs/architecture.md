@@ -920,7 +920,8 @@ running; unconfirmed, when the outcome couldn't be read back before the
 deadline or the settle didn't finish within the grace, answered with the run
 ID; already planning, the 409 above; or couldn't start, a 503 when the week's
 read failed or didn't finish, the graph couldn't be built, or the run couldn't
-be admitted in time, with no row written. Only
+be admitted in time. None of these writes a row, except an admission the route
+gave up on, which can still insert one that ends at its own deadline. Only
 `StoreBusy` and `WriterBusy`, which the store raises before any transaction
 begins, confirm a refusal; any other failure of the settle is read back by run
 ID before the deadline, never after it. The record keeps the reason that
@@ -1797,8 +1798,8 @@ values the system records itself, and a thread is cleared with each.
 A draft is saved when it is composed and published when its run settles, and
 the two are different acts. The save is the record: it is written only while
 the run is running and within its deadline, a run past its deadline is
-recorded `timed_out` instead, and a node replayed after a crash saves its text
-again and changes nothing else. Publication is `settle_run` alone, called once
+recorded `timed_out` with its steps instead, and a node replayed after a crash
+saves its text again and changes nothing else. Publication is `settle_run` alone, called once
 by the route that admitted the run, under the decision lock, after any review
 a waiting draft's thread holds that the table never got is recorded, so a
 review that reached the thread is never superseded away with it. In one

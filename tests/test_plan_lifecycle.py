@@ -28,7 +28,7 @@ from starlette.requests import Request
 from blossom.agent.graph import Ask, ModelAnswer, PlanState, plan_graph_for
 from blossom.agent.retention import SavedThread, reviewable, saved_thread, sweep_saved_state
 from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, RunBudget, run_config
-from blossom.agent.steps import RunTiming
+from blossom.agent.steps import RunTiming, StepRecord, step_label, step_sentence
 from blossom.anthropic_client import ServiceBusy, ServiceFailed
 from blossom.app import create_app
 from blossom.dependencies import (
@@ -734,6 +734,65 @@ def test_a_publication_authorized_in_time_that_commits_inside_the_grace_is_repor
     assert timing.response_seconds is not None
     assert timing.response_seconds > RUN_DEADLINE_SECONDS
     assert not timing.unconfirmed
+
+
+def test_a_save_held_past_the_deadline_ends_its_run_timed_out_with_the_steps_compose_made(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Compose has its draft, and the store is held until past the run's deadline, so its save
+    gets the store before the route's ending does: the run ends ``timed_out`` with the steps
+    compose made, and the family page lists the run with them."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    asked = threading.Event()
+    saved = threading.Event()
+    given: list[list[StepRecord]] = []
+    saving = state.drafts.record_waiting
+    ending = state.drafts.end_run
+
+    def held_past_the_deadline(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        given.append(list(kwargs["steps"]))
+        past_the_grace_on_its_loop(fake)
+        asked.wait(5)
+        try:
+            saving(*args, **kwargs)
+        finally:
+            saved.set()
+
+    def after_the_save(run_id: str, **kwargs: Any) -> RunState | None:  # noqa: ANN401
+        asked.set()
+        saved.wait(5)
+        return ending(run_id, **kwargs)
+
+    state.drafts.record_waiting = held_past_the_deadline  # type: ignore[method-assign]
+    state.drafts.end_run = after_the_save  # type: ignore[method-assign]
+    try:
+
+        async def scenario() -> PlanMade:
+            made = await make_plan(accepted_graph(state), PLAN_DATE, state, budget=fake.budget())
+            await settled_down(state)
+            return made
+
+        made = fake.run(scenario())
+        run = state.drafts.run_status(made.view.thread_id)
+        kept = state.drafts.steps_for(made.view.thread_id)
+        ended = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+    with household_files(tmp_path) as client:
+        family = words(client.get("/parent", headers=PAGE_HEADERS).text)
+
+    composed = [(step.node, step.round, step.found) for step in given[0]]
+    assert made.view.outcome == "timed_out"
+    assert run is not None
+    assert (run.status, run.reason) == ("ended", "timed_out")
+    assert [(step.node, step.round, step.found) for step in kept] == composed
+    assert [item.outcome for item in ended] == ["timed_out"]
+    assert [(step.node, step.round, step.found) for step in ended[0].steps] == composed
+    assert {"retrieve", "plan", "verify", "critique"} <= {node for node, _, _ in composed}
+    listed = family.split("Plans that couldn't be made", 1)[1]
+    for step in given[0]:
+        assert words(f"{step_label(step.node, step.round)} {step_sentence(step.found)}") in listed
 
 
 def her_json_press() -> Request:
