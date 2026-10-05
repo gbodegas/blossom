@@ -919,8 +919,8 @@ refused the publication before it began or a read-back found the run still
 running; unconfirmed, when the outcome couldn't be read back before the
 deadline or the settle didn't finish within the grace, answered with the run
 ID; already planning, the 409 above; or couldn't start, a 503 when the week's
-read failed or didn't finish, or the run couldn't be admitted in time, with no
-row written. Only
+read failed or didn't finish, the graph couldn't be built, or the run couldn't
+be admitted in time, with no row written. Only
 `StoreBusy` and `WriterBusy`, which the store raises before any transaction
 begins, confirm a refusal; any other failure of the settle is read back by run
 ID before the deadline, never after it. The record keeps the reason that
@@ -937,7 +937,8 @@ made a plan but couldn't save it. Try again in a moment." and says the current
 plan hasn't changed only when the read-back found the run still running with the
 evening's plan in place. Couldn't start reads "Blossom couldn't start a plan
 this time. Try again in a moment." on every plan route, a failed read of the
-week before any run is admitted included. An unconfirmed answer links "Check again."
+week or a graph that couldn't be built, before any run is admitted, included. An
+unconfirmed answer links "Check again."
 and invites no other press, and planning again can't fix a date problem, so after
 either her plan button keeps its own label; it reads "Try again" only after an
 answer that does invite another press, and the family page's button always reads

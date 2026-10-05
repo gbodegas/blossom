@@ -17,6 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from html import unescape
 from typing import Any, Final
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -30,7 +31,12 @@ from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, RunBudget, run_
 from blossom.agent.steps import RunTiming
 from blossom.anthropic_client import ServiceBusy, ServiceFailed
 from blossom.app import create_app
-from blossom.dependencies import ApplicationState, build_application_state, sweep_aged
+from blossom.dependencies import (
+    STATE_ATTRIBUTE,
+    ApplicationState,
+    build_application_state,
+    sweep_aged,
+)
 from blossom.drafts import Draft
 from blossom.heuristic_relevance import CriticVerdict
 from blossom.noticing import read_week
@@ -59,11 +65,13 @@ from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import (
     SETTLE_GRACE_SECONDS,
     STORE_WAIT_SECONDS,
+    DraftRecord,
     DraftsStore,
     RunState,
     Settled,
     StoreBusy,
 )
+from blossom.stores.household_claim import AnotherProcessHasTheHousehold, claim_household
 from blossom.stores.project_state import Assignment
 from blossom.views import DecisionView, PlanRunView
 from tests.support import (
@@ -2390,6 +2398,143 @@ def test_a_process_stopped_after_the_settle_committed_keeps_the_plan_published_a
     assert decided is not None
     assert (decided.published, decided.decision) == (True, "approved")
     assert saved == {run_id: None, prior.view.thread_id: None}
+
+
+@dataclass
+class StoppedAndStarted:
+    """What a household's app showed across a stop with a settle held at its commit, and the
+    start after it."""
+
+    answer: int
+    body: dict[str, Any]
+    held_at_the_stop: bool
+    stopped_in: float
+    stop_error: Exception | None
+    claimed_after_the_stop: bool
+    checked: dict[str, Any]
+    pressed: int
+    run: RunState | None
+    prior: DraftRecord | None
+
+
+def served(app: Any) -> httpx.AsyncClient:  # noqa: ANN401
+    """A client that reaches ``app`` on the caller's own event loop, as its pages do."""
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver", headers=SAME_ORIGIN
+    )
+
+
+def accepting_graphs(seconds: float = RUN_DEADLINE_SECONDS) -> Callable[..., PlanGraphs]:
+    """Her household's graphs with an accepted plan, each run given ``seconds``."""
+    return model_graphs(
+        lambda: Scripted(ok(fixture_week_plan())),
+        critic,
+        budget=lambda: RunBudget(seconds=seconds),
+    )
+
+
+async def stopped_while_a_settle_holds_the_writer(
+    settings: Settings, *, let_go_after: float
+) -> StoppedAndStarted:
+    """One process: an app over the household's files publishes a plan and approves it, then
+    answers a press whose settle is held at its commit, keeping the drafts store and the file's
+    writer. The app stops through its own lifespan with the settle held, and lets it go
+    ``let_go_after`` seconds into the stop. A new app then starts on the same files, reads the
+    held run, and takes a press."""
+    held = threading.Event()
+    let_go = threading.Timer(let_go_after, held.set)
+
+    def hold() -> None:
+        held.wait(60)
+
+    old = create_app(settings)
+    old.dependency_overrides[plan_graphs] = accepting_graphs()
+    stopping = old.router.lifespan_context(old)
+    await stopping.__aenter__()
+    try:
+        state: ApplicationState = getattr(old.state, STATE_ATTRIBUTE)
+        async with served(old) as client:
+            assert (await client.post("/student/plans")).status_code == 201
+            prior = state.drafts.latest_for(PLAN_DATE)
+            assert prior is not None
+            approval = {"approved": True, "reason": None}
+            approved = await client.post(f"/parent/approvals/{prior.draft_id}", json=approval)
+            assert approved.status_code == 200
+            await settled_down(state)
+            settles_then(state, hold)
+            old.dependency_overrides[plan_graphs] = accepting_graphs(2.0)
+            pressed = await client.post("/student/plans")
+        held_at_the_stop = not held.is_set() and bool(state.detached)
+    except BaseException:
+        held.set()
+        await stopping.__aexit__(None, None, None)
+        raise
+    let_go.start()
+    began = time.monotonic()
+    stop_error: Exception | None = None
+    try:
+        await stopping.__aexit__(None, None, None)
+    except Exception as error:
+        stop_error = error
+    stopped_in = time.monotonic() - began
+    try:
+        claim_household(settings.database_path, settings.checkpoint_path).release()
+    except AnotherProcessHasTheHousehold:
+        claimed = False
+    else:
+        claimed = True
+    run_id = str(pressed.json()["run_id"])
+    new = create_app(settings)
+    new.dependency_overrides[plan_graphs] = accepting_graphs()
+    try:
+        async with new.router.lifespan_context(new):
+            restarted: ApplicationState = getattr(new.state, STATE_ATTRIBUTE)
+            async with served(new) as client:
+                checked = (await client.get(f"/student/plans/runs/{run_id}")).json()
+                second = (await client.post("/student/plans")).status_code
+            await settled_down(restarted)
+            run = restarted.drafts.run_status(run_id)
+            kept = restarted.drafts.get(prior.draft_id)
+    finally:
+        held.set()
+        await asyncio.to_thread(let_go.join, 60)
+    return StoppedAndStarted(
+        answer=pressed.status_code,
+        body=pressed.json(),
+        held_at_the_stop=held_at_the_stop,
+        stopped_in=stopped_in,
+        stop_error=stop_error,
+        claimed_after_the_stop=claimed,
+        checked=checked,
+        pressed=second,
+        run=run,
+        prior=kept,
+    )
+
+
+def test_a_stop_while_a_settle_holds_the_writer_ends_cleanly_and_the_next_start_serves(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Her press is answered unconfirmed while its settle still holds the drafts store and the
+    file's writer at its commit. The app stops through its lifespan with the settle held, and
+    the settle lets go inside the store's wait: the stop closes every store and frees the
+    claim after it, the authorized plan stands published, the prior approval is kept, and the
+    next start serves, finds the run, and publishes a new press."""
+    settings = household_settings(tmp_path)
+    seen = asyncio.run(stopped_while_a_settle_holds_the_writer(settings, let_go_after=1.0))
+
+    assert seen.answer == 202
+    assert seen.body["status"] == "unconfirmed"
+    assert seen.held_at_the_stop
+    assert seen.stop_error is None
+    assert 0.9 <= seen.stopped_in < STORE_WAIT_SECONDS
+    assert seen.claimed_after_the_stop
+    assert seen.checked["status"] == "published"
+    assert seen.pressed == 201
+    assert seen.run is not None
+    assert seen.run.status == "published"
+    assert seen.prior is not None
+    assert (seen.prior.published, seen.prior.decision) == (True, "approved")
 
 
 # ------------------------------------------------------------------ her household, held runs

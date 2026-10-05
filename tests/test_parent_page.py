@@ -18,7 +18,7 @@ import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from blossom.agent.graph import plan_graph_for
+from blossom.agent.graph import CompiledPlanGraph, plan_graph_for
 from blossom.agent.runs import GRAPH_VERSION
 from blossom.agent.steps import StepRecord, describe_past_due
 from blossom.app import create_app
@@ -1451,6 +1451,44 @@ def test_a_week_that_cannot_be_read_before_a_family_press_is_a_plan_that_could_n
     monkeypatch.setattr(runs_module, "read_week", unreadable)
     evening = {"plan_date": PLAN_DATE.isoformat()}
     with browser() as client:
+        if route == "/parent/plans":
+            response = client.post(route, json=evening)
+        else:
+            response = client.post(route, data=evening)
+        newest = state_of(client).drafts.latest_run()
+
+    said = (
+        "Blossom couldn't start a plan this time. Try again in a moment. Her homework "
+        "updates are saved."
+    )
+    assert response.status_code == 503
+    if route == "/parent/plans":
+        assert response.json()["detail"] == said
+    else:
+        line = problem_line(response.text)
+        assert said.replace("'", "&#39;") in line
+        assert "Your" not in line
+    assert newest is None
+
+
+@pytest.mark.parametrize("route", ["/parent/plans", "/parent/actions/plan"])
+def test_a_graph_that_cannot_be_built_before_a_family_press_is_a_plan_that_could_not_start(
+    route: str,
+) -> None:
+    """A family press whose plan graph fails to build, before any run is admitted, couldn't
+    start: the JSON route and the plan form answer 503 with the try-again sentence and her
+    updates saved, in a parent's words, and no run is written."""
+
+    def unbuildable() -> CompiledPlanGraph:
+        msg = "the plan graph could not be built"
+        raise RuntimeError(msg)
+
+    def graphs() -> PlanGraphs:
+        return PlanGraphs(build=unbuildable, may_start=True)
+
+    evening = {"plan_date": PLAN_DATE.isoformat()}
+    with browser() as client:
+        client.app.dependency_overrides[plan_graphs] = graphs  # type: ignore[attr-defined]
         if route == "/parent/plans":
             response = client.post(route, json=evening)
         else:

@@ -98,6 +98,8 @@ from blossom.routes.runs import (
     CHECK_AGAIN,
     CHECK_ON_THAT_REQUEST,
     COULD_NOT_START,
+    PLAN_ANSWERS,
+    RUN_STATUS_ANSWERS,
     UNCONFIRMED,
     AlreadyPlanning,
     CouldNotStart,
@@ -109,6 +111,7 @@ from blossom.routes.runs import (
     Unconfirmed,
     already_planning,
     ended_without_a_plan,
+    graph_for_a_run,
     make_plan,
     not_saved,
     refuse_an_empty_run,
@@ -165,7 +168,6 @@ from blossom.views import (
     RunView,
     SchoolStatementView,
     SchoolWordsView,
-    UnconfirmedRunView,
     school_words,
 )
 
@@ -496,7 +498,7 @@ def beyond(evening: date) -> str:
     "/plans",
     response_model=PlanRunView,
     status_code=status.HTTP_201_CREATED,
-    responses={status.HTTP_202_ACCEPTED: {"model": UnconfirmedRunView}},
+    responses=PLAN_ANSWERS,
 )
 async def start_plan(
     request: PlanRequest, state: State, graphs: Graphs
@@ -527,10 +529,11 @@ async def start_plan(
     except CouldNotStart as error:
         raise HTTPException(error.status_code, detail=could_not_start) from None
     require_model(graphs)
-    graph = graphs.build()
     run_id = thread_for(evening)
     try:
-        made = await make_plan(graph, evening, state, budget=budget, run_id=run_id)
+        made = await make_plan(
+            graph_for_a_run(graphs), evening, state, budget=budget, run_id=run_id
+        )
     except AlreadyPlanning as error:
         raise AlreadyPlanning(error.run, parent=True) from None
     except NotSaved as error:
@@ -561,7 +564,7 @@ async def start_plan(
     return made.view
 
 
-@router.get("/plans/runs/{run_id}", response_model=RunStatusView)
+@router.get("/plans/runs/{run_id}", response_model=RunStatusView, responses=RUN_STATUS_ANSWERS)
 async def plan_run(run_id: str, state: State) -> RunStatusView:
     """Where one planning run stands, after ending any run past its deadline."""
     return await run_status_view(state, run_id)
@@ -1399,7 +1402,7 @@ async def plan_from_the_page(
     try:
         await require_work(state, evening, budget)
         require_model(graphs)
-        made = await make_plan(graphs.build(), evening, state, budget=budget)
+        made = await make_plan(graph_for_a_run(graphs), evening, state, budget=budget)
         refuse_an_empty_run(made.view)
     except AlreadyPlanning as error:
         return await not_made(

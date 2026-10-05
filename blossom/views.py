@@ -802,6 +802,33 @@ class RunStatusView(BaseModel):
     """The plan a published run put on the pages."""
 
 
+class ProblemView(BaseModel):
+    """Why a request did not do what it asked: the words an error sends as its ``detail``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: str
+
+
+class AlreadyPlanningView(BaseModel):
+    """The household's run still running that refused a press, and how long to wait for it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    run_id: str
+    plan_date: date
+    seconds_left: int
+
+
+class PlanConflictView(BaseModel):
+    """Why a press made no plan, 409: a sentence, or the run still running that refused it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: str | AlreadyPlanningView
+
+
 class StageView(BaseModel):
     """How long one step of a run took, as a parent reads it."""
 

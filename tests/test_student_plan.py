@@ -15,13 +15,14 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from time import monotonic
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom.agent.graph import MAX_REVISIONS, Ask, ModelAnswer
+from blossom.agent.graph import MAX_REVISIONS, Ask, CompiledPlanGraph, ModelAnswer
 from blossom.agent.runs import MODEL_RETRIES, RUN_DEADLINE_SECONDS
 from blossom.anthropic_client import ServiceBusy, ServiceFailed
 from blossom.app import create_app
@@ -41,6 +42,7 @@ from blossom.routes.runs import (
     AlreadyPlanning,
     CouldNotStart,
     NotSaved,
+    PlanGraphs,
     Unconfirmed,
     already_planning,
     ended_without_a_plan,
@@ -1259,6 +1261,45 @@ def test_a_week_that_cannot_be_read_before_a_press_is_a_plan_that_could_not_star
     assert newest is None
 
 
+@pytest.mark.parametrize("route", ["/student/plans", "/student/actions/plan"])
+@pytest.mark.parametrize("reader", ["her", "a parent"])
+def test_a_graph_that_cannot_be_built_before_a_press_is_a_plan_that_could_not_start(
+    route: str, reader: str, tmp_path: pathlib.Path
+) -> None:
+    """A press whose plan graph fails to build, before any run is admitted, couldn't start:
+    her JSON route and her page answer 503 with the try-again sentence and her updates
+    saved, in the reader's words, and no run is written."""
+
+    def unbuildable() -> CompiledPlanGraph:
+        msg = "the plan graph could not be built"
+        raise RuntimeError(msg)
+
+    def graphs() -> PlanGraphs:
+        return PlanGraphs(build=unbuildable, may_start=True)
+
+    parent = reader == "a parent"
+    client = client_for(signed_in_household(tmp_path)) if parent else browser()
+    client.app.dependency_overrides[plan_graphs] = graphs  # type: ignore[attr-defined]
+    with client:
+        if parent:
+            signed_in(client, THEIRS)
+        response = client.post(route)
+        newest = state_of(client).drafts.latest_run()
+
+    said = (
+        "Blossom couldn't start a plan this time. Try again in a moment. "
+        f"{'Her' if parent else 'Your'} homework updates are saved."
+    )
+    assert response.status_code == 503
+    if route == "/student/plans":
+        assert response.json()["detail"] == said
+    else:
+        line = the_line(response.text)
+        assert str(escape(said)) in line
+        assert ("Your " in line or "your " in line) is not parent
+    assert newest is None
+
+
 def test_the_plan_button_keeps_its_label_when_the_answer_is_unconfirmed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1308,6 +1349,53 @@ def test_the_status_of_a_run_whose_record_cannot_be_read_is_unconfirmed(
     for answer in (hers, family):
         assert answer.status_code == 503
         assert answer.json()["detail"] == "Blossom couldn't confirm that the new plan was saved."
+
+
+def test_the_api_schema_names_the_body_of_each_answer_to_a_press_and_to_a_runs_status() -> None:
+    """Both JSON plan routes and both run status routes declare the body of every answer
+    they give: her 201 is her plan or its published run, and a 409 says why in a sentence or
+    names the run still running."""
+    with browser() as client:
+        api = client.get("/openapi.json").json()
+
+    def named(schema: dict[str, Any]) -> list[str]:
+        return [part["$ref"].rsplit("/", 1)[-1] for part in schema.get("anyOf", [schema])]
+
+    def bodies(path: str, method: str) -> dict[str, list[str]]:
+        answers = api["paths"][path][method]["responses"]
+        return {
+            code: named(answer["content"]["application/json"]["schema"])
+            for code, answer in answers.items()
+        }
+
+    assert bodies("/student/plans", "post") == {
+        "201": ["StudentPlanView", "PublishedRunView"],
+        "202": ["UnconfirmedRunView"],
+        "409": ["PlanConflictView"],
+        "503": ["ProblemView"],
+    }
+    assert bodies("/parent/plans", "post") == {
+        "201": ["PlanRunView"],
+        "202": ["UnconfirmedRunView"],
+        "409": ["PlanConflictView"],
+        "422": ["HTTPValidationError"],
+        "503": ["ProblemView"],
+    }
+    for path in ("/student/plans/runs/{run_id}", "/parent/plans/runs/{run_id}"):
+        assert bodies(path, "get") == {
+            "200": ["RunStatusView"],
+            "404": ["ProblemView"],
+            "422": ["HTTPValidationError"],
+            "503": ["ProblemView"],
+        }
+    schemas = api["components"]["schemas"]
+    conflict = schemas["PlanConflictView"]["properties"]["detail"]["anyOf"]
+    assert conflict[0] == {"type": "string"}
+    assert named(conflict[1]) == ["AlreadyPlanningView"]
+    assert set(schemas["AlreadyPlanningView"]["required"]) == set(
+        AlreadyPlanning(STILL_RUNNING).detail
+    )
+    assert schemas["ProblemView"]["required"] == ["detail"]
 
 
 def test_her_plan_is_answered_by_its_run_when_reading_it_back_does_not_finish(

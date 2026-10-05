@@ -146,6 +146,8 @@ from blossom.routes.runs import (
     CHECK_AGAIN,
     CHECK_ON_THAT_REQUEST,
     COULD_NOT_START,
+    PLAN_ANSWERS,
+    RUN_STATUS_ANSWERS,
     UNCONFIRMED,
     AlreadyPlanning,
     CouldNotStart,
@@ -156,6 +158,7 @@ from blossom.routes.runs import (
     Unconfirmed,
     already_planning,
     ended_without_a_plan,
+    graph_for_a_run,
     make_plan,
     not_saved,
     require_model,
@@ -234,7 +237,6 @@ from blossom.views import (
     StudentAssignmentView,
     StudentDueThisWeekView,
     StudentPlanView,
-    UnconfirmedRunView,
     UpdateHistoryRowView,
     WeekView,
     WorkloadSignalView,
@@ -1067,9 +1069,9 @@ def plan_for_today(state: State) -> StudentPlanView:
 
 @router.post(
     "/plans",
-    response_model=StudentPlanView,
+    response_model=StudentPlanView | PublishedRunView,
     status_code=status.HTTP_201_CREATED,
-    responses={status.HTTP_202_ACCEPTED: {"model": UnconfirmedRunView}},
+    responses=PLAN_ANSWERS,
 )
 async def make_todays_plan(
     request: Request, state: State, graphs: Graphs
@@ -1095,7 +1097,7 @@ async def make_todays_plan(
     try:
         await require_work(state, today, budget)
         require_model(graphs)
-        made = await make_plan(graphs.build(), today, state, budget=budget)
+        made = await make_plan(graph_for_a_run(graphs), today, state, budget=budget)
     except AlreadyPlanning as error:
         raise AlreadyPlanning(error.run, parent=parent) from None
     except NotSaved as error:
@@ -1140,7 +1142,7 @@ async def make_todays_plan(
     return JSONResponse(published.model_dump(mode="json"), status_code=status.HTTP_201_CREATED)
 
 
-@router.get("/plans/runs/{run_id}", response_model=RunStatusView)
+@router.get("/plans/runs/{run_id}", response_model=RunStatusView, responses=RUN_STATUS_ANSWERS)
 async def plan_run(run_id: str, state: State) -> RunStatusView:
     """Where one planning run stands, after ending any run past its deadline."""
     return await run_status_view(state, run_id)
@@ -3442,7 +3444,7 @@ async def plan_from_the_page(request: Request, state: State, graphs: Graphs) -> 
     try:
         await require_work(state, state.clock.today(), budget)
         require_model(graphs)
-        made = await make_plan(graphs.build(), state.clock.today(), state, budget=budget)
+        made = await make_plan(graph_for_a_run(graphs), state.clock.today(), state, budget=budget)
     except AlreadyPlanning as error:
         return await not_made(
             already_planning(error.run, parent=parent),

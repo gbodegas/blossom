@@ -62,7 +62,15 @@ from blossom.stores.drafts import (
     StoreBusy,
     WriterBusy,
 )
-from blossom.views import PastDueView, PlanRunView, RunStatusView, UnconfirmedRunView
+from blossom.views import (
+    AlreadyPlanningView,
+    PastDueView,
+    PlanConflictView,
+    PlanRunView,
+    ProblemView,
+    RunStatusView,
+    UnconfirmedRunView,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,13 +119,13 @@ NOTHING_TO_SCHEDULE: Final = "Nothing to schedule from the work in this planning
 still to do: nothing has been planned, no run has been written, and no model asked."""
 
 COULD_NOT_START: Final = "Blossom couldn't start a plan this time. Try again in a moment."
-"""What a planning route answers, 503, when the week couldn't be read or the run
-couldn't be admitted in time. No run was recorded and no model asked."""
+"""What a planning route answers, 503, when the week couldn't be read, the graph couldn't be
+built, or the run couldn't be admitted in time. No run was recorded and no model asked."""
 
 
 class CouldNotStart(HTTPException):
-    """The week couldn't be read, or the run couldn't be admitted within the wait. Nothing
-    was recorded."""
+    """The week couldn't be read, the graph couldn't be built, or the run couldn't be admitted
+    within the wait. Nothing was recorded."""
 
     def __init__(self) -> None:
         super().__init__(status.HTTP_503_SERVICE_UNAVAILABLE, detail=COULD_NOT_START)
@@ -143,6 +151,16 @@ async def require_work(state: ApplicationState, plan_date: date, budget: RunBudg
         raise CouldNotStart from error
     if not active:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=NOTHING_TO_SCHEDULE)
+
+
+def graph_for_a_run(graphs: PlanGraphs) -> CompiledPlanGraph:
+    """The graph a new run takes, built before the run is admitted; a build that fails is
+    ``CouldNotStart``, since nothing has been recorded."""
+    try:
+        return graphs.build()
+    except Exception as error:
+        logger.exception("the plan graph could not be built")
+        raise CouldNotStart from error
 
 
 def refuse_an_empty_run(run: PlanRunView) -> None:
@@ -286,15 +304,13 @@ class AlreadyPlanning(HTTPException):
     in her words or, with ``parent``, in a parent's."""
 
     def __init__(self, run: RunState, *, parent: bool = False) -> None:
-        super().__init__(
-            status.HTTP_409_CONFLICT,
-            detail={
-                "message": already_planning(run, parent=parent),
-                "run_id": run.run_id,
-                "plan_date": run.plan_date.isoformat(),
-                "seconds_left": seconds_to_wait(run),
-            },
+        refusal = AlreadyPlanningView(
+            message=already_planning(run, parent=parent),
+            run_id=run.run_id,
+            plan_date=run.plan_date,
+            seconds_left=seconds_to_wait(run),
         )
+        super().__init__(status.HTTP_409_CONFLICT, detail=refusal.model_dump(mode="json"))
         self.run = run
 
 
@@ -984,6 +1000,22 @@ async def make_plan(
             if ended is not None and ended.status == "ended":
                 tidy_later(run_id, state)
         raise
+
+
+PLAN_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
+    status.HTTP_202_ACCEPTED: {"model": UnconfirmedRunView},
+    status.HTTP_409_CONFLICT: {"model": PlanConflictView},
+    status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ProblemView},
+}
+"""The bodies a JSON press answers with besides its plan, as both plan routes declare them:
+the run to check, why no plan was made, and why none could be."""
+
+RUN_STATUS_ANSWERS: Final[dict[int | str, dict[str, Any]]] = {
+    status.HTTP_404_NOT_FOUND: {"model": ProblemView},
+    status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ProblemView},
+}
+"""The bodies a run's status answers with besides the run, as both status routes declare
+them: an unknown run, and a record that couldn't be read."""
 
 
 async def run_status_view(state: ApplicationState, run_id: str) -> RunStatusView:

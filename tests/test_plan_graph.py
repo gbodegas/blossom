@@ -2050,6 +2050,43 @@ def test_retries_share_the_runs_time_and_never_start_it_again() -> None:
     assert (ended.timing.model_calls, ended.timing.retries) == (2, 1)
 
 
+def test_a_last_busy_answer_at_the_deadline_is_a_run_that_timed_out() -> None:
+    """The last retry's busy answer comes back exactly at the deadline, with no time left to
+    ask again: the run timed out, in the answer and in the record, not a service failure. The
+    run and its record read the fake clock, and the loop keeps its own."""
+    clock = FakeTime()
+    planner: Spending[DailyPlan] = Spending(
+        clock,
+        (30, ServiceBusy("overloaded")),
+        (30, ServiceBusy("overloaded")),
+        (28.5, ServiceBusy("overloaded")),
+    )
+    state = build_application_state(
+        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()), InMemorySaver(), clock
+    )
+    budget = clock.budget()
+    try:
+        view = asyncio.run(
+            plan_evening(
+                plan_graph_for(state, planner=planner, critic=Scripted()),
+                PLAN_DATE,
+                state,
+                budget=budget,
+            )
+        )
+        (ended,) = state.drafts.runs_without_a_draft()
+    finally:
+        state.close()
+
+    assert budget.elapsed() == RUN_DEADLINE_SECONDS
+    assert view.outcome == "timed_out"
+    assert planner.calls == MODEL_RETRIES + 1
+    assert ended.outcome == "timed_out"
+    assert ended.timing is not None
+    assert (ended.timing.model_calls, ended.timing.retries) == (3, 2)
+    assert ended.timing.category == "timeout"
+
+
 @pytest.mark.parametrize(
     ("planner_turns", "critic_turns", "counted"),
     [
@@ -2322,15 +2359,16 @@ def test_a_verdict_that_comes_back_past_the_limit_publishes_nothing(
         (1, 20.0, RunTimedOut),
         (2, 20.0, RunTimedOut),
         (3, 20.0, RunTimedOut),
-        (3, 8.0, ServiceBusy),
+        (3, 8.0, RunTimedOut),
+        (3, 7.5, ServiceBusy),
     ],
 )
 def test_a_busy_answer_that_comes_back_past_the_limit_times_the_run_out(
     late_on: int, spent: float, raised: type[Exception]
 ) -> None:
     """Busy answers take a quarter second, then one takes ``spent`` seconds of a ten-second
-    run on the ``late_on`` try. Past the limit it times the run out, whichever try it was;
-    the last try's busy answer at the limit is still the service failing."""
+    run on the ``late_on`` try. At or past the limit it times the run out, whichever try it
+    was; the last try's busy answer with time left is still the service failing."""
     clock = FakeTime()
     budget = clock.budget(10.0)
     tries = [0]
