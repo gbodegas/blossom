@@ -9,12 +9,8 @@ from fastapi.testclient import TestClient
 
 from blossom.app import create_app
 from blossom.settings import CHECKPOINT_PATH_VARIABLE, DATABASE_PATH_VARIABLE, TRACE_PATH_VARIABLE
-from blossom.stores.household_claim import (
-    AnotherProcessHasTheHousehold,
-    claim_household,
-    lock_path_for,
-)
-from blossom.stores.paths import UnsafeCheckpointPath
+from blossom.stores.household_claim import AnotherProcessHasTheHousehold, claim_household
+from blossom.stores.paths import UnsafeCheckpointPath, lock_path_for
 from tests.support import PLAN_DATE, SAME_ORIGIN, fixture_settings
 
 
